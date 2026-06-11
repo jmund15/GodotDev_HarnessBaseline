@@ -1,0 +1,294 @@
+{
+  "env": {
+    "CLAUDE_CODE_GLOB_NO_IGNORE": "false"
+  },
+  "permissions": {
+    "deny": [
+      "Glob(.claude/worktrees/**)",
+      "Read(.claude/worktrees/**)",
+      "Grep(.claude/worktrees/**)"
+    ],
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet clean:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet nuget:*)",
+      "Bash(dotnet tool list:*)",
+      "Bash(dotnet tool install:*)",
+      "Bash(dotnet tool run gdunit4:*)",
+      "Bash(dotnet gdunit4:*)",
+      "Bash(gdunit4:*)",
+      "Bash(git:*)",
+      "Bash(git -C:*)",
+      "Bash(GIT_EDITOR=true git rebase:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh api:*)",
+      "Bash(gh auth status:*)",
+      "Bash(gh label create:*)",
+      "Bash(claude mcp:*)",
+      "Bash(claude config:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python3:*)",
+      "Bash(node:*)",
+      "Bash(npx:*)",
+      "Bash(uv:*)",
+      "Bash(uv run:*)",
+      "Bash(bash:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(unzip:*)",
+      "Bash(chmod:*)",
+      "Bash(ln:*)",
+      "Bash(which:*)",
+      "Bash(where:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(printenv:*)",
+      "Bash(export:*)",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(more:*)",
+      "Bash(awk:*)",
+      "Bash(sed:*)",
+      "Bash(tr:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(comm:*)",
+      "Bash(wc:*)",
+      "Bash(stat:*)",
+      "Bash(test:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(cp:*)",
+      "Bash(tee:*)",
+      "Bash(timeout:*)",
+      "Bash(xargs:*)",
+      "Bash(xxd:*)",
+      "Bash(jq:*)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(for:*)",
+      "Bash(powershell:*)",
+      "Bash(powershell.exe:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(tasklist:*)",
+      "Bash(taskkill:*)",
+      "Bash(cygpath:*)",
+      "Bash(cmd //c:*)",
+      "Bash(\"$GODOT_BIN\":*)",
+      "PowerShell(Get-Process:*)",
+      "PowerShell(Stop-Process:*)",
+      "PowerShell(git:*)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:godot-gdunit-labs.github.io)",
+      "WebFetch(domain:docs.godotengine.org)",
+      "WebFetch(domain:forum.godotengine.org)",
+      "WebFetch(domain:learn.microsoft.com)",
+      "WebFetch(domain:www.nuget.org)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:obsidian.md)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "mcp__godot__*",
+      "mcp__obsidian__obsidian_list_notes",
+      "mcp__obsidian__obsidian_read_note",
+      "mcp__obsidian__obsidian_global_search",
+      "mcp__obsidian__obsidian_update_note",
+      "mcp__obsidian__obsidian_search_replace",
+      "mcp__obsidian__obsidian_manage_frontmatter",
+      "mcp__obsidian__obsidian_manage_tags",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "mcp__plugin_semantic-search_semantic-search__search",
+      "mcp__ai-worker__*",
+      "Skill(architecture_philosophy)",
+      "Skill(architecture_brainstorm)",
+      "Skill(idea_brainstorm)",
+      "Skill(autolearn)",
+      "Skill(project_subsystems)",
+      "Skill(sync_subsystems)",
+      "Skill(sync_baseline)",
+      "Skill(sync_permissions)",
+      "Skill(self_evaluate)",
+      "Skill(session_audit)",
+      "Skill(session_end)",
+      "Skill(jmodot)",
+      "Skill(testing)",
+      "Skill(regression_gate)",
+      "Skill(memory_graph)",
+      "Skill(analyze_godot_logs)",
+      "Skill(commit_push)",
+      "Skill(clean_push)",
+      "Skill(clean_pull)",
+      "Skill(create_pr)",
+      "Skill(review_pr)",
+      "Skill(review_prs)",
+      "Skill(merge_pr)",
+      "Skill(pr_test_checklist)",
+      "Skill(doc_full)",
+      "Skill(doc_architecture)",
+      "Skill(doc_retrospective)",
+      "Skill(doc_usage)",
+      "Skill(create_obsidian_design_doc)",
+      "Skill(eval_dashboard)",
+      "Skill(routing_audit)",
+      "Skill(routing_battery)",
+      "Skill(worklog)",
+      "Skill(game_vision)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_memory_loader.py\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/critical_analysis_reminder.py\"",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_git_state_delta.py\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_cumulative_reset.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_prompt_synthesis.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pattern_enforcer.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compound_cd_approver.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/cloud_test_enforcer.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|mcp__obsidian__obsidian_read_note|mcp__obsidian__obsidian_global_search|mcp__plugin_semantic-search_semantic-search__search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_read_dispatch.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_context_loader.py\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/log_instruction_loads.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/transcript_backup.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/plan_memory_reminder.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|mcp__obsidian__obsidian_read_note|mcp__obsidian__obsidian_global_search|mcp__plugin_semantic-search_semantic-search__search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_read_dispatch.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_logger_tag_prefix.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "explanatory-output-style@claude-plugins-official": true,
+    "csharp-lsp@claude-plugins-official": true
+  }
+}

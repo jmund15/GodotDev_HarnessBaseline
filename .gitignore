@@ -1,0 +1,12 @@
+# Build / runtime artifacts that the filesystem accumulates but the baseline never ships.
+__pycache__/
+*.pyc
+
+# Session-state and runtime logs that live inside a .claude/ tree (the template mirrors
+# a real .claude/, so a maintainer running tools here can generate these).
+logs/
+.cache/
+sessions/
+worktrees/
+plans/
+scratch/

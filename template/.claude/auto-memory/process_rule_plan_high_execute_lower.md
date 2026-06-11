@@ -1,0 +1,19 @@
+---
+name: Plan/audit at xhigh effort, execute at lower effort via fresh session
+description: Architectural planning + /plan_check audit benefit from xhigh reasoning; mechanical execution from a complete plan file doesn't. Hand off via plan file to fresh session at lower effort tier rather than compacting.
+type: feedback
+originSessionId: 8892bf33-068a-4265-ad0e-ad954ac0de36
+---
+Architectural planning (especially with `/plan_check` audit dispatching parallel verification agents) accumulates tokens AND benefits from xhigh-tier reasoning — the agent traverses the design space, consolidates contradictory findings from parallel agents, and iterates the plan based on feedback. Execution from a complete plan file is dominantly mechanical (TDD RED→GREEN cycles, file renames per refactor procedure, scene-tree authoring per MCP discipline, .tres creation per spec) and doesn't need xhigh.
+
+**Why:** Compacting an xhigh planning session and continuing in the same session keeps paying xhigh rates per token while ALSO losing precision in compaction summaries (worked examples with specific numbers, multi-agent finding consolidations, design-space rejection rationale — exactly the dense detail that distinguishes a useful plan from a vague one). A fresh session at a lower effort tier costs less per token AND inherits the plan file as authoritative source; auto-loaded skills/rules/CLAUDE.md recover most working-context at SessionStart.
+
+**How to apply:** When a planning session produces a self-contained plan file (file paths, TDD test names + assertions, verification gates, decision rationale, MCP discipline notes per phase, parity-audit table skeleton), pass the plan to a fresh session at a lower tier for execution rather than compacting + continuing. The handoff seam is the plan file being complete enough that a careful junior engineer could execute it cold.
+
+**Litmus before fresh-handoff:** *"Could a careful junior engineer execute this plan with only the plan file as input?"* Yes → fresh-lower-tier wins. No (plan has unresolved architectural questions, or critical implementation details only live in conversation context) → stay in the planning session OR add the missing items to the plan file first.
+
+**Caveat:** If execution reopens architectural decisions mid-implementation (plan turns out wrong), the fresh-lower-tier session may re-traverse the design space at the wrong tier and produce a worse decision than the planning session would have. Mitigation: instruct the fresh session to surface architectural surprises back to the user rather than self-resolving, OR escalate the session back to xhigh.
+
+**Tooling:** `/plan_handoff <plan-path>` is the canonical executor-session entry point (created 2026-05-18). Invoke it as the **first command in a fresh executor session** (not in the planning session). It validates the plan file exists, loads the plan, sets the executor discipline (follow plan exactly, surface don't auto-fix, verify empirical claims, `/regression_gate` before commits), and begins execution from step 1. No copy/paste prompt — the command itself IS the kickoff. **`/plan_check` is NOT a prerequisite** — many smaller-scope or manually-verified plans skip the audit. Run `/plan_check` (in the planning session) only when the plan hits its own litmus (3+ files, new types, deletions, 2+ subclass refactors).
+
+Witnessed 2026-05-13 — Wizard locomotion refactor planning ran on xhigh through /plan_check 2-agent audit + plan revision cycle (~$X session). User paused before execution to consider session strategy; recommendation given was fresh session at medium effort with the plan file as handoff. Pattern generalized 2026-05-18 — `/plan_handoff` command codifies the kickoff prompt so the workflow no longer relies on ad-hoc prompt authoring per handoff. Planning ≠ execution in cognitive load, and the harness lets us right-size each.
