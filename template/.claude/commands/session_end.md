@@ -1,5 +1,5 @@
 ---
-disable-model-invocation: true
+disable-model-invocation: false
 description: End-of-session routine — audit, autolearn, self-evaluate, commit & push
 ---
 

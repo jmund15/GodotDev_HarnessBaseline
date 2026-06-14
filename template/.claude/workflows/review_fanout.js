@@ -51,12 +51,16 @@ const FINDINGS_SCHEMA = {
   required: ['findings'],
 }
 
-const VALID_MODELS = ['opus', 'sonnet', 'haiku']
+// 'fable' is requestable but never a default — reserve for explicit high-fidelity dispatch.
+const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
+// Floor: a caller that omits (or mis-spells) model must NOT silently inherit the session model —
+// under Fable that turns a 6-lens fan-out into 6 Fable agents. Default to sonnet; callers escalate explicitly.
+const DEFAULT_MODEL = 'sonnet'
 
 phase('Review')
 const raw = await parallel(agents.map(a => () => {
-  const opts = { label: 'review:' + (a.key || 'agent'), phase: 'Review', schema: FINDINGS_SCHEMA }
-  if (VALID_MODELS.includes(a.model)) { opts.model = a.model }
+  const model = VALID_MODELS.includes(a.model) ? a.model : DEFAULT_MODEL
+  const opts = { label: 'review:' + (a.key || 'agent'), phase: 'Review', schema: FINDINGS_SCHEMA, model }
   const prompt = (contextPrefix ? (contextPrefix + '\n\n') : '') + (a.prompt || '') + GUARD
   return agent(prompt, opts).then(r => ({ key: a.key, findings: (r && Array.isArray(r.findings)) ? r.findings : [] }))
 }))

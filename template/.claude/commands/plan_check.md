@@ -93,22 +93,24 @@ These are pre-loaded into agent CONTEXT, not freshly read at agent time:
 
 ## Phase 2: Launch Plan-Check Sub-Agents
 
-**CRITICAL — Sub-agent delegation is MANDATORY.** Spawn each agent as a separate `Task` subagent with `subagent_type: "general-purpose"` and the model specified in the template. Do NOT perform the audit inline.
+**CRITICAL — Sub-agent delegation is MANDATORY.** Spawn each agent as a separate `Task` subagent with `subagent_type: "general-purpose"` and the model specified in the template. Do NOT perform the audit inline, and do NOT collapse the lenses into one generic agent.
 
-**Parallel dispatch:** Spawn all three agents in a SINGLE message with 3 Task tool calls. Do NOT use `run_in_background` — let them execute in parallel and return together. Each agent inspects the pushed CONTEXT only; none runs tests or the csharp-ls LSP (single-flight — the orchestrator already resolved symbol refs in Phase 1f and injects them).
+**Lens composition (conditional):** the default is all three lenses. **Omit `plc-pattern-fit`** when the plan proposes ZERO new types, ZERO new files (renames excluded), and no new Jmodot code — pure retirement / mechanical-edit plans give the abstraction-discovery lens nothing to discover (maiden `/part_drive` run: ~73K tokens → empty array). The report header MUST then state `pattern-fit omitted (no new types/files)`. The other two lenses are never omitted.
+
+**Parallel dispatch:** Spawn the selected agents in a SINGLE message with parallel Task tool calls. Do NOT use `run_in_background` — let them execute in parallel and return together. Each agent inspects the pushed CONTEXT only; none runs tests or the csharp-ls LSP (single-flight — the orchestrator already resolved symbol refs in Phase 1f and injects them).
 
 ### Agent Templates
 
 Use the templates in [`plan_check_agents.md`](agents/plan_check_agents.md):
-- `plc-memory-alignment` (opus) — Memory + known-failure-mode cross-check + step-ordering-hazard scan
-- `plc-pattern-fit` (opus) — Existing-abstraction discovery + framework-boundary + structure rules
+- `plc-memory-alignment` (sonnet; opus when the plan is architecturally loaded — new abstractions, framework-boundary changes, 2+ subsystem reach) — Memory + known-failure-mode cross-check + step-ordering-hazard scan
+- `plc-pattern-fit` (sonnet) — Existing-abstraction discovery + framework-boundary + structure rules
 - `plc-test-readiness` (sonnet) — Test-first executability under Hybrid TDD (detect-and-report only)
 
 ### Shared CONTEXT Block
 
 Assemble a single `CONTEXT` string injected into both agent prompts. It MUST contain:
 
-1. **Plan text** (`PLAN_TEXT` from 1a)
+1. **Plan text** (`PLAN_TEXT` from 1a) — for `Task`/Agent-tool subagents, pass the plan **file path** and instruct the agent to Read it (verbatim-by-reference; saves a per-agent paste). Inline the full text ONLY when no plan file exists (inline-arg invocation) or when dispatching through a `Workflow` script, whose fanned agents hit intermittent read failures (`gotcha_workflow_fanout_search_false_absence`).
 2. **Inferred domains** (`INFERRED_DOMAINS` from 1c)
 3. **Memory Hits** (`MEMORY_HITS` from 1d) — entity/file names + brief content
 4. **Known Failure Modes** (`KNOWN_FAILURE_MODES` from 1e) — full catalog text
@@ -172,7 +174,8 @@ Follow the Action Protocol's Step 4. Plan-check FIX findings rewrite the plan te
 - **Pre-execution stance.** This command runs BEFORE code is written. Findings are about plan content, not existing code.
 - **Time-bounded.** Full audit (spawn → consolidate) under 5 minutes for typical plans (<2000 words). Larger plans may exceed.
 - **Cloud compatible.** Uses Grep fallback for csharp-ls; no Godot MCP / Obsidian MCP dependencies.
-- **MANDATORY 3-agent parallel dispatch.** Do not perform inline; do not collapse into one generic agent.
+- **MANDATORY parallel agent dispatch** (3 lenses default; pattern-fit conditionally omitted per Phase 2's lens-composition rule). Do not perform inline; do not collapse into one generic agent.
+- **Evidence-quoting for refuting claims.** Any agent finding that REFUTES the plan on empirical grounds ("this type already exists / file missing / already refactored") must quote the raw tool output (grep line, read excerpt) supporting it. The orchestrator first-party-verifies at least one quote before the finding counts — agents fabricate confident file-state claims (`feedback_verify_explore_agent_empirical_claims`); paraphrase survives fabrication, verbatim output rarely does.
 - **Detect-and-report only for `plc-test-readiness` + the Phase-1b DoD/stub scan.** They surface findings; they never emit auto-applicable `old`/`new` edits. Test content and Definition-of-Done are scope decisions — a downstream auto-apply loop (e.g. `/plan_drive`) must never be able to silently fill in scope from these findings.
 
 ---

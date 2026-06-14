@@ -54,6 +54,7 @@ Also read into the snapshot: `.claude/worklog-titles.md` (worklog state) and the
 Agent({
   description: "Refactor parity diff",
   subagent_type: "general-purpose",
+  model: "opus", // the one high-fidelity pin: line-precision OLD-vs-NEW regression audit that gates the PR — a missed dropped branch ships a bug. Standalone Agent() bypasses review_fanout.js's sonnet floor, so this MUST be set explicitly (else it inherits the session model).
   prompt: "<parity mandate + OLD (from git show main:…) + NEW per changed .cs, verbatim with file:line>"
 })
 ```
@@ -76,9 +77,9 @@ Workflow({
   args: {
     contextPrefix: "<diff --stat + changed-file list + the 3 pre-computed BLOCKER grep results>",
     agents: [
-      { key: "api-consume",     prompt: "<mandate + new-public-API list + call-site content>" },
-      { key: "worklog-roadmap", prompt: "<mandate + worklog-titles + roadmap Parts table>" },
-      { key: "doc-coverage",    prompt: "<mandate + changed-export/subsystem content>" }
+      { key: "api-consume",     prompt: "<mandate + new-public-API list + call-site content>", model: "sonnet" },
+      { key: "worklog-roadmap", prompt: "<mandate + worklog-titles + roadmap Parts table>", model: "sonnet" },
+      { key: "doc-coverage",    prompt: "<mandate + changed-export/subsystem content>", model: "sonnet" }
     ]
   }
 })

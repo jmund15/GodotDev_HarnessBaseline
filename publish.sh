@@ -48,6 +48,8 @@ git -C "$STAGE" remote add origin "$REMOTE"
 # Force the gh CLI credential helper for this push, clearing any inherited helper
 # (e.g. Git Credential Manager) first. GitHub rejects password auth over HTTPS;
 # gh supplies the OAuth token non-interactively. Requires `gh auth login` done.
+# Run this script from Git Bash, not a PowerShell-launched sh: git invokes the
+# helper via `sh -c`, which must find `gh` on PATH (PowerShell's sh does not).
 git -C "$STAGE" \
   -c credential.helper= \
   -c 'credential.helper=!gh auth git-credential' \

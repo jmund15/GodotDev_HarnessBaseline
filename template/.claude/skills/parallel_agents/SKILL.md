@@ -123,16 +123,23 @@ CONSTRAINTS:
 
 This skill is the canonical home of fan-out model selection (the guidance formerly lived in CLAUDE.md §8 *Agent Delegation*, since removed in compression). Evidence base: `archive_agent_task_gotchas.md`.
 
-> Built-in `Explore` has run on Haiku and hallucinated file paths (e.g., `mooyum_milk.tres` in Phase 1e.2). Use `Agent(subagent_type:"general-purpose", model:"sonnet")` for accuracy-critical or cross-codebase work; `Explore` is fine for scoped lookups where a wrong answer is cheap to reject.
+### The load-bearing rule: a fan-out NEVER inherits the session model
 
-Decision tree:
+Omitting `model` does NOT pick a cheap model — it inherits the **session model**, which is whatever the orchestrator is running under. Under Fable that is the most expensive option, and a fan-out *multiplies* it: a 6-lens red-team panel with no pins becomes **6 Fable critics** — overkill the work rarely justifies. **Every dispatched agent pins a model explicitly. No exceptions outside the carve-out below.** "I'll just let it inherit" is the bug, not a shortcut.
 
-- [ ] **`general-purpose` + `sonnet`** — DEFAULT for accuracy-critical work, cross-codebase reasoning, code review, audit, fix authorship. PP commands (`session_audit`, `review_pr`, `test_skill`) all use this combination.
-- [ ] **`general-purpose` + `haiku`** — Validation steps (verify a PASS verdict, double-check a finding's correctness), simple lookups where a wrong answer is cheap to reject and re-prompt.
-- [ ] **`general-purpose` + `opus`** — Reserved for the most complex orchestration (e.g., `session_audit_agents.md` design-semantics agent). Costs scale; use when the task genuinely requires deep reasoning.
-- [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths. Use only for scoped lookups where you can cheaply reject a wrong answer. Most PP commands DO NOT use `Explore` — they use `general-purpose` + explicit model selector instead.
+**Engine floor (defense-in-depth).** `review_fanout.js` and `doc_architecture_audit.js` default an omitted/mis-spelled model to `sonnet` (never inherit). The floor is a safety net for a forgotten pin — it is NOT a license to stop pinning: a pin at the call site documents *why* a lens runs where it does, and manual `Agent`/`Task` dispatches (e.g. `pr_ready`'s `parity` lens, the red-team `Task` fallback) bypass the floor entirely and MUST pin.
 
-**Rule:** When in doubt, choose `general-purpose` + `sonnet`. The cost premium over Haiku is small; the accuracy premium is significant. Note: omitting `model` inherits the main session's model — usually the most expensive option; for fan-outs, set the model explicitly.
+### Decision tree (the tier ladder: sonnet floor → opus for depth → fable only on demand)
+
+- [ ] **`general-purpose` + `sonnet`** — **DEFAULT FLOOR.** Accuracy-critical reasoning, cross-codebase work, code review, audit, fix authorship, adversarial-design critique (red-team lenses). When in doubt, this. The cost premium over Haiku is small; the accuracy premium is significant.
+- [ ] **`general-purpose` + `haiku`** — Validation steps (verify a PASS verdict, re-check a finding), mechanical lookups/data-extraction where a wrong answer is cheap to reject and re-prompt.
+- [ ] **`general-purpose` + `opus`** — Genuinely deep reasoning lenses where a miss is costly: design-semantics (`session_audit`), domain-coherence/reference-integrity (`structure_audit`), refactor-parity regression gating (`pr_ready`). **Escalation is per-lens and deliberate** — the orchestrator may raise a *specific* lens to opus when its input is genuinely architecturally heavy (multi-subsystem boundary redesign), never a blanket bump of the whole panel.
+- [ ] **`fable`** — **Reserved for explicit user request / stated max-fidelity demand ONLY.** Never a default, never inherited, never the orchestrator's unilateral pick for a routine fan-out. If you're reaching for fable without the user asking, stop — sonnet or opus is the answer.
+- [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths (`mooyum_milk.tres`, Phase 1e.2). Use only for scoped lookups where a wrong answer is cheap to reject. Most PP commands use `general-purpose` + an explicit model selector instead.
+
+### The one legitimate inherit-the-session-model carve-out
+
+**Measurement batteries that test the session model's own behavior** — `routing_battery.md` (tool-routing decisions) and `doc_workflow_battery.md` (skill-trigger behavior) — *intentionally* omit `model` so the subagents run under the session model being measured. Pinning these would defeat their purpose. This is the ONLY sanctioned inheritance; both commands say so inline. Do not "fix" them in a model-selection sweep.
 
 ---
 

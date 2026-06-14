@@ -54,7 +54,7 @@ Workflow({
   scriptPath: ".claude/workflows/review_fanout.js",
   args: {
     contextPrefix: "Cross-surface rule-consistency audit. You compare PUSHED statements only — do not search.",
-    agents: [ { key: "tool-routing", prompt: "<mandate + gathered statements>" }, /* ≤4 per batch */ ]
+    agents: [ { key: "tool-routing", prompt: "<mandate + gathered statements>", model: "sonnet" }, /* ≤4 per batch; pin sonnet — text-comparison work, never inherit the session model */ ]
   }
 })
 ```

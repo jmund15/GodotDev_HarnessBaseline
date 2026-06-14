@@ -334,6 +334,11 @@ def cmd_init(root, baseline_dir, repo, ref, subs):
 
 
 def main():
+    # Windows consoles default to cp1252, which raises UnicodeEncodeError on the
+    # non-ASCII glyphs (arrows, em-dashes) in diff/check output. Force UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("op", choices=["check", "diff", "pull", "materialize",
                                    "update-lock", "fork", "track", "ignore",

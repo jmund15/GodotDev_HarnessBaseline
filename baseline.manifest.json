@@ -367,6 +367,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_relocation_doccomment_cref_boundary.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_schema_version_bump_breaks_version_tests.md",
       "layer": "universal",
       "sync": "auto"
@@ -597,6 +602,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/idea_brainstorm_fanout.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/instruction_audit.md",
       "layer": "universal",
       "sync": "auto"
@@ -618,6 +628,11 @@
     },
     {
       "path": ".claude/commands/mvp_plan.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/part_drive.md",
       "layer": "universal",
       "sync": "auto"
     },
@@ -1188,6 +1203,11 @@
     },
     {
       "path": ".claude/workflows/doc_architecture_audit.js",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/idea_fanout.js",
       "layer": "universal",
       "sync": "auto"
     },

@@ -7,7 +7,9 @@ description: >-
   curated idea-bank doc with per-cluster honed survivors. Hand off to
   /architecture_brainstorm once the idea pool stabilizes. SKIP for mature
   domains (canonical patterns already populate the space), tactical/mechanical
-  topics, or when the user already has a populated idea space.
+  topics, or when the user already has a populated idea space. Pass --fan_out
+  for lens-diverse multi-agent divergence + independent critique on a broad
+  cluster.
 ---
 
 # Idea Brainstorm
@@ -117,6 +119,8 @@ Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm
 
 **Rule:** This is the meat of the skill. Run the pipeline once per natural cluster. Clusters typically map to user-surfaced themes; new clusters require explicit *"I'm proposing a category you didn't mention"* framing.
 
+**Optional `--fan_out` augmentation.** When invoked as `/idea_brainstorm <topic> --fan_out` (or when a cluster is broad / enumeration-pressured), the **Diverge** phase below is dispatched to [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md): N **lens-diverse** generator agents fan out, an independent critique pass (dedup / fit / coverage-gap) annotates the merged pool, and the raw pool + annotations return here for curation. It is **opt-in** (no flag → single-agent Diverge, default flow unchanged) and replaces **only** the Diverge sub-phase — Filter → Hone → Cluster & rank → present, the per-cluster user-react loop, and the Hard Gate all run unchanged in this loop. **Curation never leaves Claude** (the worker-delegation rule): the fan-out generates and critiques; it never decides what survives. The per-step hook is marked **"Fan-out hook (`--fan_out` only)"** in the Diverge phase.
+
 **Hidden phases (agent context only):**
 
 1. **Diverge** — generate 15–30 raw candidates per cluster, drawing on:
@@ -124,6 +128,8 @@ Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm
    - Domain-canon precedents (for game design: Hades, Slay the Spire, Dead Cells, Hollow Knight, Inscryption, etc.) — cite by name when used
    - Lateral / surprising candidates from adjacent genres or domains
    - Cross-pollination from other clusters already processed
+
+   **Fan-out hook (`--fan_out` only).** Rather than running the single-agent Diverge alone, dispatch [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md) for THIS cluster: assemble the cluster CONTEXT (scope / boundary / raw seeds / already-kept survivors — **pushed**, not searched, per `gotcha_workflow_fanout_search_false_absence`), pick ~4 orthogonal lenses via the command's selection rubric, and dispatch. Merge the returned raw pool **plus** the coverage-gap critic's `proposedAdditions` **plus any context-privileged candidates you can add from the live conversation** (user tone / unstated intent / chat-only seeds the generators never received — a top-up, NOT a parallel re-diverge), then continue to Filter (phase 2) using the `fit`/`dedup` critic notes as input (not gospel — Claude makes every keep call). Confirm liveness first — every generator returned `count > 0`; a silent-empty lens is not a clean lens (`arch_rule_autonomous_loop_positive_liveness`).
 
 2. **Filter** — apply the explicit checklist:
    - **Game-mechanics fit** — does this contradict established systems? If unsure, flag as `[mechanic-uncertain]` and surface for user confirmation rather than silently culling. Agent's domain knowledge is finite; uncertainty must be visible, not hidden.
@@ -327,6 +333,7 @@ After `/update_roadmap` applies:
 
 **Commands:**
 - [`/update_roadmap`](../../commands/update_roadmap.md) — Step 6 invocation; applies Per-Cluster Routing → Part State mapping to `roadmap.md`
+- [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md) — Step 3 Diverge fan-out (`--fan_out`); lens-diverse divergence + independent critique; returns the raw pool for Claude to curate
 
 **File-based memory:**
 - `feedback_no_unilateral_condensation.md` — Step 3 Diverge verbatim-port discipline

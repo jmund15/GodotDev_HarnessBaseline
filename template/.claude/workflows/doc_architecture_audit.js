@@ -108,10 +108,12 @@ const FINDINGS_SCHEMA = {
 }
 
 phase('Audit')
+// Pinned to sonnet — doc-structure auditing (template/link/domain checks) is well within sonnet's range
+// and must not inherit the session model (a Fable session would run all three lenses at Fable cost).
 const [structRes, crossRes, domainRes] = await parallel([
-  () => agent(STRUCTURAL, { label: 'da-structural', phase: 'Audit', schema: FINDINGS_SCHEMA }),
-  () => agent(CROSSREF, { label: 'da-crossref', phase: 'Audit', schema: FINDINGS_SCHEMA }),
-  () => agent(DOMAIN, { label: 'da-domain', phase: 'Audit', schema: FINDINGS_SCHEMA }),
+  () => agent(STRUCTURAL, { label: 'da-structural', phase: 'Audit', schema: FINDINGS_SCHEMA, model: 'sonnet' }),
+  () => agent(CROSSREF, { label: 'da-crossref', phase: 'Audit', schema: FINDINGS_SCHEMA, model: 'sonnet' }),
+  () => agent(DOMAIN, { label: 'da-domain', phase: 'Audit', schema: FINDINGS_SCHEMA, model: 'sonnet' }),
 ])
 
 phase('Consolidate')

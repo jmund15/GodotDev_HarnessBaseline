@@ -48,6 +48,8 @@ Five lenses, each judging the pushed input (read-only; no tests, no LSP). The **
 
 **Phase-scoped subsets for Mode B:** Step 2 → `rt-boundary` + `rt-failuremode` + `rt-yagni-scope` (premise-challenge only). Step 4 → those three + `rt-abstraction` (+ `rt-testability` if an approach already names test surface). Step 5 / Mode A → all five.
 
+**Model — pin every lens to `sonnet`; NEVER inherit the session model.** A critic panel is a fan-out: omitting `model` makes each lens inherit the session model, so a Fable brainstorm turns a 5-lens panel into 5 Fable critics — overkill the rigor work does not need (`parallel_agents` §5). Sonnet is the floor for adversarial-design critique. **Escalation is deliberate, never blanket:** raise a *specific* lens to `opus` only when its input is genuinely architecturally heavy (a multi-subsystem boundary redesign for `rt-boundary`/`rt-abstraction`); reserve `fable` strictly for an explicit user request / stated max-fidelity demand. Default stays sonnet.
+
 **Dispatch — keep `args` FLAT (per `gotcha_workflow_args_generation_fidelity`).** Push the input ONCE via the shared `contextPrefix`; keep each lens `prompt` to its mandate only (do NOT duplicate the design into every prompt — that deeply-nested, escape-dense shape makes the tool call's JSON malformed):
 
 ```
@@ -56,16 +58,17 @@ Workflow({
   args: {
     contextPrefix: "<the pushed input + abstraction inventory + gotchas, as ONE flat string>",
     agents: [
-      { key: "rt-boundary",    prompt: "<mandate only>" },
-      { key: "rt-failuremode", prompt: "<mandate only>" },
-      { key: "rt-yagni-scope", prompt: "<mandate only>" }
-      // + rt-abstraction / rt-testability per the phase subset above
+      { key: "rt-boundary",    prompt: "<mandate only>", model: "sonnet" },
+      { key: "rt-failuremode", prompt: "<mandate only>", model: "sonnet" },
+      { key: "rt-yagni-scope", prompt: "<mandate only>", model: "sonnet" }
+      // + rt-abstraction / rt-testability per the phase subset above (model: "sonnet")
+      // escalate a single lens to "opus" only for genuinely arch-heavy input; "fable" only on explicit user request
     ]
   }
 })
 ```
 
-**Fallback (large design or a JSON-parse failure on dispatch):** dispatch the lenses as parallel `Task` subagents instead — each carries one flat prompt (mandate + the input inline). This is the more robust shape for large prose and is the documented substitute when Workflow `args` would be heavy (`gotcha_workflow_args_generation_fidelity`).
+**Fallback (large design or a JSON-parse failure on dispatch):** dispatch the lenses as parallel `Task` subagents instead — each carries one flat prompt (mandate + the input inline) and an explicit `model: "sonnet"` (the `Task` path bypasses `review_fanout.js`'s sonnet floor, so an unpinned fallback would inherit the session model). This is the more robust shape for large prose and is the documented substitute when Workflow `args` would be heavy (`gotcha_workflow_args_generation_fidelity`).
 
 **Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` returns an **empty findings array for any lens that errors, times out, or returns malformed JSON** (its guard: `Array.isArray(r.findings) ? r.findings : []`). So "0 findings" can mean "ran and found nothing" OR "never ran." Before reporting or converging, read the workflow's `perAgent: [{key, count}]` and confirm **every dispatched lens key is present**. If any lens is missing → do NOT report CLEAN; surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses (or halt). This closes the false-absence path inside the red-team itself.
 

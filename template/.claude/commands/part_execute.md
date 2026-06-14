@@ -49,9 +49,11 @@ For each slice:
 
 After all slices are green, run **`/regression_gate`** (mandatory for any `.cs` change, no carve-outs). It is the separate single-flight serial gate — do **not** fan it out, do **not** run it concurrently with anything. A gate failure that isn't a trivial in-scope fix is **halt valve (d)**.
 
-### Step 5 — Readiness battery (static, read-only)
+### Step 5 — Readiness battery (static, read-only) — *feature branches only*
 
-With the gate green, run [`/pr_ready`](pr_ready.md) over the Part's diff — the parity / consume-new-APIs / worklog-roadmap / doc-coverage lenses that each catch a "done but not actually done" class regression. Any **BLOCKER** is **halt valve (d)**: stop and surface, do not commit over it. WARN/INFO are reported, not blocking. An **empty / timed-out / partial** battery result is NOT a pass — re-run once; if still inconclusive, halt (valve d). A clean battery must be a *positive* "all lenses returned, 0 BLOCKERs," never "nothing came back" (`gotcha_workflow_fanout_search_false_absence`).
+**Skip on `main`.** `/pr_ready` is a pre-PR/pre-merge battery; a direct-to-`main` commit has no branch diff to gate against, so run it ONLY when `git branch --show-current` is not the default branch (`main`). On `main`, go straight to Step 6 — `/regression_gate` (Step 4) remains the gate, and `/pr_ready`'s lenses re-run at PR time on whatever branch the work eventually merges through.
+
+On a feature branch: with the gate green, run [`/pr_ready`](pr_ready.md) over the Part's diff — the parity / consume-new-APIs / worklog-roadmap / doc-coverage lenses that each catch a "done but not actually done" class regression. Any **BLOCKER** is **halt valve (d)**: stop and surface, do not commit over it. WARN/INFO are reported, not blocking. An **empty / timed-out / partial** battery result is NOT a pass — re-run once; if still inconclusive, halt (valve d). A clean battery must be a *positive* "all lenses returned, 0 BLOCKERs," never "nothing came back" (`gotcha_workflow_fanout_search_false_absence`).
 
 ### Step 6 — Propose completion (do not auto-apply)
 

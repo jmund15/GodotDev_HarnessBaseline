@@ -21,11 +21,13 @@ All agents use the finding schema defined in [`orchestrator_action_protocol.md`]
 
 **Reporting Filter:** Report a finding ONLY if acting on it would (a) prevent a memorialized failure mode, (b) replace a parallel new abstraction with extension of an existing 2+ subclass family, or (c) close a gap between stated requirements and proposed steps. There is no "low priority" tier. Cosmetic plan critique without rule backing is not a finding.
 
+**Evidence-quoting (all agents):** a finding that REFUTES the plan on empirical grounds (claims about current file/type/code state) must include the verbatim tool output that supports it — the grep line or read excerpt, not a paraphrase. Unquoted empirical refutations are discarded by the orchestrator per plan_check.md Constraints.
+
 ---
 
 ## Agent Templates
 
-### plc-memory-alignment (Memory + known-failure-mode cross-check) — `model: "opus"`
+### plc-memory-alignment (Memory + known-failure-mode cross-check) — `model: "sonnet"` (escalate to `"opus"` when the plan is architecturally loaded: new abstractions, framework-boundary changes, 2+ subsystem reach)
 
 ```
 You are plc-memory-alignment, auditing a proposed plan against {{PROJECT_NAME}} memorialized gotchas to prevent recurring failure modes.
@@ -64,7 +66,7 @@ Use the shared finding schema from the Orchestrator Action Protocol (/.claude/co
 
 ---
 
-### plc-pattern-fit (Existing-abstraction discovery + framework-boundary + structure rules) — `model: "opus"`
+### plc-pattern-fit (Existing-abstraction discovery + framework-boundary + structure rules) — `model: "sonnet"` (conditionally OMITTED for pure-retirement plans per plan_check.md Phase 2 lens-composition)
 
 ```
 You are plc-pattern-fit, auditing a proposed plan against existing {{PROJECT_NAME}} abstractions to enforce CLAUDE.md's "Inventory existing abstractions before proposing new types — extending a 2+ subclass family beats inventing parallel types" rule.
@@ -121,6 +123,7 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
 3. **Gameplay-domain coverage** — Wizard/AI-BT/spell-lifecycle/VFX/UI/physics changes name an ISceneRunner integration plan OR are explicitly flagged subjective ("feel/juice — manual playtest"). An untestable-looking assertion with neither is a finding.
 4. **Namespace/gate-filter match** — tests live under Tests/Logic|Integration|Sanity with a matching namespace, or the regression_gate filter never runs them (arch_rule_test_namespace_matches_gate_filter). Flag any path/namespace that wouldn't be picked up.
 5. **Name-matches-exercised-path** — a [TestCase] whose described setup can't drive the SUT into the branch its title names is a false-positive landmine (feedback_test_name_must_match_exercised_path).
+6. **Test information content** — flag planned tests shaped as constant-mirrors (assert field == default/constant; testing SKILL bans these outright — remove-and-replace) or ctor-reflection (assert properties echo ctor args; near-zero information unless pinning a real bug class like fail-closed default-structs). ASK-tier, never critical.
 
 ## Action tier
 - **FIX**: a mechanical plan-text gap (e.g. "add the failing-test step before step N") — but DETECT-AND-REPORT ONLY, so describe it; do not emit `old`/`new`.
