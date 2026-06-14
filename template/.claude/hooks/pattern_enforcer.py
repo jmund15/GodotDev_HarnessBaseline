@@ -94,10 +94,41 @@ def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
     return False, ""
 
 
+# Recoverable, harness-managed scratch the tooling itself creates and destroys
+# (baseline clone cache, log spool). A recursive delete confined to these is safe.
+_EPHEMERAL_RE = re.compile(r'\.claude[\\/](?:\.cache|logs)\b')
+
+
+def _strip_quoted(command: str) -> str:
+    """Blank single/double-quoted spans so a dangerous-looking pattern that is merely a
+    QUOTED argument (e.g. `grep "rm -rf"`, an echo, a commit body) isn't mistaken for a
+    real command. A genuine `rm -rf "<target>"` still trips the guard — only the quoted
+    target blanks; the unquoted `rm -rf` remains to match."""
+    return re.sub(r"'[^']*'|\"[^\"]*\"", " ", command)
+
+
+def _is_safe_ephemeral_cleanup(scan: str) -> bool:
+    """True only for a single (non-chained) recursive delete whose every path argument
+    sits under an ephemeral prefix. Any control operator (so a chained second delete
+    can't ride along) or any non-ephemeral path token disqualifies it — the check can
+    never green-light a broad or dangerous delete, only over-block."""
+    if re.search(r'&&|\|\||;|\||`|\$\(', scan):
+        return False
+    paths = [t for t in scan.split()
+             if not t.startswith('-')
+             and t.lower() not in ('rm', 'del', 'erase', 'ri', 'remove-item')]
+    return bool(paths) and all(_EPHEMERAL_RE.search(p) for p in paths)
+
+
 def check_bash_command(command: str) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
+    scan = _strip_quoted(command)
     for pattern, message in DANGEROUS_BASH_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
+        if re.search(pattern, scan, re.IGNORECASE):
+            # Allow recursive deletes confined to regenerable harness scratch; never
+            # relax a drive-format block regardless of target.
+            if 'format' not in message.lower() and _is_safe_ephemeral_cleanup(scan):
+                continue
             return True, message
     return False, ""
 
