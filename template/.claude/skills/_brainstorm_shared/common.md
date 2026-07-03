@@ -128,7 +128,7 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 | Topic shape | Destination |
 |---|---|
-| PP-game-specific (spell mechanics, gameplay design, content) | `DevProjects/{{PROJECT_NAME}}/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
+| {{PROJECT_NAME}}-game-specific (spell mechanics, gameplay design, content) | `DevProjects/{{PROJECT_NAME}}/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
 | Jmodot-framework-general (AI architecture, framework design, cross-game patterns) | `DevProjects/Jmodot/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
 
 **Folder-per-topic convention (always-folder default):** Every brainstorm topic is a folder. Folder name: `YYYY-MM-DD-<kebab-case-topic>/` (date = topic inception). Promoting a flat file later costs more than starting with a folder.

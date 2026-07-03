@@ -51,7 +51,7 @@ These three accumulate the most "this bit me before" knowledge. Beyond them, sea
 5. **Throwaway fixture scene** under `Tests/Fixtures/` exercising the bug code path with one function call. Useful when the production scene is too tangled to isolate the symptom.
 6. **`git bisect run dotnet test --filter <Name>`** if the bug appeared between two known-good states. Automate the verdict so bisection runs unattended. **Verify the good-end FIRST** (run the failing test at the supposed-good commit) before automating a wide window — a bisect presupposes a green→red transition exists. If both endpoints fail with an *identical* failure set, there is no transition: reclassify as "never-green-but-masked" (e.g. a test red since its introduction commit, hidden by a stale baseline) and skip the bisect. Note checking out an old commit also reverts the Jmodot submodule + `.claude/` harness — `git submodule update --init Jmodot` per step, restore on exit.
 7. **Differential loop** — run the same input through old-version vs new-version (or two configs) and diff outputs. Best for "regression appeared between commit X and Y."
-8. **Property / `JmoRng`-seeded fuzz loop** — run N random seeded inputs and look for the failure mode. Sub-bullet: rare in PP today but the right tool for "it sometimes returns wrong output."
+8. **Property / `JmoRng`-seeded fuzz loop** — run N random seeded inputs and look for the failure mode. Sub-bullet: rare in {{PROJECT_NAME}} today but the right tool for "it sometimes returns wrong output."
 9. **HITL playtest** — last resort. Ask user to playtest while you read logs after. If you go here, capture log files, screen recordings with timestamps, or any artifact that turns the manual repro into a replayable one.
 
 ### Cloud vs. local — pick the right loop for the environment
@@ -127,7 +127,7 @@ Do not proceed until you reproduce the bug.
 
 **Verify scene configuration first.** Before instrumenting, read the entity's `.tscn` to confirm which components/strategies are actually wired. Don't assume an entity uses a particular strategy — a mismatch between code-expected wiring and scene-actual wiring is itself the bug a surprising fraction of the time.
 
-**Canonical PP boundary chain** (when debugging a spell flow):
+**Canonical {{PROJECT_NAME}} boundary chain** (when debugging a spell flow):
 
 ```
 Wizard → SpellCaster → SpellArchitecture → SpellBehavior → ProjectileBody
@@ -183,7 +183,7 @@ Each hypothesis must be **falsifiable** — state the prediction it makes:
 
 If you cannot state the prediction, the hypothesis is a vibe — discard or sharpen it.
 
-**Write the ranked list visibly, then proceed.** PP's Auto Mode prefers continuous execution; do NOT block waiting for user approval of the ranking. Surface the list — the user often re-ranks instantly with domain knowledge ("we just changed #3", "we already ruled out #1") and will interject if needed. Cheap checkpoint, big time saver, but no hard pause.
+**Write the ranked list visibly, then proceed.** {{PROJECT_NAME}}'s Auto Mode prefers continuous execution; do NOT block waiting for user approval of the ranking. Surface the list — the user often re-ranks instantly with domain knowledge ("we just changed #3", "we already ruled out #1") and will interject if needed. Cheap checkpoint, big time saver, but no hard pause.
 
 ### Test ONE at a time — anti-stack-tracking
 
@@ -310,7 +310,7 @@ Required before declaring done:
 
 ### Post-mortem to auto-memory (mandatory if non-obvious)
 
-If the correct hypothesis surfaced a non-obvious gotcha that would bite again, save it to auto-memory. **Memory is PP's durable surface; commit messages are not searched.** This aligns with CLAUDE.md "DOCUMENT, MEMORIZE, & CODIFY":
+If the correct hypothesis surfaced a non-obvious gotcha that would bite again, save it to auto-memory. **Memory is {{PROJECT_NAME}}'s durable surface; commit messages are not searched.** This aligns with CLAUDE.md "DOCUMENT, MEMORIZE, & CODIFY":
 
 - ✅ Save: surprising behavior, cross-system races, lifecycle gotchas, "I burned 2 hours because X" stories.
 - ❌ Don't save: API signatures, "fixed null check in MyClass.Method" — those belong in code docs.

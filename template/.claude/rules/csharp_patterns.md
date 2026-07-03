@@ -113,7 +113,7 @@ target.Initialize(data, metadata);  // Sets metadata only on success
 
 - **Cascade (why blanket Resources):** if a `[Tool]` script `[Export]`s a typed Resource (or `Array<>` / `Dictionary<,>` of one), that Resource AND every concrete subclass assignable to that field MUST also be `[Tool]` — Godot's source generator does NOT inherit the attribute. A gap throws `InvalidCastException` in the **editor only** (the generated setter loads the instance as a bare `Godot.Resource` and casts). **No GdUnit4 / runtime test can catch it** — at runtime every script is its real type.
 - **Cost asymmetry (why selective Nodes):** `[Tool]` on a Resource is side-effect-free (editor only runs property setters); on a Node it makes the editor run `_EnterTree` / `_Ready` / `_Process`, firing game logic in-editor.
-- **Escape hatch:** type the `[Export]` as base `Resource` / `Node` and cast at runtime (`prop as IFoo`) to break the cascade — used when exporting a non-`[Tool]` Jmodot Resource (Jmodot is a submodule; fix its gaps in a Jmodot PR, not a PP edit).
+- **Escape hatch:** type the `[Export]` as base `Resource` / `Node` and cast at runtime (`prop as IFoo`) to break the cascade — used when exporting a non-`[Tool]` Jmodot Resource (Jmodot is a submodule; fix its gaps in a Jmodot PR, not a {{PROJECT_NAME}} edit).
 - *Enforced:* `pattern_enforcer.py` (edit-time — blocks a `[GlobalClass]` Resource without `[Tool]`) + `tool_cascade_audit.py` / `apply_blanket_tool.py` in `/regression_gate` step 1c (static graph) + headless `--import` (step 4b). Full mechanism + verified-empirically details: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) → *`[Tool]` Attribute Policy*. Canon: `archive_tool_attribute_cascade_rules.md`.
 
 ## Async & Tasks

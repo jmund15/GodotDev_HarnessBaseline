@@ -1,6 +1,6 @@
 ---
 name: Jmodot_Framework_Boundary_Rule
-description: Code-level boundary rule preventing Jmodot from reaching into consuming-project namespaces. Introduces the static-seam pattern used for defaults (CombatFactoryDefaults) as the framework-safe equivalent of the PP-internal Default Value Pattern. Authored 2026-04-19.
+description: Code-level boundary rule preventing Jmodot from reaching into consuming-project namespaces. Introduces the static-seam pattern used for defaults (CombatFactoryDefaults) as the framework-safe equivalent of the {{PROJECT_NAME}}-internal Default Value Pattern. Authored 2026-04-19.
 type: feedback
 originSessionId: 65fe3ebf-5342-45f2-b44f-e56a7c3d003f
 ---
@@ -18,14 +18,14 @@ Jmodot code MUST NOT reference the consuming project's namespace (e.g. `{{PROJEC
 ## Canonical example (landed 2026-04-19)
 - **Seam class:** `Jmodot/Core/Combat/CombatFactoryDefaults.cs` — static nullable fields for crit attrs + 4 status runner PackedScenes.
 - **Consumer wiring:** `{{PROJECT_NAME}}/Global/GlobalRegistry.cs::WireCombatFactoryDefaults()` called from `_EnterTree` and `EnsureInitializedForTests`.
-- **Test reset:** `CombatFactoryDefaults.Reset()` called from tests' `[BeforeTest]`/`[AfterTest]` AND from PP's `GlobalRegistry.ResetForTests()`.
+- **Test reset:** `CombatFactoryDefaults.Reset()` called from tests' `[BeforeTest]`/`[AfterTest]` AND from {{PROJECT_NAME}}'s `GlobalRegistry.ResetForTests()`.
 - **Fail-loud contract:** When both the per-factory override AND the seam default are null, `Create()` throws `InvalidOperationException` via `JmoLogger.Error + throw` (mirror of existing `TickEffectFactory.PerTickEffect` guard).
 
 ## What it replaced
-Prior contamination: 7 Jmodot files had either `using {{PROJECT_NAME}}.Global;` or fully-qualified `{{PROJECT_NAME}}.Global.GlobalRegistry.DB.*` references (6 factories + 1 unused import in `ModifiedFloatDefinition.cs`). The `?? GlobalRegistry.DB.X` pattern was canonical inside PP but contamination inside Jmodot.
+Prior contamination: 7 Jmodot files had either `using {{PROJECT_NAME}}.Global;` or fully-qualified `{{PROJECT_NAME}}.Global.GlobalRegistry.DB.*` references (6 factories + 1 unused import in `ModifiedFloatDefinition.cs`). The `?? GlobalRegistry.DB.X` pattern was canonical inside {{PROJECT_NAME}} but contamination inside Jmodot.
 
-## Interaction with the PP-internal Default Value Pattern
-Architecture Philosophy's "Default Value Pattern" (`ConfigOverride ?? GlobalRegistry.DB.DefaultAttribute`) remains the canonical pattern for **PP-internal code** (SpellArchitecture, Casters, etc.). The inversion applies ONLY at the Jmodot boundary — inside Jmodot code, the seam class replaces the registry reference.
+## Interaction with the {{PROJECT_NAME}}-internal Default Value Pattern
+Architecture Philosophy's "Default Value Pattern" (`ConfigOverride ?? GlobalRegistry.DB.DefaultAttribute`) remains the canonical pattern for **{{PROJECT_NAME}}-internal code** (SpellArchitecture, Casters, etc.). The inversion applies ONLY at the Jmodot boundary — inside Jmodot code, the seam class replaces the registry reference.
 
 ## No carve-out for "temporary" violations
 Plans that accept "temporary R11 violation as follow-up" must still be rejected at
@@ -33,14 +33,14 @@ implementation time. Jmodot/* must NEVER import {{PROJECT_NAME}}.* even transien
 boundary rule has no temporary-violation carve-out, even when the plan author explicitly
 flags the trade.
 
-**Workaround:** place the new code on the PP side mirroring an existing PP sibling, then
+**Workaround:** place the new code on the {{PROJECT_NAME}} side mirroring an existing {{PROJECT_NAME}} sibling, then
 worklog the future Jmodot relocation as one combined item alongside the marker / dep
 blocking the move.
 
 **Concrete (2026-05-07 Wind Blast Session 4):** plan §10.A accepted importing
 `{{PROJECT_NAME}}.AI.HSM.Shared.IControlLossState` into a new Jmodot `LaunchedState` as
 "temporary directional-coupling smell." Implementation overrode the plan: `LaunchedState`
-placed in PP next to `CapturedState`; `LaunchedMovementStrategy3D` (no marker dep) went
+placed in {{PROJECT_NAME}} next to `CapturedState`; `LaunchedMovementStrategy3D` (no marker dep) went
 to Jmodot. The relocation became one worklog item (move `IControlLossState` + all 6
 control-loss states together).
 

@@ -43,5 +43,5 @@ paths:
 
 - `Jmodot/Core/Movement/MovementProcessor3D` — pipeline entry.
 - `Jmodot/Core/Movement/Strategies/` — `LinearMovementStrategy3D`, `MomentumProjectileMovementStrategy3D`.
-- `SpellArchitecture/Movement/ProjectileMovementStrategy3D.cs` — PP-specific ballistic strategy with `LaunchArc`.
+- `SpellArchitecture/Movement/ProjectileMovementStrategy3D.cs` — {{PROJECT_NAME}}-specific ballistic strategy with `LaunchArc`.
 - Companion: [`hsm_bt_patterns.md`](hsm_bt_patterns.md) covers the HSM-routes/physics-drives layering invariant — knockback magnitude × mass × `MovementStrategy` is the *drives* layer this rule selects.

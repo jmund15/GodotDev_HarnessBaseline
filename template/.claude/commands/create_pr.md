@@ -68,7 +68,7 @@ If Jmodot has changes:
 3. **If no PR exists**, create one:
    ```bash
    gh pr create --repo <jmodot-remote> --base master --head jmodot/<worktree-name> \
-     --title "<PP PR title>" \
+     --title "<{{PROJECT_NAME}} PR title>" \
      --body "$(cat <<'EOF'
    Paired with {{PROJECT_NAME}} branch `claude/<worktree-name>`
 
@@ -180,7 +180,7 @@ Labels: re-check whether the new commits introduce a domain or type not yet labe
 
 ## Step 6: Update Jmodot PR (if exists)
 
-If a Jmodot PR was created or found in Step 3, update its body to cross-reference the PP PR:
+If a Jmodot PR was created or found in Step 3, update its body to cross-reference the {{PROJECT_NAME}} PR:
 
 ```bash
 gh pr edit <jmodot-pr-number> --repo <jmodot-remote> --body "$(cat <<'EOF'
@@ -207,7 +207,7 @@ Print a summary:
 ╔════════════════════════════════════════════════╗
 ║  PRs Created                                    ║
 ╠════════════════════════════════════════════════╣
-║  PP:     #<N> — <title>                         ║
+║  {{PROJECT_NAME}}:     #<N> — <title>                         ║
 ║  Jmodot: #<N> — <title>  (or "N/A")            ║
 ║  Labels: <label1>, <label2>                     ║
 ║  Cross-refs: ✅ (or ❌ if no Jmodot)            ║
@@ -223,6 +223,6 @@ Print a summary:
 - **Ask before creating OR editing** — show the user the title and body before running `gh pr create` / `gh pr edit`
 - **UPDATE mode preserves original body** — never rewrite original Summary / Key design decisions; surgical fixes for stale-by-new-commits claims only, called out in the Review-pass section
 - **UPDATE section length is proportional to work added** — see Step 5-Update length budget. Detail belongs in commit messages, not duplicated into the PR body
-- **Cross-reference both directions** — PP body links to Jmodot PR, Jmodot body links to PP PR
+- **Cross-reference both directions** — {{PROJECT_NAME}} body links to Jmodot PR, Jmodot body links to {{PROJECT_NAME}} PR
 - **Labels at creation time** — don't defer to `/merge_pr`
 - **Jmodot remote:** derive from `git -C Jmodot remote get-url origin` (don't hardcode)

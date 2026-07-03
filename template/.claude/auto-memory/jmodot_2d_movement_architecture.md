@@ -56,7 +56,7 @@ Reuses the dimension-agnostic `ControlLossEvaluator` (scalar hysteresis — no V
 
 ## ICharacterController2D additions
 
-Now extends `IVelocityProvider2D` with explicit interface implementation forwarding `LinearVelocity → Velocity` (mirrors 3D). Gained: `IsOnWall`, `GetWallNormal()`, `PreMoveVelocity`, `LastNonZeroVelocity`. `CharacterBodyController2D` tracks PreMove/LastNonZero inside `Move()`. **PP-local implementer `TestSpell.cs` required 4 explicit interface impls** to match — any other downstream implementer will break until it does the same.
+Now extends `IVelocityProvider2D` with explicit interface implementation forwarding `LinearVelocity → Velocity` (mirrors 3D). Gained: `IsOnWall`, `GetWallNormal()`, `PreMoveVelocity`, `LastNonZeroVelocity`. `CharacterBodyController2D` tracks PreMove/LastNonZero inside `Move()`. **{{PROJECT_NAME}}-local implementer `TestSpell.cs` required 4 explicit interface impls** to match — any other downstream implementer will break until it does the same.
 
 ## Deferred tech debt
 

@@ -51,7 +51,7 @@ Verify:
   - **Find the paired Jmodot branch:** Convention is `jmodot/<worktree-name>` (e.g., {{PROJECT_NAME}} branch `claude/naughty-mayer` → Jmodot branch `jmodot/naughty-mayer`). Verify it exists on the Jmodot remote: `git -C Jmodot ls-remote --heads origin "jmodot/*"`.
   - If the Jmodot PR has conflicts with Jmodot master: rebase it (`git -C Jmodot rebase origin/master`, resolve conflicts, `git -C Jmodot push --force-with-lease`).
   - Merge the Jmodot PR via `gh pr merge <jmodot-pr> --repo <jmodot-remote> --merge --delete-branch`.
-  - **CRITICAL — Do NOT update the PP branch's submodule pointer after the Jmodot merge.** Leave the PP branch pointing at its original Jmodot commit. GitHub resolves submodule pointers at merge time — the commit is reachable via Jmodot master's merge history. Updating the pointer to Jmodot's latest master pulls in commits from OTHER unrelated PRs, introducing API changes the PP branch was never designed for. The PP submodule pointer gets reconciled naturally when the PP PR merges to main.
+  - **CRITICAL — Do NOT update the {{PROJECT_NAME}} branch's submodule pointer after the Jmodot merge.** Leave the {{PROJECT_NAME}} branch pointing at its original Jmodot commit. GitHub resolves submodule pointers at merge time — the commit is reachable via Jmodot master's merge history. Updating the pointer to Jmodot's latest master pulls in commits from OTHER unrelated PRs, introducing API changes the {{PROJECT_NAME}} branch was never designed for. The {{PROJECT_NAME}} submodule pointer gets reconciled naturally when the {{PROJECT_NAME}} PR merges to main.
 
 ---
 
@@ -368,9 +368,9 @@ gh pr merge <N> --merge --delete-branch
 ```
 
 ### Jmodot Branch Cleanup
-After the PP merge, clean up the paired Jmodot branch to prevent stale branch accumulation. `--delete-branch` only affects the current repo — paired Jmodot branches live on a different remote.
+After the {{PROJECT_NAME}} merge, clean up the paired Jmodot branch to prevent stale branch accumulation. `--delete-branch` only affects the current repo — paired Jmodot branches live on a different remote.
 
-1. Derive the Jmodot branch name: if PP branch is `claude/<worktree-name>`, Jmodot branch is `jmodot/<worktree-name>`
+1. Derive the Jmodot branch name: if {{PROJECT_NAME}} branch is `claude/<worktree-name>`, Jmodot branch is `jmodot/<worktree-name>`
 2. Check if the paired Jmodot branch exists on the remote:
    ```bash
    git -C Jmodot ls-remote --heads origin jmodot/<worktree-name>

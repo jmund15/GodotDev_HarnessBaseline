@@ -2,7 +2,7 @@
 name: Architecture_Brainstorm
 description: >-
   Use BEFORE new systems, 3+ file refactors, framework-boundary changes
-  (Jmodot ↔ PP), or architecturally-loaded features — once candidate ideas
+  (Jmodot ↔ {{PROJECT_NAME}}), or architecturally-loaded features — once candidate ideas
   exist. Triggers: "how would we approach X", "design X", "should we build
   Y", "what's the architecture for Z". Run /idea_brainstorm FIRST if
   greenfield. Produces a design doc + Parts on the topic-folder roadmap.md
@@ -499,7 +499,7 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 **File-based memory:**
 - `feedback_inspect_existing_abstractions_first.md` — Step 3 abstraction inventory
 - `feedback_recommended_fix_means_implement.md` — post-approval inline-implementation path
-- `feedback_obsidian_write_locations.md` — Step 6 PP/Jmodot tiebreaker
+- `feedback_obsidian_write_locations.md` — Step 6 {{PROJECT_NAME}}/Jmodot tiebreaker
 - `feedback_no_unilateral_condensation.md` — Step 5 verbatim-port discipline
 - `feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
 - `feedback_session_start_hook_does_not_override_skill_procedure.md` — Step 2 / Step 5 procedural-gate discipline

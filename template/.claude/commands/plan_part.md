@@ -133,7 +133,7 @@ For every concrete claim in the loaded design surface, verify against current co
 | New-file path collides with non-trivial existing content (parallel work happened) | Test fixture base class was renamed but extension surface is the same | Design-doc shorthand for a multi-step process the codebase formalizes via discrete API (e.g., "LoadAsync" → `RequestLoad` / `GetLoadStatus` / `CompleteLoad`) |
 | Named subsystem in Integration touch points was removed / merged into another | Adjacent file added/removed in a touch-point subsystem (additive context) | Design-pseudocode method names that the executor will translate to canonical API at write-time |
 | Base class became `sealed`, or `abstract` → concrete, or constructor reshape that invalidates the extension | New `BBDataSig` key exists adjacent to the planned one (additive) | |
-| Jmodot ↔ PP boundary the design assumed was re-drawn | Comment / whitespace / formatting drift in linked design-doc section | |
+| Jmodot ↔ {{PROJECT_NAME}} boundary the design assumed was re-drawn | Comment / whitespace / formatting drift in linked design-doc section | |
 | Source-cell wikilink anchor no longer resolves in the design doc | An extra subclass exists in the family beyond the design's enumeration | |
 
 **Rule of thumb (litmus when in doubt):**
@@ -230,7 +230,7 @@ Scope:        <clean | <N> advisory signal(s) — see Scope Signals below>
 2. **Phase 1 Explore** — dispatch Explore agent(s) in parallel for prior-art discovery
    on any NEW types the design introduces. Briefing's API + Test Pin block enumerates
    the new types — search for similar precedents (`*Config.cs`, factory defaults,
-   static-seam patterns) across PP + Jmodot BEFORE proposing the new type. Cite found
+   static-seam patterns) across {{PROJECT_NAME}} + Jmodot BEFORE proposing the new type. Cite found
    precedents in plan, or override the design's new-type proposal if a precedent fits.
 3. **Phase 2 Plan** — dispatch Plan agent(s) in parallel to validate any
    AskUserQuestion-resolved decisions. Required when the question presented design

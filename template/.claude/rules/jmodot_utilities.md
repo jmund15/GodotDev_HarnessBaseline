@@ -84,7 +84,7 @@ Also forbidden by this rule: **eager field initializers** that allocate `JmoRng.
 
 **Construction (pick by need):**
 - `new JmoRng(int seed)` — explicit seed (deterministic).
-- `JmoRng.FromRawStreamName(string streamName, int parentSeed)` — deterministic factory taking a *raw* string; derives a per-stream child seed via `SeedManager.DeriveChild(parentSeed, streamName)`. PP consumers prefer the strongly-typed registry, which pins each stream's key via `[SeedStreamKey]`: `SeedStreams.X.CreateRng(parentSeed)` / `SeedStreams.X.GetSeed(parentSeed)` (see `Global/SeedStreamsExtensions.cs`).
+- `JmoRng.FromRawStreamName(string streamName, int parentSeed)` — deterministic factory taking a *raw* string; derives a per-stream child seed via `SeedManager.DeriveChild(parentSeed, streamName)`. {{PROJECT_NAME}} consumers prefer the strongly-typed registry, which pins each stream's key via `[SeedStreamKey]`: `SeedStreams.X.CreateRng(parentSeed)` / `SeedStreams.X.GetSeed(parentSeed)` (see `Global/SeedStreamsExtensions.cs`).
 - `JmoRng.NonDeterministic()` — Guid-seeded, **migration debt marker**. Every call site is a tracked backlog item to be replaced with a seeded construction. `Grep "NonDeterministic\("` for the current backlog.
 
 **Lifetime convention** (per `arch-seed-system.md §6`): per-scope materialization. Cache as a member field on the owning node/component, or as a method-local where appropriate. **Never** allocate per-call inside loops — drawing each sample from a fresh `NonDeterministic()` instance breaks xoshiro256++ spectral guarantees. **Never** use a static singleton `JmoRng` (the anti-pattern the audit retired).

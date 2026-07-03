@@ -1,6 +1,6 @@
 ---
 name: feedback_memory_file_refs_no_markdown_links
-description: "PP convention: reference memory files as bare code-styled `name.md`, not markdown links. They're cited from many surface types (skills, commands, CLAUDE.md, chat) where no single relative link resolves uniformly."
+description: "{{PROJECT_NAME}} convention: reference memory files as bare code-styled `name.md`, not markdown links. They're cited from many surface types (skills, commands, CLAUDE.md, chat) where no single relative link resolves uniformly."
 metadata:
   node_type: memory
   type: feedback

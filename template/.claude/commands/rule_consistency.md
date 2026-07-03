@@ -26,7 +26,7 @@ Canonical rule clusters (start here; add as the harness grows):
 3. **worklog routing** (trivial-do-now / regular / future / user-tasks)
 4. **comment discipline** (default-to-none litmus)
 5. **naming conventions** (files, commands, nullable returns)
-6. **Obsidian write-locations** (PP vs Jmodot split)
+6. **Obsidian write-locations** ({{PROJECT_NAME}} vs Jmodot split)
 7. **memory placement** (hot topic file vs cold `archive/`)
 8. **Jmodot framework boundary**
 9. **regression-gate mandate** (mandatory for `.cs`, meta exempt)

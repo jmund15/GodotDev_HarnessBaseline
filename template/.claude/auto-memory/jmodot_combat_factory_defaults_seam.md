@@ -1,12 +1,12 @@
 ---
 name: Jmodot_CombatFactoryDefaults_Seam
-description: How Jmodot's DamageEffectFactory + DistanceScaledDamageEffectFactory resolve project-wide crit attribute defaults without reaching into {{PROJECT_NAME}}.Global. Seam class CombatFactoryDefaults is set from PP's GlobalRegistry autoload at boot. Authored 2026-04-19, revised 2026-04-20 to reflect hybrid reconciliation with parallel user commits.
+description: How Jmodot's DamageEffectFactory + DistanceScaledDamageEffectFactory resolve project-wide crit attribute defaults without reaching into {{PROJECT_NAME}}.Global. Seam class CombatFactoryDefaults is set from {{PROJECT_NAME}}'s GlobalRegistry autoload at boot. Authored 2026-04-19, revised 2026-04-20 to reflect hybrid reconciliation with parallel user commits.
 type: reference
 originSessionId: 65fe3ebf-5342-45f2-b44f-e56a7c3d003f
 ---
 ## The seam (crit attrs only)
 
-Jmodot's damage-effect factories need project-wide crit defaults — default crit chance attribute and crit multiplier attribute — but Jmodot cannot know about PP's `PushinPotionRegistry`. The seam:
+Jmodot's damage-effect factories need project-wide crit defaults — default crit chance attribute and crit multiplier attribute — but Jmodot cannot know about {{PROJECT_NAME}}'s `PushinPotionRegistry`. The seam:
 
 **`Jmodot/Core/Combat/CombatFactoryDefaults.cs`** — static class with 2 nullable static fields:
 - `Attribute? DefaultCritChanceAttr`
@@ -39,8 +39,8 @@ A **separate parallel approach** (user commit `7e9d627`) governs the 4 status ru
 
 ## Why the seam exists
 
-Before this seam, Jmodot factories had `using {{PROJECT_NAME}}.Global;` or fully-qualified `{{PROJECT_NAME}}.Global.GlobalRegistry.DB.*` references, making Jmodot un-portable to any other game. The seam preserves PP's crit behavior exactly (19 PP damage factory `.tres` files that don't set crit overrides still roll crit) while keeping Jmodot framework-agnostic.
+Before this seam, Jmodot factories had `using {{PROJECT_NAME}}.Global;` or fully-qualified `{{PROJECT_NAME}}.Global.GlobalRegistry.DB.*` references, making Jmodot un-portable to any other game. The seam preserves {{PROJECT_NAME}}'s crit behavior exactly (19 {{PROJECT_NAME}} damage factory `.tres` files that don't set crit overrides still roll crit) while keeping Jmodot framework-agnostic.
 
 ## Don't confuse with `GlobalRegistryLIB`
 
-`Jmodot/Implementation/Registry/` had an abandoned extraction: `GlobalRegistryLIB : Node` + parallel `GameRegistry : Resource` (458 lines) that PP's `PushinPotionRegistry` duplicated rather than inherited. **Deleted 2026-04-19** as dead code. Refactor to proper inheritance deferred — revisit when a second framework consumer (TR) materializes. `ResourceCollection.cs` preserved — actively used.
+`Jmodot/Implementation/Registry/` had an abandoned extraction: `GlobalRegistryLIB : Node` + parallel `GameRegistry : Resource` (458 lines) that {{PROJECT_NAME}}'s `PushinPotionRegistry` duplicated rather than inherited. **Deleted 2026-04-19** as dead code. Refactor to proper inheritance deferred — revisit when a second framework consumer (TR) materializes. `ResourceCollection.cs` preserved — actively used.

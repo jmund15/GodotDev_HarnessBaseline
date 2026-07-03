@@ -28,7 +28,7 @@ Tool             Status   Notes
 Filesystem       Active   <N files at root>
 Git              Active   <branch>, <N changes>
 auto-memory       Active   <N entities>
-Obsidian MCP     Active   <N notes in PP scope>
+Obsidian MCP     Active   <N notes in {{PROJECT_NAME}} scope>
 WebFetch         Active
 WebSearch        Active
 Godot MCP        Active   <no startup errors>

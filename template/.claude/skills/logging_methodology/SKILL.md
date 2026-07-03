@@ -57,7 +57,7 @@ Tags are flat (`[Spell]`), not nested (`[Spell.Crafter]`) — the analyzer's reg
 
 ### Typo discipline
 
-Subsystem tags are **magic strings**, not constants. Constants would force PP taxonomy into Jmodot (violates the framework boundary rule in `jmodot_framework_boundary_rule.md`). Typo drift instead self-reports: `/analyze_godot_logs --mode tags` after any play session shows the histogram; a `[Colision]` outlier surfaces on first run and gets fixed at the call site.
+Subsystem tags are **magic strings**, not constants. Constants would force {{PROJECT_NAME}} taxonomy into Jmodot (violates the framework boundary rule in `jmodot_framework_boundary_rule.md`). Typo drift instead self-reports: `/analyze_godot_logs --mode tags` after any play session shows the histogram; a `[Colision]` outlier surfaces on first run and gets fixed at the call site.
 
 ### Exception — `InstrumentationTags` for cross-cutting hypothesis tags
 

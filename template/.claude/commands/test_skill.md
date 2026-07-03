@@ -84,7 +84,7 @@ If `mode == "B"`, prefix the report with: `NOTE: Skill has no explicit rationali
 ## Notes
 
 - **Cost:** ~1 synthesize + N Sonnet dispatch + N score + (COMPLIES-count) Haiku validators per run. Roughly $0.10–0.30 on a typical skill.
-- **No `--all` mode in v1** — running against all skills would exceed the 15-prompt fan-out budget. Re-evaluate if PP adopts a quarterly harness-audit cadence.
+- **No `--all` mode in v1** — running against all skills would exceed the 15-prompt fan-out budget. Re-evaluate if {{PROJECT_NAME}} adopts a quarterly harness-audit cadence.
 - **Manual invocation only** — not auto-run from `/regression_gate`. Validates *harness correctness* (skill quality), not *production correctness*.
 - **No file modifications** — read-only. No single-flight exposure (subagents reason over the injected skill text; no GdUnit4, no LSP).
 - **Calibration integrity** is enforced in the workflow: each Haiku validator is built from a fixed template with zero prior-run context, so re-testing a patched skill measures the patch, not the history.

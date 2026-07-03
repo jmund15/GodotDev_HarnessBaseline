@@ -226,7 +226,7 @@ def parse_files(root: str):
                     if b not in entry["bases"]:
                         entry["bases"].append(b)
                 entry["decl_lines"].append((rel, line_idx))
-                # Prefer a PP path as the canonical rel if the first was framework/test.
+                # Prefer a project path as the canonical rel if the first was framework/test.
                 if entry["module"] not in ("{{PROJECT_NAME}}",) and module == "{{PROJECT_NAME}}":
                     entry["rel"], entry["module"] = rel, module
     return types, files
@@ -552,7 +552,7 @@ def main():
 
     if inventory_only:
         return 0
-    # Gate semantics enforce the CHOSEN POLICY (blanket [Tool] on every PP [GlobalClass]
+    # Gate semantics enforce the CHOSEN POLICY (blanket [Tool] on every project [GlobalClass]
     # Resource). The broader cascade-required closure (pp_gaps) is reported as informational;
     # the headless-import gate backstops the narrower cases the blanket rule doesn't cover
     # (non-[GlobalClass] inline Resources, Node cascades, escape-hatch placements).
@@ -618,7 +618,7 @@ def write_inventory(root, types, edges, reverse, required, gaps, rows,
     lines.append(f"- **Tests + addons (fixtures / editor plugins):** {len(test_gaps)}\n")
 
     lines.append("## Blanket-Resources worklist ({{PROJECT_NAME}})\n")
-    lines.append(f"Every PP `[GlobalClass]` Resource lacking `[Tool]` ({len(pp_blanket_resources)} "
+    lines.append(f"Every project `[GlobalClass]` Resource lacking `[Tool]` ({len(pp_blanket_resources)} "
                  "total) — the diff a *blanket-on-Resources* policy would apply. Superset of the "
                  "Resource cascade gaps above. `[Tool]` on a Resource is side-effect-free.\n")
     if pp_blanket_resources:
@@ -697,7 +697,7 @@ def print_summary(types, rows, cat_counts, gaps, required, reverse, kind_memo,
           f"Unknown={cat_counts['Unknown']})")
     print(f"Cascade-required (theoretical closure): {len(required)}")
     print(f"CASCADE GAPS total={len(gaps)}  "
-          f"PP={len(pp_gaps)} (Resource={len(pp_resource_gaps)}, Node={len(pp_node_gaps)})  "
+          f"project={len(pp_gaps)} (Resource={len(pp_resource_gaps)}, Node={len(pp_node_gaps)})  "
           f"Jmodot={len(framework_gaps)}  Tests+addons={len(test_gaps)}")
     print(f"\n--- {{PROJECT_NAME}} cascade gaps ({len(pp_gaps)}) — actionable ---")
     for name in pp_gaps:
@@ -712,7 +712,7 @@ def print_summary(types, rows, cat_counts, gaps, required, reverse, kind_memo,
         e = types[name]
         kind = kind_memo.get(name, "Unknown")
         print(f"  [{kind:8}] {name}  base={','.join(e['bases'])}  ({e['rel']})")
-    print(f"\nBlanket-Resources worklist (every PP [GlobalClass] Resource lacking "
+    print(f"\nBlanket-Resources worklist (every project [GlobalClass] Resource lacking "
           f"[Tool]): {len(pp_blanket_resources)}")
     print("\nInventory written to logs/tool_audit_inventory.md")
 

@@ -51,7 +51,7 @@ Use parallel dispatch when:
 - [ ] **Per-test-category fix-ups:** N independent Logic-domain unit-test failures with no shared root cause.
 - [ ] **`/test_skill` adversarial prompts** (sibling Batch B command): each adversarial scenario tests a different rationalization in isolation — prototypical flat parallel dispatch.
 
-**PP exemplars** (read these to see the pattern in action):
+**{{PROJECT_NAME}} exemplars** (read these to see the pattern in action):
 - `/review_prs` (*Concurrency limit* + batch protocol sections) — N review agents launched in parallel batch, 15-cap exemplar.
 - `/session_audit` Phase 2 — 3 orthogonal axes (design-semantics / robustness-performance / intuitiveness-testability) dispatched through the `review_fanout.js` Workflow engine; the canonical §0 "known-up-front fan-out → Workflow" exemplar.
 
@@ -135,7 +135,7 @@ Omitting `model` does NOT pick a cheap model — it inherits the **session model
 - [ ] **`general-purpose` + `haiku`** — Validation steps (verify a PASS verdict, re-check a finding), mechanical lookups/data-extraction where a wrong answer is cheap to reject and re-prompt.
 - [ ] **`general-purpose` + `opus`** — Genuinely deep reasoning lenses where a miss is costly: design-semantics (`session_audit`), domain-coherence/reference-integrity (`structure_audit`), refactor-parity regression gating (`pr_ready`). **Escalation is per-lens and deliberate** — the orchestrator may raise a *specific* lens to opus when its input is genuinely architecturally heavy (multi-subsystem boundary redesign), never a blanket bump of the whole panel.
 - [ ] **`fable`** — **Reserved for explicit user request / stated max-fidelity demand ONLY.** Never a default, never inherited, never the orchestrator's unilateral pick for a routine fan-out. If you're reaching for fable without the user asking, stop — sonnet or opus is the answer.
-- [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths (`mooyum_milk.tres`, Phase 1e.2). Use only for scoped lookups where a wrong answer is cheap to reject. Most PP commands use `general-purpose` + an explicit model selector instead.
+- [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths (`mooyum_milk.tres`, Phase 1e.2). Use only for scoped lookups where a wrong answer is cheap to reject. Most {{PROJECT_NAME}} commands use `general-purpose` + an explicit model selector instead.
 
 ### The one legitimate inherit-the-session-model carve-out
 
@@ -171,7 +171,7 @@ Each "outer" agent spawns its own subagents internally.
 
 ## 7. Worktree Caveat
 
-PP frequently runs in `.claude/worktrees/<name>/`. **Parallel agents do NOT get isolated worktrees by default** — they all write to the same working tree.
+{{PROJECT_NAME}} frequently runs in `.claude/worktrees/<name>/`. **Parallel agents do NOT get isolated worktrees by default** — they all write to the same working tree.
 
 Implications:
 
@@ -201,7 +201,7 @@ After all agents return:
 **Spawn rules (do not duplicate — point to):**
 - `.claude/commands/agents/review_agents.md` — Agent Spawn Rules (MANDATORY / PARALLEL / NO POLLING / NO TODOWRITE).
 
-**Canonical PP exemplars:**
+**Canonical {{PROJECT_NAME}} exemplars:**
 - `/review_prs` (*Concurrency limit* + batch protocol) — N review agents in parallel; 15-cap exemplar with nested-concurrency math.
 - `/session_audit` Phase 2 — 3 axes via the `review_fanout.js` Workflow engine (§0 Workflow-path exemplar).
 - `/test_skill` (`.claude/commands/test_skill.md`) — adversarial flat-dispatch example (sibling Batch B artifact).

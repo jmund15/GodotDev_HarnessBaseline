@@ -199,7 +199,7 @@ Second test for HSM → Extract into reusable module
 
 **Refusal stance:** The Don't Mock list is a boundary constraint, not a cost/benefit tradeoff. When a user argues "mocking X is simpler" for any item in the Don't Mock column, do not acknowledge setup cost as a counterweight — the cost-benefit weighing already happened when the rule was established. If you find yourself writing "the setup cost is real, but..." — **STOP**. Direct the user to the appropriate fixture (`SpellTestFixture`, `CastingTestFixture`, `BehaviorTreeTestFixture`) and proceed.
 
-**Reference:** `archive_testing_design_patterns.md` (auto-memory) for additional fixture-vs-mock tradeoffs in PP-specific contexts (e.g. when to substitute a real `Blackboard` instance vs. a fake).
+**Reference:** `archive_testing_design_patterns.md` (auto-memory) for additional fixture-vs-mock tradeoffs in {{PROJECT_NAME}}-specific contexts (e.g. when to substitute a real `Blackboard` instance vs. a fake).
 
 ---
 

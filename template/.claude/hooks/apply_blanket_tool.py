@@ -126,7 +126,7 @@ def main():
         edits_by_file.setdefault(abspath, {"lines": flines, "edits": []})
         edits_by_file[abspath]["edits"].append((gc_idx, new))
 
-    print(f"Worklist (PP [GlobalClass] Resources lacking [Tool]): {len(worklist)}")
+    print(f"Worklist (project [GlobalClass] Resources lacking [Tool]): {len(worklist)}")
     print(f"Planned edits: {len(planned)}   Anomalies: {len(anomalies)}\n")
     for rel, lineno, name, old, new in planned:
         print(f"  {rel}:{lineno}  [{name}]  {old}  ->  {new}")

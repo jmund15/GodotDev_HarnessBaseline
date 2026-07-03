@@ -77,7 +77,7 @@
 
 ## Jmodot framework
 - [Jmodot 2D Movement Architecture](jmodot_2d_movement_architecture.md) — MovementProcessor2D, shared BBDataSig, TurnRateProfile3D rename, HitContext2D bridge.
-- [Jmodot CombatFactoryDefaults seam](jmodot_combat_factory_defaults_seam.md) — 6 factories resolve project defaults via static seam wired from PP autoload.
+- [Jmodot CombatFactoryDefaults seam](jmodot_combat_factory_defaults_seam.md) — 6 factories resolve project defaults via static seam wired from {{PROJECT_NAME}} autoload.
 - [Jmodot framework boundary rule](jmodot_framework_boundary_rule.md) — Jmodot must not reference `PushinPotions.*`; static seam pattern; no temp-violation carve-outs.
 
 ## Godot / scene / data / lifecycle

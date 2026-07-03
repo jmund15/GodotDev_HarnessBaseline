@@ -3,7 +3,7 @@ allowed-tools: Bash(git ls-files:*), Bash(grep:*), Glob, Grep, Read, Task
 description: Pre-execution audit of a proposed plan via 3 parallel subagents (Memory gotchas + existing-abstraction discovery + test-readiness). Invoke when the user asks to "plan check", "check this plan", "audit the plan", or "verify the plan" after a plan proposal. Advisory; does NOT block. SKIP under the litmus (≤2 files, no new types, no deletions) — trust the planner.
 ---
 
-Audit a proposed plan **before** implementation begins. Surfaces (a) memorialized failure modes the plan walks into, (b) existing PP abstractions the plan would parallel rather than extend, and (c) whether the plan is test-first executable under Hybrid TDD. Delegates to 3 specialized subagents running in parallel, then consolidates findings.
+Audit a proposed plan **before** implementation begins. Surfaces (a) memorialized failure modes the plan walks into, (b) existing {{PROJECT_NAME}} abstractions the plan would parallel rather than extend, and (c) whether the plan is test-first executable under Hybrid TDD. Delegates to 3 specialized subagents running in parallel, then consolidates findings.
 
 > **Coverage note.** The first two lenses are *project-alignment + memory*; `plc-test-readiness` adds the *test-first executability* dimension, and Phase 1b adds *Definition-of-Done completeness*, *stub/TODO scan*, and *cross-Part dependency soundness* (Claude-side). Together these broaden the audit past "does this fit our codebase/rules" into "can a downstream executor actually drive this RED→GREEN and finish it."
 
@@ -63,7 +63,7 @@ These are string/structure-matching exercises over the pushed plan + roadmap sta
 
 Infer affected domains by case-insensitive keyword matching against `PLAN_TEXT`. Use the same domain table as `plan_memory_reminder.py` (mirrors CLAUDE.md "Proactive Context Loading" table). Build `INFERRED_DOMAINS` list.
 
-If `INFERRED_DOMAINS` is empty, abort with: "Plan inference matched no PP domains — `/plan_check` has no useful contribution. Proceed with the plan as authored."
+If `INFERRED_DOMAINS` is empty, abort with: "Plan inference matched no {{PROJECT_NAME}} domains — `/plan_check` has no useful contribution. Proceed with the plan as authored."
 
 ### 1d. Load auto-memory gotchas
 

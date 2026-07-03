@@ -90,10 +90,10 @@ git -C Jmodot diff <old-hash>..<new-hash> --name-only  # Files changed in submod
 If the submodule pointer changed:
 1. **Checkout the corresponding Jmodot branch** (`jmodot/<worktree-name>`) BEFORE building or reviewing — without this, the build will fail with missing API errors that look "pre-existing"
 2. **Get the Jmodot diff**: `git -C Jmodot diff <old-hash>..<new-hash>`
-3. **Include Jmodot files in the batch plan** — treat them as first-class review targets. Jmodot `.cs` files count toward batch limits just like PP files. Group them in a dedicated batch or with their PP consumers.
+3. **Include Jmodot files in the batch plan** — treat them as first-class review targets. Jmodot `.cs` files count toward batch limits just like {{PROJECT_NAME}} files. Group them in a dedicated batch or with their {{PROJECT_NAME}} consumers.
 4. **Include the Jmodot diff in the CONTEXT block** for every batch that references Jmodot APIs — agents need to see both sides of an API contract change.
 
-**Why this matters:** Jmodot defines the APIs that {{PROJECT_NAME}} calls. Reviewing PP code without seeing the Jmodot changes is like reviewing function calls without reading the function definitions. Missing API contract changes, signature mismatches, and behavioral changes will slip through.
+**Why this matters:** Jmodot defines the APIs that {{PROJECT_NAME}} calls. Reviewing {{PROJECT_NAME}} code without seeing the Jmodot changes is like reviewing function calls without reading the function definitions. Missing API contract changes, signature mismatches, and behavioral changes will slip through.
 ---
 
 ## Shared Context Block

@@ -25,11 +25,11 @@ paths:
 
 ## Framework Boundary
 
-**Rule:** Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` namespaces. The framework is a submodule consumed by PP, not the reverse.
+**Rule:** Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` namespaces. The framework is a submodule consumed by {{PROJECT_NAME}}, not the reverse.
 
 - *Why:* Jmodot is designed to be reusable across multiple games. Inbound coupling to a specific consumer permanently brands it.
 - *Pattern for project defaults:* Introduce a framework-agnostic static seam in `Jmodot.Core.*` with nullable static fields; the consuming game's autoload forwards values into it at `_EnterTree`.
-- *Canonical example:* `Jmodot.Core.Combat.CombatFactoryDefaults` — six combat factories resolve project defaults via static fields wired from PP autoload.
+- *Canonical example:* `Jmodot.Core.Combat.CombatFactoryDefaults` — six combat factories resolve project defaults via static fields wired from {{PROJECT_NAME}} autoload.
 - *Test isolation:* Every static seam owns its own `Reset()` so Jmodot-only tests don't depend on the consuming project's reset path.
 - *No carve-outs:* "Temporary" violations during refactor are not accepted — fix the design instead. See auto-memory `jmodot_framework_boundary_rule.md` for the no-carve-out pattern.
 
