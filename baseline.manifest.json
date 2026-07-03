@@ -92,6 +92,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/feedback_design_workflow_model_mix.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/feedback_doc_revision_in_place.md",
       "layer": "universal",
       "sync": "auto"
@@ -332,6 +337,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_gdunit4_simulateframes_is_process_frames.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_godot4_uid_only_refs_break_orphan_detection.md",
       "layer": "godot",
       "sync": "auto"
@@ -379,6 +389,16 @@
     {
       "path": ".claude/auto-memory/gotcha_semantic_search_restricttodir_posix.md",
       "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_synthetic_fixture_hides_real_input_failure.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_tscn_csharp_node_exports_need_node_paths.md",
+      "layer": "godot",
       "sync": "auto"
     },
     {

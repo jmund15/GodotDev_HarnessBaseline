@@ -81,6 +81,7 @@ GODOT_PATTERNS = [
     ".claude/tools/setup-csharp-ls.sh",
     ".claude/auto-memory/gotcha_godot*.md",
     ".claude/auto-memory/gotcha_gdunit4_*.md",
+    ".claude/auto-memory/gotcha_tscn_*.md",
     ".claude/auto-memory/gotcha_editor_reserialize_*.md",
     ".claude/auto-memory/gotcha_export_enum_*.md",
     ".claude/auto-memory/gotcha_inherited_scene_*.md",
