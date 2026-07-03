@@ -36,7 +36,12 @@ MANIFEST = ROOT / "baseline.manifest.json"
 
 # Source-project identifiers that must not leak downstream. A hit is a finding
 # unless its whole line matches one of LEAK_ALLOWLIST (deliberate references).
-LEAK_TOKENS = [r"PushinPotions", r"\bjmund\b"]
+# Add BOTH the full name AND any abbreviation for every project the baseline has
+# absorbed code from — the full name alone misses shorthand (the `PP` abbreviation
+# for PushinPotions leaked into ~35 files precisely because only "PushinPotions"
+# was listed here). Abbreviations are uppercase word-boundary forms; lowercase
+# command-flag vocabularies (e.g. `pp-only`) are interface terms, not leaks.
+LEAK_TOKENS = [r"PushinPotions", r"\bPP\b", r"DraconicWars", r"\bjmund\b"]
 LEAK_ALLOWLIST = [
     r"jmund15/",                       # maintainer GitHub org in PR templates (intentional)
     r"PushinPotions\.\*",              # namespace-glob example in the jmodot boundary rule
