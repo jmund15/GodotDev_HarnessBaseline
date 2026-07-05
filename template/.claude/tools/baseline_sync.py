@@ -177,12 +177,41 @@ def classify(root: Path, baseline: Path, lock: dict, relpath: str, entry: dict) 
     return "diverged"
 
 
+# Files that intentionally retain {{TOKEN}} placeholders after install: docs that
+# describe the substitution system itself, or hook-regenerated headers. Everything
+# else carrying a residual token is an unsubstituted-install symptom — the failure
+# mode that hides on `watch` files (never hash-compared) until something breaks
+# (e.g. a hook building app_userdata/{{PROJECT_NAME}}/logs, a path that never exists).
+PLACEHOLDER_OK = {
+    ".claude/commands/sync_baseline.md",        # documents the token NAMES in prose
+    ".claude/tools/extract_subagent_tools.py",  # a docstring shows a token as an example
+    ".claude/worklog-titles.md",                # hook-regenerated; header may carry a token
+}
+
+
+def residual_placeholders(root: Path, lock: dict) -> list[tuple[str, list[str]]]:
+    keys = list(lock.get("substitutions", {}))
+    hits = []
+    for rp, e in lock["files"].items():
+        if e.get("status") not in ("tracked", "watch") or rp in PLACEHOLDER_OK:
+            continue
+        text = local_text(root, rp)
+        if text is None:
+            continue
+        found = sorted(k for k in keys if k in text)
+        if found:
+            hits.append((rp, found))
+    return sorted(hits)
+
+
 def cmd_check(root, lock, baseline, as_json):
     results = {rp: classify(root, baseline, lock, rp, e)
                for rp, e in sorted(lock["files"].items())}
+    residual = residual_placeholders(root, lock)
     if as_json:
         print(json.dumps({"baseline_commit": baseline_commit(baseline),
-                          "results": results}, indent=2))
+                          "results": results,
+                          "residual_placeholders": dict(residual)}, indent=2))
         return
     buckets: dict[str, list[str]] = {}
     for rp, state in results.items():
@@ -196,9 +225,18 @@ def cmd_check(root, lock, baseline, as_json):
             print(f"{state}:")
             for rp in files:
                 print(f"  {rp}")
+    if residual:
+        print("unsubstituted-placeholder (install did not expand these tokens):")
+        for rp, keys in residual:
+            print(f"  {rp}  [{', '.join(keys)}]")
     actionable = [s for s in buckets if s not in quiet]
-    print("\nclean" if not actionable
-          else f"\nactionable states: {', '.join(sorted(actionable))}")
+    verdict = []
+    if actionable:
+        verdict.append(f"actionable states: {', '.join(sorted(actionable))}")
+    if residual:
+        verdict.append(f"{len(residual)} file(s) with unsubstituted placeholders "
+                       "— re-run bootstrap substitution or fix per file")
+    print("\nclean" if not verdict else "\n" + "\n".join(verdict))
 
 
 def cmd_diff(root, lock, baseline, relpath):
