@@ -98,7 +98,15 @@ EXCLUDE_DIR_PARTS = {"__pycache__", "logs", ".cache", "sessions",
 
 
 def is_artifact(p: Path) -> bool:
-    return p.suffix == ".pyc" or bool(EXCLUDE_DIR_PARTS.intersection(p.parts))
+    # Match exclude-parts against the path RELATIVE to TEMPLATE, not the absolute
+    # path: a consumer clones this repo to `.../.claude/.cache/baseline-repo`, so the
+    # absolute parts always contain `.cache` and would exclude EVERY template file
+    # (silently emptying the manifest). Only segments *inside* template/ should count.
+    try:
+        parts = p.relative_to(TEMPLATE).parts
+    except ValueError:
+        parts = p.parts
+    return p.suffix == ".pyc" or bool(EXCLUDE_DIR_PARTS.intersection(parts))
 
 
 def match(relpath: str, patterns: list[str]) -> bool:
