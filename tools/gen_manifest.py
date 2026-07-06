@@ -57,6 +57,7 @@ GODOT_PATTERNS = [
     ".claude/skills/refactor_procedure/*",
     ".claude/skills/sprite_authoring/*",
     ".claude/skills/shader_authoring/*",
+    ".claude/skills/parameterized_asset_pipeline/*",
     ".claude/rules/csharp_*.md",
     ".claude/rules/godot_files.md",
     ".claude/rules/scene_authoring.md",

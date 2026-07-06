@@ -1137,6 +1137,56 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/parameterized_asset_pipeline/SKILL.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/references/style_spec.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/ThemeBuilder.cs",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/ThemeManifest.cs",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/conform_external.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/contact_sheet.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/icons.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/lint_core.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/palette.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/templates/theme_gen.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/project_subsystems/SKILL.md",
       "layer": "universal",
       "sync": "seed"
