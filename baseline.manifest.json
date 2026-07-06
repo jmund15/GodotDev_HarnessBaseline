@@ -297,12 +297,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_cascade_gate_vacuous_without_godot_bin.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_component_caches_bb_dependency_post_init_injection_noop.md",
       "layer": "jmodot",
       "sync": "auto"
     },
     {
       "path": ".claude/auto-memory/gotcha_config_exception_node_bound_not_static.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_cross_project_memory_index_autoload.md",
       "layer": "universal",
       "sync": "auto"
     },

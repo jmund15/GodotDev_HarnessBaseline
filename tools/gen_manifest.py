@@ -80,6 +80,7 @@ GODOT_PATTERNS = [
     ".claude/scripts/run_test_suite.ps1",
     ".claude/tools/csharp-ls-adapter.js",
     ".claude/tools/setup-csharp-ls.sh",
+    ".claude/auto-memory/gotcha_cascade_gate_*.md",
     ".claude/auto-memory/gotcha_godot*.md",
     ".claude/auto-memory/gotcha_gdunit4_*.md",
     ".claude/auto-memory/gotcha_tscn_*.md",
