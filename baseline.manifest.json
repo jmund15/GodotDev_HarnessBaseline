@@ -292,6 +292,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_baseline_clone_push_workflow.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_blackboard_stringname_variant_boxing.md",
       "layer": "jmodot",
       "sync": "auto"
@@ -374,6 +379,11 @@
     {
       "path": ".claude/auto-memory/gotcha_godot_variant_int64_fold.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_grep_brace_glob_silent_zero.md",
+      "layer": "universal",
       "sync": "auto"
     },
     {
