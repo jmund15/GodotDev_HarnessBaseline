@@ -41,7 +41,7 @@ It is also **downstream** of `/plan_part` — `/plan_part` briefs Plan Mode with
 Argument forms:
 - `/plan_check <inline plan text>` — plan text passed directly
 - `/plan_check @<filepath>` — plan text read from file (e.g., `@.claude/plans/foo.md`)
-- `/plan_check` (no argument) — read the most-recently-modified `.md` under `~/.claude/plans/`
+- `/plan_check` (no argument) — read the most-recently-modified `.md` under the project-local `.claude/plans/` (where `plan_drive`/`part_drive`/Plan Mode write; an earlier revision said `~/.claude/plans/` — home-dir plans are not this harness's convention)
 
 Store the plan text as `PLAN_TEXT` for downstream phases.
 
@@ -67,7 +67,7 @@ If `INFERRED_DOMAINS` is empty, abort with: "Plan inference matched no {{PROJECT
 
 ### 1d. Load auto-memory gotchas
 
-For each domain in `INFERRED_DOMAINS`, run the corresponding auto-memory single-keyword search (per CLAUDE.md "Search Strategy"). Concatenate hits into `MEMORY_HITS` (preserve entity/file names for citation in findings).
+For each domain in `INFERRED_DOMAINS`, run the corresponding auto-memory single-keyword search (per CLAUDE.md "Search Strategy"). Concatenate hits into `MEMORY_HITS` (preserve entity/file names for citation in findings). This orchestrator search is a **seed/floor**, not the memory lens's full coverage — Phase 2's *Dispatch doctrine* mandates that lens to search auto-memory itself and exceed it.
 
 **Ordering-hazard subset (feeds `plc-memory-alignment`).** Beyond per-domain gotchas, always include the step-*ordering* gotchas in `MEMORY_HITS` so the memory-alignment lens can check the plan's step *sequence*, not just individual steps: autoload subscription order (`gotcha_autoload_to_autoload_subscription_order`), `OnExit` clobbering a consumer's `OnEnter` read (`arch_rule_onexit_must_not_clobber_consumer_onenter`), init-timing (spell spawn pipeline), and spawn-marker-inside-trigger-volume. A plan whose steps are individually fine but ordered to walk into one of these is the target.
 
@@ -97,7 +97,15 @@ These are pre-loaded into agent CONTEXT, not freshly read at agent time:
 
 **Lens composition (conditional):** the default is all three lenses. **Omit `plc-pattern-fit`** when the plan proposes ZERO new types, ZERO new files (renames excluded), and no new Jmodot code — pure retirement / mechanical-edit plans give the abstraction-discovery lens nothing to discover (maiden `/part_drive` run: ~73K tokens → empty array). The report header MUST then state `pattern-fit omitted (no new types/files)`. The other two lenses are never omitted.
 
-**Parallel dispatch:** Spawn the selected agents in a SINGLE message with parallel Task tool calls. Do NOT use `run_in_background` — let them execute in parallel and return together. Each agent inspects the pushed CONTEXT only; none runs tests or the csharp-ls LSP (single-flight — the orchestrator already resolved symbol refs in Phase 1f and injects them).
+**Parallel dispatch:** Spawn the selected agents in a SINGLE message with parallel Task tool calls. Do NOT use `run_in_background` — let them execute in parallel and return together. **Single-flight applies ONLY to expensive/stateful ops** — the csharp-ls LSP and test runs — which the orchestrator resolves once (Phase 1f) and injects; agents never re-run those. It does NOT forbid cheap independent investigation: the `plc-memory-alignment` lens MUST run its OWN `semantic-search` over `.claude/auto-memory` and Read the real files to verify, and every lens may Read/Grep freely. The pushed CONTEXT is a starting seed, never the ceiling.
+
+### Dispatch doctrine — seed, don't scope
+
+The orchestrator's pre-loaded CONTEXT exists to *orient* agents efficiently, NEVER to *cap* what they investigate. An agent handed only the orchestrator's conclusions inherits the orchestrator's blind spots — the exact failure these lenses exist to catch. Three rules:
+
+- **Seed, don't cap.** `MEMORY_HITS` (Phase 1d) and any gotcha list are a FLOOR for `plc-memory-alignment`, not the set to check. Mandate it to search auto-memory itself across the plan's domains and surface anything beyond the seed. A closed checklist caps discovery at the orchestrator's recall.
+- **Orient, don't conclude.** Inject *facts* (what the code IS — surfaces, sibling counts, structure), never *conclusions* (what's right/wrong, "this is redundant", a pre-decided verdict). Conclusions invite confirmation bias; the lens's value is independent judgment.
+- **Verify, don't trust.** Label every injected codebase fact as a claim to confirm first-party, not ground truth. Orchestrator facts can be stale or extrapolated (a maiden run asserted a global "no occlusion system" from a 6-file sample — false); an agent that trusts them propagates the error. The best refuting findings come from a lens Reading the real file instead of believing the brief (reinforces *Evidence-quoting for refuting claims*, Constraints).
 
 ### Agent Templates
 
@@ -112,7 +120,7 @@ Assemble a single `CONTEXT` string injected into both agent prompts. It MUST con
 
 1. **Plan text** (`PLAN_TEXT` from 1a) — for `Task`/Agent-tool subagents, pass the plan **file path** and instruct the agent to Read it (verbatim-by-reference; saves a per-agent paste). Inline the full text ONLY when no plan file exists (inline-arg invocation) or when dispatching through a `Workflow` script, whose fanned agents hit intermittent read failures (`gotcha_workflow_fanout_search_false_absence`).
 2. **Inferred domains** (`INFERRED_DOMAINS` from 1c)
-3. **Memory Hits** (`MEMORY_HITS` from 1d) — entity/file names + brief content
+3. **Memory Hits** (`MEMORY_HITS` from 1d) — entity/file names + brief content. Label as a **search seed, not the checklist** — the memory lens searches auto-memory itself and goes beyond (per *Dispatch doctrine*).
 4. **Known Failure Modes** (`KNOWN_FAILURE_MODES` from 1e) — full catalog text
 5. **Symbol References** (`SYMBOL_REFS` from 1f) — per-symbol existing-sibling counts
 6. **Support skills** (`architecture_philosophy/SKILL.md` + `structure_rules.md` from 1g) — only for plc-pattern-fit; can be omitted from plc-memory-alignment's CONTEXT to save tokens
