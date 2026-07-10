@@ -5,11 +5,17 @@ description: >-
   surface, looking up BBDataSig keys, or diagnosing why an IComponent silently no-ops.
   Triggers: "Jmodot", "Blackboard", "BBDataSig", "IComponent", "BehaviorTree", "Combat
   factory", "MovementProcessor", "EntityStatSheet", "Attribute", "squad formation".
+  SKIP for project subsystem ownership (project_subsystems), design-pattern decisions
+  (architecture_philosophy), and submodule git mechanics (rules/jmodot_submodule.md auto-loads).
 ---
 
 # Jmodot Framework
 
 Reference index for the framework submodule. Most mechanical content has been extracted into path-scoped rules that auto-load on file reads.
+
+## Framework/consumer seam (applies to every deep-dive below)
+
+The deep-dives document Jmodot's **generic framework surface**. The consuming project reaches it through two seams: **attribute resources** resolved via `GlobalRegistry.DB` (autoload `Global/GlobalRegistry.cs` exposing `PushinPotionRegistry` — e.g. `GlobalRegistry.DB.MaxSpeedAttr`), and **project-side BBDataSig keys** (the project partial, below). Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` — project defaults flow through static seams (`rules/jmodot_framework_authoring.md`, auto-loads on `Jmodot/**/*.cs`).
 
 ## Companion files
 
@@ -51,7 +57,14 @@ Subsystem deep-dives (read on demand when designing in a specific area):
 
 ## BBDataSig Quick Reference
 
-Canonical home: the `BBDataSig` partial class (`Jmodot.Core.AI.BB.BBDataSig` + project-specific extension in `{{PROJECT_NAME}}/Global/`). When new keys are added there, refresh this table.
+`BBDataSig` is ONE `static partial class` in namespace `Jmodot.Implementation.AI.BB`, split across **two files**:
+
+| Partial | File | Holds |
+|---|---|---|
+| Framework | `Jmodot/Implementation/AI/BB/BBDataSig.cs` | `Agent`, `Stats`, `HealthComponent`, `CombatLog`, `CurrentTarget`, `Formation*`, `EntitySeed`, … |
+| Project game | `AI/BB/BBDataSig.cs` (repo root) | Casting/crafting/spell/run-scope keys (`CastStarted`, `CraftingSession`, `RunCurrencyAggregator`, …) |
+
+Grepping one file for the other's keys returns nothing — **search both** (pinning test: `Tests/Logic/JmodotTests/BBDataSigFrameworkGrabKeysTest.cs`). Constant name ≠ runtime string in places: `BBDataSig.StatusEffects` → `"StatusEffectComponent"`, `BBDataSig.HolderComponent` → `"HandMovementComponent"` — match on the constant, not the string. When new keys are added, refresh this table.
 
 | Key | Type | Purpose |
 |-----|------|---------|
@@ -71,3 +84,10 @@ Canonical home: the `BBDataSig` partial class (`Jmodot.Core.AI.BB.BBDataSig` + p
 - **Force vs velocity offset semantics** (when to use which, equilibrium formula) → [movement.md](movement.md) §"The Key Decision: Force vs Velocity Offset".
 - **Architectural principles this framework embodies** (Blackboard decoupling, data-driven design, pure-function strategies, validation, logging) → [`../architecture_philosophy/SKILL.md`](../architecture_philosophy/SKILL.md). Project-wide conventions (StringName keys, `JmoLogger` not `GD.Print`) live in `CLAUDE.md` §"Core Code Conventions".
 - **Configuration exception throwing convention** (`NodeConfigurationException`, `ResourceConfigurationException`) → [`../../rules/jmodot_utilities.md`](../../rules/jmodot_utilities.md) (auto-loads on `.cs`).
+
+## Provenance & maintenance
+
+Facts verified 2026-07-04. Re-verify:
+- BBDataSig split + keys: `Grep "partial class BBDataSig" -g "*.cs"` (expect the two files above), then read both.
+- Quick-ref key existence: `Grep "<KeyName> = new" -g "*BBDataSig.cs"`.
+- Seam accessor: `Grep "public static PushinPotionRegistry DB" Global/GlobalRegistry.cs`.

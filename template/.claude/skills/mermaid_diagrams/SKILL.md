@@ -97,4 +97,4 @@ Light fills + dark strokes stay legible in both Obsidian themes. If a fill ever 
 - `obsidian_conventions` skill — Obsidian vault rules; cites this skill for mermaid specifics.
 - `_brainstorm_shared/common.md §6.4` — roadmap mermaid schema; emits the roadmap domain mapping above.
 - `instruction_quality` skill §3 — the single-source-of-truth principle this skill operationalizes for diagrams.
-- `ai-worker prompts/modifier.mermaid.md` — worker-side output-affecting subset, auto-applied to vault `write_doc` calls; keep in sync when either changes.
+- `ai-worker prompts/modifier.mermaid.md` — worker-side output-affecting subset, auto-applied to vault `write_doc` calls. Lives with the ai-worker server (separate host, not in this repo — provenance/availability: `environment_bootstrap` skill); sync when either changes *and* the server is reachable.

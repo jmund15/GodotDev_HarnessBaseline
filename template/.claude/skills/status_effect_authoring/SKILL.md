@@ -28,7 +28,7 @@ description: >-
 4.  **Exit Condition:** Create `StatusActiveCondition` resource with `Inverted=true`.
     *   This is STATE-DRIVEN: continuously valid while tag is inactive.
 5.  **State Class:** Create state extending `State` with:
-    *   Movement strategy (e.g., `IdleFrictionStrategy2D` for frozen-in-place)
+    *   Movement strategy (e.g., `IdleFrictionStrategy3D` — `Movement/IdleFrictionStrategy3D.cs` — for frozen-in-place; this project is 3D, don't wire Jmodot's `...2D` variant)
     *   Animation name
     *   Optional: `VisualEffect` for tint/flash (applied in `OnEnter`, stopped in `OnExit`)
 6.  **Wire Transitions:**

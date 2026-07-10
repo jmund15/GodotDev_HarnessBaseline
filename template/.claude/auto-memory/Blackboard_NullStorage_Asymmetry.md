@@ -71,6 +71,8 @@ Do NOT assert on the `found` bool when testing null-storage of reference types �
 
 ## Cross-references
 
-- `Jmodot/Implementation/AI/BB/Blackboard.cs:54` (Set null path)
-- `Jmodot/Implementation/AI/BB/Blackboard.cs:138` (TryGet variant path)
+- `Jmodot/Implementation/AI/BB/Blackboard.cs:50` (Set null path)
+- `Jmodot/Implementation/AI/BB/Blackboard.cs:130` (TryGet variant path)
 - `Tests/Logic/NPCs/AI/TargetTrackerComponentTests.cs:45-58` (corrected null-publish test with the comment)
+
+**Verified:** 2026-07-09 memory-claim audit — code re-read: Set-null stores Nil (`Blackboard.cs:50-53`); TryGet on a Nil-stored reference type returns false silently (`:150-161` — the Nil check only suppresses the error log, not the false return). Anchors had drifted (:54→:50, :138→:130); mechanism intact.

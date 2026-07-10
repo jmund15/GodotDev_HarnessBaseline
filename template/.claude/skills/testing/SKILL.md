@@ -9,20 +9,22 @@ description: >-
 
 # Testing Skill
 
-GdUnit4Net v5.0.0 testing framework for {{PROJECT_NAME}}.
+GdUnit4Net testing framework for {{PROJECT_NAME}}. Version source of truth: `{{PROJECT_NAME}}.csproj` PackageReference lines (`gdUnit4.api` 5.1.0-rc4 + `gdUnit4.test.adapter` 3.0.0 as of 2026-07-04) — never trust version strings in prose.
 
 ## Quick Start
 
 ```bash
 # ALWAYS run by category (Windows pipe crashes on full suite)
-dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Logic"
-dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Integration"
-dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Sanity"
+dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Tests.Logic"
+dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Tests.Integration"
+dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Tests.Sanity"
 ```
+
+**Full prefix `~Tests.<Suite>` is mandatory** — short `~Logic` matches only a subset (observed 618 vs 4921 on the same suite; mimics a silent skip but isn't one). Canonical form: `.claude/commands/regression_gate.md`.
 
 **Hang-safe runs (Windows) — prefer the wrapper:** `pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter "FullyQualifiedName~Tests.<Suite>" -Label <Suite>`. It file-redirects output and tree-kills on a hard wall-clock cap, so a `GodotRuntimeExecutor` wedge can't hang the Bash caller past its own timeout (bare `dotnet test`'s testhost→Godot grandchildren inherit + hold the caller's stdout pipe open → the read never EOFs). Returns `STATUS=DONE`/`STATUS=HANG` + the count line. The bare commands above stay valid and are the **cloud path** (`xvfb-run`, wrapper is Windows-only). `/regression_gate` already uses the wrapper. Root cause + recovery recipe: `archive_gdunit4_process_kill_and_orphans.md` (auto-memory).
 
-**ALWAYS use `--verbosity quiet`** — Without it, the implicit rebuild produces ~50KB of compiler warnings (~337 warnings) that flood the Bash tool output, causing the agent to appear "stuck" processing noise for minutes. All test results (pass/fail counts, error messages) are fully preserved at quiet verbosity.
+**ALWAYS use `--verbosity quiet`** — the implicit rebuild otherwise emits ~50KB of compiler warnings that flood Bash tool output. All pass/fail counts and error messages are preserved at quiet.
 **NEVER use `--no-build`** — stale DLLs silently mask broken tests after branch switches/merges. `dotnet test` rebuilds automatically.
 **Use `--settings .runsettings`** — provides GODOT_BIN fallback, 30min safety timeout, `TreatNoTestsAsError`, and `MaxCpuCount=1`. GODOT_BIN is also set at User env level, but .runsettings is belt-and-suspenders.
 **Bash timeout: 600000** — Default 120s kills command but not Godot subprocess, creating orphans that block the named pipe.
@@ -40,6 +42,8 @@ Identify the domain before writing tests. For the **Logic vs Gameplay domain spl
 |--------|----------|------|------|
 | **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) | SpellArchitecture, Synergies, Data |
 | **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel | Wizard, VFX, UI, Physics |
+
+**Gate coverage is namespace-coupled.** Test namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY the three filters `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. A new top-level `Tests/<X>/` tree is **silently un-gated** — it never blocks commits unless the gate filters AND `Tests/regression_baseline.json` are extended. Live deliberate example: `Tests/ProcGenSim/` (manual-only, run via `/procgen_sim`).
 
 ### Logic Domain Flow
 ```
@@ -252,9 +256,9 @@ If the test feels hard to write, **listen to the test**: hard-to-test usually me
 
 ---
 
-## GdUnit4 v5.0.0 Essentials
+## GdUnit4 Essentials
 
-### Key Change
+### Key Change (since v5)
 Tests run **WITHOUT Godot runtime by default** (10x faster). Add `[RequireGodotRuntime]` only when needed.
 
 ### Attributes
@@ -292,7 +296,7 @@ When using `new NodeType()` in tests, `_Ready()` is **NOT called** (node never e
 
 ## Testing Framework
 
-Located in `Tests/Framework/`. Provides fixtures for spell testing.
+Base fixtures, builders, mocks, and assertions live in `Tests/Framework/`. **Exception:** `CastingTestFixture` lives at `Tests/Integration/Casting/CastingTestFixture.cs` (extends `SpellTestFixture`).
 
 ### Fixtures
 
@@ -399,9 +403,19 @@ public partial class MyTests : SpellTestFixture
 
 ---
 
-## Orphan Node Prevention
+## Teardown Doctrine & Orphan Prevention
 
-Orphans cause memory leaks and crashes. Prevent with:
+**`Free()`/`QueueFree()` are for Nodes ONLY.** `Resource`/`RefCounted`-derived objects are reference-counted — NEVER `Free()` them in teardown. Drop the references (null the field, clear the tracking list) and let refcounting collect. Freeing a Resource throws paired engine errors per call (`Can't free a RefCounted object.` + `Invalid call. Nonexistent function 'free' in base '<T>'`) — thousands per full-suite run in godot.log.
+
+| Object being torn down | Correct cleanup |
+|---|---|
+| Node in scene tree | `using ISceneRunner` (auto), or parent it (freed with parent), or `QueueFree()` |
+| Out-of-tree Node (`new NodeType()`) | `Free()` in `[AfterTest]`/`[After]` |
+| Resource / RefCounted (loaded `.tres`, `new SomeResource()`) | Drop references — no Free/QueueFree call at all |
+
+**Known-bad exemplars — do NOT imitate** (~9 suites carry this pattern per the 2026-07-03 godot.log audit; verified still present 2026-07-04): `Tests/Integration/AI/SquadFormationIntegrationTest.cs:52` (`_lineFormation?.Free()` on a `FormationDefinition : Resource`); `Tests/Logic/Settings/SettingsRegistryTest.cs:34` and `Tests/Logic/Settings/SettingDefinitionValidationTest.cs:33` (TearDown loops a `List<Resource>` calling `r.Free()`).
+
+**No numeric orphan/leak ceiling exists today.** At process exit Godot prints one engine ERROR per leaked Node (`Cannot get path of node...` in the ObjectDB leak dump), so godot.log error counts scale with orphan count, not bug count — and exit code `-1073740791` (crash) correlates with accumulation. Leak-dump math and log interpretation: `diagnostics_toolkit` skill.
 
 ```csharp
 // 1. Use 'using' with ISceneRunner (auto-cleanup)
@@ -431,16 +445,13 @@ ALWAYS run in batches (see Quick Start). Never run the full suite unfiltered.
 
 ### "GodotRuntimeExecutor timed out"
 **CRITICAL: This is a SILENT TEST SKIP.** When this message appears, ALL `[RequireGodotRuntime]` tests are reported as "Passed" but **never actually ran**. The regression gate is INVALID.
-- Logic domain: ~388 pass WITHOUT runtime. The current committed baseline for WITH-runtime runs lives in `Tests/regression_baseline.json` and auto-updates on green runs via `/regression_gate`. The ~388 sentinel is architecturally stable and does NOT drift with test growth — if you see ~388, runtime tests were silently skipped.
-- **Pre-test checklist:** Kill orphaned Godot processes BEFORE running (editor-safe):
+- **~388 is a silent-skip SENTINEL, not a suite size.** It is the count of Logic tests that pass WITHOUT the Godot runtime — the signature produced when the executor fails to connect. The real Logic baseline is ~19× larger; current counts and machine-readable floors (`silent_skip_sentinels`, e.g. `Logic_min: 500`) live in `Tests/regression_baseline.json`, auto-updated on green runs by `/regression_gate` — never hardcode them. Logic ≈ 388 ⇒ silent skip, no matter how green the output looks. The sentinel is architecturally stable (does not drift with test growth).
+- **Pre-test checklist:** Kill orphaned Godot processes BEFORE running (editor-safe — kills headless runners with empty MainWindowTitle, preserves the editor whose title contains "Godot Engine"):
   ```bash
   powershell.exe -Command "Get-Process -Name 'Godot*' | Where-Object { \$_.MainWindowTitle -notlike '*Godot Engine*' } | Stop-Process -Force -ErrorAction SilentlyContinue"
   ```
-  This kills headless test runners (empty MainWindowTitle) while preserving the user's editor (title contains "Godot Engine").
 - **Post-test validation:** Scan output for `GodotRuntimeExecutor failed` or `Connection timeout`. If present, results are invalid — fix and re-run.
-1. Check for orphaned Godot processes (editor-safe — see pre-test checklist above)
-2. Verify `GODOT_BIN` is set: `setx GODOT_BIN "C:\path\to\godot.exe"` (User env var) or pass `--settings .runsettings`
-3. If test count is low (~388 for Logic), GODOT_BIN isn't reaching the test adapter — check both the env var and .runsettings. The ~388 signature is the non-runtime test count and is architecturally stable; the current WITH-runtime baseline lives in `Tests/regression_baseline.json` and is maintained automatically by `/regression_gate`.
+- **If the sentinel fires:** the executor isn't reaching Godot — kill orphans (above), then verify `GODOT_BIN`: User env var (`setx GODOT_BIN "C:\path\to\godot.exe"`) and/or `--settings .runsettings` (which hardcodes a machine-specific path — see `environment_bootstrap` skill on a new machine).
 
 ### More Gotchas
 Search auto-memory (semantic-search) for "GdUnit4" or "Godot C# test gotchas" for additional troubleshooting.
@@ -451,5 +462,19 @@ Search auto-memory (semantic-search) for "GdUnit4" or "Godot C# test gotchas" fo
 
 | Reference | Contents |
 |-----------|----------|
-| [scene_runner.md](scene_runner.md) | ISceneRunner API: accessors, input simulation, frame control |
-| [advanced.md](advanced.md) | Lifecycle hooks, parameterized tests, utilities, FAQ |
+| [scene_runner.md](scene_runner.md) | ISceneRunner API: accessors, input simulation, frame control (vendored GdUnit4 docs) |
+| [advanced.md](advanced.md) | Lifecycle hooks, parameterized tests, utilities, FAQ (vendored GdUnit4 docs) |
+
+---
+
+## Provenance & maintenance
+
+Volatile facts and their re-verification commands (stamped 2026-07-04):
+
+| Claim | Re-verify with |
+|---|---|
+| GdUnit4 versions (api 5.1.0-rc4 / adapter 3.0.0) | `Grep "gdUnit4" {{PROJECT_NAME}}.csproj` |
+| Suite baselines + silent-skip sentinels (~388 / `Logic_min: 500`) | `Read Tests/regression_baseline.json` |
+| Canonical filter prefixes + wrapper invocation | `.claude/commands/regression_gate.md` (§ filter prefix, wrapper commands) |
+| Free()-on-Resource known-bad exemplars still unfixed | `Grep "\.Free\(\)" Tests/Logic/Settings/` + `Tests/Integration/AI/SquadFormationIntegrationTest.cs:52` |
+| `Tests/ProcGenSim/` still un-gated | gate filters in `.claude/commands/regression_gate.md` vs top-level `Tests/` dirs |

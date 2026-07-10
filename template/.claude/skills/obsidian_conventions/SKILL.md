@@ -28,17 +28,23 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 | Write / overwrite / append | `Write` / `Edit` — confirmed safe on a doc open in the Obsidian app (writes propagate, no conflict prompt) |
 | Delete a tracked file | `git rm` |
 | Edit frontmatter / tags | `obsidian_manage_frontmatter` / `obsidian_manage_tags` — the one place the MCP earns its cost (structured YAML; native `Edit` is fiddlier) |
-| Date-filtered search (`modified_since`) | `obsidian_global_search` — niche |
+| Date-filtered search | `obsidian_search_notes` with `mode: "jsonlogic"` (predicate on `stat.mtime`) — niche |
 
-Obsidian MCP being offline does **not** block native read/write/search/list — there is no "abort if MCP offline" gate for native vault work. Only the frontmatter/tag tools depend on the MCP.
+MCP tool names verified against the live server 2026-07-04 (`obsidian_get_note` / `obsidian_write_note` / `obsidian_patch_note` / `obsidian_replace_in_note` / `obsidian_search_notes`; pre-2026-07 names `obsidian_read_note` / `obsidian_update_note` / `obsidian_search_replace` / `obsidian_global_search` are dead). Obsidian MCP being offline does **not** block native read/write/search/list — there is no "abort if MCP offline" gate for native vault work. Only the frontmatter/tag tools depend on the MCP.
 
-> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — but `obsidian_update_note` has no real advantage there (both land on disk; the unsaved buffer conflicts either way). In practice the agent is directed, not hand-editing the same file simultaneously.
+> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — but `obsidian_write_note` has no real advantage there (both land on disk; the unsaved buffer conflicts either way). In practice the agent is directed, not hand-editing the same file simultaneously.
 
-## `obsidian_search_replace` — literal line-ending matching
-`obsidian_search_replace` matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `search` that works on one file may silently return `totalReplacementsMade: 0` on another — no error, reads like a text mismatch when it's actually a separator mismatch.
+## Vault taxonomy — live vs legacy (as of 2026-07-04)
+
+- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
+- **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.
+- The current design bible is the repo skill `game_vision`, not a vault doc — vault searches for "vision" find only the deprecated PvP-era doc under `Claude/Archived/`.
+
+## `obsidian_replace_in_note` — literal line-ending matching
+`obsidian_replace_in_note` (default literal mode) matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `search` that works on one file may silently report 0 replacements on another — no error, reads like a text mismatch when it's actually a separator mismatch. *(Gotcha observed under the tool's pre-2026-07 name `obsidian_search_replace`; literal-byte default carried over per the live schema.)*
 
 - **Prefer single-line, newline-free anchors** — they're line-ending-agnostic.
-- A whole-line delete must include the line terminator, so it IS line-ending-sensitive. If such a delete (or any multi-line match) returns `0` replacements, suspect the separator first: retry with the other convention (`\n` ↔ `\r\n`). Don't assume the file's convention — a wrong guess 0-hits cleanly, so verify against the actual file.
+- A whole-line delete must include the line terminator, so it IS line-ending-sensitive. If such a delete (or any multi-line match) returns `0` replacements, suspect the separator first: retry with the other convention (`\n` ↔ `\r\n`), or pass `flexibleWhitespace: true` (any whitespace run in `search` matches any whitespace in the body — sidesteps the separator question; literal mode only). Don't assume the file's convention — a wrong guess 0-hits cleanly, so verify against the actual file.
 
 ## Wikilinks & Heading Anchors
 All cross-doc references **MUST** be wikilinks — never plain text, bold, or inline code.
@@ -72,4 +78,4 @@ Obsidian auto-link-update ONLY triggers through Obsidian's UI (drag-drop, right-
 - [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md) — `/doc_*` documentation-folder structure: folder classification, the 4-doc system template, domain routing, Related Systems callouts
 - `mermaid_diagrams` skill — mermaid conventions for any diagram emitted into a vault doc
 - CLAUDE.md §3 *Obsidian (The Design Source)* — always-loaded summary of this convention
-- `ai-worker prompts/modifier.obsidian.md` — worker-side output-affecting subset, auto-applied to vault `write_doc` calls; keep in sync when either changes
+- `ai-worker prompts/modifier.obsidian.md` — worker-side output-affecting subset, auto-applied to vault `write_doc` calls. Lives with the ai-worker server (separate host, not in this repo — provenance/availability: `environment_bootstrap` skill); sync when either changes *and* the server is reachable

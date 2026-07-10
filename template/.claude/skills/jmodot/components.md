@@ -52,7 +52,9 @@ public bool Initialize(IBlackboard bb) {
 
 ## Integration Points
 
-- **Entity** owns the BB and calls `Initialize()` on all components
+- **Entity** owns the BB and calls `Initialize()` on all components (driver: `Jmodot/Implementation/Components/EntityNodeComponentsInitializer.cs`)
 - **States** receive BB in their `Init()` method
 - **Combat effects** access target's BB via `ICombatant.Blackboard`
 - **Subscriptions** allow reactive updates when BB values change
+- Two-phase init (Phase 0 `IBlackboardProvider` self-registration → Phase 1 `Initialize` dependency pull) + silent no-op gotcha: `architecture_philosophy/SKILL.md` §Blackboard-Based DI and `rules/jmodot_utilities.md` §IComponent
+- Key constants: the two-partial `BBDataSig` split — [SKILL.md](SKILL.md) §BBDataSig Quick Reference

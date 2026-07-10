@@ -18,6 +18,7 @@ Editor plugins in Godot can register `EditorImportPlugin`, `EditorInspectorPlugi
 - GdUnit4's test runner does NOT load any specific test before the crash — the executor-launch IS the crash, and it happens because Godot's editor-rebuild does the plugin scan. This is why bisecting *tests* yields nothing; bisect *plugins* instead.
 
 **How to apply:**
+- **FIRST: retry once before bisecting anything.** The identical signature (`Rebuilding Godot Project ends with exit code: -1073741819`, 0 tests executed, `TreatNoTestsAsError` exit 1) also occurs as a TRANSIENT when the user's Godot editor holds the project open during the rebuild (observed 2026-07-06: first run crashed, immediate re-run green with zero changes). Only a crash that REPRODUCES on retry warrants the plugin-pair bisect below.
 - **Investigation flow when you see deterministic native crashes from GdUnit4's `Rebuilding Godot Project` step:**
   1. Don't bisect tests — they're not the trigger (executor-launch crashes before any test code runs). Confirm by running ONE runtime-required test alone; if crash, executor-launch is the issue.
   2. Verify direct `godot --headless --build-solutions --path . --quit` — usually exits 0 (because gdunit4's invocation has different flags or different process state). If it crashes too, the editor-rebuild scan itself is the problem, not gdunit4-specific.

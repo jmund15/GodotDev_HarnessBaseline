@@ -11,15 +11,20 @@ Base Value → Modifiers (staged) → Final Value
 
 Stats aren't just numbers - they're **modifiable properties** that recalculate when modifiers change.
 
-## The Calculation Pipeline
+## The Calculation Pipeline (StageRule Resources)
 
-Modifiers apply in strict order:
+Stages are **extensible `StageRule` Resources** (`Jmodot/Core/Modifiers/StageRules/`), not a fixed enum. Every modifier references a rule; the calculation groups modifiers by `StageId` and folds groups in ascending `Order`:
 
-| Stage | Operation | Example |
-|-------|-----------|---------|
-| **BaseAdd** | Flat addition | +10 Damage from equipment |
-| **PercentAdd** | Sum percentages, apply once | +20% MaxHealth (stacks additively) |
-| **FinalMultiply** | Independent multipliers | ×2 for Critical, ×0 for Stun |
+| Stage (`StageId`) | `Order` | Operation | Example |
+|-------|------|-----------|---------|
+| **BaseAdd** | 100 | Flat addition | +10 Damage from equipment |
+| **PercentAdd** | 200 | Sum percentages, apply once | +20% MaxHealth (stacks additively) |
+| **FinalMultiply** | 300 | Independent multipliers | ×2 for Critical, ×0 for Stun |
+| **Override** | 400 | Replace value | Forced value effects |
+| **Floor** | 490 | Lower bound (bound lives on the rule) | Min-speed clamp |
+| **Cap** | 500 | Upper bound (bound lives on the rule) | Max-stack clamp |
+
+Bool stages: `Flip` (350) / `Override` (400). `Int*` rules mirror the float set. Code-side modifiers use the shared `CanonicalStageRules` statics (stateless rules; Floor/Cap carry per-instance bounds — construct at use site). Data-authored modifiers reference the `.tres` equivalents under `Jmodot/Implementation/Modifiers/StageRules/`; both fold identically.
 
 **Example calculation:**
 ```
@@ -36,8 +41,9 @@ Base: 100
 | **BaseAdd** | Equipment bonuses, flat buffs |
 | **PercentAdd** | Percentage buffs that should stack additively |
 | **FinalMultiply** | Critical hits, stun (×0), damage reduction |
+| **Floor / Cap** | Bounding the final result — don't fake clamps with FinalMultiply |
 
-**Key insight:** Multiple PercentAdd modifiers are summed first (+10% and +20% = +30% total), then applied once. FinalMultiply modifiers are applied independently in priority order.
+**Key insight:** Multiple PercentAdd modifiers are summed first (+10% and +20% = +30% total), then applied once. FinalMultiply modifiers are applied independently. Floor/Cap fold last so they bound everything upstream.
 
 ## Rules
 
@@ -93,8 +99,8 @@ stats.GetStatValue<float>("MaxSpeed", 5f);
 ```
 
 ```csharp
-// GOOD - Attribute resource
-stats.GetStatValue<float>(GlobalReg.MaxSpeedAttr, 5f);
+// GOOD - Attribute resource (project-side accessor: GlobalRegistry.DB, Global/GlobalRegistry.cs)
+stats.GetStatValue<float>(GlobalRegistry.DB.MaxSpeedAttr, 5f);
 ```
 
 **Forgetting to clean up modifiers** - Always use ownership or handles.
@@ -109,3 +115,7 @@ stats.GetStatValue<float>(GlobalReg.MaxSpeedAttr, 5f);
 - **MovementStrategy** reads speed/acceleration from IStatProvider
 - **Combat effects** can apply modifiers via TryAddModifier
 - **Status runners** own their modifiers for automatic cleanup
+- **HSM states** apply a `StatContext` while active (`State.ActiveStatContext` — added on enter, removed on exit)
+- project consumption seam (attributes via `GlobalRegistry.DB`): [SKILL.md](SKILL.md) §Framework/consumer seam
+
+Stage roster verified 2026-07-04. Re-verify: `Grep "StageId =" Jmodot/Core/Modifiers/StageRules/ -n`.

@@ -34,10 +34,11 @@ State checks Transitions[] → each Transition has Conditions[] → first all-tr
 ```csharp
 // BAD - condition has side effects
 public override bool Check(Node agent, IBlackboard bb) {
-    bb.Set(BBDataSig.SawEnemy, true);  // NO! Conditions don't modify state
+    bb.Set(BBDataSig.SelfInteruptible, true);  // NO! Check() must be side-effect-free
     return true;
 }
 ```
+Deferred side effects (e.g. consuming a one-shot flag) belong in `OnTransitionCommitted(agent, bb)` — fires only after the transition fully commits. See `rules/hsm_bt_patterns.md`.
 
 **Mutable transitions** - Transitions are shared across instances. Don't store runtime data in them.
 
@@ -101,7 +102,7 @@ Considerations score directions → Modifiers apply personality → sum scores �
 
 - **Consideration**: Scores directions based on world state (seek target, avoid danger)
 - **Modifier**: Adjusts scores based on personality (aggressive AI weights attack directions higher)
-- **DirectionSet**: The discrete directions being scored (8 cardinal directions)
+- **DirectionSet**: The discrete directions being scored — a `DirectionSet3D` Resource family (`Dir4`/`Dir8`/`Dir16`/`Custom` variants, 2D mirrors exist)
 
 ### Rules
 
@@ -118,36 +119,40 @@ Complex utility calculations often need to combine multiple factors. Instead of 
 
 ### Composition Operators
 
+Enum: `ConsiderationOperator` in `Jmodot/Implementation/AI/UtilityAI/CompositeConsideration.cs` — 11 values (cite the file, don't trust stale tables):
+
 | Operator | Formula | Use When |
 |----------|---------|----------|
-| **Multiply** | `∏(scores)` | All factors must contribute (default for hard requirements) |
-| **Average** | `Σ(scores)/n` | Balanced blend of factors |
-| **Min** | `min(scores)` | Bottleneck determines outcome (all conditions must pass) |
+| **Average** | `Σ(scores)/n` | Balanced blend of factors (**exported default**) |
+| **Add / Subtract / Multiply / Divide** | pairwise fold | Code comments suggest 2 considerations only |
+| **Min** | `min(scores)` | Bottleneck determines outcome |
 | **Max** | `max(scores)` | Any good reason suffices |
-| **WeightedAverage** | `Σ(score*weight)/Σ(weight)` | Some factors matter more than others |
-| **Veto** | `0 if any=0, else multiply` | Hard requirements that block if missing |
-| **ThresholdGate** | `0 if any<threshold, else average` | Filter low-confidence options |
-| **Random** | Random child | Variety/unpredictability |
+| **WeightedAverage** | `Σ(score*weight)/Σ(weight)` | Some factors matter more (missing weights default 1.0; empty `Weights` → plain average) |
+| **Veto** | `0 if any≤0, else multiply` | Hard requirements that block if missing |
+| **ThresholdGate** | `0 if any<Threshold, else average` | Filter low-confidence options (`Threshold` default 0.1) |
+| **Random** | Per-agent deterministic child pick | Personality variety. NOT per-call randomness — derived from `BBDataSig.EntitySeed` via `EntityRngResolver`, so the pick is FIXED per agent (seed-determinism discipline, see `rules/jmodot_utilities.md` §JmoRng) |
+
+Final result is clamped to [0, 1].
 
 ### Usage Examples
 
 ```csharp
-// Veto mode: Any zero vetoes the whole thing
-CompositeConsideration (Mode: Veto)
+// Veto: Any zero vetoes the whole thing
+CompositeConsideration (Operator: Veto)
 ├── HasAmmoConsideration → 0.0  ← VETO!
 ├── HealthConsideration → 0.8
 └── TargetDistanceConsideration → 0.9
 Result: 0.0 (can't attack without ammo)
 
 // WeightedAverage: Prioritize certain factors
-CompositeConsideration (Mode: WeightedAverage)
+CompositeConsideration (Operator: WeightedAverage)
 ├── DamageOutput (weight: 2.0) → 0.6
 ├── Risk (weight: 1.0) → 0.4
 └── Cooldown (weight: 0.5) → 0.8
 Result: (0.6*2 + 0.4*1 + 0.8*0.5) / 3.5 = 0.57
 
 // ThresholdGate: Filter weak options
-CompositeConsideration (Mode: ThresholdGate, Threshold: 0.3)
+CompositeConsideration (Operator: ThresholdGate, Threshold: 0.3)
 ├── ConfidenceConsideration → 0.2  ← Below threshold!
 ├── OpportunityConsideration → 0.8
 └── SafetyConsideration → 0.7
@@ -156,12 +161,12 @@ Result: 0.0 (confidence too low)
 
 ### Properties
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `Considerations` | `Array<UtilityConsideration>` | Child considerations to combine |
-| `Operator` | `ConsiderationOperator` | How to combine scores |
-| `Weights` | `Array<float>` | Per-child weights (for WeightedAverage) |
-| `Threshold` | `float` | Gate threshold (for ThresholdGate) |
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `Considerations` | `Array<UtilityConsideration>` | empty | Child considerations to combine (empty → score 0) |
+| `Operator` | `ConsiderationOperator` | `Average` | How to combine scores |
+| `Weights` | `Array<float>` | empty | Per-child weights (WeightedAverage only) |
+| `Threshold` | `float` | `0.1` | Gate threshold (ThresholdGate only) |
 
 ---
 
@@ -198,9 +203,9 @@ No manual wiring code needed - `AIAgentComponent` handles it automatically.
 | Component | BB Key | Found Via |
 |-----------|--------|-----------|
 | Parent node | `BBDataSig.Agent` | Always wired |
-| `AIAffinitiesComponent` | `BBDataSig.Affinities` | `GetFirstChildOfType<>` |
-| `IStatProvider` | `BBDataSig.Stats` | `GetFirstChildOfInterface<>` |
-| `IHealth` | `BBDataSig.HealthComponent` | `GetFirstChildOfInterface<>` |
+| `AIAffinitiesComponent` | `BBDataSig.Affinities` | `TryGetFirstChildOfType<>` |
+| `IStatProvider` | `BBDataSig.Stats` | `TryGetFirstChildOfInterface<>` |
+| `IHealth` | `BBDataSig.HealthComponent` | `TryGetFirstChildOfInterface<>` |
 
 ### Interface: IAIAgent
 
@@ -236,15 +241,7 @@ AI capabilities (perception range, reaction speed, turn rate) should be driven b
 | `StatConsiderationModifier` | Utility Modifier | Scale scores by stat via curve |
 | `StatDrivenConsideration3D` | Steering | Stat-driven behavior parameters (e.g., sight range) |
 
-### AI Attributes (Global/Attributes/AI/)
-
-| Attribute | Semantic Meaning | Use Case |
-|-----------|------------------|----------|
-| `SightRange` | Perception range (meters) | StatDrivenConsideration3D influence range |
-| `ReactionTime` | Decision delay (seconds) | Utility reassessment interval |
-| `TurnRate` | Steering strength (degrees/sec) | Movement responsiveness |
-
-See [stat_driven_ai.md](stat_driven_ai.md) for full API documentation.
+AI attribute `.tres` inventory + semantics: [stat_driven_ai.md](stat_driven_ai.md) (single home — full API documentation there).
 
 ---
 
@@ -265,21 +262,18 @@ FormationDefinition → FormationController → SquadManager → Blackboard
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `FormationDefinition` | Resource | Slot offsets, leader index, metadata |
-| `FormationController` | Static Methods | Calculate world positions, assign slots |
-| `NearestSlotStrategy` | ISlotAssignmentStrategy | Optimal slot assignment algorithm |
-| `FormationConsideration3D` | Steering | Guide agents toward their assigned slots |
+| `FormationDefinition` | Resource (`Jmodot/Core/AI/Squad/`) | `SlotOffsets`, `MinSpacing`, `FormationName`; slot 0 = leader by convention (no `LeaderSlotIndex`/`Metadata` properties exist) |
+| `FormationController` | Static pure functions (`Jmodot/Implementation/AI/Squad/`) | `CalculateSlotPositions(formation, FormationAnchorMode, anchorPosition, anchorForward, memberPositions?)` → `Dictionary<int, Vector3>`. Anchor modes: `Leader` / `Static` / `Centroid`. Transform math treats local **-Z as forward** (`Basis.LookingAt`) |
+| `NearestSlotStrategy` | `ISlotAssignmentStrategy` | `AssignSlots(memberPositions, slotPositions, leaderMemberIndex = -1)` → `Dictionary<int, int>` (member→slot; leader gets slot 0; unassigned = -1). Slot assignment lives HERE, not on FormationController |
+| `FormationConsideration3D` | Steering (`Jmodot/Implementation/AI/Navigation/Considerations/`) | Guide agents toward their assigned slots |
+| `SquadManager` | Node (`Jmodot/Implementation/AI/UtilityAI/`) | Orchestrates: runs the strategy, publishes formation keys to BB |
 | `DebugFormationComponent` | Node | Visual debug drawing |
 
-### Blackboard Keys
+### Blackboard Keys (framework BBDataSig partial)
 
-| Key | Type | Set By | Read By |
-|-----|------|--------|---------|
-| `BBDataSig.FormationActive` | `bool` | SquadManager | FormationConsideration3D |
-| `BBDataSig.FormationSlotPositions` | `Dictionary<int, Vector3>` | FormationController | FormationConsideration3D |
-| `BBDataSig.FormationSlotIndex` | `int` | SlotAssignmentStrategy | FormationConsideration3D |
+`FormationActive` (`bool`), `FormationSlotPositions` (`Dictionary<int, Vector3>`, squad BB), `FormationSlotIndex` (`int`, member BB, -1 = unassigned), `FormationLeader` (`Node3D`, squad BB).
 
-See [squad_formations.md](squad_formations.md) for full API documentation.
+See [squad_formations.md](squad_formations.md) for the full deep-dive.
 
 ---
 

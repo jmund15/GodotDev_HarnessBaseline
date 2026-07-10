@@ -104,5 +104,6 @@ Use the Processor - it handles forces and offsets correctly.
 
 - **HSM states** own strategies and call ProcessMovement
 - **Stats** provide speed, acceleration, friction values
-- **Combat** applies knockback via ApplyImpulse
-- **Environment areas** implement IForceProvider or IVelocityOffsetProvider
+- **Combat** applies knockback via `IMovementProcessor3D.ApplyImpulse(Vector3)`
+- **Environment areas** implement `IForceProvider3D` or `IVelocityOffsetProvider3D` (`Jmodot/Core/Environment/` — dimension-suffixed, no un-suffixed variants)
+- Strategy roster + `desiredDirection` contract split (pre-scaled velocity vs unit vector): `rules/physics_patterns.md` (auto-loads on movement files)

@@ -76,7 +76,7 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 **Rule:** Do NOT bypass the Blackboard with direct-reference calls, even for single-consumer optimizations. The BB exists specifically so producers and consumers don't need direct references — producer `.Set()`s a key, consumer `.TryGet()`s it, they stay mutually ignorant.
 
 - *Anti-pattern:* Installer calls `component.AttachThing(thing)` directly "for efficiency" after setting `BB.Set(key, thing)`. Parallel-wires data through a direct channel that duplicates BB's job. Creates inconsistency (why does X use BB but Y use direct?) and doesn't scale (every new installer must enumerate dependent components).
-- *Correct pattern for late-population:* When a consumer needs a key that isn't yet on BB at Initialize time, use BB-mediated bounded-retry (polling with cap + Warning log on timeout). Preserves decoupling. Canonical example: `IngredientCollectorComponent` deferred-attach.
+- *Correct pattern for late-population:* When a consumer needs a key that isn't yet on BB at Initialize time, use BB-mediated bounded-retry (polling with cap + Warning log on timeout). Preserves decoupling. Canonical example: `Crafting/IngredientCollectorComponent.cs` deferred-attach.
 - *Why this matters:* Every direct-push shortcut is a coupling channel future code must reason about. The BB is the decoupling layer; bypassing it defeats its purpose.
 
 ### Typed-Owned State over Blackboard Flags
@@ -137,8 +137,8 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 
 **Canonical in-codebase examples:**
 
-- BB late-population bounded retry: `IngredientCollectorComponent._PhysicsProcess` (2026-04-19) — match-level installer genuinely can't write per-entity BB key at Wizard `_Ready` time.
-- Physics broadphase bounded retry: `HitboxComponent3D._pendingOverlapRetries` (cap = 3) — silent miss acceptable when "miss" manifests as a missed hit, not missed state.
+- BB late-population bounded retry: `Crafting/IngredientCollectorComponent.cs` `_PhysicsProcess` (2026-04-19) — match-level installer genuinely can't write per-entity BB key at Wizard `_Ready` time. (Path matters: an unrelated `NPCs/AI/IngredientCollectorComponent.cs` shares the class name.)
+- Physics broadphase bounded retry: `HitboxComponent3D._pendingOverlapRetries` (small cap, const `PendingOverlapRetryFrames`) — silent miss acceptable when "miss" manifests as a missed hit, not missed state.
 - Known single-frame `CallDeferred`: `MatchController.PostSpawnSetup`, `CraftingInstaller.Install` (docblock).
 - `SetDeferred` property sync await: spell pool activation (`archive_pooling_spawn_sibling_gotchas.md`, auto-memory).
 
@@ -329,7 +329,7 @@ public override void _ExitTree()
 
 **Editor-only failure:** the cast fires in the EDITOR process; at runtime every script is its real type. **No GdUnit4 / runtime test can catch a cascade gap** — detection is static (the type graph) or headless-editor import.
 
-**Escape hatch (typed-as-base):** type the `[Export]` as base `Resource`/`Node` and cast at runtime (`prop as ISomeInterface`). Breaks the cascade at the cost of Inspector drag-drop type hints. Example: `UnifiedCollisionFactory.BounceStrategy` (`[Export] Resource?`). Static analysis can't follow this — the blanket-on-Resources policy + headless gate cover it.
+**Escape hatch (typed-as-base):** type the `[Export]` as base `Resource`/`Node` and cast at runtime (`prop as ISomeInterface`). Breaks the cascade at the cost of Inspector drag-drop type hints. Example: `StatusPlayerEffect.Factory` (`SpellArchitecture/PlayerEffects/StatusPlayerEffect.cs` — `[Export] Resource`, runtime-cast to `CombatEffectFactory`; full rationale in the *black-box* paragraph below). Static analysis can't follow this — the blanket-on-Resources policy + headless gate cover it.
 
 **Jmodot is black-box (submodule):** the framework blankets `[Tool]` across its AI families but NOT everywhere (e.g. the `CombatEffectFactory` family is `[GlobalClass]` without `[Tool]`). Jmodot is a git submodule — its `[Tool]` gaps need a paired Jmodot-repo PR, not a {{PROJECT_NAME}} edit. When a {{PROJECT_NAME}} `[Tool]` Resource must `[Export]` a non-`[Tool]` Jmodot Resource, apply the **escape hatch** — type the field as base `Resource` and cast at runtime (external-ref does NOT help). Precedent: `StatusPlayerEffect.Factory` is typed `Resource` and cast to `CombatEffectFactory` at its use site, so the `[Tool]` setter never casts the (non-`[Tool]`) Jmodot `TickEffectFactory` it holds.
 

@@ -26,3 +26,5 @@ Brainstorming  →  Plan Mode  →  Implementation
 ```
 
 **Source:** distilled from Batch C readiness verification of the superpowers-cherry-pick adoption. Adopted 2026-04-29.
+
+**Verified:** 2026-07-09 memory-claim audit — grep re-run: zero `EnterPlanMode`/`ExitPlanMode` references in `.claude/commands/` + `.claude/skills/`.

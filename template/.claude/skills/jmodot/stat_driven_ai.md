@@ -9,7 +9,7 @@ Stat-driven AI enables AI behavior parameters to be controlled by the stat syste
 
 ## AI Attributes
 
-Located in `Global/Attributes/AI/`:
+Base attributes in `Global/Attributes/AI/` (the directory also holds tide-modifier `.tres` like `tide_eclipse_sight_x0p7.tres` — glob the dir for the current inventory):
 
 | Attribute | File | Type | Description |
 |-----------|------|------|-------------|
@@ -123,7 +123,7 @@ A steering consideration that reads stat values to parameterize its behavior.
 
 ## Integration with Perception
 
-While not implemented in this phase, the intended integration pattern:
+NOT implemented (as of 2026-07-04 — `SightRange` is consumed only by `StatDrivenConsideration3D`, tests, and a tide-debuff `.tres`; no PerceptionManager consumption. Re-verify: `Grep "SightRange" -g "*.cs"`). The intended integration pattern:
 
 ```
 PerceptionManager
@@ -137,7 +137,4 @@ AI decisions based on what's in range
 
 ## Test Coverage
 
-| Suite | Tests | Description |
-|-------|-------|-------------|
-| `StatConsiderationTests` | 6 | Normalization, curves, inversion, edge cases |
-| `StatDrivenConsideration3DTests` | 3 | Stat integration, defaults, range gating |
+Suites: `Tests/Logic/AI/StatConsiderationTests.cs` (normalization, curves, inversion, edge cases) and `Tests/Logic/AI/StatDrivenConsideration3DTests.cs` (stat integration, defaults, range gating). Test counts drift — scan the suite (`Grep "\[TestCase\]" Tests/Logic/AI/Stat*.cs -c`) instead of trusting numbers written here.

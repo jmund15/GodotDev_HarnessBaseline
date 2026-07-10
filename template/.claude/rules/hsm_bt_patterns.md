@@ -40,21 +40,22 @@ Hybrid Transitions: It is perfectly fine and recommended to use both `EmitSignal
 
 ## Blackboard Transition Conditions
 
-- **`BBFlagCondition`** — Edge-triggered. Auto-clears flag after transition fires. Use for one-time events ("cast completed", "charge ready"). **Never manually clear the flag — the condition handles it.**
+- **`BBFlagCondition`** — Edge-triggered. Auto-clears flag after transition fires (via `OnTransitionCommitted`). Use for one-time events ("cast completed", "charge ready"). **Never manually clear the flag — the condition handles it.**
 - **`BBBoolCondition`** — Level-triggered. Checks value without modifying it. Use for persistent state ("is grounded", "has target").
+- Both live under `Jmodot/Examples/AI/HSM/TransitionConditions/` — production-consumed despite the `Examples/` path; do not treat as sample-only code.
 
 ## HSM Override Rule
 
-**Rule:** Override `OnEnter()`, `OnExit()`, `OnProcessFrame()`, `OnProcessPhysics()` — **NEVER** override `Enter()`/`Exit()` directly.
+**Rule:** Override `OnInit()`, `OnEnter()`, `OnExit()`, `OnProcessFrame()`, `OnProcessPhysics()` — **NEVER** override the non-virtual template methods `Enter()`/`Exit()`/`ProcessFrame()`/`ProcessPhysics()`.
 
-- The base `HierarchicalState` manages `IsActive`, `StatContext`, and blackboard flag lifecycle in `Enter()`/`Exit()`. Overriding these methods bypasses that bookkeeping and causes silent state corruption.
+- The base class is `State` (`Jmodot/Implementation/AI/HSM/State.cs` — there is no `HierarchicalState`). `Enter()`/`Exit()` manage `IsActive`, the `BBDataSig.SelfInteruptible` flag, and `ActiveStatContext` apply/remove on the stat provider. Bypassing them causes silent state corruption.
 - *Convention:* All custom state logic goes in `On*` virtual methods.
 
 ## TransitionCondition Authoring
 
-**Rule:** `TransitionCondition` subclasses must be `[GlobalClass, Tool] partial class`.
+**Rule:** `TransitionCondition` subclasses must be `[GlobalClass, Tool] partial class` (base: `Jmodot/Core/AI/HSM/TransitionCondition.cs`).
 
-- `Check()` must be **side-effect-free** — it runs every `_Process` tick on every outgoing transition. Writing state, firing events, or modifying blackboard values inside `Check()` causes frame-rate-dependent behavior.
+- `Check(Node agent, IBlackboard bb)` must be **side-effect-free** — it can run multiple times per frame, and a passing check does NOT guarantee the transition commits (`CanExit` may block). Deferred side effects (consuming one-shot flags) belong in `OnTransitionCommitted(agent, bb)`, which fires only after the transition fully commits.
 - `[Tool]` is required so the Editor can instantiate the Resource for Inspector display.
 
 ## Goal-Directed AI Behaviors (BT)

@@ -1,5 +1,7 @@
 # ISceneRunner Reference
 
+> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. Version provenance: the `gdUnit4.api` pin in `{{PROJECT_NAME}}.csproj` (5.1.0-rc4 as of 2026-07-04); this copy may drift from upstream. If an API call misbehaves, cross-check the trusted GdUnit4 URLs in CLAUDE.md §4.
+
 Complete API reference for GdUnit4's scene runner - used for integration testing with input simulation.
 
 ## Quick Start

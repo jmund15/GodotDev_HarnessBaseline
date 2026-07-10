@@ -121,7 +121,7 @@ CONSTRAINTS:
 
 ## 5. Model Selection
 
-This skill is the canonical home of fan-out model selection (the guidance formerly lived in CLAUDE.md §8 *Agent Delegation*, since removed in compression). Evidence base: `archive_agent_task_gotchas.md`.
+This skill is the canonical home of fan-out model selection. Evidence base: `archive_agent_task_gotchas.md`.
 
 ### The load-bearing rule: a fan-out NEVER inherits the session model
 

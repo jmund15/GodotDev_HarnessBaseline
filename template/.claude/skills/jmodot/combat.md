@@ -25,7 +25,7 @@ Attack → Payload (effects[]) → Combatant applies each → Results → Reacti
 
 ## Rules
 
-1. **Effects are structs** - Value types for memory efficiency, no shared state
+1. **Effects share no mutable state across applications** - `ICombatEffect` implementations are a mix of structs (`HealEffect`, `RevertStatEffect`) and classes (`DamageEffect`, `KnockbackEffect : Resource`); the invariant is statelessness per-apply, not value-type-ness
 2. **Use factories for complex effects** - Factory resources configure effects via exports
 3. **Tags categorize effects** - Use for reaction logic ("HeavyHit" triggers stagger)
 4. **CombatLog enables HSM integration** - Query "was I hit this frame?"
@@ -55,22 +55,25 @@ Temporal effects that persist over time. A StatusRunner manages the lifecycle - 
 Factory creates Runner → Runner added to StatusEffectComponent → Runner ticks/expires → cleanup
 ```
 
-### Runner Types
+### Runner Types (`Jmodot/Implementation/Combat/Status/`)
 
 | Runner | Use Case |
 |--------|----------|
-| **Duration** | Ends after fixed time (stun, buff) |
-| **Tick** | Repeats effect periodically (poison, regen) |
-| **Delayed** | Triggers after delay (time bomb) |
-| **Condition** | Ends when condition met |
+| `DurationStatusRunner` | Ends after fixed time (stun, buff) |
+| `DurationRevertibleStatusRunner` | Apply-then-revert (temporary stat buffs) |
+| `TickStatusRunner` | Repeats effect periodically (poison, regen) |
+| `DelayedStatusRunner` | Triggers after delay (time bomb) |
+| `ConditionStatusRunner` | Ends when condition met |
 
 ### Tag System
 
-StatusEffectComponent tracks which tags are currently active. This enables queries like "is this entity stunned?" without iterating all runners.
+StatusEffectComponent tracks which tags are currently active. This enables queries like "is this entity stunned?" without iterating all runners. `CombatTag` is a Resource (`CombatTag : Category`, `Jmodot/Core/Combat/CombatTag.cs`) authored as `.tres` — there is NO static `CombatTags` constants class; obtain the tag via an `[Export]` or the registry.
 
 ```csharp
+[Export, RequiredExport] public CombatTag StunTag { get; private set; } = null!;
+
 var statusComp = bb.Get<StatusEffectComponent>(BBDataSig.StatusEffects);
-if (statusComp.HasTag(CombatTags.Stun)) {
+if (statusComp.HasTag(StunTag)) {
     // Can't act while stunned
 }
 ```

@@ -1,215 +1,101 @@
-# Squad Formation System
+# Squad Formation System (Jmodot)
 
-## Overview
+Coordinated group movement for AI agents: a data-driven shape (`FormationDefinition` Resource), pure-function slot math (`FormationController`), pluggable member→slot assignment (`ISlotAssignmentStrategy`), a `SquadManager` node that orchestrates state onto Blackboards, and a steering consideration (`FormationConsideration3D`) that pulls each member toward its assigned slot.
 
-The Squad Formation System provides coordinated movement for groups of AI agents. Formations are data-driven Resources that define slot positions, and agents are dynamically assigned to slots using the steering consideration pipeline.
+**Status (as of 2026-07-06):** framework-complete and test-pinned inside Jmodot; **no {{PROJECT_NAME}} gameplay code or scene consumes it yet** — consumers are Jmodot internals + tests only.
 
-## Architecture
+**Not the same thing as the project's `NPCs/Squads/Squad`:** that is a lightweight per-encounter group CONTEXT (holds the squad-scoped `ProvocationLedger`; injected onto member blackboards under `BBNPCSig.Squad` by `CombatSpawnHelper`). This Jmodot stack is group MOVEMENT (formations/slots). When formations get adopted, `SquadManager` attaches at the same spawner seam and can be carried by/alongside the project `Squad` context — see the faction-vs-squad seam doc (`Claude/Architecture/faction-squad-seam.md` in the project vault).
 
-```
-┌─────────────────────┐
-│ FormationDefinition │  ← Resource (.tres) defining slot offsets
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│ FormationController │  ← Static methods: CalculateSlotPositions, AssignSlots
-└──────────┬──────────┘
-           │ writes to
-           ▼
-┌─────────────────────┐     ┌──────────────────────────┐
-│   Squad Blackboard  │────▶│ FormationConsideration3D │
-│  (shared by squad)  │     │   (per-agent steering)   │
-└─────────────────────┘     └──────────────────────────┘
-```
+**The maintained API surface is the XML `<summary>` docs in the source files.** This doc is a verified map (concepts, wiring, gotchas), not a signature mirror — when they disagree, code wins; re-verify per Provenance below.
 
-## FormationDefinition Resource
+## Source files (all paths verified 2026-07-04)
 
-Defines the shape and configuration of a formation.
+| File | Role |
+|---|---|
+| `Jmodot/Core/AI/Squad/FormationDefinition.cs` | `[GlobalClass]` Resource. Exports: `Vector3[] SlotOffsets`, `float MinSpacing` (1.5), `string FormationName`; computed `int SlotCount` |
+| `Jmodot/Core/AI/Squad/FormationAnchorMode.cs` | enum `Leader` / `Centroid` / `Static` |
+| `Jmodot/Core/AI/Squad/ISlotAssignmentStrategy.cs` | non-generic strategy contract (below) |
+| `Jmodot/Implementation/AI/Squad/FormationController.cs` | static, pure: `CalculateSlotPositions(...)` |
+| `Jmodot/Implementation/AI/Squad/NearestSlotStrategy.cs` | greedy nearest-first assignment, O(n²), leader→slot 0 first |
+| `Jmodot/Implementation/AI/Squad/SquadManager.cs` | orchestrator Node — the only writer of formation BB state (namespace `Jmodot.Implementation.AI.Squad` since 2026-07-06; formerly under `UtilityAI`) |
+| `Jmodot/Implementation/AI/Navigation/Considerations/FormationConsideration3D.cs` | steering consideration (extends `BaseAIConsideration3D`) |
+| `Jmodot/Implementation/AI/Squad/DebugFormationComponent.cs` | slot/assignment visualization via the `DebugDraw3D` addon (`addons/debug_draw_3d/`); child of SquadManager |
+| `Jmodot/Implementation/AI/BB/BBDataSig.cs:128-153` | the four formation BB keys (Jmodot-side partial) |
+| `Global/Formations/*.tres` | project-side formation data (see Data files) |
 
-### Location
-`Jmodot/Implementation/AI/Formations/FormationDefinition.cs`
+Anti-hallucination note: there is NO `Jmodot/Implementation/AI/Formations/` directory, no `FormationController.AssignSlots`, no `LeaderSlotIndex`/`Metadata` properties on `FormationDefinition`, and no `FormationLeaderTarget` BB key — all were fictions in the pre-2026-07-04 version of this doc.
 
-### Properties
+## How it works
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `FormationName` | `string` | Human-readable identifier |
-| `SlotOffsets` | `Vector3[]` | Local-space positions relative to formation center |
-| `LeaderSlotIndex` | `int` | Which slot is the leader (default: 0) |
-| `Metadata` | `Dictionary<string, Variant>` | Custom data for behaviors |
+1. **Shape** — `FormationDefinition.SlotOffsets` are local-space offsets. Slot 0 is the leader *by convention* (no property marks it). With `Leader` anchor mode, slot 0's offset should be `Vector3.Zero`.
+2. **Slot world positions** — `FormationController.CalculateSlotPositions(formation, anchorMode, anchorPosition, anchorForward, memberPositions = null)` → `Dictionary<int, Vector3>`. Anchor = `anchorPosition` (Leader/Static) or the member centroid (Centroid; falls back to `anchorPosition` when `memberPositions` is null/empty). Offsets rotate so local **-Z** aligns with `anchorForward` (`Basis.LookingAt`).
+3. **Assignment** — `ISlotAssignmentStrategy.AssignSlots(IReadOnlyList<Vector3> memberPositions, IReadOnlyDictionary<int, Vector3> slotPositions, int leaderMemberIndex = -1)` → `Dictionary<int, int>` mapping member index → slot index, `-1` = unassigned. `NearestSlotStrategy` pins `leaderMemberIndex` to slot 0, then each remaining member greedily takes its nearest free slot.
+4. **State onto Blackboards** — `SquadManager` writes squad-scope keys to its `BlackboardGraph` child (`_squadGraph.Local`) and each member's `FormationSlotIndex` to that member's own graph. `AddMember` attaches the member graph to the squad graph (`AttachParent`) so members can read squad state up the hierarchy.
+5. **Steering** — `FormationConsideration3D` (in each member's steering set) scores directions toward the assigned slot: zero when formation inactive / slot unassigned / leader excluded / inside `_arrivalRadius`; otherwise `_formationWeight × (distance / _maxInfluenceDistance) × alignment` (positive dot only), Y-flattened for ground movement.
 
-### Pre-built Formations
+## Coordinate convention — resolved
 
-Located in `Global/Formations/`:
+**Local formation space: -Z is forward (Godot convention); +Z = behind, +X = right.** Pinned by the implementation (`FormationController.cs:42-44` comment + `Basis.LookingAt` in `CalculateRotationBasis`, `:94-106`) and by tests (`Tests/Logic/AI/FormationControllerTest.cs:24-31` "+Z = behind"; `:54-78` local +Z rotates to world -X when facing +X). Shipped data agrees (`Global/Formations/v_formation.tres`: slot-0 leader at origin, flanks at +Z behind).
 
-| File | Shape | Slots | Use Case |
-|------|-------|-------|----------|
-| `line_formation.tres` | Line | 5 | Corridor movement |
-| `wedge_formation.tres` | V-shape | 5 | Aggressive advance |
-| `defensive_circle.tres` | Circle | 6 | Protection/holdout |
+⚠️ `FormationDefinition.cs:9`'s XML summary claims "+Z is forward" — **that comment is wrong** (contradicts implementation + tests). Fix belongs in a Jmodot PR; until then, trust the tests.
 
-### Creating Custom Formations
+## SquadManager — orchestration contract
 
-```csharp
-var formation = new FormationDefinition {
-    FormationName = "Diamond",
-    SlotOffsets = new[] {
-        new Vector3(0, 0, -2),   // Front (leader)
-        new Vector3(-2, 0, 0),   // Left
-        new Vector3(2, 0, 0),    // Right
-        new Vector3(0, 0, 2),    // Rear
-    },
-    LeaderSlotIndex = 0
-};
-```
+Public API (verified): `Members`, `AddMember(Node3D, bool isLeader = false)`, `AddMember(Node3D, IBlackboardGraph, bool isLeader = false)`, `RemoveMember(Node3D)`, `SetFormation(FormationDefinition, FormationAnchorMode)`, `ClearFormation()`, `UpdateFormationPositions(Vector3 anchorPosition, Vector3 anchorForward)`, `UpdateSquadBlackboard()`.
 
-## FormationController (Static Methods)
+Consumer responsibilities — nothing is automatic:
 
-Provides the calculation logic for formations without instance state.
+- Give SquadManager a `BlackboardGraph` child before `_Ready` (tests: `SetSquadGraph` helper).
+- Optionally set the `_defaultFormation` + `_anchorMode` exports — `_Ready` applies them via `SetFormation`.
+- Call `UpdateFormationPositions(anchor, forward)` whenever the squad anchor moves — **there is no per-frame driver**; slot world positions go stale otherwise. (Internal `ReassignSlots` — on membership/formation change — uses an origin-relative Leader-anchored layout purely for assignment; real world positions come only from `UpdateFormationPositions`.)
+- Call `UpdateSquadBlackboard()` from a Timer for the non-formation squad-state keys (`SquadAverageHealth`, `HasSquadTag`, `ActiveSquadTag` — panic-vs-attack tag switch at `_panicHealthThreshold`, default 0.25).
 
-### Location
-`Jmodot/Implementation/AI/Formations/FormationController.cs`
+## Blackboard keys (`Jmodot/Implementation/AI/BB/BBDataSig.cs:128-153`)
 
-### Key Methods
+| Key | Type | Scope | Written by |
+|---|---|---|---|
+| `FormationActive` | `bool` | squad graph | `SetFormation` (true) / `ClearFormation` (false) |
+| `FormationSlotPositions` | `Dictionary<int, Vector3>` | squad graph | `UpdateFormationPositions` |
+| `FormationLeader` | `Node3D` | squad graph | `AddMember(isLeader: true)` |
+| `FormationSlotIndex` | `int` (-1 = unassigned) | member graph | `ReassignSlots` (via strategy) |
 
-#### CalculateSlotPositions
-```csharp
-public static Dictionary<int, Vector3> CalculateSlotPositions(
-    FormationDefinition formation,
-    Vector3 anchorPosition,
-    Vector3 facingDirection)
-```
-Transforms local slot offsets to world positions based on anchor and facing.
+`BBDataSig` is a two-partial class: these keys live in the **Jmodot-side** partial, not the project's `AI/BB/BBDataSig.cs` (same namespace). Grepping the project file for them returns nothing.
 
-#### AssignSlots
-```csharp
-public static Dictionary<T, int> AssignSlots<T>(
-    IReadOnlyList<T> members,
-    FormationDefinition formation,
-    ISlotAssignmentStrategy<T> strategy)
-```
-Assigns members to slots using the provided strategy.
+## FormationConsideration3D exports
 
-## NearestSlotStrategy
+| Export | Default | Range | Meaning |
+|---|---|---|---|
+| `_formationWeight` | 1.0 | 0.1–5.0 | score multiplier |
+| `_excludeLeader` | true | — | slot 0 gets zero scores (leader drives, doesn't follow) |
+| `_arrivalRadius` | 1.5 | 0.5–5.0 | inside → no steering |
+| `_maxInfluenceDistance` | 20.0 | 5.0–50.0 | distance-factor clamp |
 
-The default slot assignment algorithm. Minimizes total travel distance.
+Cross-scope reads (`FormationActive`, `FormationSlotPositions`) go through `blackboard.FindParentGraph()` → `TryGetUp` (squad scope); `FormationSlotIndex` is agent-local. Graph-less blackboards fall back to local-only reads — a deliberate carve-out for test fixtures, not a production path. Listed as compatible with `DistanceScalingModifier3D` in that modifier's XML docs.
 
-### Location
-`Jmodot/Implementation/AI/Formations/Strategies/NearestSlotStrategy.cs`
+## Gotchas
 
-### Algorithm
+- **Member graph must be attached to the squad graph** or the consideration never sees `FormationActive`. `SquadManager.AddMember` does the `AttachParent`; bypass SquadManager and you own that wiring.
+- **`AddMember(Node3D)` requires the member to resolve a `BlackboardGraph`** (`GetGraph()`); otherwise it logs a warning and no-ops.
+- **`FormationDefinition` is `[GlobalClass]` but NOT `[Tool]`** (as of 2026-07-04). Exporting it as a typed field on a `[Tool]` script triggers the editor-only `InvalidCastException` cascade (`rules/csharp_patterns.md` §`[Tool]`); fix = add `[Tool]` in a Jmodot PR, or type the export as base `Resource` and cast.
+- **DebugFormationComponent** finds members via the `"SquadMembers"` node group — members outside that group draw no connection lines. Slot 0 renders in the leader color.
+- **Leader is slot 0 by convention only.** The convention is enforced in exactly two places: `leaderMemberIndex` in the strategy and `_excludeLeader` in the consideration.
 
-1. Create list of (member, slotIndex, distance) tuples for all combinations
-2. Sort by distance (ascending)
-3. Greedily assign: pick shortest distance, mark member and slot as used
-4. Repeat until all members assigned or slots exhausted
+## Data files
 
-### Properties
+`Global/Formations/` holds the project's formation Resources — `circle_formation.tres`, `line_formation.tres`, `v_formation.tres` (as of 2026-07-04; inventories rot — glob the directory). Authoring a new one: a `FormationDefinition` `.tres` with `SlotOffsets` in the -Z-forward convention, slot 0 = leader (typically `Vector3.Zero`).
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `PositionAccessor` | `Func<T, Vector3>` | How to get member's position |
-| `SlotPositions` | `Dictionary<int, Vector3>` | World-space slot positions |
+## Tests
 
-## FormationConsideration3D (Steering)
+`Tests/Logic/AI/`: `FormationControllerTest`, `FormationConsiderationTest`, `NearestSlotStrategyTest`, `SquadManagerTest`, `SquadManagerGraphMigrationTest`. `Tests/Integration/AI/`: `SquadFormationIntegrationTest`, `SquadGraphSceneIntegrationTest`. Suite names only — per-suite test counts rot and add nothing.
 
-A steering consideration that guides agents toward their assigned formation slots.
+## Provenance & maintenance
 
-### Location
-`Jmodot/Implementation/AI/Navigation/Considerations/FormationConsideration3D.cs`
+Re-verify from repo root (quote paths — the repo path contains spaces):
 
-### Properties
-
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `_formationWeight` | `float` | 1.0 | Score multiplier |
-| `_excludeLeader` | `bool` | true | Leader doesn't follow formation |
-| `_arrivalRadius` | `float` | 1.5 | "Arrived" at slot threshold |
-| `_maxInfluenceDistance` | `float` | 20.0 | Max steering range |
-| `_propagateScores` | `bool` | true | Smooth neighboring scores |
-
-### Blackboard Requirements
-
-Read from **Squad Blackboard** (via parent chain):
-| Key | Type | Description |
-|-----|------|-------------|
-| `BBDataSig.FormationActive` | `bool` | Is formation mode enabled? |
-| `BBDataSig.FormationSlotPositions` | `Dictionary<int, Vector3>` | World positions of all slots |
-
-Read from **Agent Blackboard**:
-| Key | Type | Description |
-|-----|------|-------------|
-| `BBDataSig.FormationSlotIndex` | `int` | This agent's assigned slot |
-
-### Score Calculation
-
-1. Check `FormationActive` is true
-2. Get this agent's slot index
-3. If leader and `_excludeLeader`, return zeros
-4. Calculate direction to slot position
-5. Score = weight × (distance / maxDistance) × alignment
-6. Apply score propagation for smooth steering
-
-## DebugFormationComponent
-
-Visual debugging component for formations.
-
-### Location
-`Jmodot/Implementation/AI/Formations/Debug/DebugFormationComponent.cs`
-
-### Usage
-
-Add as child of any node. Call `DrawFormation()` with formation data.
-
-### Visualization
-
-- **Green spheres**: Slot positions
-- **Red sphere**: Leader slot
-- **Blue lines**: Connections between adjacent slots
-- **Labels**: Slot indices
-
-## Blackboard Key Reference
-
-| Key | Type | Scope | Set By |
-|-----|------|-------|--------|
-| `FormationActive` | `bool` | Squad | SquadManager/HSM State |
-| `FormationSlotPositions` | `Dictionary<int, Vector3>` | Squad | FormationController |
-| `FormationSlotIndex` | `int` | Agent | SlotAssignmentStrategy |
-| `FormationLeaderTarget` | `Vector3?` | Squad | Leader's decision system |
-
-## Integration Example
-
-```csharp
-// In SquadManager or formation-controlling state:
-
-// 1. Calculate world positions
-var positions = FormationController.CalculateSlotPositions(
-    _activeFormation,
-    leaderPosition,
-    leaderFacing);
-
-// 2. Assign slots to members
-var strategy = new NearestSlotStrategy<IAIAgent>(
-    agent => agent.Blackboard.Get<Node>(BBDataSig.Agent).GlobalPosition,
-    positions);
-var assignments = FormationController.AssignSlots(_members, _activeFormation, strategy);
-
-// 3. Update blackboards
-_squadBlackboard.Set(BBDataSig.FormationActive, true);
-_squadBlackboard.Set(BBDataSig.FormationSlotPositions, positions);
-foreach (var (member, slotIndex) in assignments)
-{
-    member.Blackboard.Set(BBDataSig.FormationSlotIndex, slotIndex);
-}
-
-// 4. Steering considerations automatically take over
-```
-
-## Test Coverage
-
-| Suite | Tests | Description |
-|-------|-------|-------------|
-| `FormationConsiderationTest` | 9 | Steering behavior validation |
-| `FormationControllerTest` | 8 | Position calculation, slot assignment |
-| `NearestSlotStrategyTest` | 7 | Assignment algorithm correctness |
+- Class locations: `rg -n "class (FormationDefinition|FormationController|NearestSlotStrategy|SquadManager|FormationConsideration3D|DebugFormationComponent)" -g "*.cs"`
+- BB keys: `rg -n "Formation" "Jmodot/Implementation/AI/BB/BBDataSig.cs"`
+- Forward-axis pin: `rg -n "matches Godot" "Jmodot/Implementation/AI/Squad/FormationController.cs" "Tests/Logic/AI/FormationControllerTest.cs"`
+- Stale `+Z` comment fixed yet? `rg -n "Z is forward" "Jmodot/Core/AI/Squad/FormationDefinition.cs"` (a `+Z is forward` hit = still stale)
+- `[Tool]` gap: `rg -n "GlobalClass" "Jmodot/Core/AI/Squad/FormationDefinition.cs"` (no `Tool` in the attribute list = gap still open)
+- `.tres` inventory: `Get-ChildItem "Global/Formations"`
+- "No project gameplay consumer" status line: `rg -l "SquadManager|FormationConsideration3D" -g "*.cs" -g "*.tscn" -g "!Jmodot/**" -g "!Tests/**" -g "!.claude/**" -g "!harness-baseline/**"` (any hit = status line stale)
