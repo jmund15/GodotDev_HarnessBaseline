@@ -47,7 +47,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/arch_rule_frozen_upstream_needs_informed_ordering.md",
+      "layer": "jmodot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/arch_rule_greedy_commit_honor_declared_choice.md",
+      "layer": "jmodot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/arch_rule_hysteresis_for_analog_hsm_boundaries.md",
+      "layer": "jmodot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/arch_rule_invulnerability_via_health_flags.md",
       "layer": "jmodot",
       "sync": "auto"
     },
@@ -72,6 +87,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/arch_rule_rule_state_scope_via_context.md",
+      "layer": "jmodot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/arch_rule_test_namespace_matches_gate_filter.md",
       "layer": "jmodot",
       "sync": "auto"
@@ -87,7 +107,37 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/archive/gotcha_baseline_forked_file_drifts_behind.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/archive/gotcha_baseline_wrong_repo_url_silent_fallback.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/archive/gotcha_regression_gate_baseline_inflation.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/archive/gotcha_write_doc_callout_embedded_table_missing_prefix.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/diagnose_specific_objection_before_pivot.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/feedback_command_descriptions_one_line.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/feedback_considerations_consume_perception_not_queries.md",
       "layer": "universal",
       "sync": "auto"
     },
@@ -172,7 +222,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/feedback_pathspec_commit_stage_infra_deps.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/feedback_plan_check_auto_surface_on_exit.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/feedback_plan_files_are_context_free_execution_docs.md",
       "layer": "universal",
       "sync": "auto"
     },
@@ -267,6 +327,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/feedback_spec_strength_sets_agent_tier.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/feedback_test_fixture_must_match_production_topology.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/feedback_tool_routing_discipline.md",
       "layer": "universal",
       "sync": "auto"
@@ -292,12 +362,32 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/feedback_verify_plan_integration_target_is_live.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/feedback_verify_type_contract_before_design_lock.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_authoring_validator_needs_static_resolvable_reference.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_baseline_clone_push_workflow.md",
       "layer": "universal",
       "sync": "auto"
     },
     {
       "path": ".claude/auto-memory/gotcha_blackboard_stringname_variant_boxing.md",
+      "layer": "jmodot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_blackboard_valuetype_subscriber_gets_variant.md",
       "layer": "jmodot",
       "sync": "auto"
     },
@@ -332,6 +422,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_empty_tween_never_fires_finished.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_errorsonly_build_hides_cref_drift.md",
       "layer": "universal",
       "sync": "auto"
@@ -357,12 +452,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_godot4_uid_only_refs_break_orphan_detection.md",
       "layer": "godot",
       "sync": "auto"
     },
     {
       "path": ".claude/auto-memory/gotcha_godot_editor_plugin_pair_conflict.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_godot_resource_cache_stateful_tres_test_isolation.md",
       "layer": "godot",
       "sync": "auto"
     },
@@ -392,7 +497,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_inherited_scene_override_replaces_never_merges.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_namespace_rename_breaks_relative_using.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_pure_clr_poco_mirror_payload_type.md",
       "layer": "universal",
       "sync": "auto"
     },
@@ -412,6 +527,21 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_simulateframes_no_physics_tick.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_sprite3d_typed_ref_excludes_animatedsprite3d.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_subscribe_before_synchronous_fire_bind.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_synthetic_fixture_hides_real_input_failure.md",
       "layer": "universal",
       "sync": "auto"
@@ -423,6 +553,16 @@
     },
     {
       "path": ".claude/auto-memory/gotcha_type_name_equals_namespace_leaf.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/gotcha_unhandled_ready_exception_invisible_in_log.md",
+      "layer": "universal",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/ground_in_system_purpose_before_subpart_plan.md",
       "layer": "universal",
       "sync": "auto"
     },
