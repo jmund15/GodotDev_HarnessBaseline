@@ -24,6 +24,10 @@ import argparse
 import json
 import re
 import sys
+
+# Windows consoles default to cp1252; findings may quote arbitrary template bytes.
+sys.stdout.reconfigure(errors="replace")
+sys.stderr.reconfigure(errors="replace")
 from pathlib import Path
 
 # Reuse the generator's classification so audit and gen_manifest can never disagree
