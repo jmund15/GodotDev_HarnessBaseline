@@ -2,7 +2,7 @@
 disable-model-invocation: true
 ---
 
-Run the 44-test routing-compliance battery against current hooks + doctrine.
+Run the routing-compliance battery against current hooks + doctrine. The test roster and count derive from the rubric `.claude/tests/routing_compliance.md` — never pin them here.
 
 > **Workflow conversion — BLOCKED (platform capability).** The scorer (`score_routing_battery.py` via `extract_subagent_tools.py`) grades on each subagent's captured `agent_id` (the sole scoring signal) by globbing transcripts at `…/<session>/subagents/agent-<id>.jsonl`. The dynamic-Workflow `agent()` primitive does NOT expose the subagent `agent_id`/tool-trace to the script, and workflow subagents land under `subagents/workflows/<runid>/` — which the extractor's flat glob never matches. Keep this command's dispatch as model-driven `Task` fan-out until the platform exposes agent ids (and the extractor learns the nested path). See the `workflow-integration-mechanics` memory.
 
@@ -17,19 +17,12 @@ Run the 44-test routing-compliance battery against current hooks + doctrine.
 
 ## Pre-flight checks (orchestrator runs these BEFORE dispatching)
 
-1. Confirm `routing_compliance.md` test count matches the rubric — should be **44 tests** (A1–A3, B1–B2, C1–C3, D1–D2, E1–E3, F1–F4, G1–G2, H1–H2, I1, J1–J2, K1–K2, M1–M4, N1–N4, L1–L10). If the count differs, the rubric and EXPECTED dict in `.claude/tools/score_routing_battery.py` are out of sync — STOP and reconcile before running.
+1. **Derive the test count `N`** — count unique `[ROUTECHECK-XX]` IDs in `.claude/tests/routing_compliance.md` (44 as of 2026-07-04), then cross-check `N` against the key count of the `EXPECTED` dict in `.claude/tools/score_routing_battery.py`. Mismatch → rubric and scorer are out of sync — STOP and reconcile before running.
 2. Confirm `agent_dispatch_preamble.py` is NOT wired in `settings.json` — that hook (if present) injects routing doctrine into subagent prompts and contaminates the test (rubric leakage). The hook should not exist; if it does, the run is invalid.
 
 ## Execution
 
-Spawn subagents in **4 parallel waves** to respect the 15-concurrency cap:
-
-| Wave | Tests (count) |
-|---|---|
-| Wave 1 | A1, A2, A3, B1, B2, C1, C2, C3, D1, D2, E1, E2 (12) |
-| Wave 2 | E3, F1, F2, F3, F4, G1, G2, H1, H2, I1, J1, J2 (12) |
-| Wave 3 | K1, K2, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10 (12) |
-| Wave 4 | M1, M2, M3, M4, N1, N2, N3, N4 (8) |
+Spawn subagents in **parallel waves** to respect the 15-concurrency cap: chunk the rubric's test IDs, in rubric order, into waves of ≤12 (at `N`=44 that is 4 waves of 12/12/12/8). Derive the wave assignment from the rubric each run — do not maintain an ID table here.
 
 **Each wave: send all Agent tool calls in a SINGLE message** so they actually run in parallel.
 
@@ -82,17 +75,13 @@ The audit produces a per-row final grade that supersedes the scorer's `NO-TOOL-C
 
 ## Report (in this exact order)
 
-1. **Full 44-row scorecard table** — use the template at the bottom of `routing_compliance.md` (the "Scorecard template" section). For each `NO-TOOL-CALLS` row, show both the scorer grade and the post-audit final grade.
+1. **Full `N`-row scorecard table** (one row per rubric test) — use the template at the bottom of `routing_compliance.md` (the "Scorecard template" section). For each `NO-TOOL-CALLS` row, show both the scorer grade and the post-audit final grade.
 2. **Per-category pass rate (A through N, plus L)** — both routing-only and combined. Use post-audit final grades.
 3. **Signal-source breakdown** — `transcript / none` counts from the scorer. Transcript should be dominant; high `none` count means many tests need orchestrator audit (legitimate for M/N, problematic if it's hitting other categories — verify subagent toolkit was complete).
 4. **L-category soft-gate result** — ≥7/10 PASS or PASS-O on L1–L10 = rule-internalization confirmed; <6/10 = agents follow dominant rules without understanding their boundaries.
 5. **Orchestrator-audit summary** — count of rows reclassified by audit, broken down by final grade (how many `NO-TOOL-CALLS` flipped to PASS / PASS-O / FLAG / FAIL). This separates measurement-reclassification from raw scorer behavior.
 6. **Top 3 failure modes by frequency**, with the test IDs that exhibited each. Include both routing failures and silent-wrong-symbol traps. Keep `FLAG` rows distinct from `FAIL` — they signal infrastructure issues, not doctrine misses.
-7. **Compliance-threshold verdict** against the targets in `routing_compliance.md`:
-   - ≥34/44 PASS+PASS-O (~78%) → ship; close deferred worklog items
-   - 30–33/44 → ship + iterate on remaining failure categories
-   - <30/44 → roll back, re-design (most likely cause: WS4 negative-framing bullets diluted, PostToolUse Grep nudge overfiring on legitimate overrides, or M/N-category cascading failures indicating delegation rules not yet load-bearing)
-   - FLAG rows do NOT count toward PASS+PASS-O; they're a separate "needs verification" bucket
+7. **Compliance-threshold verdict** against the targets in `routing_compliance.md` §"Compliance threshold" (the authoritative bands — ship gate ~78% PASS+PASS-O, plus iterate/roll-back tiers with most-likely-cause notes; do not restate the numbers here, they scale with `N`). FLAG rows do NOT count toward PASS+PASS-O; they're a separate "needs verification" bucket.
 8. **Hard-gate verification** — zero regressions on the 11 baseline-passing tests (B1, B2, A3, C1, F1–F4, G1, K1, K2). A regression here is worse than a non-improvement on the failure cases.
 9. **Hook-fired-but-ignored count** — cases where a nudge appeared in the response but the agent ignored it. Distinct from FAIL; indicates the nudge channel works but the message isn't persuading the agent.
 

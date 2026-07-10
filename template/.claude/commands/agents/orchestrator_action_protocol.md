@@ -5,7 +5,7 @@ disable-model-invocation: true
 # Orchestrator Action Protocol
 
 <!-- Single source of truth for how orchestrators handle agent findings. -->
-<!-- Referenced by: /review-pr (Phase 3-4), /review-prs (Phase 2), /session-audit (Phase 3) -->
+<!-- Referenced by: /review_pr (Phase 3-4), /review_prs (Phase 2), /session_audit (Phase 3), /doc_audit_fix, /rule_consistency, and every agent-template file in this directory. -->
 <!-- If you update this protocol, all orchestrators pick up the change automatically. -->
 
 ## Finding Schema
@@ -189,7 +189,7 @@ When summarizing agent findings or producing the verdict, refuse to write any of
 
 **Confidence ≠ evidence.** This complements the 3-tier verification in `/regression_gate` (silent-skip sentinel + baseline drift + explicit failures): that command *produces* the evidence; this rule prevents agents from pre-announcing what the evidence will say.
 
-**Related:** `feedback_no_performative_agreement.md` — same family of discipline applied to feedback reception. `/regression_gate` Tier 1 (silent-skip sentinel) — the architectural floor that makes "tests passed" a falsifiable claim.
+**Related:** `feedback_no_performative_agreement.md` (resolves under `.claude/auto-memory/`, like all bare memory filenames) — same family of discipline applied to feedback reception. `/regression_gate` Tier 1 (silent-skip sentinel) — the architectural floor that makes "tests passed" a falsifiable claim.
 
 ---
 
@@ -212,7 +212,7 @@ This protocol replaces:
 - The AUTO/GUIDE fix classification (formerly in `review_agents.md`)
 - The FIX_NOW/FIX_LATER/DISCUSS classification (formerly in `session_audit.md`)
 
-All orchestrators (`/review-pr`, `/review-prs`, `/session-audit`, `/doc-audit-fix`) reference this file as their shared action protocol.
+All orchestrators (`/review_pr`, `/review_prs`, `/session_audit`, `/doc_audit_fix`) reference this file as their shared action protocol.
 
 Changes:
 - Added optional `options` field to Finding Schema (ranked alternatives for ASK/PLAN, best guess first)

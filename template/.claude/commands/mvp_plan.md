@@ -61,7 +61,7 @@ Exit without edits. The redirect-to-parent message is mandatory — don't silent
 
 ### Step 2 — Bundle design-doc context (one read_files call)
 
-For each Part, the Source-column wikilink points to a design-doc section. Bundle those design-doc paths into one `mcp__ai-worker__read_files` call asking for:
+For each Part, the Source-column wikilink points to a design-doc section. Bundle those design-doc paths into one `mcp__ai-worker__read_files` call (offline fallback: a Haiku subagent per `common.md §3`) asking for:
 - Per-Part playtest moment (if named in the doc body)
 - Per-Part design commitments (validates targets)
 - Per-Part test plan (acceptance criteria candidates)

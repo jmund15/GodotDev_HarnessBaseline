@@ -92,7 +92,7 @@ If count ≤ 30, omit the alarm entirely. The alarm fires on `show` and `show al
 
 **Full read (when user asks for context, dates, or sub-bullets):**
 ```
-mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md")
+mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"})
 ```
 
 When showing full content, group by domain and list the `[ ]` items — `Worklog.md` holds only active work; completed `[x]` items live in `Worklog-Archive.md` and surface via `/worklog history`. Don't dump the full Context/Where/Source unless the user asks — title + class + scope + date is the default "show" view.
@@ -117,7 +117,7 @@ Opt-in read of `User-Tasks.md`. Not folded into `/worklog show` or `show all` �
 
 1. **Read User-Tasks.md.**
    ```
-   mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md")
+   mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md"})
    ```
    If the file does not exist (no user-tasks added yet), print: `User-Tasks.md does not exist yet — no items have been routed to it. Use /worklog user-add or accept an auto-detect proposal to start populating it.` and stop.
 
@@ -135,7 +135,7 @@ Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded int
 
 1. **Read the archive.**
    ```
-   mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog-Archive.md")
+   mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog-Archive.md"})
    ```
    If the file does not exist (nothing completed since the archive model landed), print: `Worklog-Archive.md does not exist yet — no items have been completed into it.` and stop.
 
@@ -183,14 +183,13 @@ Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded int
 
    **If the Future Scope section's `### <Domain>` sub-heading exists:**
    ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath",
-     targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
+   mcp__obsidian__obsidian_replace_in_note(
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"},
      replacements=[{
        search: "> ### <Domain Long-Form>\n",
-       replace: "> ### <Domain Long-Form>\n> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)\n"
-     }],
-     replaceAll: false
+       replace: "> ### <Domain Long-Form>\n> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)\n",
+       replaceAll: false
+     }]
    )
    ```
 
@@ -204,7 +203,7 @@ Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded int
    }]
    ```
 
-   Then update the callout's item-count: re-read the Future Scope block, count the `> - ` lines, and `search_replace` the `(N items)` substring on the callout-header line. Skip count-update if the Future Scope section was just created (already says `(1 item)`).
+   Then update the callout's item-count: re-read the Future Scope block, count the `> - ` lines, and `obsidian_replace_in_note` the `(N items)` substring on the callout-header line. Skip count-update if the Future Scope section was just created (already says `(1 item)`).
 
    Skip steps 6–7 — jump to step 8 (frontmatter bump) and step 9 (mirror rewrite). The mirror rewrite will exclude this item by design.
 
@@ -214,14 +213,13 @@ Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded int
 
    **If the domain section already exists:**
    ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath",
-     targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
+   mcp__obsidian__obsidian_replace_in_note(
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"},
      replacements=[{
        search: "### <Domain Long-Form>\n",
-       replace: "### <Domain Long-Form>\n- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD\n  - Context: <one-line>\n  - Where: <path-if-any>\n  - Source: <ref-if-any>\n  - When: after <condition> | future  (omit line entirely if ready)\n  - Plan doc: [[<Doc Title>]]  (omit line entirely if not scope 4)\n"
-     }],
-     replaceAll: false
+       replace: "### <Domain Long-Form>\n- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD\n  - Context: <one-line>\n  - Where: <path-if-any>\n  - Source: <ref-if-any>\n  - When: after <condition> | future  (omit line entirely if ready)\n  - Plan doc: [[<Doc Title>]]  (omit line entirely if not scope 4)\n",
+       replaceAll: false
+     }]
    )
    ```
 
@@ -238,7 +236,7 @@ Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded int
 8. **Bump frontmatter.**
    ```
    mcp__obsidian__obsidian_manage_frontmatter(
-     filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"},
      operation="set",
      key="last_updated",
      value="YYYY-MM-DD"
@@ -263,9 +261,10 @@ Append a one-line entry to `User-Tasks.md` for items requiring user judgment Cla
 
 1. **De-dup search.** Quick search against `User-Tasks.md` for near-duplicate titles in the same domain. Active-operation carve-out to the "never read passively" rule — result lands in the tool response and informs the propose-and-confirm; doesn't persist into always-loaded context.
    ```
-   mcp__obsidian__obsidian_global_search(
+   mcp__obsidian__obsidian_search_notes(
+     mode="text",
      query="<title keywords>",
-     searchInPath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md"
+     pathPrefix="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md"
    )
    ```
    On near-match: `User-Tasks already has: <existing entry>. Add as distinct (y/n)?`. On `n`, abort.
@@ -289,25 +288,21 @@ Append a one-line entry to `User-Tasks.md` for items requiring user judgment Cla
 
    **If the domain section already exists:**
    ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath",
-     targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md",
+   mcp__obsidian__obsidian_replace_in_note(
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md"},
      replacements=[{
        search: "## <Domain Long-Form>\n",
-       replace: "## <Domain Long-Form>\n- YYYY-MM-DD — <Title> — <one-line context>\n"
-     }],
-     replaceAll: false
+       replace: "## <Domain Long-Form>\n- YYYY-MM-DD — <Title> — <one-line context>\n",
+       replaceAll: false
+     }]
    )
    ```
    New entries go at the **top** of the domain section (immediately after the heading line) — newest nearest the heading.
 
-   **If the domain section does NOT exist:** append heading + entry at the end of the file using `obsidian_update_note`:
+   **If the domain section does NOT exist:** append heading + entry at the end of the file using `obsidian_append_to_note`:
    ```
-   mcp__obsidian__obsidian_update_note(
-     targetType="filePath",
-     targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md",
-     modificationType="wholeFile",
-     wholeFileMode="append",
+   mcp__obsidian__obsidian_append_to_note(
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md"},
      content="\n## <Domain Long-Form>\n- YYYY-MM-DD — <Title> — <one-line context>\n"
    )
    ```
@@ -315,7 +310,7 @@ Append a one-line entry to `User-Tasks.md` for items requiring user judgment Cla
 5. **Bump frontmatter** on `User-Tasks.md` (NOT Worklog.md):
    ```
    mcp__obsidian__obsidian_manage_frontmatter(
-     filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md",
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md"},
      operation="set",
      key="last_updated",
      value="YYYY-MM-DD"
@@ -353,9 +348,8 @@ Cross-doc move: the `[ ]` block leaves `Worklog.md` entirely and a `[x]` one-lin
 
    **If the archive has the item's `## <Domain>` section,** append the line at the bottom of that section (just before the next `## ` heading, or end of file):
    ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath",
-     targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog-Archive.md",
+   mcp__obsidian__obsidian_replace_in_note(
+     target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog-Archive.md"},
      replacements=[{
        search: "<lastline-of-domain-section>\n",
        replace: "<lastline-of-domain-section>\n- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)\n"
@@ -363,11 +357,11 @@ Cross-doc move: the `[ ]` block leaves `Worklog.md` entirely and a `[x]` one-lin
    )
    ```
 
-   **If the archive lacks the item's `## <Domain>` section,** append a new `## <Domain>` section with the line at end of file (`obsidian_update_note` wholeFile append).
+   **If the archive lacks the item's `## <Domain>` section,** append a new `## <Domain>` section with the line at end of file (`obsidian_append_to_note`).
 
    Newest completion goes at the **bottom** of its domain section (append order = completion order).
 
-4. **Delete the `[ ]` block from `Worklog.md`** (checkbox + its indented sub-bullets) via `obsidian_search_replace`:
+4. **Delete the `[ ]` block from `Worklog.md`** (checkbox + its indented sub-bullets) via `obsidian_replace_in_note`:
    ```
    replacements=[{
      search: "- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD\n  - Context: ...\n  - Where: ...\n  - Source: ...\n  - Plan doc: ...\n",
@@ -376,7 +370,7 @@ Cross-doc move: the `[ ]` block leaves `Worklog.md` entirely and a `[x]` one-lin
    ```
    Match all sub-bullets that exist in this specific block — be precise about which lines are present.
 
-   **Line-ending note:** both `Worklog.md` and `Worklog-Archive.md` are LF — use `\n` separators. `obsidian_search_replace` matches line endings literally, so a separator mismatch silently returns `totalReplacementsMade: 0` (no error). Capture the verbatim block from a targeted read of its domain section — don't reconstruct from memory or earlier-captured escaped text; if a match 0-hits, retry with `\r\n` (the file may have been re-saved as CRLF). See `obsidian_conventions`.
+   **Line-ending note:** both `Worklog.md` and `Worklog-Archive.md` are LF — use `\n` separators. `obsidian_replace_in_note` matches literally by default, so a separator mismatch matches nothing and the call reports zero replacements (no error — always verify the reported count). Capture the verbatim block from a targeted read of its domain section — don't reconstruct from memory or earlier-captured escaped text; if a match 0-hits, retry with `\r\n` (the file may have been re-saved as CRLF) or set `flexibleWhitespace: true` on the replacement (whitespace runs then match any whitespace). See `obsidian_conventions`.
 
    **Atomicity:** if Step 3 (archive write) failed, do NOT execute this delete. Surface the error and stop — better a stuck Active item than a lost completion. (A duplicate archive line from a retried Step 3 is harmless; the archive is opaque.)
 
@@ -460,7 +454,7 @@ Preserve original `added` date — promotion is a state change, not a new add. A
 
 ### Step 3 — Apply the move
 
-Two-step `obsidian_search_replace`:
+Two-step `obsidian_replace_in_note`:
 
 **Step A — delete the one-liner from `## Future Scope`:**
 ```
@@ -521,16 +515,15 @@ If no matches found: `No items found with When: after <condition>.` (check for t
 
 ### Step 2 — Strip the When: line for each matched item
 
-For each confirmed item, remove the `When: ...` sub-bullet via `obsidian_search_replace`:
+For each confirmed item, remove the `When: ...` sub-bullet via `obsidian_replace_in_note`:
 ```
-mcp__obsidian__obsidian_search_replace(
-  targetType="filePath",
-  targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
+mcp__obsidian__obsidian_replace_in_note(
+  target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"},
   replacements=[{
     search: "  - When: after <condition>\n",
-    replace: ""
-  }],
-  replaceAll: false
+    replace: "",
+    replaceAll: false
+  }]
 )
 ```
 

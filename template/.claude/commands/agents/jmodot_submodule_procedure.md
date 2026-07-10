@@ -4,9 +4,10 @@ disable-model-invocation: true
 
 # Jmodot Submodule Procedure
 
-<!-- Single source of truth for Jmodot submodule branch management. -->
-<!-- Referenced by: /commit_push, /clean_push, /merge_pr -->
+<!-- Single source of truth for Jmodot submodule branch management during FEATURE-BRANCH work. -->
+<!-- Referenced by: /commit_push, /clean_push -->
 <!-- See also: .claude/rules/jmodot_submodule.md (path-scoped on Jmodot/**) for the authoritative rule set. -->
+<!-- Scope note: /merge_pr carries its own inline submodule doctrine for PR-MERGE time (merge order, do-NOT-bump-pointer-after-Jmodot-merge). Both are correct — this file's closing `git add Jmodot` applies when committing on a feature branch, not after a Jmodot PR merges. -->
 
 ## Branch Naming
 

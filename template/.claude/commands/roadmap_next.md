@@ -125,7 +125,7 @@ Counts the **incomplete MVPs** (per `## MVP Checkpoints` §6.11; an MVP is incom
 
 ### Phase 2 — Parse Parts tables (bundled)
 
-Per CLAUDE.md §9 — 3+ files for synthesis → route through `mcp__ai-worker__read_files`:
+Per CLAUDE.md §9 — 3+ files for synthesis → route through `mcp__ai-worker__read_files` (offline fallback: a Haiku subagent per `common.md §3`):
 
 ```
 read_files(

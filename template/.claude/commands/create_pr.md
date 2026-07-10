@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr edit:*), Bash(gh pr view:*), Bash(gh label:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*), Bash(git -C Jmodot *), Bash(git branch:*), Bash(git rev-parse:*), Glob, Grep, Read
+allowed-tools: Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr edit:*), Bash(gh pr view:*), Bash(gh label:*), Bash(git log:*), Bash(git diff:*), Bash(git status:*), Bash(git -C Jmodot *), Bash(git branch:*), Bash(git rev-parse:*), Bash(rm:*), Glob, Grep, Read, Write
 description: Create PRs for {{PROJECT_NAME}} and paired Jmodot submodule
 ---
 
@@ -65,18 +65,18 @@ If Jmodot has changes:
    gh pr list --repo <jmodot-remote> --head jmodot/<worktree-name> --state open --json number,title
    ```
 
-3. **If no PR exists**, create one:
-   ```bash
-   gh pr create --repo <jmodot-remote> --base master --head jmodot/<worktree-name> \
-     --title "<{{PROJECT_NAME}} PR title>" \
-     --body "$(cat <<'EOF'
+3. **If no PR exists**, create one. **Body-file pattern (all PR bodies in this command):** per Shell Discipline, never `--body "$(cat <<'EOF' ...)"` — `$()` triggers a manual permission prompt every time. Instead, `Write` the body to a temp file (session scratchpad), pass `--body-file`, `rm` the temp after.
+
+   Body content:
+   ```markdown
    Paired with {{PROJECT_NAME}} branch `claude/<worktree-name>`
 
    **Merge this FIRST** before the {{PROJECT_NAME}} PR.
 
    🤖 Generated with [Claude Code](https://claude.com/claude-code)
-   EOF
-   )"
+   ```
+   ```bash
+   gh pr create --repo <jmodot-remote> --base master --head jmodot/<worktree-name> --title "<project PR title>" --body-file "<temp-file>"
    ```
 
 4. **If PR exists**, note its number for cross-referencing in Step 5.
@@ -99,8 +99,9 @@ Use `$ARGUMENTS` if provided. Otherwise, derive from commit history:
 
 ### Body Template
 
-```bash
-gh pr create --title "<title>" --body "$(cat <<'EOF'
+`Write` this body to a temp file, then `gh pr create --title "<title>" --body-file "<temp-file>"` (body-file pattern — Step 3):
+
+```markdown
 ## Summary
 - <bullet 1: primary change>
 - <bullet 2: secondary change, if any>
@@ -119,8 +120,6 @@ Requires Jmodot PR [jmund15/Jmodot#<N>](<url>) — <brief description of Jmodot 
 - [ ] Manual playtest for <subjective aspects>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
 ```
 
 **Template rules:**
@@ -153,8 +152,9 @@ Cite commit hashes (e.g., `00675e2e → 4b5047ad`) once at the section top; let 
 
 Title: leave unchanged unless the update fundamentally repositions the PR's intent. Refresh `Test plan` checkboxes only for items the new commits affect (add a `Full regression rerun before merge` bullet if HSM / framework / public-API plumbing changed).
 
-```bash
-gh pr edit <pr-number> --body "$(cat <<'EOF'
+`Write` this body to a temp file, then `gh pr edit <pr-number> --body-file "<temp-file>"` (body-file pattern — Step 3):
+
+```markdown
 <verbatim original Summary>
 <verbatim original Key design decisions, with surgical fixes if any>
 
@@ -170,8 +170,6 @@ See commit messages for per-finding rationale.
 <refreshed Test plan>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
 ```
 
 Labels: re-check whether the new commits introduce a domain or type not yet labeled (e.g., review-pass added `tests` where original was pure `feature` → add `tests` label). Don't churn existing labels.
@@ -180,10 +178,11 @@ Labels: re-check whether the new commits introduce a domain or type not yet labe
 
 ## Step 6: Update Jmodot PR (if exists)
 
-If a Jmodot PR was created or found in Step 3, update its body to cross-reference the {{PROJECT_NAME}} PR:
+If a Jmodot PR was created or found in Step 3, update its body to cross-reference the project PR:
 
-```bash
-gh pr edit <jmodot-pr-number> --repo <jmodot-remote> --body "$(cat <<'EOF'
+`Write` this body to a temp file, then `gh pr edit <jmodot-pr-number> --repo <jmodot-remote> --body-file "<temp-file>"` (body-file pattern — Step 3):
+
+```markdown
 ## Summary
 - <Jmodot-specific changes summary>
 
@@ -193,8 +192,6 @@ Paired with {{PROJECT_NAME}} branch `claude/<worktree-name>`
 **Merge this FIRST** before the {{PROJECT_NAME}} PR.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
 ```
 
 ---
@@ -207,7 +204,7 @@ Print a summary:
 ╔════════════════════════════════════════════════╗
 ║  PRs Created                                    ║
 ╠════════════════════════════════════════════════╣
-║  {{PROJECT_NAME}}:     #<N> — <title>                         ║
+║  Game:   #<N> — <title>                         ║
 ║  Jmodot: #<N> — <title>  (or "N/A")            ║
 ║  Labels: <label1>, <label2>                     ║
 ║  Cross-refs: ✅ (or ❌ if no Jmodot)            ║
@@ -223,6 +220,6 @@ Print a summary:
 - **Ask before creating OR editing** — show the user the title and body before running `gh pr create` / `gh pr edit`
 - **UPDATE mode preserves original body** — never rewrite original Summary / Key design decisions; surgical fixes for stale-by-new-commits claims only, called out in the Review-pass section
 - **UPDATE section length is proportional to work added** — see Step 5-Update length budget. Detail belongs in commit messages, not duplicated into the PR body
-- **Cross-reference both directions** — {{PROJECT_NAME}} body links to Jmodot PR, Jmodot body links to {{PROJECT_NAME}} PR
+- **Cross-reference both directions** — project body links to Jmodot PR, Jmodot body links to project PR
 - **Labels at creation time** — don't defer to `/merge_pr`
 - **Jmodot remote:** derive from `git -C Jmodot remote get-url origin` (don't hardcode)

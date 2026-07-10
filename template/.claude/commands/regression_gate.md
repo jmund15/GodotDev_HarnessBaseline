@@ -4,7 +4,7 @@ allowed-tools: Bash(dotnet build:*), Bash(dotnet test:*)
 
 ## Purpose
 
-Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, and `/review_pr` before any commit or merge. Can also be invoked standalone.
+Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, and `/review_pr` before any commit or merge. Can also be invoked standalone. Rationale for WHY this gate exists, when it applies, and its non-negotiables: `change_control` skill (this file stays pure procedure).
 
 ## When Required
 

@@ -156,6 +156,17 @@ try {
             Select-Object -Last 2 | ForEach-Object { $_.Line.Trim() }
         Write-Output "STATUS=DONE  label=$Label  exit=$code  elapsed=${secs}s  attempts=$attempt"
         if ($summary) { $summary | ForEach-Object { Write-Output $_ } }
+        # On failure, surface WHICH tests failed (from the freshest TRX) so callers don't have to
+        # parse TestResults\*.trx themselves for every red run.
+        if ($code -ne 0) {
+            $trx = Get-ChildItem -Path (Join-Path $repo 'TestResults') -Filter '*.trx' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($trx) {
+                Select-String -Path $trx.FullName -Pattern 'testName="([^"]+)"[^>]*outcome="Failed"' -AllMatches -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } |
+                    Select-Object -First 15 | ForEach-Object { Write-Output "FAILED_TEST=$_" }
+            }
+        }
         if ($skip) {
             Write-Output 'WARN=SILENT_SKIP_SIGNATURE  (persisted after retry -- runtime executor connection failed, results INVALID)'
         }

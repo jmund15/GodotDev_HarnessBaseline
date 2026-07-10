@@ -36,8 +36,8 @@ State file:
 
 Wiring:
 - settings.json hooks.PostToolUse with matcher
-  "Read|Grep|Glob|mcp__obsidian__obsidian_read_note|
-   mcp__obsidian__obsidian_global_search|mcp__plugin_semantic-search_semantic-search__search"
+  "Read|Grep|Glob|mcp__obsidian__obsidian_get_note|
+   mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search"
 """
 
 import json
@@ -187,10 +187,12 @@ def _extract_target(tool_name: str, tool_input: dict) -> str:
         path = tool_input.get("path") or ""
         pattern = tool_input.get("pattern") or ""
         return f"GLOB:{path}:{pattern}"
-    if tool_name == "mcp__obsidian__obsidian_read_note":
-        return str(tool_input.get("filePath") or "")
+    if tool_name == "mcp__obsidian__obsidian_get_note":
+        target = tool_input.get("target") or {}
+        path = target.get("path") if isinstance(target, dict) else ""
+        return str(path or "")
     if tool_name in (
-        "mcp__obsidian__obsidian_global_search",
+        "mcp__obsidian__obsidian_search_notes",
         "mcp__plugin_semantic-search_semantic-search__search",
     ):
         return f"SEARCH:{tool_name}:{(tool_input.get('query') or '')[:40]}"
@@ -261,7 +263,8 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
             f"{signals['tail_streak']}× `{signals['tail_tool']}`). "
             "If synthesizing, bundle next into "
             "`mcp__ai-worker__read_files(paths=[...], question=...)`. "
-            "CLAUDE.md §9."
+            "CLAUDE.md §9. If ai-worker is absent this session, substitute a Haiku "
+            "general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
         )
     # Hard nudge — explicit target list, stronger framing.
     targets = []
@@ -278,7 +281,8 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
         "`mcp__ai-worker__read_files(paths=[<accumulated>], question=<...>)`. "
         f"Targets: {target_list}. "
         "Per-query recovery only (don't redo what's done); reroute next. "
-        "CLAUDE.md §9."
+        "CLAUDE.md §9. If ai-worker is absent this session, substitute a Haiku "
+        "general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
     )
 
 

@@ -33,10 +33,10 @@ Read `/.claude/self_evaluate_archive.json` — contains two data formats:
 When generating stats, combine both sources. Structured entries take priority for accuracy. For legacy entries, use best-effort classification and note any ambiguity in footnotes.
 
 ## Output
-Write to Obsidian at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using:
-- `targetType: "filePath"`
-- `targetIdentifier: "DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md"`
-- `modificationType: "wholeFile"`, `wholeFileMode: "overwrite"`, `createIfNeeded: true`, `overwriteIfExists: true`
+Write to Obsidian at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using `mcp__obsidian__obsidian_write_note`:
+- `target: {type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md"}`
+- `overwrite: true` (whole-file replace; creates the note if absent)
+- Native `Write` to the vault path is an equally valid fallback per CLAUDE.md §3.
 
 ## Document Structure
 

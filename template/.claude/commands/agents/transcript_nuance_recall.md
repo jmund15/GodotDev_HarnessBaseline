@@ -24,6 +24,8 @@ back-to-back, so the pass is cached per session and reused — see Procedure ste
 
 Clean / scope-1 / single-compaction sessions: SKIP — the regex digest suffices.
 
+**ai-worker offline** (`extract_session_chat`/`read_files` unavailable — `ToolSearch` returns no match): SKIP this pass and record "nuance recall skipped — ai-worker offline" in the signal pool. The deterministic `.summary.json` digest remains the floor. No documented substitute — raw pre-compaction `.jsonl` backups typically exceed a subagent's context, and `extract_session_chat` (tool-call stripping) has no native equivalent.
+
 ## Procedure
 0. **Reuse check:** if `logs/nuance_recall_<session_id>.json` exists AND was written this
    session, load it and skip to step 4. (The b2b `/session_end` path means autolearn Phase 2

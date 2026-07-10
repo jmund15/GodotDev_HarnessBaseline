@@ -21,7 +21,7 @@ Output contract:
   - Fail-open: a sub-hook exception is swallowed; later sub-hooks still run.
 
 Wired in: settings.json hooks.PostToolUse with matcher
-"Read|Grep|Glob|mcp__obsidian__obsidian_read_note|mcp__obsidian__obsidian_global_search|mcp__plugin_semantic-search_semantic-search__search".
+"Read|Grep|Glob|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search".
 The three sub-hooks keep their own main() for standalone use/testing.
 """
 

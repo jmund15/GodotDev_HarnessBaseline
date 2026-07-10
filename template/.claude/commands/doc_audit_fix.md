@@ -43,7 +43,7 @@ $ARGUMENTS — Optional filter:
 Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path — see the `obsidian_conventions` skill. No MCP-connectivity gate.
 
 ### 1b. Read Audit Report
-Use `obsidian_read_note` to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Claude/Audit Reports/Documentation Audit.md`.
+Use `obsidian_get_note` to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Claude/Audit Reports/Documentation Audit.md`.
 
 If no audit report exists, abort: **"No audit report found. Run `/doc_architecture_audit` first."**
 
@@ -129,7 +129,7 @@ Separate into `fixFindings[]` and `askFindings[]`.
 
 Within `fixFindings`, group by handler type for batching:
 - **`delegate` group**: batch by command (all `/doc_full` calls together, then `/doc_start_here_update`)
-- **`inline` group**: batch by target file (combine `obsidian_search_replace` calls on the same file)
+- **`inline` group**: batch by target file (combine `obsidian_replace_in_note` calls on the same file)
 
 ---
 
@@ -145,7 +145,7 @@ Display the fix plan following the orchestrator action protocol's presentation p
 **Delegate: /doc_full** ({count} systems)
 1. [S1] {SystemName} — missing {list of missing docs}
 
-**Inline: obsidian_search_replace** ({count} edits across {N} files)
+**Inline: obsidian_replace_in_note** ({count} edits across {N} files)
 2. [X2] Fix broken wikilink in {SystemA} QR → {SystemB}
 3. [X1] Add {SystemA} to {SystemB} Related Systems
 
@@ -191,24 +191,24 @@ Delegate commands create/update files that inline fixes may depend on.
 After delegate commands complete (new files exist), apply inline fixes.
 
 **Rename (S4 — Usage → Designer Usage):**
-1. `obsidian_read_note` — read the old file
-2. `obsidian_update_note` — write content to new path (`Designer Usage.md`), `createIfNeeded: true`
+1. `obsidian_get_note` — read the old file
+2. `obsidian_write_note` — write content to new path (`Designer Usage.md`; creates the file — new path, no `overwrite` flag needed)
 3. `obsidian_delete_note` — delete old file
-4. `obsidian_global_search` — find all references to old filename
-5. `obsidian_search_replace` — fix references in each found file
+4. `obsidian_search_notes` (`mode: "text"`) — find all references to old filename
+5. `obsidian_replace_in_note` — fix references in each found file
 
 **Search-replace (X1, X2, X4 — link fixes):**
-- Group all replacements targeting the same file into a single `obsidian_search_replace` call
+- Group all replacements targeting the same file into a single `obsidian_replace_in_note` call
 - **Idempotent**: Before replacing, verify the old text exists. If the fix is already applied (old text not found), skip silently.
 
 **X1 (add missing Related Systems entry):**
 - Read the target QR, find the `> [!info] Related Systems` callout
 - Add the missing `> - [[{System}/Quick Reference|{System}]] — {relationship}` line
-- Use `obsidian_search_replace` with the existing callout content as search, expanded content as replace
+- Use `obsidian_replace_in_note` with the existing callout content as search, expanded content as replace
 
 **X2 (fix broken wikilink):**
 - Replace the broken link text with the corrected link
-- Use `obsidian_search_replace` on the file containing the broken link
+- Use `obsidian_replace_in_note` on the file containing the broken link
 
 ### 4c. Start Here Reconciliation Last
 
@@ -244,7 +244,7 @@ Process each ASK finding following the [Orchestrator Action Protocol](agents/orc
 
    **D2 (reclassify domain):** Run `/doc_start_here_update` which handles domain table moves.
 
-   **D4 (create hub):** Write the Hub document using the template below, then `obsidian_update_note`:
+   **D4 (create hub):** Write the Hub document using the template below, then `obsidian_write_note`:
 
    ```markdown
    # {DomainName} — Domain Hub
@@ -274,8 +274,8 @@ Process each ASK finding following the [Orchestrator Action Protocol](agents/orc
    ```
 
    **D5 (archived hygiene):**
-   - "Remove reference": `obsidian_search_replace` to delete the stale link from the active doc
-   - "Update to successor": `obsidian_search_replace` to replace the archived link with the successor link
+   - "Remove reference": `obsidian_replace_in_note` to delete the stale link from the active doc
+   - "Update to successor": `obsidian_replace_in_note` to replace the archived link with the successor link
 
    **D6 (domain promotion):** Deferred to Phase 8 (Folder Hierarchy).
    - Record the promoted domain and its systems for inclusion in the Phase 8 reorganization plan
@@ -295,7 +295,7 @@ Process each ASK finding following the [Orchestrator Action Protocol](agents/orc
 
 After all fixes and ASK resolutions:
 
-1. **Spot-check modified files** — for each file that was modified, `obsidian_read_note` and verify:
+1. **Spot-check modified files** — for each file that was modified, `obsidian_get_note` and verify:
    - Wikilinks use correct format: `[[{SystemPath}/Quick Reference|{DisplayName}]]`
    - Related Systems callout is present and non-empty
    - File naming follows convention (`Designer Usage.md`, not `Usage.md`)
@@ -315,7 +315,7 @@ After all fixes and ASK resolutions:
 Update the audit report to reflect what was resolved.
 
 ### 7a. Read Current Report
-Use `obsidian_read_note` to get the current report content.
+Use `obsidian_get_note` to get the current report content.
 
 ### 7b. Mark Resolved Findings
 For each finding that was successfully fixed or resolved via ASK:
@@ -339,7 +339,7 @@ Add a new row to the Changelog table:
 ```
 
 ### 7e. Write Updated Report
-Use `obsidian_update_note` with `wholeFileMode: "overwrite"` to write the complete updated report in a single call. Regenerate the `## Machine Findings` block from the in-memory findings (updated `status`, recomputed `counts`/`healthRating`) so it remains the authoritative contract for the next run.
+Use `obsidian_write_note` with `overwrite: true` to write the complete updated report in a single call. Regenerate the `## Machine Findings` block from the in-memory findings (updated `status`, recomputed `counts`/`healthRating`) so it remains the authoritative contract for the next run.
 
 ### 7f. Final Summary
 Present the session summary:
@@ -471,12 +471,12 @@ If all domains are fully aligned AND all names are consistent (no misaligned sys
 
 ## Constraints
 
-- **Obsidian MCP required**: See the `obsidian_conventions` skill for connectivity rules.
+- **Vault tooling**: native `Read`/`Write`/`Edit` is the default (Phase 1a); the `obsidian_*` MCP calls named here are equivalents, not a connectivity gate. See `obsidian_conventions`.
 - **Idempotent**: Before each inline fix, read the target file and check if the fix is already applied. Skip silently if present.
 - **Sequential `/doc_full`**: Never run multiple `/doc_full` invocations in parallel (each spawns 3 subagents and is context-heavy).
 - **Cap at 3 delegates**: If >3 systems need `/doc_full` or `/doc_architecture` or `/doc_usage`, process 3 and report "run again for remaining." This prevents context exhaustion.
 - **Backward compatible**: Supports both old schema (derive action/handler from check code via routing table) and new schema (read `action`/`handler`/`options` fields directly from the finding).
 - **Freshness-aware**: Warn if audit report is >7 days old.
 - **No subagents**: This command runs inline as an orchestrator. It delegates to existing commands via `/doc_full`, `/doc_start_here_update`, etc. — those commands handle their own subagent orchestration.
-- **Single-report writes**: Always overwrite the full report in one `obsidian_update_note` call — never patch line by line.
+- **Single-report writes**: Always overwrite the full report in one `obsidian_write_note` (`overwrite: true`) call — never patch line by line.
 - **Preserve report structure**: When updating findings, preserve the prose report content (statistics, domain analysis tables, cross-agent patterns) and regenerate the `## Machine Findings` JSON block with updated `status`/counts. The prose RESOLVED/DEFERRED markers and the JSON `status` must always agree.

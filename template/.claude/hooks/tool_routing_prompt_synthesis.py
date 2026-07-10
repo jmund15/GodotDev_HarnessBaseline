@@ -116,7 +116,9 @@ def _build_reminder() -> str:
         "`mcp__ai-worker__read_files(paths=[...], question=...)` over chained "
         "Read/Grep/obsidian/memory. Bundle FIRST — overflow-bundling after "
         "individual searches has already burned context. "
-        "Audit-cue prompts exempt (direct Read correct there). CLAUDE.md §9.\n"
+        "Audit-cue prompts exempt (direct Read correct there). CLAUDE.md §9. "
+        "If ai-worker is absent this session, substitute a Haiku general-purpose "
+        "subagent for the bundling (CLAUDE.md Offline Fallback).\n"
         "</user-prompt-submit-hook>"
     )
 

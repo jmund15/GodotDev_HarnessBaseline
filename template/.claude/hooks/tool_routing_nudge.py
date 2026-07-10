@@ -39,13 +39,13 @@ Carve-outs (must NOT block — preserve K1/L6 legitimate-override cases):
   naturally don't reach the block path.
 
 Tool family handling:
-- `mcp__obsidian__obsidian_read_note`: nudge when path implies a large doc
-  family (Design / Planning / BrainstormingDesigns / Documentation / Brainstorm
-  / Architecture / Retrospective) — those are synthesis targets, not surgical
-  reads.
-- `mcp__obsidian__obsidian_global_search`: nudge when pageSize > 5 OR
-  contextLength > 100 OR pageSize is unset (default broad search) — implies
-  bulk-result synthesis, fits read_files better.
+- `mcp__obsidian__obsidian_get_note`: nudge when `target.path` implies a large
+  doc family (Design / Planning / BrainstormingDesigns / Documentation /
+  Brainstorm / Architecture / Retrospective) — those are synthesis targets,
+  not surgical reads.
+- `mcp__obsidian__obsidian_search_notes`: nudge when maxMatchesPerHit > 5 OR
+  contextLength > 100 OR maxMatchesPerHit is unset (default broad search) —
+  implies bulk-result synthesis, fits read_files better.
 - `Grep`: nudge when `pattern` is a single PascalCase identifier (no regex
   metachars) AND the target shape suggests `.cs` (glob `*.cs`/`**/*.cs` OR
   type `cs` OR no glob+type at all → likely cross-codebase). Suggests LSP
@@ -65,7 +65,7 @@ Boundaries:
   semantic-search instead.
 
 Wired in: settings.json hooks.PreToolUse with matcher
-"mcp__obsidian__obsidian_read_note|mcp__obsidian__obsidian_global_search|Grep|Read".
+"mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|Grep|Read".
 """
 
 import json
@@ -80,7 +80,7 @@ from routing_classifier import (
     LITERAL_INTENT_CUES,
     VERIFIED_UNIQUE_CUES,
     SYNTHESIS_DOC_HINTS,
-    BULK_PAGESIZE_THRESHOLD,
+    BULK_MAXMATCHES_THRESHOLD,
     BULK_CONTEXT_THRESHOLD,
     is_pascal_identifier,
     grep_target_family,
@@ -181,7 +181,8 @@ def _build_block_message(pattern: str) -> str:
 # --- Nudge composition ---------------------------------------------------
 
 def _nudge_obsidian_read(tool_input: dict) -> str | None:
-    path = tool_input.get("filePath") or ""
+    target = tool_input.get("target") or {}
+    path = (target.get("path") if isinstance(target, dict) else "") or ""
     if not path:
         return None
     if not any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS):
@@ -191,7 +192,9 @@ def _nudge_obsidian_read(tool_input: dict) -> str | None:
         f"`{path}` to summarize / extract context (not for surgical citation), "
         "prefer `mcp__ai-worker__read_files(paths=[<path>], question=...)` — "
         "cheap model reads, returns a 1-2 KB digest instead of loading the full "
-        "doc into your context. See CLAUDE.md §9."
+        "doc into your context. See CLAUDE.md §9. If ai-worker is absent this "
+        "session, substitute a Haiku general-purpose subagent for the bundling "
+        "(CLAUDE.md Offline Fallback)."
     )
 
 
@@ -218,16 +221,18 @@ def _nudge_read(tool_input: dict) -> str | None:
         "question=...)` — cheap model reads, returns a 1-2 KB digest instead of "
         "loading the full doc into your context. The synthesis-shape rule is "
         "path-based, not Obsidian-MCP-only — using native `Read` on a "
-        "`BrainstormingDesigns/` doc still burns context. See CLAUDE.md §9."
+        "`BrainstormingDesigns/` doc still burns context. See CLAUDE.md §9. "
+        "If ai-worker is absent this session, substitute a Haiku general-purpose "
+        "subagent for the bundling (CLAUDE.md Offline Fallback)."
     )
 
 
 def _nudge_obsidian_search(tool_input: dict) -> str | None:
-    page_size = tool_input.get("pageSize")
+    max_matches = tool_input.get("maxMatchesPerHit")
     context_length = tool_input.get("contextLength")
     is_bulk = (
-        page_size is None
-        or (isinstance(page_size, (int, float)) and page_size > BULK_PAGESIZE_THRESHOLD)
+        max_matches is None
+        or (isinstance(max_matches, (int, float)) and max_matches > BULK_MAXMATCHES_THRESHOLD)
         or (isinstance(context_length, (int, float)) and context_length > BULK_CONTEXT_THRESHOLD)
     )
     if not is_bulk:
@@ -237,7 +242,8 @@ def _nudge_obsidian_search(tool_input: dict) -> str | None:
         "for the same investigation, bundle the whole investigation into ONE "
         "`mcp__ai-worker__read_files` call with `files=[doc1, doc2, ...]` and a "
         "specific question — saves context vs chained search-then-read. "
-        "See CLAUDE.md §9."
+        "See CLAUDE.md §9. If ai-worker is absent this session, substitute a "
+        "Haiku general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
     )
 
 
@@ -281,8 +287,8 @@ def _nudge_grep(tool_input: dict) -> str | None:
 # --- Dispatch ------------------------------------------------------------
 
 _DISPATCH = {
-    "mcp__obsidian__obsidian_read_note": _nudge_obsidian_read,
-    "mcp__obsidian__obsidian_global_search": _nudge_obsidian_search,
+    "mcp__obsidian__obsidian_get_note": _nudge_obsidian_read,
+    "mcp__obsidian__obsidian_search_notes": _nudge_obsidian_search,
     "Grep": _nudge_grep,
     "Read": _nudge_read,
 }
@@ -292,7 +298,7 @@ _DISPATCH = {
 # routing_classifier.classify_call rule identifiers routing_audit.py logs, so
 # the dashboard's nudged-vs-silent-miss split runs on positive evidence.
 _RULE_KEYS = {
-    "mcp__obsidian__obsidian_read_note": "obsidian-synthesis-doc-direct-read",
+    "mcp__obsidian__obsidian_get_note": "obsidian-synthesis-doc-direct-read",
     "Read": "native-read-synthesis-doc",
 }
 

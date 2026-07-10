@@ -132,9 +132,9 @@ SYNTHESIS_DOC_HINTS = (
     "Postmortem",
 )
 
-# Bulk-search thresholds for obsidian_global_search. Source: tool_routing_nudge.py:125-126.
-BULK_PAGESIZE_THRESHOLD = 5
+# Bulk-search thresholds for obsidian_search_notes. Source: tool_routing_nudge.py:125-126.
 BULK_CONTEXT_THRESHOLD = 100
+BULK_MAXMATCHES_THRESHOLD = 5
 
 
 # === Pattern matchers (extracted verbatim from tool_routing_nudge.py) ========
@@ -298,11 +298,11 @@ def classify_call(
         return _classify_native_read(tool_input, last_prompt)
 
     # Obsidian read of synthesis-shaped doc.
-    if tool_name == "mcp__obsidian__obsidian_read_note":
+    if tool_name == "mcp__obsidian__obsidian_get_note":
         return _classify_obsidian_read(tool_input, last_prompt)
 
     # Obsidian broad search.
-    if tool_name == "mcp__obsidian__obsidian_global_search":
+    if tool_name == "mcp__obsidian__obsidian_search_notes":
         return _classify_obsidian_search(tool_input, last_prompt)
 
     # Tools without §9 routing rules.
@@ -400,13 +400,14 @@ def _classify_native_read(tool_input: dict, last_prompt: str) -> Classification:
 
 
 def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classification:
-    path = tool_input.get("filePath") or ""
+    target = tool_input.get("target") or {}
+    path = (target.get("path") if isinstance(target, dict) else "") or ""
     if not path:
-        return Classification("compliant", None, None, "mcp__obsidian__obsidian_read_note")
+        return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
     is_synthesis_shape = any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS)
     if not is_synthesis_shape:
         # Surgical read of a non-synthesis-shaped doc (e.g. Worklog) — fine.
-        return Classification("compliant", None, None, "mcp__obsidian__obsidian_read_note")
+        return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
 
     # Audit-shape carve-out: explicit line-precision framing legitimizes
     # direct read over read_files bundling.
@@ -418,7 +419,7 @@ def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classificatio
                 "synthesis-shaped Obsidian doc would route to read_files, "
                 "but user prompt invokes audit-shape direct-read carve-out"
             ),
-            tool="mcp__obsidian__obsidian_read_note",
+            tool="mcp__obsidian__obsidian_get_note",
         )
     return Classification(
         severity="nudge-warranted",
@@ -427,22 +428,22 @@ def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classificatio
             f"direct read of synthesis-shaped Obsidian doc ({path}) — "
             "should route through mcp__ai-worker__read_files for digest"
         ),
-        tool="mcp__obsidian__obsidian_read_note",
+        tool="mcp__obsidian__obsidian_get_note",
     )
 
 
 def _classify_obsidian_search(tool_input: dict, last_prompt: str) -> Classification:
-    page_size = tool_input.get("pageSize")
+    max_matches = tool_input.get("maxMatchesPerHit")
     context_length = tool_input.get("contextLength")
     is_bulk = (
-        page_size is None
-        or (isinstance(page_size, (int, float)) and page_size > BULK_PAGESIZE_THRESHOLD)
+        max_matches is None
+        or (isinstance(max_matches, (int, float)) and max_matches > BULK_MAXMATCHES_THRESHOLD)
         or (isinstance(context_length, (int, float)) and context_length > BULK_CONTEXT_THRESHOLD)
     )
     if not is_bulk:
         # Targeted search — fine.
         return Classification(
-            "compliant", None, None, "mcp__obsidian__obsidian_global_search"
+            "compliant", None, None, "mcp__obsidian__obsidian_search_notes"
         )
 
     # Broad searches are advisory (the existing nudge is informational, not
@@ -451,6 +452,6 @@ def _classify_obsidian_search(tool_input: dict, last_prompt: str) -> Classificat
     return Classification(
         severity="advisory-applicable",
         rule="obsidian-broad-search-soft-nudge",
-        reason="broad obsidian_global_search may be better as bundled read_files",
-        tool="mcp__obsidian__obsidian_global_search",
+        reason="broad obsidian_search_notes may be better as bundled read_files",
+        tool="mcp__obsidian__obsidian_search_notes",
     )

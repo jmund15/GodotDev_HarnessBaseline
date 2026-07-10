@@ -66,7 +66,7 @@ logs/transcript_backups/*.jsonl          # Raw transcripts (FALLBACK)
 
 Follow steps 1-2 from [Doc Before Writing](agents/doc_before_writing.md). Target doc path: `{SystemName}/Retrospective.md`.
 
-**Step 3 (Retrospective-specific):** Check for existing doc via `obsidian_read_note`. If it exists, you are APPENDING a new timestamped entry — do NOT modify prior entries. Read the existing doc to avoid repeating information. If it doesn't exist, create from scratch with the document header and first entry.
+**Step 3 (Retrospective-specific):** Check for existing doc via `obsidian_get_note`. If it exists, you are APPENDING a new timestamped entry — do NOT modify prior entries. Read the existing doc to avoid repeating information. If it doesn't exist, create from scratch with the document header and first entry.
 
 ## Document Structure
 
@@ -193,6 +193,6 @@ What was built, in what order, and what the final state is.
 - Include timestamps on each entry (date in header, ISO format).
 
 ## Writing Vault Files — Append-Only via `write_doc`
-Generate prose through `write_doc`, not by hand (Documentation Delegation Rule, HARD). Because this doc is APPEND-ONLY, the worker generates **only the new dated entry** — never the whole file. Follow **Reason, Then Delegate** in [Doc Before Writing](agents/doc_before_writing.md) with `doc_type="retrospective"` and `Voice/tone: first-person candid`.
+Generate prose through `write_doc`, not by hand (Documentation Delegation Rule, HARD). *Offline note:* `mcp__ai-worker__write_doc` is offline on this machine (as of 2026-07-04; ai-worker lives on another PC — see `environment_bootstrap` skill); when offline, author the entry natively per `obsidian_conventions`, keeping this file's structure and voice rules. Because this doc is APPEND-ONLY, the worker generates **only the new dated entry** — never the whole file. Follow **Reason, Then Delegate** in [Doc Before Writing](agents/doc_before_writing.md) with `doc_type="retrospective"` and `Voice/tone: first-person candid`.
 - **New doc:** the spec's `Outline` is the header + ToC + first entry; `write_doc` writes the whole file once.
 - **Existing doc:** call `write_doc` to a scratch path *under the vault* (e.g. `{SystemName}/_retro_entry.tmp.md`, so the `obsidian` modifier still auto-applies) with an `Outline` of just the new `## Entry: YYYY-MM-DD` section → the worker emits only that entry's prose. Then `Read` the existing doc, `Edit` to append the entry at the bottom and add its ToC link, and delete the scratch file. **NEVER** pass prior entries through a regen — they are historical records.

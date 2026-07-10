@@ -19,7 +19,7 @@ Follow steps 1-3 from [Doc Before Writing](agents/doc_before_writing.md). Target
 - Read relevant tests to understand behavioral contracts.
 
 ### 5. Write via `write_doc`
-Generate the prose through `write_doc`, not by hand — follow **Reason, Then Delegate** in [Doc Before Writing](agents/doc_before_writing.md) with `doc_type="architecture"` and `Voice/tone: terse-technical`. The Document Structure below is the spec's `Outline` (and the per-section shape to request) — not prose for you to type.
+Generate the prose through `write_doc`, not by hand — follow **Reason, Then Delegate** in [Doc Before Writing](agents/doc_before_writing.md) with `doc_type="architecture"` and `Voice/tone: terse-technical`. *Offline note:* `mcp__ai-worker__write_doc` is offline on this machine (as of 2026-07-04; ai-worker lives on another PC — see `environment_bootstrap` skill); when offline, author the prose natively per `obsidian_conventions`, keeping this file's structure and voice rules. The Document Structure below is the spec's `Outline` (and the per-section shape to request) — not prose for you to type.
 
 ## Document Structure
 

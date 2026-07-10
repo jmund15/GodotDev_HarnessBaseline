@@ -25,3 +25,14 @@ Output-channel rules (verified vs hooks docs): see `archive_hook_gotchas.md`
 in auto-memory — model-visible advisory output on Pre/PostToolUse is
 `hookSpecificOutput.additionalContext` JSON ONLY; stderr is exit-2-only.
 Audit principles for this directory: `instruction_quality` skill §13–§16.
+
+Subagent limitation (verified 2026-07-04): prompt-cue carve-outs (audit-shape,
+K1 literal-intent, L6 verified-unique) are dead in subagent contexts.
+`tool_routing_cumulative_reset.py` writes `last_prompt` only to the
+session-level state file `<sid>.json` (its `_state_path` takes no agent_id),
+but `tool_routing_cumulative.py` / `tool_routing_cumulative_block.py` /
+`file_size_preblock.py` read the agent-keyed `<sid>_<aid>.json` when
+`agent_id` is present — so the cue check always sees an empty prompt.
+Consequences: cascade nudges reaching subagents are advisory noise regardless
+of prompt framing (ignore them on legitimately-framed audit work), and the
+file-size gate's bounded `Read(offset, limit)` recovery always passes.

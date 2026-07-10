@@ -16,7 +16,7 @@ Bulk cleanup. Walks Active items proposing per-item dispositions; confirmation-d
 Need full content (Context, Where, Source, dates, class, scope) to score dispositions. Mirror is insufficient.
 
 ```
-mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md")
+mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"})
 ```
 
 `Worklog.md` holds only `[ ]` items now (completions live in `Worklog-Archive.md`); `When: future` items live in Future Scope and aren't part of Active triage.
@@ -90,9 +90,8 @@ The walk pauses while you do the work — don't batch all do-now items at the en
 Add a sub-bullet to the item's `[ ]` block in Obsidian, immediately after the `Context:` line:
 
 ```
-mcp__obsidian__obsidian_search_replace(
-  targetType="filePath",
-  targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
+mcp__obsidian__obsidian_replace_in_note(
+  target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"},
   replacements=[{
     search: "  - Context: <verbatim context line>\n",
     replace: "  - Context: <verbatim context line>\n  - Quick-win: flagged YYYY-MM-DD\n"
@@ -103,7 +102,7 @@ mcp__obsidian__obsidian_search_replace(
 Item stays in Active. Mirror rewrite (Step 6) appends `[quick-win]` suffix to its mirror line. `/worklog plan` weights flagged items +3 in scoring — survey-mode batching and draft-mode fill alike (treated as high hot-context).
 
 #### `promote` (Active → Future Scope)
-Inverse of `/worklog promote`. Two-step search_replace:
+Inverse of `/worklog promote`. Two-step `obsidian_replace_in_note`:
 
 **Step A** — delete the `[ ]` block from `## Active`. Same pattern as COMPLETE Step 4 (match all sub-bullets that exist in this specific block; be precise about which lines are present; mind the LF/CRLF line-ending trap).
 
@@ -128,7 +127,7 @@ For items fundamentally user-only addressable — production art, feel-tuning, o
 
 **Step B** — invoke the USER-ADD recipe (in `worklog.md`) with the derived fields. Skip USER-ADD Step 1 (de-dup search) — the triage walker has already shown the user existing entries.
 
-**Step C** — delete the `[ ]` block from `## Active` in Worklog.md. Same pattern as `promote` Step A: precise multi-line `obsidian_search_replace` matching all sub-bullets that exist in this specific block.
+**Step C** — delete the `[ ]` block from `## Active` in Worklog.md. Same pattern as `promote` Step A: precise multi-line `obsidian_replace_in_note` matching all sub-bullets that exist in this specific block.
 
 **Step D** — atomicity check: if Step B failed (MCP error on the User-Tasks write), do NOT execute Step C. The Active block stays as-is; surface the error and offer fallback dispositions (`[s]kip` / `[p]romote` to Future Scope). Better a stuck Active item than a lost migration.
 
@@ -198,7 +197,7 @@ The agentic prioritization op. Reads the worklog, scores ready items once, then 
 
 Need full content (date, context, source, where, class, scope), not just titles. The mirror isn't enough.
 ```
-mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md")
+mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"})
 ```
 Score `[ ]` items only (`Worklog.md` holds only active work — completions are in the archive). Then **partition into ready vs. waiting**: items with no `When:` sub-bullet are **ready** (proceed to scoring); items with `When: after ...` or `When: future` are **waiting** (skip scoring entirely — list in output only). Only ready items flow through Steps 2–4.
 

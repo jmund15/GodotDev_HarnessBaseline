@@ -105,7 +105,8 @@ def _build_block_message(count: int, calls: list) -> str:
         f"Targets: {target_list}. "
         f"Gate: PP_ROUTING_HARD_BLOCK_CASCADE={toggle_state} (set false to disable). "
         "Audit-cue prompts exempt (audit/debug/security review/line-by-line). "
-        "CLAUDE.md §9."
+        "CLAUDE.md §9. If ai-worker is absent this session, substitute a Haiku "
+        "general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
     )
 
 

@@ -5,7 +5,7 @@ disable-model-invocation: true
 # PR Classification
 
 <!-- Single source of truth for domain classification, type classification, and label application. -->
-<!-- Referenced by: /review_pr, /create_pr, /merge_pr -->
+<!-- Referenced by: /review_pr, /create_pr, /merge_pr, /pr_test_checklist (via pr_test_checklist_conventions.md) -->
 
 ## Domain Classification
 
@@ -13,14 +13,16 @@ Classify based on **what the PR enables in the game**, not what file types were 
 
 **Key question:** Does this PR add or modify player-facing behavior — something a player would *see*, *feel*, or *interact with differently*? If yes → Gameplay or Mixed.
 
-| Domain | Signals | User Testing? |
+| Domain | Signals (real top-level folders — no `Source/` prefix exists in this repo) | User Testing? |
 |--------|---------|---------------|
-| **Logic** | `Source/SpellArchitecture/`, `Source/Synergies/`, `Source/Inventory/`, `Tests/Logic/` | No — automated tests sufficient |
-| **Gameplay** | Scenes (`.tscn`), `Source/Wizard/`, `Source/VFX/`, `Source/UI/`, `Tests/Integration/`, `Tests/Sanity/` | **Yes** — subjective feel |
+| **Logic** | `SpellArchitecture/`, `SpellEffects/`, `Synergies/`, `Jmodot/Core/`, `Tests/Logic/`, pure-logic cores inside gameplay subsystems (e.g. `Factions/Disposition/`, `Scoring/`, `Currency/`) | No — automated tests sufficient |
+| **Gameplay** | Scenes (`.tscn`), `Wizard/`, `AI/` / `NPCs/` / `Minions/`, `Crafting/` / `PvE/`, `Dungeon/`, `Prototype/`, `Spawning/`, `Movement/`, `Visual/` / `Animation/` / `Camera/`, `UI/`, `Tests/Integration/`, `Tests/Sanity/` | **Yes** — subjective feel |
 | **Data** | `.tres` or `.tscn` files only | No — automated tests sufficient |
-| **Meta** | `.claude/`, `skills/`, `commands/`, `.gitignore`, `CLAUDE.md` | No — not runtime code |
+| **Meta** | `.claude/` (incl. `skills/`, `commands/`), `Docs/`, `harness-baseline/`, `.gitignore`, `CLAUDE.md` | No — not runtime code |
 | **Jmodot** | Submodule pointer change | Depends on what changed |
 | **Mixed** | Logic + Gameplay in same PR | **Yes** — if any Gameplay changes |
+
+> **Signal maintenance (as of 2026-07-04):** the path signals above are the actual top-level folders. The canonical folder→subsystem registry is `.claude/skills/pp_subsystems/SKILL.md` (machine-readable YAML `paths`), kept in sync with the tree by `/sync_subsystems`. A changed path not listed here → classify via that registry, and update this table.
 
 > **Common mistake:** A PR with well-tested `.cs` files (e.g., new collision response, new spell behavior) is NOT "Logic" just because it has unit tests. If the feature introduces new **game behavior**, it is **Gameplay** regardless of test coverage. Automated tests validate *correctness*; user testing validates *feel*.
 

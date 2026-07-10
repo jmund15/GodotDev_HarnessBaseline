@@ -185,7 +185,8 @@ def _build_block_message(file_path: str, size_bytes: int) -> str:
         f"[file-size-block] {file_path} is ~{size_kb} KB (~{est_tokens} tokens) "
         f"— above {threshold_kb} KB threshold for unbounded reads. "
         f"Recover: bounded `Read(file_path=..., offset=N, limit=M)` "
-        f"or `mcp__ai-worker__read_files(paths=[\"{file_path}\"], question=<...>)`."
+        f"or `mcp__ai-worker__read_files(paths=[\"{file_path}\"], question=<...>)`. "
+        "If ai-worker is absent this session, use the bounded Read — it always passes this gate."
     )
 
 

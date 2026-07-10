@@ -21,4 +21,6 @@ Place this document in 'DevProjects/{{PROJECT_NAME}}/Claude/Documentation'. If t
 Follow steps 1-3 from [Doc Before Writing](agents/doc_before_writing.md), then deep-read the session's full scope of work (code, tests, decisions, hiccups) so you can name concrete claims and facts.
 
 ## Writing via `write_doc`
+*Offline note:* `mcp__ai-worker__write_doc` is offline on this machine (as of 2026-07-04; ai-worker lives on another PC — see `environment_bootstrap` skill); when offline, author the prose natively per `obsidian_conventions`, keeping this file's structure and voice rules.
+
 Generate the prose through `write_doc`, not by hand (Documentation Delegation Rule, HARD) — follow **Reason, Then Delegate** in [Doc Before Writing](agents/doc_before_writing.md) with `doc_type="design"` and `Voice/tone: terse-technical`. Build the spec's `Outline` from the prioritized sections above (developer-workflow-first, then design rationale, tests-per-domain, issues, future enhancements). The `obsidian` modifier auto-applies from the vault `doc_path`, so Obsidian callouts/wikilinks/formatting are injected worker-side — fold callout intent into the spec rather than hand-formatting. For a multi-doc topic folder, write each doc with its own `write_doc` call.

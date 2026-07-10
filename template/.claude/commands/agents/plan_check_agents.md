@@ -14,6 +14,7 @@ Follow the **Agent Spawn Rules** defined in [`review_agents.md`](review_agents.m
 
 - **Plan as primary subject:** The CONTEXT block contains the proposed plan text in full plus pre-loaded support material (Memory search hits, known_failure_modes catalog, LSP/Grep references for named symbols). Agents do NOT need to re-read the plan from disk.
 - **Pre-execution stance:** Findings are about what the plan *should change* before code is written, not about what existing code looks like. Most findings are ASK-tier (judgment calls about scope/approach) or PLAN-tier (architectural pivots). FIX-tier findings are rare here — they apply only when the plan has a literal text mistake (missing requirement step, contradictory wording).
+- **Memory-file resolution:** memory entries cited by bare filename (`feedback_*`, `gotcha_*`, `arch_rule_*`, `status_*`, …) resolve under `.claude/auto-memory/` or `.claude/auto-memory/archive/`.
 
 ## Finding Schema & Reporting Filter
 

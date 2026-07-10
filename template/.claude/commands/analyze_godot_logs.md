@@ -1,5 +1,5 @@
 ---
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 Analyze Godot log files with mode-based presets and token-efficient JSON output.
@@ -24,7 +24,7 @@ Analyze Godot log files with mode-based presets and token-efficient JSON output.
 
 **Users will rarely pass flags.** Most invocations look like:
 
-- `/analyze-logs` (no args)
+- `/analyze_godot_logs` (no args)
 - "check the logs"
 - "what just happened?"
 - "the game crashed when I cast Rock Pillar"
@@ -47,7 +47,7 @@ Apply in order, stop at first match:
 
 5. **Generic/vague "check the logs"?** → `--mode summary` (default). It's the cheapest (~200 tok) AND the most informative for "I don't know what to look for".
 
-6. **No prior signal AND user just typed `/analyze-logs` bare?** → `--mode summary`. Same reason: cheapest first pass; if it surfaces issues, propose drilling in next turn.
+6. **No prior signal AND user just typed `/analyze_godot_logs` bare?** → `--mode summary`. Same reason: cheapest first pass; if it surfaces issues, propose drilling in next turn.
 
 ### Combine signals greedily
 
@@ -258,5 +258,5 @@ python .claude/hooks/analyze_godot_logs.py --json --mode errors --fields line_nu
 - Backtraces are compressed to user-relevant frames ({{PROJECT_NAME}}/Jmodot only, max 5)
 - The script fixes the WARNING double-counting bug from Godot's GD.PushWarning duplication
 - Empty fields are stripped from JSON output by default (further token savings)
-- Log location: see CLAUDE.md MCP section for platform-specific default paths
+- Log location: `%APPDATA%\Godot\app_userdata\{{PROJECT_NAME}}\logs\godot.log` (canonical home: `.claude/rules/godot_files.md`)
 - Legacy flags `--summary` and `--timeline` still work (alias to `--mode summary`/`--mode timeline`) for backward compat with prior automation

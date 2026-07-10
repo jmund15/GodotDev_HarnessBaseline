@@ -53,6 +53,6 @@ Scan `.claude/auto-memory/**/*.md` (skip `MEMORY.md` itself and any `.search-ind
    |------|---|-----|
    | [[#slug1]] | links | [[#slug2]] |
 
-3. **Write the file** using `mcp__obsidian__obsidian_update_note` (`targetType: filePath`, `wholeFile`/`overwrite`, `createIfNeeded: true`). Native `Write` to the vault path is also acceptable — Obsidian MCP is optional for this.
+3. **Write the file** using `mcp__obsidian__obsidian_write_note` (`target: {type: "path", path: <vault-relative path>}`, `overwrite: true`). Native `Write` to the vault path is also acceptable — Obsidian MCP is optional for this.
 
 4. **Confirm** the update with memory/link counts.

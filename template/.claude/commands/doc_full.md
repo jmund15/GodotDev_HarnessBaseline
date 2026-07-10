@@ -39,6 +39,8 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 
 **Model:** Use `opus` for all 3 agents (creative + technical depth required).
 
+**`write_doc` availability:** `mcp__ai-worker__write_doc` is offline on this machine (as of 2026-07-04 — ai-worker lives on another PC; see `environment_bootstrap` skill). When offline, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
+
 ### Usage Agent
 
 > You are writing documentation for the **{SystemName}** system in a Godot 4.6 / C# project.
@@ -46,7 +48,7 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 > Read `.claude/commands/doc_usage.md` for the complete documentation procedure, then execute it step by step for this system.
 >
 > **System name:** `{SystemName}`
-> **Doc folder:** `{resolved doc folder path from Phase 1c}`
+> **Doc folder:** `{resolved doc folder path from Phase 1b}`
 > **Folder exists:** {yes/no}
 >
 > You have full access to the codebase, the Obsidian vault, and the ai-worker `write_doc` tool (per your command file, doc prose is generated via `write_doc`, not typed by hand). Explore the source files independently — focus on `[Export]` properties, configuration points, `.tres` resources, and editor-facing interfaces relevant to this system.
@@ -58,7 +60,7 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 > Read `.claude/commands/doc_architecture.md` for the complete documentation procedure, then execute it step by step for this system.
 >
 > **System name:** `{SystemName}`
-> **Doc folder:** `{resolved doc folder path from Phase 1c}`
+> **Doc folder:** `{resolved doc folder path from Phase 1b}`
 > **Folder exists:** {yes/no}
 >
 > You have full access to the codebase, the Obsidian vault, and the ai-worker `write_doc` tool (per your command file, doc prose is generated via `write_doc`, not typed by hand). Deep-read ALL source files for this system — map class hierarchies, signal connections, dependency chains, design patterns, and extension points. Read relevant tests to understand behavioral contracts.
@@ -70,7 +72,7 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 > Read `.claude/commands/doc_retrospective.md` for the complete documentation procedure, then execute it step by step for this system.
 >
 > **System name:** `{SystemName}`
-> **Doc folder:** `{resolved doc folder path from Phase 1c}`
+> **Doc folder:** `{resolved doc folder path from Phase 1b}`
 > **Folder exists:** {yes/no}
 >
 > You have full access to the codebase, the Obsidian vault, the ai-worker `write_doc` tool (per your command file, doc prose is generated via `write_doc`, not typed by hand), auto-memory, git history, and transcript backups at `logs/transcript_backups/` (index: `logs/pre_compact.json`). Follow the command file's Context Tiers to determine what depth of retrospective is appropriate based on available sources.
@@ -92,7 +94,7 @@ Proceed to Phase 3 regardless of retrospective outcome.
 After all subagents complete, create or update `Quick Reference.md` in the system folder.
 
 ### 3a. Read the completed docs
-Use `obsidian_read_note` to read the Usage, Architecture, and Retrospective docs that were just written. Extract:
+Use `obsidian_get_note` to read the Usage, Architecture, and Retrospective docs that were just written. Extract:
 - Key types and their roles (from Architecture)
 - Key configurable properties (from Usage)
 - File paths (from Architecture)
@@ -162,9 +164,9 @@ Source files belonging to this system:
 After writing the Quick Reference, ensure every system referenced in the Related Systems callout links back to this system.
 
 For each system `B` listed in this system's (`A`) Related Systems:
-1. Read `B`'s Quick Reference via `obsidian_read_note`
+1. Read `B`'s Quick Reference via `obsidian_get_note`
 2. Check if `B`'s Related Systems callout already mentions `A`
-3. If not, use `obsidian_search_replace` to append a return link entry to `B`'s Related Systems callout
+3. If not, use `obsidian_replace_in_note` to append a return link entry to `B`'s Related Systems callout
 
 This prevents the most common audit finding (X1: unidirectional links). All cross-references must be bidirectional.
 
