@@ -143,3 +143,8 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   tree differs.
 - `cloud-install.sh` / `hooks/session_context_loader.py` — pin your Godot/.NET
   versions (config constants at the top of each).
+- `commands/agents/pr_classification.md` — the Logic/Gameplay domain table maps the
+  source game's folders to review domains; replace the folder lists with yours.
+- `skills/sprite_authoring/SKILL.md` — the *Project Prototype Style* section is the
+  source game's style spec (palette, faction looks, reference sprites); rewrite it
+  for your game's art direction, keeping the pipeline mechanics.
