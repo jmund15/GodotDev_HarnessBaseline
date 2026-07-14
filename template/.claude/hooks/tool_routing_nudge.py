@@ -192,9 +192,7 @@ def _nudge_obsidian_read(tool_input: dict) -> str | None:
         f"`{path}` to summarize / extract context (not for surgical citation), "
         "prefer `mcp__ai-worker__read_files(paths=[<path>], question=...)` — "
         "cheap model reads, returns a 1-2 KB digest instead of loading the full "
-        "doc into your context. See CLAUDE.md §9. If ai-worker is absent this "
-        "session, substitute a Haiku general-purpose subagent for the bundling "
-        "(CLAUDE.md Offline Fallback)."
+        "doc into your context. See CLAUDE.md §9."
     )
 
 
@@ -221,9 +219,7 @@ def _nudge_read(tool_input: dict) -> str | None:
         "question=...)` — cheap model reads, returns a 1-2 KB digest instead of "
         "loading the full doc into your context. The synthesis-shape rule is "
         "path-based, not Obsidian-MCP-only — using native `Read` on a "
-        "`BrainstormingDesigns/` doc still burns context. See CLAUDE.md §9. "
-        "If ai-worker is absent this session, substitute a Haiku general-purpose "
-        "subagent for the bundling (CLAUDE.md Offline Fallback)."
+        "`BrainstormingDesigns/` doc still burns context. See CLAUDE.md §9."
     )
 
 
@@ -242,8 +238,7 @@ def _nudge_obsidian_search(tool_input: dict) -> str | None:
         "for the same investigation, bundle the whole investigation into ONE "
         "`mcp__ai-worker__read_files` call with `files=[doc1, doc2, ...]` and a "
         "specific question — saves context vs chained search-then-read. "
-        "See CLAUDE.md §9. If ai-worker is absent this session, substitute a "
-        "Haiku general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
+        "See CLAUDE.md §9."
     )
 
 

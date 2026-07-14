@@ -16,7 +16,7 @@ Static structural review — sibling to `/claudemd_compact`. Does NOT measure tr
 
 **No argument:** Print usage and the 3 most-recently-modified skill/command files as suggested targets.
 
-**Multi-target:** `/instruction_audit <path> <path> ...` or `--all` (every skill + command). Fan the mechanical phases (Phase B quantitative inputs, C, C.5, C.75) out to parallel read-only verification agents per the `parallel_agents` skill — one agent per target cluster, with the claims to verify pushed into each prompt. Phase-B principle verdicts and the report stay with the orchestrator; agents return evidence, not verdicts.
+**Multi-target:** `/instruction_audit <path> <path> ...` or `--all` (every skill + command). Fan the mechanical phases (Phase B quantitative inputs, C, C.5, C.75) out to parallel read-only verification agents per the `orchestration` skill — one agent per target cluster, with the claims to verify pushed into each prompt. Phase-B principle verdicts and the report stay with the orchestrator; agents return evidence, not verdicts.
 
 **Malformed argument:** If path doesn't resolve, search for skills/commands with names containing the string and offer up to 3 matches.
 

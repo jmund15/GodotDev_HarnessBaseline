@@ -298,7 +298,7 @@ After `/update_roadmap` applies:
 
 ## 5. MCP-Offline Policy
 
-**[Shared]** Obsidian MCP offline → non-event (native vault `Read`/`Write`/`Edit`). **ai-worker MCP offline → fallback to a Haiku subagent for any `read_files` / `read_web` call** (Step 1 existing-doc digest, Step 2 multi-section spot-check, final `write_doc` synthesis). Do NOT degrade to chained native reads. See [`_brainstorm_shared/common.md` §3](../_brainstorm_shared/common.md) for the substitution shape.
+**[Shared]** Obsidian MCP offline → non-event (native vault `Read`/`Write`/`Edit`). ai-worker/`write_doc` offline → substitute the executor per [`common.md §3`](../_brainstorm_shared/common.md) (→ CLAUDE.md OFFLINE FALLBACK).
 
 ---
 

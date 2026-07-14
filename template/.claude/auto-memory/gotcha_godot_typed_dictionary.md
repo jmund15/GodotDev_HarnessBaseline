@@ -13,7 +13,9 @@ A `Godot.Collections.Dictionary<TResource, TValue>` `[Export]` has two non-obvio
 
 2. **Empty Inspector slot → `null` key.** An unfilled dictionary row surfaces as a `null` key when iterating the dict. Consumers MUST guard (`if (key == null) continue;`) or risk a `NullReferenceException` downstream.
 
-3. **Hand-authoring can hard-crash, not just silent-empty.** A typed-dict export literal hand-added to a *scene node* (`.tscn`) can crash the Godot runtime at scene load — observed as a native `STATUS` exit code with no `Passed!`/`Failed!` line, so it masquerades as a test-runner *hang*, not a clean load error. Prefer authoring scene-node typed-dict exports via the Godot editor or Godot-MCP scene tools (they emit correct serialization); reserve hand-authoring for forms a scene-load test validates.
+3. **Nested typed-array VALUE headers do not parse.** `Dictionary[StringName, Array[NodePath]]({...})` is a hard Parse Error at load (crashes the editor import + every inheriting scene cascades) — Godot dictionary type metadata cannot express a nested array element type. Write `Dictionary[StringName, Array]({...})` and keep the individual values typed (`&"key": Array[NodePath]([...])`); C# marshals into `Dictionary<StringName, Array<NodePath>>` fine.
+
+4. **Hand-authoring can hard-crash, not just silent-empty.** A typed-dict export literal hand-added to a *scene node* (`.tscn`) can crash the Godot runtime at scene load — observed as a native `STATUS` exit code with no `Passed!`/`Failed!` line, so it masquerades as a test-runner *hang*, not a clean load error. Prefer authoring scene-node typed-dict exports via the Godot editor or Godot-MCP scene tools (they emit correct serialization); reserve hand-authoring for forms a scene-load test validates.
 
 **How to apply:** filter null keys at the consumption boundary; author scene-node typed-dict exports via editor/MCP rather than by hand; cover any hand-authored typed-dict `.tres`/`.tscn` with a scene-load test (or an existing test that loads the scene) asserting the consumed result is non-empty. Sibling value-type `.tres` trap: [[gotcha_export_enum_out_of_range_silent_false]].
 

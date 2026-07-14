@@ -24,6 +24,7 @@ paths:
 | Set in `_Ready()` | `= null!` | Guaranteed after initialization |
 | **Required** `[Export]` | `= null!` + `[RequiredExport]` | Fail-fast with clear error |
 | **Optional** `[Export]` | `?` nullable | Genuinely might not be set |
+| **Collection** `[Export]` (`GCol.Array<T>` / `Dictionary<K,V>`) | `= new()` | Editor replaces the default on load; empty default = iterable without null checks. NEVER `= new()` a *Resource-typed* export — pathless Resources serialize inline into every referencing `.tres` (use the rows above). |
 | Runtime state that can be null | `?` nullable | Could legitimately be null |
 
 **Pattern:** Use `[RequiredExport]` attribute + `this.ValidateRequiredExports()` in `_Ready()`:

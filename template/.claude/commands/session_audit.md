@@ -95,14 +95,19 @@ If clean, log a single line `Refactor parity: CLEAN` and proceed to Phase 2.
 
 ## Phase 2: Launch Audit Sub-Agents
 
-The 3-agent fan-out and Step-1 consolidation run deterministically in the `review-fanout` workflow. Below, assemble the 3 agent prompts + the shared CONTEXT, then dispatch them through the engine — it runs them in parallel, appends the read-only / no-tests / no-LSP single-flight guard to each, and merges/dedups/sorts the findings.
+The agent fan-out and Step-1 consolidation run deterministically in the `review-fanout` workflow. Below, assemble the agent prompts + the shared CONTEXT, then dispatch them through the engine — it runs them in parallel, appends the read-only / no-tests / no-LSP single-flight guard to each, and merges/dedups/sorts the findings.
 
 ### Agent Templates & Spawn Rules
 
 Use the agent templates defined in [`session_audit_agents.md`](agents/session_audit_agents.md). That file contains:
 - Agent Spawn Rules (referenced from `review_agents.md`)
 - Finding Schema & Reporting Filter (referenced from `orchestrator_action_protocol.md`)
-- 3 agent templates: `sa-design-semantics` (opus), `sa-robustness-performance` (opus), `sa-intuitiveness-testability` (sonnet)
+- 3 always-on agent templates: `sa-design-semantics` (opus), `sa-robustness-performance` (opus), `sa-intuitiveness-testability` (sonnet)
+- 1 conditional template: `sa-architecture-sweep` (opus) — design-ideality judgment (existing-seam reuse, cleaner/more-modular/data-driven alternatives, dedup-similar-logic-into-one-source)
+
+### Architecture-Sweep Trigger (conditional 4th agent)
+
+Add `sa-architecture-sweep` to the fan-out when the session shipped **design-scale** work — any of: a new subsystem/type family or top-level concept, a multi-file feature design (3+ production files forming one mechanism), a refactor of a 2+ subclass/consumer family, or a new cross-system seam. (Mirror of the `/plan_check` litmus; when in doubt on a large session, include it.) Pure tuning/data/bug-fix sessions skip it. When triggered, fill its `{{DESIGN_LIST}}` with the session's major designs — name each mechanism and its key files/seams so the agent judges designs, not diffs. Its findings join the same consolidation; its SUPERIOR-ALTERNATIVE findings default to being implemented this session when effort is S/M and the migration closes a live gap (user preference: "move to the superior design"), deferred-with-worklog otherwise.
 
 ### Shared Context Block
 
@@ -126,7 +131,9 @@ Workflow({
   args: { agents: [
     { key: "sa-design-semantics", prompt: "<assembled>", model: "opus" },
     { key: "sa-robustness-performance", prompt: "<assembled>", model: "opus" },
-    { key: "sa-intuitiveness-testability", prompt: "<assembled>", model: "sonnet" } ] }
+    { key: "sa-intuitiveness-testability", prompt: "<assembled>", model: "sonnet" },
+    // + when the Architecture-Sweep Trigger fires:
+    { key: "sa-architecture-sweep", prompt: "<assembled>", model: "opus" } ] }
 })
 ```
 
@@ -175,6 +182,6 @@ Follow the protocol's Step 4:
 - **No feature changes.** Audit focuses on internal quality of existing changes, not new functionality.
 - **Substantive only.** Skip cosmetic issues (whitespace, comment style) unless they indicate a real problem.
 - **Respect TDD.** Any approved fix in Logic Domain must have test coverage.
-- **3-agent fan-out lives in the `review-fanout` workflow** — it spawns exactly the 3 agents (templates in [`session_audit_agents.md`](agents/session_audit_agents.md)) in parallel and consolidates. Do not perform the audit inline or re-spawn agents manually.
+- **The agent fan-out lives in the `review-fanout` workflow** — it spawns the 3 always-on agents plus the conditional `sa-architecture-sweep` (templates in [`session_audit_agents.md`](agents/session_audit_agents.md)) in parallel and consolidates. Do not perform the audit inline or re-spawn agents manually.
 - **Report honestly.** False positives waste time. When in doubt, don't report.
 - **Time-bounded.** The full audit (spawn → consolidate) should complete in under 10 minutes.

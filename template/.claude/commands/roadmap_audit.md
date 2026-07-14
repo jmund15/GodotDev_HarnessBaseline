@@ -80,7 +80,7 @@ Unknown check-id or slug → emit usage table and exit.
 
 ### Phase 2 — Parse Parts tables + reference surfaces (bundled)
 
-Per CLAUDE.md §9 — 3+ files for synthesis → route through `mcp__ai-worker__read_files` (offline fallback: a Haiku subagent per `common.md §3`):
+Per CLAUDE.md §9 — 3+ files for synthesis → route through `mcp__ai-worker__read_files`:
 
 ```
 read_files(
@@ -198,4 +198,4 @@ If zero findings: print *"All <N> roadmaps consistent across <enabled checks>. N
 - [`/update_roadmap`](update_roadmap.md) — fix executor for `submap` / `deps` / `anchors` / `state` findings (Parts table + Spawned section + derived views + revision log).
 - [`/mvp_plan`](mvp_plan.md) — fix executor for `mvp` findings (`/mvp_plan refine MVP-N`).
 - [`/roadmap_next`](roadmap_next.md) — sibling read-only scanner (discovery + bundled-parse skeleton shared with this command); run `/roadmap_audit` first so its leverage graph isn't built on stale cross-folder edges.
-- CLAUDE.md §9 *Tool Routing — Pre-Call Litmus* — Phase 2 bundled `read_files` rule + offline fallback.
+- CLAUDE.md §9 *Tool Routing — Pre-Call Litmus* — Phase 2 bundled `read_files` rule.

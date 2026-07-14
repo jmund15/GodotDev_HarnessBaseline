@@ -24,3 +24,5 @@ Then stage `git add -A` and `git reset` the exclude-set — never blind-commit `
 **How to apply:** When a session's changes are provably mechanical, the signature filter turns an intractable "which of N changes are mine?" into a precise exclude list. Pair with the harness rule "before deleting/committing, look at the target."
 
 **Signal:** 2026-05-26 structure_audit — session-start status showed only `? Jmodot`, but the tree held a Sanity-charter refactor + ThrustAttackAction test work; the detector isolated 7 pre-existing files from 224 audit changes cleanly. Related: [[refactor-parity-audit]].
+
+**Gate side-effect artifacts** (files a green `/regression_gate` auto-regenerates — duration manifests, tool-allowlists) commit by PROVENANCE, not by "the gate said stage it": commit the diff YOUR change caused (a re-measured timing your added tests shifted), but LEAVE a diff that is pre-existing drift your run merely surfaced (an allowlist entry for another feature's class). "The gate regenerated it" is not proof the diff is yours.

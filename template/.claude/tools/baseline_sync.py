@@ -65,12 +65,26 @@ def load_lock(root: Path) -> dict:
     lock_path = root / LOCK_RELPATH
     if not lock_path.exists():
         sys.exit(f"error: {LOCK_RELPATH} not found — run 'init' first")
-    return json.loads(lock_path.read_text(encoding="utf-8"))
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    # {{PROJECT_ROOT}} is the one machine-varying substitution (the repo path
+    # differs across PCs — e.g. laptop vs main PC). Resolve it from the current
+    # checkout on every load so substitution works on any machine; the committed
+    # value is left blank (see save_lock) and never trusted.
+    subs = lock.get("substitutions")
+    if isinstance(subs, dict) and "{{PROJECT_ROOT}}" in subs:
+        subs["{{PROJECT_ROOT}}"] = str(root).replace("\\", "/")
+    return lock
 
 
 def save_lock(root: Path, lock: dict) -> None:
+    # Never persist the machine-specific {{PROJECT_ROOT}} value — blank it so the
+    # committed lock stays portable (load_lock refills it per-machine at runtime).
+    to_write = dict(lock)
+    subs = lock.get("substitutions")
+    if isinstance(subs, dict) and "{{PROJECT_ROOT}}" in subs:
+        to_write["substitutions"] = {**subs, "{{PROJECT_ROOT}}": ""}
     (root / LOCK_RELPATH).write_text(
-        json.dumps(lock, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+        json.dumps(to_write, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
 
 def normalize(data: bytes) -> bytes:

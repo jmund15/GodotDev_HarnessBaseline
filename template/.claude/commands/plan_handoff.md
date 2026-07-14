@@ -18,7 +18,7 @@ description: Begin execution of an approved plan in this (fresh executor) sessio
    - The plan file is the authority. Follow it exactly where unambiguous.
    - Surface to the user (do not improvise) when you hit any of:
      - a referenced file/type/symbol doesn't exist as the plan describes
-     - a decision not covered by the plan's Decision record
+     - a decision the plan doesn't cover
      - an unexpected tooling failure (test infra, build error)
      - an integration step produces results the plan didn't anticipate
    - CLAUDE.md still applies. Run /regression_gate before any .cs commit.

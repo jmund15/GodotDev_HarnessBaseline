@@ -263,8 +263,7 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
             f"{signals['tail_streak']}× `{signals['tail_tool']}`). "
             "If synthesizing, bundle next into "
             "`mcp__ai-worker__read_files(paths=[...], question=...)`. "
-            "CLAUDE.md §9. If ai-worker is absent this session, substitute a Haiku "
-            "general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
+            "CLAUDE.md §9."
         )
     # Hard nudge — explicit target list, stronger framing.
     targets = []
@@ -281,8 +280,7 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
         "`mcp__ai-worker__read_files(paths=[<accumulated>], question=<...>)`. "
         f"Targets: {target_list}. "
         "Per-query recovery only (don't redo what's done); reroute next. "
-        "CLAUDE.md §9. If ai-worker is absent this session, substitute a Haiku "
-        "general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
+        "CLAUDE.md §9."
     )
 
 

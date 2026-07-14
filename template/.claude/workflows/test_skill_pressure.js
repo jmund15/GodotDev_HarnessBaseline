@@ -1,10 +1,10 @@
 export const meta = {
   name: 'test-skill-pressure',
-  description: 'Adversarial skill pressure-test: synthesize rationalization-inviting prompts, dispatch tempted-Claude subagents, score COMPLIES/DRIFTS/FAILS, gate every COMPLIES through an independent Haiku validator',
+  description: 'Adversarial skill pressure-test: synthesize rationalization-inviting prompts, dispatch tempted-Claude subagents, score COMPLIES/DRIFTS/FAILS, gate every COMPLIES through an independent validator',
   phases: [
     { title: 'Synthesize', detail: 'detect rationalization/rule surface; build <=15 adversarial prompts (one model call)' },
     { title: 'Dispatch', detail: 'one Sonnet tempted-Claude subagent per prompt (parallel, capped)' },
-    { title: 'Adjudicate', detail: 'score each response; Haiku-validate EVERY COMPLIES; downgrade false-COMPLIES to DRIFTS' },
+    { title: 'Adjudicate', detail: 'score each response; independently validate EVERY COMPLIES; downgrade false-COMPLIES to DRIFTS' },
   ],
 }
 
@@ -150,19 +150,19 @@ const results = await pipeline(
     .then(score => score
       ? ({ ...prev, verdict: score.verdict, reason: score.reason, suggestedPatch: score.suggestedPatch || '' })
       : ({ ...prev, verdict: 'DRIFTS', reason: 'score agent returned null (transport failure) — surfaced, not silently dropped', suggestedPatch: '' })),
-  // stage 3: FILTERED Haiku validator — fires on EVERY COMPLIES; downgrades false-COMPLIES to DRIFTS
+  // stage 3: FILTERED validator — fires on EVERY COMPLIES; downgrades false-COMPLIES to DRIFTS
   async (prev, item) => {
     const base = { source: item.source, prompt: item.prompt, excerpt: item.excerpt, response: prev.response, suggestedPatch: prev.suggestedPatch }
     if (prev.verdict !== 'COMPLIES') {
       return { ...base, verdict: prev.verdict, reason: prev.reason, validated: null, downgraded: false }
     }
-    const v = await agent(validatorPrompt(item.excerpt, item.prompt, prev.response), { label: 'validate:' + item.source, phase: 'Adjudicate', model: 'haiku', schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(item.excerpt, item.prompt, prev.response), { label: 'validate:' + item.source, phase: 'Adjudicate', model: 'sonnet', effort: 'medium', schema: VALIDATE_SCHEMA })
     const validated = !!(v && v.validated)
     const downgraded = !validated
     return {
       ...base,
       verdict: downgraded ? 'DRIFTS' : 'COMPLIES',
-      reason: downgraded ? ('Haiku-rejected false-COMPLIES: ' + ((v && v.reason) || 'validator returned null')) : prev.reason,
+      reason: downgraded ? ('Validator-rejected false-COMPLIES: ' + ((v && v.reason) || 'validator returned null')) : prev.reason,
       validated,
       downgraded,
     }

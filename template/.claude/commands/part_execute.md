@@ -23,7 +23,7 @@ Run [`/plan_handoff <plan-file-path>`](plan_handoff.md) and adopt its execution 
 - The plan file is authority; follow it exactly where unambiguous.
 - Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them — per `feedback_verify_explore_agent_empirical_claims`. A claim that fails verification is **halt valve (a)**.
 - Mechanical execution is yours — don't ask permission for unambiguous steps.
-- Do **not** read prior session transcripts or memory snapshots; the plan is self-sufficient by design — when produced by [`/plan_drive`](plan_drive.md), the critique trail's load-bearing conclusions were folded into the plan's **Decision record**, so the *why* travels inside the plan, not in a side artifact.
+- Do **not** read prior session transcripts or memory snapshots; the plan is self-sufficient by design — when produced by [`/plan_drive`](plan_drive.md), each decision's load-bearing *why* is woven inline (per [*Plan-file format*](../skills/_brainstorm_shared/plan_file_format.md)), so the *why* travels inside the plan, not in a side artifact.
 
 If the plan path is missing or unreadable, abort exactly as `plan_handoff` specifies and stop.
 

@@ -83,6 +83,10 @@ Scan the session for:
 - "Yes, that's right"
 - "Perfect, keep doing it this way"
 
+**Missed delegation** (orchestrator-tier sessions)
+- `DELEGATION:` entries in the self-evaluate archive, or user feedback about work that should have been dispatched
+- Each carries a rationalization + proposed harness edit (per `/self_evaluate` step 5); when the same rationalization recurs across sessions, propose the named edit against the CLAUDE.md Model Delegation ladder/grain/litmus (or the recording session's proposed file) rather than re-describing the failure
+
 **Ignore:**
 - Context-specific one-offs ("use X here" without "always")
 - Ambiguous feedback

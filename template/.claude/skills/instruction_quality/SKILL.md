@@ -1,15 +1,12 @@
 ---
 description: >-
-  Auto-load when reviewing or refining skill descriptions, command procedures, hooks,
-  or always-loaded guidance. Triggers: "audit this skill", "is this description good",
-  "review CLAUDE.md", "instruction quality", "trigger words", "skill description",
-  "audit the hooks", "hook quality". Does NOT measure trigger accuracy (use
-  `skill-creator`) or adversarial pressure (use `/test_skill`).
+  ALWAYS load when reviewing, refining, or authoring claude code harness files. This includes skills, commands, hooks, rules, or any other loaded guidance. 
+  Does NOT measure trigger accuracy (use `skill-creator`) or adversarial pressure (use `/test_skill`).
 ---
 
 # Instruction Quality Principles
 
-Codifies what makes skill descriptions, command procedures, and CLAUDE.md sections instruction-followable. Derived from Anthropic's CLAUDE.md guide (https://code.claude.com/docs/llms.txt) plus inaugural-run findings from the 2026-05-03 CLAUDE.md compression.
+Codifies what makes Claude Code Harness files -- skills, commands, hooks, and CLAUDE.md sections -- optimized and instruction-followable. Derived from Anthropic's CLAUDE.md guide (https://code.claude.com/docs/llms.txt) plus inaugural-run findings and user input.
 
 ## Universal principles (skills, commands, CLAUDE.md)
 
@@ -66,7 +63,7 @@ The 200-line target is for **always-loaded** content (CLAUDE.md, auto-memory's `
 
 **Audit checks:**
 *   Skill >800 lines? Could it split by sub-domain or path-scope?
-*   Command >300 lines? Procedure may benefit from extraction into a sub-command or skill.
+*   Command >400 lines? Procedure may benefit from extraction into a sub-command or skill.
 *   CLAUDE.md >220 lines? Run `/claudemd_compact`.
 
 **Don't:** reflexively apply the 200-line cap to skills or commands. They're not always-loaded; the cap doesn't transfer.
@@ -97,13 +94,14 @@ Every sentence should change behavior. Hedge text, narrative restatements of str
 
 ### 7. Description-as-trigger discipline
 
-Skill descriptions ARE the trigger mechanism. Vague descriptions trigger inconsistently; over-specific descriptions miss legitimate cases; over-long descriptions confuse the matcher.
+Skill descriptions ARE the trigger mechanism. Vague descriptions trigger inconsistently; over-specific descriptions miss legitimate cases; over-long descriptions confuse the matcher and bloat context.
 
 **Audit checks:**
 *   Description length 50–500 chars AND within ~150% of the peer-skill median word count in the same `.claude/skills/` directory? (`/instruction_audit` Phase B computes the char count and the sibling median — don't eyeball it. Description is always-loaded cost paid every session; anything larger than stated here must have strong justification.)
 *   Imperative trigger guidance (`Use when X` / `Use BEFORE Y` / `SKIP for Z`)?
 *   `SKIP` / `DO NOT USE` clauses present where the skill could falsely fire?
-*   Concrete trigger phrases that mirror real user prompts?
+*   **Logical scope statement, not a keyword list.** `Triggers: "word", "word", ...` enumerations are deprecated (user directive, 2026-07-13): the matcher reads and reasons over descriptions — describe *when and why* to load in logical terms instead of listing phrases. Existing keyword lists are migration debt, not the template.
+*   **SKIP clauses exclude only true non-uses of the skill.** A SKIP entry that names a case the skill's own body routes (e.g. sequential dependency → pipeline dispatch, in `orchestration`) suppresses the skill exactly when it's needed. Litmus: *would the skill body have an answer for this case?* Yes → it belongs in the description's positive scope, not SKIP.
 
 ### 8. Frontmatter convention
 
@@ -199,7 +197,7 @@ Procedures and reference skills assert facts beyond their own prose: codebase cl
 **Audit checks:**
 *   Sample the target's load-bearing codebase claims (up to ~10 — prefer paths a procedure writes to, types it instantiates, conventions it propagates) and verify each with one Glob/Grep/LSP call. A reference skill that names APIs is making testable claims — test them. Empty Glob/Grep ≠ absence; confirm with `ls` before flagging (`gotcha_grep_glob_miss_tracked_files.md`).
 *   Harness-behavior claims (tool params, agent caps, model defaults, capability negations) — verify against the CURRENT tool schema before trusting. A claim that the harness *can't* do something deserves a re-check on every audit; capabilities are added between versions.
-*   The checks are mechanical and independent — for multi-file audits, delegate to parallel read-only agents (`parallel_agents` skill); synthesis stays in the orchestrator.
+*   The checks are mechanical and independent — for multi-file audits, delegate to parallel read-only agents (`orchestration` skill); synthesis stays in the orchestrator.
 
 **Inaugural examples (2026-06-09 harness audit):** `spell_authoring` routed new TDD tests to `Tests/Unit/` (tree no longer exists — suites would silently miss the regression gate's `Tests/Logic` filter); archetype convention cited `.res` (dead — `.tres` is live); `ISpellVisuals` (interface never shipped; it's `ISpellBodyVisuals`); `parallel_agents` prescribed *sequential* dispatch for worktree isolation after the `Agent` tool had gained parallel `isolation: "worktree"`.
 

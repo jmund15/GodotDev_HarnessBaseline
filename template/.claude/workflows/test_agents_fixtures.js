@@ -1,10 +1,10 @@
 export const meta = {
   name: 'test-agents-fixtures',
-  description: 'Run synthetic agent integration fixtures: assemble CONTEXT+prompt deterministically, dispatch each review/audit agent, apply the 5-clause assertion matcher as code, then PASS-only Haiku validation',
+  description: 'Run synthetic agent integration fixtures: assemble CONTEXT+prompt deterministically, dispatch each review/audit agent, apply the 5-clause assertion matcher as code, then PASS-only independent validation',
   phases: [
     { title: 'Dispatch', detail: 'assemble CONTEXT+prompt from structured args; spawn each fixture agent (parallel)' },
     { title: 'Assert', detail: 'extract JSON findings (malformed = FAIL); run the 5-clause matcher' },
-    { title: 'Validate', detail: 'Haiku review on PASS-only; REJECTED overrides to FAIL' },
+    { title: 'Validate', detail: 'validator review on PASS-only; REJECTED overrides to FAIL' },
   ],
 }
 
@@ -171,10 +171,10 @@ const results = await pipeline(
     const a = runAssertions(findings, fx.expected, fx.agent)
     return { id: fx.id, agent: fx.agent, pass: a.pass, reason: a.reason, findingCount: findings.length, findings, validated: null, response: prev.response }
   },
-  // stage 3: Haiku validation on PASS-only; REJECTED overrides to FAIL
+  // stage 3: validation on PASS-only; REJECTED overrides to FAIL
   async (prev, fx) => {
     if (!prev.pass) { return prev }
-    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: 'haiku', schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: 'sonnet', effort: 'medium', schema: VALIDATE_SCHEMA })
     if (!v.validated) {
       return { ...prev, pass: false, reason: 'Validator REJECTED: ' + v.reason, validated: false }
     }

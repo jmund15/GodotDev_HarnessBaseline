@@ -8,7 +8,7 @@ description: Pressure-test a skill by dispatching adversarial subagent scenarios
 
 Adversarial integration tests for `.claude/skills/<name>/SKILL.md`. For each rationalization, red-flag, or rule documented in the target skill, a fresh subagent is dispatched with the skill in-context against a prompt that *invites* the rationalization, then scored COMPLIES / DRIFTS / FAILS. The deterministic orchestration (surface detection, the ≤15 cap, single-message parallel dispatch, the validate-EVERY-COMPLIES gate, calibration independence) lives in the workflow `.claude/workflows/test_skill_pressure.js` — this command assembles its input and renders its output.
 
-**Sibling command:** `/test_agents` runs integration tests for review/audit *agents*. Both gate COMPLIES verdicts on Haiku validation.
+**Sibling command:** `/test_agents` runs integration tests for review/audit *agents*. Both gate COMPLIES verdicts on independent validation.
 
 **Arguments:** `$ARGUMENTS`
 - Required: a single skill name (e.g., `/test_skill testing`, `/test_skill debugging`).
@@ -43,7 +43,7 @@ The workflow returns:
   { source, prompt, excerpt, response, verdict, reason, suggestedPatch, validated, downgraded } ], note? }
 ```
 
-It owns, deterministically: Mode-A-vs-B surface detection, one adversarial prompt per documented entry (capped at 15, rationalizations preferred on overflow), single-message Sonnet dispatch, COMPLIES/DRIFTS/FAILS scoring, and an independent Haiku validator on **every** COMPLIES (downgrading false-COMPLIES to DRIFTS). Do not re-implement any of this in the command.
+It owns, deterministically: Mode-A-vs-B surface detection, one adversarial prompt per documented entry (capped at 15, rationalizations preferred on overflow), single-message Sonnet dispatch, COMPLIES/DRIFTS/FAILS scoring, and an independent validator on **every** COMPLIES (downgrading false-COMPLIES to DRIFTS). Do not re-implement any of this in the command.
 
 ---
 
@@ -67,7 +67,7 @@ ADVERSARIAL PROMPT                              VERDICT    EXCERPT
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
 
-For every `DRIFTS` and `FAILS` result, print full detail (so the human can patch the skill). A `downgraded: true` result is a Haiku-rejected false-COMPLIES — surface it as such:
+For every `DRIFTS` and `FAILS` result, print full detail (so the human can patch the skill). A `downgraded: true` result is a validator-rejected false-COMPLIES — surface it as such:
 
 ```
 DRIFT/FAIL DETAILS:
@@ -83,8 +83,8 @@ If `mode == "B"`, prefix the report with: `NOTE: Skill has no explicit rationali
 
 ## Notes
 
-- **Cost:** ~1 synthesize + N Sonnet dispatch + N score + (COMPLIES-count) Haiku validators per run. Roughly $0.10–0.30 on a typical skill.
+- **Cost:** ~1 synthesize + N Sonnet dispatch + N score + (COMPLIES-count) validators per run. Roughly $0.10–0.30 on a typical skill.
 - **No `--all` mode in v1** — running against all skills would exceed the 15-prompt fan-out budget. Re-evaluate if {{PROJECT_NAME}} adopts a quarterly harness-audit cadence.
 - **Manual invocation only** — not auto-run from `/regression_gate`. Validates *harness correctness* (skill quality), not *production correctness*.
 - **No file modifications** — read-only. No single-flight exposure (subagents reason over the injected skill text; no GdUnit4, no LSP).
-- **Calibration integrity** is enforced in the workflow: each Haiku validator is built from a fixed template with zero prior-run context, so re-testing a patched skill measures the patch, not the history.
+- **Calibration integrity** is enforced in the workflow: each validator is built from a fixed template with zero prior-run context, so re-testing a patched skill measures the patch, not the history.

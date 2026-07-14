@@ -50,7 +50,8 @@ route through `/autolearn`, which (in `/session_end`) runs first and has already
 4. Propose the best option(s) for implementation. The BEST options:
     * A: most signficiantly increase odds of compliance and proper information acquisition
     * B: adds the least amount of context to existing Skills and Hooks as possible
-5. UPSERT a **structured entry** in the self-evaluate archive at `/.claude/self_evaluate_archive.json` — see Step 5 for the strict one-entry-per-session contract.
+5. **Delegation calibration** (orchestrator-tier sessions only). Did dispatched chunks land near expected grain/quality? Was review effort ~10–20%? Was anything kept inline a lower tier could've taken — or dispatched that shouldn't have been? For each **missed delegation** (inline work that met the CLAUDE.md delegation litmus), also record: (a) the rationalization that kept it inline ("already in context", "faster to just do it", "spec felt like overhead", "scope looked smaller than it was"), and (b) whether a harness edit would have prevented the miss (a sharper litmus line, a new trigger cue, a ladder-row example) — name the file + edit shape, don't just say "improve guidance". Record a material finding: user-flagged → `corrections[]`; self-observed → prefix `key_takeaway`/`notes` with `DELEGATION:` (include the rationalization + proposed-edit fields). Recurring `DELEGATION:` findings are the `/autolearn` signal to revise the CLAUDE.md Model Delegation ladder/grain.
+6. UPSERT a **structured entry** in the self-evaluate archive at `/.claude/self_evaluate_archive.json` — see Step 5 for the strict one-entry-per-session contract.
 
 ### Step 5: Archive Entry Format
 
@@ -121,7 +122,7 @@ When editing an existing entry, fields update with these rules — do not blindl
 - `session_id`: REQUIRED for new entries. NULL is acceptable only when the Claude Code session UUID is genuinely unrecoverable (rare).
 - `outcome`: "clean" = zero user corrections. "correction" = user caught 1+ issues. "failure" = critical failure (data loss, repeated user frustration, etc.)
 - `pattern`: Classify using established patterns from `Self_Evaluate_Themes.patterns` (A/B/C/D/E). **A `correction` or `failure` outcome MUST carry a non-null pattern (A/B/D/E)** — `null` is reserved for `clean` sessions. If a correction fits no existing pattern, add a new letter to `Self_Evaluate_Themes.patterns` rather than leaving it null; a null-on-correction is invisible to `/eval_dashboard`'s pattern distribution. (Clean sessions: `null` and the legacy `C` both read as "clean" — `/eval_dashboard` normalizes them.)
-- `domains`: Tag ALL domains the session touched. Common values: `pooling`, `testing`, `combat`, `refactoring`, `UI`, `animation`, `meta`, `brainstorm`, `debugging`, `data-files`, `environment`, `collision`, `HSM`, `spell-effects`
+- `domains`: Tag ALL domains the session touched. Common values: `pooling`, `testing`, `combat`, `refactoring`, `UI`, `animation`, `meta`, `brainstorm`, `debugging`, `data-files`, `environment`, `collision`, `HSM`, `spell-effects`, `orchestration`
 - `corrections`: Be specific. "Skipped TDD for .tres edit" not "made a mistake"
 - `memory_hits`: Only list memory entries that **actually informed a decision** — not every search result
 - `tests.tdd_followed`: `false` if you wrote implementation before a failing test in Logic Domain
