@@ -57,6 +57,26 @@ Tool family handling:
   absolute path instead of routing through `read_files`. Restricted to `.md` to avoid
   false-positives on .cs/.tres at synthesis-named folders.
 
+Edit-anchor suppression (2026-08-02). A synthesis-shaped path is not evidence
+of synthesis intent: `Edit` requires the file to have been `Read` first, so
+every edit produces anchor reads that a digest cannot serve. Signals, strongest
+first — behavior decides, vocabulary is only QoL:
+1. BEHAVIORAL (primary) — `edit_seen_this_turn`, set by
+   harness_edit_skill_reminder.py on any Write|Edit, cleared per turn by
+   tool_routing_cumulative_reset.py. Unambiguous; needs no vocabulary guessing.
+   Suppresses the worker-routing advisories only; Grep/LSP rules still fire.
+2. STRUCTURAL — `.claude/` paths (§9 forbids routing harness markdown through
+   the worker at all) and windowed reads (`offset`/`limit`, surgical by
+   construction) never nudge. Owned by routing_classifier so routing_audit.py's
+   silent-miss split can't drift from this hook.
+3. LEXICAL (weakest, QoL) — `EDIT_INTENT_CUES` in routing_classifier covers only
+   the reads that PRECEDE the turn's first edit, where the prompt is the sole
+   available evidence. Cues are context-padded ("edit the", not "edit"): an
+   over-match silently drops a real routing violation.
+Independent of intent: every nudge is delivered at most ONCE per (tool, target)
+per session (`nudge_targets_seen`). Repetition is what trains the model to
+ignore the channel.
+
 Boundaries:
 - Never blocks. Exit 0 in all paths.
 - Silent on tool calls that don't match any pattern.
@@ -77,11 +97,9 @@ import sys
 # routing_audit.py PostToolUse hook depends on. See routing_classifier.py.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from routing_classifier import (
-    LITERAL_INTENT_CUES,
-    VERIFIED_UNIQUE_CUES,
-    SYNTHESIS_DOC_HINTS,
     BULK_MAXMATCHES_THRESHOLD,
     BULK_CONTEXT_THRESHOLD,
+    classify_call,
     is_pascal_identifier,
     grep_target_family,
     is_cloud_session,
@@ -102,6 +120,30 @@ _STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 def _hard_block_enabled() -> bool:
     """Env-var toggle for the Fix 2 hard block. Default OFF."""
     return os.environ.get(HARD_BLOCK_ENV_VAR, "").lower() in ("1", "true", "yes")
+
+
+# Tools whose nudge is a "route this read through the worker" advisory. An edit
+# already made this turn is positive evidence the reads are edit anchors, which
+# the worker cannot serve — a digest is not editable. Grep rules are excluded:
+# a bare-PascalCase Grep bypasses LSP whether or not the turn edits anything.
+_SYNTHESIS_ADVISORY_TOOLS = ("Read", "mcp__obsidian__obsidian_get_note")
+
+
+def _edit_seen_this_turn(session_id: str) -> bool:
+    """Behavioral edit-intent signal, set by harness_edit_skill_reminder.py on
+    any Write|Edit and cleared per turn by tool_routing_cumulative_reset.py.
+    This is the PRIMARY suppression signal; the prompt cue words in
+    routing_classifier.EDIT_INTENT_CUES are a weaker fallback covering only the
+    reads that precede the turn's first edit."""
+    if not session_id:
+        return False
+    path = os.path.join(_STATE_DIR, f"{session_id[:8]}.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return bool(isinstance(data, dict) and data.get("edit_seen_this_turn"))
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+        return False
 
 
 def _read_last_prompt(session_id: str) -> str:
@@ -180,12 +222,12 @@ def _build_block_message(pattern: str) -> str:
 
 # --- Nudge composition ---------------------------------------------------
 
-def _nudge_obsidian_read(tool_input: dict) -> str | None:
+def _nudge_obsidian_read(tool_input: dict, last_prompt: str) -> str | None:
     target = tool_input.get("target") or {}
     path = (target.get("path") if isinstance(target, dict) else "") or ""
     if not path:
         return None
-    if not any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS):
+    if classify_call("mcp__obsidian__obsidian_get_note", tool_input, last_prompt).severity != "nudge-warranted":
         return None
     return (
         "[tool-routing] Synthesis-shaped Obsidian doc detected. If you're loading "
@@ -196,21 +238,17 @@ def _nudge_obsidian_read(tool_input: dict) -> str | None:
     )
 
 
-def _nudge_read(tool_input: dict) -> str | None:
+def _nudge_read(tool_input: dict, last_prompt: str) -> str | None:
     """Native `Read` of a synthesis-shaped `.md` path. Companion to
     `_nudge_obsidian_read` — closes the gap where an agent reads a
     synthesis-shaped doc by absolute path instead of routing through
     `read_files`. Schema note: native Read uses `file_path` (snake_case),
-    not `filePath`. Restricted to `.md` to avoid false-positives on .cs/
-    .tres paths under folders like `Architecture/` or `Audit/` — those
-    have their own routing rules (LSP / Grep) and are line-precision
-    targets, not synthesis prose."""
+    not `filePath`. Suppression (edit-anchor false-positives) is owned by
+    `routing_classifier._classify_native_read`."""
     path = tool_input.get("file_path") or ""
     if not path:
         return None
-    if not path.lower().endswith(".md"):
-        return None
-    if not any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS):
+    if classify_call("Read", tool_input, last_prompt).severity != "nudge-warranted":
         return None
     return (
         "[tool-routing] Synthesis-shaped doc path detected on native `Read`. If "
@@ -223,7 +261,7 @@ def _nudge_read(tool_input: dict) -> str | None:
     )
 
 
-def _nudge_obsidian_search(tool_input: dict) -> str | None:
+def _nudge_obsidian_search(tool_input: dict, last_prompt: str) -> str | None:
     max_matches = tool_input.get("maxMatchesPerHit")
     context_length = tool_input.get("contextLength")
     is_bulk = (
@@ -242,7 +280,7 @@ def _nudge_obsidian_search(tool_input: dict) -> str | None:
     )
 
 
-def _nudge_grep(tool_input: dict) -> str | None:
+def _nudge_grep(tool_input: dict, last_prompt: str) -> str | None:
     pattern = tool_input.get("pattern") or ""
     if not is_pascal_identifier(pattern):
         return None
@@ -298,6 +336,49 @@ _RULE_KEYS = {
 }
 
 
+# Repeat-suppression: a nudge already delivered for the same target carries no
+# new information on re-fire, and repetition is what turns an advisory into
+# noise the model learns to ignore. One delivery per (tool, target) per session.
+_SEEN_CAP = 200
+
+
+def _nudge_target_key(tool_name: str, tool_input: dict) -> str:
+    if tool_name == "Read":
+        target = tool_input.get("file_path") or ""
+    elif tool_name == "mcp__obsidian__obsidian_get_note":
+        t = tool_input.get("target") or {}
+        target = (t.get("path") if isinstance(t, dict) else "") or ""
+    elif tool_name == "Grep":
+        target = tool_input.get("pattern") or ""
+    else:
+        target = ""
+    return f"{tool_name}:{target.replace(chr(92), '/').lower()}"
+
+
+def _seen_before(session_id: str, key: str) -> bool:
+    """True if this nudge target already fired this session. Records it on the
+    first sighting. Fail-open: any state error returns False (nudge delivered)."""
+    path = os.path.join(_STATE_DIR, f"{session_id[:8] if session_id else 'default'}.json")
+    try:
+        state: dict = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                state = loaded
+        seen = state.get("nudge_targets_seen") or []
+        if key in seen:
+            return True
+        seen.append(key)
+        state["nudge_targets_seen"] = seen[-_SEEN_CAP:]
+        os.makedirs(_STATE_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=True)
+    except Exception:
+        pass
+    return False
+
+
 def _record_pre_nudge(session_id: str, rule: str) -> None:
     """Best-effort append of a fired rule key to the session-level state file
     (`tool_routing_cumulative_reset.py` clears the list each turn)."""
@@ -351,13 +432,19 @@ def process(input_data: dict) -> tuple[str | None, str | None]:
     if handler is None:
         return (None, None)
 
+    if tool_name in _SYNTHESIS_ADVISORY_TOOLS and _edit_seen_this_turn(session_id):
+        return (None, None)
+
     try:
-        nudge = handler(tool_input)
+        nudge = handler(tool_input, _read_last_prompt(session_id))
     except Exception:
         # Hook must never break the tool call. Swallow any handler bug.
         return (None, None)
 
     if not nudge:
+        return (None, None)
+
+    if _seen_before(session_id, _nudge_target_key(tool_name, tool_input)):
         return (None, None)
 
     _record_pre_nudge(session_id, _RULE_KEYS.get(tool_name, ""))

@@ -58,6 +58,7 @@ def _bump_turn(session_id: str, prompt: str) -> None:
     state["nudges_fired_this_turn"] = []
     state["post_grep_nudges_fired_this_turn"] = []
     state["pre_nudges_fired_this_turn"] = []
+    state["edit_seen_this_turn"] = False
     state["last_prompt"] = (prompt or "")[:4000]  # cap; cue-word check needs only first lines
     state.setdefault("calls", [])
     try:

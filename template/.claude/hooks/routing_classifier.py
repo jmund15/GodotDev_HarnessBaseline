@@ -115,6 +115,43 @@ AUDIT_INTENT_CUES = (
     "review for issues",
 )
 
+# Edit-intent carve-out: the read is an edit anchor, not a synthesis load.
+# You must `Read` a file before `Edit` will accept it, so a surgical read of a
+# synthesis-shaped doc is a routine precondition of editing it — routing that
+# through read_files returns a digest you cannot Edit from. Substring match on
+# the user's most recent prompt. Over-suppression costs a silent miss of a real
+# routing violation, so every cue carries enough context to exclude unrelated
+# words that contain it — bare "edit" matches editor/credit/audited, bare
+# "patch" matches dispatch, bare "tune" matches attune.
+EDIT_INTENT_CUES = (
+    "edit the",
+    "edit this",
+    "edit that",
+    "editing",
+    "revise",
+    "rewrite",
+    "update the",
+    "fix the",
+    "patch the",
+    "patch this",
+    "tweak",
+    "tune the",
+    "reword",
+    "amend",
+    "apply the",
+    "add a section",
+    "add to the",
+)
+
+# Path fragments that are agent-runtime instruction surfaces, never synthesis
+# targets. CLAUDE.md §9 write-routing forbids routing `.claude/` markdown
+# through the worker at all — so a Read here can only be an execute/edit read,
+# and the digest nudge is always wrong. Matched case-insensitively on the path
+# with separators normalized.
+HARNESS_PATH_MARKERS = (
+    "/.claude/",
+)
+
 # Path-fragment hints that an Obsidian read is a synthesis-shaped target
 # (large doc, design/architecture/retrospective shape — better to route through
 # read_files than load the full doc into context). Case-insensitive substring
@@ -221,6 +258,27 @@ def prompt_has_audit_intent(prompt: str) -> bool:
     return any(cue in lowered for cue in AUDIT_INTENT_CUES)
 
 
+def prompt_has_edit_intent(prompt: str) -> bool:
+    """True if prompt contains any edit-intent cue — the read is an edit anchor."""
+    if not prompt:
+        return False
+    lowered = prompt.lower()
+    return any(cue in lowered for cue in EDIT_INTENT_CUES)
+
+
+def is_harness_path(path: str) -> bool:
+    """True if the path is an agent-runtime instruction surface (`.claude/`)."""
+    if not path:
+        return False
+    return any(m in path.replace("\\", "/").lower() for m in HARNESS_PATH_MARKERS)
+
+
+def is_bounded_read(tool_input: dict) -> bool:
+    """True if the Read call is windowed (`offset`/`limit`) — surgical by
+    construction, so the whole-doc digest advisory does not apply."""
+    return tool_input.get("offset") is not None or tool_input.get("limit") is not None
+
+
 def prompt_has_grep_override_cue(prompt: str) -> bool:
     """
     True if prompt contains EITHER literal-intent (K1) OR verified-unique (L6) cue.
@@ -305,6 +363,16 @@ def classify_call(
     if tool_name == "mcp__obsidian__obsidian_search_notes":
         return _classify_obsidian_search(tool_input, last_prompt)
 
+    # Web transport — deterministic tiers rank ahead of the paid/lossy ones.
+    if tool_name == "WebFetch":
+        return _classify_webfetch(tool_input, last_prompt)
+
+    if tool_name == "WebSearch":
+        return _classify_websearch(tool_input, last_prompt)
+
+    if tool_name == "mcp__ai-worker__read_web":
+        return _classify_read_web(tool_input, last_prompt)
+
     # Tools without §9 routing rules.
     return Classification("not-routable", None, None, tool_name)
 
@@ -373,18 +441,21 @@ def _classify_native_read(tool_input: dict, last_prompt: str) -> Classification:
         return Classification("not-routable", None, None, "Read")
     if not path.lower().endswith(".md"):
         return Classification("not-routable", None, None, "Read")
+    # Edit-anchor carve-outs — a read that cannot be a synthesis load.
+    if is_harness_path(path) or is_bounded_read(tool_input):
+        return Classification("not-routable", None, None, "Read")
     is_synthesis_shape = any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS)
     if not is_synthesis_shape:
         # Surgical read of a non-synthesis-shaped .md (e.g. CLAUDE.md, README) — fine.
         return Classification("compliant", None, None, "Read")
     # Audit-shape carve-out — mirrors `_classify_obsidian_read`.
-    if prompt_has_audit_intent(last_prompt):
+    if prompt_has_audit_intent(last_prompt) or prompt_has_edit_intent(last_prompt):
         return Classification(
             severity="cue-exempt",
             rule="native-read-synthesis-doc",
             reason=(
                 "synthesis-shaped path on native Read would route to read_files, "
-                "but user prompt invokes audit-shape direct-read carve-out"
+                "but user prompt invokes the audit-shape or edit-anchor carve-out"
             ),
             tool="Read",
         )
@@ -409,9 +480,9 @@ def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classificatio
         # Surgical read of a non-synthesis-shaped doc (e.g. Worklog) — fine.
         return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
 
-    # Audit-shape carve-out: explicit line-precision framing legitimizes
-    # direct read over read_files bundling.
-    if prompt_has_audit_intent(last_prompt):
+    # Audit-shape / edit-anchor carve-out: explicit line-precision or edit
+    # framing legitimizes direct read over read_files bundling.
+    if prompt_has_audit_intent(last_prompt) or prompt_has_edit_intent(last_prompt):
         return Classification(
             severity="cue-exempt",
             rule="obsidian-synthesis-doc-direct-read",
@@ -429,6 +500,77 @@ def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classificatio
             "should route through mcp__ai-worker__read_files for digest"
         ),
         tool="mcp__obsidian__obsidian_get_note",
+    )
+
+
+def _classify_webfetch(tool_input: dict, last_prompt: str) -> Classification:
+    """A single-URL WebFetch is the direct, correct call — the only per-call
+    violation is aiming it at a URL a better source already answers. Two such
+    shapes on docs.godotengine.org, both about VERSION rather than reachability
+    (the host is only intermittently Cloudflare-gated, so it is not blanket-
+    banned): a class page is generated from XML the cache holds at the exact
+    engine pin, and `/en/stable/` is a moving alias that cannot be pinned at all.
+    A version-pinned non-class URL (`/en/4.7/...`) is fine. Chained WebFetch is a
+    cumulative shape, owned by tool_routing_cumulative.py, not by this
+    per-call classifier."""
+    url = str(tool_input.get("url") or "")
+    low = url.lower()
+    if "docs.godotengine.org" in low:
+        if "class_" in low:
+            return Classification(
+                severity="nudge-warranted",
+                rule="webfetch-godot-class-page-not-pinned",
+                reason=(
+                    "a rendered class page cannot be pinned to the engine — read the "
+                    "version-pinned XML it is generated from under .claude/cache/godot-docs "
+                    "(build: .claude/scripts/godot_docs_cache.sh)"
+                ),
+                tool="WebFetch",
+            )
+        if "/en/stable/" in low:
+            return Classification(
+                severity="nudge-warranted",
+                rule="webfetch-godot-stable-alias-unpinnable",
+                reason=(
+                    "/en/stable/ is a moving alias and cannot satisfy the version-pin rule — "
+                    "use context7 /websites/godotengine_en_4_7, or a /en/4.7/ URL"
+                ),
+                tool="WebFetch",
+            )
+    return Classification("compliant", None, None, "WebFetch")
+
+
+def _classify_websearch(tool_input: dict, last_prompt: str) -> Classification:
+    """Last tier in the web order — advisory, because "the docs are silent" is a
+    judgment this classifier cannot make from the call shape alone."""
+    return Classification(
+        severity="advisory-applicable",
+        rule="websearch-last-web-tier",
+        reason=(
+            "WebSearch is the last web tier — the godot-docs cache, fetch_source.sh, "
+            "single-URL WebFetch and context7 own first-party answers (rules/source_trust.md)"
+        ),
+        tool="WebSearch",
+    )
+
+
+def _classify_read_web(tool_input: dict, last_prompt: str) -> Classification:
+    """read_web is the multi-page SYNTHESIS tier, not the 3+-URL reflex: it spends
+    real dollars and its extractor silently truncates (measured: 101,558 bytes ->
+    71,478 chars extracted), so a quote taken from it is unauditable."""
+    urls = tool_input.get("urls")
+    count = len(urls) if isinstance(urls, list) else 0
+    if count >= 3:
+        return Classification("compliant", None, None, "mcp__ai-worker__read_web")
+    return Classification(
+        severity="advisory-applicable",
+        rule="read-web-below-synthesis-floor",
+        reason=(
+            f"read_web on {count} url(s) — below the multi-page synthesis floor, and it "
+            "spends dollars while silently truncating; a single URL goes to WebFetch, "
+            "quote-bearing bytes to .claude/scripts/fetch_source.sh"
+        ),
+        tool="mcp__ai-worker__read_web",
     )
 
 

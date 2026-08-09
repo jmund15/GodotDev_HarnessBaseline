@@ -11,7 +11,8 @@ nothing has moved.
 Catches:
   - Cross-window commits (user committed in another shell)
   - /commit_push consequences (HEAD advanced + tree clean)
-  - Submodule pointer drift (Jmodot HEAD changed)
+  - Submodule pointer drift (Jmodot HEAD changed, or checkout gone stale
+    against the recorded pointer after a mid-session checkout/merge)
   - Branch surprises after `git switch`
 
 State fingerprint:
@@ -26,13 +27,22 @@ block a user prompt from being processed.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+# Windows pipes default to cp1252 through Python 3.14; git text now decodes as real
+# UTF-8, so a non-ASCII branch/path/subject would raise UnicodeEncodeError on write.
+sys.stdout.reconfigure(encoding="utf-8")
+
 # Field separator inside the fingerprint string. Pipe is fine because no
 # git ref or count we capture can contain it.
 SEP = "|"
+
+# `git submodule status` line: optional drift prefix, sha, path.
+# Empty prefix group == in sync ('-' uninit, '+' checkout != pointer, 'U' conflict).
+_SUBMODULE_RE = re.compile(r"^([-+U]?)([0-9a-f]{40})\s+(\S+)")
 
 # Cache file format: a single line of pipe-separated values, no trailing newline.
 # We rewrite the whole file on every change, so no schema migration needed.
@@ -51,7 +61,7 @@ def _run(args: list[str], cwd: str | None = None, timeout: int = 5) -> str:
     """
     try:
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, cwd=cwd
+            args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=cwd
         )
         if result.returncode != 0:
             return ""
@@ -170,19 +180,25 @@ def _capture_state(repo_root: str) -> dict[str, str]:
             "behind": "0",
         }
 
-    # Jmodot submodule HEAD — one more call, only if the submodule directory
-    # is non-empty. Un-init submodule records empty string (stable across
-    # prompts; no perpetual delta noise).
-    jmodot_path = Path(repo_root) / "Jmodot"
+    # Jmodot submodule HEAD + sync flag — one call supplies both. The status
+    # prefix ('+' checkout != recorded pointer, '-' uninitialized, 'U' conflicted,
+    # ' ' in sync) is what catches a MID-SESSION `git checkout` leaving the
+    # submodule behind; SessionStart's setup only sees session start.
+    # Un-init/unreadable records empty string (stable across prompts; no noise).
     jmodot_head = ""
-    if jmodot_path.exists() and any(jmodot_path.iterdir()):
-        jmodot_full = _run(
-            ["git", "rev-parse", "HEAD"], cwd=str(jmodot_path)
-        )
-        if jmodot_full:
-            jmodot_head = jmodot_full[:8]
+    jmodot_sync = ""
+    for line in _run(["git", "submodule", "status"], cwd=repo_root).splitlines():
+        # Match on the sha, not a fixed column: _run() strips, which eats the
+        # in-sync entry's leading-space prefix and shifts every offset by one.
+        match = _SUBMODULE_RE.match(line.strip())
+        if not match or "Jmodot" not in match.group(3):
+            continue
+        jmodot_head = match.group(2)[:8]
+        jmodot_sync = "stale" if match.group(1) else "ok"
+        break
 
     state["jmodot_head"] = jmodot_head
+    state["jmodot_sync"] = jmodot_sync
     return state
 
 
@@ -198,6 +214,7 @@ def _fingerprint(state: dict[str, str]) -> str:
             state["ahead"],
             state["behind"],
             state["jmodot_head"],
+            state["jmodot_sync"],
         ]
     )
 
@@ -205,7 +222,7 @@ def _fingerprint(state: dict[str, str]) -> str:
 def _parse_fingerprint(fp: str) -> dict[str, str] | None:
     """Inverse of _fingerprint. None if the cached line is malformed (treat as no prior)."""
     parts = fp.split(SEP)
-    if len(parts) != 8:
+    if len(parts) != 9:
         return None
     return {
         "branch": parts[0],
@@ -216,6 +233,7 @@ def _parse_fingerprint(fp: str) -> dict[str, str] | None:
         "ahead": parts[5],
         "behind": parts[6],
         "jmodot_head": parts[7],
+        "jmodot_sync": parts[8],
     }
 
 
@@ -298,6 +316,16 @@ def _format_delta(prev: dict[str, str], curr: dict[str, str]) -> str:
         prev_j = prev["jmodot_head"] or "(none)"
         curr_j = curr["jmodot_head"] or "(none)"
         lines.append(f"Jmodot HEAD: {curr_j} (was: {prev_j})")
+
+    # Staleness is reported on every drifted prompt while it persists, not only
+    # on the ok->stale edge: it silently breaks the build, so a delta emitted for
+    # any other reason should still carry the warning.
+    if curr["jmodot_sync"] == "stale":
+        lines.append(
+            "Jmodot submodule: STALE -- checkout does not match the pointer this "
+            "branch records. Builds will fail on phantom missing types. "
+            "Fix: git submodule update --init --recursive"
+        )
 
     lines.append("</git-state-delta>")
     return "\n".join(lines)

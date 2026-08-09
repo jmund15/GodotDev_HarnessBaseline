@@ -36,7 +36,7 @@ State file:
 
 Wiring:
 - settings.json hooks.PostToolUse with matcher
-  "Read|Grep|Glob|mcp__obsidian__obsidian_get_note|
+  "Read|Grep|Glob|WebFetch|WebSearch|mcp__obsidian__obsidian_get_note|
    mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search"
 """
 
@@ -80,7 +80,7 @@ BURST_CALL_THRESHOLD = 4
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 try:
-    from routing_classifier import AUDIT_INTENT_CUES  # noqa: F401
+    from routing_classifier import AUDIT_INTENT_CUES, prompt_has_edit_intent  # noqa: F401
 except ImportError:
     # Defensive fallback — preserves behavior if classifier module is missing.
     AUDIT_INTENT_CUES = (
@@ -89,6 +89,14 @@ except ImportError:
         "line by line", "line-by-line", "inspect the code", "inspect this file",
         "verify the implementation", "review for bugs", "review for issues",
     )
+
+    def prompt_has_edit_intent(prompt: str) -> bool:  # type: ignore[misc]
+        return False
+
+# Web-transport tools — counted like any other read, but their cascade reroutes
+# to the web order (cache -> fetch_source.sh -> WebFetch -> context7 -> read_web
+# -> WebSearch), not to read_files.
+WEB_TOOLS = ("WebFetch", "WebSearch")
 
 # Cap stored call list length to bound state file size.
 MAX_CALLS_RETAINED = 50
@@ -187,6 +195,10 @@ def _extract_target(tool_name: str, tool_input: dict) -> str:
         path = tool_input.get("path") or ""
         pattern = tool_input.get("pattern") or ""
         return f"GLOB:{path}:{pattern}"
+    if tool_name == "WebFetch":
+        return f"WEB:{(tool_input.get('url') or '')[:80]}"
+    if tool_name == "WebSearch":
+        return f"SEARCH:{tool_name}:{(tool_input.get('query') or '')[:40]}"
     if tool_name == "mcp__obsidian__obsidian_get_note":
         target = tool_input.get("target") or {}
         path = target.get("path") if isinstance(target, dict) else ""
@@ -215,6 +227,8 @@ def _target_dir(target: str) -> str:
         return "<glob-bucket>"
     if target.startswith("SEARCH:"):
         return "<search-bucket>"
+    if target.startswith("WEB:"):
+        return "<web-bucket>"
     # File path — take dirname. Normalize slashes so Windows/POSIX match.
     norm = target.replace("\\", "/")
     return os.path.dirname(norm).rstrip("/")
@@ -250,6 +264,20 @@ def _classify(calls: list) -> dict:
     }
 
 
+def _bundle_target(signals: dict) -> str:
+    """The tool the cascade should reroute into. A web chain is not a read_files
+    shape, and read_web is no longer its reflex answer: it is the multi-page
+    SYNTHESIS tier, spends real dollars, and silently truncates — so the
+    deterministic transport is named first."""
+    if signals.get("tail_tool") in WEB_TOOLS:
+        return (
+            "`.claude/scripts/fetch_source.sh <url> ...` (raw bytes, zero cost, quotable) "
+            "— or one `mcp__ai-worker__read_web(urls=[...], question=...)` only if the "
+            "answer genuinely needs multi-page synthesis"
+        )
+    return "`mcp__ai-worker__read_files(paths=[...], question=...)`"
+
+
 def _build_nudge(level: str, signals: dict, calls: list) -> str:
     """
     Compose the nudge text. Different shape for soft vs hard so the model can
@@ -261,8 +289,7 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
             f"[tool-routing] {count} reads/searches this turn "
             f"({signals['distinct_dirs']} dirs, "
             f"{signals['tail_streak']}× `{signals['tail_tool']}`). "
-            "If synthesizing, bundle next into "
-            "`mcp__ai-worker__read_files(paths=[...], question=...)`. "
+            f"If synthesizing, bundle next into {_bundle_target(signals)}. "
             "CLAUDE.md §9."
         )
     # Hard nudge — explicit target list, stronger framing.
@@ -270,14 +297,13 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
     for c in calls[-min(10, len(calls)):]:
         t = c.get("target") or ""
         if t:
-            if t.startswith(("GREP:", "GLOB:", "SEARCH:")):
+            if t.startswith(("GREP:", "GLOB:", "SEARCH:", "WEB:")):
                 t = t.split(":", 2)[-1][:40]
             targets.append(t)
     target_list = "; ".join(targets) if targets else "(targets unavailable)"
     return (
         f"[tool-routing] {count} reads/searches this turn — synthesis shape. "
-        "**Reroute next call** to "
-        "`mcp__ai-worker__read_files(paths=[<accumulated>], question=<...>)`. "
+        f"**Reroute next call** to {_bundle_target(signals)}. "
         f"Targets: {target_list}. "
         "Per-query recovery only (don't redo what's done); reroute next. "
         "CLAUDE.md §9."
@@ -314,6 +340,26 @@ def _prompt_implies_audit(state: dict) -> bool:
     return any(cue in prompt for cue in AUDIT_INTENT_CUES)
 
 
+def _prompt_implies_edit(state: dict) -> bool:
+    """
+    True when the user's prompt framed the task as editing. `Edit` requires the
+    file to have been Read first, so an edit turn produces a run of anchor
+    reads that look like a synthesis cascade and are not one — a digest cannot
+    be edited from. Symmetric with `_prompt_implies_audit`.
+
+    Two signals, either sufficient. The behavioral one (an Edit/Write already
+    happened this turn, recorded by harness_edit_skill_reminder.py) is the
+    reliable one; the lexical cue only covers the reads that PRECEDE the first
+    edit, which is exactly when the prompt is the only evidence available.
+    """
+    if state.get("edit_seen_this_turn"):
+        return True
+    prompt = (state.get("last_prompt") or "").lower()
+    if not prompt:
+        return False
+    return prompt_has_edit_intent(prompt)
+
+
 def _decide_nudge(state: dict) -> tuple[str | None, str | None]:
     """
     Returns (nudge_id, nudge_text) — nudge_id is what gets stored in
@@ -339,6 +385,12 @@ def _decide_nudge(state: dict) -> tuple[str | None, str | None]:
     # nudge that would push toward a cheap-model summary.
     if _prompt_implies_audit(state):
         state["audit_exception_suppressions"] = state.get("audit_exception_suppressions", 0) + 1
+        return (None, None)
+
+    # Edit-anchor suppression — reads that exist to satisfy Edit's read-first
+    # precondition are not a bundleable cascade.
+    if _prompt_implies_edit(state):
+        state["edit_anchor_suppressions"] = state.get("edit_anchor_suppressions", 0) + 1
         return (None, None)
 
     signals = _classify(calls)

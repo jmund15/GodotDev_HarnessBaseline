@@ -71,8 +71,12 @@ except ImportError:
 
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 
-# Project-relative; the cwd at hook-fire time is the project root.
-AUDIT_LOG_PATH = "logs/routing_audit.jsonl"
+# Anchored to CLAUDE_PROJECT_DIR: hook cwd is USUALLY the project root, but
+# sessions with a different cwd scattered stray logs/ dirs under .claude/commands/,
+# .claude/auto-memory/, and arbitrary code folders (observed 2026-07-25).
+# Worktree sessions keep their own project dir — that split is intended.
+_PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
+AUDIT_LOG_PATH = os.path.join(_PROJECT_DIR, "logs", "routing_audit.jsonl")
 
 # Cap each log entry's prompt-excerpt to bound JSONL size on long-prompt turns.
 PROMPT_EXCERPT_CAP = 400

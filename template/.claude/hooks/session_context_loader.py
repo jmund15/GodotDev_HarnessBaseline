@@ -6,7 +6,7 @@ Hook: SessionStart - Worktree setup + development context loader
 On every session start:
 1. Detects if running in a git worktree or cloud environment
 2. On cloud: runs cloud-install.sh if dependencies are missing
-3. Initializes Jmodot submodule if empty (worktree-critical)
+3. Re-syncs any submodule whose checkout differs from the recorded pointer
 4. Generates .runsettings from template if missing (worktree/cloud)
 5. Regenerates .godot import cache if missing (headless)
 6. Runs dotnet build to verify compilation health
@@ -17,9 +17,18 @@ On every session start:
 import json
 import os
 import platform
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Windows consoles default stdout to cp1252; injected text carries em-dashes.
+sys.stdout.reconfigure(encoding="utf-8")
+
+# `git submodule status` line: optional drift prefix, sha, path.
+# Empty prefix group == in sync ('-' uninit, '+' checkout != pointer, 'U' conflict).
+_SUBMODULE_RE = re.compile(r"^([-+U]?)([0-9a-f]{40})\s+(\S+)")
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +85,7 @@ def get_project_root() -> Path:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         if result.returncode == 0 and result.stdout.strip():
             return Path(result.stdout.strip())
@@ -90,11 +99,11 @@ def is_worktree() -> bool:
     try:
         toplevel = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         common = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         if toplevel.returncode == 0 and common.returncode == 0:
             tl = Path(toplevel.stdout.strip()).resolve()
@@ -110,25 +119,109 @@ def is_worktree() -> bool:
 # Setup steps
 # ---------------------------------------------------------------------------
 
-def setup_submodule(root: Path) -> str:
-    """Initialize submodule if the Jmodot directory is empty."""
-    jmodot_path = root / "Jmodot"
-    # Check if directory exists but is empty (or only has . and ..)
-    if jmodot_path.exists() and any(jmodot_path.iterdir()):
-        return "OK"
+def submodule_status(root: Path) -> list[tuple[str, str, str]]:
+    """Return [(prefix, sha, path)] from `git submodule status --recursive`.
 
+    Prefix is the authoritative sync tell, and the only one that needs no build:
+      ' ' in sync | '-' uninitialized | '+' checkout != recorded pointer
+      'U' merge conflicts inside the submodule
+    Empty list on any failure (caller treats that as "nothing to do").
+    """
     try:
         result = subprocess.run(
-            ["git", "submodule", "update", "--init", "--recursive"],
-            capture_output=True, text=True, timeout=120, cwd=str(root)
+            ["git", "submodule", "status", "--recursive"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=str(root)
         )
-        if result.returncode == 0:
-            return "FIXED (initialized)"
-        return f"FAILED: {result.stderr.strip()[:80]}"
-    except subprocess.TimeoutExpired:
-        return "FAILED: timeout"
-    except Exception as e:
-        return f"FAILED: {e}"
+        if result.returncode != 0:
+            return []
+        entries = []
+        for line in result.stdout.splitlines():
+            # Match on the sha rather than fixed columns — the in-sync prefix is
+            # a leading space, which any upstream strip() would silently eat.
+            match = _SUBMODULE_RE.match(line.strip())
+            if match:
+                entries.append((match.group(1) or " ", match.group(2), match.group(3)))
+        return entries
+    except Exception:
+        return []
+
+
+def _submodule_is_dirty(root: Path, sub_path: str) -> bool:
+    """True if the submodule working tree has uncommitted changes."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root / sub_path), "status", "--porcelain"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def setup_submodule(root: Path) -> str:
+    """Re-sync every submodule whose checkout differs from the recorded pointer.
+
+    Why not "is the directory non-empty": that only catches a never-initialized
+    submodule (day one of a worktree). The recurring break is a POPULATED
+    submodule left at the wrong commit — `git worktree add` does not init
+    submodules and `git checkout`/merge does not move an already-checked-out
+    one, so a worktree whose branch later advanced the pointer builds against a
+    Jmodot the superproject does not record. Failure signature and both drift
+    directions: auto-memory gotcha_concurrent_session_hazards.
+
+    Auto-fix is gated on a CLEAN submodule working tree. A dirty submodule means
+    live in-progress work (the develop-in-Jmodot-then-bump-the-pointer flow), and
+    `git submodule update` would move HEAD out from under it — so that case is
+    reported loudly instead. Discarded checkouts are never lost: the pre-update
+    sha is printed for `git -C <sub> checkout <sha>`.
+    """
+    entries = submodule_status(root)
+    if not entries:
+        return "OK"
+
+    actionable = []   # (prefix, sha, path) safe to update
+    blocked = []      # (reason, path)
+    for prefix, sha, path in entries:
+        if prefix == " ":
+            continue
+        if prefix == "U":
+            blocked.append((f"{path}: merge conflicts inside submodule", path))
+        elif prefix == "+" and _submodule_is_dirty(root, path):
+            blocked.append((f"{path}: checkout {sha[:8]} != recorded, but working tree is dirty", path))
+        else:
+            actionable.append((prefix, sha, path))
+
+    if not actionable and not blocked:
+        return "OK"
+
+    notes = []
+    if actionable:
+        cmd = ["git", "submodule", "update", "--init", "--recursive"] + [p for _, _, p in actionable]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, cwd=str(root)
+            )
+            if result.returncode != 0:
+                return f"FAILED: {result.stderr.strip()[:120]}"
+        except subprocess.TimeoutExpired:
+            return "FAILED: timeout"
+        except Exception as e:
+            return f"FAILED: {e}"
+        for prefix, sha, path in actionable:
+            if prefix == "-":
+                notes.append(f"{path} initialized")
+            else:
+                notes.append(f"{path} re-synced to recorded pointer (was {sha[:8]}; "
+                             f"restore with: git -C {path} checkout {sha[:8]})")
+
+    if blocked:
+        detail = "; ".join(r for r, _ in blocked)
+        prefix_str = f"FIXED ({'; '.join(notes)}) but " if notes else ""
+        return (f"{prefix_str}BROKEN (not auto-fixed): {detail} — "
+                f"commit or stash inside the submodule, then run "
+                f"`git submodule update --init --recursive`")
+
+    return f"FIXED ({'; '.join(notes)})"
 
 
 def setup_runsettings(root: Path) -> str:
@@ -157,6 +250,73 @@ def setup_runsettings(root: Path) -> str:
         return "FIXED (generated from template)"
     except Exception as e:
         return f"FAILED: {e}"
+
+
+def resolve_bash() -> str | None:
+    """Resolve Git Bash, never WSL bash.
+
+    On Windows `bash` on PATH is C:\\Windows\\System32\\bash.exe — the WSL launcher,
+    which cannot see C:/... paths (it wants /mnt/c/...) and fails with a bare
+    "No such file or directory". Git Bash sits beside git.exe, so derive it from
+    git's own location rather than trusting PATH order.
+    """
+    if platform.system() != "Windows":
+        return "bash"
+    git_exe = shutil.which("git")
+    if git_exe:
+        # .../Git/cmd/git.exe -> .../Git/bin/bash.exe
+        candidate = Path(git_exe).parent.parent / "bin" / "bash.exe"
+        if candidate.exists():
+            return str(candidate)
+    for fallback in (
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ):
+        if Path(fallback).exists():
+            return fallback
+    found = shutil.which("bash")
+    # Reject WSL: it would report every POSIX-path probe as missing.
+    if found and "system32" not in found.lower():
+        return found
+    return None
+
+
+def verify_sidecar(root: Path) -> str:
+    """Report whether the DeepSeek CLI sidecar can dispatch on this workstation.
+
+    Delegates to `deepseek_sidecar.sh --check` rather than reimplementing the
+    preconditions, so availability has ONE definition and the hook cannot drift
+    green while real dispatch fails. Invoking through bash is deliberate: bash is
+    itself a precondition, so a missing shell is reported, not masked.
+
+    Exists so budget-pressure routing (CLAUDE.md §Model Delegation) can pick a
+    provider from a fact already in context, never from a mid-session investigation.
+    """
+    script = root / ".claude" / "scripts" / "deepseek_sidecar.sh"
+    if not script.exists():
+        return "UNAVAILABLE (deepseek_sidecar.sh not present)"
+    bash = resolve_bash()
+    if not bash:
+        return "UNAVAILABLE (no Git Bash found; sidecar needs a POSIX shell)"
+    try:
+        # Absolute POSIX form: bash strips Windows backslashes, which would make
+        # the probe report UNAVAILABLE on every Windows session — a false negative
+        # that silently routes all delegation back to Anthropic quota.
+        proc = subprocess.run(
+            [bash, script.resolve().as_posix(), "--check"],
+            capture_output=True, text=True, timeout=20, cwd=str(root),
+        )
+    except FileNotFoundError:
+        return "UNAVAILABLE (bash not on PATH)"
+    except subprocess.TimeoutExpired:
+        return "UNKNOWN (--check timed out)"
+    except OSError as exc:
+        return f"UNKNOWN (--check failed to launch: {exc})"
+    emitted = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    if not emitted:
+        return f"UNKNOWN (--check exit {proc.returncode}, no output)"
+    return emitted.splitlines()[-1].strip()
 
 
 def verify_lsp_plugin() -> str:
@@ -220,6 +380,45 @@ def verify_lsp_plugin() -> str:
     return "BROKEN: " + "; ".join(issues)
 
 
+def godot_docs_cache_issue(root: Path) -> str | None:
+    """One line when the version-pinned Godot class-reference cache is unusable,
+    None when it is healthy — the cache is the FIRST tier of the web order
+    (docs.godotengine.org is Cloudflare-gated), so a silently stale one sends
+    every doc lookup down a paid or blocked path.
+
+    A stamp alone is not health: the tree it names must actually be populated.
+    Pin SSOT is project_stack.md; never hardcode it here. Fails open — this is
+    advisory context, and no cache state is worth breaking session start.
+    """
+    try:
+        stack = (root / ".claude" / "reference" / "project_stack.md").read_text(encoding="utf-8")
+        match = re.search(r"Godot engine:\D*(\d+\.\d+(?:\.\d+)?)", stack)
+        if not match:
+            return None
+        pin = match.group(1)
+
+        cache = root / ".claude" / "cache" / "godot-docs"
+        stamp_path = cache / ".stamp"
+        stamp = stamp_path.read_text(encoding="utf-8").strip() if stamp_path.exists() else ""
+        classes = cache / "doc" / "classes"
+        count = len(list(classes.glob("*.xml"))) if classes.is_dir() else 0
+
+        if stamp == pin and count > 0:
+            return None
+        if not stamp:
+            state = "absent"
+        elif count == 0:
+            state = f"stamped {stamp} but 0 class files"
+        else:
+            state = f"stamped {stamp} ({count} classes)"
+        return (
+            f"Godot docs cache: {state}, pin is {pin} — "
+            "rebuild with .claude/scripts/godot_docs_cache.sh"
+        )
+    except Exception:
+        return None
+
+
 def setup_import_cache(root: Path) -> str:
     """Regenerate .godot import cache if missing."""
     godot_dir = root / ".godot"
@@ -235,7 +434,7 @@ def setup_import_cache(root: Path) -> str:
     try:
         result = subprocess.run(
             [godot_bin, "--headless", "--path", str(root), "--import", "--quit"],
-            capture_output=True, text=True, timeout=120, cwd=str(root)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root)
         )
         # Godot import may return non-zero but still succeed
         if (imported_dir.exists() and any(imported_dir.iterdir())):
@@ -260,7 +459,7 @@ def _git_head(root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd=str(root)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, cwd=str(root)
         )
         return result.stdout.strip()
     except Exception:
@@ -306,7 +505,7 @@ def verify_build(root: Path) -> str:
     try:
         result = subprocess.run(
             ["dotnet", "build", "--nologo", "-v", "q"],
-            capture_output=True, text=True, timeout=120, cwd=str(root)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root)
         )
         # Parse error/warning counts from last lines
         output = result.stdout + result.stderr
@@ -342,7 +541,7 @@ def get_git_branch() -> str:
     try:
         result = subprocess.run(
             ["git", "branch", "--show-current"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         return result.stdout.strip() or "unknown"
     except Exception:
@@ -353,7 +552,7 @@ def get_uncommitted_count() -> int:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         lines = [l for l in result.stdout.strip().split("\n") if l]
         return len(lines)
@@ -365,7 +564,7 @@ def get_recent_commits(count: int = 3, cwd: str | None = None) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "log", f"-{count}", "--format=%h %s"],
-            capture_output=True, text=True, timeout=5, cwd=cwd
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, cwd=cwd
         )
         return [line.strip()[:70] for line in result.stdout.strip().split("\n") if line.strip()]
     except Exception:
@@ -409,7 +608,7 @@ def run_cloud_install(root: Path) -> str:
     try:
         result = subprocess.run(
             ["bash", str(install_script)],
-            capture_output=True, text=True, timeout=540, cwd=str(root)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=540, cwd=str(root)
         )
         if result.returncode == 0:
             # Re-source env vars that the install script set
@@ -490,13 +689,16 @@ def main():
     if not cloud:
         setup_results["lsp_plugin"] = verify_lsp_plugin()
 
+    # --- DeepSeek sidecar availability ---
+    setup_results["sidecar"] = verify_sidecar(root)
+
     # --- Git context ---
     branch = get_git_branch()
     uncommitted = get_uncommitted_count()
     uncommitted_str = f"{uncommitted} uncommitted" if uncommitted > 0 else "clean"
 
-    main_commits = get_recent_commits(3)
-    jmodot_commits = get_jmodot_commits(root, 3)
+    main_commits = get_recent_commits(1)
+    jmodot_commits = get_jmodot_commits(root, 1)
 
     # --- Persist env for cloud ---
     godot_bin = get_godot_bin()
@@ -516,20 +718,16 @@ def main():
         output_lines.append("Environment: CLOUD (CLAUDE_CODE_REMOTE=true)")
 
     output_lines.append("")
-    output_lines.append("Environment Setup:")
+    env_parts = []
     any_fixed = False
     for step, status in setup_results.items():
         if status.startswith("OK"):
-            marker = "OK"
-        elif "FIXED" in status:
-            marker = "FIXED"
-        elif "BROKEN" in status:
-            marker = "FAIL"
+            env_parts.append(f"{step} OK")
         else:
-            marker = "WARN"
-        if "FIXED" in status:
-            any_fixed = True
-        output_lines.append(f"  [{marker}] {step}: {status}")
+            env_parts.append(f"{step}: {status}")
+            if "FIXED" in status:
+                any_fixed = True
+    output_lines.append("Env: " + " | ".join(env_parts))
 
     # GODOT_BIN for test commands (Bash sessions don't inherit setx env vars)
     if godot_bin:
@@ -561,11 +759,16 @@ def main():
 
     output_lines.append("</session-context>")
 
-    # Worklog titles cache (lightweight always-loaded TODO awareness).
-    # Source of truth is Obsidian; this is the local mirror maintained by the
-    # `worklog` skill. Empty / missing file is fine — silent no-op.
+    # Worklog titles mirror — NOT injected. The mirror grows unbounded with the backlog and is
+    # paid by EVERY session, while the question it answers ("does an open item overlap what I am
+    # about to do?") is asked better once, at scope-definition time, by a delegate that reads the
+    # file itself: .claude/workflows/worklog_relevance.js (Anthropic) or
+    # .claude/scripts/worklog_relevance_sidecar.sh (DeepSeek).
+    # Flip to True to restore verbatim injection. A size-tiered domain+count digest was built and
+    # dropped the same day — it was unread middle ground, so it is not kept here as dead code.
+    WORKLOG_INLINE = False
     worklog_titles_path = root / ".claude" / "worklog-titles.md"
-    if worklog_titles_path.exists():
+    if WORKLOG_INLINE and worklog_titles_path.exists():
         try:
             worklog_content = worklog_titles_path.read_text(encoding="utf-8").strip()
             if worklog_content:
@@ -581,28 +784,19 @@ def main():
     # it up front via ToolSearch so C# symbol queries don't default to Grep.
     # Gated only on plugin health — unconditional otherwise, because this is a C#
     # project and even read-only sessions benefit from semantic navigation.
-    # Mirrors .claude/rules/csharp_lsp.md behavioral gotchas — sync on changes there.
+    # The quirks/workflow details live in .claude/rules/csharp_lsp.md (auto-loads on
+    # the first .cs read) — this nudge only preserves the EARLY ToolSearch timing.
     lsp_ok = not cloud and setup_results.get("lsp_plugin", "").startswith("OK")
     if lsp_ok:
         output_lines.append("")
         output_lines.append("<lsp-early-load>")
         output_lines.append(
-            "csharp-lsp is healthy. Load the LSP tool schema as one of your first actions: "
-            "ToolSearch(query=\"select:LSP\", max_results=1). Then default to LSP for C# "
-            "symbol/caller/type questions (findReferences, hover, documentSymbol, "
-            "incomingCalls). Keep Grep for .tscn/.tres, StringName keys, and as the "
-            "anchor-finding step before LSP (see workflow below).\n\n"
-            "Schema quirks (avoid the C2-failure shape):\n"
-            "  1. filePath is REQUIRED on every operation, even workspace-wide ones. It is "
-            "a server-routing hint (extension picks the language server) — pass any real "
-            ".cs file, NOT \".\" or \"\". Passing \".\" returns \"Path is not a file\".\n"
-            "  2. workspaceSymbol does NOT take a query parameter — there is none in the "
-            "schema. It returns 100 unfiltered alphabetical-by-path symbols. Use it for "
-            "browsing, NOT for finding a symbol by name.\n\n"
-            "Anchor-then-navigate workflow (find symbol FooBar → enumerate callers):\n"
-            "  Step 1: semantic-search('FooBar') OR Grep('class FooBar\\b' -g '*.cs') → file path\n"
-            "  Step 2: LSP(operation='documentSymbol', filePath=<file>, line=1, character=1) → line numbers\n"
-            "  Step 3: LSP(operation='findReferences', filePath=<file>, line=<decl>, character=<col>) → callers"
+            "csharp-lsp healthy. Load the LSP tool schema as one of your first actions: "
+            "ToolSearch(query=\"select:LSP\", max_results=1); then default to LSP for C# "
+            "symbol/caller/type questions. Anchor-then-navigate (semantic-search or "
+            "Grep(\"class X\") -> LSP documentSymbol -> findReferences); schema quirks "
+            "(filePath required on every op; workspaceSymbol has no query param) live in "
+            "rules/csharp_lsp.md, which auto-loads on the first .cs read."
         )
         output_lines.append("</lsp-early-load>")
 
@@ -647,6 +841,12 @@ def main():
                     )
             except Exception:
                 pass
+
+    # Godot docs cache — silent when healthy.
+    docs_cache_issue = godot_docs_cache_issue(root)
+    if docs_cache_issue:
+        output_lines.append("")
+        output_lines.append(docs_cache_issue)
 
     # Continuation reminder
     output_lines.append("")

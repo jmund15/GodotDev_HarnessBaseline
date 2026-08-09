@@ -20,6 +20,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows consoles default stdout to cp1252; injected text carries em-dashes.
+sys.stdout.reconfigure(encoding="utf-8")
+
 
 # High-risk patterns that require explicit acknowledgment (execution mode)
 # These are domains where gotchas frequently cause issues
@@ -147,6 +150,34 @@ Editing Godot resource files (.tres/.tscn):
 - Read the file first to understand existing structure
 </resource-file-reminder>"""
 
+# Drive commands (/part_drive etc.) run a whole plan→execute cycle in the normal
+# session flow, so the plan-mode branch below never fires for them, and
+# plan_memory_reminder only fires once the plan FILE is written — i.e. after
+# drafting has already begun. Their invocation string is also far under the
+# 20-char floor. This branch re-keys the Memory obligation onto the command
+# itself, at invocation, which is the last moment it can still shape the plan.
+DRIVE_COMMANDS = ("/part_drive", "/feature_drive", "/design_drive")
+
+
+def get_drive_reminder(prompt: str) -> str:
+    """Drive-command Memory obligation, plus the argument to infer domains from."""
+    stripped = prompt.lstrip()
+    parts = stripped.split(None, 1)
+    command = parts[0]
+    argument = parts[1].strip() if len(parts) > 1 else ""
+
+    lines = [
+        "<drive-memory-obligation>",
+        f"{command} runs plan-then-execute with no approval gate before code — the Memory pass is MANDATORY and yours to run:",
+        "1. Dispatch /explore (its exp-memory floor lens covers the per-domain auto-memory search plus the unconditional `arch_rule_*` sweep).",
+        "2. Record the dossier's constraint claims + their evidence in the plan file under Constraints — an unrecorded pass did not happen.",
+    ]
+    if argument:
+        lines.append(f"Infer domains from: {argument[:200]}")
+    lines.append("</drive-memory-obligation>")
+    return "\n".join(lines)
+
+
 ANALYZER_SCRIPT = Path(__file__).parent / "analyze_godot_logs.py"
 
 # Session cap for the STANDARD MemoryCheck nudge only (plan-mode and high-risk
@@ -221,7 +252,7 @@ def run_log_analysis() -> str:
         result = subprocess.run(
             [sys.executable, str(ANALYZER_SCRIPT), str(DEFAULT_LOG_PATH), "--json"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10,
             cwd=str(ANALYZER_SCRIPT.parent)
         )
@@ -287,6 +318,17 @@ def main():
         print("{}")
         sys.exit(0)
 
+    # Slash commands bypass the length floor below — a bare "/part_drive P3.2"
+    # is under 20 chars but is the highest-stakes prompt shape there is.
+    # Uncapped, same as the plan-mode / high-risk branches: this is the only
+    # Memory nudge a drive session ever sees.
+    stripped_prompt = prompt.lstrip()
+    if stripped_prompt.startswith("/"):
+        first_token = stripped_prompt.split(None, 1)[0]
+        if first_token in DRIVE_COMMANDS:
+            print(get_drive_reminder(prompt))
+            sys.exit(0)
+
     # Skip very short prompts (confirmations, commands). This gate also covers
     # every short acknowledgement ("lgtm", "thanks", "push") — no separate
     # phrase list needed.
@@ -310,7 +352,7 @@ def main():
     # === PLAN MODE ===
     if permission_mode == "plan":
         output = """<user-prompt-submit-hook>
-PLAN MODE — gather context first: Skills for matching workflows, auto-memory for domain gotchas (semantic-search, restrictToDir=.claude/auto-memory; CLAUDE.md domain table for query seeds), Obsidian for design docs, flag unresolved questions. Max ~3 searches.
+PLAN-PERMISSION MODE — gather context first: dispatch /explore for the state sweep (memory gotchas, prior art, design docs, blast radius), load Skills for matching workflows, and flag unresolved questions.
 </user-prompt-submit-hook>"""
         for ctx in extra_context:
             print(ctx)
@@ -328,7 +370,7 @@ PLAN MODE — gather context first: Skills for matching workflows, auto-memory f
     # === EXECUTION MODE (High-Risk) ===
     elif is_high_risk(prompt):
         output = """<user-prompt-submit-hook>
-HIGH-RISK TASK — search auto-memory first (semantic-search, restrictToDir=.claude/auto-memory). Identify domain(s) from CLAUDE.md table, load matching Skills. Output: [x] CONTEXT: [Skills | N/A] | Memory: [query]. Re-search if scope grows.
+HIGH-RISK TASK — search auto-memory first (semantic-search, restrictToDir=.claude/auto-memory); identify domain(s) from CLAUDE.md table, load matching Skills. Report: Skills: [invoked|auto-rules|N/A] | Memory: [query]. Re-search if scope grows.
 </user-prompt-submit-hook>"""
         for ctx in extra_context:
             print(ctx)
@@ -352,7 +394,7 @@ Avoid reflexive agreement. Instead, provide substantive technical analysis.
         session_id = input_data.get("session_id", "") or ""
         if _bump_memory_check_count(session_id) <= MEMORY_CHECK_SESSION_CAP:
             print("""<user-prompt-submit-hook>
-MEMORY CHECK — search auto-memory for domain gotchas before proceeding (semantic-search, restrictToDir=.claude/auto-memory). Identify domain(s) from CLAUDE.md table for query seeds; max ~3 searches. Output: [x] Memory: [query | N/A — reason] | Skills: [loaded | N/A]. Re-search NEW domains if scope grows.
+MEMORY CHECK — search auto-memory for domain gotchas before proceeding (semantic-search, restrictToDir=.claude/auto-memory); use CLAUDE.md table for query seeds, max ~3 searches. Report: Memory: [query | N/A] | Skills: [invoked|auto-rules|N/A]. Re-search NEW domains if scope grows.
 </user-prompt-submit-hook>""")
 
     sys.exit(0)

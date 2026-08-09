@@ -14,6 +14,7 @@ Usage:
     Tag frequencies:      python analyze_godot_logs.py --mode tags
     Targeted timeline:    python analyze_godot_logs.py --target HSM Transition
     Previous-run logs:    python analyze_godot_logs.py --log previous --mode errors
+    Test-run log:         python analyze_godot_logs.py --log test --mode errors
 
     JSON output (for agents): add --json to any of the above.
 
@@ -39,7 +40,9 @@ from collections import Counter, defaultdict
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Default log directory (platform-dependent)
+# Default log directory (platform-dependent) — LIVE-RUN-ONLY (editor / run_project). Since
+# the parallel-test-runner-unlock, test-spawned Godot writes to TestResults/godot_test.log
+# per worktree (`.runsettings` `--log-file`) instead of here — use spec "test" for that log.
 _system = platform.system()
 if _system == "Windows":
     DEFAULT_LOG_DIR = Path.home() / "AppData/Roaming/Godot/app_userdata/{{PROJECT_NAME}}/logs"
@@ -50,14 +53,19 @@ else:
 
 DEFAULT_LOG_PATH = DEFAULT_LOG_DIR / "godot.log"
 
+# Test-run log: fixed name, cwd-relative (project/worktree root), overwritten every run — no
+# rotation, unlike DEFAULT_LOG_PATH's timestamped siblings.
+TEST_LOG_PATH = Path("TestResults/godot_test.log")
+
 
 # --- Log file selection --------------------------------------------------
 
 def resolve_log_path(spec: str | None) -> Path:
     """
     Resolve a log spec to a concrete file path. Spec semantics:
-      None        -> DEFAULT_LOG_PATH (the active godot.log)
+      None        -> DEFAULT_LOG_PATH (the active LIVE-RUN godot.log)
       "latest"    -> DEFAULT_LOG_PATH (alias)
+      "test"      -> TEST_LOG_PATH (TestResults/godot_test.log — GdUnit4 test-run log)
       "previous"  -> second-most-recent timestamped log file
       "<int>"     -> Nth-most-recent (0 = latest active, 1 = previous, ...)
       "<path>"    -> explicit path (absolute or relative)
@@ -68,6 +76,9 @@ def resolve_log_path(spec: str | None) -> Path:
     """
     if spec is None or spec == "latest":
         return DEFAULT_LOG_PATH
+
+    if spec == "test":
+        return TEST_LOG_PATH
 
     # Numeric index into the timestamped-files list
     try:
@@ -792,8 +803,9 @@ def main():
                         default=None,
                         help="Output mode preset (default: summary, or timeline if filters given)")
     parser.add_argument("--log", default=None,
-                        help="Log file selector: 'latest' (default), 'previous', "
-                             "<int> (Nth most recent, 0=latest), or explicit path")
+                        help="Log file selector: 'latest' (default, live-run only), 'test' "
+                             "(TestResults/godot_test.log), 'previous', <int> (Nth most "
+                             "recent, 0=latest), or explicit path")
 
     # Output format
     parser.add_argument("--json", action="store_true",
