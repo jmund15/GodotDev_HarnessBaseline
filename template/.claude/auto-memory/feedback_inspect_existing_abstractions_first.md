@@ -18,7 +18,7 @@ Both times I had jumped to new code without inventorying the existing hierarchy.
 - Before designing a new `*Strategy`/`*Behavior`/`*Handler` class: grep for `abstract class`, `abstract partial class`, and the domain keyword in `Jmodot/Core/`, `SpellArchitecture/`, and relevant top-level directories.
 - If a base class with 2+ subclasses exists, read at least 2 of the subclasses to understand the shape before proposing anything new.
 - If the proposed change crosses an existing abstraction (e.g., new intent type, new strategy output), read the consuming sites to understand the contract — the existing family may already support the use case via a small extension.
-- **Meta-rule for plan mode:** "Where does this fit in the existing abstraction tree?" is a mandatory question before drafting any plan that introduces new types.
+- **Meta-rule for planning:** "Where does this fit in the existing abstraction tree?" is a mandatory question before drafting any plan that introduces new types.
 
 **Adjacent rule — read source before speculating about API (added 2026-04-28):**
 When a plan reasons about the API of an existing class (its method signatures, return types, query semantics, lifecycle), READ the source file before writing the plan. Do NOT infer the API from related files, call sites, or the class name. Inference produces plans with subtly-wrong assumptions that get caught at execution time and force rework.
@@ -27,7 +27,7 @@ Concrete: planned around `CombatLog`'s "recent events query" assuming it might n
 
 **Trigger:** Plan mentions a class by name and proposes design around its API. Stop. Read that class's source file. Then write the plan.
 
-**Distinction from the parent rule:** Parent rule = "before *inventing* a new abstraction, find the existing one." This rule = "before *reasoning about* an existing one's API, read its source." Both fire during plan mode, both fail with the same shape (rework on execution), but the diagnostic ("did I invent a parallel?" vs "did I infer an API?") differs.
+**Distinction from the parent rule:** Parent rule = "before *inventing* a new abstraction, find the existing one." This rule = "before *reasoning about* an existing one's API, read its source." Both fire during planning, both fail with the same shape (rework on execution), but the diagnostic ("did I invent a parallel?" vs "did I infer an API?") differs.
 
 **Refinement — `Array<X>` and `Dictionary<X, Y>` fields on Resource types are themselves potential homes (added 2026-04-30):**
 
@@ -38,3 +38,11 @@ Before proposing a new abstraction, also grep the related Resource hierarchy for
 **Concrete (2026-04-30):** Brainstorm proposed `ElementProfile.SignatureEffects` Resource on `Category` to inherit element-signature SpellEffects across all spells of that element. `TraitTier.Effects: Array<SpellEffect>` already supported per-tier signature wiring (production pattern in `Spells/Fire/Tier1_Fireball/fire_tier1.tres:19-22`). The new abstraction was duplicative; designer wiring per-tier was the architecturally-sanctioned path.
 
 **Distinction from parent rule:** Parent rule = "before *inventing* a new abstraction *type*, find the existing *base class*." This refinement = "before *inventing* a new abstraction *to hold collected content*, check whether existing `Array`/`Dictionary` fields on related types already accept that content." Both fail with the same shape (parallel abstractions); the diagnostic differs.
+
+**Refinement — inventory the new type's COLLABORATORS, not just the type it replaces:**
+
+The inventory instinct fires on the thing being created and stops there. A field typed as a raw engine primitive is the blind spot: it reads as "just a parameter," never gets its own search, and is exactly where a purpose-built project Resource already exists.
+
+**Trigger:** the new type declares a field whose type is a raw engine primitive standing in for a project concept (`Curve`, `Gradient`, `Shape3D`, `AnimationLibrary`). Search the framework for a wrapper around that primitive before shipping it.
+
+**Distinction:** the other refinements ask "does a home for this already exist?" This one asks "does a home for this type's PARTS already exist?" Same failure shape; the miss happens one level down.
