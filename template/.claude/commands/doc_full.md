@@ -1,4 +1,5 @@
 ---
+description: Generate the full doc suite for a system — usage, architecture, and retrospective.
 disable-model-invocation: true
 ---
 
@@ -43,7 +44,7 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 
 ### Usage Agent
 
-> You are writing documentation for the **{SystemName}** system in a Godot 4.6 / C# project.
+> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} Godot/C# project (engine per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_usage.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -55,7 +56,7 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 
 ### Architecture Agent
 
-> You are writing documentation for the **{SystemName}** system in a Godot 4.6 / C# project.
+> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} Godot/C# project (engine per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_architecture.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -67,7 +68,7 @@ Spawn all 3 agents **in parallel** using the Task tool in a **single message** (
 
 ### Retrospective Agent
 
-> You are writing documentation for the **{SystemName}** system in a Godot 4.6 / C# project.
+> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} Godot/C# project (engine per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_retrospective.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -94,7 +95,7 @@ Proceed to Phase 3 regardless of retrospective outcome.
 After all subagents complete, create or update `Quick Reference.md` in the system folder.
 
 ### 3a. Read the completed docs
-Use `obsidian_get_note` to read the Usage, Architecture, and Retrospective docs that were just written. Extract:
+Use `obsidian_read_note` to read the Usage, Architecture, and Retrospective docs that were just written. Extract:
 - Key types and their roles (from Architecture)
 - Key configurable properties (from Usage)
 - File paths (from Architecture)
@@ -164,9 +165,9 @@ Source files belonging to this system:
 After writing the Quick Reference, ensure every system referenced in the Related Systems callout links back to this system.
 
 For each system `B` listed in this system's (`A`) Related Systems:
-1. Read `B`'s Quick Reference via `obsidian_get_note`
+1. Read `B`'s Quick Reference via `obsidian_read_note`
 2. Check if `B`'s Related Systems callout already mentions `A`
-3. If not, use `obsidian_replace_in_note` to append a return link entry to `B`'s Related Systems callout
+3. If not, use `obsidian_search_replace` to append a return link entry to `B`'s Related Systems callout
 
 This prevents the most common audit finding (X1: unidirectional links). All cross-references must be bidirectional.
 

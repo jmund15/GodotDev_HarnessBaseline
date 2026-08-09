@@ -16,7 +16,7 @@ Bulk cleanup. Walks Active items proposing per-item dispositions; confirmation-d
 Need full content (Context, Where, Source, dates, class, scope) to score dispositions. Mirror is insufficient.
 
 ```
-mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"})
+mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md")
 ```
 
 `Worklog.md` holds only `[ ]` items now (completions live in `Worklog-Archive.md`); `When: future` items live in Future Scope and aren't part of Active triage.
@@ -90,8 +90,8 @@ The walk pauses while you do the work — don't batch all do-now items at the en
 Add a sub-bullet to the item's `[ ]` block in Obsidian, immediately after the `Context:` line:
 
 ```
-mcp__obsidian__obsidian_replace_in_note(
-  target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"},
+mcp__obsidian__obsidian_search_replace(
+  targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
   replacements=[{
     search: "  - Context: <verbatim context line>\n",
     replace: "  - Context: <verbatim context line>\n  - Quick-win: flagged YYYY-MM-DD\n"
@@ -102,7 +102,7 @@ mcp__obsidian__obsidian_replace_in_note(
 Item stays in Active. Mirror rewrite (Step 6) appends `[quick-win]` suffix to its mirror line. `/worklog plan` weights flagged items +3 in scoring — survey-mode batching and draft-mode fill alike (treated as high hot-context).
 
 #### `promote` (Active → Future Scope)
-Inverse of `/worklog promote`. Two-step `obsidian_replace_in_note`:
+Inverse of `/worklog promote`. Two-step `obsidian_search_replace`:
 
 **Step A** — delete the `[ ]` block from `## Active`. Same pattern as COMPLETE Step 4 (match all sub-bullets that exist in this specific block; be precise about which lines are present; mind the LF/CRLF line-ending trap).
 
@@ -127,7 +127,7 @@ For items fundamentally user-only addressable — production art, feel-tuning, o
 
 **Step B** — invoke the USER-ADD recipe (in `worklog.md`) with the derived fields. Skip USER-ADD Step 1 (de-dup search) — the triage walker has already shown the user existing entries.
 
-**Step C** — delete the `[ ]` block from `## Active` in Worklog.md. Same pattern as `promote` Step A: precise multi-line `obsidian_replace_in_note` matching all sub-bullets that exist in this specific block.
+**Step C** — delete the `[ ]` block from `## Active` in Worklog.md. Same pattern as `promote` Step A: precise multi-line `obsidian_search_replace` matching all sub-bullets that exist in this specific block.
 
 **Step D** — atomicity check: if Step B failed (MCP error on the User-Tasks write), do NOT execute Step C. The Active block stays as-is; surface the error and offer fallback dispositions (`[s]kip` / `[p]romote` to Future Scope). Better a stuck Active item than a lost migration.
 
@@ -180,7 +180,7 @@ Still over cap. Consider another /worklog triage pass on the lower-signal items.
 
 ## Operation: PLAN
 
-The agentic prioritization op. Reads the worklog, scores ready items once, then **forks on whether a capacity target was given**: no target → propose exploratory batches (*survey mode*); target given → draft a plan-mode-ready body sized to the target (*draft mode*).
+The agentic prioritization op. Reads the worklog, scores ready items once, then **forks on whether a capacity target was given**: no target → propose exploratory batches (*survey mode*); target given → draft a ready-to-execute body sized to the target (*draft mode*).
 
 **Argument:** optional capacity target — `scope:<N>` and/or `items:<N>`.
 - **No target** → *survey mode*: propose 2–3 prioritized batches; the user picks one to plan.
@@ -190,14 +190,14 @@ The agentic prioritization op. Reads the worklog, scores ready items once, then 
 **`tackle` alias:** `/worklog tackle` ≡ `/worklog plan scope:3` — the single-session draft-mode default. Everything in the *draft mode* path (Step 4-Draft) applies.
 
 **Draft-mode rules:**
-- **Scope-4 never enters a drafted body** — it needs its own design doc + multi-session arc. Draft mode surfaces it as a big-ticket flag and routes to `mcp__ccd_session__spawn_task` (Step 4-Draft, Mode B / 4c). Survey mode also flags scope-4, never batches it.
-- **Plan-mode assumption.** Draft mode assumes the harness is already in plan mode. If it isn't, the output is still a usable draft body — warn at the top, don't refuse. Never try to enter plan mode yourself — you can't.
+- **Scope-4 never enters a drafted body** — it needs its own design doc + multi-session arc. Draft mode surfaces it as a big-ticket flag and routes to a user-spawned parallel session (Step 4-Draft, Mode B / 4c). Survey mode also flags scope-4, never batches it.
+- **Draft, not execution.** Draft mode produces a plan body for the user to approve and then execute (via a drive command or `/plan_handoff`); it never starts the work itself.
 
 ### Step 1 — Read full Active section
 
 Need full content (date, context, source, where, class, scope), not just titles. The mirror isn't enough.
 ```
-mcp__obsidian__obsidian_get_note(format="content", target={type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md"})
+mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md")
 ```
 Score `[ ]` items only (`Worklog.md` holds only active work — completions are in the archive). Then **partition into ready vs. waiting**: items with no `When:` sub-bullet are **ready** (proceed to scoring); items with `When: after ...` or `When: future` are **waiting** (skip scoring entirely — list in output only). Only ready items flow through Steps 2–4.
 
@@ -236,7 +236,7 @@ No target → **Step 4-Survey**. Target given (`scope:` and/or `items:`, or the 
 2. **Domain-cohesion batch**: 2+ items sharing the same `### Domain` section. One focused session knocks them out together. Bonus weight if they share a class (e.g., 3 `refactor` items in `vfx`).
 3. **Quick-wins batch** (scope-1 sweep): scope-1 items across any domain *without* the `Quick-win:` flag — clearable in a single short session, regardless of cohesion. The flag-driven batch (priority 0) takes precedence.
 4. **Stale-item batch** (oldest items): top 3–5 oldest `[ ]` items regardless of cohesion or scope. Clear backlog pressure.
-5. **Big-ticket flag**: any single scope-4 item. Don't batch — propose `mcp__ccd_session__spawn_task` instead, citing the linked Plan doc.
+5. **Big-ticket flag**: any single scope-4 item. Don't batch — recommend the user start a parallel session for it, citing the linked Plan doc.
 
 If Active has ≤ 2 `[ ]` items, skip batching entirely — just print them with "Want to plan one of these? (pass `scope:N` / `items:N` to draft straight into one)".
 
@@ -255,7 +255,7 @@ Batch B — ...
 
 Batch C — ...
 
-Big-ticket (won't batch): <title> — scope 4, see [[Plan doc]]. Spawn task?
+Big-ticket (won't batch): <title> — scope 4, see [[Plan doc]]. Recommend a parallel session?
 
 Waiting (not scored):
   - <title> [after: <condition>] (<domain>)
@@ -268,8 +268,8 @@ Pick a batch (A/B/C) to plan, or re-run with `scope:N` / `items:N` to draft one 
 Rationales should cite *which heuristic* fired (hot-context, cohesion, quick-wins, age) so the user can sanity-check the priority logic.
 
 **On batch pick:** two options —
-- **Inline plan:** outline an approach for the batch's items in the current turn. Lighter-weight, doesn't enter Plan mode.
-- **Plan mode hand-off:** if the batch is non-trivial, suggest entering Plan mode (the user has to invoke; you can't). Pre-populate a draft plan with the batch's items and their context blocks already filled in so they have a head-start.
+- **Inline plan:** outline an approach for the batch's items in the current turn. Lighter-weight, no plan file.
+- **Plan-file hand-off:** if the batch is non-trivial, suggest drafting a plan file at `.claude/plans/<slug>.md`. Pre-populate it with the batch's items and their context blocks already filled in so they have a head-start.
 
 Survey mode does **not** log to tackle-history — it doesn't commit to a drafted body.
 
@@ -300,7 +300,7 @@ Top candidate is scope-4 (one-session viability cap is scope-3).
   <title> — <domain> · scope 4
   Plan doc: [[<doc>]]
 
-Recommended: spawn a parallel session via `mcp__ccd_session__spawn_task` with the linked plan doc as context. Or: re-run with a larger `items:N` target to surface smaller candidates.
+Recommended: start a parallel session for it with the linked plan doc as context. Or: re-run with a larger `items:N` target to surface smaller candidates.
 ```
 Stop.
 
@@ -328,12 +328,12 @@ If every item scored 0 (no hot-context, no cohesion, scope-1 odds-and-ends), def
 
 Any scope-4 ready item is surfaced below the fill-set proposal — never silently dropped:
 ```
-Big-ticket (excluded from draft): <title> — scope 4, see [[Plan doc]]. Spawn task?
+Big-ticket (excluded from draft): <title> — scope 4, see [[Plan doc]]. Recommend a parallel session?
 ```
 
 #### 4d — Draft the plan body
 
-For the fill-set, produce a plan-mode-ready body:
+For the fill-set, produce a ready-to-execute body:
 ```
 ## Plan: <title-or-fill-set-name>
 
@@ -367,7 +367,7 @@ After landing: `/worklog complete <title>` (commit hash <pending>).
 
 **Class-aware composition:**
 - `class: design` items: do NOT draft an implementation plan inline. Instead, suggest invoking `/architecture_brainstorm` (which will route to `/idea_brainstorm` first if the design space is greenfield): `Picked a design item — recommend running /architecture_brainstorm first; it will route to /idea_brainstorm if the candidate pool is empty. Re-run plan once the design exists.` Stop without drafting that item (draft the rest of the fill-set if any).
-- **Audit-shape items** (title starts `Audit`/`Verify`/`Review`/`Inspect`/`Check`, or Context is read-and-decide): execute the reads in plan mode and render the verdict in the plan body; plan only consequent code changes. Compliant verdict → plan collapses to `/worklog complete` with verdict as `[x]` ref. Same for read-only `debug` reproduction.
+- **Audit-shape items** (title starts `Audit`/`Verify`/`Review`/`Inspect`/`Check`, or Context is read-and-decide): execute the reads while drafting and render the verdict in the plan body; plan only consequent code changes. Compliant verdict → plan collapses to `/worklog complete` with verdict as `[x]` ref. Same for read-only `debug` reproduction.
 - `class: debug` items: structure Steps per the `debugging` skill's 6-phase discipline (feedback loop → reproduce → patterns → hypothesise → fix → cleanup). Don't propose fixes before reproduction.
 - `class: test` items: Steps describe what to assert and which fixture (`SpellTestFixture` / `CastingTestFixture`), not implementation.
 
@@ -409,17 +409,15 @@ The history file holds two event shapes, both with `event` and `date`:
 
 End with a one-liner:
 ```
-Plan drafted. ExitPlanMode when ready to start, or refine first.
+Plan drafted. Say the word when ready to start, or refine first.
 ```
 
 If a `/plan_check` recommendation was surfaced in 4e, alter to:
 ```
-Plan drafted with pre-execution gate flagged. Recommend running /plan_check before ExitPlanMode.
+Plan drafted with pre-execution gate flagged. Recommend running /plan_check before starting.
 ```
 
 ### Edge cases for PLAN
-
-- **Draft mode invoked outside plan mode.** The output is still useful (a draft plan body) but warn at the top: `(Note: not in plan mode — output is a draft you can paste into plan mode, or read for guidance.)`. Don't refuse to run.
 - **Fill-set item already in current uncommitted work.** Hot-context can fire on items the user is *already* doing. Detect by checking whether `git status` files overlap the item's `Where:` paths AND the item appears `[ ]` (not yet completed). If suspected, ask: `<title> looks like work-in-progress — draft as continuation, or pick the next candidate?`
 - **Survey-mode Hot-context batch overlaps current work too narrowly.** Batching items that ARE the current uncommitted work is silly — flag it rather than proposing it as fresh work.
 - **User picks a fill-set then says "actually use a different one".** Re-run 4d with the new selection. Don't re-score (the user has overridden the heuristic).
@@ -443,11 +441,11 @@ User: `/worklog plan`
    - Stale: 1 item > 30 days old in `ui`.
    - Big-ticket: 1 scope-4 `design` item with linked doc — flag for spawn_task.
 4. Step 4-Survey batches: Batch A (Hot + AI cohesion merged), Batch B (Quick-wins scope-1 sweep), Big-ticket flag.
-5. User picks A. Suggest entering Plan mode with pre-drafted notes. No tackle-history log (survey mode).
+5. User picks A. Suggest drafting a plan file from the pre-drafted notes. No tackle-history log (survey mode).
 
 ### Plan cycle (draft mode — `/worklog tackle` ≡ `plan scope:3`)
 
-User enters plan mode, then types: `/worklog tackle`
+User types: `/worklog tackle`
 
 1. Read Worklog.md → 12 ready items across 5 domains. Read git context.
 2. Score (Step 3):
@@ -464,7 +462,7 @@ User enters plan mode, then types: `/worklog tackle`
 4. 4c: no scope-4 ready items → no big-ticket flag. 4d: draft the plan body. Logic-domain item (SpellArchitecture) → Steps start with a RED test against the new statsheet field's expected behavior.
 5. 4e `/plan_check` evaluation: 2 files touched, no new types, no subclass refactor → no gate trigger. Skip the block.
 6. 4f: append one `tackle` event to `.claude/worklog-tackle-history.jsonl`.
-7. 4g: print `Plan drafted. ExitPlanMode when ready to start, or refine first.`
+7. 4g: print `Plan drafted. Say the word when ready to start, or refine first.`
 
 ### Plan cycle (draft mode — scope-4 refusal)
 
@@ -478,6 +476,6 @@ User: `/worklog plan scope:3`
      Core Elemental Spells tier-1 implementation — spell · scope 4
      Plan doc: [[Core Elemental Spells Brainstorm v1.1]]
 
-   Recommended: spawn a parallel session via mcp__ccd_session__spawn_task with the linked plan doc as context. Or: re-run with a larger items:N target to surface smaller candidates.
+   Recommended: start a parallel session for it with the linked plan doc as context. Or: re-run with a larger items:N target to surface smaller candidates.
    ```
 3. Stop. No plan body drafted. Return.

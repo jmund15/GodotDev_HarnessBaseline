@@ -1,10 +1,17 @@
 ---
+description: Commit and push every dirty file on the branch, submodule first, until the tree is clean.
 allowed-tools: Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git push:*), Bash(git diff:*), Bash(git log:*), Bash(cd *)
 ---
 
 ## Scope
 
 This command ensures the current branch is **completely clean** — all changes committed, submodules synced, and everything pushed to origin. Unlike `/commit_push` (session-scoped), this sweeps up ALL dirty files regardless of when they were modified.
+
+## Arguments
+
+`$ARGUMENTS` — optional. The only recognised flag is `--check-baseline` (see step 5). No arguments is
+the normal case. An unrecognised argument is reported and otherwise ignored — never treat it as a
+path or a commit message.
 
 ## Context
 
@@ -24,8 +31,7 @@ This command ensures the current branch is **completely clean** — all changes 
    - Each commit should be independently revertable.
 3. **Push**: Push all commits to the current branch on origin.
 4. **Verify**: Run `git status` for both {{PROJECT_NAME}} AND Jmodot to confirm both are clean and up to date with origin.
-5. **Baseline drift gate**: if `.claude/baseline.lock.json` exists:
-   - **Modified tracked files** — intersect the files committed in steps 1–2 with `python3 .claude/tools/baseline_sync.py paths`. On overlap, report the hits and classify each change per `/sync_baseline` *Classification Rules*: universal → propose `/sync_baseline push`; project-specific → propose `/sync_baseline fork <file>` (or accept the standing local diff).
-   - **New `.claude/` artifacts** — if the commits added files under `.claude/`, run `python3 .claude/tools/baseline_sync.py candidates`. For each candidate, judge once: universal-shaped (new hook/command/skill/rule with no project content) → propose upstreaming via `/sync_baseline` (copy into the baseline `template/`, regen manifest, then `track`); project-specific → `python3 .claude/tools/baseline_sync.py ignore <file>` so it never re-fires.
-   - Tracked-file changes and new universal artifacts must never fork the shared baseline silently.
+5. **Baseline drift gate — OPT-IN.** Runs only when the invocation passed `--check-baseline`. Without the flag, skip it entirely and say nothing about the baseline: a commit touching tracked files is not a reason to run it anyway.
+   - When flagged and `.claude/baseline.lock.json` exists, run the drift check over the files committed in steps 1–2 per [`/sync_baseline`](sync_baseline.md) — it owns the mechanism, the classification rules, and the push/fork/ignore decision.
+   - Default-off because `/sync_baseline` is normally invoked on its own cadence; re-running a classification pass on every push re-bills judgment the user already owns. **`/sync_baseline` is therefore the sole enforcement point** — an unflagged push can land a tracked-file edit or a new universal artifact without classifying it, which is the accepted cost of the default.
 6. You have the capability to call multiple tools in a single response. When commits are independent, batch the staging and committing in parallel where possible. Other than the drift gate above, do not use any other tools or do anything else; besides the drift-gate report (when it fires), do not send any other text or messages besides these tool calls.

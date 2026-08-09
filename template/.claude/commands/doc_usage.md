@@ -1,4 +1,5 @@
 ---
+description: Create or update an Obsidian Usage Guide for a system or feature.
 disable-model-invocation: true
 ---
 

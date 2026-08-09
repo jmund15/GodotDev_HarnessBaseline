@@ -1,4 +1,5 @@
 ---
+description: Audit and compress CLAUDE.md when it exceeds the 200-line always-loaded target.
 disable-model-invocation: true
 ---
 
@@ -23,7 +24,7 @@ Over-long always-loaded files reduce instruction-following adherence (per [Anthr
 3. **201–220 lines:** Advisory only. Report current count + headline targets but do NOT proceed. *"Approaching cap; track but no urgency"* unless user overrides with `--force`.
 4. **>220 lines:** Proceed to Phase B.
 
-### Phase B — Audit (read-only, three Explore agents in parallel)
+### Phase B — Audit (read-only, three audit agents in parallel; general-purpose + explicit pins — the built-in `Explore` agent runs Haiku per `orchestration` §5)
 
 Dispatch all three in a single message. Each returns a focused report; do NOT pre-read CLAUDE.md sections yourself before delegating — that defeats the cost model. An agent's EMPTY search result is INCONCLUSIVE, not evidence of "UNIQUE" / "no conflict" — re-run that specific search yourself before accepting a no-finding verdict (`gotcha_grep_glob_miss_tracked_files`).
 
@@ -52,7 +53,7 @@ Report: DUP / PARTIAL / UNIQUE per section, with file path evidence. PARTIAL mea
 
 The 2026-05-03 inaugural run found a §2-forbidden-keyword-list vs Proactive-Context-Loading-table conflict on `refactor` and `MCP`. Pattern: structured data vs prose drift. Report each finding with quoted text from both sides.
 
-### Phase C — Plan (use Plan Mode)
+### Phase C — Plan
 
 Synthesize agent findings into a phased plan at `.claude/plans/<YYYY-MM-DD>-claudemd-compact.md`:
 
@@ -63,7 +64,7 @@ Synthesize agent findings into a phased plan at `.claude/plans/<YYYY-MM-DD>-clau
 
 Each phase shippable independently. Estimate line savings per phase. Goal: land ≤200 with some headroom.
 
-### Phase D — Execute (after user approval via ExitPlanMode)
+### Phase D — Execute (after the user approves the plan file)
 
 Apply edits in dependency order:
 1. Create new rule files first (so cross-references resolve when CLAUDE.md updates).

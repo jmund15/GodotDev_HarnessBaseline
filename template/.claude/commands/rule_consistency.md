@@ -30,7 +30,7 @@ Canonical rule clusters (start here; add as the harness grows):
 7. **memory placement** (hot topic file vs cold `archive/`)
 8. **Jmodot framework boundary**
 9. **regression-gate mandate** (mandatory for `.cs`, meta exempt)
-10. **plan-mode gates** (plan_check litmus, ExitPlanMode)
+10. **plan-time gates** (plan_check litmus, plan-file + approval convention)
 
 For each cluster, gather every statement across the surfaces with file:line:
 ```bash

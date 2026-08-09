@@ -1,3 +1,7 @@
+---
+description: Sync local and user permissions into the tracked project settings.json.
+---
+
 Sync permissions from local/user settings into the tracked project settings.json.
 
 ## Purpose

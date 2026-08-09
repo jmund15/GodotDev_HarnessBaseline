@@ -9,7 +9,7 @@ The serial grind that runs AFTER a plan is approved. Plan approval (in the plann
 
 ## Usage
 
-`/part_execute <plan-file-path>` — invoke in a **fresh, lower-effort executor session** (the planning/auditing happened at high effort; execution of an unambiguous plan is safely lower-effort per `process_rule_plan_high_execute_lower`). Not in the planning session. For a Part too large for one context, wrap the invocation in `/loop` — the loop body is still this command.
+`/part_execute <plan-file-path>` — invoke in a **fresh, lower-effort executor session** (the planning/auditing happened at high effort; execution of an unambiguous plan is safely lower-effort per CLAUDE.md §Model Delegation). Not in the planning session. For a Part too large for one context, wrap the invocation in `/loop` — the loop body is still this command.
 
 ## The single gate (upstream, already passed)
 
@@ -21,9 +21,9 @@ By the time you run this, the plan has been authored, `/plan_check`'d, audited t
 
 Run [`/plan_handoff <plan-file-path>`](plan_handoff.md) and adopt its execution stance verbatim for the rest of this run:
 - The plan file is authority; follow it exactly where unambiguous.
-- Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them — per `feedback_verify_explore_agent_empirical_claims`. A claim that fails verification is **halt valve (a)**.
+- Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them — per `feedback_delegate_output_trust`. A claim that fails verification is **halt valve (a)**.
 - Mechanical execution is yours — don't ask permission for unambiguous steps.
-- Do **not** read prior session transcripts or memory snapshots; the plan is self-sufficient by design — when produced by [`/plan_drive`](plan_drive.md), each decision's load-bearing *why* is woven inline (per [*Plan-file format*](../skills/_brainstorm_shared/plan_file_format.md)), so the *why* travels inside the plan, not in a side artifact.
+- Do **not** read prior session transcripts or memory snapshots; the plan is self-sufficient **for SCOPE** by design — when produced by [`/part_drive`](part_drive.md), each decision's load-bearing *why* is woven inline (per [*Plan-file format*](../skills/_brainstorm_shared/plan_file_format.md)), so the *why* travels inside the plan, not in a side artifact. **Carve-out:** auto-memory `arch_rule_*`/`gotcha_*` entries and path-scoped `.claude/rules` remain in force — when a slice introduces something the plan didn't describe (a new type, `[Export]`, or scene node), consult them; the plan bounds WHAT you build, never which design rules apply.
 
 If the plan path is missing or unreadable, abort exactly as `plan_handoff` specifies and stop.
 
@@ -40,8 +40,9 @@ For each slice:
 1. **Classify the domain** (per CLAUDE.md *Hybrid TDD*): Logic vs Gameplay. The plan usually states it; if not, infer from the touched subsystem.
 2. **Logic domain — strict TDD:** RED (write the failing `[TestSuite]` test first) → **VERIFY the specific expected failure** (per `feedback_test_name_must_match_exercised_path` — confirm the setup drives the SUT into the branch the title names) → GREEN (minimum production code to pass) → assess REFACTOR (refactor when it adds value; skip when it doesn't).
 3. **Gameplay domain — automate deterministic, flag subjective:** drive input→outcome / state-transition / signal-wiring / scene-structure expectations through ISceneRunner integration tests. Work that is genuinely subjective ("feels responsive?", juice, timing) cannot be test-gated → **halt valve (c)**: implement the mechanism, then flag the specific behaviors for manual playtest rather than asserting them green.
-4. **A green test is the only proof a slice is done.** `JmoLogger.Error` triggers test failure — treat any error log surfaced by the run as a real failure, not noise.
-5. Mark the slice complete and advance.
+4. **A green test proves the slice WORKS — not that it's done.** `JmoLogger.Error` triggers test failure — treat any error log surfaced by the run as a real failure, not noise.
+5. **Reuse check (per slice, self-reported):** for every named configuration surface this slice introduced BEYOND the plan's Authored-surfaces section — type, `[Export]`, parameter, behavior flag, helper — answer `rules/design_litmus.md` #1: name the family that owns the concern, or record "none exists" in the slice rationale. A mid-slice invention is exactly what plan-time checks cannot see; this line is the only guard at the moment it happens.
+6. Mark the slice complete and advance.
 
 **Self-introduced regressions are fixed in-session, never parked** (per `feedback_fix_self_introduced_regression_immediately`). If a slice breaks a sibling behavior, that is part of this slice's work.
 

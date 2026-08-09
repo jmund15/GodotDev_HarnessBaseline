@@ -1,3 +1,7 @@
+---
+description: Generate the Self-Evaluation Performance Dashboard from the session archive.
+---
+
 Generate a Self-Evaluation Performance Dashboard from the session archive.
 
 ## Fast Path (preferred — use the analysis script)
@@ -33,9 +37,9 @@ Read `/.claude/self_evaluate_archive.json` — contains two data formats:
 When generating stats, combine both sources. Structured entries take priority for accuracy. For legacy entries, use best-effort classification and note any ambiguity in footnotes.
 
 ## Output
-Write to Obsidian at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using `mcp__obsidian__obsidian_write_note`:
-- `target: {type: "path", path: "DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md"}`
-- `overwrite: true` (whole-file replace; creates the note if absent)
+Write to Obsidian at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using `mcp__obsidian__obsidian_update_note`:
+- `targetType: "filePath"`, `targetIdentifier: "DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md"`
+- `modificationType: "wholeFile"`, `wholeFileMode: "overwrite"`, `overwriteIfExists: true` (whole-file replace; creates the note if absent)
 - Native `Write` to the vault path is an equally valid fallback per CLAUDE.md §3.
 
 ## Document Structure
@@ -142,6 +146,30 @@ This section answers the question Sections 4 and 4b can't: *are the routing hook
 **Cross-link:** trend deltas here should triangulate with the most recent `/routing_battery` results. If continuous-audit silent-miss spikes but the last battery still passes, the doctrine is intact and the spike is task-specific (a sprint of unfamiliar code-discovery). If both the audit AND battery show the same rule degrading, doctrine drift is real and the rule needs a CLAUDE.md negative-framing addition or skill update.
 
 **No-data state:** if `silent_misses == 0` and `cue_exempt_overrides == 0`, either (a) all routing is compliant (excellent), (b) no routing-classifiable calls happened in window (fresh project, recent rotation), or (c) audit hook isn't firing. Disambiguate via `total_entries` field — if zero entries, suspect (c) and check `settings.json` for `routing_audit.py` wire-up.
+
+### Section 4d: Effort Calibration
+
+**Data source:** `.claude/orchestration_metrics.jsonl` (written by `/orchestration_metrics archive`, also run by `/session_end` Phase 3.6). Render via `python3 .claude/tools/orchestration_metrics.py --archive-summary`. If the file doesn't exist, render a "(no orchestration data — no Workflow-dispatching session has been archived yet)" placeholder rather than omitting; visible absence signals the phase isn't firing.
+
+Sections 4/4b measure whether *skills* carry their declared compliance. This measures whether *effort pins* are sized right — a different failure surface, and the only one whose cost is directly attributable.
+
+`--archive-summary` also prints a **DeepSeek sidecar** section (labeled runs from the spend ledger, real USD, requested-effort vendor coordinates). Render it as its own table beside — never merged into — the Anthropic matrix below; the effort axes are not commensurable.
+
+> [!tip]- Effort Fit vs Cost
+> | Effort | Agents | clean | defects | rework | discarded | Cost/agent |
+> |--------|--------|-------|---------|--------|-----------|------------|
+> | low | N | N | N | N | N | X |
+> | medium | N | N | N | N | N | X |
+> | high | N | N | N | N | N | X |
+> | xhigh | N | N | N | N | N | X |
+
+**Reading the distribution:**
+- **Any `defects`/`rework`** → the falsification signal — that shape's floor is too low. One instance is noise; two on the same family means the floor moved.
+- **`discarded` → audit the spec, not the pin.** It usually means an open decision was pushed into an agent instead of settled first, which no effort level fixes.
+- **`clean` is a null measurement, not a certification** — nothing here says a lower pin would have failed. Overshoot is not a row in this table: it is the **over-pin candidates section** the summary prints (same-family higher rung at ≥2× cost for comparable work, both rungs clean-only). Render it verbatim; the action is a substituted downgrade on the family's next dispatch. Canon: `/orchestration_metrics` *Over-pin candidates*.
+- **`?` efforts in the archive** → scripts are missing the `PINS` log line (`orchestration` §9); the data is unattributable until that lands.
+
+**Minimum N before proposing a ladder edit:** ≥8 archived agents at the tier in question, spanning ≥3 sessions. Below that, per-session variance dominates — say so rather than tuning on it.
 
 ### Section 5: Key Corrections Log
 Chronological table of sessions with corrections:

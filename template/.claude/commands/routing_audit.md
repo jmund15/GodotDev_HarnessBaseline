@@ -1,4 +1,5 @@
 ---
+description: Inspect and aggregate the continuous routing-audit log written by the hook.
 disable-model-invocation: true
 ---
 

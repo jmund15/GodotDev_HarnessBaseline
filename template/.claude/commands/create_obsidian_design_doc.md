@@ -1,4 +1,5 @@
 ---
+description: Create an Obsidian design doc covering this session's full scope of work.
 disable-model-invocation: true
 ---
 

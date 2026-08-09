@@ -1,4 +1,5 @@
 ---
+description: Create or append to a Development Retrospective in Obsidian.
 disable-model-invocation: true
 ---
 
@@ -66,7 +67,7 @@ logs/transcript_backups/*.jsonl          # Raw transcripts (FALLBACK)
 
 Follow steps 1-2 from [Doc Before Writing](agents/doc_before_writing.md). Target doc path: `{SystemName}/Retrospective.md`.
 
-**Step 3 (Retrospective-specific):** Check for existing doc via `obsidian_get_note`. If it exists, you are APPENDING a new timestamped entry — do NOT modify prior entries. Read the existing doc to avoid repeating information. If it doesn't exist, create from scratch with the document header and first entry.
+**Step 3 (Retrospective-specific):** Check for existing doc via `obsidian_read_note`. If it exists, you are APPENDING a new timestamped entry — do NOT modify prior entries. Read the existing doc to avoid repeating information. If it doesn't exist, create from scratch with the document header and first entry.
 
 ## Document Structure
 

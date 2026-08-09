@@ -1,4 +1,5 @@
 ---
+description: Analyze Godot log files with mode-based presets and token-efficient JSON output.
 disable-model-invocation: false
 ---
 
@@ -15,6 +16,7 @@ Analyze Godot log files with mode-based presets and token-efficient JSON output.
 | "Everything HoarderCritter did" | `--json --mode entity --node HoarderCritter` | varies |
 | "Targeted timeline" | `--json --target HSM --target Transition` | varies |
 | "Previous game session" | add `--log previous` to any | varies |
+| "Check the test run" | add `--log test` to any (reads `TestResults/godot_test.log`) | varies |
 
 **Always use `--json` for agent consumption.**
 
@@ -115,12 +117,13 @@ If you give filters (`--target`, `--level`, `--node`, `--type`) without `--mode`
 
 | `--log` value | Resolves to | When to use |
 |---|---|---|
-| (omitted) or `latest` | Active `godot.log` | Default — current/most-recent run |
-| `previous` | Most-recent timestamped historical log | After a crash + quit (active log was truncated by next launch) |
-| `<int>` | Nth-most-recent (0=latest, 1=previous, 2=...) | Walking back through past runs |
+| (omitted) or `latest` | Active `godot.log` (appdata, **live-run only**) | Default — current/most-recent editor/`run_project` session |
+| `test` | `TestResults/godot_test.log` (cwd-relative, per-worktree) | Analyzing a GdUnit4 test run — test-spawned Godot no longer writes to appdata |
+| `previous` | Most-recent timestamped historical log | After a crash + quit (active live-run log was truncated by next launch) |
+| `<int>` | Nth-most-recent (0=latest, 1=previous, 2=...) | Walking back through past live-run logs |
 | `<path>` | Explicit file | Specific log you have a path for |
 
-**Why this matters**: Godot truncates `godot.log` on every launch. If the user crashed, quit, and is asking you to analyze the crash, the active log is empty — you need `--log previous`.
+**Why this matters**: Godot truncates `godot.log` on every launch. If the user crashed, quit, and is asking you to analyze the crash, the active log is empty — you need `--log previous`. Test runs never rotate — `TestResults/godot_test.log` is one fixed file overwritten each run, so `--log test` always reads the latest test run.
 
 ## Filters (compose with any mode)
 
@@ -258,5 +261,5 @@ python .claude/hooks/analyze_godot_logs.py --json --mode errors --fields line_nu
 - Backtraces are compressed to user-relevant frames ({{PROJECT_NAME}}/Jmodot only, max 5)
 - The script fixes the WARNING double-counting bug from Godot's GD.PushWarning duplication
 - Empty fields are stripped from JSON output by default (further token savings)
-- Log location: `%APPDATA%\Godot\app_userdata\{{PROJECT_NAME}}\logs\godot.log` (canonical home: `.claude/rules/godot_files.md`)
+- Log location: live-run `%APPDATA%\Godot\app_userdata\{{PROJECT_NAME}}\logs\godot.log` (canonical home: `.claude/rules/godot_files.md`); test-run `TestResults/godot_test.log` (`--log test`)
 - Legacy flags `--summary` and `--timeline` still work (alias to `--mode summary`/`--mode timeline`) for backward compat with prior automation

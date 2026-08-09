@@ -1,6 +1,6 @@
 ---
 description: Pre-PR release-readiness battery — fan out parity, API-consumption, worklog/roadmap, doc-coverage lenses over the frozen diff (excludes test runs).
-allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git status:*), Bash(git show:*), Bash(git grep:*), Bash(git ls-files:*), Read, Workflow
+allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git status:*), Bash(git show:*), Bash(git grep:*), Bash(git ls-files:*), Read, Agent, Workflow
 ---
 
 # /pr_ready — Release-Readiness Battery
@@ -11,7 +11,7 @@ Consolidates the "done but not actually done" invariants into one gate at the hi
 
 ## When to use
 - Pre-commit after `/regression_gate` passes, before `/commit_push`.
-- Pre-PR before `/create_pr`, or pre-merge before `/merge_pr`.
+- Pre-PR before `/create_pr`, or pre-merge before `/merge_pr` — its Step 6b Pre-Merge Checklist carries a BLOCKER row for this battery, so the batch path (`/pr_pipeline` Phase 3 → `/merge_pr`) reaches it too.
 - Skip for meta-only commits (`.claude/`, docs) — the parity/API lenses have nothing to chew on.
 
 ## Step 0: Assemble the frozen snapshot (Claude-side — push-don't-pull)
@@ -54,7 +54,7 @@ Also read into the snapshot: `.claude/worklog-titles.md` (worklog state) and the
 Agent({
   description: "Refactor parity diff",
   subagent_type: "general-purpose",
-  model: "opus", // the one high-fidelity pin: line-precision OLD-vs-NEW regression audit that gates the PR — a missed dropped branch ships a bug. Standalone Agent() bypasses review_fanout.js's sonnet floor, so this MUST be set explicitly (else it inherits the session model).
+  model: "opus", // executor role per CLAUDE.md's ladder — reasoning-heavy floor (`orchestration` §5): line-precision OLD-vs-NEW regression audit that gates the PR, where a missed dropped branch ships a bug. Standalone Agent() bypasses review_fanout.js's engine floor, so this MUST be set explicitly (else it inherits the session model). If the ladder's role→model mapping changes, this literal follows it.
   prompt: "<parity mandate + OLD (from git show main:…) + NEW per changed .cs, verbatim with file:line>"
 })
 ```
@@ -93,5 +93,7 @@ Workflow({
 - **BLOCKERS** (critical / parity-dropped-branch / framework-leak / leftover `[DIAG-]`) — must resolve before PR.
 - **WARN** (unmigrated call site, state drift, missing doc-coverage).
 - **INFO** (minor).
+
+**Never average across lenses, and issue no roll-up verdict.** Each lens reports its own outcome, set by its worst surviving finding — a clean `doc-coverage` does not soften a `parity` BLOCKER, and "3 of 4 lenses clean" is not a result. State each lens's worst finding separately.
 
 Then run the user-gated walkthrough per `agents/orchestrator_action_protocol.md` (Step 1.5 verify → FIX/ASK/PLAN per finding). Do NOT auto-run tests or auto-commit.

@@ -95,7 +95,7 @@ Ask user to confirm the grouping or override (split, merge, reorder, rename). Ea
 
 ### Step 4 — Author each MVP Socratically (one at a time)
 
-For each MVP-N in approved order, walk the 6 fields per the `common.md §6.11` schema. One question per turn; multiple-choice preferred when the design doc offers candidates.
+For each MVP-N in approved order, walk the 7 fields per the `common.md §6.11` schema (Playtest plan is REQUIRED — the walk does not complete without a manual plan or the explicit automated-only declaration). One question per turn (the deep-single-fork mode of `common.md §9` — a 7-field walk is sequential by nature, not a fork batch); multiple-choice preferred when the design doc offers candidates.
 
 1. **Goal** — propose the one-sentence playable-surface narrative based on Step 2's extracted goal candidates. *"MVP-N target: <proposed>. Approve / refine?"*
 
@@ -105,11 +105,14 @@ For each MVP-N in approved order, walk the 6 fields per the `common.md §6.11` s
 
 4. **Acceptance** — propose the **cross-Part integration** checks this MVP verifies — assertions no single Required Part's completion guarantees (e.g. *"enemy spawns AND trail renders AND room loads together in one scene"*). Do NOT restate per-Part criteria: a Part can't reach `complete` without its own tests passing the gate, so per-Part acceptance rides on the Required-Part check-mark (§6.11). Each criterion verifiable without ambiguity (named integration test, multi-Part behavioral assertion, full-scene check). Vague checks (*"feels responsive"*) belong in Playtest plan. These cross-Part checks are confirmed at playtest, not auto-computed.
 
-5. **Playtest plan** — propose concrete manual verification steps the user runs after the MVP ships. This is where *"feels responsive"* belongs — subjective rubric. Pull candidates from each Part's design-doc playtest moment.
+5. **Playtest plan** — **REQUIRED field (per common.md §6.11)** — the roadmap field carries a 2–3 line summary + wikilink; the **full content is authored in the topic's `playtest.md`** (colocated with `roadmap.md`, one section per MVP; create it here if absent, carrying over the summary shape). The doc holds the rubric + operational runbook — verify each runbook step against the codebase's actual editor surface: exact `[ExportToolButton]` labels in order, plugin main-screen tabs, scene paths, launch path. A rubric-only plan is incomplete. This is where *"feels responsive"* belongs — subjective rubric. Pull candidates from each Part's design-doc playtest moment. The walk completes this field with ONE of two branches:
+   - **Manual surface** — the playtest.md section: named scene path + step-by-step procedure + what to look for (the Acceptance's cross-Part checks, verified by hand). If the playtest needs a scene/artifact that must be authored (stacking frame, demo scenario), name it as a **Checkpoint artifact** (next field) and make it a deliverable of a Required Part's Trigger — the plan's scene path must exist by Status-flip time, not after.
+   - **`Automated-only — no manual surface`** — the explicit carve-out when every Acceptance criterion is a deterministic test with no human verdict. An absent plan is NOT the carve-out; a `🧪` with neither branch is a lie by omission.
 
-6. **Validates** — propose design commitments being exercised. Pull from each Required Part's design-doc commitments. This field is the *"why this MVP earns its slot"* — connects the milestone narrative back to architectural commitments.
+6. **Checkpoint artifact** — *optional, ask when the Playtest plan names a surface that must be authored.* Propose the named deliverable (scene, demo scenario, hand-authored data) + which Required Part's Trigger carries it (per common.md §6.11). The artifact is the playtest surface's existence guarantee; `🧪` presumes it.
+7. **Validates** — propose design commitments being exercised. Pull from each Required Part's design-doc commitments. This field is the *"why this MVP earns its slot"* — connects the milestone narrative back to architectural commitments.
 
-After the 6 fields, **initialize Status** to `🔨 In progress (0/Y parts)` (Y = Required-Parts count) — non-Socratic, no user input; `/update_roadmap` recomputes it on its next run. Never author `🧪`/`✅` at creation.
+After the 7 fields, **initialize Status** to `🔨 In progress (0/Y parts)` (Y = Required-Parts count) — non-Socratic, no user input; `/update_roadmap` recomputes it on its next run. Never author `🧪`/`✅` at creation.
 
 Get user approval per MVP before moving to the next. Save approved MVPs to scratch as you go (in-context only; not a file ledger — this command is single-session).
 

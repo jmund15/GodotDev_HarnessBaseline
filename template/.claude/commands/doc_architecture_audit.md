@@ -1,4 +1,5 @@
 ---
+description: Audit the documentation landscape and produce a prioritized report in Obsidian.
 disable-model-invocation: true
 ---
 
@@ -11,7 +12,7 @@ Audit the documentation landscape — produces a prioritized report in Obsidian.
 ```
 Phase 1: INVENTORY      (Claude — folder structure, read Start Here, build manifest + CONTEXT)
 Phase 2+3: AUDIT        (workflow .claude/workflows/doc_architecture_audit.js — 3 parallel lens-agents + deterministic consolidation)
-Phase 4: REPORT         (Claude — write audit report to Obsidian from the workflow's structured output)
+Phase 4: VERIFY+REPORT  (Claude — kill false-absence findings against the filesystem, then write the report)
 ```
 
 The 3 lens-agent prompts (checks S1-S4 / X1-X4 / D1-D7), the parallel barrier, the dedup, the cross-agent-pattern detection, and the health-rating thresholds all live canonically in the workflow — do not re-implement them here.
@@ -48,7 +49,9 @@ List `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/` (recursion depth 2). C
 Read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Start Here.md`. Parse all `[[wikilinks]]` + domain-table assignments, Role table entries (Designer/Developer), and entry-point links (Quick Reference vs Design Document).
 
 ### 1d. Assemble CONTEXT Block
-Build a single CONTEXT string: the full System Manifest (JSON — including each entry's `classification` + `domain`) + the full Start Here content (raw markdown) + today's date + total system count. Archived/structural folders are excluded by construction in 1b; do not assemble a separate "exclusion list" component (the canonical rules are content-based — see `documentation_structure.md`).
+Build a single CONTEXT string: the full System Manifest (JSON — including each entry's `classification` + `domain`) + the full Start Here content (raw markdown) + today's date + total system count.
+
+**Inject source material verbatim — never annotate it inline.** A parenthetical inference you add (tagging a Start Here row `(BROKEN? not in tree)`) is indistinguishable from source to the lenses: they consume it as evidence, escalate on it, and then cite Start Here as independently corroborating a claim you invented. State the manifest's exclusions (`Archived/`, `Claude/`) explicitly so agents don't read manifest-absence as disk-absence; any other orchestrator observation goes in its own labelled section, never interleaved with quoted source. Archived/structural folders are excluded by construction in 1b; do not assemble a separate "exclusion list" component (the canonical rules are content-based — see `documentation_structure.md`).
 
 ---
 
@@ -80,6 +83,30 @@ It returns:
 ---
 
 ## Phase 4: Report (Claude)
+
+### 4a. Absence-Claim Verification Gate (MANDATORY — before computing anything)
+
+Lens agents produce **false absences**: they read a bounded slice and report the unread remainder as missing. Confirming presence needs one hit; confirming absence needs exhaustive coverage — and an agent cannot distinguish "I looked everywhere" from "I stopped early." Treat every absence-shaped finding as unverified until you check it yourself.
+
+**Qualifying shape** — the description asserts something does not exist: *missing, absent, broken, unresolvable, does not link back, not found, orphaned, no longer exists*. Usual carriers: X1, X2, S1, S2, D1, D5.
+
+| Claim | Verification | Trap it catches |
+|---|---|---|
+| "wikilink `[[Title]]` resolves to nothing" | `Get-ChildItem -LiteralPath <VAULT ROOT> -Recurse -Filter "Title.md"` — search the **whole vault**, never just `Documentation/` | Obsidian resolves bare-title wikilinks vault-wide; targets legitimately live in `Claude/Design/`, `Claude/Archived/` |
+| "file/doc does not exist" | `ls` the containing folder on disk | `Archived/` + `Claude/` are excluded from the manifest **by construction** — manifest-absence ≠ disk-absence |
+| "System A's Related Systems omits B" | `grep -n "Related Systems" -A 40 <A's QR>`, read to the callout's last `>` line | Lens enumerations truncate; the "missing" entry usually sits just past where it stopped counting |
+| "section/heading is missing" | `grep -n "^#" <file>` | Same truncation |
+
+**Disposition:**
+- **Verified present** → the finding is FALSE. Do not emit it as critical/warning/info. Record it under a `## Invalidated Findings` section (claim + verification + verdict) and set `status: "resolved"` in the Machine Findings block.
+- **Verified absent** → keep at the lens's severity.
+- **Cannot verify** → drop it (per *No hallucinated findings*).
+
+**Recompute after the gate, never before.** Invalidations move the numbers: an invalidated X1 returns its edges to `linkGraph.bidirectional` (decrementing `unidirectional` and `unidirectionalBySystem`), which changes Link Integrity. Statistics, counts, `healthRating`, and `ratingBasis` are all computed from the **post-gate** finding set, re-applying the workflow's own threshold definitions (canonical there — do not invent new ones).
+
+**Two lenses disagreeing about one file+line is a gate trigger, not a cross-agent pattern.** Dedup keys on `system+check`, so contradictory verdicts filed under different check codes both survive the merge. Verify, then keep at most one.
+
+### 4b. Statistics and report
 
 Compute the Statistics-table metrics from your Phase-1 manifest + the workflow's findings/linkGraph using these explicit formulas (denominators count only `classification=="system"` folders unless noted):
 - **Template Compliance** = (# systems with the full 4-doc suite — `templateFormat` is `4-doc` **OR** `mixed`) / (# system folders). A `mixed` system carries all four canonical docs PLUS a legacy Design Document, so it IS compliant; only `design-doc-only` and `empty` fail. (Counting `templateFormat=="4-doc"` alone would wrongly mark suite-complete `mixed` systems as non-compliant.)
@@ -124,6 +151,16 @@ Then write the report to Obsidian with a single overwrite:
 > **Scope:** {scope list}
 
 (Repeat for each critical finding. Omit section if none.)
+
+## Invalidated Findings
+
+> [!success]- {id} (INVALIDATED): {what the lens claimed} ({system})
+> **Check:** {check code} | **Agent:** {agent} | **Reported severity:** {severity} | **Verified verdict:** NOT A DEFECT | DUPLICATE
+> **Claim:** {the assertion, quoted}
+> **Verification:** {the command run and what it returned}
+> **Action:** none.
+
+(Findings killed by the Phase-4a gate. Omit section if none. These do NOT count toward the Findings totals.)
 
 ## Warning Findings
 
@@ -262,6 +299,6 @@ Rules for the block:
 - **Read-only.** NEVER modify existing documentation files. Only write to the audit report path.
 - **Advisory.** Present findings for user decision — do not auto-fix anything (the user-confirmed FIX/ASK walkthrough is `/doc_audit_fix`).
 - **Push-don't-pull.** Claude reads Start Here + folder structure and injects them into the CONTEXT; the workflow's agents do NOT re-read Start Here.
-- **No hallucinated findings.** Only report issues verified by reading actual files. If uncertain, skip it.
+- **No hallucinated findings.** Only report issues verified by reading actual files. If uncertain, skip it. Absence-shaped claims (*missing / broken / not found*) are never trusted from a lens — every one goes through the Phase-4a verification gate.
 - **3-lens delegation lives in the workflow.** The workflow spawns exactly 3 agents — do not perform the audit inline or combine lenses.
 - **Time-bounded.** Full audit (inventory → report) should complete in under 15 minutes.

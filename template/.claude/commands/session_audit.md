@@ -1,4 +1,5 @@
 ---
+description: Audit this session's code changes for smells and design debt via 3 parallel agents.
 allowed-tools: Bash(git diff:*), Bash(git ls-files:*), Bash(git log:*), Glob, Grep, Read, Workflow
 ---
 
@@ -107,7 +108,7 @@ Use the agent templates defined in [`session_audit_agents.md`](agents/session_au
 
 ### Architecture-Sweep Trigger (conditional 4th agent)
 
-Add `sa-architecture-sweep` to the fan-out when the session shipped **design-scale** work — any of: a new subsystem/type family or top-level concept, a multi-file feature design (3+ production files forming one mechanism), a refactor of a 2+ subclass/consumer family, or a new cross-system seam. (Mirror of the `/plan_check` litmus; when in doubt on a large session, include it.) Pure tuning/data/bug-fix sessions skip it. When triggered, fill its `{{DESIGN_LIST}}` with the session's major designs — name each mechanism and its key files/seams so the agent judges designs, not diffs. Its findings join the same consolidation; its SUPERIOR-ALTERNATIVE findings default to being implemented this session when effort is S/M and the migration closes a live gap (user preference: "move to the superior design"), deferred-with-worklog otherwise.
+Add `sa-architecture-sweep` to the fan-out when the session shipped **design-scale** work — any of: a new subsystem/type family or top-level concept, a multi-file feature design (3+ production files forming one mechanism), a refactor of a 2+ subclass/consumer family, a new cross-system seam, **or any new `[Export]`/authored field added to a pre-existing class** (the export-surface failures — bypassed families, dual-concern knobs, re-authored values — ship in small diffs that "design-scale" alone never catches). (Mirror of the `/plan_check` litmus; when in doubt on a large session, include it.) Pure tuning/data/bug-fix sessions skip it. When triggered, fill its `{{DESIGN_LIST}}` with the session's major designs — name each mechanism and its key files/seams so the agent judges designs, not diffs. Its findings join the same consolidation; its SUPERIOR-ALTERNATIVE findings default to being implemented this session when effort is S/M and the migration closes a live gap (user preference: "move to the superior design"), deferred-with-worklog otherwise.
 
 ### Shared Context Block
 
@@ -116,6 +117,7 @@ Assemble a `CONTEXT` string containing:
 - Architecture Philosophy key rules summary
 - auto-memory gotchas for touched domains
 - List of which files are NEW vs MODIFIED
+- **Prior-coverage note (conditional):** when the session executed against a plan file (`.claude/plans/*.md`) whose Decision record contains a close-out design-review entry, include a note that the Part's diff was four-axis reviewed + plan-conformance-checked pre-gate — `sa-design-semantics` then concentrates fresh findings on the non-Part session surface and its own axes, and treats re-covering the Part's code as expected re-coverage rather than re-litigation (validated 2026-08-08: the note steered the lens to fresh findings — visibility, catch narrowing — instead of re-covering the close-out review).
 
 Additionally, read these shared checklists and inject their contents into agent prompts:
 - Read `/.claude/commands/checklists/code_quality.md` → inject as `{{CODE_QUALITY_CHECKLIST}}`
@@ -159,13 +161,15 @@ The workflow already performed **Step 1** (merge/dedup by `file:line`, sort crit
 
 Then present findings grouped by action tier (FIX → ASK → PLAN) per the protocol's Step 2.
 
-### Verdict
+### Verdict — two axes, never merged
 
-Rate overall session code quality:
+Issue **two** verdicts: **correctness** (findings tagged `bug` or `rule` — silent failures, regressions, violated project rules) and **design** (findings tagged `improvement` — structure, seams, naming, taste). Never average them into one rating: strong design plus one data-loss bug is `REVIEW RECOMMENDED` on correctness and `CLEAN` on design, never "pretty good".
 
-- **CLEAN** — No critical findings. Code is production-ready.
-- **MINOR POLISH** — A few non-critical findings. Ship it, improve later.
-- **REVIEW RECOMMENDED** — 1+ critical findings that could cause issues. Consider addressing before commit.
+Each axis's verdict is set by its **worst surviving finding** — not the average, not the count:
+
+- **CLEAN** — no surviving finding on this axis.
+- **MINOR POLISH** — worst surviving finding is non-critical. Ship it, improve later.
+- **REVIEW RECOMMENDED** — worst surviving finding is `critical: true`, a MERGE-BLOCKER from Phase 1.5, or a PLAN-tier systemic defect. Address before commit.
 
 ### Execute Actions
 

@@ -1,3 +1,7 @@
+---
+description: Detect this session's corrections and preferences; propose minimal Skill/memory edits.
+---
+
 Phase 2 of `/session_end`. Detect corrections and recurring preferences from the session; propose minimal reversible edits to active Skills or auto-memory. Filter for quality and overfit before proposing.
 
 ## When to activate
@@ -162,10 +166,13 @@ The `MEMORY.md` index auto-loads into every session (first 200 lines / 25KB), an
 | Where | Target | Hard cap |
 |---|---|---|
 | MEMORY.md index entry | ≤ 120 chars | 150 |
+| Links on ONE index line | ≤ 3 | 4 = merge the cluster (Step 1) |
 | Hot topic file body (rule + Why + How) | as short as the rule allows | ~500 chars |
 | Cold archive file body | as long as the reference genuinely needs | n/a |
 
 A budget-violation on a hot entry signals *split into two principles* (or demote bulk detail to `archive/`), not "allow more characters." If a hot rule + concrete genuinely needs > 500 chars, it's probably two rules.
+
+The per-line link cap is the one budget that binds in *aggregate* rather than per-entry: the index hits its byte cap through link count, not through any single entry being too long, so a store of individually-compliant entries can still blow it. Bytes bind before the 200-line budget does — a dense index reaches 25KB at ~90 lines.
 
 ### Anti-patterns that produced the 2026-04-30 compaction debt
 
@@ -186,10 +193,26 @@ Litmus before saving: *would a future-me searching for this rule benefit from an
 
 If the signal maps to a **Preference** or **Fact**, add to **auto-memory** (`.claude/auto-memory/`).
 
-**Step 1: Create or update a topic file**
-- If the signal extends a preexisting topic file, append to that file's body.
-- If it's a new concept, create a new `<slug>.md` topic file (frontmatter: `name`, `description`, `metadata.type` of user|feedback|project|reference).
-- **Hot tier** (surfaced every session): add a one-line pointer to `MEMORY.md` in the *same turn*. **Cold/bulk** reference: place under `archive/`, no pointer.
+**Step 1: Extend an existing topic file, or create one — in that order**
+
+**Default to extending. Search before you create.** Semantic-search the store for the concern, and
+read the `MEMORY.md` line your pointer would join. A new file is correct only when no existing topic
+file owns this concern.
+
+**The index line is the tell.** If your pointer would join a line already carrying **≥3 links**, that
+line is a *cluster* — a topic that fragmented one incident at a time. Append your rule as a numbered
+entry in that cluster's topic file instead of adding a fourth link. Creating a sibling file there is
+how an index reaches its byte cap while every individual entry remains correct and every individual
+decision was defensible — the failure is only visible in aggregate, which is why it has to be caught
+at write time. (Retroactive cleanup: `/memory_audit` lens 5.)
+
+- Extends an existing topic file → append to its body; **no new `MEMORY.md` link**.
+- Genuinely new concept → create `<slug>.md` (frontmatter: `name`, `description`, `metadata.type` of
+  user|feedback|project|reference).
+- **Hot tier** (surfaced every session): add a one-line pointer to `MEMORY.md` in the *same turn*.
+- **Placement gate — CLAUDE.md §2 placement litmus (SSOT):** a Proactive Context Loading table domain
+  trigger exists → write `archive/`, always, no pointer; no trigger → hot topic file + `MEMORY.md` pointer
+  in the *same turn*. **Cold/bulk** reference: place under `archive/`, no pointer.
 
 **Step 2: Link related memories**
 - Cross-link related topic files with `[[other-file-slug]]` wikilinks in the body.

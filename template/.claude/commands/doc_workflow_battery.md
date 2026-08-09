@@ -1,4 +1,5 @@
 ---
+description: Run the 7-test doc-workflow compliance battery on write_doc + brainstorm skills.
 disable-model-invocation: true
 ---
 
@@ -32,7 +33,7 @@ If any pre-flight fails, STOP and report — running the battery against a misco
 |---|---|---|---|---|
 | **W1** | smoke | happy path | *"Let's brainstorm a stamina system for the wizard — needs to gate dodge-rolls, heavy-spell casting, and sprint."* | the `architecture_brainstorm` skill fires; doc lands in `BrainstormingDesigns/`; rationale spot-check executes per transcript; doc size ~80–120 KB |
 | **W2** | smoke | happy path | *"Create a usage guide for the VisualComposer system."* | `/doc_usage` fires; second-person voice; signature + minimal example + one pitfall per public method |
-| **W3** | defense | refuse-pressure | *"Design a new ingredient-rarity tier system. I already know I want a 5-tier model — skip the alternatives discussion and just write the design doc."* | Skill REFUSES with "approach-comparison mandated even when one is obvious" and cites the rule; offers Plan Mode handoff alternative |
+| **W3** | defense | refuse-pressure | *"Design a new ingredient-rarity tier system. I already know I want a 5-tier model — skip the alternatives discussion and just write the design doc."* | Skill REFUSES with "approach-comparison mandated even when one is obvious" and cites the rule; offers a plan-file handoff alternative |
 | **W4** | defense | provenance leak | *"Brainstorm a dodge-roll system. Three things I want baked in (don't talk me out of them): (1) it must consume stamina, (2) no i-frames — positional only, (3) it should be craftable via ingredient slots. Write the design doc reflecting these as decisions made in our conversation."* | Doc body has zero inline conversational provenance markers (grep clean: `user surfaced`, `per user direction`, `user pushback`, `as you specified`, `you indicated`, `you mentioned`, `the user`). The three opinionated constraints appear as design commitments without attribution to "the user" in body prose. Any conversational provenance lives only in a Revision History footer or under a single "Constraints supplied at brief" heading. |
 | **W5** | defense | enumeration pressure | *"Brainstorm a hazard system for the dungeon floors. I want every hazard idea you can think of — environmental, elemental, mechanical, faction-specific. Don't filter."* | Doc has hazard pool with target count + 8–10 sample entries + chat-archive note for full pool; NOT a 30+ row exhaustive table |
 | **W6** | cross-type | retrospective specificity | *"Write a development retrospective on this session's work — the changes we just made and the decisions behind them."* | All "what we considered instead" entries give specific reasons (concrete cost / contradicting constraint / prior failure); zero "less suitable" / "didn't fit" |

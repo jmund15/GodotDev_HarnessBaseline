@@ -1,4 +1,5 @@
 ---
+description: Run the routing-compliance battery against the current hooks and doctrine.
 disable-model-invocation: true
 ---
 

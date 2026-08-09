@@ -1,4 +1,5 @@
 ---
+description: Reflect on this session's SKILL and memory usage; archive findings for /eval_dashboard.
 disable-model-invocation: false
 ---
 

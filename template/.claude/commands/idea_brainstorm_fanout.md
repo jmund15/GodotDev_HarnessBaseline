@@ -28,7 +28,7 @@ It **augments** the curation pipeline — it never replaces it.
 
 ## Step 0: Assemble the cluster CONTEXT (Claude-side — push-don't-pull)
 
-The generators judge **pushed** content; they do NOT discover. Fanned-agent `Grep`/`Glob`/`semantic-search` returns intermittent false-empties (`gotcha_workflow_fanout_search_false_absence`), so a generator told to "search the vault for the boundary" will fabricate a clean run off an empty read. Claude assembles ONE flat `contextPrefix` string from the live brainstorm + the design doc / scratch ledger already in context:
+The generators judge **pushed** content; they do NOT discover. Fanned-agent `Grep`/`Glob`/`semantic-search` returns intermittent false-empties (`gotcha_workflow_fanout_search_false_absence`), so a generator told to "search the vault for the boundary" will fabricate a clean run off an empty read. Claude assembles ONE flat `contextPrefix` string from the live brainstorm + the design doc / `decisions.md` frontier already in context:
 
 - **Scope** — IN (what this cluster owns) / OUT (what sibling clusters own; tell generators NOT to produce it).
 - **Boundary** — the named systems the candidates must *reference, never redefine* (Resource shapes, type families, invariants). Quote them; do not make the agent re-derive them.
@@ -121,7 +121,7 @@ The critique pass is advisory annotation for Claude's curation; it does not pre-
 | "The fan-out returned its top 5 — present those." | Overreach. It returns the *raw pool + critic notes*; Claude curates (Filter/Hone/rank). Curation is judgment and never leaves the main loop. |
 | "Let the generators search the vault for the boundary themselves." | Fanned-agent search false-empties (`gotcha_workflow_fanout_search_false_absence`). Push the boundary into `contextPrefix`; generators work from it. |
 | "Use one fixed lens list for every cluster." | Different cluster TYPES need different lenses. Pick ~4 per cluster via the rubric (orthogonal / spanning / balanced); the worked sets are examples, not a frozen menu. |
-| "Critics are just the generators re-reading their own output." | Critics are FRESH, independent agents over the merged pool (`red_team_must_be_independent_dispatch`). Generators self-grading share premises and bias the verdict. |
+| "Critics are just the generators re-reading their own output." | Critics are FRESH, independent agents over the merged pool (`feedback_delegate_output_trust`). Generators self-grading share premises and bias the verdict. |
 | "Zero candidates came back from a lens — it found nothing." | A live divergence lens always returns ~`genCount`. `count:0`/`dead:true` = it died. Check `perGenerator` before curating; re-dispatch. |
 | "Nest the per-cluster schema object into `args` so fields are typed." | A nested schema is the escape-dense `args` shape that breaks the Workflow call (`gotcha_workflow_args_generation_fidelity`). Use the flat `genFields` descriptor list; the engine builds the schema. |
 | "Fan out all clusters in one Workflow, then curate the lot." | Per-cluster pacing is mandatory (skill Step 3). Fan out one cluster, curate, present, get the user-react — then the next cluster. |
@@ -132,4 +132,4 @@ The critique pass is advisory annotation for Claude's curation; it does not pre-
 - [`/idea_brainstorm`](../skills/idea_brainstorm/SKILL.md) — fires this command at Step 3 via `--fan_out`; owns Filter/Hone/Cluster/present + the per-cluster user-react loop + the Hard Gate.
 - [`/architecture_brainstorm_redteam`](architecture_brainstorm_redteam.md) — the mirror precedent (command + `review_fanout.js` engine + per-step skill hooks); shares the push-don't-pull, flat-`args`, MANDATORY-dispatch, and liveness discipline.
 - `.claude/workflows/idea_fanout.js` — the engine (parameterized: `contextPrefix` + `generators` + optional `critics` / `genFields` / `genCount` / per-agent `model`).
-- **File-based memory:** `gotcha_workflow_fanout_search_false_absence` (push-don't-pull), `gotcha_workflow_args_generation_fidelity` (flat args), `gotcha_workflow_single_flight_concurrency` (no nested fan-out of GdUnit4/LSP), `red_team_must_be_independent_dispatch` (fresh critics), `feedback_no_unilateral_condensation` (raw seeds survive), `arch_rule_autonomous_loop_positive_liveness` (silent-empty ≠ clean).
+- **File-based memory:** `gotcha_workflow_fanout_search_false_absence` (push-don't-pull), `gotcha_workflow_args_generation_fidelity` (flat args), `gotcha_workflow_single_flight_concurrency` (no nested fan-out of GdUnit4/LSP), `feedback_delegate_output_trust` (fresh critics), `feedback_no_unilateral_condensation` (raw seeds survive), `arch_rule_autonomous_loop_positive_liveness` (silent-empty ≠ clean).

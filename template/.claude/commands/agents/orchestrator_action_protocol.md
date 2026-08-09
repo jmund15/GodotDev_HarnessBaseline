@@ -5,7 +5,7 @@ disable-model-invocation: true
 # Orchestrator Action Protocol
 
 <!-- Single source of truth for how orchestrators handle agent findings. -->
-<!-- Referenced by: /review_pr (Phase 3-4), /review_prs (Phase 2), /session_audit (Phase 3), /doc_audit_fix, /rule_consistency, and every agent-template file in this directory. -->
+<!-- Referenced by: /review_pr (Phase 3-4), /pr_pipeline (Phase 2), /session_audit (Phase 3), /doc_audit_fix, /rule_consistency, and every agent-template file in this directory. -->
 <!-- If you update this protocol, all orchestrators pick up the change automatically. -->
 
 ## Finding Schema
@@ -165,7 +165,7 @@ After presenting agent findings, the orchestrator MAY add a `## Notes` section i
 **PLAN tier:**
 1. Present EACH PLAN finding directly to the user with ranked options if available
 2. For each, ask how they want to address it:
-   - Address now (enter plan mode or implement immediately)
+   - Address now (draft a plan or implement immediately)
    - Create an Obsidian TODO note (deferred)
    - Dismiss as not relevant
 
@@ -212,10 +212,10 @@ This protocol replaces:
 - The AUTO/GUIDE fix classification (formerly in `review_agents.md`)
 - The FIX_NOW/FIX_LATER/DISCUSS classification (formerly in `session_audit.md`)
 
-All orchestrators (`/review_pr`, `/review_prs`, `/session_audit`, `/doc_audit_fix`) reference this file as their shared action protocol.
+All orchestrators (`/review_pr`, `/pr_pipeline`, `/session_audit`, `/doc_audit_fix`) reference this file as their shared action protocol.
 
 Changes:
 - Added optional `options` field to Finding Schema (ranked alternatives for ASK/PLAN, best guess first)
 - Added PLAN-to-ASK promotion rule (prefer ASK with ranked options over PLAN when alternatives are enumerable)
 - Updated ASK presentation format to show ranked options with recommended marker
-- Added Step 1.5 (Finding Verification) — orchestrator grep-checks every FIX `old` field against actual file content with whitespace tolerance; unverifiable findings surface in a dedicated ⚠️ UNVERIFIED section above FIX. Counters subagent hallucination (Haiku `mooyum_milk.tres` class). See `parallel_agents` skill §5 *Model Selection*.
+- Added Step 1.5 (Finding Verification) — orchestrator grep-checks every FIX `old` field against actual file content with whitespace tolerance; unverifiable findings surface in a dedicated ⚠️ UNVERIFIED section above FIX. Counters subagent hallucination (Haiku `mooyum_milk.tres` class). See `orchestration` skill §5 *Model & Effort Selection*.

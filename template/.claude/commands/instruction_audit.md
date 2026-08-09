@@ -1,4 +1,5 @@
 ---
+description: Audit a skill, command, hook, or CLAUDE.md against instruction-loading principles.
 disable-model-invocation: true
 ---
 
@@ -26,9 +27,9 @@ Static structural review — sibling to `/claudemd_compact`. Does NOT measure tr
 
 1. Resolve the argument to an absolute path.
 2. Read the target file.
-3. Classify:
-   - Has YAML frontmatter with `description:` field → skill
+3. Classify — **path first, frontmatter only as fallback.** A command with a `description:` field is still a command; classifying on frontmatter alone routes it to the skill principles and silently exempts it from the one-line command-description rule.
    - In `.claude/commands/` → command
+   - In `.claude/skills/` (or has YAML frontmatter with `description:` outside the dirs below) → skill
    - In `.claude/hooks/` → hook (sub-classify: event hook = registered in settings.json `hooks`; library = imported by other hooks; CLI = invoked by a command — grep `.claude/` for consumers)
    - Equals `.claude/CLAUDE.md` → claudemd
 4. **Invoke `Skill(instruction_quality)`** to load the principle checklist. MANDATORY tool call — do not paraphrase the checklist from memory or skip this step on the grounds of "I recall the principles." The skill is the single source of truth; section numbers and carve-outs drift between sessions.
@@ -37,7 +38,9 @@ Static structural review — sibling to `/claudemd_compact`. Does NOT measure tr
 
 Run each applicable principle from the checklist against the target. Apply only what's applicable: skill-specific principles skipped for commands; command-specific principles skipped for skills; both apply to CLAUDE.md only as relevant; hooks get the hook-specific principles plus universal principles applied to their docstrings. (Exact section numbers come from the loaded `instruction_quality` skill — do not hardcode them here; they drift.)
 
-**Compute the quantitative inputs first** (so the size/length principles gate on numbers, not eyeballing): line count of the target; for a skill, the `description` char count AND its word count vs. the median word count of sibling `description:` fields in the same `.claude/skills/` directory (Glob the siblings, count). Feed these into the size-proportional and description-as-trigger findings.
+**Compute the quantitative inputs first** (so the size/length principles gate on numbers, not eyeballing): line count of the target; for a skill, the `description` char count AND its word count vs. the median word count of sibling `description:` fields in the same `.claude/skills/` directory (Glob the siblings, count); for a command, whether frontmatter carries a non-empty single-line `description:` at all, and its char count against the ~90-char target. Feed these into the size-proportional, description-as-trigger, and frontmatter-convention findings.
+
+**Command targets — sweep the directory, not just the target.** A missing `description:` is invisible from inside a file that reads fine, so on any command audit (and always under `--all`) parse every `commands/*.md` frontmatter in one pass and report the offenders as a set. The catalog falls back to the first body line, so heading-first files publish `Scope`/`Purpose` as their trigger text and nothing ever errors.
 
 **Hook targets — measure, don't trust prose:** read the target's settings.json registration (event, matcher, timeout); verify each output path against the channel matrix (canon: `archive_hook_gotchas.md`); stat any log/state files the hook appends to (bounded-state principle gates on on-disk size, not intent); grep the hook for expiry-marked diagnostics ("Remove after/once") and judge whether the condition is met.
 

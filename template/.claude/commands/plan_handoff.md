@@ -1,6 +1,6 @@
 ---
 allowed-tools: Read
-description: Begin execution of an approved plan in this (fresh executor) session. Takes plan file path; loads plan, sets executor stance, begins implementation. Invoke as the first command in a fresh executor session — not in the planning session.
+description: Begin execution of an approved plan in this executor session — takes plan file path, loads plan, sets executor stance, begins implementation.
 ---
 
 ## Usage
@@ -22,7 +22,7 @@ description: Begin execution of an approved plan in this (fresh executor) sessio
      - an unexpected tooling failure (test infra, build error)
      - an integration step produces results the plan didn't anticipate
    - CLAUDE.md still applies. Run /regression_gate before any .cs commit.
-   - Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them per feedback_verify_explore_agent_empirical_claims.
+   - Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them per feedback_delegate_output_trust.
    - Mechanical execution is yours to make — don't ask permission for unambiguous steps.
    - Do not read prior session transcripts or memory snapshots; the plan file is self-sufficient by design.
 

@@ -8,6 +8,8 @@ Single executor for `roadmap.md` edits. Source of truth for the roadmap schema: 
 
 **Mode: batch-propose.** All proposed edits assembled into one diff; single user approval applies everything (Parts table + Mermaid + derived views + Spawned sub-brainstorms + MVP check-mark/Status recompute + Revision Log). Iterative per-edit confirmation is NOT this command's job.
 
+**Gate inheritance:** when invoked from a flow whose own human gate just approved the exact Parts list (e.g. `/design_drive` design-lock batch answers), present the diff informationally and apply WITHOUT a second approval prompt — the upstream gate was the approval; the user redirects after the fact. Standalone/user-driven invocations keep the approval prompt.
+
 **Invocation contexts:**
 - **From `/architecture_brainstorm`** (final step): just-saved arch design doc + the Parts the design produced.
 - **From `/idea_brainstorm`** (final step): just-saved idea-bank doc + Per-Cluster Routing → Part state mapping.
@@ -74,6 +76,7 @@ Cluster Open Questions / Findings populate the Trigger and Source fields. Pos is
 | Part with open arch design questions (architectural fork) | `arch-pending` |
 | Part needing creative ideation (creative fork) | `idea-pending` |
 | Part awaiting user decision | `workshop-pending` |
+| Part blocked on a feel-fork the design can't grill (per arch Step 5 *Feel-fork detour*) | `prototype-pending` |
 | Part marked user-owned (per arch Step 5 user-owned ask) | `user-owned` |
 
 Each Part inherits Deps from the design doc's enumerated dependencies and gets a Source link to the design section.
@@ -94,13 +97,14 @@ Each Part inherits Deps from the design doc's enumerated dependencies and gets a
 Before rendering, check for structural issues:
 
 - [ ] Every Deps entry resolves to an existing Part name (or a cross-folder `path#part-name`).
-- [ ] Every `Pos` value is either an integer or `—`. Integers form a contiguous range (`1, 2, 2, 3, 4`) — gaps signal an authoring mistake.
+- [ ] Every `Pos` value is either an integer or `—`. Integers form a contiguous set — no gaps (`1, 2, 2, 3, 4` is fine; `1, 2, 4` is not). Duplicates (ties) are allowed.
 - [ ] No Part has State=`complete` with un-completed Deps (signal of a state-mismatch — flag for user review).
 - [ ] No backward `*-pending` transitions — `plan-pending` → `arch-pending` (not `arch-rework`), or `arch-pending` → `idea-pending` (not `idea-rework`). Emits `⚠ Backward to *-pending — did you mean *-rework? *-pending means 'never had this phase'; *-rework means 'had this phase, redo'.`
 - [ ] No compound-`+` Part names — soft warn. Emits `⚠ Compound name — split-candidate signal. Verify this is one cohesive unit, not two stapled together.` (non-blocking).
 - [ ] **Trigger content** per [`common.md §6.10`](../skills/_brainstorm_shared/common.md) — every Part with State ∈ {`*-pending`, `*-rework`, `user-owned`} carries a Trigger whose content shape conforms to §6.10's sub-table. Per-shape soft-warns (all non-blocking):
   - `arch-pending` / `idea-pending`: `⚠ Trigger missing required field per common.md §6.10 — must include inventory + source pointer + out-of-scope.`
   - `workshop-pending`: `⚠ workshop-pending requires a Trigger naming the user decision + source pointer (per common.md §6.10).`
+  - `prototype-pending`: `⚠ prototype-pending requires a Trigger naming the runtime question AND the shape of its answer ("a number" / "one of three enum values" / "yes/no"), plus the prototypes/<slug> path (per the prototype skill). A question with no stateable answer shape is not yet scoped — sharpen it or use arch-pending.`
   - `idea-rework` / `arch-rework`: `⚠ *-rework requires a Trigger explaining what changed since the prior phase (per common.md §6.10).`
   - `submap-pending`: `⚠ submap-pending requires a Trigger naming the child sub-roadmap path (per common.md §6.10). Canonical format: "Decomposed into <child-folder>/roadmap.md (N child Parts)."`
   - `user-owned`: `⚠ user-owned requires a Trigger naming the user deliverable (per common.md §6.10).`
@@ -117,9 +121,9 @@ If any validator fails, surface the issue in the diff preview with a `⚠` marke
 
 | Warning | Fix-recipe |
 |---|---|
-| Any `Trigger ... per common.md §6.10` warning | Look up the State's required Trigger content shape in [common.md §6.10](../skills/_brainstorm_shared/common.md) and supply it. Examples: `*-rework` → "spec revealed scope creep" / "Plan Mode hard-stop"; `workshop-pending` → the user-decision question + source link; `user-owned` → a concrete user deliverable like "design 5 floor scenes". |
+| Any `Trigger ... per common.md §6.10` warning | Look up the State's required Trigger content shape in [common.md §6.10](../skills/_brainstorm_shared/common.md) and supply it. Examples: `*-rework` → "spec revealed scope creep" / "plan_part macro-drift hard-stop"; `workshop-pending` → the user-decision question + source link; `user-owned` → a concrete user deliverable like "design 5 floor scenes". |
 | `complete with un-completed deps` | Check whether deps actually completed, or whether this Part was prematurely marked complete. |
-| `Compound name — split-candidate signal` | Recheck whether the Part is one cohesive Plan Mode session or two stapled together; if the latter, split via `/update_roadmap split <part> into <a>, <b>`. |
+| `Compound name — split-candidate signal` | Recheck whether the Part is one cohesive planning session or two stapled together; if the latter, split via `/update_roadmap split <part> into <a>, <b>`. |
 | `Backward to *-pending` | Confirm intent: was the Part previously at the destination phase (correct: use `*-rework`) or genuinely never authored at this phase (rare; usually a typo)? |
 | `MVP-N Required Parts references missing Part` | Run `/mvp_plan refine MVP-N` to repoint to the current Part name (or remove the reference if the underlying Part was retired). For splits, decide per-MVP which child Part(s) should replace the original reference. |
 | `Source wikilink anchor not found in <doc>` | Open the target doc, copy the heading line VERBATIM (including the `Section N — ` prefix for top-level `## Section N — Title` headings and the ` — ` em-dash inside `### N.M — Title` sub-headings). Paste into the wikilink: `[[<doc>#<exact-heading>\|<short display>]]`. Escape the alias pipe as `\|` inside the table cell. If the Part's commitment legitimately spans 2+ design-doc sections, emit 2+ wikilinks separated by ` + ` — never fabricate a joined `#<a> and <b>` anchor that doesn't exist as a real heading. |
@@ -132,7 +136,7 @@ Generate deterministically from the Parts table:
 
 - **Node ID:** Part name slugified (`Foundation+Refactor` → `Foundation_Refactor`).
 - **Node label:** Part name **verbatim, NO `Pos N. ` prefix.** Mermaid's CommonMark parser interprets leading `N. ` (also `- `, `* `, `# `, `> `) as markdown list/heading syntax and emits "Unsupported markdown: list" warnings — one per offending node. Pos is encoded by graph rank, not in the label. If the renderer must surface Pos in-label, use `N: Name` / `[N] Name` / `Pos N — Name` (em-dash-separated) — never `N. Name`. Full constraint: [`mermaid_diagrams` skill](../skills/mermaid_diagrams/SKILL.md) → *Renderer constraints* + [`common.md §6.4`](../skills/_brainstorm_shared/common.md) → *Node label rule*.
-- **Class:** one of `plan | arch | idea | rework | workshop | complete | abandoned | user | submap` (rework states map to `rework` class which is dashed-stroke; `user-owned` maps to `user`; `submap-pending` maps to `submap` which is long-dashed teal).
+- **Class:** one of `plan | arch | idea | rework | workshop | complete | abandoned | user | submap` (rework states map to `rework` class which is dashed-stroke; `user-owned` maps to `user`; `submap-pending` maps to `submap` which is long-dashed teal; `prototype-pending` maps to `workshop` — both terminate in a human verdict, and common.md §6.4's classDef block defines no `prototype` class).
 - **Edges:** `<dep> --> <part>` for each Deps entry where `<dep>` is a local Part.
 - **Cross-folder edges:** dashed line with the cross-folder path as edge label.
 
@@ -148,7 +152,7 @@ Three computed sections rendered below Mermaid:
 
 **Blocked / awaiting deps** — Parts where State ∈ {`idea-pending`, `arch-pending`, `plan-pending`, `idea-rework`, `arch-rework`} having ANY Dep with State ≠ `complete`. Show the blocking dep and its current State.
 
-**Ready for you (user-owned)** — Parts where State=`user-owned` AND every Dep has State=`complete`. Bullet list with Trigger (the user deliverable) displayed.
+**Ready for you (user-owned)** — Parts where State ∈ {`user-owned`, `prototype-pending`} AND every Dep has State=`complete`. Bullet list with Trigger displayed (the user deliverable; for `prototype-pending`, the runtime question the user answers by playing the prototype build).
 
 Replace existing derived-view sections in roadmap.md.
 
@@ -160,6 +164,7 @@ Replace existing derived-view sections in roadmap.md.
    - `X = Y` AND current Status is not `✅ Verified` → `🧪 Ready for playtest`
    - current Status is `✅ Verified` AND `X = Y` → preserve `✅ Verified`
    - current Status is `✅ Verified` AND `X < Y` → **downgrade** to the computed `🔨 In progress (X/Y parts)` and record a regression flag for Step 7: `⚠ MVP-N was Verified but Part <name> regressed out of complete — downgraded.`
+   - **Playtest-plan guard (only when computed Status is `🧪 Ready for playtest`)** — if the MVP has no `Playtest plan` field (absent or empty, and not the explicit `Automated-only — no manual surface` declaration per common.md §6.11), emit for Step 7: `⚠ MVP-N flipped to 🧪 Ready for playtest but has no Playtest plan — author it via /mvp_plan refine MVP-N before playtesting.` The flip is still applied (Part completion is factual); the warning makes the narrative gap visible at the exact moment the status promises playtestability.
 
 ### Step 6 — Compose revision log entry
 
@@ -223,7 +228,7 @@ All standalone ops route through Steps 3-8 (validate, regen, present diff, apply
 |---|---|
 | Verb not recognized (e.g., `/update_roadmap whatevs Foo`) | List the valid verbs from the operations table above; exit without edits. |
 | `<part-name>` doesn't resolve in the target roadmap | List candidate Parts; exit without edits. Don't auto-propose creating a new Part — Part creation routes through brainstorm-skill invocation. |
-| `transition <part> to <state>` with invalid `<state>` | List the 10 valid States from [common.md §6.3](../skills/_brainstorm_shared/common.md); exit without edits. |
+| `transition <part> to <state>` with invalid `<state>` | List the 11 valid States from [common.md §6.3](../skills/_brainstorm_shared/common.md); exit without edits. |
 | `rename <old> <new>` where `<new>` collides with an existing Part name | Refuse — silent rename would corrupt Deps references on the collision target. Exit with the conflict named. User resolves by picking a non-colliding name or `retire`-ing the existing Part first. |
 | `split <part> into <new-1>` (only one child supplied) | Refuse — split produces 2+ children by definition. (Use `rename` for 1→1.) Exit. |
 | `split <part> into ...` where any new name collides with an existing Part | Refuse — same name-collision rationale as `rename`. Exit with the conflict named. |

@@ -1,5 +1,5 @@
 ---
-description: Scan all roadmaps ({{PROJECT_NAME}} + Jmodot trees) for actionable Parts (deps satisfied per state predicate), score by Leverage + State-Proximity + Readiness + MVP-Demand, recommend top 3. State filter + optional scope (pp-only / jmodot-only); default excludes idea-pending + user-owned + workshop-pending.
+description: Scan all roadmaps ({{PROJECT_NAME}} + Jmodot trees) for actionable Parts (deps satisfied), score by Leverage + State-Proximity + Readiness + MVP-Demand, recommend top 3. Optional scope (pp-only / jmodot-only); bare invocation excludes idea-pending, user-owned, workshop-pending, prototype-pending.
 ---
 
 # /roadmap_next
@@ -36,7 +36,7 @@ User-typed at the start of a planning session, or when:
 | `/roadmap_next pp-only` | Scope filter — recommend only {{PROJECT_NAME}} Parts (`pp` accepted). |
 | `/roadmap_next jmodot-only` | Scope filter — recommend only Jmodot Parts (`jmodot` accepted). |
 | `/roadmap_next plan-pending pp-only` | Scope + state tokens compose, any order. |
-| `/roadmap_next --all` | Include `idea-pending` + `workshop-pending` + `submap-pending` in the filter. `user-owned` always excluded. |
+| `/roadmap_next --all` | Include `idea-pending` + `workshop-pending` + `submap-pending` + `prototype-pending` in the filter. `user-owned` always excluded. |
 | `/roadmap_next --recommend-only` | Skip the full actionable table; show top-3 only. |
 
 **Scope** narrows which Parts are *recommended*, never which are *analyzed* — both vault trees are always discovered + parsed so cross-tree Leverage stays accurate (Phase 1, Anti-patterns). Scope vocabulary: `both` (default) / `pp` / `pp-only` / `jmodot` / `jmodot-only`.
@@ -57,6 +57,7 @@ User-typed at the start of a planning session, or when:
 | `idea-rework` | always actionable | `/idea_brainstorm` |
 | `idea-pending` | only with `--all` flag (greenfield = "what to build" not "what's ready") | `/idea_brainstorm` |
 | `workshop-pending` | only with `--all` flag (user decision required) | user-decision-then-route |
+| `prototype-pending` | only with `--all`; all Deps `complete` AND the `prototype/<slug>` branch carries a runnable build | user plays the build → `prototype` capture → re-route |
 | `submap-pending` | only with `--all`; recurse into child roadmap referenced in Source cell | enter child roadmap |
 
 ---
@@ -76,6 +77,7 @@ Computation: build full reverse dep graph across ALL roadmaps. Cross-roadmap dep
 - `2` — `arch-rework` (re-brainstorm → plan → execution)
 - `1` — `arch-pending` OR `idea-rework` (one brainstorm round → plan → execution)
 - `0` — `idea-pending` (full pipeline; rare to be top-3 even with `--all`)
+- `0` — `prototype-pending` (a human verdict gates the next phase; agent proximity is irrelevant)
 
 ### 3. Readiness Signal (0–3) — how well-anchored
 For `plan-pending`:
@@ -92,6 +94,10 @@ For `arch-*`:
 For `idea-*`:
 - `3` — user has stated direction explicitly in roadmap notes
 - `1` — default (idea space is open by definition)
+
+For `prototype-pending`:
+- `3` — Trigger states the runtime question AND the shape of its answer
+- `1` — question stated, answer shape missing (not yet scoped per the `prototype` skill)
 
 ### 4. MVP Demand (0–3) — incomplete-MVP reach
 Counts the **incomplete MVPs** (per `## MVP Checkpoints` §6.11; an MVP is incomplete unless its Status is `✅ Verified`) within the candidate's **one-hop reach** = `{MVPs that list the candidate itself as a Required Part}` ∪ `{MVPs that list any *direct dependent* of the candidate}`. Set-union over distinct MVPs — a Part that both serves MVP-1 and unblocks another MVP-1 Part counts MVP-1 once.
@@ -119,7 +125,7 @@ Counts the **incomplete MVPs** (per `## MVP Checkpoints` §6.11; an MVP is incom
 1. `Glob` for `BrainstormingDesigns/**/roadmap.md` under **both** vault trees, tagging each result with its `tree` (`pp` | `jmodot`):
    - **{{PROJECT_NAME}}** — `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\BrainstormingDesigns\`
    - **Jmodot** — `{{VAULT_ROOT}}\DevProjects\Jmodot\Claude\BrainstormingDesigns\`
-2. Parse positional args. Match each token against the **scope set** {`both`, `pp`, `pp-only`, `jmodot`, `jmodot-only`} first, then the **state set**. Empty state args → default state set; no scope token → `both`. `--all` flag adds `idea-pending`, `workshop-pending`, `submap-pending`. `--recommend-only` toggles output verbosity.
+2. Parse positional args. Match each token against the **scope set** {`both`, `pp`, `pp-only`, `jmodot`, `jmodot-only`} first, then the **state set**. Empty state args → default state set; no scope token → `both`. `--all` flag adds `idea-pending`, `workshop-pending`, `submap-pending`, `prototype-pending`. `--recommend-only` toggles output verbosity.
 3. **Scope filters the candidate pool, NOT discovery.** Always glob + parse BOTH trees regardless of scope, so Phase 3 builds the complete cross-tree dep graph — a `pp-only` Part's Leverage must still count Jmodot dependents (e.g. {{PROJECT_NAME}}'s `Graph Engine Core` is depended on by Jmodot procgen Parts; {{PROJECT_NAME}} `hub-world` depends on Jmodot `grab→jmodot`). The scope token is applied in Phase 4 to gate which Parts can be *recommended*.
 4. If a positional token ∉ scope set ∪ known states → emit usage table and exit.
 
@@ -240,6 +246,7 @@ Format (full version; truncate full actionable table if `--recommend-only`):
 | "Treat all `arch-pending` and `arch-rework` Parts as equally actionable" | `arch-rework` is closer to ship (design exists, needs revisit) than `arch-pending` (design needs initial brainstorm). State-Proximity rubric reflects this. |
 | "Recommend top 3 by total score only; skip tie-breakers" | Score ties are common with 0–12 range across small candidate pools. Tie-breakers (closes-MVP → proximity → recency → focus) encode the project's "ship next" intuition. |
 | "Treat `user-owned` Parts as recommendable" | `user-owned` is not agent-runnable. Surface them via `/worklog` triage if they're blocking downstream Parts; never in `/roadmap_next` recommendations. |
+| "`prototype-pending` is agent work — the agent builds the prototype, so recommend it like `plan-pending`" | The Part's done-condition is a *verdict*, and only the user playing the build produces one. Report it as user-action-needed ("play `prototype/<slug>`, answer the question"), never as an agent pickup — recommending it as agent work re-creates the mandatory-human-gate that filing the Part exists to avoid. |
 | "MVP Demand should dominate — a Part serving 3 MVPs is obviously the next pickup" | MVP Demand is a *coequal* 0–3 criterion (≤25% of total), not a primary sort key. A Part demanded by 3 MVPs but blocked by unmet deps isn't actionable (Phase 4 drops it); a high-demand *ready* Part still has to beat Leverage/Proximity/Readiness on total. The cap is the overtuning guard. Cross-roadmap effect is deliberate: inert on MVP-less roadmaps (all score 0), but MVP-bearing roadmaps out-total MVP-less ones by ≤+3 — an intended tilt toward committed-to-ship roadmaps, not a bug. |
 | "Propagate MVP demand transitively (A→B→C) so foundational Parts reflect everything they enable" | One-hop only, by design. Transitive closure makes a foundational Part accumulate the whole roadmap's demand and always rank top — re-introducing the dominance the cap exists to prevent. One hop covers the "A blocks B, B serves N MVPs" case; that's the intended scope. |
 

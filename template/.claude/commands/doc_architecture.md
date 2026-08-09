@@ -1,4 +1,5 @@
 ---
+description: Create or update an Obsidian Architecture Document for a system or feature.
 disable-model-invocation: true
 ---
 
