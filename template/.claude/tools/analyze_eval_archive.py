@@ -21,7 +21,9 @@ with open(".claude/self_evaluate_archive.json", "r", encoding="utf-8") as f:
 seen = set()
 unique = []
 for e in data["structured_entries"]:
-    key = (e["title"], e["date"])
+    # session_id is the v2 dedupe key; (title, date) covers pre-v2 entries.
+    # .get() fallbacks keep one malformed entry from killing the whole fast path.
+    key = (e.get("session_id") or e.get("title") or e.get("id"), e.get("date"))
     if key not in seen:
         seen.add(key)
         unique.append(e)

@@ -119,6 +119,24 @@ def reverse_sub(text: str, subs: dict) -> str:
     return text
 
 
+def _expected_template_files(lock: dict) -> list[str]:
+    # Only "tracked" entries are hash-compared against upstream (classify() skips
+    # forked/watch/local without touching template/), so those are the reliable
+    # verification set — a race that drops other files wouldn't be caught by any
+    # command anyway.
+    return sorted(rp for rp, e in lock["files"].items() if e.get("status") == "tracked")
+
+
+def _missing_template_files(clone: Path, expected: list[str]) -> list[str]:
+    return [rp for rp in expected if not (clone / "template" / rp).is_file()]
+
+
+def _is_shallow(clone: Path) -> bool:
+    r = subprocess.run(["git", "-C", str(clone), "rev-parse", "--is-shallow-repository"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == "true"
+
+
 def ensure_baseline(lock: dict, root: Path, baseline_dir: str | None) -> Path:
     if baseline_dir:
         d = Path(baseline_dir).resolve()
@@ -134,6 +152,34 @@ def ensure_baseline(lock: dict, root: Path, baseline_dir: str | None) -> Path:
         subprocess.run(["git", "-C", str(clone), "fetch", "origin", ref], check=True)
         subprocess.run(["git", "-C", str(clone), "checkout", "-q", f"origin/{ref}"],
                        check=True)
+
+    # Known Windows race: fetch+checkout on the --depth 1 clone can return before
+    # the working tree is fully materialized, leaving template/ incomplete for the
+    # rest of this invocation (silent "skip (no upstream)" / empty diffs downstream —
+    # see gotcha_baseline_sync_shallow_clone_fetch_race.md). Verify the checked-out
+    # file set against the lock's tracked-file list before trusting it; on mismatch,
+    # fall back to a full (non-shallow) fetch + hard reset and re-verify once.
+    expected = _expected_template_files(lock)
+    missing = _missing_template_files(clone, expected)
+    if missing:
+        if _is_shallow(clone):
+            subprocess.run(["git", "-C", str(clone), "fetch", "--unshallow", "origin", ref],
+                           check=True)
+        else:
+            subprocess.run(["git", "-C", str(clone), "fetch", "origin", ref], check=True)
+        subprocess.run(["git", "-C", str(clone), "reset", "--hard", f"origin/{ref}"],
+                       check=True)
+        missing = _missing_template_files(clone, expected)
+    if missing:
+        sample = ", ".join(missing[:5])
+        more = f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""
+        sys.exit(
+            f"error: baseline checkout at {clone} is still missing "
+            f"{len(missing)} expected template file(s) after a full fetch + hard "
+            f"reset retry: {sample}{more}. This is the shallow-clone fetch race "
+            "(see gotcha_baseline_sync_shallow_clone_fetch_race.md) if these files "
+            "are otherwise known-good; delete .claude/.cache/baseline-repo and retry, "
+            "or investigate a real upstream removal if it persists.")
     return clone
 
 
