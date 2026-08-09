@@ -1,12 +1,11 @@
 ---
 name: Logging Methodology
 description: >-
-  Producer-side contract for JmoLogger call sites (Info/Debug levels, mandatory [Subsystem]
-  prefix, [DIAG-<id>] composition). Pairs with /analyze_godot_logs consumer. Triggers:
-  "JmoLogger", "log prefix", "Info vs Debug", "[Tag]", "log methodology", "log discipline",
-  "log call site", "analyze_godot_logs producer". Also fires when reviewing a `.cs` change
-  that adds log calls. SKIP for `/analyze_godot_logs` invocation (consumer-side) and
-  `[DIAG-]` cleanup post-diagnosis (use debugging Phase 6).
+  Auto-load for the producer-side contract on JmoLogger call sites — Info-vs-Debug level
+  choice, the mandatory [Subsystem] prefix, [DIAG-<id>] composition — and when reviewing a
+  `.cs` change that adds log calls. Pairs with `/analyze_godot_logs` (consumer-side). SKIP
+  for `/analyze_godot_logs` invocation itself and `[DIAG-]` cleanup post-diagnosis (use
+  debugging Phase 6).
 user-invocable: false
 ---
 
@@ -82,6 +81,8 @@ JmoLogger.Debug(this, $"[Spell][DIAG-a4f2] cast state={state} target={target?.Na
 Pick four random hex chars for `<id>` per debugging session. Single grep `[DIAG-` removes all of a session's instrumentation at Phase 6 cleanup.
 
 **Cleanup is owed.** See `archive_diagnostic_log_cleanup_discipline.md` (auto-memory) for the worklog-item rule: any `[DIAG-]` log without a same-session removal commit needs a worklog item tracking it, or the noise calcifies. `[DEBUG-]` is reserved — would collide with `JmoLogger.Debug` itself when grepping.
+
+**Sibling tag — `[PROTO-<slug>]`.** Same family, same composition rule (`[Subsystem][PROTO-<slug>]`), same single-grep cleanup (`[PROTO-`). It marks the agent-readable channel of a `prototype` skill run; `<slug>` is the prototype's directory name under `prototypes/`, not a random id, so the tag survives across sessions on that prototype's branch. No cleanup is owed on `main` — prototype code never lands there (`prototype` skill §Containment); cleanup applies only if a `[PROTO-]` line reaches production code during promotion.
 
 ## Producer↔Consumer pairing
 

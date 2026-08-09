@@ -2,11 +2,9 @@
 name: Status Effect Authoring
 description: >-
   Procedure for creating a status effect that drives an HSM state transition in
-  {{PROJECT_NAME}} (e.g. stun, freeze, root, slow-to-stop). Triggers: "create status effect",
-  "stun effect", "freeze effect", "root effect", "slow effect", "status effect that
-  transitions to state". SKIP for status effects with no HSM transition (just a CombatTag
-  + factory — author inline), pure visual tints (`vfx_patterns`), or balance tuning on
-  existing effects.
+  {{PROJECT_NAME}} (e.g. stun, freeze, root, slow-to-stop). SKIP for status effects with no
+  HSM transition (just a CombatTag + factory — author inline), pure visual tints
+  (`vfx_patterns`), or balance tuning on existing effects.
 ---
 
 # Status Effect Authoring (HSM State Transition)
@@ -35,6 +33,11 @@ description: >-
     *   Add entry transition to states that can be affected (Idle, Run, etc.)
     *   Add exit transition to the new state (back to Idle)
     *   Add interrupt transitions (e.g., hurt transition) if interrupts should break the status
+
+## Runner Authoring Rules
+
+*   **Start-time scaling must survive refresh.** Any target-side scaling applied in `StatusRunner.Start` (element resistance, potency) is silently stripped by the StackPolicy Refresh path — `RefreshDuration` sources its duration from the *incoming, never-started* runner, whose values are unscaled. Override `RefreshDuration` alongside `Start`, and pin the behavior with a refresh-preserves-scaling test.
+*   **Status-vs-status rules live in `CategoryInteraction`**, not payload filters or `ImmuneCategories`: state-conditional acceptance/extinguish (e.g. frozen rejects fire, freeze extinguishes burn) is authored as entries in the project's category-interactions `.tres` (`CancelIncoming`/`CancelExisting`, matched via `IsOrDescendsFrom` in `StatusEffectComponent.AddStatus`). Trap: author two DIRECTIONAL interactions when the two directions need different effects — a bidirectional `CancelIncoming` also rejects the reverse application.
 
 ## Design Decisions
 

@@ -1,10 +1,9 @@
 ---
 description: >-
-  Auto-load when authoring, editing, or reviewing a mermaid diagram, or when
-  working on a command/skill that generates one. Triggers: "mermaid", "diagram",
-  "classDef", "graph TD", "graph LR", "stateDiagram", "flowchart", "render a
-  diagram", roadmap/memory-graph/dashboard diagram regen. Canonical home for
-  renderer constraints, the house palette, and diagram-type selection. SKIP for
+  Auto-load when authoring, editing, or reviewing a mermaid diagram, or when working
+  on a command/skill that generates one — diagram syntax (graph/flowchart/stateDiagram,
+  classDef), the house palette, or roadmap/memory-graph/dashboard diagram regen.
+  Canonical home for renderer constraints and diagram-type selection. SKIP for
   non-mermaid visuals (ASCII art, image files) and pure-prose docs.
 ---
 

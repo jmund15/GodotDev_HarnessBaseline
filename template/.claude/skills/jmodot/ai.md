@@ -253,25 +253,38 @@ Coordinated movement for groups of AI agents. Data-driven formations integrate w
 ### Architecture
 
 ```
-FormationDefinition → FormationController → SquadManager → Blackboard
-                                                              ↓
-                                            FormationConsideration3D
+                    SquadRoster  (membership + owns the squad graph)
+                         │ events
+                         ▼
+FormationDefinition → FormationController → FormationCoordinator → Blackboard
+                                                                       ↓
+                                                     FormationConsideration3D
+
+SquadPolicy chain → SquadDirectiveBrain → Blackboard (SquadDirective)
+                                                ↓
+                                      SquadDirectiveCondition (HSM)
 ```
 
 ### Key Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| `FormationDefinition` | Resource (`Jmodot/Core/AI/Squad/`) | `SlotOffsets`, `MinSpacing`, `FormationName`; slot 0 = leader by convention (no `LeaderSlotIndex`/`Metadata` properties exist) |
+| `FormationDefinition` | Resource (`Jmodot/Core/AI/Squad/`) | `SlotOffsets`, `MinSpacing` (inert authoring metadata — no runtime consumer), `FormationName`; slot 0 = leader by convention (no `LeaderSlotIndex`/`Metadata` properties exist) |
 | `FormationController` | Static pure functions (`Jmodot/Implementation/AI/Squad/`) | `CalculateSlotPositions(formation, FormationAnchorMode, anchorPosition, anchorForward, memberPositions?)` → `Dictionary<int, Vector3>`. Anchor modes: `Leader` / `Static` / `Centroid`. Transform math treats local **-Z as forward** (`Basis.LookingAt`) |
 | `NearestSlotStrategy` | `ISlotAssignmentStrategy` | `AssignSlots(memberPositions, slotPositions, leaderMemberIndex = -1)` → `Dictionary<int, int>` (member→slot; leader gets slot 0; unassigned = -1). Slot assignment lives HERE, not on FormationController |
 | `FormationConsideration3D` | Steering (`Jmodot/Implementation/AI/Navigation/Considerations/`) | Guide agents toward their assigned slots |
-| `SquadManager` | Node (`Jmodot/Implementation/AI/UtilityAI/`) | Orchestrates: runs the strategy, publishes formation keys to BB |
-| `DebugFormationComponent` | Node | Visual debug drawing |
+| `SquadRoster` | Node (`Jmodot/Implementation/AI/Squad/`) | Membership + owns the floating squad `BlackboardGraph`; raises `MemberAdded`/`MemberRemoved(Node3D, IBlackboardGraph)`/`LeaderChanged`. `MemberRemoved` carries the graph registered at enrolment, which a child-tree walk cannot recover. Never author a `BlackboardGraph` child under it |
+| `FormationCoordinator` | Node (`Jmodot/Implementation/AI/Squad/`) | Runs the strategy, publishes formation keys to BB. Holds no member list — reads the roster |
+| `SquadDirectiveBrain` | Node (`Jmodot/Implementation/AI/Squad/`) | Walks an ordered `SquadPolicy` chain, publishes `SquadDirective` (change-gated + min-hold) |
+| `SquadPolicy` / `HealthThresholdPolicy` | Resource (`Jmodot/Core/AI/Squad/`, impl in `Implementation/AI/Squad/`) | Stateless `Evaluate(in SquadSnapshot)` → directive or `null` (abstain). **Shared instances — no mutable fields** |
+| `SquadSnapshotBuilder` / `SquadSnapshot` | Static + `readonly record struct` | Roster → immutable per-evaluation aggregate handed to policies |
+| `DebugFormationComponent` | Node | Visual debug drawing; child of `SquadRoster` |
 
 ### Blackboard Keys (framework BBDataSig partial)
 
-`FormationActive` (`bool`), `FormationSlotPositions` (`Dictionary<int, Vector3>`, squad BB), `FormationSlotIndex` (`int`, member BB, -1 = unassigned), `FormationLeader` (`Node3D`, squad BB).
+`FormationActive` (`bool`), `FormationSlotPositions` (`Dictionary<int, Vector3>`, squad BB), `FormationSlotIndex` (`int`, member BB, -1 = unassigned), `FormationLeader` (`Node3D`, squad BB), `SquadDirective` (`SquadDirectiveDefinition`, squad BB).
+
+Retired 2026-07-18 by the `SquadManager` decomposition: `ActiveSquadTag`, `HasSquadTag`, `SquadAverageHealth`.
 
 See [squad_formations.md](squad_formations.md) for the full deep-dive.
 

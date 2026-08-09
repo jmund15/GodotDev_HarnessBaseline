@@ -2,12 +2,10 @@
 name: Shader Authoring
 description: >-
   Procedure for authoring prototype-grade Godot shaders (.gdshader) for sprite and
-  surface looks — pulse, swirl, glow, dissolve, distortion — with a deterministic
-  multi-phase screenshot review loop. Triggers: "write a shader", "shader effect",
-  "make X glow", "make X pulse", "dissolve effect", "procedural look", "gdshader".
-  SKIP for authoring the underlying sprite/texture (use `sprite_authoring`), wiring
-  effects into the runtime VFX pipeline (use `vfx_patterns`), and
-  Environment/post-processing tuning.
+  surface looks — pulse, swirl, glow, dissolve, distortion, or other procedural effects
+  — with a deterministic multi-phase screenshot review loop. SKIP for authoring the
+  underlying sprite/texture (use `sprite_authoring`), wiring effects into the runtime
+  VFX pipeline (use `vfx_patterns`), and Environment/post-processing tuning.
 ---
 
 # Prototype Shader Authoring

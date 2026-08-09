@@ -1,6 +1,6 @@
 # The Appetite Invariant — rigor-hole vs taste-fork
 
-> Single source of truth for the rigor-hole-vs-taste-fork classification rule shared by [`/architecture_brainstorm_redteam`](../../commands/architecture_brainstorm_redteam.md) (its critic panel) and [`/plan_drive`](../../commands/plan_drive.md) (its convergence loop). Both reference this file via *"[Shared] See `_brainstorm_shared/appetite_invariant.md`."* and then add their own one-line application.
+> Single source of truth for the rigor-hole-vs-taste-fork classification rule shared by [`/architecture_brainstorm_redteam`](../../commands/architecture_brainstorm_redteam.md) (its critic panel) and [`/part_drive`](../../commands/part_drive.md) (its convergence loop). Both reference this file via *"[Shared] See `_brainstorm_shared/appetite_invariant.md`."* and then add their own one-line application.
 >
 > This file is NOT a skill — no frontmatter, not directly invocable. It exists so the two surfaces cannot drift: a future edit to the tripwire list or the always-taste set lands once, here.
 

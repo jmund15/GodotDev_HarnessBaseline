@@ -2,11 +2,10 @@
 name: Refactor Procedure
 description: >-
   Procedure for refactoring, moving, renaming, deprecating, or migrating C# classes/files
-  in {{PROJECT_NAME}} when scene/resource references must be kept in sync. Triggers:
-  "refactor [class/file]", "move [class/file]", "rename [class]", "deprecate [exported
-  field]", "migrate [from] [to]", "unify [X] and [Y]", "consolidate [pattern]". SKIP for
-  pure logic refactors with no scene/resource impact (just edit + test), or architectural
-  redesigns (use `architecture_brainstorm` first).
+  in {{PROJECT_NAME}} when scene/resource references must be kept in sync — including
+  unifying or consolidating duplicated patterns. SKIP for pure logic refactors with no
+  scene/resource impact (just edit + test), or architectural redesigns (use
+  `architecture_brainstorm` first).
 ---
 
 # Refactor Procedure

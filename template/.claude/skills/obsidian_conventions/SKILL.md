@@ -1,12 +1,10 @@
 ---
 description: >-
   Auto-load when reading, writing, or editing files in the Obsidian vault
-  (DevProjects/{{PROJECT_NAME}} or DevProjects/Jmodot) — design docs, roadmaps,
-  worklog, brainstorm docs, framework notes. Triggers: "Obsidian", "vault doc",
-  "wikilink", "write to the vault", heading-anchor links, vault file paths.
-  SKIP for the /doc_* documentation-folder structure (folder classification,
-  the 4-doc system template, domain routing) — that lives in
-  agents/documentation_structure.md.
+  (DevProjects/{{PROJECT_NAME}} or DevProjects/Jmodot) — design docs, roadmaps, worklog,
+  brainstorm docs, framework notes, wikilinks, heading-anchor links, or any vault file
+  path. SKIP for the /doc_* documentation-folder structure (folder classification, the
+  4-doc system template, domain routing) — that lives in agents/documentation_structure.md.
 ---
 
 # Obsidian Vault Conventions
@@ -28,20 +26,22 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 | Write / overwrite / append | `Write` / `Edit` — confirmed safe on a doc open in the Obsidian app (writes propagate, no conflict prompt) |
 | Delete a tracked file | `git rm` |
 | Edit frontmatter / tags | `obsidian_manage_frontmatter` / `obsidian_manage_tags` — the one place the MCP earns its cost (structured YAML; native `Edit` is fiddlier) |
-| Date-filtered search | `obsidian_search_notes` with `mode: "jsonlogic"` (predicate on `stat.mtime`) — niche |
+| Date-filtered search | `obsidian_global_search` (`query` required; `searchInPath`, `modified_since`/`modified_until`, `caseSensitive`, `useRegex` — verified against the live schema 2026-08-07), or native `Glob` + file mtimes |
 
-MCP tool names verified against the live server 2026-07-04 (`obsidian_get_note` / `obsidian_write_note` / `obsidian_patch_note` / `obsidian_replace_in_note` / `obsidian_search_notes`; pre-2026-07 names `obsidian_read_note` / `obsidian_update_note` / `obsidian_search_replace` / `obsidian_global_search` are dead). Obsidian MCP being offline does **not** block native read/write/search/list — there is no "abort if MCP offline" gate for native vault work. Only the frontmatter/tag tools depend on the MCP.
+MCP tool names verified against the live server 2026-08-06: `obsidian_read_note` / `obsidian_update_note` / `obsidian_search_replace` / `obsidian_global_search` / `obsidian_list_notes` / `obsidian_delete_note` / `obsidian_manage_frontmatter` / `obsidian_manage_tags`. The 2026-07-era names (`obsidian_get_note` / `obsidian_write_note` / `obsidian_patch_note` / `obsidian_replace_in_note` / `obsidian_search_notes`) are dead — the mapping has now inverted across TWO server swaps, so treat tool-name liveness as swap-prone: check the session's actual tool listing before scripting MCP calls, and prefer native tools (which never swap) for anything they cover. Obsidian MCP being offline does **not** block native read/write/search/list — there is no "abort if MCP offline" gate for native vault work. Only the frontmatter/tag tools depend on the MCP.
 
-> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — but `obsidian_write_note` has no real advantage there (both land on disk; the unsaved buffer conflicts either way). In practice the agent is directed, not hand-editing the same file simultaneously.
+> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — but `obsidian_update_note` has no real advantage there (both land on disk; the unsaved buffer conflicts either way). In practice the agent is directed, not hand-editing the same file simultaneously.
 
 ## Vault taxonomy — live vs legacy (as of 2026-07-04)
 
 - **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
 - **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.
 - The current design bible is the repo skill `game_vision`, not a vault doc — vault searches for "vision" find only the deprecated PvP-era doc under `Claude/Archived/`.
+- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (schema + append rules: `_brainstorm_shared/common.md` §8). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.
+- **`Claude/Research/`** — `/research` artifacts, transient by design. Frontmatter carries `expires-with:` (engine/library version); stale the moment that version moves — re-run or delete, never edit in place. Durable findings promote to cold auto-memory or the design doc first.
 
-## `obsidian_replace_in_note` — literal line-ending matching
-`obsidian_replace_in_note` (default literal mode) matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `search` that works on one file may silently report 0 replacements on another — no error, reads like a text mismatch when it's actually a separator mismatch. *(Gotcha observed under the tool's pre-2026-07 name `obsidian_search_replace`; literal-byte default carried over per the live schema.)*
+## `obsidian_search_replace` — literal line-ending matching
+`obsidian_search_replace` (default literal mode) matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `search` that works on one file may silently report 0 replacements on another — no error, reads like a text mismatch when it's actually a separator mismatch. *(Gotcha observed under the tool's 2026-07-era name `obsidian_replace_in_note`; literal-byte behavior carries across the rename.)*
 
 - **Prefer single-line, newline-free anchors** — they're line-ending-agnostic.
 - A whole-line delete must include the line terminator, so it IS line-ending-sensitive. If such a delete (or any multi-line match) returns `0` replacements, suspect the separator first: retry with the other convention (`\n` ↔ `\r\n`), or pass `flexibleWhitespace: true` (any whitespace run in `search` matches any whitespace in the body — sidesteps the separator question; literal mode only). Don't assume the file's convention — a wrong guess 0-hits cleanly, so verify against the actual file.

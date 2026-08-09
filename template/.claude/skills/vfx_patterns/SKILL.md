@@ -1,12 +1,12 @@
 ---
 name: VFX Patterns
 description: >-
-  Auto-load for VFX, animation, or visual composition work. Triggers: "VFX", "visual effect",
-  "particle", "animation", "sprite", "tween", "tint", "flash", "explosion", "VisualComposer",
-  "VisualSlotNode", "VisualQuery", "TintByQuery", "VisualEffectController",
-  "AnimationOrchestrator". Also load when diagnosing why a tint isn't applying or a flash
-  gets stomped. SKIP for authoring new sprite/texture assets (use `sprite_authoring`)
-  or authoring new prototype shaders (use `shader_authoring`).
+  Auto-load for VFX, animation, or visual composition work — particles, tweens, tints,
+  flashes, explosions, or the VisualComposer/VisualSlotNode/VisualQuery/TintByQuery/
+  VisualEffectController/AnimationOrchestrator surface. Also load when diagnosing why a
+  tint isn't applying or a flash gets stomped. SKIP for authoring new sprite/texture
+  assets (use `sprite_authoring`) or authoring new prototype shaders (use
+  `shader_authoring`).
 user-invocable: false
 ---
 
@@ -82,6 +82,7 @@ composer.Pop(slotKey);                                   // restores prior item
 composer.GetVisualNodes(VisualQuery.Slot(slotKey));      // typed query
 composer.GetVisualNodes(VisualQuery.Tagged("PlayerColored"));
 composer.GetVisualNodes(VisualQuery.AllExceptSlot(slotKey));
+composer.GetVisibleNodes(VisualQuery.All);               // LIVE visibility — see Gotcha 8
 composer.Effects;  // VisualEffectService for persistent-tint registration
 ```
 
@@ -326,3 +327,5 @@ each frame: Final = BaseColor * effectColor (mix product or override winner)
 5. **Time seeking**: `AnimatedSprite3D` uses `frame / FPS` for time conversion — mismatched FPS breaks sync.
 6. **Slot composition is `_Ready`-time only**: reparenting a `VisualSlotNode` away from a composer at runtime is unsupported — the composer keeps event subscriptions and slot dictionary entries until `_ExitTree`. Add `ChildExitingTree` handling if runtime composition becomes a need.
 7. **Push/Pop semantics**: `Push(item, AsAnimationIndependent)` saves the prior item AND its options; `Pop` restores both. The `AsAnimationIndependent` flag suppresses composite-animator registration for the duration of the push only — the body keeps animating normally during a `PotionAdd` overlay.
+8. **`GetVisualNodes(VisualQuery.VisibleOnly)` is not the live-visibility query — use `GetVisibleNodes(query)`.** `VisualQuery.VisibleOnly` matches `handle.IsVisible`, a snapshot taken when the slot built the handle; only `GetVisibleNodes` re-checks the node live. For any slot an `AnimationVisibilityCoordinator` drives, every handle is snapshotted hidden, so the `VisibleOnly` form returns an **empty set** with no error — measured on a coordinator-driven entity: every handle snapshotted hidden, `GetVisualNodes(VisibleOnly)` → 0 while `GetVisibleNodes(All)` returned the shown sprites.
+9. **Never size an attached visual off an arbitrary composer sprite.** A composer keeps every animation of every slot resident, and their frames span art regimes — hidden legacy frames can measure ~2× the shown body's height. A tree walk that takes the first (or tallest) `SpriteBase3D` is silently wrong by that factor. Measure only live-visible nodes; if none, return neutral rather than guessing.

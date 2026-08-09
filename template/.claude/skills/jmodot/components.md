@@ -7,15 +7,30 @@ Eliminates tight coupling between game systems. Instead of components holding di
 Think of the Blackboard as a **shared dictionary** owned by an entity. During initialization, the entity populates it with services. Components then query the BB to get their dependencies - they never directly reference siblings.
 
 ```
-Entity owns BB → populates with services → components query BB
+Entity owns BB → components self-publish → components query BB
 ```
+
+## Initialization Mechanics
+
+`EntityNodeComponentsInitializer` (ENCI) drives three subtree scans. Each phase completes for ALL components before the next starts.
+
+| Phase | Scan | Call |
+|---|---|---|
+| 0 | `GetChildrenOfInterface<IBlackboardProvider>()` — **independent of `IComponent`** | read `Provision` → `bb.Set(key, value)` |
+| 1 | `GetChildrenOfInterface<IComponent>()` | `Initialize(bb)` — resolve dependencies only |
+| 2 | components that returned `true` | `OnPostInitialize()` — subscribe here |
+
+- Provider-independence means a **passive publisher** (a node that only exposes something on the BB) implements `IBlackboardProvider` alone — no `IComponent`, no `Initialize`.
+- Phase 0 is reusable outside ENCI: `EntityNodeComponentsInitializer.RunPhase0(Node entity, IBlackboard bb)`. Non-entity bootstrap paths call it instead of hand-rolling the scan.
+- Never self-call `OnPostInitialize()` from `Initialize` — the phase driver invokes it after the Phase-1 barrier (ENCI, or `ComponentInitHelper` for delegated lifecycles).
 
 ## Rules
 
 1. **Always use `BBDataSig` constants** - Never raw strings for BB keys
-2. **Validate in `Initialize()`** - If a required dependency is missing, return `false` immediately
-3. **Fail fast** - Log errors and abort if configuration is wrong
-4. **Document required keys** - Add a class summary listing which `BBDataSig` keys your component needs
+2. **Publish via `Provision`, not a hand-written `bb.Set` in the entity root** - Phase 0 does the wiring
+3. **Resolve in `Initialize`, subscribe in `OnPostInitialize`** - a sibling's events are only safe after the Phase-1 barrier
+4. **Return `false` only for a dependency without which the component serves no purpose** - ENCI logs `Error` and drops it; partial-behavior deps degrade and return `true`. Full policy + `[Export]` carve-outs + the bespoke-path taxonomy: `architecture_philosophy/SKILL.md` §Component Initialization Paths
+5. **Document required keys** - Add a class summary listing which `BBDataSig` keys your component needs
 
 ## When to Use
 
@@ -52,9 +67,9 @@ public bool Initialize(IBlackboard bb) {
 
 ## Integration Points
 
-- **Entity** owns the BB and calls `Initialize()` on all components (driver: `Jmodot/Implementation/Components/EntityNodeComponentsInitializer.cs`)
+- **Entity** owns the BB and runs the three phases (driver: `Jmodot/Implementation/Components/EntityNodeComponentsInitializer.cs`)
 - **States** receive BB in their `Init()` method
 - **Combat effects** access target's BB via `ICombatant.Blackboard`
 - **Subscriptions** allow reactive updates when BB values change
-- Two-phase init (Phase 0 `IBlackboardProvider` self-registration → Phase 1 `Initialize` dependency pull) + silent no-op gotcha: `architecture_philosophy/SKILL.md` §Blackboard-Based DI and `rules/jmodot_utilities.md` §IComponent
+- Path taxonomy, required-dep policy, `[Export]` carve-outs, `[Tool]` warning convention: `architecture_philosophy/SKILL.md` §Component Initialization Paths. Silent no-op diagnostic: `rules/jmodot_utilities.md` §IComponent
 - Key constants: the two-partial `BBDataSig` split — [SKILL.md](SKILL.md) §BBDataSig Quick Reference

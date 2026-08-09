@@ -1,20 +1,18 @@
 ---
 name: Idea_Brainstorm
 description: >-
-  Use BEFORE architecture decisions, when the design space needs population.
-  Greenfield topics, "fun X ideas", "what creative X could exist", or
-  enumeration-pressure requests ("every idea you can think of"). Produces a
-  curated idea-bank doc with per-cluster honed survivors. Hand off to
-  /architecture_brainstorm once the idea pool stabilizes. SKIP for mature
-  domains (canonical patterns already populate the space), tactical/mechanical
-  topics, or when the user already has a populated idea space. Pass --fan_out
-  for lens-diverse multi-agent divergence + independent critique on a broad
-  cluster.
+  Use BEFORE architecture decisions, when the design space itself needs populating —
+  greenfield topics, open-ended what-could-exist-here questions, or enumeration
+  pressure. Produces a curated idea-bank doc with per-cluster honed survivors; hand
+  off to /architecture_brainstorm once the pool stabilizes. SKIP for mature domains
+  where canonical patterns already populate the space, tactical/mechanical topics, or
+  when the user arrives with a populated idea space. Pass --fan_out for lens-diverse
+  multi-agent divergence + independent critique on a broad cluster.
 ---
 
 # Idea Brainstorm
 
-> **Scope:** Sits **upstream of `architecture_brainstorm`**. Idea brainstorm answers *"what could exist?"*; architecture brainstorm answers *"how should we build it?"*; Plan Mode answers *"how do we ship it?"*. Three sequential phases of design work; one skill per phase.
+> **Scope:** Sits **upstream of `architecture_brainstorm`**. Idea brainstorm answers *"what could exist?"*; architecture brainstorm answers *"how should we build it?"*; plan production answers *"how do we ship it?"*. Three sequential phases of design work; one skill per phase.
 >
 > **Not to be confused with:** [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) — that's where Socratic narrowing, 2–3 approaches with trade-offs, and Parts-authoring (with the 5-criterion readiness gate) live. Idea brainstorm produces the candidate POOL that architecture brainstorm narrows from.
 
@@ -46,7 +44,6 @@ Idea brainstorm produces an idea-bank doc and STOPS. Hand off to the next phase.
 
 - [ ] Topic is creative / spatial (open-ended) rather than mechanical / tactical (pricing, naming, sizing of an already-decided thing).
 - [ ] No existing idea-bank or design doc covers the topic (verified via common.md §1 existing-doc check, run in Step 1).
-- [ ] User has NOT already entered Plan Mode.
 - [ ] Topic is not in the SKIP categories below.
 
 ---
@@ -56,9 +53,8 @@ Idea brainstorm produces an idea-bank doc and STOPS. Hand off to the next phase.
 | Skip case | Why |
 |---|---|
 | **Mature domain** — agent can list 5+ named design approaches from memory without searching | Design space is already populated by canon. Go straight to `/architecture_brainstorm`. |
-| **Tactical / mechanical topic** — *"what's the right pricing for X?"* | Divergence adds noise to convergent decisions. Go straight to `/architecture_brainstorm` (or Plan Mode if architecture is settled). |
+| **Tactical / mechanical topic** — *"what's the right pricing for X?"* | Divergence adds noise to convergent decisions. Go straight to `/architecture_brainstorm` (or plan production if architecture is settled). |
 | **User explicitly says** *"skip the brainstorm, go straight to design"* | They've populated the space themselves. |
-| **User in Plan Mode already** | Implementation phase; do not interrupt. |
 | **Existing `ideation-complete` doc covers the topic** | §1 existing-doc check surfaces this; hand off to `/architecture_brainstorm`. |
 | **Worklog scope 1 or 2** | Trivial / mechanical work; brainstorming overhead exceeds benefit. |
 
@@ -69,7 +65,7 @@ Idea brainstorm produces an idea-bank doc and STOPS. Hand off to the next phase.
 ```
 /idea_brainstorm           /architecture_brainstorm        Implementation
 ─────────────────          ─────────────────────────        ──────────────
-"What could exist?"        "How should we build it?"        (Plan Mode,
+"What could exist?"        "How should we build it?"        (plan file,
                                                             write code,
                                                             tests, commit)
 
@@ -97,7 +93,7 @@ Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm
 
 ### Step 1: Existing-doc check
 
-**[Shared]** See [`_brainstorm_shared/common.md` §1](../_brainstorm_shared/common.md) — existing-doc digest (one `read_files` call over enumerated paths) + Memory sweep (semantic-search); the abstraction-scan ask is optional for ideation.
+**[Shared]** See [`_brainstorm_shared/common.md` §1](../_brainstorm_shared/common.md) — the required asks, dispatched as [`/explore`](../../commands/explore.md) lenses. Ideation may drop `exp-prior-art` (ideas precede architecture) but never `exp-memory`.
 
 **Two doc-hit cases — handle distinctly:**
 - **Same topic** (digest doc IS for this brainstorm's topic, status-tagged): resume per common §1.1 status table. If `ideation-active` → resume mid-procedure; if `ideation-complete` → hand off to `/architecture_brainstorm`.
@@ -107,7 +103,7 @@ Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm
 
 **Rule:** Optional. Use ONLY for **scope-framing** — establishing constraints the idea pool should respect (PvE vs multi, design pillar, target audience, tone, target system the ideas should slot into). Do NOT use for **architecture-narrowing** (*"single currency or dual?"*) — that belongs in `/architecture_brainstorm` Step 2 AFTER the idea pool exists.
 
-- Multiple-choice preferred over open-ended. One question per turn.
+- Multiple-choice preferred over open-ended. Interview mechanic — **[Shared]** [`_brainstorm_shared/common.md §9`](../_brainstorm_shared/common.md): frontier rounds for a batch of framing forks, one question per turn for a single deep one.
 - Stop asking when the FRAME is clear enough to populate ideas in-bounds.
 - Often this step is empty — if the user's prompt already establishes the frame, skip.
 
@@ -160,7 +156,7 @@ Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm
 
    Move to the next cluster only after the current one is acknowledged. The user reacts per cluster, not after all clusters are dumped.
 
-6. **Checkpoint to scratch ledger.** **[Shared]** See [`_brainstorm_shared/common.md §8`](../_brainstorm_shared/common.md) for path, append cadence, format rules, consumption, and lifecycle. Per-cluster bullet schema for this skill:
+6. **Checkpoint to `decisions.md`.** **[Shared]** See [`_brainstorm_shared/common.md §8`](../_brainstorm_shared/common.md) for path, schema, append-on-classify, and consumption. Per-cluster block appended under `## Decided`:
 
    ```markdown
    ## Cluster <N> — <Cluster Name>
@@ -171,7 +167,7 @@ Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm
    - Cross-cluster anchors: <list>
    ```
 
-   Append after the user acknowledges the cluster (accepted survivors, swapped cuts back in, raised additional categories, or said "proceed"). Worker reads it as `reference_files` in the final `write_doc` call (Step 5).
+   Append after the user acknowledges the cluster (accepted survivors, swapped cuts back in, raised additional categories, or said "proceed"). Worker reads the file as `reference_files` in the final `write_doc` call (Step 5).
 
 ### Step 4: Cross-pollination pass
 
@@ -325,7 +321,7 @@ After `/update_roadmap` applies:
 ## 7. Cross-references
 
 **Shared procedures:**
-- [`_brainstorm_shared/common.md`](../_brainstorm_shared/common.md) — §1 existing-doc check, §1.1 resume table, §1.2 stale-roadmap remediation, §2 rationale spot-check, §3 MCP-offline, §4 user-review gate, §5 doc path/frontmatter conventions, §5.1 spawn-placement, §6 roadmap.md schema (including §6.10 Trigger semantics), §7 workflow phase cardinality, §8 scratch-ledger checkpoint discipline
+- [`_brainstorm_shared/common.md`](../_brainstorm_shared/common.md) — §1 existing-doc check, §1.1 resume table, §1.2 stale-roadmap remediation, §2 rationale spot-check, §3 MCP-offline, §4 user-review gate, §5 doc path/frontmatter conventions, §5.1 spawn-placement, §6 roadmap.md schema (including §6.10 Trigger semantics), §7 workflow phase cardinality, §8 decision frontier (`decisions.md`), §9 interview mechanic (frontier rounds)
 
 **Adjacent skills:**
 - [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) — runs AFTER this skill; consumes the idea-bank doc; produces a design doc + Parts authored on `roadmap.md`

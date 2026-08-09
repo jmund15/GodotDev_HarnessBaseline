@@ -1,15 +1,13 @@
 ---
 name: parameterized_asset_pipeline
 description: >-
-  Bootstrap a style-appropriate procedural asset pipeline for a NEW project
-  (or a new track in an existing one) from the proven source-project
-  methodology — entity sprites (Track A), UI chrome/icons/motion (Track C),
-  external-asset conform. Triggers: "set up the art pipeline", "new project
-  art bootstrap", "instantiate the asset pipeline", "style spec", "procedural
-  art methodology", "conform external assets". SKIP for authoring individual
-  assets inside an existing pipeline (project-local skills like
-  sprite_authoring own that) and for 3D (Track B — not designed; see the
-  GeneralGameDev Parameterized-Asset-Pipeline index).
+  Use when bootstrapping a style-appropriate procedural asset pipeline for a NEW
+  project (or a new track in an existing one), following the proven source-project
+  methodology — entity sprites (Track A), UI chrome/icons/motion (Track C), or
+  conforming external assets to the house style. SKIP for authoring individual assets
+  inside an existing pipeline (project-local skills like sprite_authoring own that) and
+  for 3D (Track B — not designed; see the GeneralGameDev Parameterized-Asset-Pipeline
+  index).
 ---
 
 # Parameterized Asset Pipeline — cross-project methodology
@@ -45,7 +43,7 @@ Creature/entity generator code is genre- and style-shaped — author it per-proj
 ## 3. Track C — UI chrome, icons, motion
 
 1. **Chrome** — instantiate `templates/theme_gen.py`: spec roles → 9-patch tiles → `theme_manifest.json` with resolved hexes. Variant axes (element/faction/rarity chrome) are loops over spec maps producing extra tiles + type-variation entries — same geometry, different ramps.
-2. **Runtime split** — instantiate `templates/ThemeManifest.cs` + `templates/ThemeBuilder.cs` (engine-pure; replace `{{PROJECT_NAMESPACE}}`). Python owns pixels + manifest; C# consumes verbatim. Game-domain color accessors (element/rarity/faction) are manifest lookups — no hex literal ever lives in engine code (the single-source recipe; the reference project's `ThemeService.ElementColor` is the worked example).
+2. **Runtime split** — instantiate `templates/ThemeManifest.cs` + `templates/ThemeBuilder.cs` (engine-pure; replace `{{PROJECT_NAME}}`). Python owns pixels + manifest; C# consumes verbatim. Game-domain color accessors (element/rarity/faction) are manifest lookups — no hex literal ever lives in engine code (the single-source recipe; the reference project's `ThemeService.ElementColor` is the worked example).
 3. **Icons** — instantiate `templates/icons.py`: 16-grid glyph DSL, integer-scaled tiers, per-icon sourcing dial with a **bake-enforced CREDITS ledger** for external sources. Compose the manifest `icons` section from theme_gen (single-writer manifests — two writers on one manifest is an anti-pattern).
 4. **Motion** — classify each juice primitive framework-general vs project-specific before writing it (hover/press/slide/ticker/pulse/fade are framework-shaped; game-semantic composites stay project-side). Fire-and-forget statics with node-meta kill-safe re-entry; explicit opt-in wiring, no global scanning. (Jmodot projects: `Jmodot.Implementation.UI.Motion.UiMotion` already ships this.)
 

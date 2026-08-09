@@ -4,10 +4,8 @@ description: >-
   Procedure for authoring prototype-grade visual assets as text — hand-written SVG,
   pixel grids baked via Godot's Image API, procedural .tres (StyleBoxFlat,
   GradientTexture2D) — covering in-game sprites (Sprite2D/3D), GUI icons, UI chrome,
-  and animation frames/sheets, with a mandatory render→screenshot→critique loop.
-  Triggers: "create a sprite", "placeholder art", "placeholder UI", "prototype asset",
-  "make an icon", "sprite sheet", "animate the sprite", "we need art for X". SKIP for
-  production/final art (user-owned), 3D meshes/models, shader effects (use
+  and animation frames/sheets, with a mandatory render→screenshot→critique loop. SKIP
+  for production/final art (user-owned), 3D meshes/models, shader effects (use
   `shader_authoring`), and composing existing sprites into effects (use `vfx_patterns`).
 ---
 
@@ -73,7 +71,7 @@ Critique rubric — fail any line, edit and re-render:
 - [ ] No stray/disconnected shapes, no part misalignment, intended symmetry holds?
 - [ ] Outline closed; alpha edges clean (no halo)?
 
-**Rung 2 — scene-context screenshot (before integration).** Isolated renders hide scale and contrast errors — judge the sprite next to existing assets, on real backgrounds, and (for Sprite3D) under lighting/billboard. Keep a review scene per project with a screenshot script:
+**Rung 2 — scene-context screenshot (before integration).** Isolated renders hide scale and contrast errors — an asset on a flat card is a vacuum, and every variant looks fine in isolation. Judge the sprite next to existing assets, on real backgrounds, and (for Sprite3D) under lighting/billboard. Keep a review scene per project with a screenshot script:
 
 ```gdscript
 # attach to review-scene root (2D or 3D)
@@ -104,7 +102,13 @@ xvfb-run --auto-servernum godot --path <proj> --rendering-driver opengl3 \
 | `compress/mode` | 0 (lossless) | VRAM compression visibly degrades flat color / pixel art |
 | `detect_3d/compress_to` | 0 (disabled) | first 3D use silently re-imports as VRAM-compressed |
 
-**Sprite3D:** `pixel_size` maps px→meters — pick one project-wide convention (e.g. 32px/m → `0.03125`) so all sprites agree on scale. Prototype defaults: `billboard = 1`, `alpha_cut = 1` (DISCARD — sidesteps transparency sorting), `shaded` off. Filter enums differ: CanvasItem `texture_filter` 1 = nearest, but SpriteBase3D uses BaseMaterial3D values — 2 = nearest-with-mipmaps.
+**Sprite3D:** `pixel_size` maps px→meters — pick one project-wide convention (e.g. 32px/m → `0.03125`) so all sprites agree on scale. Prototype defaults: `billboard = 1`, `alpha_cut = 1` (DISCARD — sidesteps transparency sorting), `shaded` off. Filter enums differ: CanvasItem `texture_filter` 1 = nearest, but SpriteBase3D uses BaseMaterial3D values — 0 = nearest (no mipmaps), 2 = nearest-with-mipmaps.
+
+**Transparency sorting — `sorting_use_aabb_center` / `sorting_offset`.** Both are `GeometryInstance3D` properties affecting **only geometry in the transparent pass**; sprites at `alpha_cut = 1`/`2` are depth-buffer sorted per-pixel and ignore them entirely, which is why DISCARD is the default above. When they do apply, `sorting_use_aabb_center` (default `true`) selects the depth reference point — AABB center vs. the node's global origin — and `sorting_offset` is added to whichever point was selected. Under a pitched camera a tilted sprite's local `+Y` also carries world `+Z`, so the AABB center of a ground-anchored sprite sits *further from the camera* than its base: tall sprites sort as though standing behind their own footprint. **Set `sorting_use_aabb_center = false` on any world-space sprite whose origin is its ground-contact point** — that restores sort-by-feet, the 2.5D rule. Leave it default for center-anchored sprites (projectiles, pickups, stacked particle layers): the two points coincide and the flag buys nothing. The engine tooltip's "more accurate for 3D models" is about solid volumes, where the centroid is a fair depth proxy; for a flat quad standing at an angle it is not.
+
+Because the offset is measured from the selected point, flipping the flag on a rig of hand-tuned siblings re-bases every `sorting_offset` at once. Equal-size siblings survive (the AABB delta is constant and cancels); mixed-height comparisons shift — which is the intended effect and also the regression surface. Flip per-rig with a visual check, never as a project-wide find-and-replace.
+
+**Texture filtering — set it explicitly, never leave it at engine default.** When the project's style is a hard pixel grid (no anti-aliasing), every sprite/spritesheet node — 2D (`Sprite2D`/`AnimatedSprite2D`, CanvasItem enum) or 3D (`Sprite3D`/`AnimatedSprite3D`, BaseMaterial3D enum) — must have `texture_filter` explicitly set to the Nearest variant. The engine default is Linear-with-mipmaps, which blurs pixel art; leaving the field unset silently ships blurred sprites. Set it on the node itself (not the `.import` file — filtering is a rendering property, not an import param).
 
 **Godot 4.5+ `DPITexture`** (SVG kept as source, auto re-rasterized) exists but ignores oversampling on SpriteBase3D — for shared 2D/3D assets stay on the classic texture importer + `svg/scale`.
 
