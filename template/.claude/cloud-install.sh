@@ -39,6 +39,7 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+# must match .claude/reference/project_stack.md
 GODOT_VERSION="4.6.2"
 GODOT_RELEASE="stable"
 DOTNET_VERSION_PROJECT="9.0"
@@ -57,7 +58,7 @@ echo ""
 # ── Helpers ───────────────────────────────────────────────────────────────────
 FAILED_STEPS=()
 STEP_COUNT=0
-STEP_TOTAL=10
+STEP_TOTAL=11
 
 step() {
     STEP_COUNT=$((STEP_COUNT + 1))
@@ -278,7 +279,17 @@ else
     fi
 fi
 
-# ── 7. Environment variables + xvfb-run check ───────────────────────────────
+# ── 7. Godot docs cache (optimization, not a build dependency) ──────────────
+step "Godot docs cache"
+if bash "${PROJECT_ROOT}/.claude/scripts/godot_docs_cache.sh" 2>&1; then
+    echo "  Godot docs cache: OK"
+else
+    echo "  WARNING: godot_docs_cache.sh failed — non-fatal. Class-ref lookups fall back to context7"
+    echo "           (/websites/godotengine_en_4_7); docs.godotengine.org is Cloudflare-gated and"
+    echo "           WebFetch gets 429 there. Re-run the script to restore version-pinned lookups."
+fi
+
+# ── 8. Environment variables + xvfb-run check ───────────────────────────────
 step "Environment variables"
 export GODOT_BIN="${GODOT_BIN}"
 echo "  GODOT_BIN=${GODOT_BIN}"
@@ -311,7 +322,7 @@ if ! grep -q "GODOT_BIN" "${PROFILE_FILE}" 2>/dev/null; then
     echo "  Added to ${PROFILE_FILE}"
 fi
 
-# ── 8. Generate .runsettings ─────────────────────────────────────────────────
+# ── 9. Generate .runsettings ─────────────────────────────────────────────────
 step "Generate .runsettings"
 RUNSETTINGS="${PROJECT_ROOT}/.runsettings"
 TEMPLATE="${PROJECT_ROOT}/.runsettings.template"
@@ -326,7 +337,7 @@ else
     fi
 fi
 
-# ── 9. Godot headless import + dotnet build ──────────────────────────────────
+# ── 10. Godot headless import + dotnet build ─────────────────────────────────
 step "Godot import + dotnet build"
 
 # Import cache
