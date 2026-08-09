@@ -16,6 +16,11 @@ try {
 } catch (e) {
   return { error: 'args is not valid JSON — /doc_architecture_audit must pass a JSON-serialized {context, docRoot}. ' + ((e && e.message) || '') }
 }
+// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent,
+// so Anthropic sessions run unchanged. Inlined per script: the Workflow sandbox has no require.
+const PIN = (m) => (A.__pin && A.__pin.model) || m
+const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+
 const CONTEXT = A.context || ''
 const DOC_ROOT = A.docRoot || ''
 if (!CONTEXT) {
@@ -36,7 +41,7 @@ const FINDING_SCHEMA_TEXT = [
 const READ_TOOLING = 'Read vault docs with native Read/Glob/Grep under the documentation root: ' + DOC_ROOT + ' . Do NOT re-read Start Here or the folder structure — they are already in the CONTEXT block below (push-don\'t-pull). IMPORTANT: the vault is on OneDrive (Files-On-Demand), so a doc read can transiently return empty/"No such file" while the file hydrates. An empty or missing read is NOT proof of absence — retry the same Read once before concluding a doc is missing, and only flag a doc as absent if the CONTEXT manifest also lacks it. Never emit a finding from a single failed read.'
 
 const STRUCTURAL = [
-  'You are auditing documentation STRUCTURE for a Godot 4.6 / C# game project.',
+  'You are auditing documentation STRUCTURE for the {{PROJECT_NAME}} Godot/C# game project (engine per `.claude/reference/project_stack.md`).',
   'Your role: check template completeness, compliance, formatting standards, and naming consistency across all documented systems.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -49,7 +54,7 @@ const STRUCTURAL = [
 ].join('\n')
 
 const CROSSREF = [
-  'You are auditing CROSS-REFERENCES and system boundaries in documentation for a Godot 4.6 / C# game project.',
+  'You are auditing CROSS-REFERENCES and system boundaries in documentation for the {{PROJECT_NAME}} Godot/C# game project (engine per `.claude/reference/project_stack.md`).',
   'Your role: build a directed link graph from Related Systems callouts, verify link integrity, detect boundary overlaps.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -62,7 +67,7 @@ const CROSSREF = [
 ].join('\n')
 
 const DOMAIN = [
-  'You are auditing DOMAIN hierarchy and navigation quality in documentation for a Godot 4.6 / C# game project.',
+  'You are auditing DOMAIN hierarchy and navigation quality in documentation for the {{PROJECT_NAME}} Godot/C# game project (engine per `.claude/reference/project_stack.md`).',
   'Your role: verify Start Here coverage, domain classification accuracy, entry-point correctness, hub needs, archived-doc hygiene, and domain cohesion/isolation.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -111,9 +116,9 @@ phase('Audit')
 // Pinned to sonnet — doc-structure auditing (template/link/domain checks) is well within sonnet's range
 // and must not inherit the session model (a Fable session would run all three lenses at Fable cost).
 const [structRes, crossRes, domainRes] = await parallel([
-  () => agent(STRUCTURAL, { label: 'da-structural', phase: 'Audit', schema: FINDINGS_SCHEMA, model: 'sonnet' }),
-  () => agent(CROSSREF, { label: 'da-crossref', phase: 'Audit', schema: FINDINGS_SCHEMA, model: 'sonnet' }),
-  () => agent(DOMAIN, { label: 'da-domain', phase: 'Audit', schema: FINDINGS_SCHEMA, model: 'sonnet' }),
+  () => agent(STRUCTURAL, { label: 'da-structural', phase: 'Audit', schema: FINDINGS_SCHEMA, model: PIN('sonnet'), effort: EFF('medium') }),
+  () => agent(CROSSREF, { label: 'da-crossref', phase: 'Audit', schema: FINDINGS_SCHEMA, model: PIN('sonnet'), effort: EFF('medium') }),
+  () => agent(DOMAIN, { label: 'da-domain', phase: 'Audit', schema: FINDINGS_SCHEMA, model: PIN('sonnet'), effort: EFF('medium') }),
 ])
 
 phase('Consolidate')

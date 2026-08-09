@@ -8,8 +8,20 @@ export const meta = {
   ],
 }
 
-// Platform contract: `args` arrives as a JSON STRING. Parse-guard.
-const A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
+// Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
+// string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
+// expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+let A
+try {
+  A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
+} catch (e) {
+  return { error: 'test-agents-fixtures: args must be JSON-serializable {fixtures: [...]}. Received a non-JSON string. ' + ((e && e.message) || '') }
+}
+
+// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent,
+// so Anthropic sessions run unchanged. Inlined per script: the Workflow sandbox has no require.
+const PIN = (m) => (A.__pin && A.__pin.model) || m
+const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
 const fixtures = Array.isArray(A.fixtures) ? A.fixtures : []
 const checklists = A.checklists || {}
 const agentTemplates = A.agentTemplates || {}
@@ -159,7 +171,7 @@ const results = await pipeline(
   // stage 1: dispatch the agent under test (model from fixture; NO schema — must catch malformed JSON as FAIL)
   (fx) => {
     const model = VALID_MODELS.includes(fx.model) ? fx.model : 'sonnet'
-    return agent(buildPrompt(fx), { label: 'dispatch:' + fx.id, phase: 'Dispatch', model })
+    return agent(buildPrompt(fx), { label: 'dispatch:' + fx.id, phase: 'Dispatch', model: PIN(model) })
       .then(response => ({ response }))
   },
   // stage 2: extract findings + 5-clause matcher (pure deterministic code)
@@ -174,7 +186,7 @@ const results = await pipeline(
   // stage 3: validation on PASS-only; REJECTED overrides to FAIL
   async (prev, fx) => {
     if (!prev.pass) { return prev }
-    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: 'sonnet', effort: 'medium', schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: PIN('sonnet'), effort: EFF('medium'), schema: VALIDATE_SCHEMA })
     if (!v.validated) {
       return { ...prev, pass: false, reason: 'Validator REJECTED: ' + v.reason, validated: false }
     }

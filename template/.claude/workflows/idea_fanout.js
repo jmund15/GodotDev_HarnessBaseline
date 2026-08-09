@@ -7,8 +7,15 @@ export const meta = {
   ],
 }
 
-// Platform contract: args is a JSON STRING. Parse-guard.
-const A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
+// Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
+// string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
+// expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+let A
+try {
+  A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
+} catch (e) {
+  return { error: 'idea-fanout: args must be JSON-serializable {generators: [{key, instr, model?}, ...], contextPrefix}. Received a non-JSON string. ' + ((e && e.message) || '') }
+}
 const generators = Array.isArray(A.generators) ? A.generators : []
 const contextPrefix = A.contextPrefix || '' // the pushed cluster CONTEXT, prepended to every agent prompt
 const genCount = A.genCount || '15-20'      // raw candidates each generator returns
@@ -22,6 +29,12 @@ if (generators.length < 2) {
 }
 
 // 'fable' is requestable but never a default — reserve for explicit high-fidelity dispatch.
+// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
+// Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
+// script because the Workflow sandbox has no require/import.
+const PIN = (m) => (A.__pin && A.__pin.model) || m
+const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+
 const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
 // Asymmetric defaults: divergence wants the strong model; criticism (rigor) does not. A caller that
 // omits (or mis-spells) model must NOT silently inherit the session model — under Fable that turns the
@@ -42,24 +55,28 @@ for (const f of genFields) {
   candProps[f.name] = { type: 'string', description: typeof f.desc === 'string' ? f.desc : '' }
   if (f.required) { candRequired.push(f.name) }
 }
+// Containers are permissive (additionalProperties: true) so a stray key on ONE candidate can never
+// discard the whole list — the reject-wholesale class feedback_schema_caps_must_not_invalidate_delegate_work
+// exists to prevent. Required name/shape still hold; the merged pool forwards only name/shape/lens to
+// critics, and the curator filters strays.
 const GEN_SCHEMA = {
-  type: 'object', additionalProperties: false,
+  type: 'object', additionalProperties: true,
   properties: {
     candidates: {
       type: 'array',
-      items: { type: 'object', additionalProperties: false, properties: candProps, required: candRequired },
+      items: { type: 'object', additionalProperties: true, properties: candProps, required: candRequired },
     },
   },
   required: ['candidates'],
 }
 
 const CRITIC_SCHEMA = {
-  type: 'object', additionalProperties: false,
+  type: 'object', additionalProperties: true,
   properties: {
     notes: {
       type: 'array',
       items: {
-        type: 'object', additionalProperties: false,
+        type: 'object', additionalProperties: true,
         properties: { topic: { type: 'string' }, finding: { type: 'string' } },
         required: ['topic', 'finding'],
       },
@@ -67,7 +84,7 @@ const CRITIC_SCHEMA = {
     proposedAdditions: {
       type: 'array',
       items: {
-        type: 'object', additionalProperties: false,
+        type: 'object', additionalProperties: true,
         properties: { name: { type: 'string' }, shape: { type: 'string' }, rationale: { type: 'string' } },
         required: ['name', 'shape'],
       },
@@ -93,7 +110,7 @@ const genResults = await parallel(generators.map((g) => () => {
   const prompt = (contextPrefix ? contextPrefix + '\n\n' : '')
     + '## YOUR DIVERGENCE LENS: ' + (g.key || 'lens') + '\n' + (g.instr || '')
     + '\n\nReturn ' + genCount + ' candidate ideas as structured data.' + GEN_GUARD
-  return agent(prompt, { label: 'gen:' + (g.key || 'lens'), phase: 'Generate', schema: GEN_SCHEMA, model })
+  return agent(prompt, { label: 'gen:' + (g.key || 'lens'), phase: 'Generate', schema: GEN_SCHEMA, model: PIN(model), effort: EFF(['low', 'medium', 'high', 'xhigh'].includes(g.effort) ? g.effort : 'medium') })
     .then((r) => ({ key: g.key, candidates: (r && Array.isArray(r.candidates)) ? r.candidates : [], dead: !r }))
 }))
 
@@ -123,7 +140,7 @@ const DEFAULT_CRITICS = [
 const critics = (Array.isArray(A.critics) && A.critics.length) ? A.critics : DEFAULT_CRITICS
 
 // Critics are FRESH, INDEPENDENT agents — never the generators self-grading
-// (red_team_must_be_independent_dispatch: shared premises bias verdicts).
+// (feedback_delegate_output_trust: shared premises bias verdicts).
 const CRITIC_GUARD = [
   '',
   '=== CRITIC GUARD (you are an INDEPENDENT critic — you did NOT generate these candidates) ===',
@@ -137,7 +154,7 @@ const critiqueResults = await parallel(critics.map((c) => () => {
   const prompt = (contextPrefix ? contextPrefix + '\n\n' : '')
     + '## MERGED CANDIDATE POOL (' + merged.length + ' items, indexed)\n' + pool
     + '\n\n## YOUR CRITIC LENS: ' + (c.key || 'critic') + '\n' + (c.instr || '') + CRITIC_GUARD
-  return agent(prompt, { label: 'critic:' + (c.key || 'critic'), phase: 'Critique', schema: CRITIC_SCHEMA, model })
+  return agent(prompt, { label: 'critic:' + (c.key || 'critic'), phase: 'Critique', schema: CRITIC_SCHEMA, model: PIN(model), effort: EFF(['low', 'medium', 'high', 'xhigh'].includes(c.effort) ? c.effort : 'medium') })
     .then((r) => ({
       key: c.key,
       notes: (r && Array.isArray(r.notes)) ? r.notes : [],

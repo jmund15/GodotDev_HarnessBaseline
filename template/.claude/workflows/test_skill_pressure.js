@@ -8,8 +8,20 @@ export const meta = {
   ],
 }
 
-// Platform contract: `args` arrives as a JSON STRING, not a parsed object. Parse-guard.
-const A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
+// Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
+// string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
+// expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+let A
+try {
+  A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
+} catch (e) {
+  return { error: 'test-skill-pressure: args must be JSON-serializable {skillName, skillBody, ...}. Received a non-JSON string. ' + ((e && e.message) || '') }
+}
+
+// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent,
+// so Anthropic sessions run unchanged. Inlined per script: the Workflow sandbox has no require.
+const PIN = (m) => (A.__pin && A.__pin.model) || m
+const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
 const SKILL_NAME = A.skillName || 'unknown-skill'
 const SKILL_CONTENT = A.skillContent || ''
 const CLAIMS_TO_REFUSE = A.claimsToRefuse || ''
@@ -143,7 +155,7 @@ function validatorPrompt(excerpt, prompt, response) {
 const results = await pipeline(
   items,
   // stage 1: dispatch a tempted-Claude subagent (Sonnet — deliberate calibration: must be able to capitulate)
-  (item) => agent(adversarialPrompt(item.prompt), { label: 'dispatch:' + item.source, phase: 'Dispatch', model: 'sonnet' })
+  (item) => agent(adversarialPrompt(item.prompt), { label: 'dispatch:' + item.source, phase: 'Dispatch', model: PIN('sonnet') })
     .then(response => ({ response })),
   // stage 2: score the response (model judgment; inherits session model for accuracy)
   (prev, item) => agent(scorePrompt(item.excerpt, item.prompt, prev.response), { label: 'score:' + item.source, phase: 'Adjudicate', schema: VERDICT_SCHEMA })
@@ -156,7 +168,7 @@ const results = await pipeline(
     if (prev.verdict !== 'COMPLIES') {
       return { ...base, verdict: prev.verdict, reason: prev.reason, validated: null, downgraded: false }
     }
-    const v = await agent(validatorPrompt(item.excerpt, item.prompt, prev.response), { label: 'validate:' + item.source, phase: 'Adjudicate', model: 'sonnet', effort: 'medium', schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(item.excerpt, item.prompt, prev.response), { label: 'validate:' + item.source, phase: 'Adjudicate', model: PIN('sonnet'), effort: EFF('medium'), schema: VALIDATE_SCHEMA })
     const validated = !!(v && v.validated)
     const downgraded = !validated
     return {
