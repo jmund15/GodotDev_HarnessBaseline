@@ -44,7 +44,7 @@ They are **NOT** physics collision layers:
 - `CollisionObject3D.collision_layer` — physics body's layer membership.
 - `PhysicsRayQueryParameters3D.collision_mask` — what a raycast hits.
 
-The two layer systems are independent 32-bit (rendering: 20-bit) spaces with separate Project Settings sections. Passing a `RenderLayers` value to a physics query is a silent category error — the previous `DropShadowDecal` bug at line 80 (pre-fix) did exactly this, reusing `CullMask` as a raycast `collision_mask`.
+The two layer systems are independent 32-bit (rendering: 20-bit) spaces with separate Project Settings sections. Passing a `RenderLayers` value to a physics query is a silent category error — the pre-fix `DropShadowDecal` bug did exactly this, reusing `CullMask` as a raycast `collision_mask`.
 
 For physics layer masks on `[Export]` properties, use:
 ```csharp

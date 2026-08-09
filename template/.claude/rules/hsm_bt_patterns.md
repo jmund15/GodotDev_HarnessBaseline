@@ -58,6 +58,40 @@ Hybrid Transitions: It is perfectly fine and recommended to use both `EmitSignal
 - `Check(Node agent, IBlackboard bb)` must be **side-effect-free** — it can run multiple times per frame, and a passing check does NOT guarantee the transition commits (`CanExit` may block). Deferred side effects (consuming one-shot flags) belong in `OnTransitionCommitted(agent, bb)`, which fires only after the transition fully commits.
 - `[Tool]` is required so the Editor can instantiate the Resource for Inspector display.
 
+## Animation Authority (IAnimatedState claims)
+
+**Rule:** Claim animation at the **narrowest active scope that knows what the body should look like**;
+everything else stays silent (`AnimationName` empty ⇒ `IsAnimated` false), and locomotion is the
+unclaimed fallback on driver entities. Resolution is innermost-first: BT task > HSM state > locomotion.
+Authority follows **behavioral granularity** — entities differ in where they put granularity, never in
+the rule:
+
+- **No BT under the state** (pure-HSM entities — e.g. a driverless player-character entity): the leaf
+  state is the narrowest scope by construction → every leaf state claims, 1:1 state-to-clip. When such
+  an entity's locomotion *phases* are first-class states, the locomotion fallback tier never fires there.
+- **BT under the state**: ask per subtree — does the STATE know the look for its whole duration (pursue:
+  tree is navigation-only → state claims), or does the look depend on WHICH TASK runs (combat → state
+  silent, leaves claim)? "Does this scope know the look for its whole active duration?" is the per-node
+  authoring litmus.
+
+Four sanctioned shapes — pick by who knows the clip:
+
+| Shape | When | Example |
+|---|---|---|
+| **Container-silent / leaf-claims** | The state can't know (depends on which task runs); between tasks, locomotion correctly shows movement | `CombatState` silent; attack/`AttachToTarget` leaves claim |
+| **State-claims / leaves-silent** | The state IS the look for its whole duration; its tree does steering/nav/logic only | pursue/flee states; `AttachedState` ("run") over a silent damage tick |
+| **All-silent** | Pure locomotion — velocity-derived clips are correct | wander on driver entities only |
+| **One-shot** (shape, no marker interface) | The clip is the completion criterion — the state claims AND gates its exit on `AnimFinished` | getup/recover/craft states |
+
+- **Enter-order invariant:** an animated `BTState` claims (`StartAnim`) BEFORE `base.OnEnter()` enters
+  its tree — clips are last-start-wins at enter time, so the outer claim must land first for an animated
+  leaf to override it. On entities with a `LocomotionAnimationDriver` the per-frame push corrects a wrong
+  order within a frame; on driverless entities the order is the only enforcement.
+- **Both a state and its always-running leaf claiming** = the state's clip is permanently shadowed —
+  author one of them silent.
+- Runtime unification (single resolver for all animated entities) is a tracked design topic; this
+  grammar is runtime-independent and survives it.
+
 ## Goal-Directed AI Behaviors (BT)
 
 **Rule:** BT actions fall into two categories based on whether they have a spatial destination:

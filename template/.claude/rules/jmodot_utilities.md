@@ -14,19 +14,17 @@ paths:
 - *Diagnostic:* If a component method does nothing with no error, check `IsInitialized` first.
 - The blackboard parameter can be `null` if dependencies are optional.
 
+**Three phases, run by `EntityNodeComponentsInitializer`** — each completes for ALL components before the next begins:
+
+0. `IBlackboardProvider.Provision` → `bb.Set` (scanned independently of `IComponent`)
+1. `IComponent.Initialize(bb)` — **resolve dependencies only**; order is arbitrary, so a sibling may be uninitialized
+2. `OnPostInitialize()` — post-barrier; **sibling-event subscriptions belong here**, never in `Initialize`
+
+Never self-call `OnPostInitialize()` from `Initialize` — the phase driver invokes it after the Phase-1 barrier; the house tail is `IsInitialized = true; Initialized(); return true;`. Required-dep `bool` policy and the bespoke-path taxonomy: [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) §Component Initialization Paths.
+
 ## Node & Scene Querying (NodeExts)
 
-**Rule:** Prefer `NodeExts` extension methods over standard `GetNode()`. Most accept `bool includeSubChildren = true`.
-
-| Method | Purpose |
-|---|---|
-| `GetFirstChildOfType<T>()` / `GetChildrenOfType<T>()` | Concrete-type search |
-| `GetFirstChildOfInterface<T>()` / `GetChildrenOfInterface<T>()` | Interface search |
-| `TryGetNode<T>(...)` / `TryGetChildOfInterface<T>(...)` | Safe access (no throw) |
-| `GetFirstNodeOfTypeInScene<T>()` | Singleton finder |
-| `IsValid<T>()` / `IfValid<T>()` | Safe null/freed check |
-| `SafeQueueFree()` | Safe deletion with error logging |
-| `ValidateRequiredExports()` | Validate `[RequiredExport]` properties (see below) |
+**Rule:** Prefer `NodeExts` extension methods over standard `GetNode()`. Most accept `bool includeSubChildren = true`. Method inventory + signatures: `<summary>` docs on `NodeExts`.
 
 **When ambiguous:** if multiple nodes of the same type live under the same parent, `GetFirstChildOfType<T>()` is non-deterministic — use a direct `[Export]` reference instead.
 
@@ -50,27 +48,11 @@ public class MyResource : Resource, IGodotResourceInterface {
 
 ## IRuntimeCopyable&lt;T&gt;
 
-**Purpose:** Interface to copy state — blueprint→instance pattern (e.g., Resource templates spawning per-instance runtime copies).
-
-```csharp
-public class MyData : IRuntimeCopyable<MyData> {
-    public float Value { get; set; }
-    public void CopyStateFrom(MyData original) {
-        this.Value = original.Value;
-    }
-}
-```
+**Purpose:** Interface to copy state — blueprint→instance pattern (e.g., Resource templates spawning per-instance runtime copies). Contract: `CopyStateFrom(T original)`.
 
 ## Map&lt;T1, T2&gt;
 
-**Purpose:** Two-way dictionary (forward and reverse lookup).
-
-```csharp
-var map = new Map<StringName, int>();
-map.Add("Key1", 123);
-int value = map.Forward["Key1"];
-StringName key = map.Reverse[123];
-```
+**Purpose:** Two-way dictionary (`.Forward` / `.Reverse` lookup) — exists; don't hand-roll one.
 
 ## JmoRng
 
@@ -99,19 +81,11 @@ Also forbidden by this rule: **eager field initializers** that allocate `JmoRng.
 
 ## JmoMath
 
-Pure math + geometry utilities. Full signatures in `<summary>` on the class.
-
-- `Remap(value, inMin, inMax, outMin, outMax)` — range mapping
-- `QuadraticBezier3D(p0, p1, p2, t)` — Bezier curve point
-- `GetPointOnRing(center, basis, direction, radius)` — point on a ring
-- `GetEnumValues<T>()` — all values of an enum
+Pure math + geometry utilities (remap, Bezier, ring-point, enum-values). Full signatures in `<summary>` on the class — check before hand-rolling math helpers.
 
 ## MovementExtensions
 
-- `GetFlattenedVector2(this Vector3 vec)` — flatten 3D to 2D
-- `GetFlatVector3(this Vector2 vec)` — lift 2D to flat 3D
-- `GetWeightedGravity3D(this CharacterBody3D, float weight)` — weighted gravity
-- `GetCustomWeightedGravity(this CharacterBody3D, Vector3 custom, float weight)` — custom-vector variant
+Vector flatten/lift (3D↔2D) + weighted-gravity helpers on `CharacterBody3D`. Signatures in `<summary>` on the class.
 
 ## Configuration Exceptions
 
@@ -127,4 +101,4 @@ Pure math + geometry utilities. Full signatures in `<summary>` on the class.
 - [`csharp_patterns.md`](csharp_patterns.md) — `[RequiredExport]` mechanics, nullability, test helpers, signals vs events.
 - [`jmodot_framework_authoring.md`](jmodot_framework_authoring.md) — fires only on `Jmodot/**/*.cs` for framework-internal rules.
 - [`../skills/jmodot/SKILL.md`](../skills/jmodot/SKILL.md) — design-time index, subsystem deep-dive routing, BBDataSig keys.
-- [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) — Blackboard DI, Resource Strategy Hierarchies, Marker Interface as Capability Query.
+- [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) — Component Initialization Paths, Resource Strategy Hierarchies, Marker Interface as Capability Query.

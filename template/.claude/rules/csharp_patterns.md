@@ -7,6 +7,13 @@ paths:
 
 **Context:** Mechanical patterns that fire when writing or editing `.cs` files — lifecycle ordering, nullability annotations, export discipline, defensive guards, test-helper conventions. Auto-loads on `.cs` reads. Companion to [`csharp_lsp.md`](csharp_lsp.md) (navigation tooling) and [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) (design philosophy).
 
+## Core Conventions (project-level)
+
+- **Pure functions** wherever possible. **Control flow:** no nested if/else, early returns, ALWAYS brackets `{}`.
+- **Logging:** use the project logger (`Info`/`Warning`/`Error`), never `GD.Print`. Log STATE CHANGES, not state. Whether a logged error fails a test is a project-level opt-in (a logger spy installed by the suite) — engine-level ERROR lines never fail tests.
+- **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT, NEVER reference task/PR/"Phase X"/dates/CLAUDE.md rules. Litmus: *"If I delete this, will a maintainer 6 months from now make a wrong decision?"* No -> don't write it. `<summary>` on `[Export]` is softer (becomes Godot Inspector tooltip). `#if TOOLS` setters need no `///`. Doc-only commits to recent code = smell; cut over clarify.
+- **Strings:** prefer `StringName` for Godot identifiers (node paths, signal/animation names).
+
 ## Lifecycle & Constructors
 
 **Rule:** **NEVER** put game logic in the C# Constructor (`public MyClass()`).

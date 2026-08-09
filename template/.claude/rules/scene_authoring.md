@@ -1,6 +1,7 @@
 ---
 paths:
   - "**/*.tscn"
+  - "**/*.tres"
   - "project.godot"
   - "UI/**/*.cs"
 ---
@@ -14,6 +15,20 @@ paths:
 - **Heuristic:** Scenes are for **Representation** (Mesh, Audio, Collision), not Logic.
 - **Logic Root:** The Root node usually holds the `MainController.cs`.
 - **Wiring:** Prefer code-based wiring (`_Ready`) over `.tscn` signal connection syntax to keep logic searchable in C#.
+
+## Scene anatomy — what a good scene looks like
+
+The Inspector and scene tree are an API surface: exports and node structure carry the same contract discipline as public code. Seven principles, each with a litmus:
+
+1. **Role-pure nodes.** Every node has one nameable role — if stating its job needs "and", split it. *Litmus:* can you state the node's job in one clause? *Exception (verified, not hypothesized):* two roles that never ship separately — checked against the actual roster — may share a component.
+2. **Structure authored, behavior coded.** The scene owns what exists and where; code owns what happens. Wiring split: anything with an automatic/procedural resolution (signal connections, component lookup) lives in code and stays invisible to the designer; the hand-authored remainder IS the designer surface — keep it minimal, obvious, and validated.
+3. **One authored value, one home.** A second surface derives the value (computed property, stat resolution, lookup over the owning collection) — it never re-authors it. *Litmus:* if a designer changed this in one place and shipped, what still reads the old value? Any answer but "nothing" → derive. *Anti-shapes:* a sensor radius authored beside the stat that governs it; a parallel identity→asset dictionary beside the identity's own asset field; the same node block repeated across N sibling scenes.
+4. **Every visible export is read.** An export inert in any context an author can reach is a defect, not clutter (canon incident: `arch_rule_shared_config_resource_no_dead_exports` in auto-memory). *Litmus:* for every export reachable from this scene/`.tres`, name the code that reads it in THIS context; can't → delete it or narrow the type per context.
+5. **Required dependency fails loud — three rungs.** (1) Authoring time: `_GetConfigurationWarnings` on every component with required deps/config (yellow triangle in the scene dock). (2) Load/initialize time: throw or `Error` once. (3) Lint time, where machine-checkable. A per-use WARNING is never the mechanism — it converts one config error into N noise lines indistinguishable from N failures. *Corollary:* any `X.Instance`-style system decides its ownership seam (scene node / autoload / lazily created) at design time and records it.
+6. **Shared wiring lives in one scene.** At the second copy, extract to a template/inherited or instanced sub-scene — the forget-to-update failure arrives with the first divergent edit. Instancing constraint: instanced children are NOT configurable from the host scene (editable-children is not an accepted answer), so a shared scene puts every designer knob on its ROOT (forwarding exports or one config Resource); genuinely per-nested-node configuration → scene INHERITANCE, which overrides nested nodes in place. On inherited scenes, configure by overriding the template node — adding a sibling with the same role is a duplicate-provider defect, not a customization.
+7. **The visual is a promise; the collider must keep it.** Whatever the art communicates about reach, timing, and growth is the contract the player plays against. If the visual changes size or position over its lifetime, the volume is driven over the same lifetime (shared curve/duration) — or the art is re-authored honest to the fixed volume. *Litmus:* at frame 1 and at the last frame, does the collider match what a player would predict from the art?
+
+**Component contract (summary — canonical home: `architecture_philosophy` §Component Contract):** per-entity divergence is expressed by which components an entity composes plus exported Resource data — never structural rewiring of shared blocks. Inter-component dependencies are one-directional and always communicated: either an explicit exported slot the author must assign, or (house default) auto-resolution via Blackboard/ENCI paired with `_GetConfigurationWarnings` and a loud initialize.
 
 ## Programmatic vs Scene-Tree Node Construction
 
