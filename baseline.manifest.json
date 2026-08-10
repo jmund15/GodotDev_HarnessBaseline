@@ -117,6 +117,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/archive/gotcha_editing_shell_script_corrupts_running_instances.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/archive/gotcha_regression_gate_baseline_inflation.md",
       "layer": "core",
       "sync": "auto"
