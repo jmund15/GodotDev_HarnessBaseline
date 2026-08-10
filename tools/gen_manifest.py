@@ -278,6 +278,8 @@ CORE_PATTERNS = [
     ".claude/hooks/prompt_git_state_delta.py",
     ".claude/hooks/prompt_memory_loader.py",
     ".claude/hooks/transcript_backup.py",
+    ".claude/rules/model_delegation.md",
+    ".claude/rules/source_trust.md",
     ".claude/scripts/autolearn.sh",
     ".claude/scripts/check_learnings.sh",
     ".claude/skills/_brainstorm_shared/appetite_invariant.md",

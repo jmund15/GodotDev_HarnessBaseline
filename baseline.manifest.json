@@ -1177,6 +1177,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/rules/model_delegation.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/rules/physics_patterns.md",
       "layer": "godot",
       "sync": "auto"
@@ -1184,6 +1189,11 @@
     {
       "path": ".claude/rules/scene_authoring.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/rules/source_trust.md",
+      "layer": "core",
       "sync": "auto"
     },
     {
