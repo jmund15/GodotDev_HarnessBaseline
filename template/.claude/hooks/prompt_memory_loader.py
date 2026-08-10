@@ -6,7 +6,6 @@ Hook: UserPromptSubmit - Mode-aware context loading
 Purpose:
 - PLAN MODE: Focus on exploring existing workflows, design docs, and architectural context
 - EXECUTION MODE: Focus on implementation gotchas; remind to reload context if scope expands
-- LOG ANALYSIS: Auto-analyze Godot logs when user mentions log-related keywords
 - Scalable: No hardcoded skill/workflow names - uses generic language
 
 Design: Mode-aware progressive disclosure
@@ -14,18 +13,17 @@ Design: Mode-aware progressive disclosure
 
 import json
 import os
-import platform
 import re
-import subprocess
 import sys
-from pathlib import Path
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
 
 # High-risk patterns that require explicit acknowledgment (execution mode)
-# These are domains where gotchas frequently cause issues
+# These are domains where gotchas frequently cause issues.
+# PROJECT-CONFIG: append your project's high-gotcha domain keywords (the rows
+# below are the domain-agnostic floor).
 HIGH_RISK_PATTERNS = [
     # Debugging/Investigation
     r"\bdebug\b",
@@ -36,17 +34,14 @@ HIGH_RISK_PATTERNS = [
     r"\binvestigat",
     r"\bcheck.*(log|output)\b",
     r"\bwhy.*(not|isn't|doesn't)\b",
-    # HSM/State machines
-    r"\bstate\s*(machine|transition)\b",
-    r"\bHSM\b",
-    r"\btransition\b",
-    r"\bfreeze\b",
-    r"\bstun\b",
-    r"\bstatus\s*effect\b",
     # Refactoring
     r"\brefactor\b",
     r"\bmigrat\b",
     r"\bdeprecat\b",
+    # Outward-facing / irreversible
+    r"\bpublish\b",
+    r"\bupload\b",
+    r"\bdelete\b",
 ]
 
 
@@ -106,57 +101,14 @@ def is_execution(prompt: str) -> bool:
     return False
 
 
-# Log analysis keywords - triggers automatic Godot log analysis
-LOG_ANALYSIS_KEYWORDS = [
-    r"\bgodot\s*log",
-    r"\banalyze\s*(the\s*)?(log|output)",
-    r"\bcheck\s*(the\s*)?(log|output|error)",
-    r"\bgame\s*(crash|error|issue)",
-    r"\bdebug\s*output",
-    r"\bwhat.*(error|warning|issue)",
-    r"\brun\s*(the\s*)?game.*check",
-    r"\bafter\s*running",
-    r"\bpool\s*(issue|error|warning)",
-    r"\bspawn\s*(issue|error|lag)",
-]
-
-# Resource file keywords - triggers UID/resource reminder
-RESOURCE_FILE_KEYWORDS = [
-    r"\.tres\b",
-    r"\.tscn\b",
-    r"\buid\b",
-    r"\bresource\s*(file|path|reference)",
-    r"\bedit.*(scene|resource)",
-    r"\bmodify.*(scene|resource)",
-    r"\bmissing\s*(dependency|reference|uid)",
-]
-
-
-def should_remind_resource_files(prompt: str) -> bool:
-    """Check if prompt mentions resource file editing."""
-    prompt_lower = prompt.lower()
-    for pattern in RESOURCE_FILE_KEYWORDS:
-        if re.search(pattern, prompt_lower):
-            return True
-    return False
-
-
-def get_resource_reminder() -> str:
-    """Return a resource file editing reminder."""
-    return """<resource-file-reminder>
-Editing Godot resource files (.tres/.tscn):
-- Use get_uid MCP tool to verify UIDs before manual edits
-- Search Memory for "UID" if you encounter dependency issues
-- Read the file first to understand existing structure
-</resource-file-reminder>"""
-
-# Drive commands (/part_drive etc.) run a whole plan→execute cycle in the normal
-# session flow, so the plan-mode branch below never fires for them, and
-# plan_memory_reminder only fires once the plan FILE is written — i.e. after
-# drafting has already begun. Their invocation string is also far under the
-# 20-char floor. This branch re-keys the Memory obligation onto the command
-# itself, at invocation, which is the last moment it can still shape the plan.
-DRIVE_COMMANDS = ("/part_drive", "/feature_drive", "/design_drive")
+# Commands that run a whole plan→execute cycle in the normal session flow, so
+# the plan-mode branch below never fires for them, and any plan-file reminder
+# only fires once drafting has already begun. This branch re-keys the Memory
+# obligation onto the command itself, at invocation, which is the last moment
+# it can still shape the plan.
+# PROJECT-CONFIG: list your project's plan-then-execute commands (empty tuple
+# disables the branch; e.g. the code layer's ("/part_drive", "/plan_drive")).
+DRIVE_COMMANDS: tuple = ()
 
 
 def get_drive_reminder(prompt: str) -> str:
@@ -169,16 +121,14 @@ def get_drive_reminder(prompt: str) -> str:
     lines = [
         "<drive-memory-obligation>",
         f"{command} runs plan-then-execute with no approval gate before code — the Memory pass is MANDATORY and yours to run:",
-        "1. Dispatch /explore (its exp-memory floor lens covers the per-domain auto-memory search plus the unconditional `arch_rule_*` sweep).",
-        "2. Record the dossier's constraint claims + their evidence in the plan file under Constraints — an unrecorded pass did not happen.",
+        "1. Search auto-memory for each inferred domain's gotchas (semantic-search if connected, else Grep).",
+        "2. Record the constraint claims + their evidence in the plan file under Constraints — an unrecorded pass did not happen.",
     ]
     if argument:
         lines.append(f"Infer domains from: {argument[:200]}")
     lines.append("</drive-memory-obligation>")
     return "\n".join(lines)
 
-
-ANALYZER_SCRIPT = Path(__file__).parent / "analyze_godot_logs.py"
 
 # Session cap for the STANDARD MemoryCheck nudge only (plan-mode and high-risk
 # nudges stay uncapped — higher signal). Same anti-fatigue rationale as
@@ -214,95 +164,6 @@ def _bump_memory_check_count(session_id: str) -> int:
     return count
 
 
-def _get_godot_log_path() -> Path:
-    """Return the Godot log path for the current platform."""
-    home = Path.home()
-    system = platform.system()
-    if system == "Windows":
-        return home / "AppData/Roaming/Godot/app_userdata/{{PROJECT_NAME}}/logs/godot.log"
-    elif system == "Darwin":
-        return home / "Library/Application Support/Godot/app_userdata/{{PROJECT_NAME}}/logs/godot.log"
-    else:  # Linux and other Unix
-        return home / ".local/share/godot/app_userdata/{{PROJECT_NAME}}/logs/godot.log"
-
-
-DEFAULT_LOG_PATH = _get_godot_log_path()
-
-
-def should_analyze_logs(prompt: str) -> bool:
-    """Check if prompt mentions log-related keywords."""
-    prompt_lower = prompt.lower()
-    for pattern in LOG_ANALYSIS_KEYWORDS:
-        if re.search(pattern, prompt_lower):
-            return True
-    return False
-
-
-def run_log_analysis() -> str:
-    """Run the Godot log analyzer and return formatted results."""
-    if not ANALYZER_SCRIPT.exists():
-        return ""
-
-    if not DEFAULT_LOG_PATH.exists():
-        return ""
-
-    try:
-        # sys.executable guarantees the same interpreter that runs this hook
-        # ("python" can resolve to the MS-Store stub on Windows and fail silently).
-        result = subprocess.run(
-            [sys.executable, str(ANALYZER_SCRIPT), str(DEFAULT_LOG_PATH), "--json"],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=10,
-            cwd=str(ANALYZER_SCRIPT.parent)
-        )
-
-        if result.returncode != 0:
-            return ""
-
-        data = json.loads(result.stdout)
-
-        # Skip if no issues
-        counts = data.get("counts", {})
-        errors = counts.get("errors", 0)
-        warnings = counts.get("warnings", 0)
-
-        if errors == 0 and warnings == 0:
-            return ""
-
-        # Format concise summary
-        lines = [
-            "<godot-log-analysis>",
-            f"Godot Log: {errors} errors | {warnings} warnings",
-        ]
-
-        # Top error
-        grouped_errors = data.get("grouped_errors", [])
-        if grouped_errors:
-            top = grouped_errors[0]
-            lines.append(f"Top Error: \"{top[0][:50]}...\" ({top[1]}x)")
-
-        # Top warning
-        grouped_warnings = data.get("grouped_warnings", [])
-        if grouped_warnings:
-            top = grouped_warnings[0]
-            lines.append(f"Top Warning: \"{top[0][:50]}...\" ({top[1]}x)")
-
-        # Recommendations
-        recs = data.get("recommendations", [])
-        if recs:
-            rec = recs[0]
-            lines.append(f"Recommendation: [{rec.get('severity', 'MEDIUM')}] {rec.get('fix', '')[:60]}")
-
-        lines.append("Use /analyze_godot_logs for full details.")
-        lines.append("</godot-log-analysis>")
-
-        return "\n".join(lines)
-
-    except Exception:
-        return ""
-
-
 def main():
     # Read hook input from stdin
     try:
@@ -336,65 +197,38 @@ def main():
         print("{}")
         sys.exit(0)
 
-    # === CONDITIONAL CONTEXT (prepended to other output) ===
-    extra_context = []
-
-    # Log analysis
-    if should_analyze_logs(prompt):
-        log_output = run_log_analysis()
-        if log_output:
-            extra_context.append(log_output)
-
-    # Resource file reminder
-    if should_remind_resource_files(prompt):
-        extra_context.append(get_resource_reminder())
-
     # === PLAN MODE ===
     if permission_mode == "plan":
-        output = """<user-prompt-submit-hook>
-PLAN-PERMISSION MODE — gather context first: dispatch /explore for the state sweep (memory gotchas, prior art, design docs, blast radius), load Skills for matching workflows, and flag unresolved questions.
-</user-prompt-submit-hook>"""
-        for ctx in extra_context:
-            print(ctx)
-        print(output)
+        print("""<user-prompt-submit-hook>
+PLAN-PERMISSION MODE — gather context first: search auto-memory for gotchas, prior art, design docs, and blast radius; load Skills for matching workflows; flag unresolved questions.
+</user-prompt-submit-hook>""")
 
     # === DIRECTIVE: EXECUTE PRIOR-AGREED WORK (no fresh memory search needed) ===
     elif is_execution(prompt):
         # Relevant context was loaded when the work was scoped; re-nudging on
-        # "apply it" / "do the refinements" is a false positive. Still surface
-        # any conditional context (log analysis, resource reminder) if relevant.
-        for ctx in extra_context:
-            print(ctx)
+        # "apply it" / "do the refinements" is a false positive.
         sys.exit(0)
 
     # === EXECUTION MODE (High-Risk) ===
     elif is_high_risk(prompt):
-        output = """<user-prompt-submit-hook>
-HIGH-RISK TASK — search auto-memory first (semantic-search, restrictToDir=.claude/auto-memory); identify domain(s) from CLAUDE.md table, load matching Skills. Report: Skills: [invoked|auto-rules|N/A] | Memory: [query]. Re-search if scope grows.
-</user-prompt-submit-hook>"""
-        for ctx in extra_context:
-            print(ctx)
-        print(output)
+        print("""<user-prompt-submit-hook>
+HIGH-RISK TASK — search auto-memory first (semantic-search if connected, else Grep, restrictToDir=.claude/auto-memory); identify domain(s) from CLAUDE.md, load matching Skills. Report: Skills: [invoked|auto-rules|N/A] | Memory: [query]. Re-search if scope grows.
+</user-prompt-submit-hook>""")
 
     # === CONVERSATIONAL / META (no memory needed) ===
     elif is_conversational(prompt):
         # Lightweight — no memory search instruction
-        output = """<user-prompt-submit-hook>
+        print("""<user-prompt-submit-hook>
 Avoid reflexive agreement. Instead, provide substantive technical analysis.
-</user-prompt-submit-hook>"""
-        for ctx in extra_context:
-            print(ctx)
-        print(output)
+</user-prompt-submit-hook>""")
         sys.exit(0)
 
     # === EXECUTION MODE (Standard) ===
     else:
-        for ctx in extra_context:
-            print(ctx)
         session_id = input_data.get("session_id", "") or ""
         if _bump_memory_check_count(session_id) <= MEMORY_CHECK_SESSION_CAP:
             print("""<user-prompt-submit-hook>
-MEMORY CHECK — search auto-memory for domain gotchas before proceeding (semantic-search, restrictToDir=.claude/auto-memory); use CLAUDE.md table for query seeds, max ~3 searches. Report: Memory: [query | N/A] | Skills: [invoked|auto-rules|N/A]. Re-search NEW domains if scope grows.
+MEMORY CHECK — search auto-memory for domain gotchas before proceeding (semantic-search if connected, else Grep, restrictToDir=.claude/auto-memory); use CLAUDE.md for query seeds, max ~3 searches. Report: Memory: [query | N/A] | Skills: [invoked|auto-rules|N/A]. Re-search NEW domains if scope grows.
 </user-prompt-submit-hook>""")
 
     sys.exit(0)

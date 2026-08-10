@@ -713,7 +713,7 @@
     },
     {
       "path": ".claude/commands/clean_pull.md",
-      "layer": "code",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -1007,7 +1007,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/dangerous_shell_guard.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/file_size_preblock.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/git_guardrails.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/harness_edit_skill_reminder.py",
       "layer": "core",
       "sync": "auto"
     },
@@ -1062,6 +1077,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/running_script_edit_guard.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/session_context_loader.py",
       "layer": "godot",
       "sync": "auto"
@@ -1109,6 +1129,11 @@
     {
       "path": ".claude/hooks/tres_nullstrip_guard.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/unbounded_scan_guard.py",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -1173,6 +1198,11 @@
     },
     {
       "path": ".claude/scripts/check_learnings.sh",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/deepseek_sidecar.sh",
       "layer": "core",
       "sync": "auto"
     },

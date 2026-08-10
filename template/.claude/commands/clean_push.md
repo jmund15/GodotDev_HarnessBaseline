@@ -1,5 +1,5 @@
 ---
-description: Commit and push every dirty file on the branch, submodule first, until the tree is clean.
+description: Commit and push every dirty file on the branch, paired repos first, until the tree is clean.
 allowed-tools: Bash(git add:*), Bash(git status:*), Bash(git commit:*), Bash(git push:*), Bash(git diff:*), Bash(git log:*), Bash(cd *)
 ---
 
@@ -22,15 +22,12 @@ path or a commit message.
 
 ## Your task
 
-1. **Jmodot submodule first**: Check if Jmodot has uncommitted changes (`cd Jmodot && git status`).
-   - Follow the [Jmodot Submodule Procedure](agents/jmodot_submodule_procedure.md) for branch checkout, commit, and push.
-   - If dirty: commit changes. Use categorical commits if changes span multiple concerns.
-   - If Jmodot is ahead of origin: push it.
+1. **Paired repos first** (PROJECT-CONFIG: skip if the project has none): if a submodule or paired repo is dirty or ahead of origin, commit and push it FIRST per its own procedure.
 2. **{{PROJECT_NAME}}**: Group ALL remaining dirty files into categorical commits by logical concern (e.g., feat, fix, refactor, chore, data, docs).
-   - If Jmodot was committed/pushed in step 1, include `git add Jmodot` to update the submodule pointer.
+   - If a paired repo was pushed in step 1, stage its pointer update in the appropriate commit.
    - Each commit should be independently revertable.
 3. **Push**: Push all commits to the current branch on origin.
-4. **Verify**: Run `git status` for both {{PROJECT_NAME}} AND Jmodot to confirm both are clean and up to date with origin.
+4. **Verify**: Run `git status` (and the paired repo's, if any) to confirm clean and up to date with origin.
 5. **Baseline drift gate — OPT-IN.** Runs only when the invocation passed `--check-baseline`. Without the flag, skip it entirely and say nothing about the baseline: a commit touching tracked files is not a reason to run it anyway.
    - When flagged and `.claude/baseline.lock.json` exists, run the drift check over the files committed in steps 1–2 per [`/sync_baseline`](sync_baseline.md) — it owns the mechanism, the classification rules, and the push/fork/ignore decision.
    - Default-off because `/sync_baseline` is normally invoked on its own cadence; re-running a classification pass on every push re-bills judgment the user already owns. **`/sync_baseline` is therefore the sole enforcement point** — an unflagged push can land a tracked-file edit or a new universal artifact without classifying it, which is the accepted cost of the default.

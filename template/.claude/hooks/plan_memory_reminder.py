@@ -37,79 +37,26 @@ import sys
 import time
 from pathlib import Path
 
-# Domain inference table — mirrors CLAUDE.md "Proactive Context Loading" table
+# Domain inference table — mirrors the CLAUDE.md proactive-context table
 # and extends it with project-specific domains that map to existing Skills.
 #
-# PROJECT-CONFIG: add your game's content domains at the top of this table
+# PROJECT-CONFIG: add your project's content domains at the top of this table
 # (e.g., for a spell-crafting game: ("Spells", ["spell", "trait", "synergy"],
-# ["spell"], ["architecture_philosophy", "your_authoring_skill"])). The entries
-# below are stack-generic and apply to any Godot + C# + Jmodot project.
+# ["spell"], ["architecture_philosophy", "your_authoring_skill"]); for a video
+# channel: ("Scripting", ["script", "segment", "voiceover"], ["script"],
+# ["video_pipeline"])). The entries below are the domain-agnostic floor.
 #
 # Each entry: (display_name, [trigger_keyword_substrings], [memory_search_keywords], [skills_to_load])
 # Trigger matches are case-insensitive substring; word-boundary not enforced
 # (false-positives are cheap, false-negatives are expensive).
 DOMAINS = [
-    ("HSM/States",
-     ["HSM", "transition", "state machine", "compoundstate", "statebase"],
-     ["HSM", "transition"],
-     []),
-
-    ("AI/Critters",
-     ["AI", "critter", "BT", "perception", "steering", "behavior tree", "blackboard"],
-     ["critter", "steering"],
-     []),
-
-    ("VFX",
-     ["VFX", "particle", "Modulate", "tint", "sprite3d", "visualeffect"],
-     ["VFX", "Modulate"],
-     ["vfx_patterns"]),
-
-    # Note: "test" intentionally absent — too broad (matches "diagnostic test",
-    # "test sequence", "smoke test" in any plan). The remaining triggers are
-    # specific enough to require no minimum-hits gate. CLAUDE.md "Forbidden as
-    # primary search keywords" rule applies to triggers, not just memory_keys.
-    ("Testing",
-     ["GdUnit4", "TestSuite", "ISceneRunner", "[TestCase]", "fixture"],
-     ["testing", "GdUnit4"],
-     ["testing"]),
-
-    ("Jmodot/Framework",
-     ["Jmodot", "submodule", "framework boundary", "jmodot.core"],
-     ["Jmodot"],
-     ["jmodot"]),
-
-    ("Physics",
-     ["physics", "collision", "hitbox", "Area3D", "CollisionShape", "RigidBody"],
-     ["physics", "collision"],
-     []),
-
-    ("Pooling",
-     ["pool", "spawn", "acquire", "return"],
-     ["pool", "spawn"],
-     []),
-
-    ("Status Effects",
-     ["status", "stun", "freeze", "burn", "DoT", "tickrunner", "tickeffect"],
-     ["status"],
-     ["jmodot", "status_effect_authoring"]),
-
     ("Refactoring",
      ["refactor", "deprecate", "migrate", "rename", "extract", "consolidate"],
      ["refactor"],
-     ["refactor_procedure"]),
-
-    ("Data Files",
-     [".tres", ".tscn", "UID", "ext_resource", "ScriptClass", "sub_resource"],
-     ["UID"],
-     ["architecture_philosophy"]),
-
-    ("Design Philosophy",
-     ["modifier", "stat", "affinity", "design"],
-     ["modifier"],
-     ["architecture_philosophy"]),
+     []),
 
     ("Obsidian/Docs",
-     ["Obsidian", "design doc", "lore", "vault"],
+     ["Obsidian", "design doc", "vault"],
      ["Obsidian"],
      ["worklog_reference"]),
 ]

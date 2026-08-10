@@ -11,12 +11,12 @@ nothing has moved.
 Catches:
   - Cross-window commits (user committed in another shell)
   - /commit_push consequences (HEAD advanced + tree clean)
-  - Submodule pointer drift (Jmodot HEAD changed, or checkout gone stale
+  - Watched-submodule pointer drift (HEAD changed, or checkout gone stale
     against the recorded pointer after a mid-session checkout/merge)
   - Branch surprises after `git switch`
 
-State fingerprint:
-  branch | head_sha | staged | unstaged | untracked | ahead | behind | jmodot_head_sha
+State fingerprint (schema is parameterized by WATCHED_SUBMODULES below):
+  branch | head_sha | staged | unstaged | untracked | ahead | behind [| <sub>_head | <sub>_sync]*
 
 Cache: .claude/.cache/git-state-{cwd_hash}.txt (per worktree, gitignored).
 
@@ -39,6 +39,20 @@ sys.stdout.reconfigure(encoding="utf-8")
 # Field separator inside the fingerprint string. Pipe is fine because no
 # git ref or count we capture can contain it.
 SEP = "|"
+
+# PROJECT-CONFIG: names of git submodules whose pointer drift should be part of
+# the fingerprint (matched as substrings of `git submodule status` paths, e.g.
+# ("Jmodot",)). Empty tuple = no submodule fields; the fingerprint schema
+# derives its field count from this, so changing it invalidates old caches
+# safely (length mismatch parses as no-prior).
+WATCHED_SUBMODULES: tuple = ()
+
+# Canonical fingerprint field order — derived, never hand-edited. The parse/
+# format pair below both key off this list, so field count and order cannot
+# drift apart.
+BASE_FIELDS = ["branch", "head", "staged", "unstaged", "untracked", "ahead", "behind"]
+SUB_FIELDS = [f"sub_{name}_{k}" for name in WATCHED_SUBMODULES for k in ("head", "sync")]
+FIELDS = BASE_FIELDS + SUB_FIELDS
 
 # `git submodule status` line: optional drift prefix, sha, path.
 # Empty prefix group == in sync ('-' uninit, '+' checkout != pointer, 'U' conflict).
@@ -180,61 +194,40 @@ def _capture_state(repo_root: str) -> dict[str, str]:
             "behind": "0",
         }
 
-    # Jmodot submodule HEAD + sync flag — one call supplies both. The status
+    # Watched-submodule HEAD + sync flag — one call supplies both. The status
     # prefix ('+' checkout != recorded pointer, '-' uninitialized, 'U' conflicted,
     # ' ' in sync) is what catches a MID-SESSION `git checkout` leaving the
     # submodule behind; SessionStart's setup only sees session start.
     # Un-init/unreadable records empty string (stable across prompts; no noise).
-    jmodot_head = ""
-    jmodot_sync = ""
-    for line in _run(["git", "submodule", "status"], cwd=repo_root).splitlines():
-        # Match on the sha, not a fixed column: _run() strips, which eats the
-        # in-sync entry's leading-space prefix and shifts every offset by one.
-        match = _SUBMODULE_RE.match(line.strip())
-        if not match or "Jmodot" not in match.group(3):
-            continue
-        jmodot_head = match.group(2)[:8]
-        jmodot_sync = "stale" if match.group(1) else "ok"
-        break
-
-    state["jmodot_head"] = jmodot_head
-    state["jmodot_sync"] = jmodot_sync
+    if WATCHED_SUBMODULES:
+        for name in WATCHED_SUBMODULES:
+            state[f"sub_{name}_head"] = ""
+            state[f"sub_{name}_sync"] = ""
+        for line in _run(["git", "submodule", "status"], cwd=repo_root).splitlines():
+            # Match on the sha, not a fixed column: _run() strips, which eats the
+            # in-sync entry's leading-space prefix and shifts every offset by one.
+            match = _SUBMODULE_RE.match(line.strip())
+            if not match:
+                continue
+            for name in WATCHED_SUBMODULES:
+                if name in match.group(3):
+                    state[f"sub_{name}_head"] = match.group(2)[:8]
+                    state[f"sub_{name}_sync"] = "stale" if match.group(1) else "ok"
     return state
 
 
 def _fingerprint(state: dict[str, str]) -> str:
-    """Pipe-joined canonical order. Order matters — must match across versions."""
-    return SEP.join(
-        [
-            state["branch"],
-            state["head"],
-            state["staged"],
-            state["unstaged"],
-            state["untracked"],
-            state["ahead"],
-            state["behind"],
-            state["jmodot_head"],
-            state["jmodot_sync"],
-        ]
-    )
+    """Pipe-joined FIELDS order. Derived from one list — cannot drift from parse."""
+    return SEP.join(state[k] for k in FIELDS)
 
 
 def _parse_fingerprint(fp: str) -> dict[str, str] | None:
-    """Inverse of _fingerprint. None if the cached line is malformed (treat as no prior)."""
+    """Inverse of _fingerprint. None if the cached line is malformed or was
+    written under a different WATCHED_SUBMODULES schema (treat as no prior)."""
     parts = fp.split(SEP)
-    if len(parts) != 9:
+    if len(parts) != len(FIELDS):
         return None
-    return {
-        "branch": parts[0],
-        "head": parts[1],
-        "staged": parts[2],
-        "unstaged": parts[3],
-        "untracked": parts[4],
-        "ahead": parts[5],
-        "behind": parts[6],
-        "jmodot_head": parts[7],
-        "jmodot_sync": parts[8],
-    }
+    return dict(zip(FIELDS, parts))
 
 
 # ---------------------------------------------------------------------------
@@ -312,20 +305,19 @@ def _format_delta(prev: dict[str, str], curr: dict[str, str]) -> str:
             f"(was: ahead={prev['ahead']} behind={prev['behind']})"
         )
 
-    if curr["jmodot_head"] != prev["jmodot_head"]:
-        prev_j = prev["jmodot_head"] or "(none)"
-        curr_j = curr["jmodot_head"] or "(none)"
-        lines.append(f"Jmodot HEAD: {curr_j} (was: {prev_j})")
-
-    # Staleness is reported on every drifted prompt while it persists, not only
-    # on the ok->stale edge: it silently breaks the build, so a delta emitted for
-    # any other reason should still carry the warning.
-    if curr["jmodot_sync"] == "stale":
-        lines.append(
-            "Jmodot submodule: STALE -- checkout does not match the pointer this "
-            "branch records. Builds will fail on phantom missing types. "
-            "Fix: git submodule update --init --recursive"
-        )
+    for name in WATCHED_SUBMODULES:
+        hk, sk = f"sub_{name}_head", f"sub_{name}_sync"
+        if curr[hk] != prev[hk]:
+            lines.append(f"{name} HEAD: {curr[hk] or '(none)'} (was: {prev[hk] or '(none)'})")
+        # Staleness is reported on every drifted prompt while it persists, not
+        # only on the ok->stale edge: it silently breaks downstream work, so a
+        # delta emitted for any other reason should still carry the warning.
+        if curr[sk] == "stale":
+            lines.append(
+                f"{name} submodule: STALE -- checkout does not match the pointer "
+                "this branch records. "
+                "Fix: git submodule update --init --recursive"
+            )
 
     lines.append("</git-state-delta>")
     return "\n".join(lines)

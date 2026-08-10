@@ -153,4 +153,14 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   source game's folders to review domains; replace the folder lists with yours.
 - `skills/sprite_authoring/SKILL.md` — the *Project Prototype Style* section is the
   source game's style spec (palette, faction looks, reference sprites); rewrite it
-  for your game's art direction, keeping the pipeline mechanics.
+  for your game's art direction, keeping the pipeline mechanics.- Core files with source-domain nouns as inline examples only (mechanism is
+  domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
+  `commands/autolearn.md`, `commands/reindex_search.md`,
+  `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,
+  `workflows/review_fanout.js`, plus the PROJECT-CONFIG seams in the slimmed
+  git commands (`commit_push`, `clean_push`, `clean_pull`, `create_pr`) and in
+  `hooks/prompt_memory_loader.py`, `hooks/prompt_git_state_delta.py`
+  (WATCHED_SUBMODULES), `hooks/plan_memory_reminder.py` (DOMAINS), and
+  `hooks/compound_cd_approver.py` (SAFE_SEGMENT_COMMANDS). Allowlisted in
+  `tools/audit_baseline.py`'s core-domain-noun check — swap the examples for
+  your domain's when you first touch each file.

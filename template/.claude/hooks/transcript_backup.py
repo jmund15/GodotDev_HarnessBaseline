@@ -25,57 +25,6 @@ except ImportError:
     SUMMARY_AVAILABLE = False
 
 
-def capture_unrated_dispatch_debt():
-    """Seed still-unrated Workflow dispatches into the incremental verdict ledger.
-
-    Per-agent COST survives compaction (it lives in the session dir on disk); the effort-fit
-    VERDICT does not, because rating asks whether the output was accepted, reworked, or
-    discarded. A long session — exactly the kind that dispatches most — would otherwise
-    archive its earliest dispatches as permanently 'unrated', which Effort Calibration
-    cannot consume.
-
-    Preserves state only: writes null placeholders naming the debt and returns the labels
-    so the caller can surface them. The verdict itself is a judgment and stays with the
-    agent (`/orchestration_metrics` §Incremental rating owns the rule).
-
-    Best-effort by construction — a backup hook must never fail a compaction.
-    """
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-        import orchestration_metrics as om
-
-        session = om.find_session_dir()
-        if not session:
-            return []
-        archived, ignored = om.load_run_ledger()
-        rated = om.load_pending_verdicts()
-
-        labels = []
-        for run in om.collect(session):
-            if run.get('run') in archived or run.get('run') in ignored:
-                continue
-            lbl = run.get('label')
-            if lbl and lbl not in rated and lbl not in labels:
-                labels.append(lbl)
-        if not labels:
-            return []
-
-        path = Path(om.PENDING_VERDICTS)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        existing = {}
-        if path.exists():
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8")) or {}
-            except json.JSONDecodeError:
-                existing = {}
-        for lbl in labels:
-            existing.setdefault(lbl, None)
-        path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-        return labels
-    except Exception:
-        return []
-
-
 # Raw transcript backups are only needed for recent-session forensics; the
 # .summary.json files are the durable artifact (/autolearn, session_audit)
 # and are kept indefinitely (small).
@@ -296,18 +245,6 @@ def main():
     output_lines.append("")
     output_lines.append("POST-CONTINUATION REMINDER: After resuming from this compaction,")
     output_lines.append("immediately search auto-memory (semantic-search, restrictToDir=.claude/auto-memory) for task-relevant gotchas before proceeding.")
-
-    unrated = capture_unrated_dispatch_debt()
-    if unrated:
-        output_lines.append("")
-        output_lines.append(
-            f"UNRATED DISPATCH DEBT ({len(unrated)}): effort-fit verdicts need context this "
-            "compaction is destroying. Seeded as nulls in .claude/scratch/orchestration_verdicts.json "
-            "— fill them in NOW if you still recall the outcome; otherwise reconstruct from the "
-            "transcript summary above before /orchestration_metrics. Rule: /orchestration_metrics "
-            "§Incremental rating.")
-        for lbl in unrated:
-            output_lines.append(f"  {lbl}")
 
     output_lines.append("</pre-compact-hook>")
 

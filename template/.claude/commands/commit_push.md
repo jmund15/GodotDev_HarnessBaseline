@@ -26,10 +26,7 @@ Based on the above changes:
 
 1. **Identify session files.** Follow the [Session File Identification Procedure](agents/session_file_identification.md) to determine which files belong to this session. Files not identified by the procedure are pre-existing dirty — **skip them**.
 2. Group session changes into **categorical commits** by logical concern (e.g., feat, fix, refactor, chore, data, docs). Each commit should be independently revertable.
-3. **Jmodot submodule**: If the Jmodot submodule has changes you made this session:
-   - `cd` into `Jmodot/` and handle it FIRST (Jmodot must be pushed before {{PROJECT_NAME}} can reference its commit).
-   - Follow the [Jmodot Submodule Procedure](agents/jmodot_submodule_procedure.md) for branch checkout, commit, and push.
-   - Then back in {{PROJECT_NAME}}, `git add Jmodot` to update the submodule pointer and include it in the appropriate commit.
+3. **Paired repos first** (PROJECT-CONFIG: skip if the project has none): if a submodule or paired repo has changes you made this session, commit and push it FIRST per its own procedure, then stage its pointer update here in the appropriate commit.
 4. For each category: stage only the relevant files, then commit with an appropriate message.
 5. After all commits, push to the current branch on origin.
 6. Run `git status` to confirm session changes are committed. Pre-existing dirty files may still appear — that is expected.

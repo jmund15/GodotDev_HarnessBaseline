@@ -30,8 +30,10 @@ CD_COMPOUND_PATTERN = re.compile(r'^cd\s+(".*?"|\'.*?\'|\S+)\s*&&')
 # commands only. Deliberately excludes interpreters (python/node/npx — inline
 # `-c` code would ride the approval) and anything destructive (rm/del/mv/cp).
 # Excluded commands fall through to the normal permission prompt.
+# PROJECT-CONFIG: add your stack's read-only build/inspect tools (e.g. "dotnet"
+# for .NET projects) — keep the set read-only.
 SAFE_SEGMENT_COMMANDS = frozenset({
-    "cd", "git", "dotnet", "ls", "dir", "pwd", "cat", "head", "tail",
+    "cd", "git", "ls", "dir", "pwd", "cat", "head", "tail",
     "grep", "find", "echo", "wc", "sort", "uniq", "tree", "stat", "test",
     "where", "which",
 })

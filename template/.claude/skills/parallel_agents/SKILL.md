@@ -137,6 +137,10 @@ Omitting `model` does NOT pick a cheap model — it inherits the **session model
 - [ ] **`fable`** — **Reserved for explicit user request / stated max-fidelity demand ONLY.** Never a default, never inherited, never the orchestrator's unilateral pick for a routine fan-out. If you're reaching for fable without the user asking, stop — sonnet or opus is the answer.
 - [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths (`mooyum_milk.tres`, Phase 1e.2). Use only for scoped lookups where a wrong answer is cheap to reject. Most {{PROJECT_NAME}} commands use `general-purpose` + an explicit model selector instead.
 
+### Effort pins: the Agent tool has no `effort` parameter
+
+The `Agent`/`Task` tool pins `model` but carries effort as prompt text only ("Effort: medium" in the first line) — a soft pin the subagent can ignore. The Workflow engine's `agent()` has a real `effort` option. Consequence: **when a hard effort pin matters (cost-bounded sweeps, calibrated review tiers), dispatch via Workflow; otherwise pin model via the parameter and state effort in the first line of the prompt.** Treat a bare Agent dispatch with neither as the same bug as an unpinned model.
+
 ### The one legitimate inherit-the-session-model carve-out
 
 **Measurement batteries that test the session model's own behavior** — `routing_battery.md` (tool-routing decisions) and `doc_workflow_battery.md` (skill-trigger behavior) — *intentionally* omit `model` so the subagents run under the session model being measured. Pinning these would defeat their purpose. This is the ONLY sanctioned inheritance; both commands say so inline. Do not "fix" them in a model-selection sweep.

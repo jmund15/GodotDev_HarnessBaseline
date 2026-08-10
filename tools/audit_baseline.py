@@ -60,7 +60,8 @@ SECRET_PATTERNS = [
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    re.compile(r"""(?:password|secret|api[_-]?key|token)\s*[:=]\s*["'][^"'{<\s]{8,}["']""", re.I),
+    # $-leading values are shell variable expansions, not literals — skip them.
+    re.compile(r"""(?:password|secret|api[_-]?key|token)\s*[:=]\s*["'][^"'{<$\s]{8,}["']""", re.I),
 ]
 # Concrete Jmodot framework identifiers. A *universal*-tagged file naming several
 # distinct ones is probably substantively Jmodot-specific and would wrongly survive
@@ -86,6 +87,20 @@ CORE_DOMAIN_ALLOWLIST = {
     ".claude/CLAUDE.md",            # seed: consumer replaces domain sections
     ".claude/settings.json",        # seed: wiring layered at bootstrap
     ".claude/auto-memory/MEMORY.md",
+    # Core memories whose *evidence* sections cite source-domain incidents.
+    # The rule text is generic; evidence stays verbatim by memory convention.
+    ".claude/auto-memory/feedback_recommended_fix_means_implement.md",
+    ".claude/auto-memory/feedback_session_end_full_scope.md",
+    ".claude/auto-memory/feedback_verify_explore_agent_empirical_claims.md",
+    ".claude/auto-memory/feedback_verify_plan_integration_target_is_live.md",
+    # Known adaptation points (README) — mechanism core, source-domain nouns
+    # appear only as inline examples. Genericize opportunistically, not by fiat.
+    ".claude/commands/agents/orchestrator_action_protocol.md",
+    ".claude/commands/autolearn.md",
+    ".claude/commands/reindex_search.md",
+    ".claude/skills/instruction_quality/SKILL.md",
+    ".claude/skills/parallel_agents/SKILL.md",
+    ".claude/workflows/review_fanout.js",
 }
 # Universal doctrine that legitimately discusses framework types as examples.
 LAYER_MISTAG_ALLOWLIST = {
