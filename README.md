@@ -1,21 +1,24 @@
-# Harness Baseline — Claude Code config for Godot + C# projects
+# Harness Baseline — layered Claude Code harness
 
-The shared, project-agnostic core of the Claude Code harness developed in
-**PushinPotions**, extracted as a starting point for every new Godot 4.x + C#
-(+ Jmodot) project — and as the **single upstream** that keeps that shared core
-in sync as it evolves across projects.
+The shared, project-agnostic harness core developed in **PushinPotions**,
+extracted as a starting point for any Claude Code project — game dev (Godot 4.x +
+C#, with or without Jmodot), content production, or other — and as the **single
+upstream** that keeps that shared core in sync as it evolves across projects.
 
 ## What's in it
 
-`template/.claude/` mirrors a consumer project's `.claude/` directory: 240 files
-in three layers (see `baseline.manifest.json` for the per-file map; 6 of these are
-`sync: seed`, counted in `universal` below):
+`template/.claude/` mirrors a consumer project's `.claude/` directory: 292 files
+in four layers (see `baseline.manifest.json` for the per-file map; 6 of these are
+`sync: seed`, counted in `core` below):
 
 | Layer | Files | Contents |
 |---|---|---|
-| `universal` | 160 | Session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, eval dashboard), plan pipeline (`/plan_part` → `/plan_drive` → `/plan_check` → `/part_execute`), roadmap + brainstorm system, doc system (`/doc_*`), PR workflow, worklog system, tool-routing discipline (hooks + audits), memory system (two-tier auto-memory + seeded universal gotchas/preferences), agent templates, review fan-out workflows, instruction-quality tooling, the `/sync_baseline` machinery itself |
-| `godot` | 38 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate`, Godot log analysis, `.tres`/`[Tool]` safety guards, C# LSP rules + adapter, scene/physics/C# pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas |
-| `jmodot` | 42 | `jmodot` framework skill (+ subsystem docs), HSM/BT patterns, status-effect authoring, VFX patterns, logging methodology (JmoLogger), submodule procedure, Jmodot architecture rules in memory |
+| `core` | 107 | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, eval dashboard), doc system (`/doc_*`), worklog system, memory system + curated process/discipline auto-memory seed, agent templates, review fan-out workflows, instruction-quality tooling, slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
+| `code` | 71 | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/plan_drive` → `/plan_check` → `/part_execute`), brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
+| `godot` | 63 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate`, Godot log analysis, `.tres`/`[Tool]` safety guards, C# LSP rules + adapter, scene/physics/C# pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas |
+| `jmodot` | 51 | `jmodot` framework skill (+ subsystem docs), HSM/BT patterns, status-effect authoring, VFX patterns, logging methodology (JmoLogger), submodule procedure, Jmodot architecture rules in memory |
+
+A consumer subscribes to a prefix of `core` → `code` → `godot` → `jmodot`.
 
 **Seed files** (`sync: seed` in the manifest) are copied once at bootstrap and then
 project-owned: `CLAUDE.md` (PROJECT section + `BASELINE:core` region), `settings.json`,
@@ -24,7 +27,7 @@ project-owned: `CLAUDE.md` (PROJECT section + `BASELINE:core` region), `settings
 
 **Deliberately excluded** (stays per-project): game-content skills/commands
 (spell/entity authoring, content audits), project subsystem registries, game-design
-docs, project memory (beyond the curated universal/godot/jmodot seed), and all
+docs, project memory (beyond the curated core/code/godot/jmodot seed), and all
 session state (`self_evaluate_archive.json`, plans, scratch, logs, caches).
 
 ## Placeholders
@@ -42,8 +45,10 @@ git clone <this-repo> harness-baseline
 cd harness-baseline
 ./bootstrap.sh --target /path/to/NewGame --project-name NewGame \
     --vault-root "C:/Users/you/Documents/ObsidianVault" \
-    --project-root "C:/path/to/NewGame"          # add --no-jmodot to skip that layer
+    --project-root "C:/path/to/NewGame"          # --layers core,code,godot to choose your prefix (default: all)
 ```
+
+A content-production repo bootstraps with `--layers core`.
 
 Bootstrap copies the template, substitutes placeholders, and writes
 `.claude/baseline.lock.json` (per-file hashes + your substitution map) so the sync
@@ -91,16 +96,17 @@ Typical lifecycles:
 - `python3 tools/gen_manifest.py` after any add/remove/move under `template/` —
   the manifest drives bootstrap layer-filtering and consumer lock generation.
   Layer/seed assignment is pattern-based at the top of that script; extend the
-  pattern lists when adding files of a new kind. **Layer defaults to `universal`
-  on no pattern match**, so a new Godot/Jmodot file silently lands universal (and
-  escapes `--no-jmodot` stripping) until you add its pattern — the audit catches this.
+  pattern lists when adding files of a new kind. **Layer assignment now has NO
+  fallback**; `gen_manifest.py` fails loudly listing any unclassified file, so
+  every new file must be added to exactly one layer pattern list.
 - `python3 tools/audit_baseline.py` (also `/sync_baseline audit`) — the separation
   gate. Verifies no source-project identifiers / secrets leak into `template/`, the
-  manifest matches disk and the generator, and no universal file is substantively
-  Jmodot-specific. ERROR exit blocks publish; run it after any template change.
-  `publish.sh` runs it automatically as a backstop. Its judgment pass (in the
-  `/sync_baseline audit` command) covers what the script can't: game-domain-noun
-  leaks and the adaptation-points list above.
+  manifest matches disk and the generator, and no core file is substantively
+  Jmodot-specific. It also warns on core-tagged files naming code/engine or
+  consumer-domain nouns (core-domain-noun check). ERROR exit blocks publish; run it
+  after any template change. `publish.sh` runs it automatically as a backstop. Its
+  judgment pass (in the `/sync_baseline audit` command) covers what the script
+  can't: game-domain-noun leaks and the adaptation-points list above.
 - Commit messages follow the same categorical convention as consumer projects
   (`feat`/`fix`/`refactor`/`chore`).
 - Model/tooling evolution (new Claude models, new plugin capabilities, superior

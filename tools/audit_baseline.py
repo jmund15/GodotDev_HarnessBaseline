@@ -72,6 +72,21 @@ JMODOT_TYPE_TOKENS = [
     r"\bBehaviorTree\b", r"\bIComponent\b", r"\bEntityStatModifier\b",
 ]
 LAYER_MISTAG_MIN_DISTINCT = 4
+# Domain nouns that must not appear in a *core*-tagged file: core is consumed by
+# non-code content-production projects, so code/engine vocabulary is a mistag
+# signal there the same way Jmodot types are for universal. Content-side nouns
+# (YouTube etc.) are listed too — core must not absorb a consumer's domain either.
+CORE_DOMAIN_TOKENS = [
+    r"\bGodot\b", r"\bdotnet\b", r"\bGdUnit4?\b", r"\.tscn\b", r"\.tres\b",
+    r"\bC#\b", r"\bcsharp\b", r"\bnamespace\b", r"\bsubmodule\b",
+    r"\bYouTube\b", r"\bdevlog\b", r"\bDaVinci\b",
+]
+CORE_DOMAIN_MIN_DISTINCT = 2
+CORE_DOMAIN_ALLOWLIST = {
+    ".claude/CLAUDE.md",            # seed: consumer replaces domain sections
+    ".claude/settings.json",        # seed: wiring layered at bootstrap
+    ".claude/auto-memory/MEMORY.md",
+}
 # Universal doctrine that legitimately discusses framework types as examples.
 LAYER_MISTAG_ALLOWLIST = {
     ".claude/CLAUDE.md",
@@ -135,12 +150,11 @@ def check_manifest_staleness(f: Findings, manifest: dict) -> None:
     for _, rel in iter_template_files():
         if rel not in on_disk:
             continue  # already reported by integrity check
-        if gm.match(rel, gm.JMODOT_PATTERNS):
-            layer = "jmodot"
-        elif gm.match(rel, gm.GODOT_PATTERNS):
-            layer = "godot"
-        else:
-            layer = "universal"
+        layer = gm.classify(rel)
+        if layer is None:
+            f.add("ERROR", "manifest-staleness", rel,
+                  "unclassified by layer patterns -- add to a pattern list")
+            continue
         sync = "seed" if gm.match(rel, gm.SEED_PATTERNS) else "auto"
         if on_disk[rel] != (layer, sync):
             f.add("ERROR", "manifest-staleness", rel,
@@ -174,7 +188,7 @@ def check_layer_mistag(f: Findings, manifest: dict) -> None:
         return
     layer_of = {e["path"]: e["layer"] for e in manifest["files"]}
     for p, rel in iter_template_files():
-        if layer_of.get(rel) != "universal" or rel in LAYER_MISTAG_ALLOWLIST:
+        if layer_of.get(rel) not in ("core", "code") or rel in LAYER_MISTAG_ALLOWLIST:
             continue
         text = read_text(p)
         if text is None:
@@ -185,6 +199,24 @@ def check_layer_mistag(f: Findings, manifest: dict) -> None:
             f.add("INFO", "layer-mistag", rel,
                   f"universal-tagged but names {len(hits)} Jmodot types ({names}) -- "
                   "confirm it's stack-agnostic, or move to the jmodot layer")
+
+
+def check_core_domain_nouns(f: Findings, manifest: dict) -> None:
+    if not manifest:
+        return
+    layer_of = {e["path"]: e["layer"] for e in manifest["files"]}
+    for p, rel in iter_template_files():
+        if layer_of.get(rel) != "core" or rel in CORE_DOMAIN_ALLOWLIST:
+            continue
+        text = read_text(p)
+        if text is None:
+            continue
+        hits = sorted({tok for tok in CORE_DOMAIN_TOKENS if re.search(tok, text)})
+        if len(hits) >= CORE_DOMAIN_MIN_DISTINCT:
+            names = ", ".join(t.replace(r"\b", "") for t in hits)
+            f.add("WARN", "core-domain-noun", rel,
+                  f"core-tagged but names {len(hits)} domain tokens ({names}) -- "
+                  "extract to an adaptation point or demote a layer")
 
 
 def main() -> int:
@@ -201,6 +233,7 @@ def main() -> int:
     check_manifest_staleness(f, manifest)
     check_leaks_and_secrets(f)
     check_layer_mistag(f, manifest)
+    check_core_domain_nouns(f, manifest)
 
     errors, warns, infos = (f.by_severity(s) for s in ("ERROR", "WARN", "INFO"))
 
