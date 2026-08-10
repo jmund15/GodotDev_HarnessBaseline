@@ -6,7 +6,7 @@ Hook: PreCompact - Backup conversation transcript before compaction
 Purpose:
 - Saves conversation transcript before Claude compacts context
 - Preserves potentially valuable context that would otherwise be lost
-- Generates concise summary (~10-20KB) optimized for autolearn and post-compaction resume
+- Generates concise summary (~10-20KB) optimized for post-compaction resume
 - Backups stored in logs/transcript_backups/ with timestamps
 
 Note: This hook cannot block compaction, only log/backup before it happens.
@@ -26,8 +26,7 @@ except ImportError:
 
 
 # Raw transcript backups are only needed for recent-session forensics; the
-# .summary.json files are the durable artifact (/autolearn, session_audit)
-# and are kept indefinitely (small).
+# .summary.json files are the durable artifact and are kept indefinitely (small).
 RAW_BACKUP_RETENTION_DAYS = 14
 
 
@@ -63,15 +62,13 @@ def backup_transcript_with_summary(
         if not source.exists():
             return None, None
 
-        # Create backup directory
         backup_dir = Path.cwd() / "logs" / "transcript_backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
 
-        # Retention sweep BEFORE adding the new backup (dir reached 8.4 GB
-        # before retention existed — raw transcripts are multi-MB each).
+        # Retention sweep BEFORE adding the new backup — an unpruned dir grows
+        # unbounded (raw transcripts are multi-MB each).
         _prune_old_raw_backups(backup_dir)
 
-        # Create timestamped backup filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_short = session_id[:8] if session_id else "unknown"
         backup_name = f"transcript_{session_short}_{trigger}_{timestamp}.jsonl"
@@ -79,7 +76,6 @@ def backup_transcript_with_summary(
         summary_name = f"transcript_{session_short}_{trigger}_{timestamp}.summary.json"
         summary_file = backup_dir / summary_name
 
-        # Streaming copy with summary generation
         if SUMMARY_AVAILABLE:
             builder = TranscriptSummaryBuilder(session_id, backup_name)
 
@@ -89,7 +85,6 @@ def backup_transcript_with_summary(
                         dst.write(line)
                         builder.process_line(line)  # Safe - catches exceptions
 
-            # Generate and write summary
             try:
                 summary = builder.finalize()
                 if write_summary(str(summary_file), summary):
@@ -106,19 +101,9 @@ def backup_transcript_with_summary(
         return str(backup_path), summary_path
 
     except Exception:
-        # If we got the backup path but failed later, still return it
         if backup_path and backup_path.exists():
             return str(backup_path), None
         return None, None
-
-
-def backup_transcript(transcript_path: str, trigger: str, session_id: str) -> str | None:
-    """
-    Legacy wrapper for backward compatibility.
-    Returns only the backup path.
-    """
-    backup_path, _ = backup_transcript_with_summary(transcript_path, trigger, session_id)
-    return backup_path
 
 
 def log_compaction_event(input_data: dict, backup_path: str | None, summary_path: str | None = None):
@@ -128,7 +113,6 @@ def log_compaction_event(input_data: dict, backup_path: str | None, summary_path
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "pre_compact.json"
 
-        # Load existing logs
         existing = []
         if log_file.exists():
             try:
@@ -136,7 +120,6 @@ def log_compaction_event(input_data: dict, backup_path: str | None, summary_path
             except json.JSONDecodeError:
                 existing = []
 
-        # Add new entry
         entry = {
             "timestamp": datetime.now().isoformat(),
             "session_id": input_data.get("session_id", "unknown"),
@@ -147,8 +130,7 @@ def log_compaction_event(input_data: dict, backup_path: str | None, summary_path
         }
         existing.append(entry)
 
-        # Write back, capped to the most recent entries (full-array rewrite
-        # grew unbounded — 293 KB before the cap existed).
+        # Capped to the most recent entries — a full-array rewrite grows unbounded.
         log_file.write_text(json.dumps(existing[-200:], indent=2))
 
     except Exception:
@@ -159,15 +141,13 @@ def update_session_manifest(session_id: str, summary_path: str | None):
     """
     Update the per-session file manifest with the latest files_modified data.
 
-    Since compaction summaries are cumulative (each is a superset of all prior ones),
-    we just need the latest summary's files_modified list. This eliminates the need to
-    read N individual .summary.json files during session_audit / commit_push.
+    Compaction summaries are cumulative (each is a superset of all prior ones), so
+    we just need the latest summary's files_modified list.
     """
     if not session_id or session_id == "unknown" or not summary_path:
         return
 
     try:
-        # Read the summary to extract files_modified
         summary_file = Path(summary_path)
         if not summary_file.exists():
             return
@@ -178,7 +158,6 @@ def update_session_manifest(session_id: str, summary_path: str | None):
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / f"{session_id}.json"
 
-        # Track compaction count across updates
         compaction_count = 1
         if manifest_path.exists():
             try:
@@ -203,11 +182,9 @@ def update_session_manifest(session_id: str, summary_path: str | None):
 
 
 def main():
-    # Read hook input from stdin
     try:
         input_data = json.load(sys.stdin)
     except json.JSONDecodeError:
-        # Hook workaround #10463: Always print before exit to avoid false errors
         print("{}")
         sys.exit(0)
 
@@ -215,7 +192,6 @@ def main():
     transcript_path = input_data.get("transcript_path")
     trigger = input_data.get("trigger", "unknown")  # "manual" or "auto"
 
-    # Attempt backup with summary generation if transcript path provided
     backup_path = None
     summary_path = None
     if transcript_path:
@@ -223,13 +199,9 @@ def main():
             transcript_path, trigger, session_id
         )
 
-    # Log the compaction event
     log_compaction_event(input_data, backup_path, summary_path)
-
-    # Update session manifest (single-read file for session_audit / commit_push)
     update_session_manifest(session_id, summary_path)
 
-    # Output status and post-continuation reminder
     output_lines = ["<pre-compact-hook>"]
 
     if backup_path:
@@ -241,16 +213,12 @@ def main():
     else:
         output_lines.append("Compaction triggered (no transcript to backup)")
 
-    # Add reminder for post-continuation context loading
     output_lines.append("")
     output_lines.append("POST-CONTINUATION REMINDER: After resuming from this compaction,")
-    output_lines.append("immediately search auto-memory (semantic-search, restrictToDir=.claude/auto-memory) for task-relevant gotchas before proceeding.")
-
+    output_lines.append("immediately search auto-memory (semantic-search if connected, else Grep) for task-relevant gotchas before proceeding.")
     output_lines.append("</pre-compact-hook>")
 
     print("\n".join(output_lines))
-
-    # Hook workaround #10463: print before exit
     sys.exit(0)
 
 
