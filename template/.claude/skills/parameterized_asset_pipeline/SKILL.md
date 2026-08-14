@@ -51,6 +51,8 @@ Creature/entity generator code is genre- and style-shaped — author it per-proj
 
 `templates/conform_external.py`: curated CC0/CC-BY asset → posterize to N luminance levels → map each level to a chosen palette ramp step → relaxed lint profile (`source: external`) → mandatory license ledger entry. Use when a fidelity tier demands artist-quality bases the procedural track can't hit.
 
+Clear the license BEFORE conforming — [`references/provenance.md`](references/provenance.md) owns the sourcing rules, the ledger's required fields, and the verified CC0 endpoints. Posterize/conform/atlas do not discharge an attribution term, and atlas packing is where the link to the source asset is silently lost.
+
 ## 5. The verification loop (every change, every track)
 
 1. Regenerate (`python art_pipeline/<batch>.py`) — generators are deterministic (seeded).
@@ -71,6 +73,6 @@ Creature/entity generator code is genre- and style-shaped — author it per-proj
 
 ## Cross-links
 
-- Schema: [`references/style_spec.md`](references/style_spec.md) · Templates: [`templates/`](templates/)
+- Schema: [`references/style_spec.md`](references/style_spec.md) · Provenance + sourcing: [`references/provenance.md`](references/provenance.md) · Templates: [`templates/`](templates/)
 - Design + taxonomy: `GeneralGameDev/Research/Parameterized-Asset-Pipeline/` (`_Index.md`, `arch-2d-extraction.md`)
 - Reference implementation (originating project's vault): `creature-archetype-methodology.md`, `ui-art-system.md`, `arch-ui-followups.md`

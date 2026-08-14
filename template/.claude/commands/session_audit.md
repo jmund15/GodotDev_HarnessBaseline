@@ -117,6 +117,7 @@ Assemble a `CONTEXT` string containing:
 - Architecture Philosophy key rules summary
 - auto-memory gotchas for touched domains
 - List of which files are NEW vs MODIFIED
+- **Subset exclusions (conditional):** when the scope cap trimmed the roster, list what was excluded and its verification status (e.g. "test suites excluded — exist, gate-green") so lenses don't report excluded-but-existing artifacts as gaps.
 - **Prior-coverage note (conditional):** when the session executed against a plan file (`.claude/plans/*.md`) whose Decision record contains a close-out design-review entry, include a note that the Part's diff was four-axis reviewed + plan-conformance-checked pre-gate — `sa-design-semantics` then concentrates fresh findings on the non-Part session surface and its own axes, and treats re-covering the Part's code as expected re-coverage rather than re-litigation (validated 2026-08-08: the note steered the lens to fresh findings — visibility, catch narrowing — instead of re-covering the close-out review).
 
 Additionally, read these shared checklists and inject their contents into agent prompts:

@@ -1,0 +1,67 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overlaps", "checked"],
+  "properties": {
+    "checked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["indexRead", "obsidianOpened", "shortlisted", "stoppedAt", "basis"],
+      "properties": {
+        "stoppedAt": {
+          "type": "string",
+          "enum": ["triviality-gate", "empty-shortlist", "verified-none", "verified-overlaps"],
+          "description": "where the procedure ended — distinguishes a legitimate early exit from a check that simply did not run"
+        },
+        "basis": {
+          "type": "string",
+          "description": "ONE sentence: what you examined and why it did or did not clear the overlap bar. This is the result-level justification; it never licenses prose inside overlaps[]."
+        },
+        "indexRead": {
+          "type": "boolean",
+          "description": "the titles mirror was read"
+        },
+        "obsidianOpened": {
+          "type": "boolean",
+          "description": "true ONLY if you consulted Worklog.md itself — Read, or Grep with -C context against that path. A repo search, or reasoning from the titles mirror alone, is false."
+        },
+        "shortlisted": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "titles carried out of the index scan, BEFORE verification — the audit trail that makes an empty result falsifiable"
+        }
+      }
+    },
+    "overlaps": {
+      "type": "array",
+      "description": "Empty when nothing genuinely overlaps — that is the expected common case.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "domain", "relation", "why", "recommendation"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "worklog item title, copied verbatim"
+          },
+          "domain": {
+            "type": "string",
+            "description": "the '## <domain>' heading the item sits under"
+          },
+          "relation": {
+            "type": "string",
+            "enum": ["same-scope", "provides-context", "adjacent"]
+          },
+          "why": {
+            "type": "string",
+            "description": "one or two sentences naming the shared surface (file, type, .tres, design decision)"
+          },
+          "recommendation": {
+            "type": "string",
+            "enum": ["fold-in", "read-first", "note-only"]
+          }
+        }
+      }
+    }
+  }
+}

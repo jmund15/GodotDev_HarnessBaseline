@@ -34,7 +34,7 @@ MCP tool names verified against the live server 2026-08-06: `obsidian_read_note`
 
 ## Vault taxonomy — live vs legacy (as of 2026-07-04)
 
-- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
+- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
 - **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.
 - The current design bible is the repo skill `game_vision`, not a vault doc — vault searches for "vision" find only the deprecated PvP-era doc under `Claude/Archived/`.
 - **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (schema + append rules: `_brainstorm_shared/common.md` §8). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.

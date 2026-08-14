@@ -10,8 +10,14 @@ paths:
 ## Core Conventions (project-level)
 
 - **Pure functions** wherever possible. **Control flow:** no nested if/else, early returns, ALWAYS brackets `{}`.
-- **Logging:** use the project logger (`Info`/`Warning`/`Error`), never `GD.Print`. Log STATE CHANGES, not state. Whether a logged error fails a test is a project-level opt-in (a logger spy installed by the suite) — engine-level ERROR lines never fail tests.
-- **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT, NEVER reference task/PR/"Phase X"/dates/CLAUDE.md rules. Litmus: *"If I delete this, will a maintainer 6 months from now make a wrong decision?"* No -> don't write it. `<summary>` on `[Export]` is softer (becomes Godot Inspector tooltip). `#if TOOLS` setters need no `///`. Doc-only commits to recent code = smell; cut over clarify.
+- **Logging:** `JmoLogger.Info/Warning/Error`. Never `GD.Print`. Log STATE CHANGES, not state. `JmoLogger.Error` fails tests only in suites that install `JmoLoggerSpy` (`Tests/Framework/JmoLoggerSpy.cs`) — opt-in, not automatic; engine-level ERROR lines never fail tests.
+- **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT, NEVER reference task/PR/"Phase X"/dates/CLAUDE.md rules — and never project history; that belongs in the vault and is not linked from source. Litmus: *"If I delete this, will a maintainer 6 months from now make a wrong decision?"* No -> don't write it. Doc-only commits to recent code = smell; cut over clarify.
+- **Trust radius — a `///` is authoritative about its own member and nothing else.** `<summary>` states that member's contract; `<remarks>` carries longer supplemental explanation. Doc comments are the one source here that no compiler, test, or reference check validates, so the radius is what makes them citable: inside it they sit beside the code they describe, outside it they are unowned claims that rot silently. (Measured 2026-08-12: 6 of 11 false premises in a rejected design investigation came from doc comments reaching outside their radius.)
+- **Obligation, not observation.** *Obligation* = a constraint a caller must honour to use the member correctly, or a guarantee it makes — invariants, call-ordering, required configuration, failure modes, what it throws. Cross-file by nature and REQUIRED on seams (`design_litmus.md` #7); a collaborator-owned constraint (a driver's phase ordering, a base's contract) is still an obligation. *Observation* = a report on the current state of code elsewhere: who calls this, what another implementation currently does, whether two bodies match, what happened historically. **Litmus: must a caller honour this to use the member correctly?** Yes -> obligation, write it, richly. No, it merely describes the neighbourhood -> observation, cut it.
+- **References are cref, not font.** A member named inside `///` uses `<see cref="X"/>`, which the compiler resolves (CS1574 when it can't, CS0419 when it's ambiguous — disambiguate with a signature). A **parameter** uses `<paramref name="x"/>` and a type parameter `<typeparamref>` — a cref to either does not resolve and emits the warning the gate blocks on. `<c>` is typographic and unchecked; it stays correct for non-symbols (literals, snippets, expressions, pseudo-code).
+- **TODO, future-tense, and notes to yourself or to agents go in `//` line comments.** Never `///` — a `<summary>` on an `[Export]` ships verbatim to the designer-facing tooltip.
+- **`<summary>` on `[Export]` is softer** — it surfaces on IDE hover (Roslyn reads it from source) AND as the Godot Inspector tooltip, supplied by Jmodot's `Tools/DocTooltips/` mechanism (wired here by `addons/csharp_doc_tooltips`); the engine provides none itself (`CSharpScript::get_documentation()` is an empty `// TODO` stub at 4.7.1). Put the `///` above **ALL** the member's attributes, `[ExportGroup]` included — between them it is orphaned (CS1587), dropped from the XML sidecar, and the tooltip silently vanishes. Hovering the export's VALUE WIDGET shows the summary; hovering its label shows nothing (engine doc path, empty for C#). `#if TOOLS` setters need no `///`.
+- **Repair on sight.** Finding a false or dangling doc comment while doing other work means fixing it in that turn, not logging it (`feedback_dont_defer_immediately_addressable.md`). Enforced at commit by the `DOCS` check in `/regression_gate`; sweep the whole tree on demand with `.claude/scripts/doc_warning_check.sh`.
 - **Strings:** prefer `StringName` for Godot identifiers (node paths, signal/animation names).
 
 ## Lifecycle & Constructors
@@ -76,6 +82,15 @@ int max = Math.Max(typeData.MinSlots, typeData.MaxSlots);
 int result = rng.Next(min, max + 1);
 ```
 *Why:* Designers can easily set Min > Max in the inspector. `Random.Next` throws `ArgumentOutOfRangeException` when `minValue > maxValue`. Guard at the consumption site, not the data source.
+
+### Float Aggregation Accumulates in `double`
+
+**Rule:** never `Enumerable.Average()`/`Sum()` over a `float` source. Cast to `double` first, or accumulate explicitly.
+
+```csharp
+float mean = (float)values.Select(v => (double)v).Average();  // not values.Average()
+```
+*Why:* .NET 9 vectorizes these over `float` and reduces in float lanes, so the result depends on lane count and differs from a scalar sum — observed `1.1666666269302368` where the scalar path gives `1.1666666666666667`. The symptom is a test that fails on the ~7th decimal, which reads as a tolerance problem and is actually a summation-order problem. Applies to any statistic derived from authored `float` data (`ScalarDistribution` means, stat aggregates, sim reports).
 
 ### Atomic Initialization
 **Rule:** When a method can fail with an early return, dependent state mutations must happen inside the success path, not in the caller after the call.

@@ -20,7 +20,7 @@ try {
 
 // Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent,
 // so Anthropic sessions run unchanged. Inlined per script: the Workflow sandbox has no require.
-const PIN = (m) => (A.__pin && A.__pin.model) || m
+const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
 const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
 const fixtures = Array.isArray(A.fixtures) ? A.fixtures : []
 const checklists = A.checklists || {}

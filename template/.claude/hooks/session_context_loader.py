@@ -62,7 +62,7 @@ def persist_cloud_env(godot_bin: str):
 # ---------------------------------------------------------------------------
 
 # Update on every Godot engine upgrade — both platform fallback paths use this.
-GODOT_VERSION = "4.6.2-stable"
+GODOT_VERSION = "4.7.1-stable"
 
 
 def get_godot_bin() -> str:
@@ -847,6 +847,52 @@ def main():
     if docs_cache_issue:
         output_lines.append("")
         output_lines.append(docs_cache_issue)
+
+    # Queued-gate result surfacing (godot-process-identity-and-gate-queue.md Part 2).
+    # A gate queued behind an open editor can finish between sessions; without this
+    # it is silently lost. Fail-open: any error here must not break session start.
+    try:
+        import time as _time
+        queue_dir = root / ".claude" / "scratch" / "gate_queue"
+        marker_path = queue_dir / ".last_surfaced"
+        if queue_dir.is_dir():
+            marker_mtime = marker_path.stat().st_mtime if marker_path.exists() else 0.0
+            # The gate now writes EVERY completed run (inline and queued) to the ledger; only
+            # the queued-finish signal is lost across sessions, so inline records are filtered
+            # out — they must not relabel a session's own runs as queued, crowd out the real
+            # queued signal via the marker, or advance .last_surfaced ahead of it.
+            new_results = []
+            for p in sorted(
+                queue_dir.glob("*.result.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            ):
+                if p.stat().st_mtime <= marker_mtime:
+                    continue
+                try:
+                    result = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if result.get("source") == "inline":
+                    continue
+                new_results.append((p, result))
+                if len(new_results) >= 3:
+                    break
+            if new_results:
+                output_lines.append("")
+                for result_path, result in new_results:
+                    rid = result.get("id", result_path.stem.removesuffix(".result"))
+                    status = result.get("status", "unknown")
+                    exit_code = result.get("exitCode", "?")
+                    tree_delta = result.get("treeDelta", "?")
+                    output_lines.append(
+                        f'Queued gate result: {rid} {status} exit={exit_code} treeDelta={tree_delta} '
+                        f'— read .claude/scratch/gate_queue/{result_path.name}; treeDelta=true means '
+                        'the tree changed since the run and it cannot back a "Verified" claim.'
+                    )
+                marker_path.write_text(str(_time.time()), encoding="utf-8")
+    except Exception:
+        pass
 
     # Continuation reminder
     output_lines.append("")

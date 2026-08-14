@@ -1,8 +1,8 @@
 ---
-description: Run any worklog operation — add, complete, promote, unblock, triage, sweep, or show.
+description: Run any worklog operation — drive logged items, add, complete, promote, unblock, triage, sweep, show.
 ---
 
-The single executor for all worklog operations. Source of truth is `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian); local title mirror at `.claude/worklog-titles.md`. This command file is the **operations playbook** (the recipes). For the **decision-time reference** — classification + scope rules, the domain list, the full trigger catalog, completion signals, and the which-operation-to-pick litmus — refer to the `worklog_reference` skill. PLAN + TRIAGE recipes live in `agents/worklog_plan_triage.md` (loaded on demand).
+The single executor for all worklog operations. Source of truth is `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian); local title mirror at `.claude/worklog-titles.md`. This command file is the **operations playbook** (the recipes). For the **decision-time reference** — classification + scope rules, the domain list, the full trigger catalog, completion signals, and the which-operation-to-pick litmus — refer to the `worklog_reference` skill. DRIVE + TRIAGE recipes live in `agents/worklog_drive_triage.md` (loaded on demand).
 
 ## Forms
 
@@ -16,13 +16,12 @@ Argument: `$ARGUMENTS`
 | `complete <id-or-search>` | Match an Active `[ ]` item by title or fuzzy search; delete its block from `Worklog.md` and append a `[x]` one-liner (completion date + ref) to `Worklog-Archive.md` under its domain; patch mirror. If multiple matches, ask the user to pick. |
 | `sweep` | Run three passes: add-sweep (transcript scan for missed deferrals) + completion-sweep (git diff vs `[ ]` items) + **promotion-sweep** (Future Scope items whose conditions have plausibly ripened given recent commits / current state). Each candidate is confirmation-driven. |
 | `triage` | Bulk cleanup walk. Reads Active, scores per-item dispositions (complete / do-now / quick-win flag / promote to Future Scope / delete / skip), walks them confirmation-driven, executes confirmed dispositions inline, rewrites mirror at end. Use when `/worklog show` flags overload (Active > 30) or backlog pressure builds. The "do-now" disposition executes scope-1 mechanical work this turn; "quick-win flag" defers small items to next session with a priority bump. |
-| `plan [scope:N] [items:N]` | The agentic prioritization op. **No target** → *survey mode*: propose 2-3 prioritized batches with rationale, user picks one. **Target given** → *draft mode*: score per-item, fill the target, draft a ready-to-execute body, log to tackle-history. Only scores **ready** items (no `When:` sub-bullet); `after`/`future` items are listed in "Waiting" or parked in `## Future Scope`. Quick-win-flagged items get a +3 score boost. |
+| `drive [<N> \| scope:N \| items:N \| <names>] [--plan-only]` | The agentic prioritization-and-execution op — selects logged items and drives them through to commits. Three modes, first match wins after `--plan-only` is stripped: **no argument** → *survey* (propose 2-3 prioritized batches, user picks); **budget-shaped argument** (`<N>` ≡ `scope:N`, combinable with `items:N`, more-restrictive binds) → score per-item and fill the target; **anything else** → *named-items* (comma-split, fuzzy-match, no scoring). Only ready items are selectable (no `When:` sub-bullet); quick-win-flagged items get a +3 score boost. Depth per scope tier (`_brainstorm_shared/execution_depth.md`); scope-4 is never driven — it routes to `/design_drive` or `/part_drive`. `--plan-only` stops at the drafted plan body. |
 | `unblock <condition>` | Strip `When: after <condition>` from all matching Active `[ ]` items, promoting them to ready. Fuzzy-matches condition text; shows matches before writing. |
 | `promote <title>` | Move a `When: future` item from `## Future Scope` back to `## Active`. Reconstructs a full `[ ]` block (Context preserved from one-liner; Where/Source/When dropped). Mirror image of `unblock` — for the manual or sweep-suggested case where a Future Scope item ripens. |
-| `tackle` | Alias for `plan scope:3` — the single-session draft-mode default. Drafts a ready-to-execute plan body sized to ~one session. Scope-4 items are flagged, never drafted. |
 | `user-add <free text>` | Append a one-line entry to the parallel `User-Tasks.md` doc (user-only addressable items: art, feel, brainstorms, design audits). De-dup search runs first, then prompt for missing fields (domain, context). Append-only from Claude's side. Never touches `Worklog.md` or the mirror. |
 | `user-show` | Read `User-Tasks.md` and print grouped by domain. Opt-in only — never folded into `show` / `show all`. The "never read passively" rule applies to passive context loading, not explicit user invocation. |
-| `history [domain]` | Read `Worklog-Archive.md` and print completed `[x]` items grouped by domain (optional single-domain filter). Opt-in only — the archive is never loaded passively (no mirror, no SessionStart, no sweep/triage/plan scan). |
+| `history [domain]` | Read `Worklog-Archive.md` and print completed `[x]` items grouped by domain (optional single-domain filter). Opt-in only — the archive is never loaded passively (no mirror, no SessionStart, no sweep/triage/drive scan). |
 
 ## Cross-cutting rules
 
@@ -66,7 +65,7 @@ On cloud, Obsidian MCP is unavailable, so `Worklog.md` cannot be written. Detect
   - PROMOTE: <title>
   ```
   Group a session's ops under one header (append lines; new header only when the session changes).
-- **Read ops**: `show` operates on the local mirror `worklog-titles.md` (it ships with the checkout). Ops needing the full Obsidian doc (`show all` Future Scope, `sweep`, `plan`/`tackle`) print `Obsidian unavailable on cloud — defer to a local session.` and stop.
+- **Read ops**: `show` operates on the local mirror `worklog-titles.md` (it ships with the checkout). Ops needing the full Obsidian doc (`show all` Future Scope, `sweep`, `drive`) print `Obsidian unavailable on cloud — defer to a local session.` and stop.
 - **Commit** the pending file from cloud (it is tracked); the cloud→local handoff crosses machines via git.
 
 ### Replay (local session)
@@ -93,7 +92,7 @@ The SessionStart hook surfaces `Cloud worklog: N pending` on local sessions when
 ⚠ Active has <N> items (cap target: 30). Run `/worklog triage` for a guided cleanup pass.
 ```
 
-If count ≤ 30, omit the alarm entirely. The alarm fires on `show` and `show all` only; it does NOT fire during `add` / `complete` / `plan` / `triage` itself (those have their own contexts). Soft alarm — informational, never blocking.
+If count ≤ 30, omit the alarm entirely. The alarm fires on `show` and `show all` only; it does NOT fire during `add` / `complete` / `drive` / `triage` itself (those have their own contexts). Soft alarm — informational, never blocking.
 
 **Full read (when user asks for context, dates, or sub-bullets):**
 ```
@@ -136,7 +135,7 @@ Opt-in read of `User-Tasks.md`. Not folded into `/worklog show` or `show all` �
 
 ## Operation: HISTORY
 
-Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded into `show` / `show all`; the archive is never loaded passively (no mirror, no SessionStart, no sweep/triage/plan scan). Argument `$ARGUMENTS` is an optional domain filter.
+Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded into `show` / `show all`; the archive is never loaded passively (no mirror, no SessionStart, no sweep/triage/drive scan). Argument `$ARGUMENTS` is an optional domain filter.
 
 1. **Read the archive.**
    ```
@@ -349,7 +348,7 @@ Cross-doc move: the `[ ]` block leaves `Worklog.md` entirely and a `[x]` one-lin
 
 3. **Append the `[x]` one-liner to `Worklog-Archive.md` FIRST (before deleting from Active — see atomicity note).**
 
-   **If `Worklog-Archive.md` doesn't exist yet,** create it: frontmatter (`title: Worklog Archive`, `status: archive`, `last_updated: <today>`), an `# Worklog Archive` heading, the opacity note (`> Completed worklog items ... never mirrored, never loaded at SessionStart, never scanned by sweep/triage/plan. Read only via /worklog history.`), then a `## <Domain>` section holding the line.
+   **If `Worklog-Archive.md` doesn't exist yet,** create it: frontmatter (`title: Worklog Archive`, `status: archive`, `last_updated: <today>`), an `# Worklog Archive` heading, the opacity note (`> Completed worklog items ... never mirrored, never loaded at SessionStart, never scanned by sweep/triage/drive. Read only via /worklog history.`), then a `## <Domain>` section holding the line.
 
    **If the archive has the item's `## <Domain>` section,** append the line at the bottom of that section (just before the next `## ` heading, or end of file):
    ```
@@ -395,7 +394,7 @@ Cross-doc move: the `[ ]` block leaves `Worklog.md` entirely and a `[x]` one-lin
 
    If no matching `tackle` event exists, skip silently. The item was completed without ever being tackled — no anti-thrash signal to clear.
 
-   This step is what makes the PLAN anti-thrash penalty self-clearing (PLAN recipe: `agents/worklog_plan_triage.md`). Without it, every tackled-then-completed item would forever carry the −2 penalty on re-occurrence.
+   This step is what makes the DRIVE anti-thrash penalty self-clearing (DRIVE recipe: `agents/worklog_drive_triage.md`). Without it, every driven-then-completed item would forever carry the −2 penalty on re-occurrence.
 
 ### Edge cases for COMPLETE
 
@@ -431,7 +430,7 @@ All three passes are confirmation-driven — never auto-apply. They are the dete
 
 ## Operation: TRIAGE
 
-Full recipe extracted to [`agents/worklog_plan_triage.md`](agents/worklog_plan_triage.md) — Read that file on any `triage` invocation and execute from its steps (disposition scoring table, confirmation walk, caps, edge cases). Do not run triage from memory of this stub.
+Full recipe extracted to [`agents/worklog_drive_triage.md`](agents/worklog_drive_triage.md) — Read that file on any `triage` invocation and execute from its steps (disposition scoring table, confirmation walk, caps, edge cases). Do not run triage from memory of this stub.
 
 ## Operation: PROMOTE
 
@@ -493,9 +492,11 @@ Promoted: <Title> — now in Active under <Domain>.
 - **User rejects a sweep-proposed promotion:** mark nothing. Do NOT add a `When: not yet` annotation — that's noise. The next sweep will re-evaluate.
 - **Title collision with an existing Active item:** ask user. Possible the same work was logged twice (once as Active, once as Future Scope). Resolve manually.
 
-## Operation: PLAN (+ `tackle` alias)
+## Operation: DRIVE
 
-Full recipe extracted to [`agents/worklog_plan_triage.md`](agents/worklog_plan_triage.md) — Read that file on any `plan` / `tackle` invocation and execute from its steps (scoring engine, survey/draft fork, tackle-history JSONL schema, edge cases). Do not draft from memory of this stub.
+Full recipe extracted to [`agents/worklog_drive_triage.md`](agents/worklog_drive_triage.md) — Read that file on any `drive` invocation and execute from its steps (mode dispatch, scoring engine, execute phase + re-scope valve, tackle-history JSONL schema, edge cases). Do not drive from memory of this stub.
+
+Execution is the default: the invocation is the execution directive, and Mode D (choose-among) is the one selection gate. `--plan-only` stops at the drafted plan body.
 
 ---
 
@@ -543,7 +544,7 @@ After all strips are applied:
 ### Step 4 — Confirm
 
 ```
-Unblocked <n> item(s). They are now ready and will appear in /worklog plan batches.
+Unblocked <n> item(s). They are now ready and will appear in /worklog drive batches.
 ```
 
 ### Edge cases for UNBLOCK

@@ -1,7 +1,6 @@
 ---
 description: >-
-  ALWAYS load when reviewing, refining, or authoring claude code harness files. This includes skills, commands, hooks, rules, or any other loaded guidance. 
-  Does NOT measure trigger accuracy (use `skill-creator`) or adversarial pressure (use `/test_skill`).
+  ALWAYS load when reviewing, modifying, or authoring claude code harness files. This includes skills, commands, hooks, rules, or any other loaded guidance.
 ---
 
 # Instruction Quality Principles

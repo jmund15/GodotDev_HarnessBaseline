@@ -98,7 +98,7 @@ Vector flatten/lift (3D↔2D) + weighted-gravity helpers on `CharacterBody3D`. S
 
 ## Touchpoints
 
-- [`csharp_patterns.md`](csharp_patterns.md) — `[RequiredExport]` mechanics, nullability, test helpers, signals vs events.
+- [`csharp_patterns.md`](csharp_patterns.md) — `[RequiredExport]` mechanics, nullability, test helpers, signals vs events, comment discipline. The `<summary>` citations above point at **signatures** — a member's own contract, citable under the trust radius. A doc comment is never citable for an observation about other code.
 - [`jmodot_framework_authoring.md`](jmodot_framework_authoring.md) — fires only on `Jmodot/**/*.cs` for framework-internal rules.
 - [`../skills/jmodot/SKILL.md`](../skills/jmodot/SKILL.md) — design-time index, subsystem deep-dive routing, BBDataSig keys.
 - [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) — Component Initialization Paths, Resource Strategy Hierarchies, Marker Interface as Capability Query.

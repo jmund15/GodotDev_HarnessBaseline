@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claims", "checked"],
+  "properties": {
+    "checked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolsUsed", "stoppedAt", "basis"],
+      "properties": {
+        "toolsUsed": { "type": "array", "items": { "type": "string" } },
+        "stoppedAt": { "type": "string", "enum": ["nothing-in-scope", "exhausted-leads", "trigger-not-met", "blocked"] },
+        "basis": { "type": "string" }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "polarity", "claim", "bearing"],
+        "properties": {
+          "subject": { "type": "string" },
+          "polarity": { "type": "string", "enum": ["exists", "absent", "partial", "unclear"] },
+          "claim": { "type": "string" },
+          "evidence": { "type": ["string", "null"] },
+          "verification": { "type": ["string", "null"] },
+          "file": { "type": ["string", "null"] },
+          "bearing": { "type": "string", "enum": ["premise-contradiction", "reuse-candidate", "constraint", "blast-radius", "context"] },
+          "confidence": { "type": "string", "enum": ["verified", "unverified"] }
+        }
+      }
+    },
+    "gaps": { "type": "array", "items": { "type": "string" } }
+  }
+}

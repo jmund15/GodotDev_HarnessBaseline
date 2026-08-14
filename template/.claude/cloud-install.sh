@@ -40,7 +40,7 @@ fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # must match .claude/reference/project_stack.md
-GODOT_VERSION="4.6.2"
+GODOT_VERSION="4.7.1"
 GODOT_RELEASE="stable"
 DOTNET_VERSION_PROJECT="9.0"
 

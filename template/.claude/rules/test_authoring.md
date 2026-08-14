@@ -1,0 +1,14 @@
+---
+paths:
+  - "Tests/**/*.cs"
+---
+
+# Test Authoring (fires on Tests/ touches)
+
+Full doctrine: `testing` skill §Test Subject Selection + §Retention & Curation.
+
+1. **Scene addressing — never direct-child-by-name off a scene root.** Resolve production nodes by type (`GetFirstChildOfType<T>`), by `%UniqueName`, or via a NodePath the scene exports. Hardcoded `GetNode("SystemName")` couples the test to topology and taxes every future scene refactor (24 such lookups blocked the wind/trail template extraction). *Exception:* when topology IS the declared subject — say so in the test's `<summary>` so a refactor knows the coupling is load-bearing, not incidental.
+2. **Double reuse.** Before hand-rolling a fake/spy/mock/fixture, check (a) for a **concrete production type** that already answers it — a preconfigured Resource, a shipped `Dir8*`/`Default*` instance — then (b) `Tests/Framework/Mocks/`. An empty `Mocks/` is not clearance to author; (a) is the step that gets skipped, and a hand-rolled copy of a shipping type drifts from the config production actually runs while the suite stays green. On the SECOND use of any double, promote it to `Tests/Framework/Mocks/` — a private nested double is only legal while it is the first and only one for its interface.
+3. **Subject selection.** Building blocks (components, systems, strategies, behavioral Resources) get thorough logic+integration coverage. Composed entities get one parameterized roster wiring suite + representative full-composition E2Es — never a per-entity logic suite or per-instance resource pin. Data pins are per-SCHEMA (`[TestCase]` roster rows; exemplar: `Tests/Integration/Enemies/NewEnemyDataTests.cs`), not per-instance.
+4. **Never name a `Tests/Logic/<X>` folder after a top-level `Tests/<X>` sibling.** `Tests/` holds `Fixtures`, `Framework`, `Integration`, `Sanity`, `Stress`, `ProcGenSim`. Creating e.g. `Tests/Logic/Framework/` declares `{{PROJECT_NAME}}.Tests.Logic.Framework`, which **shadows** `{{PROJECT_NAME}}.Tests.Framework` for every file under `Tests.Logic` — C# name lookup walks outward and stops at the first match. Unqualified references like `new Framework.Fixtures.TestCombatant()` in *untouched, unrelated* suites then fail to compile (`CS0234`), so the error names a file you never opened. Put such a suite in an existing non-colliding folder (`Foundation`) or coin a name with no top-level twin. The namespace must still start `{{PROJECT_NAME}}.Tests.Logic.` — `/regression_gate` filters on `FullyQualifiedName~Tests.Logic`.
+5. **Curation on touch.** Touching a suite obligates retiring redundant, documentation-only, or duplicate-double coverage in the same change. *Doc-only litmus:* does every assertion consume a value produced by production code? Both operands derived from locally-constructed literals → documentation-only, regardless of how real the setup looks.

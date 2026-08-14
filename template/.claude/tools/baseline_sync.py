@@ -114,7 +114,7 @@ def reverse_sub(text: str, subs: dict) -> str:
         else:
             # Word-like value (e.g. a short PROJECT_NAME): bound the match so a
             # common word doesn't corrupt unrelated identifiers — "Test" must not
-            # rewrite "TestSuite" → "{{PROJECT_NAME}}Suite" when upstreaming.
+            # rewrite "TestSuite" → "ProjectSuite" when upstreaming.
             text = re.sub(rf"\b{re.escape(value)}\b", placeholder, text)
     return text
 
@@ -244,6 +244,7 @@ def classify(root: Path, baseline: Path, lock: dict, relpath: str, entry: dict) 
 # (e.g. a hook building app_userdata/{{PROJECT_NAME}}/logs, a path that never exists).
 PLACEHOLDER_OK = {
     ".claude/commands/sync_baseline.md",        # documents the token NAMES in prose
+    ".claude/tools/baseline_sync.py",           # the substitution engine itself — source carries the tokens it resolves
     ".claude/tools/extract_subagent_tools.py",  # a docstring shows a token as an example
     ".claude/worklog-titles.md",                # hook-regenerated; header may carry a token
 }

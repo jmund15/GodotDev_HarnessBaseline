@@ -32,7 +32,7 @@ if (generators.length < 2) {
 // Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
 // Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
 // script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.model) || m
+const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
 const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
 
 const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']

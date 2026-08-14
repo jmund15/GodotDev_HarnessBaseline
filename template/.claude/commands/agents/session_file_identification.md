@@ -22,12 +22,13 @@ If the manifest exists, it contains the authoritative `files` list (cumulative a
 
 ## Step 2: Compaction Recovery (MANDATORY)
 
-**Always check for compaction data** — do not skip this step regardless of whether you think compaction has occurred. Check `logs/pre_compact.json` for entries matching the current session ID.
+**Always check for compaction data** — do not skip this step regardless of whether you think compaction has occurred.
 
-1. Read `logs/pre_compact.json` — find ALL entries matching the current session ID
-2. For each entry with a `summary_path`, read the `.summary.json` file
-3. Check the `files_modified` field (sorted list of file paths edited before compaction)
-4. Union these with files from your conversation memory
+1. Check `logs/pre_compact.json` for entries matching the current session ID
+2. No match (or the file is missing — this harness's compaction hook writes `logs/transcript_backups/` instead): check `logs/transcript_backups/transcript_<session-id>_*.summary.json` — the transcript-backup summary carries the same machine-generated `files_modified` field
+3. For each entry with a `summary_path` (or each matched backup summary), read the `.summary.json` file
+4. Check the `files_modified` field (sorted list of file paths edited before compaction)
+5. Union these with files from your conversation memory
 
 **WARNING — Narrative summaries are NOT file lists:** The "Summary:" block injected into conversation after compaction is a narrative for context resumption, NOT an authoritative file list. Only `.summary.json` `files_modified` fields are machine-generated and authoritative — they capture every Edit/Write tool call from the pre-compaction window.
 
@@ -35,7 +36,7 @@ If the manifest exists, it contains the authoritative `files` list (cumulative a
 
 **Multiple compactions:** Summaries are cumulative — each later summary is a superset of all earlier ones. The LATEST `.summary.json` for the session ID contains the complete file list. You can read just the latest one instead of unioning all.
 
-**No compactions found:** If `logs/pre_compact.json` is missing or contains no entries for this session ID:
+**No compactions found:** If neither `logs/pre_compact.json` nor `logs/transcript_backups/transcript_<session-id>_*.summary.json` exists for this session ID:
 ```
 ⚠️ WARNING: No compaction data found for this session.
 This is unusual for /session_end and /session_audit — these commands almost never run

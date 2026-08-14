@@ -1,12 +1,12 @@
 ---
 name: Jmodot Framework
 description: >-
-  Auto-load when proposing systems that touch Jmodot's Combat / AI / Movement / Stats
-  surface, looking up BBDataSig keys, or diagnosing why an IComponent silently no-ops.
-  Triggers: "Jmodot", "Blackboard", "BBDataSig", "IComponent", "BehaviorTree", "Combat
-  factory", "MovementProcessor", "EntityStatSheet", "Attribute", "squad formation".
-  SKIP for project subsystem ownership (project_subsystems), design-pattern decisions
-  (architecture_philosophy), and submodule git mechanics (rules/jmodot_submodule.md auto-loads).
+  Auto-load when proposing systems that touch Jmodot's Combat/AI/Movement/Stats surface —
+  Blackboard data, BBDataSig keys, IComponent, BehaviorTree, the Combat factory,
+  MovementProcessor, EntityStatSheet/Attribute, or squad formation — or diagnosing why an
+  IComponent silently no-ops. SKIP for project subsystem ownership (project_subsystems),
+  design-pattern decisions (architecture_philosophy), and submodule git mechanics
+  (rules/jmodot_submodule.md auto-loads).
 ---
 
 # Jmodot Framework
@@ -15,7 +15,7 @@ Reference index for the framework submodule. Most mechanical content has been ex
 
 ## Framework/consumer seam (applies to every deep-dive below)
 
-The deep-dives document Jmodot's **generic framework surface**. The consuming project reaches it through two seams: **attribute resources** resolved via `GlobalRegistry.DB` (autoload `Global/GlobalRegistry.cs` exposing `PushinPotionRegistry` — e.g. `GlobalRegistry.DB.MaxSpeedAttr`), and **project-side BBDataSig keys** (the project partial, below). Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` — project defaults flow through static seams (`rules/jmodot_framework_authoring.md`, auto-loads on `Jmodot/**/*.cs`).
+The deep-dives document Jmodot's **generic framework surface**. The consuming project reaches it through two seams: **attribute resources** resolved via `GlobalRegistry.DB` (autoload `Global/GlobalRegistry.cs` exposing the project registry — e.g. `GlobalRegistry.DB.MaxSpeedAttr`), and **project-side BBDataSig keys** (the project partial, below). Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` — project defaults flow through static seams (`rules/jmodot_framework_authoring.md`, auto-loads on `Jmodot/**/*.cs`).
 
 ## Companion files
 

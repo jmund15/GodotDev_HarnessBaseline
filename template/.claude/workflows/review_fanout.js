@@ -21,7 +21,7 @@ const agents = Array.isArray(A.agents) ? A.agents : []
 // Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
 // Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
 // script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.model) || m
+const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
 const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
 const contextPrefix = A.contextPrefix || '' // optional shared CONTEXT prepended to every agent prompt
 if (agents.length === 0) {
@@ -44,6 +44,8 @@ const tierOf = (m) => A.__pin ? 'strict' : (TIER_OF[m] || 'strict')
 // writes to the tree does the same damage a sonnet lens would, and this engine is read-only by
 // construction, so those bars are not the receiving model's to earn out of.
 const CONCURRENT = agents.length > 1
+// The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
+// .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
 const BASE_CONTRACT = [
   '',
   '=== ENGINE CONTRACT ===',

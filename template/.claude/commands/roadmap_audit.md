@@ -4,9 +4,9 @@ description: Audit all roadmaps for cross-roadmap drift — submap-count sync, d
 
 # /roadmap_audit
 
-Surveys every `roadmap.md` under `BrainstormingDesigns/`, builds the cross-roadmap dependency + submap graph, and runs five consistency checks that the single-roadmap executors can't see. `/update_roadmap` maintains *one* roadmap; this command checks the *seams between* roadmaps — the denormalized references (submap counts, cross-folder deps, MVP Pos-numbers, state snapshots) that drift silently when a child roadmap mutates and its parent isn't resynced.
+Surveys every `roadmap.md` under `BrainstormingDesigns/`, builds the cross-roadmap dependency + submap graph, and runs six consistency checks that the single-roadmap executors can't see. `/update_roadmap` maintains *one* roadmap; this command checks the *seams between* roadmaps — the denormalized references (submap counts, cross-folder deps, MVP Pos-numbers, state snapshots) that drift silently when a child roadmap mutates and its parent isn't resynced.
 
-**Companion to `/update_roadmap`** (per-roadmap maintainer — the fix executor) and `/roadmap_next` (next-pickup scorer). This command answers "**are the roadmaps consistent with each other?**"
+**Companion to `/update_roadmap`** (per-roadmap maintainer — the fix executor) and `/roadmap_atlas` (generated cross-roadmap dashboard + next-pickup scorer). This command answers "**are the roadmaps consistent with each other?**"
 
 **Read-only.** Parses roadmaps, computes findings, prints a tiered report. No file writes, no agent dispatch. Every finding names the fix executor — `/update_roadmap` (Parts / Spawned / deps / count), `/mvp_plan refine` (MVP Pos-refs), or a manual design-doc move + `brainstorm-source` update (placement) — the command never applies fixes itself.
 
@@ -26,7 +26,7 @@ All four are mechanically detectable. This command is the periodic catch.
 ## When to invoke
 
 - After a sub-roadmap split / renumber / rename / state-batch (the parent likely drifted).
-- Before a planning session that spans multiple roadmaps, or before `/roadmap_next` (so its leverage graph isn't built on stale cross-folder edges).
+- Before a planning session that spans multiple roadmaps, or before `/roadmap_atlas` (so its leverage graph isn't built on stale cross-folder edges).
 - Periodically as hygiene — e.g., a `/session_end`-conditional sweep when the session touched 2+ roadmaps.
 
 ## When to skip
@@ -40,7 +40,7 @@ All four are mechanically detectable. This command is the periodic catch.
 
 | Form | Behavior |
 |---|---|
-| `/roadmap_audit` | Full audit — all 5 checks across every roadmap. |
+| `/roadmap_audit` | Full audit — all 6 checks across every roadmap. |
 | `/roadmap_audit <check-id[,check-id...]>` | Run only named checks. IDs: `submap`, `deps`, `anchors`, `mvp`, `state`, `docs`. |
 | `/roadmap_audit <roadmap-slug>` | Scope to one roadmap as the *subject* (still reads others as resolution targets). |
 | `/roadmap_audit --strict` | Promote advisory state-staleness (Check 5) findings to the same tier as structural findings. |
@@ -65,8 +65,8 @@ Unknown check-id or slug → emit usage table and exit.
 **Out of scope** (owned elsewhere — don't duplicate):
 - Intra-roadmap Source-cell *design-doc* anchor coherence (`[[arch#Section ...]]`) — `/update_roadmap` Step 3 validates these at edit time.
 - Trigger content-shape per `common.md §6.10` — `/update_roadmap` Step 3.
-- Derived-view freshness within a single roadmap — `/update_roadmap` Step 5 regen + `/roadmap_next`'s "parse the canonical table" discipline.
-- Part *scoring* / next-pickup — `/roadmap_next`.
+- Derived-view freshness within a single roadmap — `/update_roadmap` Step 5 regen + the atlas generator's "parse the canonical table" discipline.
+- Part *scoring* / next-pickup, and the portfolio/MVP/unscoped dashboard — `/roadmap_atlas`.
 
 ---
 
@@ -75,35 +75,38 @@ Unknown check-id or slug → emit usage table and exit.
 ### Phase 1 — Discover roadmaps + parse args
 
 1. `Glob` for `BrainstormingDesigns/**/roadmap.md` under the Obsidian vault (`{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\BrainstormingDesigns\`).
-2. Parse args into `checks` (default: all 5) + optional `subject_slug` + `--strict`. Unknown id/slug → usage + exit.
+2. Parse args into `checks` (default: all 6) + optional `subject_slug` + `--strict`. Unknown id/slug → usage + exit.
 3. Build the parent↔child map from frontmatter `parent-roadmap` fields (identifies which roadmaps are sub-roadmaps, and each `submap-pending` Part's child target).
 
-### Phase 2 — Parse Parts tables + reference surfaces (bundled)
+### Phase 2 — Parse Parts tables + reference surfaces
 
-Per CLAUDE.md §9 — 3+ files for synthesis → route through `mcp__ai-worker__read_files`:
-
-```
-read_files(
-  paths=[<each roadmap.md absolute path>],
-  question="For EACH roadmap return one structured record per input path (do not omit any path).
-            Extract: (a) every Parts table row {pos, part_name, state, deps_raw, trigger, source};
-            (b) the Spawned-sub-brainstorms section text;
-            (c) every MVP Checkpoint's Required-Parts + Acceptance lines that name a cross-folder
-                Part or Pos (e.g. 'encounter-extraction Pos 6', 'all 8 Parts');
-            (d) any 'Cross-roadmap references' / 'Cross-roadmap dependencies' section bullets,
-                including parenthetical state annotations like '(arch-pending)';
-            (e) the frontmatter 'parent-roadmap' and 'brainstorm-source' fields (verbatim);
-            (f) any PROSE sentence — especially in derived-view sections ('Currently ready to
-                execute', 'Blocked', 'Status', section intros) — that denormalizes a child
-                sub-roadmap's Part COUNT or per-state breakdown (e.g. 'its 10 sub-Parts: 2 complete,
-                6 plan-pending...', 'the 11-Part encounter roadmap'). Return each verbatim with its
-                heading. This surface is INVISIBLE to (a)-(d) and is the recurring blind spot — a
-                submap fix touching only the Trigger + Spawned row leaves these prose copies stale.
-            Return JSON-shaped output keyed by roadmap path."
-)
+```bash
+python .claude/scripts/roadmap_atlas.py --json
 ```
 
-**Output-shape verification (MANDATORY):** count returned records vs input `paths`. If fewer, re-`Read` the missing roadmaps individually before Phase 3 — a missing roadmap silently drops its cross-folder edges and produces false "phantom dep" / "resolves clean" findings. Mechanical check, not a judgment call (same failure mode documented in `/roadmap_next` Phase 2).
+One deterministic parse of every roadmap; no model in the loop, so the record set is complete by
+construction and the former output-shape verification retires with the `read_files` bundle that needed it.
+Non-zero exit → report the named error and stop; do not fall back to a partial parse.
+
+Fields consumed, per check:
+
+| `--json` field | Feeds |
+|---|---|
+| `roadmaps[].parts[]` — `{pos, name, state, deps, deps_resolved, trigger, source}` | the Part index (Phase 3.1) that every check resolves against; `deps` + `deps_resolved` drive `deps` |
+| `roadmaps[].frontmatter` — `parent-roadmap`, `brainstorm-source` | sub-roadmap identification; `raw_surfaces.brainstorm_source` is the verbatim pointer the `docs` check resolves |
+| `roadmaps[].children` / `cross_refs` | the submap map (Phase 3.2) |
+| `raw_surfaces.spawned_text` | `submap` — the Spawned-sub-brainstorms entry's denormalized count/breakdown |
+| `raw_surfaces.denormalized_prose` | `submap` — the derived-view prose copies, the recurring blind spot invisible to the tables |
+| `raw_surfaces.mvp_reference_lines` | `mvp` — cross-folder Pos / "all N Parts" claims |
+| `raw_surfaces.cross_roadmap_bullets` | `state` — parenthetical state annotations and "named as DEP" assertions |
+| `raw_surfaces.brainstorm_source` | `docs` — dangling / mis-placed submap design-doc pointers |
+
+`anchors` regexes the raw reference strings carried by `deps`, `source`, `mvp_reference_lines`, and
+`cross_roadmap_bullets`.
+
+**Scope boundary.** The atlas's own Health section reports parse-byproduct findings only
+(`[parse]`, `[dep]`, `[submap]`, `[schema]`). The six-check tiered sweep below — with its
+fix-executor routing — stays in this command; consuming `--json` swaps the *parse*, not the checks.
 
 ### Phase 3 — Build resolution structures
 
@@ -116,12 +119,12 @@ read_files(
 
 For each enabled check, walk the relevant structure and emit findings. Each finding = `{tier, check-id, roadmap, location-hint, observed, expected, fix-executor}`.
 
-- **submap** — for each submap map entry, compare Trigger "(N child Parts)" + Spawned breakdown + any derived-view prose mention (field (f)) vs child live count/breakdown. All denormalized copies must agree; flag each stale location separately so the fix covers them all (the prose copy is the recurring miss).
+- **submap** — for each submap map entry, compare Trigger "(N child Parts)" + Spawned breakdown + any derived-view prose mention (`raw_surfaces.denormalized_prose`) vs child live count/breakdown. All denormalized copies must agree; flag each stale location separately so the fix covers them all (the prose copy is the recurring miss).
 - **deps** — for each cross-folder Deps reference, look up `(target-roadmap, target-part)` in the Part index; miss → phantom-dep finding.
 - **anchors** — regex the raw reference strings for `roadmap#` followed by a Part-name-shaped token (not a design-doc section); hit → forbidden-anchor finding. (Design-doc anchors `[[<doc>#Section ...]]` where `<doc> ≠ roadmap` are exempt.)
 - **mvp** — for each MVP cross-folder Pos/count reference, verify the named Part sits at that Pos on the target / the count matches the child live count.
 - **state** — for each annotated cross-roadmap reference, compare asserted state vs target live state; also verify any "named as DEP" assertion against the target's actual Deps cell.
-- **docs** — for each sub-roadmap (has `parent-roadmap` frontmatter), resolve `brainstorm-source` relative to the sub-roadmap's own folder. If the resolved file doesn't exist → dangling-pointer finding. If `brainstorm-source` is `../arch.md` or `../ideas.md` (a bare-name design doc reached one level up) → mis-placement finding: a freshly-authored submap doc that should be co-located as `./arch.md` / `./ideas.md` in the sub-roadmap folder (per common.md §5.1). `../arch-<slug>.md` (hyphenated cluster doc that legitimately stays in the parent) is exempt — not a finding. Use `Glob`/`Read` to confirm existence; this is the one check that touches the filesystem beyond the bundled Parts-table read.
+- **docs** — for each sub-roadmap (has `parent-roadmap` frontmatter), resolve `brainstorm-source` relative to the sub-roadmap's own folder. If the resolved file doesn't exist → dangling-pointer finding. If `brainstorm-source` is `../arch.md` or `../ideas.md` (a bare-name design doc reached one level up) → mis-placement finding: a freshly-authored submap doc that should be co-located as `./arch.md` / `./ideas.md` in the sub-roadmap folder (per common.md §5.1). `../arch-<slug>.md` (hyphenated cluster doc that legitimately stays in the parent) is exempt — not a finding. Use `Glob`/`Read` to confirm existence; this is the one check that touches the filesystem beyond the `--json` parse.
 
 ### Phase 5 — Emit tiered report
 
@@ -173,9 +176,9 @@ If zero findings: print *"All <N> roadmaps consistent across <enabled checks>. N
 ## Constraints
 
 - **Read-only.** No file writes, no worklog adds, no state transitions. Findings name the executor; the user runs it.
-- **No agents.** Bounded sequential parse + check; no `Task` dispatch (the bundled `read_files` is the only synthesis call).
+- **No agents, no model in the parse.** Bounded sequential check pass over `roadmap_atlas.py --json`; no `Task` dispatch, no synthesis call.
 - **Source-of-truth: Parts tables.** Resolve against canonical Parts tables, never derived views (which may themselves be stale).
-- **Cloud compatible.** No LSP / Godot MCP dependency. `read_files` offline → Haiku-subagent fallback (`common.md §3`).
+- **Cloud compatible.** No LSP / Godot MCP dependency. Requires `python` on PATH and the vault mounted.
 - **Don't auto-fix design decisions.** Phantom-dep findings (Check `deps`) often can't be resolved mechanically — the fix may require creating a parent Part or folding scope into another (a design call). Surface; never guess the resolution.
 
 ---
@@ -184,7 +187,7 @@ If zero findings: print *"All <N> roadmaps consistent across <enabled checks>. N
 
 | Rationalization | Reality |
 |---|---|
-| "Resolve against `## Currently ready to execute` — it's pre-computed" | Derived views drift too. Resolve against canonical Parts tables (same rule as `/roadmap_next`). |
+| "Resolve against `## Currently ready to execute` — it's pre-computed" | Derived views drift too. Resolve against canonical Parts tables — which is what `roadmap_atlas.py --json` returns. |
 | "A phantom dep is just stale — auto-rewrite it to the nearest real Part" | Phantom-dep resolution is usually a design decision (create the missing parent Part vs fold scope vs drop the dep). Surface it; don't guess. |
 | "State annotations are always wrong eventually — skip Check 5" | The annotation alone is §6.8-tolerated, but a *false structural claim* riding on it ("named as DEP" when Deps is `—`) misleads. Keep the check; it's why `state` also verifies the DEP assertion, not just the parenthetical. |
 | "Apply the fixes from this command directly" | This command is the *detector*. Fixes route through `/update_roadmap` (Parts/Spawned/derived) and `/mvp_plan refine` (MVP section) so the revision-log + regen discipline runs. |
@@ -197,5 +200,5 @@ If zero findings: print *"All <N> roadmaps consistent across <enabled checks>. N
 - [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) — roadmap.md schema. §5.1 (submap doc placement — `docs` check), §6.3 (submap-pending), §6.8 (cross-folder dep resolution + forbidden-anchor rule), §6.10 (Trigger content + submap denormalization discipline), §6.11 (MVP refs), §6.12 (sub-roadmap cross-roadmap-deps section) are the surfaces this command checks.
 - [`/update_roadmap`](update_roadmap.md) — fix executor for `submap` / `deps` / `anchors` / `state` findings (Parts table + Spawned section + derived views + revision log).
 - [`/mvp_plan`](mvp_plan.md) — fix executor for `mvp` findings (`/mvp_plan refine MVP-N`).
-- [`/roadmap_next`](roadmap_next.md) — sibling read-only scanner (discovery + bundled-parse skeleton shared with this command); run `/roadmap_audit` first so its leverage graph isn't built on stale cross-folder edges.
-- CLAUDE.md §9 *Tool Routing — Pre-Call Litmus* — Phase 2 bundled `read_files` rule.
+- [`/roadmap_atlas`](roadmap_atlas.md) — the generated dashboard + next-pickup scorer; `roadmap_atlas.py --json` is this command's Phase 2 parse. Run `/roadmap_audit` first so its leverage graph isn't built on stale cross-folder edges.
+- `.claude/scripts/roadmap_atlas.py` — the Phase 2 parser; its `--json` schema is this command's input contract.

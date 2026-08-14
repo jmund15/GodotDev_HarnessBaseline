@@ -197,14 +197,30 @@ Show the user the proposed diff covering:
 6. MVP recompute (if a `## MVP Checkpoints` section exists): changed check-marks + Status transitions. **Surface a playtest prompt** for any MVP that flipped to `🧪 Ready for playtest` this run — name it, and name any remaining `user-owned` Required Part the user must finish first (e.g. *"MVP-2 ready for playtest, except user-owned Part: Room scene art"*). Surface any `✅ Verified`→downgrade regression flag.
 7. New Revision Log line(s)
 8. Validator warnings from Step 3 (if any)
+9. Atlas regeneration (Step 9) — always listed, so the single approval covers it
 
 **Single approval applies all.** User can redirect ("revise Mermaid", "split this transition into two log lines", "skip the spawn entry — it's the same folder") — adjust diff, re-present.
 
 ### Step 8 — Apply
 
-If the batch diff (Step 7) is empty — proposed edits reduce to no changes — report *"No roadmap changes needed"* and exit without prompting for approval.
+If the batch diff (Step 7) is empty — proposed edits reduce to no changes — report *"No roadmap changes needed"* and skip to Step 9 without prompting for approval.
 
 Otherwise: `Edit` (or `Write` if creating) `roadmap.md` with the approved diff. Bump `last_revised: YYYY-MM-DD` in frontmatter to today.
+
+### Step 9 — Regenerate the atlas
+
+```bash
+python .claude/scripts/roadmap_atlas.py --render
+```
+
+Runs on **every invocation that reaches Step 8, the empty-diff path included** — the atlas can be stale
+from roadmap edits made outside this command, so the no-op case is exactly the one a "only when Step 8
+applied" gate would wrongly skip.
+
+**Non-blocking.** A generator failure warns with its named error and never rolls back the roadmap edit;
+the atlas is a derived vault document, and the next `/session_end` or `/roadmap_atlas` rebuilds it.
+Generated docs live outside the git checkout and are never committed. Report any Health finding the
+generator surfaces for the roadmap just edited.
 
 ---
 
@@ -220,7 +236,7 @@ Otherwise: `Edit` (or `Write` if creating) `roadmap.md` with the approved diff. 
 | `/update_roadmap promote <part> to <pos>` | Move from un-sequenced to sequenced at given Pos. |
 | `/update_roadmap demote <part>` | Move from sequenced to un-sequenced (Pos → `—`). |
 
-All standalone ops route through Steps 3-8 (validate, regen, present diff, apply).
+All standalone ops route through Steps 3-9 (validate, regen, present diff, apply, regenerate atlas).
 
 ### Standalone error handling
 
@@ -265,4 +281,5 @@ Non-event — `roadmap.md` is a vault file edited with native `Read`/`Edit`/`Wri
 - [`_brainstorm_shared/common.md §1.2`](../skills/_brainstorm_shared/common.md) — stale-roadmap remediation (relevant when invoked against a roadmap whose Parts predate the calling skill's current state — the caller re-runs arch Step 5 before handing the Part list here)
 - [`architecture_brainstorm/SKILL.md`](../skills/architecture_brainstorm/SKILL.md) — invokes this command as its final step
 - [`idea_brainstorm/SKILL.md`](../skills/idea_brainstorm/SKILL.md) — invokes this command as its final step
+- [`/roadmap_atlas`](roadmap_atlas.md) — the generated cross-roadmap dashboard Step 9 regenerates (`common.md §6.13`)
 - `obsidian_conventions` skill — Obsidian wikilink/anchor conventions for `Source`-column links

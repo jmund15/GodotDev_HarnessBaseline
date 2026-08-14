@@ -617,6 +617,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/agents/explore_agents.md",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/agents/jmodot_submodule_procedure.md",
       "layer": "jmodot",
       "sync": "auto"
@@ -667,6 +672,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/agents/worklog_drive_triage.md",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/agents/worklog_plan_triage.md",
       "layer": "code",
       "sync": "auto"
@@ -679,6 +689,11 @@
     {
       "path": ".claude/commands/analyze_godot_logs.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/apply_harness_edits.md",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -742,6 +757,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/design_drive.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/doc_architecture.md",
       "layer": "core",
       "sync": "auto"
@@ -787,7 +807,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/explore.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/feature_drive.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/idea_brainstorm_fanout.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/ingest_conversation.md",
       "layer": "core",
       "sync": "auto"
     },
@@ -814,6 +849,11 @@
     {
       "path": ".claude/commands/mvp_plan.md",
       "layer": "code",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/orchestration_metrics.md",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -867,6 +907,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/research.md",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/review_pr.md",
       "layer": "code",
       "sync": "auto"
@@ -899,6 +944,11 @@
     {
       "path": ".claude/commands/rule_consistency.md",
       "layer": "code",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/salvage_fanout.md",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -972,12 +1022,37 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/guards/any.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/guards/author.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/guards/review.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/guards/survey.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/README.md",
       "layer": "core",
       "sync": "auto"
     },
     {
       "path": ".claude/hooks/_transcript_summary.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/activity_registry.py",
       "layer": "core",
       "sync": "auto"
     },
@@ -989,6 +1064,11 @@
     {
       "path": ".claude/hooks/apply_blanket_tool.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/budget_posture.py",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -1017,8 +1097,28 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/design_surface_reminder.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/duplicate_test_double_baseline.json",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/duplicate_test_double_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/file_size_preblock.py",
       "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/generate_family_manifest.py",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -1037,7 +1137,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/load_steps_validator.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/log_instruction_loads.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/model_pin_translate.py",
       "layer": "core",
       "sync": "auto"
     },
@@ -1072,6 +1182,21 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/prototype_containment_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/readonly_lens_write_guard.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/readonly_marker_arm.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/routing_audit.py",
       "layer": "code",
       "sync": "auto"
@@ -1088,6 +1213,16 @@
     },
     {
       "path": ".claude/hooks/session_context_loader.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/session_model_rails.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/test_suite_gate_coverage_guard.py",
       "layer": "godot",
       "sync": "auto"
     },
@@ -1132,12 +1267,32 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/tres_format_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/tres_nullstrip_guard.py",
       "layer": "godot",
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/tres_script_strip_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/uid_cache_audit.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/unbounded_scan_guard.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/workflow_provider_guard.py",
       "layer": "core",
       "sync": "auto"
     },
@@ -1154,6 +1309,11 @@
     {
       "path": ".claude/rules/csharp_patterns.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/rules/design_litmus.md",
+      "layer": "code",
       "sync": "auto"
     },
     {
@@ -1202,13 +1362,28 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/rules/test_authoring.md",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/rules/visual_layers.md",
       "layer": "jmodot",
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/GodotProcess.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/autolearn.sh",
       "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/batch_diagnosis.ps1",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -1222,13 +1397,58 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/doc_diff_check.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/doc_warning_check.sh",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/fetch_source.sh",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/gate_queue_watcher.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/godot_docs_cache.sh",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/regression_gate.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/run_integration_batched.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/run_test_suite.ps1",
       "layer": "godot",
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/schema_parity.js",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/validate_commands.py",
       "layer": "code",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/worklog_relevance_sidecar.sh",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -1244,6 +1464,21 @@
     {
       "path": ".claude/skills/_brainstorm_shared/common.md",
       "layer": "code",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/_brainstorm_shared/design_contract.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/_brainstorm_shared/execution_depth.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/_brainstorm_shared/plan_file_format.md",
+      "layer": "core",
       "sync": "auto"
     },
     {
@@ -1327,6 +1562,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/merge_conflicts/SKILL.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/mermaid_diagrams/SKILL.md",
       "layer": "core",
       "sync": "auto"
@@ -1337,12 +1577,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/orchestration/SKILL.md",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/parallel_agents/SKILL.md",
       "layer": "core",
       "sync": "auto"
     },
     {
       "path": ".claude/skills/parameterized_asset_pipeline/SKILL.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/parameterized_asset_pipeline/references/provenance.md",
       "layer": "godot",
       "sync": "auto"
     },
@@ -1397,6 +1647,11 @@
       "sync": "seed"
     },
     {
+      "path": ".claude/skills/prototype/SKILL.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/refactor_procedure/SKILL.md",
       "layer": "godot",
       "sync": "auto"
@@ -1437,6 +1692,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/wait_what/SKILL.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/worklog_reference/SKILL.md",
       "layer": "core",
       "sync": "auto"
@@ -1467,6 +1727,21 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/gen_godot_class_index.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/model_registry.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/orchestration_metrics.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/score_routing_battery.py",
       "layer": "code",
       "sync": "auto"
@@ -1477,7 +1752,32 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/verify_claims.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/verify_doc_citations.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/dispatch.js",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/workflows/doc_architecture_audit.js",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/explore_fanout.js",
+      "layer": "code",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/explore_fanout.schema.json",
       "layer": "core",
       "sync": "auto"
     },
@@ -1498,6 +1798,21 @@
     },
     {
       "path": ".claude/workflows/test_skill_pressure.js",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/worklog_relevance.js",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/worklog_relevance.prompt.md",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/worklog_relevance.schema.json",
       "layer": "core",
       "sync": "auto"
     },
