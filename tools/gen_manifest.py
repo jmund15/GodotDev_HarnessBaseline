@@ -298,6 +298,7 @@ CORE_PATTERNS = [
     ".claude/hooks/README.md",
     ".claude/hooks/_transcript_summary.py",
     ".claude/hooks/compound_cd_approver.py",
+    ".claude/hooks/bash_shape_guard.py",
     ".claude/hooks/git_guardrails.py",
     ".claude/hooks/dangerous_shell_guard.py",
     ".claude/hooks/unbounded_scan_guard.py",

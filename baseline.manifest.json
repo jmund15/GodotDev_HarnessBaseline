@@ -1067,6 +1067,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/bash_shape_guard.py",
+      "layer": "core",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/budget_posture.py",
       "layer": "core",
       "sync": "auto"
