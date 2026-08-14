@@ -3,6 +3,7 @@ name: Skill vs command frontmatter convention
 description: Custom commands and skills are the SAME mechanism post-merge — both model-invokable by default. Project convention uses `disable-model-invocation: true` on commands plus single-line `description:`; skills use multi-line `description: >-`.
 type: feedback
 originSessionId: 10c65425-68c7-4266-a24a-b35e9a15e00d
+modified: 2026-08-14T23:08:51.737Z
 ---
 
 **The mechanism (per current Claude Code docs, `https://code.claude.com/docs/en/skills.md`):**
@@ -15,7 +16,7 @@ Both file types support the same frontmatter spec. **Both are model-invokable by
 
 **How to apply:**
 
-1. **`disable-model-invocation: true` is the gate that makes a command slash-only.** Without it (or with no frontmatter at all), the command defaults to `false` and is model-invocable. NOTE (verified 2026-05-20): the claimed "universal bulk update across 42 commands" did NOT stick — `self_evaluate`, `eval_dashboard`, `autolearn`, `worklog` all shipped with NO frontmatter (hence default-invocable). Don't assume the gate is present; check the file. To explicitly enable auto-invoke on a frontmatter-less command, prepend a block with `disable-model-invocation: false` (omitting `description:` keeps the first-paragraph fallback intact).
+1. **`disable-model-invocation: true` is the gate that makes a command slash-only.** Without it (or with no frontmatter at all), the command defaults to `false` and is model-invocable. NOTE (verified 2026-05-20): the claimed "universal bulk update across 42 commands" did NOT stick — `self_evaluate`, `eval_dashboard`, `autolearn`, `worklog` all shipped with NO frontmatter (hence default-invocable). Don't assume the gate is present; check the file. To explicitly enable auto-invoke on a frontmatter-less command, prepend a block with `disable-model-invocation: false`. NOTE (P1-verified 2026-08-14): omitting `description:` does NOT leave the skill trigger-less — the skills.md frontmatter reference states verbatim that a missing description "uses the first paragraph of markdown content." The trigger is re-derived from the body, not removed.
 2. **Skills (auto-invocable) need rich descriptions.** Multi-line `description: >-` block scalar; keyword-surface enumeration for trigger coverage. The matcher reads the description to decide when to load the skill.
 3. **Commands (slash-only) need terse descriptions.** Single-line `description:`, ~90 chars line 1, action-verb-first. See `feedback_command_descriptions_one_line.md`. Long descriptions are pure context tax once auto-invoke is disabled.
 4. **The skill/command split is functional, not categorical.** Both produce `/name` invocations. The meaningful axis is **procedure (executes step-by-step) vs reference (loads as context)**. Procedure → command file; reference → skill. Example: `instruction_quality` is a principle checklist consumed by `/instruction_audit` — stays as skill. `spell_balance_audit` was structured as a Step 1 / Step 2 / ... procedure — migrated to command 2026-05-11.
