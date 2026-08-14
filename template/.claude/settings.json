@@ -84,7 +84,6 @@
       "Bash(taskkill:*)",
       "Bash(cygpath:*)",
       "Bash(cmd //c:*)",
-      "Bash(\"$GODOT_BIN\":*)",
       "PowerShell(Get-Process:*)",
       "PowerShell(Stop-Process:*)",
       "PowerShell(git:*)",
