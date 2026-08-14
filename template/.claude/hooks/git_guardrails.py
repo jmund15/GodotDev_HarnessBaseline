@@ -2,13 +2,11 @@
 """
 Hook: PreToolUse on Bash|PowerShell — block git operations that destroy local state.
 
-Fully
-domain-agnostic, no project-specific content.
-
 Why:
 - Uncommitted and unpushed work has no remote copy and no undo. A single
   `git reset --hard` / `git clean -f` / force-push discards work that no other
-  session, branch, or reflog entry can recover.
+  session, branch, or reflog entry can recover. Concurrent sessions share one
+  checkout, so the loss is not even necessarily the caller's own work.
 - Every blocked operation has a non-destructive alternative that preserves the
   same intent (stash, --keep, dry-run, unstage), so blocking costs one extra
   step and never a re-do.

@@ -11,4 +11,4 @@ A pathspec commit (`git commit -- <paths>`, the concurrent-safe idiom) silently 
 
 **Why:** existence-on-disk ≠ tracked. A file your tests depend on can be untracked WIP (an interrupted prior session, or a parallel session's in-flight work).
 
-**How to apply:** before a pathspec commit of tests, confirm each test-infra dep (mock/builder/fixture) is tracked via `git ls-files <path>`; stage the untracked ones with your tests. Pairs with [[feedback_separate_preexisting_changes_before_commit]] (exclude foreign) + [[gotcha_concurrent_session_shared_index_collision]] (the WIP often comes from a parallel session).
+**How to apply:** before a pathspec commit of tests, confirm each test-infra dep (mock/builder/fixture) is tracked via `git ls-files <path>`; stage the untracked ones with your tests. Pairs with [[feedback_separate_preexisting_changes_before_commit]] (exclude foreign) + [[gotcha_concurrent_session_hazards]] (the WIP often comes from a parallel session).

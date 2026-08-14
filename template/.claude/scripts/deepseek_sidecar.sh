@@ -10,7 +10,14 @@
 #   deepseek_sidecar.sh [-m MODEL] [-t TOOLS] [-n MAX_TURNS] [-o FORMAT] [-d DIR] -- "PROMPT"
 #   deepseek_sidecar.sh -f prompt.txt
 #
-#   -m  model id            (default: deepseek-v4-flash)
+#   -m  model ALIAS or id   (pro | flash | deepseek-v4-pro | deepseek-v4-flash;
+#       default: flash). Resolved through .claude/reference/external_models.json,
+#       the SSOT for ids, prices, limits and gates. An unresolvable name exits 2
+#       listing the legal set. A missing/unreadable/invalid registry ALSO exits 2:
+#       this is the spending consumer, so it fails closed rather than dispatching
+#       at a tier nobody chose.
+#   -A  authorize a `gated` model past the BAND gate (pro is gated). The balance
+#       floor still applies. The "I typed this deliberately" flag.
 #   -e  effort level        low|medium|high|xhigh (default: unset — provider default)
 #   -t  --allowedTools CSV  (default: Read,Glob,Grep — read-only)
 #   -n  max turns           (default: UNCAPPED — never cap benchmark/delegate turns,
@@ -51,6 +58,21 @@
 #       hooks/session_model_rails.py falls back to `any`). Exported as
 #       CLAUDE_CODE_SIDECAR_SHAPE; the hook inlines .claude/guards/<shape>.md
 #       at the strict tier on the child's SessionStart.
+#   -D  disclosure tier       bare|pointer|full (default: full). `bare`: child
+#       runs from an empty scratch run-cwd — vendor prompt + CLI only; user-level
+#       config is intentionally KEPT (isolating CLAUDE_CONFIG_DIR would drop
+#       marketplace MCP tools, and the dial is a token-disclosure lever, not a
+#       tool-surface lever). `pointer`: bare + append .claude/auto-memory/MEMORY.md
+#       (the compact gotcha index; deep reads stay demand-driven via the child's
+#       Read against --add-dir grants). `full`: today's exact behavior — child
+#       runs in-repo, hooks/rails/rules all live. Unknown value exits 2.
+#       In bare/pointer tiers no project hooks fire, so the -G guard is appended
+#       by the sidecar itself (same content, different delivery); `full` keeps
+#       hook delivery — no duplication.
+#   -C  context file (repeatable): append any additional file to the child's
+#       system prompt via --append-system-prompt-file (domain rules, guard file,
+#       spec excerpt). Missing file exits 2. This is the per-dispatch composition
+#       layer on top of -D.
 #   -L  spend-ledger JSONL: appends the run-record as one line (default:
 #       ~/.claude/deepseek_spend.jsonl when -R is set; -L "" disables)
 #   -l  label: attribution tag stored on the run-record (e.g. "review:config-dup").
@@ -70,23 +92,38 @@
 # EMPIRICAL question, not a guarantee. Claude Code will send it regardless. Verify
 # a pin actually changed behavior before trusting an effort-pinned benchmark arm.
 #
-# NOTE ON -m: DeepSeek's compat layer is documented to route UNRECOGNIZED model
-# names to V4 Flash. Always check `modelUsage`/`canonicalModel` in the JSON to
-# confirm which model actually served — a silent fallback would corrupt an arm.
+# NOTE ON -m (measured 2026-08-12, supersedes the old "unrecognized names route
+# to V4 Flash" claim — that was never true and is now demonstrably false):
+#   * Unknown VENDOR-SHAPED ids HARD-ERROR. `deepseek-v4-pro-0813` is rejected with
+#     "The supported API model names are deepseek-v4-pro or deepseek-v4-flash".
+#     There is no silent fallback to correct for.
+#   * BARE ROLE NAMES HARD-ERROR: opus, sonnet, haiku, fable are all rejected.
+#     This is why hooks/model_pin_translate.py STRIPS the Agent tool's model pin
+#     rather than passing it through — an un-stripped bare role makes agent()
+#     return null, .filter(Boolean) swallows it, and the fan-out reports
+#     "0 findings" while looking clean.
+#   * FULL `claude-*` ids alias BY TIER: claude-opus-* -> V4 Pro;
+#     claude-sonnet-* / claude-haiku-* / claude-fable-* -> V4 Flash.
+# Still check `modelUsage`/`canonicalModel` in the JSON — it is now how you confirm
+# a tier alias landed where you intended, rather than how you catch a fallback.
 #
 # Availability: `deepseek_sidecar.sh --check` prints one line and exits (0 = can
 # dispatch now). SessionStart reports it as `sidecar:` in <session-context>, so
 # availability is a known fact before any routing decision — never something to
 # investigate mid-session.
 #
-# Exit codes: 0 ok · 2 bad usage · 3 credential missing · 4 claude CLI missing
+# Exit codes: 0 ok · 2 bad usage / unresolvable model / unusable registry
+#             3 credential missing · 4 claude CLI missing
+#             5 band gate refusal (pass -A to override) · 6 balance floor unmet
+#               or the balance probe itself failed (-A does NOT override 6)
 
 set -uo pipefail
 
 ENV_FILE="${HOME}/.env.ai-worker.cmd"
 BASE_URL="https://api.deepseek.com/anthropic"
 
-MODEL="deepseek-v4-flash"
+MODEL="flash"          # resolved through the registry below; alias or full id both fine
+AUTHORIZED=0           # -A: bypass the band gate for a `gated` model
 EFFORT=""
 TOOLS="Read,Glob,Grep"
 MAX_TURNS=""   # empty = NO turn cap (user directive 2026-08-03: never cap turns; -T wall-clock is the runaway guard). Pass -n N to cap explicitly.
@@ -107,6 +144,8 @@ LEDGER="__default__"
 LABEL=""
 SHAPE=""
 ADD_DIRS=()
+DISCLOSURE="full"
+CONTEXT_FILES=()
 
 # --check: zero-argument availability probe. Prints ONE line, exits, dispatches
 # nothing. Exit 0 = the sidecar can dispatch on this workstation right now;
@@ -125,13 +164,19 @@ if [ "${1:-}" = "--check" ]; then
     ""|"<redacted>"|"your-key-here"|"sk-xxx"*)
       echo "UNAVAILABLE (DEEPSEEK_API_KEY not populated in $ENV_FILE)"; exit 3 ;;
   esac
-  echo "OK (model=$MODEL endpoint=$BASE_URL key=***${_check_key: -4})"
+  # The registry is a hard dependency of every dispatch (model resolution, prices,
+  # gates), so an unusable one means UNAVAILABLE — not a surprise at dispatch time.
+  _check_reg="$(python3 "$(dirname "${BASH_SOURCE[0]}")/../tools/model_registry.py" \
+    sidecar-fields "$MODEL" 2>&1)" || {
+    echo "UNAVAILABLE (model registry unusable: ${_check_reg%%$'\n'*})"; exit 2; }
+  echo "OK (model=${_check_reg%%|*} endpoint=$BASE_URL key=***${_check_key: -4})"
   exit 0
 fi
 
-while getopts "m:e:t:n:o:d:f:T:R:x:P:S:sr:p:L:l:a:G:" opt; do
+while getopts "m:e:t:n:o:d:f:T:R:x:P:S:sr:p:L:l:a:G:AD:C:" opt; do
   case "$opt" in
     m) MODEL="$OPTARG" ;;
+    A) AUTHORIZED=1 ;;
     e) EFFORT="$OPTARG" ;;
     t) TOOLS="$OPTARG" ;;
     n) MAX_TURNS="$OPTARG" ;;
@@ -150,6 +195,8 @@ while getopts "m:e:t:n:o:d:f:T:R:x:P:S:sr:p:L:l:a:G:" opt; do
     l) LABEL="$OPTARG" ;;
     a) ADD_DIRS+=(--add-dir "$OPTARG") ;;
     G) SHAPE="$OPTARG" ;;
+    D) DISCLOSURE="$OPTARG" ;;
+    C) CONTEXT_FILES+=("$OPTARG") ;;
     *) echo "bad usage; see header" >&2; exit 2 ;;
   esac
 done
@@ -165,6 +212,26 @@ fi
 [ -n "$PROMPT" ] || { echo "empty prompt" >&2; exit 2; }
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 4; }
+
+# ---------------------------------------------------------------- model resolution
+# One registry call yields everything the dispatch path needs. Python startup
+# dominates on Windows, so five `resolve --field` calls would cost most of a
+# second for what is one dict lookup.
+REGISTRY_CLI="$(dirname "${BASH_SOURCE[0]}")/../tools/model_registry.py"
+BUDGET_HOOK="$(dirname "${BASH_SOURCE[0]}")/../hooks/budget_posture.py"
+
+if ! MODEL_FIELDS="$(python3 "$REGISTRY_CLI" sidecar-fields "$MODEL" 2>&1)"; then
+  {
+    echo "[sidecar] cannot resolve -m '$MODEL':"
+    echo "  $MODEL_FIELDS"
+    echo "  registry: $REGISTRY_CLI"
+    echo "  This is the SPENDING consumer, so it fails closed: no fallback to a"
+    echo "  hardcoded id, because dispatching at a tier nobody chose costs money."
+  } >&2
+  exit 2
+fi
+IFS='|' read -r MODEL MODEL_ALIAS AUTH_TIER MIN_BAND MIN_BALANCE FRESH_RATE BALANCE_URL \
+  <<< "$MODEL_FIELDS"
 
 # Fail BEFORE dispatch on an unwritable record path — an arm that runs and then
 # discards its provenance is unscoreable under MANIFEST seal discipline.
@@ -192,6 +259,15 @@ if [ -n "$SHAPE" ]; then
     *) echo "invalid guard shape '$SHAPE' (any|survey|review|author)" >&2; exit 2 ;;
   esac
 fi
+if [ -n "$DISCLOSURE" ]; then
+  case "$DISCLOSURE" in
+    bare|pointer|full) ;;
+    *) echo "invalid disclosure tier '$DISCLOSURE' (bare|pointer|full)" >&2; exit 2 ;;
+  esac
+fi
+for _cf in "${CONTEXT_FILES[@]}"; do
+  [ -f "$_cf" ] || { echo "context file not found: $_cf" >&2; exit 2; }
+done
 
 # Parse `set DEEPSEEK_API_KEY=...` out of the CMD-format env file the ai-worker
 # MCP server uses. Strip CR (the file has Windows line endings) and any quotes.
@@ -204,6 +280,115 @@ case "$DEEPSEEK_KEY" in
   ""|"<redacted>"|"your-key-here"|"sk-xxx"*)
     echo "DEEPSEEK_API_KEY not populated in $ENV_FILE" >&2; exit 3 ;;
 esac
+
+# -------------------------------------------------------------- preflight gate
+# Runs BEFORE any dispatch. Two independent checks with different scopes:
+#
+#   BAND    every model, both tiers. The band read is local and free, so gating it
+#           behind authTier would leave flash's minBand authored, validated and
+#           never read - a dead config value that reads as a live prohibition.
+#           Flash's `On pace` floor encodes live doctrine: sidecar spend is
+#           forbidden in Surplus, where unused plan quota simply expires.
+#   BALANCE `gated` models only (one HTTP round-trip; the common path pays nothing).
+#
+# Band NAMES are ordered by BURN RATE, not by headroom: Surplus is the LOW-pressure
+# band ("plan quota going unused - spend it"), Ahead/Hot are HIGH-pressure ones
+# ("quota tight - paid transport is now the cheaper currency"). Every message below
+# prints the pressure NUMBER with the name, because the name alone reads backwards.
+BAND_OUT="$(python3 "$BUDGET_HOOK" --band --pressure 2>/dev/null)"; BAND_RC=$?
+BAND="${BAND_OUT%%$'\t'*}"
+BAND_P="${BAND_OUT##*$'\t'}"
+[ "$BAND_P" = "$BAND" ] && BAND_P="?"
+
+if [ "$AUTHORIZED" -eq 1 ]; then
+  echo "[sidecar] -A: band gate bypassed for $MODEL_ALIAS ($MODEL); band=$BAND pressure=$BAND_P, floor=$MIN_BAND" >&2
+elif [ "$BAND_RC" -ne 0 ]; then
+  # `unknown` is NOT a band. Treated as not-satisfied, and said so explicitly:
+  # "unreadable" and "too low" are different problems with different fixes.
+  {
+    echo "[sidecar] REFUSING $MODEL_ALIAS ($MODEL): budget band is UNREADABLE (not low)."
+    echo "  $BUDGET_HOOK --band exited $BAND_RC; no cc-cachestat state file was findable."
+    echo "  That file is written by ~/.claude/statusline.py every turn - if it is absent,"
+    echo "  the gate has no input and cannot certify the floor of $MIN_BAND."
+    echo "  Override deliberately with -A, or restore the statusline."
+  } >&2
+  exit 5
+else
+  python3 "$REGISTRY_CLI" band-satisfies "$BAND" "$MIN_BAND"; SAT_RC=$?
+  if [ "$SAT_RC" -ne 0 ]; then
+    {
+      if [ "$SAT_RC" -eq 2 ]; then
+        echo "[sidecar] REFUSING $MODEL_ALIAS ($MODEL): band name '$BAND' is not in budget_posture.BANDS."
+      else
+        echo "[sidecar] REFUSING $MODEL_ALIAS ($MODEL): band $BAND (7d pressure $BAND_P) is below the floor $MIN_BAND."
+        echo "  Bands rank by BURN RATE: Surplus < On pace < Ahead < Hot. A low band means"
+        echo "  plan quota is going unused - spend that first; it expires."
+      fi
+      echo "  Override: re-run with -A. Policy home: .claude/skills/orchestration/SKILL.md section 5."
+    } >&2
+    exit 5
+  fi
+fi
+
+if [ "$AUTH_TIER" = "gated" ] && [ -n "$BALANCE_URL" ]; then
+  # Applies ALWAYS, -A included: -A authorizes intent, it cannot conjure funds.
+  BAL_RAW="$(curl -s --max-time 15 "$BALANCE_URL" -H "Authorization: Bearer $DEEPSEEK_KEY" 2>/dev/null)"
+  BAL_NOW="$(BAL_V="$BAL_RAW" python3 -c '
+import json, os, sys
+try:
+    infos = json.loads(os.environ["BAL_V"]).get("balance_infos") or []
+    # total_balance is a STRING in this API ("6.74"), not a number.
+    print(max(float(i["total_balance"]) for i in infos))
+except Exception:
+    sys.exit(1)
+' 2>/dev/null)" || BAL_NOW=""
+  if [ -z "$BAL_NOW" ]; then
+    {
+      echo "[sidecar] REFUSING $MODEL_ALIAS ($MODEL): balance probe FAILED (not: balance low)."
+      echo "  $BALANCE_URL returned nothing parsable. Failing loud before spending, because"
+      echo "  an unverified balance on a gated model is the case this gate exists for."
+    } >&2
+    exit 6
+  fi
+  if ! awk -v b="$BAL_NOW" -v f="$MIN_BALANCE" 'BEGIN{exit !(b+0 >= f+0)}'; then
+    echo "[sidecar] REFUSING $MODEL_ALIAS ($MODEL): balance \$$BAL_NOW is below the \$$MIN_BALANCE floor. -A does not override this." >&2
+    exit 6
+  fi
+  echo "[sidecar] $MODEL_ALIAS preflight OK: band=$BAND (pressure $BAND_P, floor $MIN_BAND), balance=\$$BAL_NOW (floor \$$MIN_BALANCE), fresh-token rate \$$FRESH_RATE/1M" >&2
+fi
+
+# -------------------------------------------------------- disclosure tier
+# Constructive disclosure: the child runs isolated and the tier appends exactly
+# what it names. `full` = today's behavior (RUN_CWD == WORKDIR, no appends);
+# `bare`/`pointer` = scratch run-cwd; the repo grant (--add-dir "$WORKDIR")
+# is unchanged, so the child keeps Read access to the repo either way.
+# Appended paths must be ABSOLUTE: the child resolves them against its own cwd
+# (RUN_CWD), not this script's — a relative dirname-of-BASH_SOURCE breaks in
+# the isolated tiers exactly where these appends are the only context.
+_SDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_CWD="$WORKDIR"
+APPEND_ARGS=()
+case "$DISCLOSURE" in
+  bare|pointer)
+    RUN_CWD="$(mktemp -d)"
+    # The child (a Windows process) may still hold RUN_CWD when EXIT fires;
+    # a busy-dir rm must not fail the script.
+    trap 'rm -rf "$RUN_CWD" 2>/dev/null || :' EXIT
+    if [ -n "$SHAPE" ]; then
+      _guard="$_SDIR/guards/$SHAPE.md"
+      [ -f "$_guard" ] || { echo "guard file not found: $_guard" >&2; exit 2; }
+      APPEND_ARGS+=(--append-system-prompt-file "$_guard")
+    fi
+    ;;
+esac
+if [ "$DISCLOSURE" = "pointer" ]; then
+  _mem="$_SDIR/auto-memory/MEMORY.md"
+  [ -f "$_mem" ] || { echo "pointer disclosure requires $_mem" >&2; exit 2; }
+  APPEND_ARGS+=(--append-system-prompt-file "$_mem")
+fi
+for _cf in "${CONTEXT_FILES[@]}"; do
+  APPEND_ARGS+=(--append-system-prompt-file "$(cd "$(dirname "$_cf")" && pwd)/$(basename "$_cf")")
+done
 
 EFFORT_ARGS=()
 if [ -n "$EFFORT" ]; then
@@ -249,12 +434,13 @@ while IFS='=' read -r _name _; do
   case "$_name" in CLAUDE*|ANTHROPIC*) SCRUB+=(-u "$_name") ;; esac
 done < <(env)
 
-# Subagent/background-model names are pinned to the REQUESTED model: an
-# Anthropic registry name (e.g. a spawned agent's claude-opus-*) is a
-# recognized alias on DeepSeek's compat layer and silently routes to V4 PRO
-# (billing-confirmed 2026-08-03). Belt to the -x suspenders.
+# Subagent/background-model names are pinned to the REQUESTED model. Left
+# unpinned, a spawned agent's Anthropic name reaches the compat layer, which
+# aliases full `claude-*` ids BY TIER: claude-opus-* -> V4 Pro (the expensive
+# one, billing-confirmed 2026-08-03), claude-sonnet-*/haiku-*/fable-* -> V4 Flash.
+# Pinning removes the tier lottery entirely. Belt to the -x suspenders.
 run_claude() {
-  cd "$WORKDIR" && env \
+  cd "$RUN_CWD" && env \
     ${SCRUB[@]+"${SCRUB[@]}"} \
     CLAUDE_CODE_ENTRYPOINT=cli \
     ${DS_CONFIG_DIR:+CLAUDE_CONFIG_DIR="$DS_CONFIG_DIR"} \
@@ -274,6 +460,7 @@ run_claude() {
       ${VERBOSE_ARGS[@]+"${VERBOSE_ARGS[@]}"} \
       --allowedTools "$TOOLS" \
       ${DISALLOWED:+--disallowedTools "$DISALLOWED"} \
+      ${APPEND_ARGS[@]+"${APPEND_ARGS[@]}"} \
       ${MAX_TURNS:+--max-turns "$MAX_TURNS"} \
       ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
       --add-dir "$WORKDIR" \
@@ -297,9 +484,18 @@ if [ -n "$RECORD" ]; then
   # heredoc and a data pipe cannot share the channel.
   RAW_TMP="$(mktemp)"
   printf '%s' "$OUTPUT" > "$RAW_TMP"
-  RAW_V="$RAW_TMP" EFFORT_V="$EFFORT" MODEL_V="$MODEL" RC_V="$rc" \
-    HB_V="$HARNESS_BASE" HS_V="$HARNESS_SESSION" REC_V="$RECORD" \
-    SCHEMA_V="$SCHEMA_FILE" LEDGER_V="$LEDGER" LABEL_V="$LABEL" python3 - <<'PYEOF'
+  # `python3` may be native Windows Python, which cannot resolve an MSYS path —
+  # /tmp and /c/... open as FileNotFoundError and the record is silently lost.
+  # Hand it native paths where cygpath exists; elsewhere this is the identity.
+  to_native() {
+    [ -z "$1" ] && return 0
+    if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi
+  }
+  RAW_V="$(to_native "$RAW_TMP")" EFFORT_V="$EFFORT" MODEL_V="$MODEL" RC_V="$rc" \
+    HB_V="$HARNESS_BASE" HS_V="$HARNESS_SESSION" REC_V="$(to_native "$RECORD")" \
+    SCHEMA_V="$(to_native "$SCHEMA_FILE")" LEDGER_V="$LEDGER" LABEL_V="$LABEL" \
+    DISCLOSURE_V="$DISCLOSURE" \
+    REGCLI_V="$REGISTRY_CLI" python3 - <<'PYEOF'
 import json, os, sys, time
 raw = open(os.environ["RAW_V"], encoding="utf-8", errors="replace").read()
 try:
@@ -329,22 +525,37 @@ else:
     fresh = usage.get("input_tokens") or 0
     cache_read = usage.get("cache_read_input_tokens") or 0
     out_tok = usage.get("output_tokens") or 0
-# costUSD is COMPUTED from raw token counts at DeepSeek list prices
-# (fresh 0.14 / cacheRead 0.003 / output 0.28 per 1M). NEVER read
-# total_cost_usd: Claude Code prices DeepSeek tokens on its Anthropic
-# table and the reported field is wrong by ~39.2x (measured 2026-08).
-cost = fresh * 0.14 / 1e6 + cache_read * 0.003 / 1e6 + out_tok * 0.28 / 1e6
+# costUSD is COMPUTED from raw token counts at the per-model rates in
+# .claude/reference/external_models.json (the ONE price home - never re-author a
+# rate here, in code or in a comment). NEVER read total_cost_usd: Claude Code
+# prices DeepSeek tokens on its Anthropic table, so that field is inflated by the
+# Anthropic-to-DeepSeek rate ratio - ~39x on flash, proportionally smaller on pro.
+#
+# Keyed on servedModel, falling back to requestedModel when modelUsage is absent.
+# Hardcoded flash rates here under-reported a real V4 Pro run by exactly 3.11x
+# (measured 2026-08-12: recorded $0.007934, true cost $0.024652).
+sys.path.insert(0, os.path.join(os.path.dirname(os.environ["REGCLI_V"])))
+import model_registry as _reg
+_cost_model = (served[0] if len(served) == 1 else None) or os.environ["MODEL_V"]
+try:
+    cost = _reg.price_run(_cost_model, fresh, cache_read, out_tok)
+    cost_basis = _cost_model
+except Exception as exc:
+    # Never lose the record over pricing: keep the tokens, flag the gap.
+    cost, cost_basis = None, f"UNPRICED ({exc})"
 record = {
     "label": os.environ.get("LABEL_V") or None,
     "servedModel": served[0] if len(served) == 1 else (served or None),
     "requestedModel": os.environ["MODEL_V"],
     "effort": os.environ["EFFORT_V"] or None,
+    "disclosureTier": os.environ.get("DISCLOSURE_V") or None,
     "harnessBase": os.environ["HB_V"],
     "harnessSession": os.environ["HS_V"],
     "inputTokens": fresh,
     "cacheReadTokens": cache_read,
     "outputTokens": out_tok,
-    "costUSD": round(cost, 6),
+    "costUSD": round(cost, 6) if cost is not None else None,
+    "costBasis": cost_basis,
     "numTurns": data.get("num_turns"),
     "durationMs": data.get("duration_ms"),
     "stopReason": data.get("stop_reason") or data.get("subtype"),

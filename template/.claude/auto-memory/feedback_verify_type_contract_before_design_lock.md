@@ -11,6 +11,6 @@ Before locking a design that mutates, replaces, snapshots, or compares a type, v
 
 **Why:** review passes sharpen design *shape* but can't catch a wrong type-contract baked into the shared context — "code is truth" applies to design brainstorms, not just runtime.
 
-**How to apply:** grep/Read the type declaration for the contract BEFORE the Step-5 design lock. Links: [[feedback_verify_explore_agent_empirical_claims]], [[red_team_must_be_independent_dispatch]], [[feedback_inventory_implementation_not_just_contract]].
+**How to apply:** grep/Read the type declaration for the contract BEFORE the Step-5 design lock. Links: [[feedback_delegate_output_trust]], [[feedback_inventory_implementation_not_just_contract]].
 
 **Concrete:** P4 gated-edge brainstorm (2026-07-04) — 4 per-decision red-teams + 1 integration red-team + the draft all assumed a mutable `SetGated`; `GraphEdge` was `sealed` + all-get-only (immutable), so the mutate-in-place mechanism was impossible → replace-and-swap. Only reading `GraphEdge.cs` caught it.

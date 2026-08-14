@@ -213,6 +213,7 @@ CODE_PATTERNS = [
     '.claude/workflows/explore_fanout.js',
     '.claude/commands/agents/explore_agents.md',
     '.claude/commands/agents/worklog_drive_triage.md',
+    '.claude/rules/source_trust.md',
 ]
 
 # Fully domain-agnostic — proven portable to a non-code content-production
