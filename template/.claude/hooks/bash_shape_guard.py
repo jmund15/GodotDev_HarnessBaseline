@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hook: PreToolUse (Bash) - Deny command shapes the auto-mode classifier cannot analyze
+Hook: PreToolUse (Bash|Monitor) - Deny command shapes the auto-mode classifier cannot analyze
 
 Auto permission mode approves a Bash command only when the platform can statically
 verify it. Shapes it cannot analyze - heredocs (<<), command substitution ($(...)),
@@ -56,7 +56,7 @@ def main():
         if src is not sys.stdin:
             src.close()
 
-    if input_data.get("tool_name") != "Bash":
+    if input_data.get("tool_name") not in ("Bash", "Monitor"):
         print("{}")
         sys.exit(0)
 
