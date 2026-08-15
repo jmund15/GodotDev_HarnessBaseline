@@ -4,7 +4,7 @@ Hook: PreToolUse (Bash) - Deny command shapes the auto-mode classifier cannot an
 
 Auto permission mode approves a Bash command only when the platform can statically
 verify it. Shapes it cannot analyze - heredocs (<<), command substitution ($(...)),
-backtick substitution - are refused classifier delegation and force a manual
+backtick substitution, backgrounding (&) - are refused classifier delegation and force a manual
 permission prompt, even when the command itself is safe. This hook denies those
 shapes BEFORE the permission system sees them, naming the statically-verifiable
 replacement, so the agent self-corrects and no manual prompt appears.
@@ -29,6 +29,7 @@ _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 _HEREDOC = re.compile(r"<<")    # <<EOF / <<'EOF' / <<-EOF / <<< (here-string)
 _SUBST = re.compile(r"\$\(")    # $(...) command substitution
 _BACKTICK = re.compile(r"`")    # `...` command substitution
+_BACKGROUND = re.compile(r"(?<![\d&])&(?![\d&])")  # background & — not &&, not 2>&1, not &>
 
 
 def _deny(reason: str) -> None:
@@ -86,6 +87,16 @@ def main():
             "same fail-closed class as $(...). Rewrite statically: Write the probe "
             "to a file and run python3 <probe.py> / bash <script>. "
             "Canon: CLAUDE.md §Shell Discipline."
+        )
+        sys.exit(0)
+    if _BACKGROUND.search(scan):
+        _deny(
+            "Blocked by bash_shape_guard: background operator (&) - the auto-mode "
+            "classifier cannot statically analyze backgrounded processes and would "
+            "prompt the user manually. Rewrite statically: use the Bash tool's "
+            "run_in_background parameter instead of shell '&', or restructure "
+            "without backgrounding (Write-tool probe scripts, timeout-wrapped "
+            "foreground runs). Canon: CLAUDE.md §Shell Discipline."
         )
         sys.exit(0)
 
