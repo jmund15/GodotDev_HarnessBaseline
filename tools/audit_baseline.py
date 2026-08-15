@@ -12,7 +12,8 @@ Checks (each emits findings with a severity):
   manifest-staleness    on-disk manifest == what gen_manifest.py would emit now
   leak-scan             source-project identifiers / machine paths in template/
   secret-scan           token/key/credential shapes in template/
-  layer-mistag          universal-tagged files that look substantively Jmodot-heavy
+  layer-gate            pure files naming >=4 godot/coding markers; coding files
+                        naming >=4 godot markers (advisory archetype-appropriateness)
 
 Severities: ERROR (publish blocker, exit 1), WARN (review before publish, exit 0),
 INFO (advisory). Run from the baseline repo root:  python3 tools/audit_baseline.py
@@ -63,16 +64,24 @@ SECRET_PATTERNS = [
     # $-leading values are shell variable expansions, not literals — skip them.
     re.compile(r"""(?:password|secret|api[_-]?key|token)\s*[:=]\s*["'][^"'{<$\s]{8,}["']""", re.I),
 ]
-# Concrete Jmodot framework identifiers. A *universal*-tagged file naming several
-# distinct ones is probably substantively Jmodot-specific and would wrongly survive
-# --no-jmodot stripping. Generic single mentions (a tool-routing example naming
-# "Blackboard" once) are not the target -- hence the distinct-token threshold below.
-JMODOT_TYPE_TOKENS = [
+# Concrete Godot/Jmodot-stack identifiers. A *pure*- or *coding*-tagged file
+# naming several distinct ones is probably substantively godot-specific and
+# would wrongly be consumed by a non-Godot profile. Generic single mentions (a
+# tool-routing example naming "Blackboard" once) are not the target -- hence the
+# distinct-token threshold below.
+GODOT_MARKERS = [
+    r"\bGodot\b", r"\bGdUnit4?\b", r"\.tscn\b", r"\.tres\b",
     r"\bBBDataSig\b", r"\bJmoLogger\b", r"\bMovementProcessor\w*\b",
     r"\bEntityStatSheet\b", r"\bCombatFactor\w*\b", r"\bBlackboard\b",
     r"\bBehaviorTree\b", r"\bIComponent\b", r"\bEntityStatModifier\b",
 ]
-LAYER_MISTAG_MIN_DISTINCT = 4
+# Concrete *programming* identifiers (beyond content production). A *pure*-tagged
+# file naming several distinct ones is probably substantively coding-specific.
+CODING_MARKERS = [
+    r"\bC#\b", r"\bcsharp\b", r"\bnamespace\b", r"\bdotnet\b",
+    r"\.cs\b", r"\bcsproj\b", r"\bNuGet\b", r"\bsubmodule\b",
+]
+LAYER_GATE_MIN_DISTINCT = 4
 # Domain nouns that must not appear in a *core*-tagged file: core is consumed by
 # non-code content-production projects, so code/engine vocabulary is a mistag
 # signal there the same way Jmodot types are for universal. Content-side nouns
@@ -98,6 +107,9 @@ CORE_DOMAIN_ALLOWLIST = {
     ".claude/commands/agents/orchestrator_action_protocol.md",
     ".claude/commands/autolearn.md",
     ".claude/commands/reindex_search.md",
+    # Two-shape lens set (harness/doctrine AND code plans): classified pure per
+    # the archetype-home rule, but its plan-check targets are code/engine nouns.
+    ".claude/commands/plan_check.md",
     ".claude/skills/instruction_quality/SKILL.md",
     ".claude/skills/parallel_agents/SKILL.md",
     ".claude/workflows/review_fanout.js",
@@ -199,21 +211,38 @@ def check_leaks_and_secrets(f: Findings) -> None:
 
 
 def check_layer_mistag(f: Findings, manifest: dict) -> None:
+    """Archetype-gate: a file must not substantively name a *narrower* archetype.
+
+    pure files must not name >= 4 godot markers NOR >= 4 coding markers.
+    coding files must not name >= 4 godot markers.
+    All advisory (INFO): the classification rule's canonical home is sync_baseline.md.
+    """
     if not manifest:
         return
     layer_of = {e["path"]: e["layer"] for e in manifest["files"]}
     for p, rel in iter_template_files():
-        if layer_of.get(rel) not in ("core", "code") or rel in LAYER_MISTAG_ALLOWLIST:
+        layer = layer_of.get(rel)
+        if layer not in ("pure", "coding") or rel in LAYER_MISTAG_ALLOWLIST:
             continue
         text = read_text(p)
         if text is None:
             continue
-        hits = sorted({tok for tok in JMODOT_TYPE_TOKENS if re.search(tok, text)})
-        if len(hits) >= LAYER_MISTAG_MIN_DISTINCT:
-            names = ", ".join(t.strip("\\b") for t in hits)
-            f.add("INFO", "layer-mistag", rel,
-                  f"universal-tagged but names {len(hits)} Jmodot types ({names}) -- "
-                  "confirm it's stack-agnostic, or move to the jmodot layer")
+        g_hits = sorted({t for t in GODOT_MARKERS if re.search(t, text)})
+        c_hits = sorted({t for t in CODING_MARKERS if re.search(t, text)})
+        if layer == "pure":
+            if len(g_hits) >= LAYER_GATE_MIN_DISTINCT:
+                f.add("INFO", "layer-gate", rel,
+                      f"pure-tagged but names {len(g_hits)} godot markers "
+                      f"({', '.join(g_hits)}) -- confirm stack-agnostic or move to godot")
+            if len(c_hits) >= LAYER_GATE_MIN_DISTINCT:
+                f.add("INFO", "layer-gate", rel,
+                      f"pure-tagged but names {len(c_hits)} coding markers "
+                      f"({', '.join(c_hits)}) -- confirm content-agnostic or move to coding")
+        elif layer == "coding":
+            if len(g_hits) >= LAYER_GATE_MIN_DISTINCT:
+                f.add("INFO", "layer-gate", rel,
+                      f"coding-tagged but names {len(g_hits)} godot markers "
+                      f"({', '.join(g_hits)}) -- confirm engine-agnostic or move to godot")
 
 
 def check_core_domain_nouns(f: Findings, manifest: dict) -> None:
@@ -221,7 +250,7 @@ def check_core_domain_nouns(f: Findings, manifest: dict) -> None:
         return
     layer_of = {e["path"]: e["layer"] for e in manifest["files"]}
     for p, rel in iter_template_files():
-        if layer_of.get(rel) != "core" or rel in CORE_DOMAIN_ALLOWLIST:
+        if layer_of.get(rel) != "pure" or rel in CORE_DOMAIN_ALLOWLIST:
             continue
         text = read_text(p)
         if text is None:
@@ -230,7 +259,7 @@ def check_core_domain_nouns(f: Findings, manifest: dict) -> None:
         if len(hits) >= CORE_DOMAIN_MIN_DISTINCT:
             names = ", ".join(t.replace(r"\b", "") for t in hits)
             f.add("WARN", "core-domain-noun", rel,
-                  f"core-tagged but names {len(hits)} domain tokens ({names}) -- "
+                  f"pure-tagged but names {len(hits)} domain tokens ({names}) -- "
                   "extract to an adaptation point or demote a layer")
 
 

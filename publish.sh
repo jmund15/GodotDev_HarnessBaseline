@@ -43,7 +43,7 @@ git -C "$STAGE" add -A
 git -C "$STAGE" \
   -c user.name="${NAME:-Harness Baseline}" \
   -c user.email="${EMAIL:-noreply@users.noreply.github.com}" \
-  commit -m "feat: initial harness baseline (extracted from PushinPotions)"
+  commit -m "feat: initial harness baseline (extracted from the harness baseline)"
 git -C "$STAGE" remote add origin "$REMOTE"
 # Force the gh CLI credential helper for this push, clearing any inherited helper
 # (e.g. Git Credential Manager) first. GitHub rejects password auth over HTTPS;

@@ -6,24 +6,25 @@
 #       [--vault-root "C:/Users/you/Documents/ObsidianVault"] \
 #       [--project-root "C:/path/to/NewGame"] \
 #       [--repo https://github.com/you/harness-baseline.git] [--ref main] \
-#       [--layers core,code,godot,jmodot] [--no-jmodot] [--force]
+#       [--layers pure,coding,godot] [--force]
 #
-#   --layers takes a PREFIX of core -> code -> godot -> jmodot (e.g. "core" for a
-#   content-production project, "core,code" for a non-Godot code project). Default
-#   is all four. --no-jmodot is the legacy alias for core,code,godot.
+#   --layers takes a PREFIX of pure -> coding -> godot (e.g. "pure" for a
+#   content-production project, "pure,coding" for a non-Godot code project). Default
+#   is all three archetypes.
 #
 # What it does:
 #   1. Copies template/.claude into the target project (refusing to clobber an
 #      existing .claude unless --force).
-#   2. Substitutes {{PROJECT_NAME}} / {{VAULT_ROOT}} / {{PROJECT_ROOT}} everywhere.
-#   3. Optionally strips the jmodot layer (manifest-driven).
+#   2. Substitutes {{PROJECT_NAME}} / {{PROJECT_NAMESPACE}} / {{VAULT_ROOT}} /
+#      {{PROJECT_ROOT}} everywhere ({{PROJECT_NAMESPACE}} defaults to the project name).
+#   3. Optionally strips layers not in --layers (manifest-driven).
 #   4. Writes .claude/baseline.lock.json via baseline_sync.py init so /sync_baseline
 #      works from day one.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TARGET="" PROJECT_NAME="" VAULT_ROOT="" PROJECT_ROOT="" REPO="" REF="main"
-NO_JMODOT=0 FORCE=0 LAYERS="core,code,godot,jmodot"
+FORCE=0 LAYERS="pure,coding,godot"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,7 +35,6 @@ while [[ $# -gt 0 ]]; do
     --repo) REPO="$2"; shift 2;;
     --ref) REF="$2"; shift 2;;
     --layers) LAYERS="$2"; shift 2;;
-    --no-jmodot) NO_JMODOT=1; shift;;
     --force) FORCE=1; shift;;
     *) echo "unknown arg: $1" >&2; exit 1;;
   esac
@@ -53,14 +53,13 @@ fi
 mkdir -p "$TARGET"
 cp -r "$HERE/template/.claude" "$TARGET/"
 
-if [[ $NO_JMODOT -eq 1 ]]; then LAYERS="core,code,godot"; fi
 case "$LAYERS" in
-  core|core,code|core,code,godot|core,code,godot,jmodot) ;;
-  *) echo "--layers must be a prefix of core,code,godot,jmodot (got: $LAYERS)" >&2; exit 1;;
+  pure|pure,coding|pure,coding,godot) ;;
+  *) echo "--layers must be a prefix of pure,coding,godot (got: $LAYERS)" >&2; exit 1;;
 esac
 
-TARGET="$TARGET" PROJECT_NAME="$PROJECT_NAME" VAULT_ROOT="$VAULT_ROOT" \
-PROJECT_ROOT="$PROJECT_ROOT" LAYERS="$LAYERS" HERE="$HERE" python3 - <<'EOF'
+TARGET="$TARGET" PROJECT_NAME="$PROJECT_NAME" PROJECT_NAMESPACE="${PROJECT_NAMESPACE:-$PROJECT_NAME}" \
+VAULT_ROOT="$VAULT_ROOT" PROJECT_ROOT="$PROJECT_ROOT" LAYERS="$LAYERS" HERE="$HERE" python3 - <<'EOF'
 import json, os
 from pathlib import Path
 
@@ -68,6 +67,7 @@ target = Path(os.environ["TARGET"])
 here = Path(os.environ["HERE"])
 subs = {
     "{{PROJECT_NAME}}": os.environ["PROJECT_NAME"],
+    "{{PROJECT_NAMESPACE}}": os.environ["PROJECT_NAMESPACE"],
     "{{VAULT_ROOT}}": os.environ.get("VAULT_ROOT", ""),
     "{{PROJECT_ROOT}}": os.environ.get("PROJECT_ROOT", ""),
 }
@@ -152,6 +152,7 @@ EOF
 ( cd "$TARGET" && python3 .claude/tools/baseline_sync.py init \
     --baseline-dir "$HERE" --repo "$REPO" --ref "$REF" \
     --sub "{{PROJECT_NAME}}=$PROJECT_NAME" \
+    --sub "{{PROJECT_NAMESPACE}}=${PROJECT_NAMESPACE:-$PROJECT_NAME}" \
     ${VAULT_ROOT:+--sub "{{VAULT_ROOT}}=$VAULT_ROOT"} \
     ${PROJECT_ROOT:+--sub "{{PROJECT_ROOT}}=$PROJECT_ROOT"} )
 

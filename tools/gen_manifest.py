@@ -4,14 +4,13 @@ gen_manifest.py — regenerate baseline.manifest.json from the template/ tree.
 
 Each manifest entry: {"path": <relpath under template/>, "layer": ..., "sync": ...}
 
-  layer "core"      : any Claude Code project, including non-code content production
-  layer "code"      : any *programming* project (builds, tests, PRs, refactors)
-  layer "godot"     : Godot 4.x + C# projects
-  layer "jmodot"    : projects built on the Jmodot framework submodule
+  layer "pure"      : any Claude Code project, including non-code content production
+  layer "coding"    : any *programming* project (builds, tests, PRs, refactors)
+  layer "godot"     : Godot 4.x + C# projects (absorbs the former jmodot layer)
   sync  "auto"      : hash-tracked by baseline_sync.py in consumer projects
   sync  "seed"      : copied at bootstrap, thereafter project-owned (watch-only)
 
-A consumer subscribes to a layer *prefix* of core -> code -> godot -> jmodot
+A consumer subscribes to a layer *prefix* of pure -> coding -> godot
 (bootstrap --layers). Layer assignment has NO fallback: every template file must
 match exactly one layer's pattern list, or generation fails loudly. The old
 default-to-universal fallthrough is what let ~100 files mistag silently.
@@ -38,32 +37,6 @@ SEED_PATTERNS = [
     ".claude/commands/checklists/known_failure_modes.md",
 ]
 
-JMODOT_PATTERNS = [
-    ".claude/skills/jmodot/*",
-    ".claude/skills/status_effect_authoring/*",
-    ".claude/skills/vfx_patterns/*",
-    ".claude/skills/logging_methodology/*",
-    ".claude/rules/hsm_bt_patterns.md",
-    ".claude/rules/jmodot_*.md",
-    ".claude/rules/visual_layers.md",
-    ".claude/hooks/check_logger_tag_prefix.py",
-    ".claude/commands/agents/jmodot_submodule_procedure.md",
-    ".claude/auto-memory/jmodot_*.md",
-    ".claude/auto-memory/arch_rule_*.md",
-    ".claude/auto-memory/Blackboard_NullStorage_Asymmetry.md",
-    ".claude/auto-memory/gotcha_blackboard_*.md",
-    ".claude/auto-memory/gotcha_component_caches_*.md",
-    ".claude/auto-memory/feedback_prefer_typed_shapes_over_empty_markers.md",
-    ".claude/auto-memory/feedback_prefer_data_params_over_injected_delegates.md",
-    ".claude/auto-memory/feedback_typed_state_over_bb_flag_soup.md",
-    ".claude/auto-memory/feedback_dont_defer_existing_framework_abstractions.md",
-    # Jmodot-specific items the old universal fallback mistagged:
-    ".claude/auto-memory/gotcha_config_exception_node_bound_not_static.md",
-    ".claude/auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md",
-    ".claude/auto-memory/gotcha_authoring_validator_needs_static_resolvable_reference.md",
-    ".claude/commands/doc_workflow_battery.md",
-]
-
 GODOT_PATTERNS = [
     ".claude/skills/testing/*",
     ".claude/skills/refactor_procedure/*",
@@ -71,7 +44,8 @@ GODOT_PATTERNS = [
     ".claude/skills/shader_authoring/*",
     ".claude/skills/parameterized_asset_pipeline/*",
     ".claude/skills/game_vision/*",
-    ".claude/rules/csharp_*.md",
+    ".claude/skills/project_subsystems/*",
+    ".claude/rules/csharp_patterns.md",
     ".claude/rules/godot_files.md",
     ".claude/rules/scene_authoring.md",
     ".claude/rules/physics_patterns.md",
@@ -92,8 +66,6 @@ GODOT_PATTERNS = [
     ".claude/commands/agents/pr_test_checklist_conventions.md",
     ".claude/cloud-install.sh",
     ".claude/scripts/run_test_suite.ps1",
-    ".claude/tools/csharp-ls-adapter.js",
-    ".claude/tools/setup-csharp-ls.sh",
     ".claude/auto-memory/gotcha_cascade_gate_*.md",
     ".claude/auto-memory/gotcha_godot*.md",
     ".claude/auto-memory/gotcha_gdunit4_*.md",
@@ -134,15 +106,38 @@ GODOT_PATTERNS = [
     '.claude/skills/prototype/SKILL.md',
     '.claude/tools/verify_claims.py',
     '.claude/tools/verify_doc_citations.py',
+    # Former jmodot layer — folded into godot per the three-archetype taxonomy:
+    ".claude/skills/jmodot/*",
+    ".claude/skills/status_effect_authoring/*",
+    ".claude/skills/vfx_patterns/*",
+    ".claude/skills/logging_methodology/*",
+    ".claude/rules/hsm_bt_patterns.md",
+    ".claude/rules/jmodot_*.md",
+    ".claude/rules/visual_layers.md",
+    ".claude/hooks/check_logger_tag_prefix.py",
+    ".claude/commands/agents/jmodot_submodule_procedure.md",
+    ".claude/auto-memory/jmodot_*.md",
+    ".claude/auto-memory/arch_rule_*.md",
+    ".claude/auto-memory/Blackboard_NullStorage_Asymmetry.md",
+    ".claude/auto-memory/gotcha_blackboard_*.md",
+    ".claude/auto-memory/gotcha_component_caches_*.md",
+    ".claude/auto-memory/feedback_prefer_typed_shapes_over_empty_markers.md",
+    ".claude/auto-memory/feedback_prefer_data_params_over_injected_delegates.md",
+    ".claude/auto-memory/feedback_typed_state_over_bb_flag_soup.md",
+    ".claude/auto-memory/feedback_dont_defer_existing_framework_abstractions.md",
+    ".claude/auto-memory/gotcha_config_exception_node_bound_not_static.md",
+    ".claude/auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md",
+    ".claude/auto-memory/gotcha_authoring_validator_needs_static_resolvable_reference.md",
+    ".claude/commands/doc_workflow_battery.md",
+    ".claude/commands/workstation_setup.md",
 ]
 
 # Any programming project, but not content production: build/test/PR machinery,
 # plan/roadmap pipeline, tool-routing hook family, code-architecture doctrine.
-CODE_PATTERNS = [
+CODING_PATTERNS = [
     ".claude/skills/architecture_brainstorm/*",
     ".claude/skills/architecture_philosophy/*",
     ".claude/skills/debugging/*",
-    ".claude/skills/project_subsystems/*",
     ".claude/hooks/pre_read_dispatch.py",
     ".claude/hooks/post_read_dispatch.py",
     ".claude/hooks/routing_audit.py",
@@ -151,7 +146,6 @@ CODE_PATTERNS = [
     ".claude/commands/mvp_plan.md",
     ".claude/commands/part_drive.md",
     ".claude/commands/part_execute.md",
-    ".claude/commands/plan_check.md",
     ".claude/commands/plan_drive.md",
     ".claude/commands/plan_handoff.md",
     ".claude/commands/plan_part.md",
@@ -206,6 +200,9 @@ CODE_PATTERNS = [
     ".claude/tools/score_routing_battery.py",
 
     '.claude/rules/design_litmus.md',
+    '.claude/rules/csharp_lsp.md',
+    '.claude/tools/csharp-ls-adapter.js',
+    '.claude/tools/setup-csharp-ls.sh',
     '.claude/rules/test_authoring.md',
     '.claude/commands/research.md',
     '.claude/skills/orchestration/SKILL.md',
@@ -218,10 +215,13 @@ CODE_PATTERNS = [
 
 # Fully domain-agnostic — proven portable to a non-code content-production
 # harness verbatim or with {{PLACEHOLDER}} substitution (two-domain rule).
-CORE_PATTERNS = [
+PURE_PATTERNS = [
     ".claude/CLAUDE.md",
     ".claude/settings.json",
     ".claude/worklog-titles.md",
+    # Sidecar/tooling trio consumed by any harness (pure):
+    ".claude/reference/external_models.json",
+    ".claude/scripts/claude_profile_functions.ps1",
     ".claude/auto-memory/MEMORY.md",
     ".claude/auto-memory/archive/*",
     ".claude/auto-memory/diagnose_specific_objection_before_pivot.md",
@@ -334,6 +334,7 @@ CORE_PATTERNS = [
     '.claude/commands/design_drive.md',
     '.claude/commands/explore.md',
     '.claude/commands/feature_drive.md',
+    '.claude/commands/plan_check.md',
     '.claude/commands/ingest_conversation.md',
     '.claude/commands/orchestration_metrics.md',
     '.claude/commands/salvage_fanout.md',
@@ -363,13 +364,12 @@ CORE_PATTERNS = [
 ]
 
 # Layer precedence: most specific wins (a file matching two lists is assigned
-# the most specific layer, so broad globs in core/code can't swallow a
-# godot/jmodot file).
+# the most specific layer, so broad globs in pure/coding can't swallow a
+# godot file).
 LAYER_ORDER = [
-    ("jmodot", JMODOT_PATTERNS),
     ("godot", GODOT_PATTERNS),
-    ("code", CODE_PATTERNS),
-    ("core", CORE_PATTERNS),
+    ("coding", CODING_PATTERNS),
+    ("pure", PURE_PATTERNS),
 ]
 
 # Runtime/session-state directories and build artifacts that exist on disk but are

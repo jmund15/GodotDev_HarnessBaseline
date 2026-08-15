@@ -1,24 +1,23 @@
 # Harness Baseline — layered Claude Code harness
 
-The shared, project-agnostic harness core developed in **PushinPotions**,
-extracted as a starting point for any Claude Code project — game dev (Godot 4.x +
-C#, with or without Jmodot), content production, or other — and as the **single
+The shared, project-agnostic harness core extracted from a game-development
+harness as a starting point for any Claude Code project — game dev (Godot 4.x +
+C#, Jmodot builds included), content production, or other — and as the **single
 upstream** that keeps that shared core in sync as it evolves across projects.
 
 ## What's in it
 
-`template/.claude/` mirrors a consumer project's `.claude/` directory: 292 files
-in four layers (see `baseline.manifest.json` for the per-file map; 6 of these are
-`sync: seed`, counted in `core` below):
+`template/.claude/` mirrors a consumer project's `.claude/` directory: 368 files
+in three archetypes (see `baseline.manifest.json` for the per-file map; 6 of these
+are `sync: seed`, counted in `pure` below):
 
 | Layer | Files | Contents |
 |---|---|---|
-| `core` | 107 | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, eval dashboard), doc system (`/doc_*`), worklog system, memory system + curated process/discipline auto-memory seed, agent templates, review fan-out workflows, instruction-quality tooling, slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
-| `code` | 71 | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/plan_drive` → `/plan_check` → `/part_execute`), brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
-| `godot` | 63 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate`, Godot log analysis, `.tres`/`[Tool]` safety guards, C# LSP rules + adapter, scene/physics/C# pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas |
-| `jmodot` | 51 | `jmodot` framework skill (+ subsystem docs), HSM/BT patterns, status-effect authoring, VFX patterns, logging methodology (JmoLogger), submodule procedure, Jmodot architecture rules in memory |
+| `pure` | 150 | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, eval dashboard), doc system (`/doc_*`), worklog system, memory system + curated process/discipline auto-memory seed, agent templates, review fan-out workflows, instruction-quality tooling, slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself, the DeepSeek sidecar trio (`external_models.json`, `claude_profile_functions.ps1`, `model_registry.py`) |
+| `coding` | 79 | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/plan_drive` → `/plan_check` → `/part_execute`), brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
+| `godot` | 139 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate`, Godot log analysis, `.tres`/`[Tool]` safety guards, C# LSP rules + adapter, scene/physics/C# pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, HSM/BT patterns, status-effect authoring, VFX patterns, logging methodology (JmoLogger), submodule procedure, and `/workstation_setup` |
 
-A consumer subscribes to a prefix of `core` → `code` → `godot` → `jmodot`.
+A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
 
 **Seed files** (`sync: seed` in the manifest) are copied once at bootstrap and then
 project-owned: `CLAUDE.md` (PROJECT section + `BASELINE:core` region), `settings.json`,
@@ -27,14 +26,15 @@ project-owned: `CLAUDE.md` (PROJECT section + `BASELINE:core` region), `settings
 
 **Deliberately excluded** (stays per-project): game-content skills/commands
 (spell/entity authoring, content audits), project subsystem registries, game-design
-docs, project memory (beyond the curated core/code/godot/jmodot seed), and all
+docs, project memory (beyond the curated pure/coding/godot seed), and all
 session state (`self_evaluate_archive.json`, plans, scratch, logs, caches).
 
 ## Placeholders
 
-Template files use three substitution variables, applied by `bootstrap.sh`:
+Template files use four substitution variables, applied by `bootstrap.sh`:
 
 - `{{PROJECT_NAME}}` — Godot project name (also used for `app_userdata` log paths and the Obsidian `DevProjects/<name>` folder)
+- `{{PROJECT_NAMESPACE}}` — C# namespace / library prefix (defaults to the project name)
 - `{{VAULT_ROOT}}` — absolute path to the Obsidian vault root
 - `{{PROJECT_ROOT}}` — absolute path to the project repo on your dev machine
 
@@ -45,10 +45,10 @@ git clone <this-repo> harness-baseline
 cd harness-baseline
 ./bootstrap.sh --target /path/to/NewGame --project-name NewGame \
     --vault-root "C:/Users/you/Documents/ObsidianVault" \
-    --project-root "C:/path/to/NewGame"          # --layers core,code,godot to choose your prefix (default: all)
+    --project-root "C:/path/to/NewGame"          # --layers pure,coding,godot to choose your prefix (default: all)
 ```
 
-A content-production repo bootstraps with `--layers core`.
+A content-production repo bootstraps with `--layers pure`.
 
 Bootstrap copies the template, substitutes placeholders, and writes
 `.claude/baseline.lock.json` (per-file hashes + your substitution map) so the sync
@@ -101,8 +101,9 @@ Typical lifecycles:
   every new file must be added to exactly one layer pattern list.
 - `python3 tools/audit_baseline.py` (also `/sync_baseline audit`) — the separation
   gate. Verifies no source-project identifiers / secrets leak into `template/`, the
-  manifest matches disk and the generator, and no core file is substantively
-  Jmodot-specific. It also warns on core-tagged files naming code/engine or
+  manifest matches disk and the generator, and flags (INFO) a `pure` file naming
+  >=4 godot/coding markers, or a `coding` file naming >=4 godot markers
+  (layer-gate check). It also warns on pure-tagged files naming code/engine or
   consumer-domain nouns (core-domain-noun check). ERROR exit blocks publish; run it
   after any template change. `publish.sh` runs it automatically as a backstop. Its
   judgment pass (in the `/sync_baseline audit` command) covers what the script
@@ -144,6 +145,11 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   pattern (e.g. sibling collision groups) your project lacks.
 - `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
   folder-layout rules reflect the source project's conventions; prune to taste.
+- `commands/workstation_setup.md` — the machine-provisioning command carries the
+  source machine's toolchain pins (GODOT_BIN, .NET SDK, LSP) as defaults; review
+  them against your fresh-PC environment on first run.
+- `skills/architecture_philosophy/SKILL.md` — the design-philosophy skill reflects
+  the source project's architectural conventions; prune to taste on first use.
 - `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
   assumes the 4-doc Obsidian documentation system; adapt vocabulary if your doc
   tree differs.
@@ -153,7 +159,7 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   source game's folders to review domains; replace the folder lists with yours.
 - `skills/sprite_authoring/SKILL.md` — the *Project Prototype Style* section is the
   source game's style spec (palette, faction looks, reference sprites); rewrite it
-  for your game's art direction, keeping the pipeline mechanics.- Core files with source-domain nouns as inline examples only (mechanism is
+  for your game's art direction, keeping the pipeline mechanics.- pure files with source-domain nouns as inline examples only (mechanism is
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,
   `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,

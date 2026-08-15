@@ -23,18 +23,24 @@ Mechanical only — classification of WHICH hunks are universal is judgment and 
 in the /sync_baseline command (Claude), not here.
 
 Usage:
-  baseline_sync.py check   [--json] [--baseline-dir DIR]
-  baseline_sync.py diff    RELPATH [--baseline-dir DIR]
+  baseline_sync.py check   [--json] [--baseline-dir DIR] [--layers PURE,CODING,GODOT]
+  baseline_sync.py diff    RELPATH [--baseline-dir DIR] [--layers PURE,CODING,GODOT]
   baseline_sync.py pull    [RELPATH ...] [--baseline-dir DIR]   # upstream -> local
   baseline_sync.py materialize RELPATH ... [--baseline-dir DIR] # local -> baseline worktree
-  baseline_sync.py update-lock [RELPATH ...] [--baseline-dir DIR]
+  baseline_sync.py update-lock [RELPATH ...] [--baseline-dir DIR] [--layers PURE,CODING,GODOT]
   baseline_sync.py fork    RELPATH ...
   baseline_sync.py track   RELPATH ...
   baseline_sync.py ignore  RELPATH ...                          # mark project-owned
-  baseline_sync.py candidates                                   # new .claude/ files unknown to the lock
+  baseline_sync.py candidates [--layers PURE,CODING,GODOT]      # new .claude/ files unknown to the lock
   baseline_sync.py paths   [--status tracked|watch|forked|local]
   baseline_sync.py init    --baseline-dir DIR --repo URL [--ref REF]
-                           [--sub PLACEHOLDER=VALUE ...]
+                           [--sub PLACEHOLDER=VALUE ...] [--layers PURE,CODING,GODOT]
+
+  --layers selects a layer profile (pure/coding/godot). check/diff/pull/candidates
+  operate only on lock-tracked files whose layer is in the set (files outside are
+  excluded from the report, with a count printed so silence never reads as clean);
+  init and update-lock record it as the lock's "profile" field. When omitted, the
+  lock's "profile" field is used, falling back to all layers for older locks.
 """
 from __future__ import annotations
 
@@ -50,6 +56,41 @@ from pathlib import Path
 LOCK_RELPATH = ".claude/baseline.lock.json"
 CACHE_CLONE = ".claude/.cache/baseline-repo"
 MANIFEST_NAME = "baseline.manifest.json"
+
+# The three archetype layers the taxonomy admits. --layers and the lock's
+# `profile` field select among these; FULL_LAYERS is the default (all adopted).
+FULL_LAYERS = ("pure", "coding", "godot")
+
+
+def resolve_layers(lock: dict, layers_arg: str | None) -> list[str]:
+    """Resolve the effective layer set: --layers wins, else the lock's `profile`
+    field, else all layers (older locks without `profile` are fully in scope)."""
+    if layers_arg:
+        parts = [x.strip() for x in layers_arg.split(",")]
+    else:
+        profile = lock.get("profile")
+        parts = [x.strip() for x in profile.split(",")] if profile else list(FULL_LAYERS)
+    bad = [x for x in parts if x not in FULL_LAYERS]
+    if bad:
+        sys.exit(f"error: invalid layer value(s): {', '.join(bad)} — "
+                 f"expected pure,coding,godot")
+    seen, out = set(), []
+    for x in parts:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    if not out:
+        sys.exit("error: --layers resolved to an empty set — expected pure,coding,godot")
+    return out
+
+
+def in_profile(entry: dict, layers: list[str]) -> bool:
+    # A lock entry with no layer (older locks) counts as in-profile — excluding it
+    # would silently hide files the user never classified.
+    layer = entry.get("layer")
+    if not layer:
+        return True
+    return layer in layers
 
 
 def project_root() -> Path:
@@ -241,7 +282,7 @@ def classify(root: Path, baseline: Path, lock: dict, relpath: str, entry: dict) 
 # describe the substitution system itself, or hook-regenerated headers. Everything
 # else carrying a residual token is an unsubstituted-install symptom — the failure
 # mode that hides on `watch` files (never hash-compared) until something breaks
-# (e.g. a hook building app_userdata/{{PROJECT_NAME}}/logs, a path that never exists).
+# (e.g. a hook building app_userdata/<ProjectName>/logs, a path that never exists).
 PLACEHOLDER_OK = {
     ".claude/commands/sync_baseline.md",        # documents the token NAMES in prose
     ".claude/tools/baseline_sync.py",           # the substitution engine itself — source carries the tokens it resolves
@@ -265,14 +306,21 @@ def residual_placeholders(root: Path, lock: dict) -> list[tuple[str, list[str]]]
     return sorted(hits)
 
 
-def cmd_check(root, lock, baseline, as_json):
-    results = {rp: classify(root, baseline, lock, rp, e)
-               for rp, e in sorted(lock["files"].items())}
+def cmd_check(root, lock, baseline, as_json, layers):
+    results = {}
+    outside = 0
+    for rp, e in sorted(lock["files"].items()):
+        if not in_profile(e, layers):
+            outside += 1
+            continue
+        results[rp] = classify(root, baseline, lock, rp, e)
     residual = residual_placeholders(root, lock)
     if as_json:
         print(json.dumps({"baseline_commit": baseline_commit(baseline),
                           "results": results,
-                          "residual_placeholders": dict(residual)}, indent=2))
+                          "residual_placeholders": dict(residual),
+                          "profile": {"layers": layers, "files_outside": outside}},
+                         indent=2))
         return
     buckets: dict[str, list[str]] = {}
     for rp, state in results.items():
@@ -298,9 +346,15 @@ def cmd_check(root, lock, baseline, as_json):
         verdict.append(f"{len(residual)} file(s) with unsubstituted placeholders "
                        "— re-run bootstrap substitution or fix per file")
     print("\nclean" if not verdict else "\n" + "\n".join(verdict))
+    if set(layers) != set(FULL_LAYERS):
+        print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")
 
 
-def cmd_diff(root, lock, baseline, relpath):
+def cmd_diff(root, lock, baseline, relpath, layers):
+    entry = lock["files"].get(relpath)
+    if entry is not None and not in_profile(entry, layers):
+        print(f"skip (outside profile): {relpath}")
+        return
     up = upstream_text(baseline, relpath, lock["substitutions"]) or ""
     lo = local_text(root, relpath) or ""
     sys.stdout.writelines(difflib.unified_diff(
@@ -308,10 +362,11 @@ def cmd_diff(root, lock, baseline, relpath):
         fromfile=f"baseline/{relpath}", tofile=f"local/{relpath}"))
 
 
-def cmd_pull(root, lock, baseline, relpaths):
+def cmd_pull(root, lock, baseline, relpaths, layers):
     targets = relpaths or [
         rp for rp, e in lock["files"].items()
-        if classify(root, baseline, lock, rp, e) == "upstream-updated"]
+        if in_profile(e, layers)
+        and classify(root, baseline, lock, rp, e) == "upstream-updated"]
     for rp in targets:
         up = upstream_text(baseline, rp, lock["substitutions"])
         if up is None:
@@ -340,10 +395,11 @@ def cmd_materialize(root, lock, baseline, relpaths):
           "then commit/push there and run 'update-lock'.")
 
 
-def cmd_update_lock(root, lock, baseline, relpaths):
+def cmd_update_lock(root, lock, baseline, relpaths, layers):
     targets = relpaths or [
         rp for rp, e in lock["files"].items()
-        if classify(root, baseline, lock, rp, e) == "in-sync-lock-stale"]
+        if in_profile(e, layers)
+        and classify(root, baseline, lock, rp, e) == "in-sync-lock-stale"]
     for rp in targets:
         up = upstream_text(baseline, rp, lock["substitutions"])
         if up is None:
@@ -351,6 +407,7 @@ def cmd_update_lock(root, lock, baseline, relpaths):
         lock["files"][rp]["hash"] = sha(up.encode())
         print(f"lock updated: {rp}")
     lock["synced_commit"] = baseline_commit(baseline)
+    lock["profile"] = ",".join(layers)
     save_lock(root, lock)
 
 
@@ -377,15 +434,33 @@ def cmd_paths(lock, status_filter):
         print(rp)
 
 
-def cmd_candidates(root: Path, lock: dict):
+def _manifest_layer_map(root: Path, baseline_dir: str | None) -> dict[str, str]:
+    """{template relpath: layer} from the baseline manifest, when one is
+    discoverable (explicit --baseline-dir, else the cached clone). Candidates that
+    correspond to a manifest layer outside the profile are not surfaced."""
+    for candidate in (Path(baseline_dir).resolve() if baseline_dir else None,
+                      root / CACHE_CLONE):
+        if candidate is None or not (candidate / MANIFEST_NAME).is_file():
+            continue
+        try:
+            manifest = json.loads((candidate / MANIFEST_NAME).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        return {e["path"]: e["layer"] for e in manifest["files"]}
+    return {}
+
+
+def cmd_candidates(root: Path, lock: dict, layers: list[str], baseline_dir: str | None):
     import fnmatch
     r = subprocess.run(["git", "-C", str(root), "ls-files", "--", ".claude"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("error: candidates requires the project to be a git repository "
                  "(it scans committed .claude/ files) — run git init + commit first")
+    manifest_layers = _manifest_layer_map(root, baseline_dir)
     known = set(lock["files"])
     found = False
+    outside = 0
     for rp in sorted(r.stdout.splitlines()):
         if rp in known:
             continue
@@ -394,13 +469,19 @@ def cmd_candidates(root: Path, lock: dict):
         name = rp.rsplit("/", 1)[-1]
         if any(fnmatch.fnmatch(name, g) for g in CANDIDATE_EXCLUDE_NAMES):
             continue
+        ml = manifest_layers.get(rp)
+        if ml is not None and ml not in layers:
+            outside += 1
+            continue
         print(rp)
         found = True
-    if not found:
+    if not found and outside == 0:
         print("(no candidates — every committed .claude/ artifact is known to the lock)")
+    if set(layers) != set(FULL_LAYERS):
+        print(f"profile: {','.join(layers)} — {outside} candidate(s) outside profile not shown")
 
 
-def cmd_init(root, baseline_dir, repo, ref, subs):
+def cmd_init(root, baseline_dir, repo, ref, subs, profile):
     baseline = Path(baseline_dir).resolve()
     manifest_path = baseline / MANIFEST_NAME
     if not manifest_path.exists():
@@ -424,7 +505,7 @@ def cmd_init(root, baseline_dir, repo, ref, subs):
             files[rp] = {"status": "watch", "layer": entry["layer"]}
     lock = {"baseline_repo": repo, "baseline_ref": ref,
             "synced_commit": baseline_commit(baseline),
-            "substitutions": subs, "files": files}
+            "profile": profile, "substitutions": subs, "files": files}
     save_lock(root, lock)
     tracked = sum(1 for e in files.values() if e["status"] == "tracked")
     watch = sum(1 for e in files.values() if e["status"] == "watch")
@@ -450,6 +531,11 @@ def main():
     ap.add_argument("--ref", default="main")
     ap.add_argument("--sub", action="append", default=[],
                     metavar="PLACEHOLDER=VALUE")
+    ap.add_argument("--layers", metavar="PURE,CODING,GODOT",
+                    help="layer profile to operate on (default: the lock's "
+                         "'profile' field, else all layers). check/diff/candidates "
+                         "exclude files outside the set; init records it as the "
+                         "generated lock's profile.")
     args = ap.parse_args()
     root = project_root()
 
@@ -457,7 +543,8 @@ def main():
         if not (args.baseline_dir and args.repo):
             sys.exit("init requires --baseline-dir and --repo")
         subs = dict(s.split("=", 1) for s in args.sub)
-        cmd_init(root, args.baseline_dir, args.repo, args.ref, subs)
+        profile = ",".join(resolve_layers({}, args.layers))
+        cmd_init(root, args.baseline_dir, args.repo, args.ref, subs, profile)
         return
 
     lock = load_lock(root)
@@ -465,7 +552,7 @@ def main():
         cmd_paths(lock, args.status)
         return
     if args.op == "candidates":
-        cmd_candidates(root, lock)
+        cmd_candidates(root, lock, resolve_layers(lock, args.layers), args.baseline_dir)
         return
     if args.op in ("fork", "track", "ignore"):
         status = {"fork": "forked", "track": "tracked", "ignore": "local"}[args.op]
@@ -473,16 +560,17 @@ def main():
         return
 
     baseline = ensure_baseline(lock, root, args.baseline_dir)
+    layers = resolve_layers(lock, args.layers)
     if args.op == "check":
-        cmd_check(root, lock, baseline, args.json)
+        cmd_check(root, lock, baseline, args.json, layers)
     elif args.op == "diff":
-        cmd_diff(root, lock, baseline, args.relpaths[0])
+        cmd_diff(root, lock, baseline, args.relpaths[0], layers)
     elif args.op == "pull":
-        cmd_pull(root, lock, baseline, args.relpaths)
+        cmd_pull(root, lock, baseline, args.relpaths, layers)
     elif args.op == "materialize":
         cmd_materialize(root, lock, baseline, args.relpaths)
     elif args.op == "update-lock":
-        cmd_update_lock(root, lock, baseline, args.relpaths)
+        cmd_update_lock(root, lock, baseline, args.relpaths, layers)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,76 @@
+{
+  "revision": "2026-08-12",
+  "_comment": "SSOT for external (non-Anthropic-transport) models: per-transport role resolution, prices, limits, authorization gates. Policy prose home: .claude/skills/orchestration/SKILL.md section 5. CLAUDE.md's ladder owns role SEMANTICS and the Anthropic-transport mapping; this file owns per-transport resolution. Model churn is an edit in exactly one of the two, never both. Validate with: python3 .claude/tools/model_registry.py --check",
+  "transports": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/anthropic",
+      "credentialFile": "~/.env.ai-worker.cmd",
+      "credentialVar": "DEEPSEEK_API_KEY",
+      "balanceUrl": "https://api.deepseek.com/user/balance",
+      "launcher": ".claude/scripts/deepseek_sidecar.sh"
+    }
+  },
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "alias": "flash",
+      "transport": "deepseek",
+      "version": "DeepSeek-V4-Flash-0731",
+      "roles": ["sonnet", "haiku", "fable"],
+      "price": {
+        "cacheHitPer1M": 0.0028,
+        "cacheMissPer1M": 0.14,
+        "outputPer1M": 0.28,
+        "currency": "USD",
+        "asOf": "2026-08-12",
+        "source": "https://api-docs.deepseek.com/quick_start/pricing"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "maxOutputTokens": 384000,
+        "concurrency": 2500
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": ["high"],
+        "evidence": "measured"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "On pace"
+      }
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "alias": "pro",
+      "transport": "deepseek",
+      "version": "DeepSeek-V4-Pro-0813",
+      "roles": ["opus"],
+      "price": {
+        "cacheHitPer1M": 0.003625,
+        "cacheMissPer1M": 0.435,
+        "outputPer1M": 0.87,
+        "currency": "USD",
+        "asOf": "2026-08-12",
+        "source": "https://api-docs.deepseek.com/quick_start/pricing"
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "maxOutputTokens": 384000,
+        "concurrency": 500
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": [],
+        "evidence": "unmeasured"
+      },
+      "authTier": "gated",
+      "gate": {
+        "minBand": "Ahead",
+        "minBalanceUSD": 1.0
+      }
+    }
+  ]
+}
