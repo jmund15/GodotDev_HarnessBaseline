@@ -4,7 +4,8 @@ Hook: PreToolUse (Bash|Monitor) - Deny command shapes the auto-mode classifier c
 
 Auto permission mode approves a Bash command only when the platform can statically
 verify it. Shapes it cannot analyze - heredocs (<<), command substitution ($(...)),
-backtick substitution, backgrounding (&) - are refused classifier delegation and force a manual
+backtick substitution, backgrounding (&), cd-compounds with write operations -
+are refused classifier delegation and force a manual
 permission prompt, even when the command itself is safe. This hook denies those
 shapes BEFORE the permission system sees them, naming the statically-verifiable
 replacement, so the agent self-corrects and no manual prompt appears.
@@ -30,6 +31,19 @@ _HEREDOC = re.compile(r"<<")    # <<EOF / <<'EOF' / <<-EOF / <<< (here-string)
 _SUBST = re.compile(r"\$\(")    # $(...) command substitution
 _BACKTICK = re.compile(r"`")    # `...` command substitution
 _BACKGROUND = re.compile(r"(?<![\d&])&(?![\d&])")  # background & — not &&, not 2>&1, not &>
+
+# cd-compounds with a write operation: the platform cannot statically determine
+# the compound's final cwd, so relative write targets can't be symlink-checked
+# and it always prompts ("manual approval required to prevent path resolution
+# bypass"). Mirrors compound_cd_approver's segment split; git verbs are excluded
+# (the approver's safe list already covers cd + git).
+_CD_START = re.compile(r"^\s*cd\b")
+_WRITE_OPS = frozenset({
+    "rm", "del", "rd", "rmdir", "mv", "cp", "mkdir", "touch", "truncate",
+    "remove-item", "ri", "move-item", "mi", "copy-item", "ci",
+    "set-content", "sc",
+})
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\|")
 
 
 def _deny(reason: str) -> None:
@@ -97,6 +111,21 @@ def main():
             "run_in_background parameter instead of shell '&', or restructure "
             "without backgrounding (Write-tool probe scripts, timeout-wrapped "
             "foreground runs). Canon: CLAUDE.md §Shell Discipline."
+        )
+        sys.exit(0)
+    if _CD_START.match(command) and any(
+        seg.split()[0].lower() in _WRITE_OPS
+        for seg in _SEGMENT_SPLIT.split(scan)[1:]
+        if seg.split()
+    ):
+        _deny(
+            "Blocked by bash_shape_guard: cd-compound with a write operation - "
+            "the platform cannot statically determine the compound's final working "
+            "directory, so relative write targets can't be checked for Cygwin-"
+            "emulated symlinks, and it prompts manually. Rewrite statically: drop "
+            "the cd - use git -C <abs-path> for git, and standalone commands with "
+            "absolute targets for writes (rm C:/abs/path). "
+            "Canon: CLAUDE.md §Shell Discipline."
         )
         sys.exit(0)
 
