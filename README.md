@@ -143,6 +143,8 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 - `commands/agents/review_agents.md` — the `pool-lifecycle` agent's checklist names
   example pooled types in brackets; substitute your pooling types and prune any
   pattern (e.g. sibling collision groups) your project lacks.
+- `skills/worklog_reference/SKILL.md` — the domain-classification tables use the
+  source project's content domains as examples; replace with your project's domains.
 - `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
   folder-layout rules reflect the source project's conventions; prune to taste.
 - `commands/workstation_setup.md` — the machine-provisioning command carries the
