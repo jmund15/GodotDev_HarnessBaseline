@@ -8,6 +8,7 @@ description: >-
   inside an existing pipeline (project-local skills like sprite_authoring own that) and
   for 3D (Track B — not designed; see the GeneralGameDev Parameterized-Asset-Pipeline
   index).
+disable-model-invocation: true
 ---
 
 # Parameterized Asset Pipeline — cross-project methodology

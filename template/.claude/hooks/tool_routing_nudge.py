@@ -92,6 +92,8 @@ import json
 import os
 import sys
 
+from _hook_state import read_json_salvage, write_json_atomic
+
 # Shared classifier — extracted 2026-05-04 to eliminate cue-list duplication
 # across nudge.py / post_grep.py / cumulative.py and provide the API the new
 # routing_audit.py PostToolUse hook depends on. See routing_classifier.py.
@@ -371,9 +373,7 @@ def _seen_before(session_id: str, key: str) -> bool:
             return True
         seen.append(key)
         state["nudge_targets_seen"] = seen[-_SEEN_CAP:]
-        os.makedirs(_STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
+        write_json_atomic(path, state)
     except Exception:
         pass
     return False
@@ -396,9 +396,7 @@ def _record_pre_nudge(session_id: str, rule: str) -> None:
         if rule not in fired:
             fired.append(rule)
         state["pre_nudges_fired_this_turn"] = fired
-        os.makedirs(_STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
+        write_json_atomic(path, state)
     except Exception:
         pass
 

@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(dotnet:*), Bash(git:*), Glob, Grep, Read, Edit, Write, Task, TaskCreate, TaskUpdate, SlashCommand
-description: Autonomously execute an approved plan — handoff stance, TDD per slice, regression_gate, pr_ready, propose roadmap-complete + commit. Halts on 4 valves.
+description: Autonomously execute an approved plan — TDD per slice, gate, commit. Halts on its stop valves.
 ---
 
 # /part_execute — Autonomous Plan-Execution Loop
@@ -9,7 +9,7 @@ The serial grind that runs AFTER a plan is approved. Plan approval (in the plann
 
 ## Usage
 
-`/part_execute <plan-file-path>` — invoke in a **fresh, lower-effort executor session** (the planning/auditing happened at high effort; execution of an unambiguous plan is safely lower-effort per CLAUDE.md §Model Delegation). Not in the planning session. For a Part too large for one context, wrap the invocation in `/loop` — the loop body is still this command.
+`/part_execute <plan-file-path>` — invoke in a **fresh, lower-effort executor session** (the planning/auditing happened at high effort; execution of an unambiguous plan is safely lower-effort per `orchestration` §5 *Work-shape defaults*). Not in the planning session. For a Part too large for one context, wrap the invocation in `/loop` — the loop body is still this command.
 
 ## The single gate (upstream, already passed)
 
@@ -48,7 +48,10 @@ For each slice:
 
 ### Step 4 — Regression gate (single-flight, serial)
 
-After all slices are green, run **`/regression_gate`** (mandatory for any `.cs` change, no carve-outs). It is the separate single-flight serial gate — do **not** fan it out, do **not** run it concurrently with anything. A gate failure that isn't a trivial in-scope fix is **halt valve (d)**.
+After all slices are green, verify **by chain position** (`change_control` §Gate cadence):
+
+- **Mid-chain Part** — run a **union `-Filter` over this Part's accumulated blast zone** (plain tests; `-StaticOnly` optional for the static guards). Do **not** run the gate and do **not** commit: the work accumulates to the drive close, whose full gate backs every commit in the drive. A red union run is **halt valve (d)**.
+- **Chain-final Part, or a standalone Part with no chain** — run the FULL **`/regression_gate`** (mandatory for any `.cs` change, no carve-outs), marked `# gate: final`. It is the separate single-flight serial gate — do **not** fan it out, do **not** run it concurrently with anything. A gate failure that isn't a trivial in-scope fix is **halt valve (d)**; re-verify a fix at its blast-radius width (`-RetryOnly` / `verify.ps1 -Scope <domains>`), never a reflex full re-run.
 
 ### Step 5 — Readiness battery (static, read-only) — *feature branches only*
 

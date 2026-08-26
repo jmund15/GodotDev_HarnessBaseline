@@ -35,10 +35,13 @@
   2   INVALID       silent-skip signature / below sentinel -> results untrustworthy
   3   WARN          Tier-2 moderate drop or untrusted baseline -> needs user ack
   4   BLOCKED       preflight, guard, or build failure -> fix before re-running
-  6   INCOMPLETE    a suite did not finish (wall-clock budget, no machine-busy signature)
-  7   QUEUED        an editor holds this checkout, a peer gate/test run didn't clear, or a
-                    budget-starved run deferred — handed to gate_queue_watcher.ps1, which
-                    fires it when the machine is quiet
+  6   INCOMPLETE    a suite did not finish (wall-clock budget, no machine-busy signature),
+                    OR a -FromQueue run hit the LOCKED tier (a watcher-fired run already waited
+                    for machine-wide quiet; the watcher re-queues this, capped)
+  7   QUEUED        an editor holds this checkout, a peer gate (any checkout, any session) or
+                    test run didn't clear, a suite's lock-wait expired (LOCKED tier,
+                    runtime-mutex-busy), or a budget-starved run deferred — handed to
+                    gate_queue_watcher.ps1, which fires it when the machine is quiet
   8   CONTENTION    external-kill signature AND a live peer harness run -> not a
                     regression signal; re-run once the peer clears
   124 HANG          a suite wedged and was tree-killed after retry
@@ -53,18 +56,16 @@
 
 [CmdletBinding()]
 param(
-    # Chain-mode smoke tier (mid-chain commits only): defers Sanity and the
-    # headless import gate, and never ratchets the baseline. Integration still
-    # runs in full — run_integration_batched.ps1 enumerates units from disk and
-    # exposes no verified unit-subsetting switch, so narrowing it is left to the
-    # caller rather than faked here. The chain-FINAL commit must run the full gate.
-    [switch]   $Smoke,
-    # Skip the static guard block (1b-1h) — for re-runs after a suite-only fix.
-    [switch]   $SkipStatic,
     # Run preflight + guards + build only, then stop. ~20s, takes no test lock.
     # The correct gate for a pure-data commit that skips the .cs-triggered path.
+    # The gate's ONLY remaining width knob, and it is a different QUESTION ("do the
+    # guards and the build pass"), not a cheaper answer to the same one. Narrow test
+    # runs live in verify.ps1 and never produce a gate verdict.
     [switch]   $StaticOnly,
-    # Evaluate and report without writing Tests/regression_baseline.json.
+    # Evaluate and report WITHOUT writing Tests/regression_baseline.json. A recording
+    # flag, not a width flag: coverage is unchanged, so it forks the reuse key but never
+    # lets a reduced-coverage run satisfy a full one. /test_compact needs it to capture
+    # counts without ratcheting.
     [switch]   $NoBaselineUpdate,
     # Forwarded to run_integration_batched.ps1: rerun only non-green batches.
     [switch]   $RetryOnly,
@@ -77,12 +78,45 @@ param(
     [switch]   $FromQueue,
     # Read-only report of the queue directory. Takes no locks, spawns nothing.
     [switch]   $QueueStatus,
+    # Seconds to block on a queued run's RESULT before returning exit 7. Pass 0 for the
+    # fire-and-forget handoff.
+    #
+    # DEFAULTS TO WAITING because the caller is an agent that must decide something. A
+    # bare exit 7 hands back no verdict, so the only autonomous move left is to give up
+    # or to invent a polling loop; waiting turns the queue into a resume point instead.
+    # It costs a 5s-poll process and nothing else — the documented invocation is
+    # `run_in_background: true` (commands/regression_gate.md), where blocking is free and
+    # process exit is exactly what wakes the session with the verdict.
+    #
+    # Expiry WAKES, it never kills: the request stays pending, the watcher still owns it,
+    # and the caller re-checks (feedback_timeouts_wake_dont_kill.md). 30min covers a full
+    # suite run plus a realistic wait for the machine to go quiet.
+    #
+    # The wait polls the result FILE, never process absence: the batched runner tears down
+    # testhost/Godot between every batch, so a process-absence waiter fires in an
+    # inter-batch gap and calls a live peer run finished
+    # (gotcha_runtime_suite_pipe_contention.md). Deliberately NOT forwarded through
+    # Get-GateArgs — a watcher-fired run must never wait on itself.
+    [int]      $WaitForQueue = 1800,
     # Set only by gate_queue_watcher.ps1: this run's queue request id. The runId and the
     # result record use it (one record per request, never a stray); treeDelta compares the
     # request-time treeDigest against the tree this run actually saw.
     [string]   $QueueId = '',
     # Force a fresh run: refuse a ledger REUSE even when a digest+mode+age match exists.
-    [switch]   $NoReuse
+    [switch]   $NoReuse,
+    # Spawn the real gate as a DETACHED process, print where its stdout lands, and exit in ~1s.
+    #
+    # This is the agent-session entry point, and it exists because `run_in_background: true` is
+    # not durable: Claude Code terminates a backgrounded Bash task once the session goes idle,
+    # and the task's whole process tree dies with it. Measured 2026-08-25 — five gates killed
+    # mid-Logic at a byte-identical 327 bytes of stdout, plus a bare `sleep` loop killed at 0
+    # bytes, which is what rules out anything gate-specific. A detached child is not a
+    # descendant of that shell, so the reap cannot reach it (the same reason
+    # Start-GateWatcherIfAbsent detaches).
+    #
+    # Stdout goes to a FILE, never a pipe back to the caller: an inherited pipe is what makes a
+    # child die with its parent. The caller polls that file for a line starting VERDICT=.
+    [switch]   $Detach
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,16 +149,18 @@ $script:BaselineAction = 'unknown'   # threaded to the result record by Complete
 $script:ReusedFrom   = $null   # producer record id when this run reused a verdict
 $script:ReusedFailedTests = @() # producer's failing tests on a reused-FAIL
 $script:PeersSeen    = $false  # any suite-boundary peer snapshot non-empty
+$script:ActivityKind = 'gate'  # 'waiter' while parked in Wait-QueueResult (holds nothing)
+$script:QueueWaitResult = $null # Wait-QueueResult's out-param; see the note there
 $suiteResults        = [ordered]@{}
 
 # ---------------------------------------------------------------- coverage contract (mode)
-# The normalized arg set, NOT a 3-value enum: -RetryOnly reruns only non-green batches and
-# -SkipStatic skips guards 1b-1h, yet both would otherwise carry mode=full — a reuse would
-# then satisfy a full request with reduced coverage. Dispatch artifacts (-FromQueue, -QueueId,
-# -IgnoreEditor) are excluded: editor state is re-checked fresh at every gate entry.
-$script:Mode = if ($StaticOnly) { 'static-only' } elseif ($Smoke) { 'smoke' } else { 'full' }
+# The normalized arg set, NOT a bare enum: -RetryOnly reruns only non-green batches, so it
+# would otherwise carry mode=full and let a reuse satisfy a full request with reduced coverage.
+# Dispatch artifacts (-FromQueue, -QueueId, -IgnoreEditor) are excluded: editor state is
+# re-checked fresh at every gate entry. Three modes total since the width lattice was deleted
+# (2026-08-20) — the reuse key is now trivially correct by construction.
+$script:Mode = if ($StaticOnly) { 'static-only' } else { 'full' }
 if ($RetryOnly)        { $script:Mode += '+retry-only' }
-if ($SkipStatic)       { $script:Mode += '+skip-static' }
 if ($NoBaselineUpdate) { $script:Mode += '+no-baseline-update' }
 
 function Add-Detail { param([string] $Text) $script:Detail.Add($Text) }
@@ -189,6 +225,40 @@ function Complete-Gate {
                 } catch { }
             }
         }
+        # Fold: satisfy every OTHER pending request whose tree is the one this run tested. The
+        # digest is content-exact, so an equal digest means byte-identical inputs — the verdict
+        # transfers with no soundness loss, and a session that queued three minutes after us
+        # unblocks now instead of serializing a duplicate 15-minute run behind us. Requests
+        # whose digest differs are deliberately left pending: a PASS on tree A backs nothing on
+        # tree B, and the watcher re-fires them against the live tree.
+        $folded = @()
+        if ($script:RunTree) {
+            foreach ($exId in @(Get-FoldableRequestIds -QueueDir $queueDir -RunId $runId -RunDigest $script:RunTree.digest)) {
+                try {
+                    # Field-by-field copy, NOT $rec.Clone(): [ordered]@{} is an
+                    # OrderedDictionary, which has no Clone method (Hashtable does). The call
+                    # threw on every fold, the catch below swallowed it, and the run's own
+                    # result still landed — so the whole optimization was dead while every
+                    # unit test passed. Caught only by the e2e (test_gate_queue_e2e.ps1).
+                    $copy = [ordered]@{}
+                    foreach ($kv in $rec.GetEnumerator()) { $copy[$kv.Key] = $kv.Value }
+                    $copy.id        = $exId
+                    $copy.source    = 'folded'
+                    $copy.treeDelta = $false   # digest-equal by construction — that is the fold test
+                    Set-Content -Path (Join-Path $queueDir "$exId.result.json") `
+                                -Value ($copy | ConvertTo-Json -Depth 5) -Encoding utf8
+                    $folded += $exId
+                } catch {
+                    # Never silent: a swallowed fold is indistinguishable from "nothing to fold",
+                    # which is precisely how the Clone bug survived. The run still completes.
+                    Emit "QUEUE_FOLD_ERROR id=$exId $($_.Exception.Message)"
+                }
+            }
+        }
+        # Recorded so the watcher's re-queue path can un-satisfy them together: a folded result
+        # carrying an exit 6/7/8 contention artifact must not outlive the run that produced it.
+        $rec.foldedIds = $(if ($folded.Count -gt 0) { @($folded) } else { $null })
+        if ($folded.Count -gt 0) { Emit "QUEUE_FOLD ids=$($folded -join ',') into=$runId" }
         Set-Content -Path (Join-Path $queueDir "$runId.result.json") -Value ($rec | ConvertTo-Json -Depth 5) -Encoding utf8
     } catch { }
     Emit "DETAIL=$detailPath"
@@ -237,12 +307,11 @@ function Get-EngineProbe {
 }
 # Digests cross process boundaries at different widths (the TREE stdout line the
 # watcher parses is abbreviated), so equality is a prefix test, never -eq.
-function Test-DigestMatch {
-    param([string] $A, [string] $B)
-    if (-not $A -or -not $B) { return $false }
-    $n = [math]::Min($A.Length, $B.Length)
-    $A.Substring(0, $n) -eq $B.Substring(0, $n)
-}
+# Test-DigestMatch, Get-FoldTargetId and Get-FoldableRequestIds come from the queue-protocol
+# module: the fold decision is the one place here whose wrong answer is a false green, so it
+# has one implementation and a test (.claude/tests/test_gate_queue_fold.ps1) rather than a
+# copy in each script that reads the queue.
+. (Join-Path $PSScriptRoot 'GateQueue.ps1')
 
 # ---------------------------------------------------------------- tree digest
 # Identity of the tree a run was requested for / actually ran against. The gate's
@@ -251,11 +320,25 @@ function Test-DigestMatch {
 #
 # The gate's OWN artifacts are excluded: the ratchet rewrites the baseline during
 # a green run, so an unexcluded digest would stamp every ratcheting queued run
-# dirty against itself. The agent-artifact trees (.claude/scratch/, .claude/auto-memory/,
-# .claude/plans/) are the same class: a peer session's memory captures, plan files, and
-# run debris are not under test, and a concurrent design drive writing them must not
-# invalidate a running gate (measured 2026-08-13: auto-memory writes tripped
-# TREE_CHANGED=1 at Sanity on three consecutive runs).
+# dirty against itself. All of .claude/ is the same class: harness doctrine, tooling, and
+# agent artifacts are not under test, and a concurrent session (or the gate itself — the
+# guard regenerates hooks/tool_resource_classes.txt) writing them must not invalidate a
+# running gate (measured 2026-08-13 auto-memory, 2026-08-14 rules/ + hooks/:
+# TREE_CHANGED=1 mid-run).
+# Digest exclusion list — script scope so Assert-TreeStable can apply the same class test
+# to a moved HEAD's committed diff (a peer session committing only excluded paths must not
+# invalidate a running gate; measured 2026-08-20, two INVALIDs from mid-run .claude/ commits).
+$script:DigestExcl = @('Tests/regression_baseline.json',
+          'Tests/integration_batch_durations.json',
+          'TestResults/',
+          # Engine-regenerated import artifact: the Godot test host rewrites this CSV (+ its
+          # .translation siblings) whenever authored .tres data changed, so a run adding
+          # sheets self-invalidates mid-Logic (measured 2026-08-20, VERDICT=INVALID at
+          # suite:Integration). Same class as TestResults/ — the run's own artifacts.
+          # Blanket, not per-tree: narrow carve-outs repeatedly missed a .claude tree and
+          # tripped TREE_CHANGED (auto-memory 2026-08-13, rules/ + hooks/ 2026-08-14).
+          '.claude/')
+
 function Get-TreeDigest {
     # Content-exact: identical digest <=> identical committed state + working-tree content +
     # Jmodot internal state. The old HEAD+porcelain hash read status letters and paths only,
@@ -268,12 +351,7 @@ function Get-TreeDigest {
     # pointers and recurses into its working tree.
     $head = (& git -C $repo rev-parse HEAD 2>$null)
     if (-not $head) { $head = '' }
-    $excl = @('Tests/regression_baseline.json',
-              'Tests/integration_batch_durations.json',
-              'TestResults/',
-              '.claude/scratch/',
-              '.claude/auto-memory/',
-              '.claude/plans/')
+    $excl = $script:DigestExcl
     $entries = [System.Collections.Generic.List[string]]::new()
 
     # One repo's changed paths, exclusion-filtered at the porcelain-line level. hash-object
@@ -323,7 +401,7 @@ function Get-TreeDigest {
     $sha  = [System.Security.Cryptography.SHA1]::Create()
     try   { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text)) }
     finally { $sha.Dispose() }
-    [pscustomobject]@{ head = $head; digest = (($bytes | ForEach-Object { $_.ToString('x2') }) -join '') }
+    [pscustomobject]@{ head = $head; digest = (($bytes | ForEach-Object { $_.ToString('x2') }) -join ''); entries = @(@($entries) | Sort-Object) }
 }
 
 # ---------------------------------------------------------------- queue status
@@ -387,6 +465,13 @@ if (-not (Test-Path $godotProcP)) {
 # shell). Captured HERE, at record-creation time, and never re-derived by a reader later: a
 # detached run outlives its launcher — Claude Code kills a backgrounded wrapper at its ~10-minute
 # ceiling — and the orphaned process's parent chain then reaches no session at all.
+# Declared at script scope — under Set-StrictMode Latest an unset variable READ throws, and the
+# first call hits `if ($script:OwnerRootComputed)` before any assignment. That throw is swallowed
+# by Update-ActivityRecord's best-effort catch, so without this declaration the gate silently
+# never writes its activity record — measured 2026-08-14: every live gate ran record-less,
+# blinding gate-level peer detection (machineGates preflight, CONTENTION adjudication).
+$script:OwnerRootComputed = $false
+$script:OwnerRootCache    = $null
 function Get-OwnerRoot {
     if ($script:OwnerRootComputed) { return $script:OwnerRootCache }
     $script:OwnerRootComputed = $true
@@ -420,7 +505,12 @@ function Update-ActivityRecord {
         $rec = [ordered]@{
             pid         = $PID
             procStart   = $script:ActivityProcStart
-            kind        = 'gate'
+            # 'gate' means "I am consuming build output and the runtime mutex". A run parked in
+            # Wait-QueueResult consumes NEITHER, so it downgrades to 'waiter' for the duration —
+            # see the deadlock note there. Every blocker check keys on kind eq 'gate'
+            # (gate_queue_watcher.ps1 Test-PeerGateLive, Get-PeerGates here), so a waiter stays
+            # visible to operators without blocking anyone.
+            kind        = $script:ActivityKind
             checkout    = $repo
             sessionId   = $(if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } else { $null })
             ownerRootPid   = $(if ($o = Get-OwnerRoot) { $o.RootPid }   else { $null })
@@ -428,7 +518,10 @@ function Update-ActivityRecord {
             label       = $Label
             startedAt   = $script:ActivityStart
             heartbeatAt = $now
-            expectedSec = 600
+            # A parked waiter is deliberately idle for its whole -WaitForQueue window (default
+            # 1800s), so advertising a gate's 600s made every long wait read as stale/hung to
+            # peers and to the activity hook. Advertise the window each kind actually occupies.
+            expectedSec = $(if ($script:ActivityKind -eq 'waiter' -and $WaitForQueue -gt 0) { $WaitForQueue } else { 600 })
         }
         Set-Content -Path $script:ActivityPath -Value ($rec | ConvertTo-Json -Depth 4) -Encoding utf8
     } catch { }
@@ -463,10 +556,15 @@ function Get-LivePeerActivity {
         if ((Get-Prop $rec 'kind' '') -notin @('gate', 'suite')) { continue }
         $proc = Get-Process -Id $rpid -ErrorAction SilentlyContinue
         if (-not $proc) { Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue; continue }
-        $ps = [string](Get-Prop $rec 'procStart' '')
+        # The [string] cast of a ConvertFrom-Json-materialized DateTime drops the Z marker;
+        # the re-parse lands Kind=Unspecified and ToUniversalTime() ADDS the machine offset —
+        # measured +5h skew (17999.7s), sweeping every live peer record as stale. Compare
+        # DateTimes directly; only a raw string (hand-written record) goes through the parse.
+        $ps = Get-Prop $rec 'procStart' ''
         if ($ps) {
             try {
-                if ([math]::Abs((([datetime]$ps).ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds) -gt 5) {
+                $psDt = if ($ps -is [datetime]) { $ps } else { [datetime]$ps }
+                if ([math]::Abs(($psDt.ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds) -gt 5) {
                     Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue; continue
                 }
             } catch { continue }
@@ -514,8 +612,6 @@ function Get-GateArgs {
     # would nest ([["-StaticOnly"]]) through the JSON round-trip — the watcher's Start-Process
     # then dies on an Object[] element inside ArgumentList (observed live 2026-08-13).
     $a = @()
-    if ($Smoke)            { $a += '-Smoke' }
-    if ($SkipStatic)       { $a += '-SkipStatic' }
     if ($StaticOnly)       { $a += '-StaticOnly' }
     if ($NoBaselineUpdate) { $a += '-NoBaselineUpdate' }
     if ($RetryOnly)        { $a += '-RetryOnly' }
@@ -523,20 +619,47 @@ function Get-GateArgs {
     $a
 }
 
+# Stamp the request with the digest this run is ACTUALLY testing. A queued run waits while
+# the user keeps editing, so it re-digests at its own start (RunTree, below the build) and the
+# request's own digest is by then a stale snapshot. Without this stamp a session arriving
+# mid-run compared its tree against that stale snapshot, failed to match, and opened a SECOND
+# request for a tree the live run was already testing byte-for-byte — measured 2026-08-23,
+# three sessions, three serialized runs, two INVALID (q...-54276 ran a tree nobody still had).
+# All sessions share ONE checkout: request digests are versions of one tree, not separate
+# trees, and only the newest version exists on disk.
+function Publish-RunDigest {
+    if (-not $QueueId -or -not $script:RunTree) { return }
+    try {
+        $p = Join-Path $queueDir "$QueueId.request.json"
+        if (-not (Test-Path $p)) { return }
+        $obj = Get-Content -Path $p -Raw | ConvertFrom-Json
+        # Add-Member -Force: a request written by an older gate build has no runDigest property,
+        # and StrictMode makes the bare assignment throw on the missing member.
+        $obj | Add-Member -NotePropertyName 'runDigest' -NotePropertyValue $script:RunTree.digest -Force
+        $obj | Add-Member -NotePropertyName 'runHead'   -NotePropertyValue $script:RunTree.head   -Force
+        $obj | Add-Member -NotePropertyName 'runPid'    -NotePropertyValue $PID                   -Force
+        Set-Content -Path $p -Value ($obj | ConvertTo-Json -Depth 5) -Encoding utf8
+        Emit "QUEUE_FOLD_OPEN id=$QueueId digest=$(Format-Short $script:RunTree.digest)"
+    } catch { }
+}
+
 function New-GateRequest {
-    param([string] $Reason)
+    param([string] $Reason, [string[]] $ExtraArgs = @())
     New-Item -ItemType Directory -Force -Path $queueDir | Out-Null
     $tree = Get-TreeDigest
-    # Two sessions queueing the same tree get ONE run.
-    foreach ($f in @(Get-ChildItem -Path $queueDir -Filter '*.request.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
-        $ex = $null
-        try { $ex = Get-Content -Path $f.FullName -Raw | ConvertFrom-Json } catch { continue }
-        $exId = [string](Get-Prop $ex 'id' '')
-        if (-not $exId) { continue }
-        if (Test-Path (Join-Path $queueDir "$exId.result.json")) { continue }   # not pending
-        if ((Get-Prop $ex 'treeDigest' '') -eq $tree.digest) { return $exId }
-    }
-    $id  = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $PID
+    # Two sessions on the same tree get ONE run — including onto a run that has already fired,
+    # matched against the tree it is actually testing.
+    $join = Get-FoldTargetId -QueueDir $queueDir -Digest $tree.digest
+    if ($join) { return $join }
+    # 'q' prefix is load-bearing, not decoration. $runId (script top) uses the SAME
+    # 'yyyyMMdd-HHmmss-PID' shape, and the queueing run's own Complete-Gate writes
+    # <runId>.result.json into this very directory. A handoff inside the same clock
+    # second as script start (the editor/peer preflight checks are reachable in well
+    # under 1s) made request id == run id, so the QUEUED record instantly satisfied
+    # the watcher's "result exists => not pending" test at gate_queue_watcher.ps1:157
+    # and the queued run was dropped without ever firing. Namespacing the request id
+    # makes the two files structurally incapable of colliding.
+    $id  = 'q{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $PID
     $req = [ordered]@{
         id          = $id
         head        = $tree.head
@@ -544,7 +667,7 @@ function New-GateRequest {
         attempt     = 0
         requestedAt = (Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
         reason      = $Reason
-        gateArgs    = @(Get-GateArgs)
+        gateArgs    = @(@(Get-GateArgs) + @($ExtraArgs) | Select-Object -Unique)
     }
     Set-Content -Path (Join-Path $queueDir "$id.request.json") -Value ($req | ConvertTo-Json -Depth 5) -Encoding utf8
     $id
@@ -569,12 +692,170 @@ function Start-GateWatcherIfAbsent {
     } catch { return $false } finally { if ($mutex) { $mutex.Dispose() } }
 }
 
+# Block until a queued request's result lands, or the window expires. Returns the
+# parsed result record, or $null on expiry.
+#
+# Polls the RESULT FILE and nothing else. Process-absence is not completion: the
+# batched Integration runner tears testhost.exe and headless Godot down between
+# every batch, so a waiter watching for their absence fires in that gap and reports
+# a still-live peer run as finished (observed 2026-08-18). The result record is the
+# only signal written exactly once, at genuine completion, by a single writer
+# (Complete-Gate). Dedup-safe: when New-GateRequest folded us into an existing
+# pending request we poll THAT id, so both sessions unblock on the one shared run.
+# Sets $script:QueueWaitResult to the parsed result record, or leaves it $null on expiry.
+#
+# RESULT VIA A SCRIPT VARIABLE, NOT THE PIPELINE. Every Emit inside this loop writes to the
+# output stream, and PowerShell folds a function's uncaptured output into its return value —
+# so returning the record made the caller receive [heartbeat strings + record] as an array,
+# whose Get-Prop lookups all missed and produced a fabricated `VERDICT=UNKNOWN exit=7`
+# (measured in the e2e run, 2026-08-19). A verdict is the one thing here that must never be
+# synthesized from stream noise, so the value leaves by a channel the stream cannot reach.
+function Wait-QueueResult {
+    param([string] $Id, [int] $Seconds)
+    $script:QueueWaitResult = $null
+    $resP      = Join-Path $queueDir "$Id.result.json"
+    $reqP      = Join-Path $queueDir "$Id.request.json"
+    $deadline  = (Get-Date).AddSeconds($Seconds)
+    $nextBeat  = (Get-Date).AddSeconds(60)
+
+    # DEADLOCK FIX — downgrade our own activity record for the duration of the wait.
+    # gate_queue_watcher.ps1's Test-PeerGateLive refuses to fire while ANY live kind=gate
+    # record exists. A gate parked here holds one, so it blocked the watcher from firing the
+    # very run it was waiting for: measured 2026-08-19, the watcher fired 2s AFTER the 420s
+    # wait expired, making -WaitForQueue strictly worse than not waiting. A parked run holds
+    # no build output and no runtime mutex, so 'gate' was simply the wrong claim.
+    $script:ActivityKind = 'waiter'
+    Update-ActivityRecord -Label "waiting on queued run $Id" | Out-Null
+    try {
+        while ((Get-Date) -lt $deadline) {
+            if (Test-Path $resP) {
+                # The writer is Set-Content on a whole object, but a reader can still catch a
+                # partial file; a parse failure means "not yet", never "no result".
+                try {
+                    $script:QueueWaitResult = (Get-Content -Path $resP -Raw | ConvertFrom-Json)
+                    return
+                } catch { }
+            }
+            # The request vanishing with no result means someone cleared the queue underneath
+            # us. Wake now rather than serving out a 30-minute wait on a request that will
+            # never produce anything.
+            if (-not (Test-Path $reqP)) { return }
+            if ((Get-Date) -ge $nextBeat) {
+                # Heartbeat, not chatter. Emit refreshes this run's activity record, so without
+                # it a long wait ages past the reader-side staleness window and peers read us as
+                # hung — while we are in fact deliberately idle. It also gives an operator
+                # tailing the background task a liveness signal instead of 30 minutes of silence.
+                $att = '?'
+                try { $att = [string](Get-Prop (Get-Content -Path $reqP -Raw | ConvertFrom-Json) 'attempt' '?') } catch { }
+                $left = [int]((New-TimeSpan -End $deadline).TotalSeconds)
+                # State, not just a countdown. "pending=1" was true both before the watcher fired
+                # and fifteen minutes into the suites, so the line was identical whether the run
+                # had started or not — the operator reads a shrinking number and cannot tell a
+                # live run from a wedged queue. The fired run streams its phases to <id>.log; the
+                # last line of it IS the progress feed, already on disk and previously unread.
+                $state = 'queued'; $phase = 'waiting for a quiet checkout'
+                try {
+                    $logP = Join-Path $queueDir "$Id.log"
+                    if (Test-Path $logP) {
+                        $last = @(Get-Content -Path $logP -Tail 4 -ErrorAction SilentlyContinue |
+                                  Where-Object { $_ -and $_.Trim() })
+                        if ($last.Count -gt 0) { $state = 'running'; $phase = $last[-1].Trim() }
+                    }
+                } catch { }
+                if ($state -eq 'queued') {
+                    # Name WHY the checkout is not quiet. "waiting for a quiet checkout" alone is
+                    # ambiguous between an open editor/playtest and a peer session's run, and the
+                    # reader acts differently on each (close the editor vs leave the peer alone).
+                    # The watcher already classifies the blocker into its own log — surface its
+                    # latest verdict here instead of re-probing.
+                    try {
+                        $wlog = Join-Path $queueDir 'watcher.log'
+                        if (Test-Path $wlog) {
+                            $bline = @(Get-Content -Path $wlog -Tail 40 -ErrorAction SilentlyContinue |
+                                       Where-Object { $_ -match 'BLOCKED blocker=|QUIET ' })
+                            if ($bline.Count -gt 0 -and $bline[-1] -match 'blocker=(\S+)') {
+                                $why = switch ($Matches[1]) {
+                                    'editor'      { 'a Godot editor/playtest is open on this checkout — close it to let the run fire' }
+                                    'test-runner' { 'a test runner (possibly a peer session) is live on this checkout — wait, never kill it' }
+                                    'peer-gate'   { 'another session''s gate run is live — wait, never kill it' }
+                                    default       { "the machine-global runtime mutex is held ($($Matches[1]))" }
+                                }
+                                $phase = "waiting for a quiet checkout: $why"
+                            }
+                        }
+                    } catch { }
+                }
+                Emit "QUEUE_WAIT id=$Id state=$state attempt=$att remaining=${left}s phase=`"$phase`""
+                $nextBeat = (Get-Date).AddSeconds(60)
+            }
+            Start-Sleep -Seconds 5
+        }
+    } finally {
+        # Restored on every path: whatever runs after the wait is a real gate again.
+        $script:ActivityKind = 'gate'
+        Update-ActivityRecord -Label "queue wait finished ($Id)" | Out-Null
+    }
+}
+
 function Invoke-QueueHandoff {
     param([string] $Reason)
-    $id      = New-GateRequest -Reason $Reason
+    # A starvation handoff has, by construction, an inline run behind it whose green batches are
+    # recorded in the state file — re-proving them is pure waste (measured 2026-08-19: 13 min
+    # inline + 23 min queued full repeat for one verdict). Queue the re-run as -RetryOnly: it
+    # re-runs only the non-green batches, and its composition guard degrades it to a full pass
+    # by itself if the state file no longer matches.
+    $extra = @()
+    if ($Reason -eq 'budget-starvation' -and -not $RetryOnly) { $extra = @('-RetryOnly') }
+    $id      = New-GateRequest -Reason $Reason -ExtraArgs $extra
     $spawned = Start-GateWatcherIfAbsent
     Add-Detail "Handed to the gate queue (reason=$Reason). The run fires when this checkout is quiet: no editor or playtest, no peer test runner, and the machine-global runtime mutex free. Watch it with ``/regression_gate --queue-status``; the result records the tree it actually ran against."
     Emit "QUEUED id=$id reason=$Reason watcher=$(if ($spawned) { 'started' } else { 'live' })"
+
+    if ($WaitForQueue -gt 0) {
+        Emit "QUEUE_WAIT id=$id window=${WaitForQueue}s"
+        Wait-QueueResult -Id $id -Seconds $WaitForQueue
+        $res = $script:QueueWaitResult
+        # A record with no readable status is not a verdict. Adopting one would hand the caller
+        # a synthesized answer with a gate's authority behind it — strictly worse than exit 7,
+        # which at least says "no answer yet". Fall through to the expiry path instead.
+        if ($res -and -not [string](Get-Prop $res 'status' '')) {
+            Emit "QUEUE_WAIT id=$id malformed-result=1 (ignored)"
+            $res = $null
+        }
+        if ($res) {
+            # Adopt the queued run's verdict as this invocation's exit status, so a caller
+            # that must gate a commit gets a real answer instead of a pointer. Provenance is
+            # explicit: ReusedFrom threads the producing run's id into our own record, and
+            # treeDelta is surfaced because a run whose tree moved underneath it backs no
+            # "Verified" claim regardless of its verdict.
+            $qStatus = [string](Get-Prop $res 'status' '')
+            $qExit   = [int](Get-Prop $res 'exitCode' -Default 7)
+            $qDelta  = Get-Prop $res 'treeDelta' $false
+            $script:ReusedFrom = $id
+            Emit "QUEUE_RESULT id=$id status=$qStatus exit=$qExit treeDelta=$qDelta detail=$(Get-Prop $res 'detail' '-')"
+            Add-Detail "## Queued run completed inside the wait window`n`nThis invocation waited ${WaitForQueue}s and adopted queued run ``$id``'s verdict (**$qStatus**, exit $qExit). Its full detail is at ``$(Get-Prop $res 'detail' '-')``.$(if ($qDelta -eq $true) { " **treeDelta=true** — the tree changed between the request and the run, so this result cannot back a ``Verified`` claim." })"
+            Complete-Gate $qStatus $qExit
+        }
+        Emit "QUEUE_WAIT id=$id expired=1 resume=re-invoke"
+        Add-Detail @"
+## Wait expired — the run is queued, not lost
+
+The ${WaitForQueue}s window closed before queued run ``$id`` finished. The request is still
+pending and the detached watcher still owns it. Expiry wakes the caller to re-check; it
+never cancels the run.
+
+**To resume: re-invoke the gate with the same flags.** One of two things happens, both correct:
+
+- the queued run finished meanwhile -> the ledger serves its verdict via ``REUSE`` (digest +
+  mode match, under 6h) and you get the real answer immediately, with no second run;
+- it is still pending -> the request dedups by tree digest, so you fold back into ``$id``
+  and resume waiting rather than stacking a duplicate run.
+
+The result is also announced unprompted on the next turn as a ``[gate-queue]`` line, and on
+demand via ``/regression_gate --queue-status``.
+"@
+    }
+
     Complete-Gate 'QUEUED' 7
 }
 
@@ -593,8 +874,39 @@ function Assert-TreeStable {
     param([string] $Phase)
     $now = Get-TreeDigest
     if (Test-DigestMatch $now.digest $script:RunTree.digest) { return }
-    Emit "TREE_CHANGED=1 phase=$Phase"
-    Add-Detail "## Tree changed mid-run ($Phase)`n`nThe working tree's digest differs from the run-start digest. A concurrent session's edit (or your own edit under test) invalidates every result after the change — later batches would fail with compile errors that present as test failures. Results are INVALID, not a regression. Re-run when the tree is stable."
+    # Name the delta: an INVALID that doesn't say WHICH path moved forces post-hoc
+    # archaeology against a transient state that may already be gone.
+    $delta = @()
+    try {
+        $startE = @($script:RunTree.entries); $nowE = @($now.entries)
+        $delta = @(Compare-Object -ReferenceObject $startE -DifferenceObject $nowE |
+                   ForEach-Object { "$(if ($_.SideIndicator -eq '=>') { 'NOW ' } else { 'WAS ' })$($_.InputObject)" })
+        if (-not $delta.Count -and ($now.head -ne $script:RunTree.head)) {
+            # HEAD moved with an identical dirty-set: a peer session committed. If every
+            # committed path is digest-excluded (harness commits — the measured recurring
+            # case), the tested content is byte-identical: adopt the new head and continue.
+            # Any non-excluded committed path, or an unreadable diff, stays INVALID.
+            $moved = @(& git -C $repo diff --name-only "$($script:RunTree.head)..$($now.head)" 2>$null)
+            $diffOk = ($LASTEXITCODE -eq 0)
+            $hot = @($moved | ForEach-Object { $_ -replace '\\', '/' } | Where-Object {
+                $p = $_; -not @($script:DigestExcl | Where-Object { $p.StartsWith($_) }).Count })
+            if ($diffOk -and -not $hot.Count) {
+                # Write-Host, NOT Emit: this is the one Assert-TreeStable path that RETURNS, and
+                # Invoke-IntegrationRun captures its caller's output stream — an Emit here lands
+                # inside the returned hashtable ($intRun.code lookup fails). Return-pollution class.
+                $line = "TREE_HEAD_MOVED phase=$Phase from=$(Format-Short $script:RunTree.head) to=$(Format-Short $now.head) committedPaths=$($moved.Count) allExcluded=1 action=continue"
+                Write-Host $line
+                Update-ActivityRecord -Label $line
+                $script:RunTree = $now
+                return
+            }
+            $delta = @("HEAD $($script:RunTree.head) -> $($now.head)") +
+                     @($hot | Select-Object -First 19 | ForEach-Object { "COMMITTED $_" })
+        }
+    } catch { $delta = @("(entry diff unavailable: $($_.Exception.Message))") }
+    Emit "TREE_CHANGED=1 phase=$Phase delta=$($delta.Count)"
+    foreach ($d in @($delta | Select-Object -First 20)) { Emit "TREE_DELTA $d" }
+    Add-Detail ("## Tree changed mid-run ($Phase)`n`nThe working tree's digest differs from the run-start digest. A concurrent session's edit (or your own edit under test) invalidates every result after the change — later batches would fail with compile errors that present as test failures. Results are INVALID, not a regression. Re-run when the tree is stable.`n`nChanged entries:`n" + (($delta | Select-Object -First 50) -join "`n"))
     Complete-Gate 'INVALID' 2
 }
 
@@ -639,6 +951,11 @@ function Assert-NotContention {
     # obvious contention artifact was adjudicated as a real UNPARSED result. Contention holds if a peer
     # was live at EITHER end of the window.
     param($R, [datetime] $StartedAt, [string] $Label, $PeersAtStart = @())
+    # LOCK_TIMEOUT/LOCKED are the runner's own machine-busy statuses — the LOCKED tier owns their
+    # classification deterministically. CONTENTION stays for the external-kill signature only;
+    # adjudicating a known lock expiry against the advisory registry is what re-opens the
+    # INVALID path the LOCKED tier closes.
+    if ((Get-Prop $R 'status' '') -in @('LOCK_TIMEOUT', 'LOCKED')) { return }
     if ([int](Get-Prop $R 'exit'   -Default 0)  -eq 0) { return }
     if ([int](Get-Prop $R 'passed' -Default -1) -ge 0) { return }
     $peers = @(Get-LivePeerActivity)
@@ -656,17 +973,33 @@ function Assert-NotContention {
     Complete-Gate 'CONTENTION' 8
 }
 
+# ---------------------------------------------------------------- detached spawn
+# Nothing above this point takes a lock, writes a record, or spawns work, so the parent can
+# hand off here and leave without anything to unwind. -FromQueue is refused: the watcher
+# already detaches its child, and a second hop would orphan the QueueId this run must report.
+if ($Detach) {
+    if ($FromQueue) {
+        Write-Output 'DETACH=REFUSED reason=from-queue (the watcher already spawns detached)'
+        exit 4
+    }
+    $outPath = Join-Path $logDir "gate_run_$runId.out"
+    $errPath = Join-Path $logDir "gate_run_$runId.err"
+    $childArgs = @('-NoProfile', '-File', $PSCommandPath) + @(Get-GateArgs)
+    if ($IgnoreEditor) { $childArgs += '-IgnoreEditor' }
+    $childArgs += @('-WaitForQueue', "$WaitForQueue")
+    # -WindowStyle Hidden + file redirection, no -Wait and no inherited handles: the child
+    # keeps no channel back to this process, which is the whole point.
+    $child = Start-Process -FilePath 'pwsh' -WindowStyle Hidden -ArgumentList $childArgs `
+                -RedirectStandardOutput $outPath -RedirectStandardError $errPath -PassThru
+    Write-Output "DETACHED pid=$($child.Id) mode=$($script:Mode)"
+    Write-Output "OUT=$outPath"
+    Write-Output "ERR=$errPath"
+    Write-Output 'WAIT=poll OUT until a line begins VERDICT= (the run is over only then)'
+    exit 0
+}
+
 Start-ActivityRecord
 try {
-
-# ---------------------------------------------------------------- queue entry
-if (-not $IgnoreEditor) {
-    $liveEds = @(Get-LiveEditor -Checkout $repo -Map (Get-ProcSnapshot))
-    if ($liveEds.Count -gt 0) {
-        Add-Detail "A Godot editor is open on this checkout ($($liveEds.Count) process(es))."
-        Invoke-QueueHandoff 'editor-open'
-    }
-}
 
 # ---------------------------------------------------------------- cross-session REUSE
 # A peer's completed verdict for byte-identical content + the same coverage contract + a live
@@ -715,6 +1048,22 @@ if (-not $NoReuse) {
             }
         }
         Complete-Gate ([string](Get-Prop $best 'status' 'PASS')) ([int](Get-Prop $best 'exitCode' 0))
+    }
+}
+
+# ---------------------------------------------------------------- queue entry
+# DELIBERATELY BELOW the REUSE check. Ordered the other way, an open editor queued a
+# full run even when a byte-identical verdict from minutes ago was sitting in the
+# ledger — the caller waited (or gave up) for a result it already had. REUSE takes no
+# locks, spawns nothing, and touches no build output, so it is safe beside a live
+# editor; its only external call is the engine probe, which preflight above already
+# made. Nothing below this point is editor-safe, which is why the check sits here and
+# not later.
+if (-not $IgnoreEditor) {
+    $liveEds = @(Get-LiveEditor -Checkout $repo -Map (Get-ProcSnapshot))
+    if ($liveEds.Count -gt 0) {
+        Add-Detail "A Godot editor is open on this checkout ($($liveEds.Count) process(es))."
+        Invoke-QueueHandoff 'editor-open'
     }
 }
 
@@ -803,6 +1152,33 @@ function Get-PeerGates {
     })
 }
 
+# Cross-checkout gate preflight: REPORT, never queue.
+#
+# A peer gate in a DIFFERENT worktree shares exactly one resource with us — the
+# machine-global runtime mutex (Global\gdunit4-{{PROJECT_NAME}}-runlock), and only for
+# runtime suites. Everything else is per-checkout: its own .godot/mono/temp/bin/Debug
+# build output, its own per-worktree Logic mutex (run_test_suite.ps1:378), its own
+# salted GdUnit4 pipe. Queueing the whole run on that record therefore serialized
+# preflight, guards, build, DOCS and every Logic suite — all fully parallel work — to
+# protect a contention that already has a correct, finer-grained mechanism: the
+# runtime suites block on the mutex, and a genuine starvation degrades to the LOCKED
+# tier and queues from there.
+#
+# SAME-checkout gates are a different animal and are NOT relaxed: they share the build
+# output, which is what produced the measured 2026-08-13 double-gate HANG. The wait-then-
+# queue block below owns them via Get-PeerGates, and gives them a 90s wait first.
+if (-not $FromQueue) {
+    $machineGates = @(Get-LivePeerActivity | Where-Object {
+        (Get-Prop $_ 'kind' '') -eq 'gate' -and (Get-Prop $_ 'checkout' '') -ne $repo
+    })
+    if ($machineGates.Count -gt 0) {
+        # Emitted, not silent: runtime suites may still wait on the mutex, and an operator
+        # reading a slow run needs the cross-checkout gate named rather than inferred.
+        Emit "PEERS site=preflight crossCheckoutGates=$($machineGates.Count) action=proceed  (shares only the runtime mutex; runtime suites may wait)"
+        Add-Detail "A gate is live in another checkout ($($machineGates.Count) record(s)). This run proceeds: the two share only the machine-global runtime mutex, so guards, build and Logic suites are parallel-safe. Runtime suites may wait on the mutex, and a wait that expires surfaces as ``STATUS=LOCKED`` → the LOCKED tier → the queue."
+    }
+}
+
 $peerDeadline = (Get-Date).AddSeconds(90)
 $peerRunners  = @(Get-CheckoutTestRunners -Map $map)
 $peerGates    = @(Get-PeerGates)
@@ -848,8 +1224,9 @@ $guards = [ordered]@{
     floorcell_seam = 'floorcell_mutation_seam_guard.py'
     gate_coverage  = 'test_suite_gate_coverage_guard.py'
     dup_double     = 'duplicate_test_double_guard.py'
+    refcount_free  = 'refcounted_free_guard.py'
 }
-if (-not $SkipStatic) {
+if ($true) {
     $results = @(); $blocked = @()
     foreach ($name in $guards.Keys) {
         $path = Join-Path $hooks $guards[$name]
@@ -882,6 +1259,7 @@ Assert-NoEditor -Phase 'build'
 # readable against, and a queued run's request tree may already be stale.
 $script:RunTree = Get-TreeDigest
 Emit ("TREE head={0} digest={1}" -f (Format-Short $script:RunTree.head), (Format-Short $script:RunTree.digest))
+Publish-RunDigest
 $buildOut  = & dotnet build $repo 2>&1
 $buildCode = $LASTEXITCODE
 if ($buildCode -ne 0) {
@@ -968,6 +1346,7 @@ function Test-SuiteTiers {
     $warnAt   = [math]::Floor($base * [double]$baseline.drift_thresholds.warn_ratio)
     $hardAt   = [math]::Floor($base * [double]$baseline.drift_thresholds.hard_fail_ratio)
     if ($R.silentSkip)            { return @{ tier = 'INVALID'; note = "silent-skip signature (results INVALID regardless of count)" } }
+    if ($R.status -in @('LOCK_TIMEOUT', 'LOCKED')) { return @{ tier = 'LOCKED'; note = "lock-wait window on the machine-global runtime mutex expired — a live holder owns the runtime slot" } }
     if ($R.passed -lt 0)          { return @{ tier = 'UNPARSED'; note = "no 'Failed: N, Passed: M' line in wrapper output — do NOT treat as green" } }
     if ($R.passed -lt $sentinel)  { return @{ tier = 'INVALID'; note = "passed=$($R.passed) below architectural floor $sentinel — GodotRuntimeExecutor likely failed" } }
     # A real failure explains its own count shortfall — do not also label it a
@@ -979,27 +1358,59 @@ function Test-SuiteTiers {
     @{ tier = 'PASS'; note = '' }
 }
 
+
 $suiteResults = [ordered]@{}
 
+# LOCKED conversion — the deterministic machine-busy verdict, keyed on the runner's own STATUS
+# line and never on the advisory registry. A live holder — another session's gate, a raw suite
+# run, or an unannounced consumer — owns the machine's single runtime slot. Nothing failed; the
+# counts prove nothing. An inline run hands to the queue (exit 7); a -FromQueue run reports
+# INCOMPLETE (exit 6) and the watcher re-queues it (capped at its attempt ceiling), because a
+# watcher-fired run already waited for machine-wide quiet and re-queueing there could loop.
+# Called mid-phase (a LOCKED Logic/Integration pre-empts the remaining suites, which would only
+# re-wait the same mutex or trip Assert-NotContention's phase-level exit 8 before the
+# adjudication LOCKED branch ever runs — measured 2026-08-14, V5 run C) or from adjudication
+# (a LOCKED Sanity, the last phase).
+function Complete-LockedGate {
+    $lockedSuite = $suiteResults.Keys | Where-Object { $suiteResults[$_].t.tier -eq 'LOCKED' } | Select-Object -First 1
+    if ($lockedSuite -and $suiteResults[$lockedSuite].t.note) {
+        Add-Detail "## $lockedSuite — LOCKED`n`n$($suiteResults[$lockedSuite].t.note)"
+    }
+    Add-Detail "## Machine-busy — runtime mutex held`n`nAt least one suite reported LOCK_TIMEOUT/LOCKED: its lock-wait window expired while a live holder owned the machine-global runtime mutex. Not a regression. An inline run is handed to the gate queue (reason=runtime-mutex-busy); a queued re-fire reports INCOMPLETE and the watcher re-queues it."
+    if (-not $FromQueue) { Invoke-QueueHandoff 'runtime-mutex-busy' }
+    Complete-Gate 'INCOMPLETE' 6
+}
+
 # --- Logic
+$logicFilter = 'FullyQualifiedName~Tests.Logic'
 Assert-TreeStable -Phase 'suite:Logic'
 Assert-NoEditor -Phase 'suite:Logic'
 $t0 = Get-Date
 $peers0 = @(Get-SuitePeers)
-$r = Invoke-Suite -Label 'Logic' -Filter 'FullyQualifiedName~Tests.Logic'
+$r = Invoke-Suite -Label 'Logic' -Filter $logicFilter
 $t = Test-SuiteTiers -R $r -Label 'Logic'
 # Partial-but-clean: re-run that one suite ONCE before evaluating.
 if ($t.tier -in @('PARTIAL', 'INVALID') -and $r.status -ne 'HANG') {
     Emit "SUITE Logic rerun=1 reason=$($t.tier)"
     $t0 = Get-Date
     $peers0 = @(Get-SuitePeers)
-    $r = Invoke-Suite -Label 'Logic' -Filter 'FullyQualifiedName~Tests.Logic'
+    $r = Invoke-Suite -Label 'Logic' -Filter $logicFilter
     $t = Test-SuiteTiers -R $r -Label 'Logic'
 }
 Assert-NotContention -R $r -StartedAt $t0 -Label 'Logic' -PeersAtStart $peers0
 $suiteResults['Logic'] = @{ r = $r; t = $t }
 Emit ("SUITE Logic passed={0} failed={1} tier={2} delta={3:+#;-#;+0} status={4} dur={5}s" -f `
       $r.passed, $r.failed, $t.tier, ($r.passed - [int]$baseline.suites.Logic.passed), $r.status, $r.elapsed)
+
+# A LOCKED Logic tier means the wrapper's lock-wait on the machine-global runtime mutex expired —
+# the slot was busy for the entire window. The remaining phases would only re-wait the same
+# mutex (Integration) or run mid-phase under live peers, where Assert-NotContention's phase-level
+# exit 8 pre-empts this deterministic tier (measured 2026-08-14, V5 run C). Convert now.
+if ($t.tier -eq 'LOCKED') {
+    Emit 'SUITE Integration skipped=1 reason=logic-locked'
+    Emit 'SUITE Sanity skipped=1 reason=logic-locked'
+    Complete-LockedGate
+}
 
 # --- Integration (batched runner already evaluates its own sentinel/baseline)
 function Invoke-IntegrationRun {
@@ -1061,7 +1472,7 @@ if ($intComplete -eq 'SHORTFALL' -and $intT.tier -eq 'PASS') { $intT = @{ tier =
 # UNKNOWN counts as not-comparable, not as complete. The runner emits COMPLETENESS on every exit
 # path, so its ABSENCE means the run did not report — which is weaker evidence than INCOMPLETE, never
 # stronger. Treating it as comparable is what turns a silent partial into a fabricated count drop.
-if ($intComplete -in @('INCOMPLETE', 'UNKNOWN') -and $intFailed -le 0) {
+if ($intComplete -in @('INCOMPLETE', 'UNKNOWN') -and $intFailed -le 0 -and $intT.tier -ne 'LOCKED') {
     $why = if ($intComplete -eq 'UNKNOWN') { 'the runner reported no COMPLETENESS at all, so the total cannot be assumed whole' }
            else { 'runner reported COMPLETENESS=INCOMPLETE after an automatic -RetryOnly pass — batches were skipped for wall-clock budget' }
     $intT = @{ tier = 'INCOMPLETE'; note = "$why, so passed=$intPassed is partial by construction and is NOT comparable to the baseline" }
@@ -1070,10 +1481,13 @@ $suiteResults['Integration'] = @{ r = $intR; t = $intT }
 Emit ("SUITE Integration passed={0} failed={1} tier={2} delta={3:+#;-#;+0} completeness={4} exit={5}" -f `
       $intPassed, $intFailed, $intT.tier, ($intPassed - [int]$baseline.suites.Integration.passed), $intComplete, $intCode)
 
-# --- Sanity (deferred in smoke tier)
-if ($Smoke) {
-    Emit 'SUITE Sanity deferred=1 reason=smoke-tier'
-} else {
+if ($intT.tier -eq 'LOCKED') {
+    Emit 'SUITE Sanity skipped=1 reason=integration-locked'
+    Complete-LockedGate
+}
+
+# --- Sanity (always: the tier that used to defer it bought 21 seconds of a 576-second suite)
+if ($true) {
     Assert-TreeStable -Phase 'suite:Sanity'
     Assert-NoEditor -Phase 'suite:Sanity'
     $t0 = Get-Date
@@ -1108,6 +1522,11 @@ if ($suiteResults.Keys | Where-Object { $suiteResults[$_].r.status -eq 'HANG' })
     Add-Detail 'A suite wedged and was tree-killed after the wrapper''s built-in retry. Re-run once. If a second run also HANGs or counts DROP across retries, machine named-pipe state is exhausted — reboot is the terminal fix.'
     Complete-Gate 'HANG' 124
 }
+# LOCKED: the deterministic machine-busy tier — converted by Complete-LockedGate (defined above
+# the phase flow). Reached from adjudication only by a LOCKED Sanity (the last phase); Logic and
+# Integration LOCKED tiers complete the gate at their phase boundary instead, so the remaining
+# suites never re-wait the same mutex mid-hold.
+if ($tiers -contains 'LOCKED') { Complete-LockedGate }
 if ($tiers -contains 'INVALID' -or $tiers -contains 'UNPARSED') {
     Add-Detail 'Results are untrustworthy — not a regression signal. Kill orphaned Godot processes and re-run; do not interpret counts.'
     Complete-Gate 'INVALID' 2
@@ -1143,9 +1562,7 @@ if ($tiers -contains 'WARN' -or $tiers -contains 'PARTIAL') {
 # (observed as a false-low Integration count at its non-runtime floor).
 # Catches what the static gate (1c) cannot: Node cascades, escape-hatch inline
 # placements ([Export] Resource?), and Jmodot-side gaps.
-if ($Smoke) {
-    Emit 'IMPORT_GATE deferred=1 reason=smoke-tier'
-} else {
+if ($true) {
     Assert-TreeStable -Phase 'import-gate'
     Assert-NoEditor -Phase 'import-gate'
     # Orphan scope again: the suites have finished, so anything of OURS is gone,
@@ -1197,10 +1614,7 @@ $testWip = @(& git -C $repo status --porcelain -- Tests/ 2>$null | Where-Object 
     $_ -notmatch 'Tests/regression_baseline\.json' -and $_ -notmatch 'Tests/integration_batch_durations\.json'
 })
 $reestablish = ($stampTrust -eq 'UNTRUSTED')
-if ($Smoke) {
-    $script:BaselineAction = 'skipped:smoke-tier'
-    Emit 'BASELINE action=skipped reason=smoke-tier'
-} elseif ($NoBaselineUpdate) {
+if ($NoBaselineUpdate) {
     $script:BaselineAction = 'skipped:flag'
     Emit 'BASELINE action=skipped reason=flag'
 } elseif ($testWip.Count -gt 0) {

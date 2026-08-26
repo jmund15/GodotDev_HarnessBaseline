@@ -5,32 +5,30 @@ paths:
 
 # C# & Godot Interop Patterns
 
-**Context:** Mechanical patterns that fire when writing or editing `.cs` files — lifecycle ordering, nullability annotations, export discipline, defensive guards, test-helper conventions. Auto-loads on `.cs` reads. Companion to [`csharp_lsp.md`](csharp_lsp.md) (navigation tooling) and [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) (design philosophy).
+Mechanical patterns for writing or editing `.cs`: lifecycle ordering, nullability, export discipline, defensive guards, test-helper conventions. Siblings and companion skill: §Touchpoints.
 
 ## Core Conventions (project-level)
 
 - **Pure functions** wherever possible. **Control flow:** no nested if/else, early returns, ALWAYS brackets `{}`.
-- **Logging:** `JmoLogger.Info/Warning/Error`. Never `GD.Print`. Log STATE CHANGES, not state. `JmoLogger.Error` fails tests only in suites that install `JmoLoggerSpy` (`Tests/Framework/JmoLoggerSpy.cs`) — opt-in, not automatic; engine-level ERROR lines never fail tests.
-- **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT, NEVER reference task/PR/"Phase X"/dates/CLAUDE.md rules — and never project history; that belongs in the vault and is not linked from source. Litmus: *"If I delete this, will a maintainer 6 months from now make a wrong decision?"* No -> don't write it. Doc-only commits to recent code = smell; cut over clarify.
-- **Trust radius — a `///` is authoritative about its own member and nothing else.** `<summary>` states that member's contract; `<remarks>` carries longer supplemental explanation. Doc comments are the one source here that no compiler, test, or reference check validates, so the radius is what makes them citable: inside it they sit beside the code they describe, outside it they are unowned claims that rot silently. (Measured 2026-08-12: 6 of 11 false premises in a rejected design investigation came from doc comments reaching outside their radius.)
-- **Obligation, not observation.** *Obligation* = a constraint a caller must honour to use the member correctly, or a guarantee it makes — invariants, call-ordering, required configuration, failure modes, what it throws. Cross-file by nature and REQUIRED on seams (`design_litmus.md` #7); a collaborator-owned constraint (a driver's phase ordering, a base's contract) is still an obligation. *Observation* = a report on the current state of code elsewhere: who calls this, what another implementation currently does, whether two bodies match, what happened historically. **Litmus: must a caller honour this to use the member correctly?** Yes -> obligation, write it, richly. No, it merely describes the neighbourhood -> observation, cut it.
-- **References are cref, not font.** A member named inside `///` uses `<see cref="X"/>`, which the compiler resolves (CS1574 when it can't, CS0419 when it's ambiguous — disambiguate with a signature). A **parameter** uses `<paramref name="x"/>` and a type parameter `<typeparamref>` — a cref to either does not resolve and emits the warning the gate blocks on. `<c>` is typographic and unchecked; it stays correct for non-symbols (literals, snippets, expressions, pseudo-code).
+- **Logging:** `JmoLogger.Info/Warning/Error`, never `GD.Print`. Log STATE CHANGES, not state. `JmoLogger.Error` fails tests only in suites installing `JmoLoggerSpy` (`Tests/Framework/JmoLoggerSpy.cs`) — opt-in; engine ERROR lines never fail tests.
+- **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT; never cite task/PR/"Phase X"/dates/CLAUDE.md rules; never project history (vault-only, unlinked from source). Litmus: *"If I delete this, will a maintainer 6 months out make a wrong decision?"* No → don't write it. Doc-only commits to recent code are a smell; cut over clarify. **A sanctioned WHY is 1–3 lines stating the invariant itself** — build-up, the bug it prevents and alternatives go in the commit message.
+- **Trust radius — a `///` is authoritative about its own member and nothing else.** `<summary>` states that member's contract; `<remarks>` carries longer supplemental explanation. Nothing validates doc comments, so outside the radius they are unowned claims that rot silently.
+- **Obligation, not observation.** *Obligation* = a constraint a caller must honour, or a guarantee the member makes: invariants, call-ordering, required configuration, failure modes, what it throws. Cross-file by nature, REQUIRED on seams (`design_litmus.md` #7); a collaborator-owned constraint (a driver's phase ordering, a base's contract) is still an obligation. *Observation* = a report on code elsewhere: who calls this, what another implementation does, whether two bodies match, what happened historically. **Litmus: must a caller honour this to use the member correctly?** Yes → obligation, write it richly. No → observation, cut it.
+- **References are cref, not font.** A member named inside `///` uses `<see cref="X"/>`, compiler-resolved (CS1574 unresolved, CS0419 ambiguous — disambiguate with a signature). A **parameter** uses `<paramref name="x"/>`, a type parameter `<typeparamref>`; a cref to either emits the warning the gate blocks on. `<c>` is typographic and unchecked — correct for non-symbols (literals, snippets, expressions, pseudo-code).
 - **TODO, future-tense, and notes to yourself or to agents go in `//` line comments.** Never `///` — a `<summary>` on an `[Export]` ships verbatim to the designer-facing tooltip.
-- **`<summary>` on `[Export]` is softer** — it surfaces on IDE hover (Roslyn reads it from source) AND as the Godot Inspector tooltip, supplied by Jmodot's `Tools/DocTooltips/` mechanism (wired here by `addons/csharp_doc_tooltips`); the engine provides none itself (`CSharpScript::get_documentation()` is an empty `// TODO` stub at 4.7.1). Put the `///` above **ALL** the member's attributes, `[ExportGroup]` included — between them it is orphaned (CS1587), dropped from the XML sidecar, and the tooltip silently vanishes. Hovering the export's VALUE WIDGET shows the summary; hovering its label shows nothing (engine doc path, empty for C#). `#if TOOLS` setters need no `///`.
-- **Repair on sight.** Finding a false or dangling doc comment while doing other work means fixing it in that turn, not logging it (`feedback_dont_defer_immediately_addressable.md`). Enforced at commit by the `DOCS` check in `/regression_gate`; sweep the whole tree on demand with `.claude/scripts/doc_warning_check.sh`.
+- **`<summary>` on `[Export]` is softer** — it surfaces on IDE hover and as the Inspector tooltip via Jmodot's `Tools/DocTooltips/` (wired by `addons/csharp_doc_tooltips`); the engine supplies none (`CSharpScript::get_documentation()` is an empty stub at 4.7.1). Put the `///` above **ALL** the member's attributes, `[ExportGroup]` included — between them it is orphaned (CS1587), dropped from the XML sidecar, and the tooltip silently vanishes. Hovering the export's VALUE WIDGET shows the summary; its label shows nothing. `#if TOOLS` setters need no `///`.
+- **Repair on sight.** Fix a false or dangling doc comment in the turn you find it (`feedback_dont_defer_immediately_addressable.md`). Enforced at commit by the `DOCS` check in `/regression_gate`; full-tree sweep: `.claude/scripts/doc_warning_check.sh`.
 - **Strings:** prefer `StringName` for Godot identifiers (node paths, signal/animation names).
 
 ## Lifecycle & Constructors
 
-**Rule:** **NEVER** put game logic in the C# Constructor (`public MyClass()`).
-- *Why:* The Godot Engine native side is not initialized yet.
-- *Correct:* Use `_EnterTree()` for initialization or `_Ready()` for node wiring.
+**Rule:** **NEVER** put game logic in the C# constructor (`public MyClass()`) — the Godot native side is not initialized yet. Use `_EnterTree()` for initialization, `_Ready()` for node wiring.
 
-**Rule:** Perform all Node Lookups (`NodeExts`) inside `_Ready()` and cache the result. Never query the scene tree inside `_Process` — it's a hot-path scene-tree walk; cache in `_Ready`.
+**Rule:** Perform all node lookups (`NodeExts`) inside `_Ready()` and cache the result. Never query the scene tree inside `_Process` — hot-path scene-tree walk.
 
 ## Nullability Convention for Godot Properties
 
-**Context:** Godot has no typical C# constructor, so properties start null until `_Ready()`.
+Godot has no typical C# constructor, so properties start null until `_Ready()`.
 
 | Scenario | Annotation | Rationale |
 | :--- | :--- | :--- |
@@ -40,7 +38,7 @@ paths:
 | **Collection** `[Export]` (`GCol.Array<T>` / `Dictionary<K,V>`) | `= new()` | Editor replaces the default on load; empty default = iterable without null checks. NEVER `= new()` a *Resource-typed* export — pathless Resources serialize inline into every referencing `.tres` (use the rows above). |
 | Runtime state that can be null | `?` nullable | Could legitimately be null |
 
-**Pattern:** Use `[RequiredExport]` attribute + `this.ValidateRequiredExports()` in `_Ready()`:
+**Pattern:** `[RequiredExport]` + `this.ValidateRequiredExports()` in `_Ready()`:
 ```csharp
 [Export, RequiredExport] public SpellArchetype Archetype { get; set; } = null!;
 [Export] public SpellArchetype? OptionalOverride { get; set; }  // No RequiredExport = optional
@@ -50,105 +48,98 @@ public override void _Ready()
     this.ValidateRequiredExports();  // One line validates ALL required exports
 }
 ```
-- *Why `= null!`:* Suppresses IDE warnings when accessing the property throughout code.
-- *Why `[RequiredExport]`:* The attribute + validation method throws `NodeConfigurationException` (Nodes) or `ResourceConfigurationException` (Resources) with clear message if forgotten in Inspector.
-- *Why not manual null checks:* Avoids "unnecessary null check" warnings and verbose boilerplate.
+`= null!` suppresses IDE warnings at every access site; `[RequiredExport]` throws `NodeConfigurationException` (Nodes) / `ResourceConfigurationException` (Resources) with a clear message when the Inspector slot is empty; manual null checks instead would draw "unnecessary null check" warnings and boilerplate.
 
 **Rule:** Every `[Export] = null!` **MUST** use `[RequiredExport]`:
 - Declare: `[Export, RequiredExport] public Type Prop { get; set; } = null!;`
 - Validate: `this.ValidateRequiredExports()` as first line in `_Ready()` (Nodes) or during initialization (Resources)
-- **Resources:** `[RequiredExport]` + `ValidateRequiredExports()` works on `Resource` subclasses too (via `ResourceExts`, global namespace). Call during initialization since Resources don't have `_Ready()`. Throws `ResourceConfigurationException` instead of `NodeConfigurationException`.
-- Enforced by `pattern_enforcer.py` hook — writing `[Export]...= null!` without `RequiredExport` is blocked.
+- **Resources:** works on `Resource` subclasses too (via `ResourceExts`, global namespace); call during initialization since Resources have no `_Ready()`.
+- Enforced by `pattern_enforcer.py` — `[Export]...= null!` without `RequiredExport` is blocked.
 
 ## Defensive Patterns
 
 ### Event Initialization
-**Rule:** Initialize events with `= delegate { }` to avoid null checks: `public event Action SomeEvent = delegate { };`
+**Rule:** initialize events with `= delegate { }` to avoid null checks: `public event Action SomeEvent = delegate { };`
 
 ### Nullable Default Parameters
-**Rule:** Parameters with `= null` default must be nullable: `void Method(StringName? reason = null)`. Fix base → all overrides.
+**Rule:** parameters with `= null` default must be nullable: `void Method(StringName? reason = null)`. Fix base → all overrides.
 
 ### TryGet Null Guard
-**Rule:** Add `|| result == null` after `TryGet`/`TryGetFirstChildOfType` calls to satisfy nullable analysis:
+**Rule:** add `|| result == null` after `TryGet`/`TryGetFirstChildOfType` calls to satisfy nullable analysis:
 ```csharp
 if (!bb.TryGet<T>(key, out var result) || result == null) { return; }
 ```
 
 ### Data-Driven Range Guard
-**Rule:** When `Random.Next(min, max)` uses editor-exported values, always guard with `Math.Min`/`Math.Max`:
+**Rule:** when `Random.Next(min, max)` uses editor-exported values, guard with `Math.Min`/`Math.Max` — designers can set Min > Max, and `Random.Next` throws `ArgumentOutOfRangeException` when `minValue > maxValue`. Guard at the consumption site, not the data source.
 ```csharp
 int min = Math.Min(typeData.MinSlots, typeData.MaxSlots);
 int max = Math.Max(typeData.MinSlots, typeData.MaxSlots);
 int result = rng.Next(min, max + 1);
 ```
-*Why:* Designers can easily set Min > Max in the inspector. `Random.Next` throws `ArgumentOutOfRangeException` when `minValue > maxValue`. Guard at the consumption site, not the data source.
 
 ### Float Aggregation Accumulates in `double`
-
 **Rule:** never `Enumerable.Average()`/`Sum()` over a `float` source. Cast to `double` first, or accumulate explicitly.
-
 ```csharp
 float mean = (float)values.Select(v => (double)v).Average();  // not values.Average()
 ```
-*Why:* .NET 9 vectorizes these over `float` and reduces in float lanes, so the result depends on lane count and differs from a scalar sum — observed `1.1666666269302368` where the scalar path gives `1.1666666666666667`. The symptom is a test that fails on the ~7th decimal, which reads as a tolerance problem and is actually a summation-order problem. Applies to any statistic derived from authored `float` data (`ScalarDistribution` means, stat aggregates, sim reports).
+.NET 9 vectorizes these over `float` and reduces in float lanes, so the result depends on lane count and diverges from a scalar sum. The symptom is a test failing on the ~7th decimal — reads as a tolerance problem, is a summation-order problem. Applies to any statistic derived from authored `float` data (`ScalarDistribution` means, stat aggregates, sim reports).
 
 ### Atomic Initialization
-**Rule:** When a method can fail with an early return, dependent state mutations must happen inside the success path, not in the caller after the call.
+**Rule:** when a method can fail with an early return, dependent state mutations happen inside the success path, not in the caller after the call. A void return leaves the caller unable to tell success from failure, and half-initialized objects cause subtle downstream bugs.
+```csharp
+target.Initialize(data);     // Bad — can fail silently
+target.Metadata = metadata;  //       runs even if Initialize failed
 
-*Bad:*
-```csharp
-target.Initialize(data);    // Can fail silently
-target.Metadata = metadata;  // Runs even if Initialize failed
+target.Initialize(data, metadata);  // Good — sets metadata only on success
 ```
-*Good:*
+
+### Fail-Closed Guards on Data-Resolved Floats
+**Rule:** `x <= 0f` is not a fail-closed guard. Every comparison against NaN is false, so NaN passes the guard and reaches the math behind it. Write `!(x > 0f)`, and test `float.IsFinite` on every operand a designer can author.
 ```csharp
-target.Initialize(data, metadata);  // Sets metadata only on success
+// Bad — NaN fails `<= 0f`, falls through, and Acos(Clamp(NaN)) returns NaN.
+public float Degrees => Speed <= 0f ? 90f : RadToDeg(Acos(Clamp(Along / Speed, 0f, 1f)));
+
+// Good — !(x > 0f) catches NaN, zero and negatives in one test.
+public float Degrees => !(Speed > 0f) || !float.IsFinite(Along) ? 90f : ...;
 ```
-*Why:* Half-initialized objects cause subtle downstream bugs. The caller cannot distinguish success from failure when the method returns void.
+NaN in a threshold comparison **inverts** the gate rather than breaking it — `if (value > max) { reject; }` stops rejecting entirely, so the failure presents as a gate that silently passes everything. Guard where the value is produced AND where it is consumed: any float resolved from `[Export]`/`.tres` data (mass, speed, radius, an angle cone) is not compiler-guaranteed finite.
+
+*Litmus:* for each float guard, ask what happens when the value is NaN — if the answer is "the branch I wrote to be safe doesn't run", the test is inverted. Sibling of the range guard above.
 
 ## Signals vs Events
 
-- **Gameplay Logic:** Use **C# Native Events** (`public event Action`).
-    - *Why:* Faster, type-safe, refactor-friendly, easier to analyze and debug.
-    - *Rule:* Do NOT use Godot Signals for game logic.
-- **UI / Engine Interaction:** Use **Godot Signals** (`[Signal]`, `.Connect`).
-    - *Why:* Required for UI Nodes (`Button.Pressed`) or Area3D detections.
-    - *Rule:* Connect these in `_Ready` or via Editor if strictly visual.
-- **Cross-Cutting vs Domain Events (Hybrid Architecture):**
-    - *Cross-cutting events:* Use a centralized `EventBus` (autoload singleton) for events that span multiple unrelated systems (e.g., UI notifications any subscriber might care about).
-    - *Domain-specific events:* Use domain registries (`PlayerRegistry`, `IngredientRegistry`) for events scoped to a single subsystem.
-    - *Rule:* Prefer domain registries. Use EventBus only for truly cross-cutting events that don't belong to any single domain.
+- **Gameplay Logic:** use **C# native events** (`public event Action`) — faster, type-safe, refactor-friendly. Do NOT use Godot Signals for game logic.
+- **UI / Engine Interaction:** use **Godot Signals** (`[Signal]`, `.Connect`) — required for UI Nodes (`Button.Pressed`) and Area3D detections. Connect in `_Ready`, or via Editor if strictly visual.
+- **Cross-Cutting vs Domain Events:** a centralized `EventBus` autoload carries events spanning multiple unrelated systems (UI notifications any subscriber might care about); domain registries (`PlayerRegistry`, `IngredientRegistry`) carry events scoped to one subsystem. Prefer domain registries; EventBus only for events belonging to no single domain.
 
 ## Exports & Inspector
 
-- **Numeric Parameters:** When a value could be constant OR attribute-driven (e.g., speed, cooldown, duration), export as `BaseFloatValueDefinition` rather than a raw `Attribute`. This lets designers choose `ConstantFloatDefinition` or `AttributeFloatDefinition` per-field without code changes. Resolve via `definition.ResolveFloatValue(statProvider)`.
-- **Configuration:** Use `[Export]` for values designers (you) need to tweak (Speed, Damage, Prefabs).
-- **References:** Use `[Export]` for assigning child nodes IF the structure is rigid.
-    - *Better:* Use `GetNode<T>("%UniqueName")` for internal scene wiring to avoid Inspector rot.
-- **Data Types:**
-    - Prefer `Godot.Collections.Array<T>` over `System.Collections.Generic.List<T>` **only** if it must be visible in the Inspector.
-    - Otherwise, use standard .NET Collections.
-    - In files needing usings for `Godot.Collections` AND `System.Collections`, alias Godot as `using GCol = Godot.Collections;`.
+- **Numeric Parameters:** when a value could be constant OR attribute-driven (speed, cooldown, duration), export `BaseFloatValueDefinition` rather than a raw `Attribute`, so designers pick `ConstantFloatDefinition` or `AttributeFloatDefinition` per-field without code changes. Resolve via `definition.ResolveFloatValue(statProvider)`.
+- **Configuration:** use `[Export]` for values designers tweak (Speed, Damage, Prefabs).
+- **References:** use `[Export]` for assigning child nodes IF the structure is rigid. *Better:* `GetNode<T>("%UniqueName")` for internal scene wiring, to avoid Inspector rot.
+- **Data Types:** prefer `Godot.Collections.Array<T>` over `System.Collections.Generic.List<T>` **only** if it must be Inspector-visible; otherwise standard .NET collections. In files needing both usings, alias `using GCol = Godot.Collections;`.
 
 ## `[Tool]` Attribute — Editor-Time Type Registration
 
-**Rule:** Blanket `[Tool]` on every `[GlobalClass]` **Resource** (`[GlobalClass, Tool]`); **selective** on Nodes — a Node gets `[Tool]` only if it has editor-time code (`Engine.IsEditorHint`, `_ValidateProperty`, `[ExportToolButton]`) or extends a framework-convention Node (`State` / `BehaviorTask` / `BTState`).
+**Rule:** blanket `[Tool]` on every `[GlobalClass]` **Resource** (`[GlobalClass, Tool]`); **selective** on Nodes — a Node gets `[Tool]` only with editor-time code (`Engine.IsEditorHint`, `_ValidateProperty`, `[ExportToolButton]`) or when it extends a framework-convention Node (`State` / `BehaviorTask` / `BTState`).
 
-- **Cascade (why blanket Resources):** if a `[Tool]` script `[Export]`s a typed Resource (or `Array<>` / `Dictionary<,>` of one), that Resource AND every concrete subclass assignable to that field MUST also be `[Tool]` — Godot's source generator does NOT inherit the attribute. A gap throws `InvalidCastException` in the **editor only** (the generated setter loads the instance as a bare `Godot.Resource` and casts). **No GdUnit4 / runtime test can catch it** — at runtime every script is its real type.
-- **Cost asymmetry (why selective Nodes):** `[Tool]` on a Resource is side-effect-free (editor only runs property setters); on a Node it makes the editor run `_EnterTree` / `_Ready` / `_Process`, firing game logic in-editor.
+- **Cascade (why blanket Resources):** if a `[Tool]` script `[Export]`s a typed Resource (or `Array<>` / `Dictionary<,>` of one), that Resource AND every concrete subclass assignable to that field MUST also be `[Tool]` — Godot's source generator does NOT inherit the attribute. A gap throws `InvalidCastException` in the **editor only** (the generated setter loads the instance as a bare `Godot.Resource` and casts). **No GdUnit4 / runtime test catches it** — at runtime every script is its real type.
+- **Cost asymmetry (why selective Nodes):** `[Tool]` on a Resource is side-effect-free (the editor only runs property setters); on a Node the editor runs `_EnterTree` / `_Ready` / `_Process`, firing game logic in-editor.
 - **Escape hatch:** type the `[Export]` as base `Resource` / `Node` and cast at runtime (`prop as IFoo`) to break the cascade — used when exporting a non-`[Tool]` Jmodot Resource (Jmodot is a submodule; fix its gaps in a Jmodot PR, not a {{PROJECT_NAME}} edit).
-- *Enforced:* `pattern_enforcer.py` (edit-time — blocks a `[GlobalClass]` Resource without `[Tool]`) + `tool_cascade_audit.py` / `apply_blanket_tool.py` in `/regression_gate` step 1c (static graph) + headless `--import` (step 4b). Full mechanism + verified-empirically details: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) → *`[Tool]` Attribute Policy*. Canon: `archive_tool_attribute_cascade_rules.md`.
+- **Every `GodotObject`-derived script class declares a PARAMETERLESS constructor**, dependencies field-init `= null!` and injected through a second ctor. On assembly reload `ScriptManagerBridge` recreates a managed instance for every script-bearing object and can only call a parameterless ctor; a constructor-injected-only class throws `MissingMemberException` there. The throw is caught and logged, never propagated — the editor takes a native access violation frames later, so the crash record names only the AV and the explaining exception exists ONLY on the editor's stdout (`godot.log` is the game's). Guard engine-invoked entry points (`_ParseEnd`, `_Parse*`) against the inert recreated instance. Editor-only like the cascade — no GdUnit4 test catches it. **Investigating any editor crash, capture stdout FIRST:** `<install>/Godot_*_console.exe --editor --path <dir> > <log> 2>&1`.
+- *Enforced:* `pattern_enforcer.py` (edit-time — blocks a `[GlobalClass]` Resource without `[Tool]`) + `tool_cascade_audit.py` / `apply_blanket_tool.py` in `/regression_gate` step 1c (static graph) + headless `--import` (step 4b). Full mechanism: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) → *`[Tool]` Attribute Policy*. Canon: `archive_tool_attribute_cascade_rules.md`.
 
 ## Async & Tasks
 
-- **Rule:** Avoid `async void`. Use `async Task` or `async void` ONLY for top-level event handlers (e.g., Button pressed).
-- **Rule:** Do not touch Godot Nodes from a background `Task.Run` thread. Use `CallDeferred` if returning to the main thread.
+- **Rule:** avoid `async void`. Use `async Task`, or `async void` ONLY for top-level event handlers (Button pressed).
+- **Rule:** do not touch Godot Nodes from a background `Task.Run` thread. Use `CallDeferred` to return to the main thread.
 
 ## Test Helper Setters
 
-**Context:** The project uses a single assembly (tests and production in one `.csproj`), so `internal` provides no access control.
+Tests and production share one `.csproj`, so `internal` provides no access control.
 
-**Rule:** ALL `internal` methods added for test access MUST be wrapped in `#if TOOLS` / `#endif` within a `#region Test Helpers` block. This includes:
+**Rule:** ALL `internal` methods added for test access MUST be wrapped in `#if TOOLS` / `#endif` within a `#region Test Helpers` block:
 - **Property setters:** `Set<PropertyName>(<type> value)` — bypass private setters for test configuration
 - **Test-prefixed methods:** `_Test<Action>()` — test hooks, simulation helpers, wiring checks
 - **Simulation helpers:** `Simulate<Action>()` — trigger internal events/signals from tests
@@ -164,25 +155,24 @@ internal event Action<PackedScene, Vector3>? _TestOnVFXSpawnRequested;
 #endif
 #endregion
 ```
-- *Why `#if TOOLS`:* Godot's `Debug` configuration (used by editor, `dotnet build`, `dotnet test`) defines `TOOLS`, NOT `DEBUG`. Methods guarded by `#if TOOLS` are available during development and testing, but stripped from all exported builds. **Do NOT use `#if DEBUG`** — it is NOT defined during `dotnet test` in Godot.
-- *Why not public setters:* Preserves encapsulation in the API surface.
-- *Production invocations:* If production code invokes a test hook event (e.g., `_TestOnVFXSpawnRequested?.Invoke(...)`), the invocation site MUST also be wrapped in `#if TOOLS`. Otherwise export builds get a dangling reference.
-- *Production usage:* If a "test helper" setter is called from production code, it is NOT a test helper — move it out of the `#region Test Helpers` block into the regular API.
-- *Route observable-state setters through the production pathway:* if production mutates a property via a method that fires events/signals (`StartPhase(p)` → `RunPhaseChanged`), the test helper should call that method, not assign the property directly. Direct mutation creates a silent semantic split — tests see the new value without the side-effects, and subscribers that depend on the side-effect don't fire. Either route through the production method, or rename the helper to `SetForTest_BypassEvents(...)` so the divergence is intentional and grep-visible.
-- *Enforcement:* Run `/audit_test_accessors` periodically to catch unguarded methods and dangerous production callers.
+- *Why `#if TOOLS`:* Godot's `Debug` configuration (editor, `dotnet build`, `dotnet test`) defines `TOOLS`, NOT `DEBUG`, so those members are available in development and stripped from exported builds. **Do NOT use `#if DEBUG`** — it is NOT defined during `dotnet test` in Godot. Public setters instead would break encapsulation in the API surface.
+- *Production invocations:* a production site invoking a test-hook event (`_TestOnVFXSpawnRequested?.Invoke(...)`) MUST also be wrapped in `#if TOOLS`, or export builds get a dangling reference.
+- *Production usage:* a "test helper" setter called from production code is NOT a test helper — move it out of `#region Test Helpers` into the regular API.
+- *Route observable-state setters through the production pathway:* when production mutates a property via a method that fires events/signals (`StartPhase(p)` → `RunPhaseChanged`), the helper calls that method rather than assigning directly. Direct mutation splits semantics silently — tests see the new value without the side-effects, and subscribers depending on them don't fire. Either route through the production method, or rename to `SetForTest_BypassEvents(...)` so the divergence is intentional and grep-visible.
+- *Enforcement:* run `/audit_test_accessors` periodically to catch unguarded methods and dangerous production callers.
 
 ## Builder Pattern for Test Fixtures
 
-**Rule:** Complex test setup should use a fluent Builder pattern: static `Create()` → `.With*()` → terminal `.Build()` or `.Execute()`.
+**Rule:** complex test setup uses a fluent Builder: static `Create()` → `.With*()` → terminal `.Build()` or `.Execute()`.
 - Eliminates duplicated setup code and makes test intent readable at a glance.
 - *Location:* `Tests/Framework/Builders/`
 - *Example:* `GameplayScenarioBuilder.Create().WithIngredients(...).WithSynergies(...).CraftSpell()`
-- *Note:* Builder in production code is rarely needed — `SpellCrafter` and factory classes already serve this role.
+- *Note:* a Builder in production code is rarely needed — `SpellCrafter` and factory classes already serve this role.
 
 ## Touchpoints
 
 - `pattern_enforcer.py` — hook enforcing the `[Export] = null!` + `[RequiredExport]` pairing.
 - `Tests/Framework/Builders/GameplayScenarioBuilder` — canonical Builder example.
-- Sibling rules on `**/*.cs`: [`csharp_lsp.md`](csharp_lsp.md) for symbol navigation; [`jmodot_utilities.md`](jmodot_utilities.md) for Jmodot framework utilities (NodeExts, JmoRng, JmoMath, Map, configuration exceptions, IComponent gotcha).
+- Sibling rules on `**/*.cs`: [`csharp_lsp.md`](csharp_lsp.md) for symbol navigation; [`jmodot_utilities.md`](jmodot_utilities.md) for Jmodot utilities (NodeExts, JmoRng, JmoMath, Map, configuration exceptions, IComponent gotcha).
 - Sibling rule on `Jmodot/**/*.cs` only: [`jmodot_framework_authoring.md`](jmodot_framework_authoring.md) for 2D/3D parity, framework boundary, static seam pattern.
 - Companion skill: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) for design-time decisions (Resource Strategy Hierarchies, DI, Marker Interfaces).

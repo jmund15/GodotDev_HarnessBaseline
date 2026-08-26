@@ -1,5 +1,6 @@
 ---
 description: Detect this session's corrections and preferences; propose minimal Skill/memory edits.
+disable-model-invocation: true
 ---
 
 Phase 2 of `/session_end`. Detect corrections and recurring preferences from the session; propose minimal reversible edits to active Skills or auto-memory. Filter for quality and overfit before proposing.
@@ -45,30 +46,11 @@ logs/transcript_backups/*.jsonl          # Raw transcripts (fallback if summary 
 
 **Why:** Critical corrections often happen early in long sessions and get lost during compaction. The transcript backups preserve the full conversation history.
 
-## Learning Strategy and Distinctions
-**Context:** You have two long-term knowledge banks. Use them distinctively.
-**A. Auto-memory (file-based, `.claude/auto-memory/`)**
-*   **Trigger:** Small, context-specific facts, preferences, and gotchas.
-*   **What to Store:**
-    *   User preferences ("User hates `var`", "User prefers `private` fields").
-    *   Environment quirks ("Windows command line needs double quotes").
-    *   Specific "Gotchas" discovered during debugging.
-*   **Tier choice:**
-    *   **Hot** (topic file + `MEMORY.md` pointer): surprising/cross-cutting rules to surface every session.
-    *   **Cold** (`archive/`, no pointer): bulk domain reference or low-frequency detail — searchable, zero passive cost.
-*   **Constraint:** Do NOT store large code blocks here; link to source instead.
+## Surface routing
 
-**B. Skills (The Handbook)**
-*   **Trigger:** Rules or preferences affecting larger architectural or design decisions.
-*   **What to Store:**
-    *   Architectural decisions (e.g., "Ban Godot Groups").
-    *   Reusable Workflows (e.g., "New Spell Checklist").
-    *   Framework usage rules (`Jmodot` patterns).
-*   **Action:** Triggers an update to `.claude/skills/*.md`.
+Route each surviving signal through [`/codify`](codify.md) §Step 4 — the ordered table over all six surfaces (`rules/` + `paths:`, cold memory, `commands/`, hooks, skills, always-loaded), with §Step 5's cost gate on the always-loaded rows. Decide the surface there, not here; the two mapping sections below carry only the mechanics once a surface is chosen.
 
-**Decision Rule:**
-*   Is it a **Preference** or **Fact**? -> **auto-memory** (hot topic file, or `archive/` for bulk).
-*   Is it a **Rule** or **Process**? -> **SKILL update**.
+One constraint routing does not cover: never store large code blocks in auto-memory — link to source instead.
 
 ## Signal detection
 
@@ -89,7 +71,7 @@ Scan the session for:
 
 **Missed delegation** (orchestrator-tier sessions)
 - `DELEGATION:` entries in the self-evaluate archive, or user feedback about work that should have been dispatched
-- Each carries a rationalization + proposed harness edit (per `/self_evaluate` step 5); when the same rationalization recurs across sessions, propose the named edit against the CLAUDE.md Model Delegation ladder/grain/litmus (or the recording session's proposed file) rather than re-describing the failure
+- Each carries a rationalization + proposed harness edit (per `/self_evaluate` step 5); when the same rationalization recurs across sessions, propose the named edit against the ladder (`reference/model_ladder_evidence.md`) or the grain/litmus rules (`orchestration` §5/§11) (or the recording session's proposed file) rather than re-describing the failure
 
 **Ignore:**
 - Context-specific one-offs ("use X here" without "always")
@@ -191,7 +173,7 @@ Litmus before saving: *would a future-me searching for this rule benefit from an
 
 ## Mapping signals to Memory
 
-If the signal maps to a **Preference** or **Fact**, add to **auto-memory** (`.claude/auto-memory/`).
+When `/codify` §Step 4 routes the signal to **auto-memory** (`.claude/auto-memory/`):
 
 **Step 1: Extend an existing topic file, or create one — in that order**
 
@@ -209,10 +191,12 @@ at write time. (Retroactive cleanup: `/memory_audit` lens 5.)
 - Extends an existing topic file → append to its body; **no new `MEMORY.md` link**.
 - Genuinely new concept → create `<slug>.md` (frontmatter: `name`, `description`, `metadata.type` of
   user|feedback|project|reference).
-- **Hot tier** (surfaced every session): add a one-line pointer to `MEMORY.md` in the *same turn*.
-- **Placement gate — CLAUDE.md §2 placement litmus (SSOT):** a Proactive Context Loading table domain
-  trigger exists → write `archive/`, always, no pointer; no trigger → hot topic file + `MEMORY.md` pointer
-  in the *same turn*. **Cold/bulk** reference: place under `archive/`, no pointer.
+- **Default tier is COLD** (`archive/`, no pointer). Hot requires, written in the save report: the decision the pointer pre-empts AND why it fires before any search would run (CLAUDE.md §2 *Admission, not headroom*). Absent either → cold. Hot add → one-line `MEMORY.md` pointer in the *same turn*, naming the line it outranks.
+- **Placement gate — three-way routing, `instruction_quality` §5 standard, destinations at [`/codify`](codify.md) §Step 4:**
+  no trigger, pre-existing → hot topic file + `MEMORY.md` pointer in the *same turn*; decided with a file
+  of a prefix-anchored class open → split — the rule to `rules/<name>.md` + `paths:`, the evidence file
+  stays under `auto-memory/` (source not deleted); a `reference/memory_domains.md` domain-entry trigger
+  exists → `archive/`, no pointer.
 
 **Step 2: Link related memories**
 - Cross-link related topic files with `[[other-file-slug]]` wikilinks in the body.
@@ -220,18 +204,11 @@ at write time. (Retroactive cleanup: `/memory_audit` lens 5.)
 - Wikilinks improve discoverability — they connect a found memory to its neighbors.
 
 **Step 3: Catalog the failure mode (if applicable)**
-When the new entity codifies a **recurring failure pattern** (regression class, bug shape, mistake-shape with detection signal), propose a corresponding entry in [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md). The catalog is the **detection-pattern layer** that critic agents (`/plan_check`'s `plc-memory-alignment`, `/session_audit --include-failure-history`) load on demand.
+When the new entity codifies a **recurring failure pattern** (regression class, bug shape, mistake-shape with detection signal), propose a corresponding entry in [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md). The catalog is the **detection-pattern layer** that critic agents (`/plan_check`'s `plc-memory-alignment`, `/explore`'s `exp-memory`) fetch per entry on demand. Append the entry to `.claude/reference/known_failure_modes_entries.md` with an ID from `python3 .claude/tools/kfm.py next-id`; that is the whole maintenance job — the selector index is generated, never stored.
 
 Trigger: the new entity describes a *bug class* (not a *preference* or *fact*). Litmus — would another future occurrence of this class be catchable by a grep regex, LSP query, or structural pattern? If yes, the catalog entry adds value.
 
-Format per entry (5 lines, see `known_failure_modes.md` header for full spec):
-```
-### <failure name>
-**Incident**: <PR # / date / one-line summary>
-**Detection**: <grep regex | LSP query | structural signal>
-**Memory**: auto-memory file `<filename>.md`
-**Catches you when**: <one-line scenario where this fires>
-```
+Entry format and placement: [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md) §How to add — `kfm.py` parses the five lines, so a malformed entry silently vanishes from the index.
 
 If no concrete detection signal exists, the entry isn't ready — defer to the next pass when the pattern surfaces a second time and the signal becomes clearer. Catalog entries are append-only; manual sweeps are not part of normal autolearn flow.
 
@@ -264,7 +241,7 @@ Wait for explicit approval before updating memory.
 
 ## Mapping signals to Skills
 
-If the signal maps to a **Rule** or **Process**, justifies a **SKILL update**. Skills updates have a larger impact than memory additions, so we have a longer workflow here.
+When `/codify` §Step 4 routes the signal to a **skill**: skill updates have a larger impact than memory additions, so the workflow here is longer.
 
 Match each signal to the Skill that was active and relevant during the session:
 

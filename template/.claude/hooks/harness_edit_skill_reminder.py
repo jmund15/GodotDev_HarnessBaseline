@@ -14,27 +14,29 @@ Why:
 
 What it does:
 - Gates on the tool's file_path: only .claude/ harness surfaces (see PATH RULES).
-- Emits a hookSpecificOutput.additionalContext advisory naming the skill and the
-  gates most often missed. Per the verified channel matrix, additionalContext is
-  the ONLY model-visible advisory channel on PreToolUse — stderr on an exit-0
-  PreToolUse path is a dead channel.
-- Dedupes per session so a multi-edit harness session pays the advisory once.
+- DENIES the edit (permissionDecision) until `instruction_quality` appears in the
+  session's `skills_loaded` state, written by skill_load_marker.py (PostToolUse on
+  Skill). Escalated from advisory: the advisory channel was observed being ignored.
+- Once loaded: emits the hookSpecificOutput.additionalContext gates-summary
+  advisory. Per the verified channel matrix, additionalContext is the ONLY
+  model-visible advisory channel on PreToolUse.
+- Dedupes the advisory per session so a multi-edit harness session pays it once.
 
 PATH RULES (in .claude/ only):
 - IN:  **/*.md (CLAUDE.md, skills, commands, rules), hooks/*.py, settings*.json
 - OUT: auto-memory/** — governed by consolidate-memory / memory_audit, not this
        skill (see instruction_quality "Composition with other tools").
 - OUT: scratch/**, tests/**, __pycache__/** — not loaded guidance.
-- IN (carve-out): scratch/pending_harness_edits.md — queued CLAUDE.md/MEMORY.md
+- IN (carve-out): pending_harness_edits.md — queued CLAUDE.md/MEMORY.md
   content awaiting /apply_harness_edits; it IS loaded guidance in transit, and
   authoring errors there land verbatim in the injected files.
 
 Boundaries:
-- Never blocks. Always exits 0. Any unexpected error exits 0 silently (advisory
-  hooks fail open; only enforcement gates may fail closed).
-- Advisory only — it does not verify the skill was actually loaded.
-- Re-fires after REFIRE_AFTER_SECONDS so a long session that compacted away the
-  first advisory gets it again.
+- The deny path is deterministic (harness file AND skill not loaded). Unexpected
+  errors exit 0 open — a hook bug must not brick every edit; the marker writer's
+  failure direction (keep denying) covers the enforcement side.
+- Re-fires the advisory after REFIRE_AFTER_SECONDS so a long session that
+  compacted away the first advisory gets it again.
 
 Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 """
@@ -44,6 +46,8 @@ import os
 import sys
 import tempfile
 import time
+
+from _hook_state import read_json_salvage, write_json_atomic
 
 # Shared with tool_routing_cumulative.py / critical_analysis_reminder.py
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
@@ -97,9 +101,10 @@ def is_harness_file(file_path: str) -> bool:
     tail = norm.split("/.claude/")[-1] if "/.claude/" in norm else norm[len(".claude/"):]
     parts = tail.split("/")
 
-    # Queued injected-file content is harness guidance in transit — the one
-    # scratch/ path the gate must cover (see PATH RULES carve-out).
-    if tail == "scratch/pending_harness_edits.md":
+    # Queued injected-file content is harness guidance in transit, so the gate
+    # covers it even though it is not under a governed subdirectory. Lived in
+    # scratch/ until 2026-08-16; moved to .claude/ root when scratch was ignored.
+    if tail == "pending_harness_edits.md":
         return True
 
     if any(seg in EXCLUDED_DIRS for seg in parts[:-1]):
@@ -118,8 +123,8 @@ def is_harness_file(file_path: str) -> bool:
 def build_reminder(file_path: str) -> str:
     name = file_path.replace("\\", "/").split("/.claude/")[-1]
     return (
-        f"Editing harness file `.claude/{name}` — load the `instruction_quality` skill "
-        "before authoring. The trigger is the FILE CLASS, not the edit size; "
+        f"Editing harness file `.claude/{name}` — `instruction_quality` is loaded (verified); "
+        "apply it to THIS edit. The trigger is the FILE CLASS, not the edit size; "
         '"it\'s a small change" is not an exemption.\n'
         "\n"
         "Gates most often missed:\n"
@@ -142,16 +147,9 @@ def _note_edit_for_routing(session_id: str) -> None:
         _ROUTING_STATE_DIR, f"{session_id[:8] if session_id else 'default'}.json"
     )
     try:
-        state: dict = {}
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as fh:
-                loaded = json.load(fh)
-            if isinstance(loaded, dict):
-                state = loaded
+        state = read_json_salvage(path)
         state["edit_seen_this_turn"] = True
-        os.makedirs(_ROUTING_STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, ensure_ascii=True)
+        write_json_atomic(path, state)
     except Exception:
         pass
 
@@ -178,6 +176,23 @@ def main() -> None:
         sys.exit(0)
 
     state = _read_state(session_id)
+
+    skills_loaded = state.get("skills_loaded")
+    if not (isinstance(skills_loaded, list) and "instruction_quality" in skills_loaded):
+        name = file_path.replace("\\", "/").split("/.claude/")[-1]
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in this "
+                    "session's loaded-skill state. Invoke Skill(skill=\"instruction_quality\"), then "
+                    "retry this exact edit — only a real Skill invocation clears the gate; prior "
+                    "familiarity or a compaction summary does not."
+                ),
+            }
+        }))
+        sys.exit(0)
     now = time.time()
     last = state.get(STATE_KEY, 0)
     if isinstance(last, (int, float)) and (now - last) < REFIRE_AFTER_SECONDS:

@@ -22,8 +22,8 @@ try {
 const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
 const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
 
-// Pins are the CALLER's decision (provider choice is budget-posture, and CLAUDE.md's ladder is the
-// only role→model surface). No silent model floor, no session-effort inheritance.
+// Pins are the CALLER's decision (provider choice is budget-posture, and the ladder in
+// reference/model_ladder_evidence.md is the only role→model surface). No silent model floor, no session-effort inheritance.
 const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
 

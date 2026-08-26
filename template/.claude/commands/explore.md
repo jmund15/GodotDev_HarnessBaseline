@@ -24,7 +24,7 @@ Fired by the drive commands and both brainstorm skills at their context-gatherin
 | Lifecycle stage | Tool | What it covers |
 |---|---|---|
 | Pre-design (no plan yet) | `/explore` | Current state: memory, prior art, blast radius, design source, harness, external APIs, test/data reality |
-| Any stage, external fact | `/research` | What an engine, library, or spec actually does, cited and tiered ([`source_trust.md`](../rules/source_trust.md)) |
+| Any stage, external fact | `/research` | What an engine, library, or spec actually does, cited and tiered ([`source_trust.md`](../reference/source_trust.md)) |
 | Plan-entry (roadmap Part) | `/plan_part` | Design surface load verbatim + drift classification |
 | Plan-time (plan drafted) | `/plan_check` | Does the plan walk into a gotcha, parallel an abstraction, ship untestable |
 | Post-implementation | `/session_audit`, `/pr_ready` | Code-quality lenses, parity, doc coverage |
@@ -45,11 +45,13 @@ Find the most recent `[budget-posture]` line. Provider choice precedes every oth
 
 ### 1c. Infer domains
 
-Case-insensitive keyword match of `TOPIC` against the CLAUDE.md *Proactive Context Loading* table (the same table `plan_memory_reminder.py` mirrors). Build `INFERRED_DOMAINS`. Unlike `/plan_check`, an empty domain list does **not** abort — `exp-prior-art` and `exp-harness-governance` still apply to a topic that matches no gameplay domain.
+Case-insensitive keyword match of `TOPIC` against `.claude/reference/memory_domains.md` (the same table `plan_memory_reminder.py` mirrors). Build `INFERRED_DOMAINS`. Unlike `/plan_check`, an empty domain list does **not** abort — `exp-prior-art` and `exp-harness-governance` still apply to a topic that matches no gameplay domain.
 
 ### 1d. Evaluate lens triggers as rules
 
-Walk the trigger table in [`explore_agents.md`](agents/explore_agents.md) against `TOPIC`. The two floor lenses always run. For each triggered lens, record which clause fired — the report states it, so lens selection is auditable rather than a judgment nobody can check.
+Walk the trigger table against `TOPIC` — `python3 .claude/tools/lens.py shared explore` returns it without the eight lens bodies. The two floor lenses always run. For each triggered lens, record which clause fired — the report states it, so lens selection is auditable rather than a judgment nobody can check.
+
+Then fetch only the selected mandates: `python3 .claude/tools/lens.py get <KEY> [<KEY> ...]`. **Never `Read` [`explore_agents.md`](agents/explore_agents.md) whole** (~27KB; a guard blocks it) — a four-lens explore would pay for four mandates it never dispatches.
 
 In `--make-this-easy` mode, `exp-change-ease` is added on top of whatever the table selected; it never replaces a lens. Friction claims are only actionable read against the prior-art and blast-radius claims that say what already exists and who breaks.
 
@@ -76,9 +78,9 @@ Write ONE scratchpad file, passed to every lens by path (keeps `args` small — 
 
 - **Surplus band → the engine, every lens, Anthropic fallback pins.** No sidecar spend when the plan quota is already paid for.
 
-- **On-pace band or above → the sidecar for every lens whose roster row carries a sidecar primary pin**, however many lenses fired:
-  `bash .claude/scripts/deepseek_sidecar.sh -m flash -e low -f <mandate-file> -S .claude/workflows/explore_fanout.schema.json -R <record.json> -l "explore:<key>" -G survey -d <repo-root>`
-  Launch them in the background. Pass `-a <vault-path>` only if a mandate needs the Obsidian vault. Lenses whose roster row has NO sidecar column (`—`) are Anthropic-only and go through the engine in the same run.
+- **On-pace band or above → the sidecar for every lens whose roster row carries a sidecar primary pin**, however many lenses fired. One launcher per transport, from the registry's `launcher` field (`model_registry.py available`); a lens is the `lens` sidecar agent type (`orchestration` §5b):
+  `bash <launcher> -m <alias> -e <effort> -D pointer -G survey -f <mandate-file> -S .claude/workflows/explore_fanout.schema.json -R <record.json> -l "explore:<key>" -d <repo-root> > <capture>.json`
+  Launch them in the background; the result payload is stdout (`-o` defaults to `json` — it is a format, never a file path). Pass `-a <vault-path>` only if a mandate needs the Obsidian vault. Lenses whose roster row has NO sidecar column (`—`) are Anthropic-only and go through the engine in the same run.
 
 - **The engine, for whatever lenses remain on the Anthropic side:**
   `Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {lenses: [{key, promptPath, model, effort}], contextPrefixPath: <ctx>, spillDir: ".claude/scratch/fanout_spills/<slug>", justification: <only if a pin is raised>}})`

@@ -313,6 +313,48 @@ def format_fragment(rec) -> str:
     return fragment
 
 
+def tree_write_blockers(checkout: str):
+    """Live runs on `checkout` that a working-tree write would invalidate.
+
+    A gate and a suite run both digest the tree at run start and compare mid-run; any write
+    that lands between those points is read as "a concurrent session edited the tree" and
+    voids the whole run. That check cannot tell a peer's edit from the harness repairing the
+    tree underneath it, so the write side has to yield. Every hook that writes to the working
+    tree outside a user-initiated edit MUST consult this first and defer while it returns
+    non-empty (measured 2026-08-20: a SessionStart .tres repair landed mid-Integration-suite
+    and cost a 16-minute queue wait plus a full gate, verdict INVALID, zero test signal).
+
+    `watcher` records are not blockers — the watcher only waits and launches; it digests
+    nothing. Returns the blocking records, newest first, or [] when a write is safe.
+    """
+    target = normalize_checkout(checkout)
+    if not target:
+        return []
+    blockers = []
+    for rec in load_registry():
+        if rec.get("kind") not in ("gate", "suite"):
+            continue
+        if normalize_checkout(rec.get("checkout", "")) != target:
+            continue
+        blockers.append(rec)
+    blockers.sort(key=lambda r: parse_ts(r.get("startedAt")) or 0, reverse=True)
+    return blockers
+
+
+def find_repo_root(start):
+    """Walk up from the session cwd to the checkout that owns .claude/. The hook's own
+    location cannot stand in: worktrees each carry their own .claude/scratch/gate_queue,
+    and a shared hooks directory would point every worktree at the wrong queue."""
+    cur = os.path.abspath(start or os.getcwd())
+    while True:
+        if os.path.isdir(os.path.join(cur, ".claude")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return start
+        cur = parent
+
+
 def dedupe_path(session_id):
     safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64]
     return os.path.join(tempfile.gettempdir(), f"cc-activity-{safe or 'unknown'}.json")
@@ -347,6 +389,18 @@ def main():
     my_checkout = normalize_checkout(cwd)
     my_pid = os.getpid()
     my_root = session_root(my_pid)
+
+    # Queued-gate results — surfaced BEFORE the no-peers early return below, because a
+    # queued run finishing is exactly the moment its peer disappears from the registry.
+    # This is the only mid-session channel a detached watcher has back to a session.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from gate_queue_surface import surface_lines
+
+        for line in surface_lines(find_repo_root(cwd), session_id):
+            print("[gate-queue] " + line)
+    except Exception:
+        pass
 
     records = load_registry()
 

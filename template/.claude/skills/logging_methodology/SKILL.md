@@ -13,7 +13,7 @@ user-invocable: false
 
 The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_logs` — the consumer relies on every convention in this doc to slice the corpus surgically.
 
-> **Why this skill exists:** logs were drifting in two directions at once — `DebugEnabled=false` left the agent under-informed, `DebugEnabled=true` flooded context. Audit (2026-05-11) found Debug at 7% of calls and `[Tag]` prefix discipline at ~55% on Info. The fix is producer-side: a stable, filterable corpus that lets `/analyze_godot_logs --target [Tag]` do the slicing, instead of the binary toggle doing it.
+> **Why this skill exists:** the level threshold and `--target` slicing can only be as good as the call sites. A corpus whose levels and tags are assigned by gut cannot be sliced by anything.
 
 ## Level Rules — assign by category, not by gut
 
@@ -22,7 +22,12 @@ The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_log
 | **`Error`** | Invariant violation. Production-impossible state. | `[Caster] holder component null after Initialize` |
 | **`Warning`** | Recoverable issue. Designer/data oversight that has a defensible default. | `[Pool] cap exceeded, allocating fresh instance` |
 | **`Info`** | State transitions. Discrete game events. Cross-system signals. **One Info ≈ one user-visible thing happened.** | `[HSM] WizardSM Idle→Casting`, `[Match] wave 3 started`, `[Crafter] cast fizzled — mana depleted` |
-| **`Debug`** | Decision branches inside a system. Numeric tunables. Per-collision / per-event detail. **Disabled by default** — gated by `debug/jmodot/debug_logging_enabled`. | `[EscapeCheck] no threats in perception → ESCAPE`, `[Collision] periodic prune: removed 4 dead refs`, `[Pool] request hit, reused id=17` |
+| **`Debug`** | Decision branches inside a system. Numeric tunables. Per-collision / per-event detail. **Off by default** — emitted only when `JmoLogger.MinimumLevel` reaches `Debug`. | `[EscapeCheck] no threats in perception → ESCAPE`, `[Collision] periodic prune: removed 4 dead refs`, `[Pool] request hit, reused id=17` |
+
+**Every level is silenceable.** `JmoLogger.MinimumLevel` (project setting `debug/jmodot/minimum_log_level`, default `Info`) is the emission threshold; only `Error` is ungated. `DebugEnabled` still works as a derived accessor. Two consequences for call-site choice:
+
+- **`Info` is not free.** It is what a normal play session pays for, so the Info/Debug litmus below is the one that governs runtime cost — not the debug toggle.
+- **A `Debug` call site costs nothing at the default threshold.** Diagnostics no longer have to be deleted to stop being load; demoting is a legitimate terminal state for instrumentation worth keeping. What must never ship is a diagnostic at `Info`, which the debug toggle cannot reach and no default silences.
 
 **Hard rule on `Error`:** `JmoLogger.Error(...)` fails GdUnit4 tests at the call site, before any assertion (see `archive_jmologger_gotcha.md` in auto-memory). Two consequences:
 
@@ -129,6 +134,16 @@ Keep the toggle on. Narrow via the analyzer:
 ```
 
 Don't flip Debug back off — you'll lose the diagnostic detail you just enabled. The analyzer's job is to slice; let it.
+
+### "Debug is OFF and the log is STILL flooded"
+
+The toggle only ever governed `Debug`. A flood with debug off is `Info` call sites, and no amount of
+toggling reaches them — check the level assignment at the noisiest sites, not the flag.
+
+```
+/analyze_godot_logs --mode tags        # which subsystem owns the volume
+/analyze_godot_logs --level info       # then fix the call sites, or drop MinimumLevel to Warning
+```
 
 ### "Debug=OFF is silent"
 

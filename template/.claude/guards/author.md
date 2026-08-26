@@ -1,10 +1,9 @@
 # Guard: author — delegates that write production code
 
-Read ONLY the section matching your model tier: `strict` = sonnet / haiku / deepseek · `terse` = opus · fable receives none. Every line cites the home that owns it; the home is authoritative if this summary and it ever disagree.
+Read ONLY the section matching your model tier: `terse` if you are an opus-class model, `strict` otherwise. `any.md`'s section of the same tier binds you too and arrives with this file. Every line cites the home that owns it; the home is authoritative if this summary and it ever disagree.
 
 ## strict
 
-- `.claude/guards/any.md` §strict applies to you as well — read it too.
 - Logic Domain (SpellArchitecture, Synergies, Jmodot.Core, Inventory, Math/Parsing, Data Structures) is strict TDD: NO production code without a failing test. RED (`[TestSuite]` in `Tests/Logic/`) → VERIFY the specific failure → GREEN minimum → REFACTOR. Includes `.tres` changes that affect Logic behavior. [CLAUDE.md §Hybrid TDD]
 - "The logic is obvious, implement first and test after" is a named rationalization to refuse, not a carve-out. [CLAUDE.md §Rationalizations to Refuse]
 - Gameplay Domain (Wizard, enemy BT, spell lifecycle, VFX, UI, physics feel): automate the deterministic via ISceneRunner; leave subjective feel to manual playtest. [CLAUDE.md §Hybrid TDD]
@@ -17,6 +16,6 @@ Read ONLY the section matching your model tier: `strict` = sonnet / haiku / deep
 
 ## terse
 
-- `any.md` §terse applies; Logic-domain strict TDD and the `/regression_gate`-before-commit rule per CLAUDE.md §Hybrid TDD + §Build & Test (do not run the gate under the concurrency guard — report it owed).
-- Seven-question design litmus before any new configuration surface: `rules/design_litmus.md`.
+- Logic-domain strict TDD and the `/regression_gate`-before-commit rule per CLAUDE.md §Hybrid TDD + §Build & Test (do not run the gate under the concurrency guard — report it owed).
+- The design litmus before any new configuration surface: `rules/design_litmus.md` (the file states its own item count).
 - Comments default to none, and a `///` is authoritative about its own member only — write obligations (what a caller must honour), never observations about other code; TODO/future notes go in `//`, never `///` (`rules/csharp_patterns.md` §Core Conventions). Planned scope is not yours to cut (`feedback_dont_unilaterally_reduce_planned_scope.md`).

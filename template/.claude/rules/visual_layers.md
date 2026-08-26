@@ -28,11 +28,18 @@ Two named bits. Typed constants live in `Jmodot/Core/Shared/RenderLayers.cs`:
 
 ## Failure modes (by design)
 
-- New floor mesh forgets to opt in → no shadow visible on it at playtest. **Loud, easy to fix.**
+- New floor mesh **authored in a `.tscn`** forgets to opt in → no shadow visible on it at playtest. **Loud, easy to fix.**
 - New entity accidentally added to layer 2 → shadow stamps on the entity body. Visible immediately.
 - New decal author forgets `cull_mask = 2` → projects on everything. The `DropShadowDecal._Ready()` / `PlacementLocusPreview._Ready()` safety nets cover the two existing decal scripts; new decal classes should add the same safety-net line.
 
-The opt-in design (ground opts in) was chosen over opt-out (entities opt out) because the failure mode is louder. An opt-out scheme would silently re-introduce the original bug for any new entity that forgot to move off layer 1.
+Within scene-authored geometry, the opt-in design (ground opts in) was chosen over opt-out (entities opt out) because the failure mode is louder. An opt-out scheme would silently re-introduce the original bug for any new entity that forgot to move off layer 1.
+
+## Coverage boundary — the convention binds only geometry the project authors
+
+A `.tscn`-level convention reaches only geometry declared in a scene file. Generated, vendored, or `RenderingServer`-level render paths are outside it **by construction**: there is no mesh node to opt in, so no scene sweep reaches them, and the failure mode inverts — the decal never lands, and nothing is missing from any file a reviewer reads. **Silent, not loud.** Audit every such path separately, at its own render call.
+
+- Geometry created as raw instance RIDs (`RenderingServer.instance_create()`) has no `VisualInstance3D`. Its render layers are set with `RenderingServer.instance_set_layer_mask(instance, mask)` — *"Sets the render layers that this instance will be drawn to. Equivalent to [member VisualInstance3D.layers]."* (Godot 4.7.1 class reference). A receiver surface built this way needs `mask = 3`.
+- Live instance of the class: a vendored tilemap/terrain addon that renders generated geometry through instance RIDs is governed by the addon's own render path, never by a scene-file opt-in.
 
 ## Layer-system distinction (CRITICAL — category error if confused)
 
@@ -59,4 +66,4 @@ The hint gives the Godot Inspector the same 32-cell grid UI that `CollisionObjec
 - `Spells/Aiming/PlacementLocusPreview.cs` + `Spells/Aiming/placement_indicator.tscn` — both set the DecalReceiver-only cull_mask (C# safety net + scene primary).
 - `Prototype/arena_floor.tscn` — floor `MeshInstance3D` opted in (`layers = 3`).
 
-Other arena/environment scenes still on `layers = 1` default — broader sweep is on the worklog.
+A project-wide sweep of scenes still on the `layers = 1` default covers `.tscn`-authored meshes only; RID-level render paths need the separate audit above.

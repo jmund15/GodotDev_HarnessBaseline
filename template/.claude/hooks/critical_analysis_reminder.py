@@ -24,6 +24,8 @@ import os
 import re
 import sys
 
+from _hook_state import read_json_salvage, write_json_atomic
+
 
 PROPOSAL_PATTERNS = [
     r"\b(i think we should|i think you should|we should|you should)\b",
@@ -94,9 +96,7 @@ def _mark_fired(session_id: str) -> None:
         state = {}
     state[SESSION_FIRED_FLAG] = True
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
+        write_json_atomic(path, state)
     except OSError:
         pass  # Non-fatal: dedupe degrades to per-call (current behavior)
 

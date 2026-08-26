@@ -18,6 +18,19 @@ When you notice a small change you could make right now without derailing the ma
 
 **Threshold (2026-07-28 ruling):** scope ≤2 AND in-session-context → fix now; orchestrate a slice/agent if needed — "it needs an agent" is not a defer reason. Worklog only for large-scope or out-of-context items.
 
+**A defect you NAME in a report is disposed of, not merely mentioned.** Prose acknowledgment is
+not a disposition. "This is a genuine bug worth its own investigation" reads as a finding and
+functions as a dismissal: nothing tracks it, nobody owns it, and it looks handled *precisely
+because* it was said out loud. The rule above is framed around worklog-add proposals, so it cannot
+catch this shape — here the sentence IS the deferral, and there is no proposal to intercept.
+
+*Litmus:* after naming a defect, exactly one of these must be true — fixed now / worklog item
+created / explicitly declined **with a reason and an offer**. If none is, you deferred it
+invisibly. (Measured 2026-08-20: a live test-pollution bug was diagnosed, written into a status
+report as worth investigating, and left — while a second finding in the same report was declined
+correctly, naming the corruption risk and offering to do it anyway. Same session, same report; the
+difference is the disposition, not the severity.)
+
 **When the worklog IS appropriate:**
 - Items requiring user judgment.
 - Items whose scope would derail (>1 file / >30 min / multi-decision).

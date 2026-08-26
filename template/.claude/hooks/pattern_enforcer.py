@@ -120,9 +120,29 @@ def _is_safe_ephemeral_cleanup(scan: str) -> bool:
     return bool(paths) and all(_EPHEMERAL_RE.search(p) for p in paths)
 
 
+# `git`'s global options sit BETWEEN `git` and the subcommand (`git -C <path> rm ...`),
+# which defeats the fixed-width `(?<!git\s)` lookbehind that exempts `git rm` below —
+# the four chars before `rm` are the tail of <path>, not "git ". Collapsing the globals
+# first restores the exemption as written, with no change to any pattern.
+# Only `git rm` is affected: destructive git subcommands are parsed properly by the
+# sibling `git_guardrails.py`, which tokenizes and skips these same globals.
+_GIT_GLOBALS_RE = re.compile(
+    r'\bgit\s+(?:-C\s+\S+|-c\s+\S+|--git-dir=\S+|--work-tree=\S+|--namespace=\S+)\s+'
+)
+
+
+def _normalize_git_globals(scan: str) -> str:
+    """Rewrite `git -C <path> <sub>` to `git <sub>` so subcommand-anchored lookbehinds
+    match. Purely a matching aid — never consulted for what the command actually does."""
+    prev = None
+    while prev != scan:                       # loop: globals may repeat (`git -C x -c k=v rm`)
+        prev, scan = scan, _GIT_GLOBALS_RE.sub('git ', scan)
+    return scan
+
+
 def check_bash_command(command: str) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
-    scan = _strip_quoted(command)
+    scan = _normalize_git_globals(_strip_quoted(command))
     for pattern, message in DANGEROUS_BASH_PATTERNS:
         if re.search(pattern, scan, re.IGNORECASE):
             # Allow recursive deletes confined to regenerable harness scratch; never

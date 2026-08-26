@@ -100,7 +100,7 @@ The agent fan-out and Step-1 consolidation run deterministically in the `review-
 
 ### Agent Templates & Spawn Rules
 
-Use the agent templates defined in [`session_audit_agents.md`](agents/session_audit_agents.md). That file contains:
+Fetch the templates: `python3 .claude/tools/lens.py get --shared sa-design-semantics sa-robustness-performance sa-intuitiveness-testability` — add `sa-architecture-sweep` only when the trigger below fires, and never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole. The registry holds:
 - Agent Spawn Rules (referenced from `review_agents.md`)
 - Finding Schema & Reporting Filter (referenced from `orchestrator_action_protocol.md`)
 - 3 always-on agent templates: `sa-design-semantics` (opus), `sa-robustness-performance` (opus), `sa-intuitiveness-testability` (sonnet)

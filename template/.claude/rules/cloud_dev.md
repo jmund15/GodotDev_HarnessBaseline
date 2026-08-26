@@ -27,6 +27,6 @@ Active when `CLAUDE_CODE_REMOTE=true` (detected by SessionStart hook). This rule
 - Orphan kill: `pkill -f "Godot_v"` (not PowerShell)
 - Godot logs: test runs write `TestResults/godot_test.log` (sandbox checkout root, via `.runsettings` `--log-file`); live runs (rare on cloud — no Godot MCP) would write `~/.local/share/godot/app_userdata/{{PROJECT_NAME}}/logs/godot.log`
 
-**Proxy allowlist (required domains):** `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `github.com`, `registry.npmjs.org`, `raw.githubusercontent.com`, `learn.microsoft.com` — the latter two are P1 source hosts (`rules/source_trust.md`) that `.claude/scripts/fetch_source.sh` needs.
+**Proxy allowlist (required domains):** `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `github.com`, `registry.npmjs.org`, `raw.githubusercontent.com`, `learn.microsoft.com` — the latter two are P1 source hosts (`reference/source_trust.md`) that `.claude/scripts/fetch_source.sh` needs.
 
 **gh authentication on cloud:** Set `GH_TOKEN` env var in Claude Code web settings (Settings → Custom Environment). `gh` CLI auto-detects `GH_TOKEN` — no `gh auth login` needed. Use `-R owner/repo` flag with `gh` commands (cloud sandbox proxy requires it).

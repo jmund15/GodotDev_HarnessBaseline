@@ -59,8 +59,14 @@ def check_file(path_str: str) -> list[str]:
 
     # 1. script_class
     if 'script_class="' not in header:
-        # Godot writes type uid path id (in that order) -- id must come AFTER path.
-        root = re.search(r'\[ext_resource[^\n]*type="Script"[^\n]*path="res://([^"]+\.cs)"[^\n]*id="1_[^"]*"', text)
+        # The root script is the `script = ExtResource(...)` of the root block -- `[resource]` in a
+        # .tres, the first `[node` without `parent=` in a .tscn. An id-prefix guess ("1_*") picks a
+        # child's Script ext_resource in scenes whose root carries no script (false positive).
+        root_block = re.search(r'^\[(?:resource|node(?![^\]]*parent=)[^\]]*)\]\n(.*?)(?=^\[|\Z)', text, re.M | re.S)
+        script_ref = re.search(r'^script = ExtResource\("([^"]+)"\)', root_block.group(1), re.M) if root_block else None
+        root = None
+        if script_ref:
+            root = re.search(r'\[ext_resource[^\n]*type="Script"[^\n]*path="res://([^"]+\.cs)"[^\n]*id="' + re.escape(script_ref.group(1)) + r'"', text)
         if root:
             cls = pathlib.Path(root.group(1)).stem
             issues.append(f"header lacks script_class=\"{cls}\" (root script {root.group(1)})")

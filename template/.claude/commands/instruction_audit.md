@@ -40,6 +40,10 @@ Run each applicable principle from the checklist against the target. Apply only 
 
 **Compute the quantitative inputs first** (so the size/length principles gate on numbers, not eyeballing): line count of the target; for a skill, the `description` char count AND its word count vs. the median word count of sibling `description:` fields in the same `.claude/skills/` directory (Glob the siblings, count); for a command, whether frontmatter carries a non-empty single-line `description:` at all, and its char count against the ~90-char target. Feed these into the size-proportional, description-as-trigger, and frontmatter-convention findings.
 
+**Em-dash density — a readout, not a gate.** Also compute, per target: em-dash count (`grep -o $'—' <file> | wc -l`), word count (`wc -w <file>`), and the derived `1 per N words` — frontmatter and fenced code included, so the number is reproducible. Print it beside the prose-engineering norm the `instruction_quality` prose-engineering principle cites (do not restate the figure here; read it from the loaded skill). **Emit no verdict on it.** Density reduction is not in this command's scope, and a permanently-red flag trains its readers to ignore the whole report.
+
+**The count is whole-file; the norm is prose-only.** Table cells, bolded bullet lead-ins and the title carry em dashes that the prose-engineering principle's own qualifications exempt as list density, so a table-heavy file reads far denser than its prose is. Print that caveat with the number. The ratio is a trend line across audits of the same file, not a verdict on any single one — a reader who takes it as a verdict will "fix" exempt usage.
+
 **Command targets — sweep the directory, not just the target.** A missing `description:` is invisible from inside a file that reads fine, so on any command audit (and always under `--all`) parse every `commands/*.md` frontmatter in one pass and report the offenders as a set. The catalog falls back to the first body line, so heading-first files publish `Scope`/`Purpose` as their trigger text and nothing ever errors.
 
 **Hook targets — measure, don't trust prose:** read the target's settings.json registration (event, matcher, timeout); verify each output path against the channel matrix (canon: `archive_hook_gotchas.md`); stat any log/state files the hook appends to (bounded-state principle gates on on-disk size, not intent); grep the hook for expiry-marked diagnostics ("Remove after/once") and judge whether the condition is met.
@@ -75,6 +79,8 @@ This catches *other artifacts referencing this one* (inbound rot).
 - Every cited `§N` / named section anchor → confirm it still exists in the target it points at.
 - Every named skill/command (`/foo`, `` `bar` skill ``) → confirm it's still registered.
 
+- Every **mirrored count, ordinal or scale** — a cardinality the target restates from a file it cites (`Grep -iE "\\b(two|three|four|five|six|seven|eight|nine|ten|[0-9]+)[- ](question|item|rung|step|lens|phase|tier|check|principle|axis|axes|mode)s?\\b"`) → open the cited source and confirm the number still matches. The three checks above cannot see this class: they match paths, `§N` and `#N`, and a count spelled as a word is none of those, so a mirrored count survives an otherwise-clean audit. The fix is almost always to drop the number and let the source state its own total (`instruction_quality` §4).
+
 Each is one mechanical check. Only *semantic* outbound rot (a cite whose meaning drifted while the path still resolves) is the harder manual pass — flag as a follow-up if the target is large.
 
 ### Phase C.5 — Orchestration-contract scan (conditional)
@@ -103,6 +109,7 @@ Produce a structured report. Output format:
 Type: skill | command | claudemd
 Lines: <count>
 Description length: <count> chars (skill only)
+Em dashes: <count> in <words> words = 1 per <N> (norm per instruction_quality prose-engineering: 1 per <cited range>, PROSE only — this count includes exempt table/lead-in/title usage) — readout, no verdict
 
 ### Findings (Phase B)
 1. ✅ §1 Specificity: ... — no change

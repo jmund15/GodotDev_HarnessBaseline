@@ -17,10 +17,10 @@ Keyed on the `worklog_reference` *Scope* vocabulary — that table is the SSOT; 
 | 3 | Plan file + `/plan_check` (lens set by plan shape) + execute — the `/feature_drive` steps 2–6 shape. Full `/explore` per its trigger table. |
 | 4 | Not drivable. Own design track: `/design_drive` (no design doc) or `/part_drive` (roadmap Part exists). |
 
-Who executes each tier is not this table's call — CLAUDE.md §Model Delegation + [`orchestration`](../orchestration/SKILL.md) §11 own it.
+Who executes each tier is not this table's call — [`orchestration`](../orchestration/SKILL.md) §5/§11 owns it.
 
 ## Reconciliation rules
 
 1. **The independent litmuses stay the binding floor.** The ladder sets *default* depth; `/plan_check`'s litmus (3+ files / new types / deletions), CLAUDE.md gate 4, `/regression_gate` on `.cs`, and `/explore`'s own SKIP litmus (skip only on a single mechanical fix with a known root cause, or a same-session dossier) adjudicate independently. The ladder may narrow the LENS SET; it never decides whether a pass those litmuses mandate runs. A scope-1 `debug` item with an unknown root cause still gets the tier-2 floor-lens pass; a scope-2 item whose plan trips the plan_check litmus still writes a plan file and runs `/plan_check`. Deepen past the default freely — never skip a gate a litmus trips.
 
-2. **The ladder governs process artifacts only** — `/explore` lens set, plan artifact, `/plan_check` depth. Dispatch grain and executor choice belong to CLAUDE.md §Model Delegation + `orchestration` §11; do not restate their thresholds here.
+2. **The ladder governs process artifacts only** — `/explore` lens set, plan artifact, `/plan_check` depth. Dispatch grain and executor choice belong to `orchestration` §5/§11; do not restate their thresholds here.

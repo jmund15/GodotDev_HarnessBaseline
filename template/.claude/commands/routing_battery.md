@@ -67,7 +67,7 @@ The scorer is transcript-only and graders any test with zero transcript tools as
 
 | Response shape | Final grade |
 |---|---|
-| Test is M-category or N-category, response prose names the expected tool (e.g. `write_doc`, `write_code`) without negation context | **PASS** — planning-style answer, this is the legitimate response shape for these categories |
+| Test is M-category or N-category, response prose names the expected tool (e.g. `write_doc`, `read_files`) without negation context | **PASS** — planning-style answer, this is the legitimate response shape for these categories |
 | Response prose names the expected tool AND cites why the agent chose it despite normal routing (override-justified — K1/L6 shape) | **PASS-O** |
 | Response says the agent identified the correct tool but the tool was unavailable in the subagent toolkit (e.g. *"`mcp__ai-worker__read_files` is not available in this agent's toolset"*) | **FLAG** — environmental issue, not a doctrine miss. Does NOT count as PASS toward compliance threshold but should be reported separately so the user can verify subagent toolkit before re-running |
 | Response is a genuine refusal with no useful routing reasoning, OR the response describes a wrong tool, OR the response is contentless | **FAIL** |

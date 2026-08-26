@@ -13,8 +13,13 @@ Joins the harness's own records -- no hand-maintained pin maps:
      literal `label:`  (works only for non-data-driven dispatch)
   3. '?' -- reported as unresolved; supply it at verdict time.
 
-Cost is normalized to base-input-token equivalents (output x5, cache-write
-x1.25, cache-read x0.1) so tiers are comparable in one number.
+Cost is normalized to base-input-token equivalents (fresh input x1, output x5,
+cache-write x1.25, cache-read x0.1) so EFFORT rungs are comparable in one number.
+`turns` counts API calls, deduplicated by `message.id` -- see agent_usage(). That figure
+weights token types but not the model, so it measures VOLUME: across models it is
+not a quota figure, because plan quota is billed per model. `qcost` applies the
+per-model QUOTA_W multiplier for cross-model calls; it is None for any model with
+no recorded weight, and the report names those rather than defaulting them to 1.0.
 
 DeepSeek sidecar runs (deepseek_sidecar.sh -R/-L) are a SECOND SOURCE read from
 the spend ledger (~/.claude/deepseek_spend.jsonl). They surface side-by-side and
@@ -50,16 +55,60 @@ Usage:
 import argparse, json, os, re, sys
 from datetime import datetime, timezone
 
-OUT_W, CW_W, CR_W = 5.0, 1.25, 0.1
+IN_W, OUT_W, CW_W, CR_W = 1.0, 5.0, 1.25, 0.1
+
+
+def agent_cost(u):
+    """Base-input-token equivalents for one agent's usage dict.
+
+    Fresh `input_tokens` bills at 1.0 and was previously omitted entirely. Under
+    caching it is small, but it is exactly the UNCACHED portion -- so omitting it
+    understated the first turn of every agent and any cache miss after it.
+    """
+    return (u.get('inp', 0) * IN_W + u.get('out', 0) * OUT_W
+            + u.get('cw', 0) * CW_W + u.get('cr', 0) * CR_W)
+
+# Plan-quota weight per model, relative to sonnet = 1.0.
+#
+# `cost` above weights token TYPES but not the MODEL, so it measures VOLUME and is
+# not comparable across models on its own: plan quota is billed per model, so the
+# cheapest cell by token-equivalents is not the cheapest cell by quota. Re-measured
+# 2026-08-19 over the 272 surviving archived agents, opus-low and sonnet-medium are
+# within 5% on volume (272,524 vs 261,948, n=21/41) while opus-low draws 2.60x the
+# quota -- an inversion invisible until the weight is applied.
+#
+# Provenance: the opus:sonnet per-token price ratio (reference/model_ladder_evidence.md
+# section sonnet). Substring match on the model id, longest key first.
+#
+# A model absent from this table reports qcost as None and is named in the report.
+# It never silently defaults to 1.0: a quietly-wrong quota number is worse than a
+# missing one, and this table is exactly the sort of hardcoded pricing fact that
+# rots on the vendor's schedule (instruction_quality section 16).
+QUOTA_W = {'opus': 2.5, 'sonnet': 1.0}
+
+
+def quota_weight(model):
+    """Plan-quota multiplier for a model id, or None when unweighted."""
+    m = (model or '').lower()
+    for key in sorted(QUOTA_W, key=len, reverse=True):
+        if key in m:
+            return QUOTA_W[key]
+    return None
+
+
+def quota_cost(cost, model):
+    """Quota-equivalent cost, or None when the model carries no weight."""
+    weight = quota_weight(model)
+    return None if weight is None else cost * weight
 ARCHIVE = os.path.join('.claude', 'orchestration_metrics.jsonl')
 # Falsification outcomes, recorded at consumption (see module docstring).
 OUTCOMES = ('clean', 'defects', 'rework', 'discarded')
 LEGACY_VERDICTS = {'right-sized': 'clean', 'overshoot': 'clean',
                    'undershoot': 'rework', 'wasted': 'discarded',
-                   # effort-fit vocabulary (object-shaped pending entries): accepted
-                   # as-is -> clean, one-correction -> defects
-                   'fit': 'clean', 'excellent': 'clean', 'fit-high-value': 'clean',
-                   'fit-highest-value': 'clean', 'fit-with-one-correction': 'defects'}
+                   # fit-vocabulary used by consumption-time rich verdicts
+                   'fit': 'clean', 'excellent': 'clean',
+                   'fit-high-value': 'clean', 'fit-highest-value': 'clean',
+                   'fit-with-one-correction': 'defects', 'misfit-input': 'discarded'}
 SIDECAR_LEDGER = os.path.expanduser('~/.claude/deepseek_spend.jsonl')
 # Derived over-pin candidates (recomputed on every --archive-summary run). The
 # dispatch-time surface (report()) reads it so the pin decision sees the queue.
@@ -106,9 +155,11 @@ def fmt(n):
 
 
 def norm_outcome(v):
-    """Accept the outcome vocabulary; legacy verdict words map through."""
+    """Accept the outcome vocabulary; legacy verdict words map through.
+    Rich dict verdicts (consumption-time entries carrying model/effort/fit/rationale)
+    unwrap via their 'fit'/'outcome' field."""
     if isinstance(v, dict):
-        v = v.get('outcome') or v.get('verdict') or v.get('fit') or '?'
+        v = v.get('outcome') or v.get('fit') or v.get('verdict') or '?'
     return LEGACY_VERDICTS.get(v, v)
 
 
@@ -122,6 +173,19 @@ def outcome_of(r):
 def find_session_dir():
     root = os.path.expanduser('~/.claude/projects')
     cwd = os.path.abspath(os.getcwd())
+
+    # Exact identity first. The mtime scan below cannot tell this session's runs from a peer's:
+    # concurrent sessions share one machine, and whichever touched its workflows/ dir last wins the
+    # max(). That misattributes a whole session's cost to another and is silent -- the table renders
+    # normally, just with someone else's agent labels. Measured 2026-08-18: a peer session sharing
+    # the same minute won the tie and 84 foreign agents were reported as this session's.
+    sid = os.environ.get('CLAUDE_CODE_SESSION_ID')
+    if sid:
+        for d in (os.listdir(root) if os.path.isdir(root) else []):
+            p = os.path.join(root, d, sid)
+            if os.path.isdir(os.path.join(p, 'workflows')):
+                return p
+
     slug = cwd.replace(':', '-').replace(os.sep, '-').replace('/', '-')
     cands = [os.path.join(root, d) for d in os.listdir(root)
              if d.lower().lstrip('-') in slug.lower().lstrip('-')
@@ -172,8 +236,49 @@ def efforts_for(run):
     return out
 
 
+def run_date_of(value):
+    """UTC date (YYYY-MM-DD) of a run instant, or None when unrecoverable.
+
+    Accepts an ISO-8601 string, epoch-millis (Workflow `startedAt`/`startTime`),
+    or the synthetic sidecar run id 'sidecar-<iso>-<label>'. Never falls back to
+    today: the archive date is a different fact, and a wrong run date is
+    indistinguishable from a right one.
+    """
+    if value is None or value == '?':
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000.0, timezone.utc).strftime('%Y-%m-%d')
+        except (ValueError, OSError, OverflowError):
+            return None
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if v.startswith('sidecar-'):
+        v = v[len('sidecar-'):]
+    m = re.match(r'(\d{4}-\d{2}-\d{2})(?:[T ]|$)', v)
+    return m.group(1) if m else None
+
+
 def agent_usage(run_dir):
-    """agentId -> token/turn/tool/wall usage from the transcripts."""
+    """agentId -> token/turn/tool/wall usage from the transcripts.
+
+    ONE API CALL PER `message.id`, never one per record. An assistant message
+    spanning several content blocks is written as several JSONL lines that each
+    repeat the SAME `message.usage`, so accumulating per record double-counts
+    tokens, turns and tool calls alike. Measured 2026-08-19 over one six-agent
+    run: 132 assistant records for 66 real calls -- an even 2.00x overall, and
+    NOT uniform per agent (1.69x-2.47x), so it inflated effort RATIOS as well as
+    absolute figures. Every median and rung multiplier published before that date
+    carries the inflation.
+
+    Grouping invariants, verified rather than assumed (all 66 groups): within one
+    message.id, cache_read / cache_creation / input are constant and output is
+    monotonic non-decreasing -- so the LAST record holds the finalized usage and
+    the complete content array.
+    """
     usage = {}
     if not os.path.isdir(run_dir):
         return usage
@@ -181,7 +286,7 @@ def agent_usage(run_dir):
         if not (fn.startswith('agent-') and fn.endswith('.jsonl')):
             continue
         aid = fn[len('agent-'):-len('.jsonl')]
-        u = dict(out=0, cw=0, cr=0, turns=0, tools=0, secs=0.0)
+        calls, order, recs = {}, [], 0
         first = last = None
         for line in open(os.path.join(run_dir, fn), encoding='utf-8'):
             try:
@@ -198,9 +303,21 @@ def agent_usage(run_dir):
                     pass
             if o.get('type') != 'assistant':
                 continue
-            u['turns'] += 1
+            recs += 1
             m = o.get('message') or {}
+            # No message.id -> fall back to the record's own uuid. A missing key
+            # must never collapse distinct calls into one bucket, which would
+            # under-count in exactly the direction this fix corrects.
+            mid = m.get('id') or o.get('uuid') or ('rec-%d' % recs)
+            if mid not in calls:
+                order.append(mid)
+            calls[mid] = m                      # later record wins
+        u = dict(inp=0, out=0, cw=0, cr=0, turns=len(calls), tools=0,
+                 recs=recs, secs=0.0)
+        for mid in order:
+            m = calls[mid]
             us = m.get('usage') or {}
+            u['inp'] += us.get('input_tokens', 0) or 0
             u['out'] += us.get('output_tokens', 0) or 0
             u['cw'] += us.get('cache_creation_input_tokens', 0) or 0
             u['cr'] += us.get('cache_read_input_tokens', 0) or 0
@@ -208,6 +325,7 @@ def agent_usage(run_dir):
                 if isinstance(b, dict) and b.get('type') == 'tool_use':
                     u['tools'] += 1
         u['secs'] = (last - first).total_seconds() if (first and last) else 0.0
+        u['first_ts'] = first.isoformat() if first else None
         usage[aid] = u
     return usage
 
@@ -228,12 +346,21 @@ def collect(session):
             if e.get('type') != 'workflow_agent':
                 continue
             aid, lab = e.get('agentId'), e.get('label') or '(unlabeled)'
-            u = usage.get(aid, dict(out=0, cw=0, cr=0, turns=0, tools=0, secs=0.0))
+            u = usage.get(aid, dict(inp=0, out=0, cw=0, cr=0, turns=0, tools=0,
+                                    recs=0, secs=0.0, first_ts=None))
+            cost = agent_cost(u)
+            # Run date, most specific source first: this agent's own start, the
+            # workflow record's instant, then the transcript's earliest turn.
+            run_date = (run_date_of(e.get('startedAt')) or run_date_of(e.get('queuedAt'))
+                        or run_date_of(run.get('timestamp')) or run_date_of(run.get('startTime'))
+                        or run_date_of(u.pop('first_ts', None)))
+            u.pop('first_ts', None)
             rows.append(dict(
                 run=rid, workflow=run.get('workflowName') or '?', phase=e.get('phaseTitle') or '',
                 agent_id=aid, label=lab, model=e.get('model') or '?',
                 effort=eff.get(lab, '?'), state=e.get('state') or '?',
-                cost=u['out'] * OUT_W + u['cw'] * CW_W + u['cr'] * CR_W, **u))
+                run_date=run_date,
+                cost=cost, qcost=quota_cost(cost, e.get('model') or ''), **u))
     return rows
 
 
@@ -260,12 +387,15 @@ def collect_sidecar(ledger=SIDECAR_LEDGER, include_unlabeled=False):
         lab = rec.get('label') or '(unlabeled)'
         ts = rec.get('timestamp') or '?'
         rows.append(dict(
-            run=f'sidecar-{ts}-{lab}', workflow='sidecar', phase='', agent_id='',
+            run=f'sidecar-{ts}-{lab}', run_date=run_date_of(ts),
+            workflow='sidecar', phase='', agent_id='',
             label=lab, model=str(rec.get('servedModel') or rec.get('requestedModel') or '?'),
             effort=rec.get('effort') or '?',
             state=('completed' if rec.get('exitCode') == 0 else f"exit-{rec.get('exitCode')}"),
-            source='sidecar', cost=0.0, cost_usd=rec.get('costUSD') or 0.0,
-            out=rec.get('outputTokens') or 0, cw=0, cr=rec.get('cacheReadTokens') or 0,
+            source='sidecar', cost=0.0, cost_usd=rec.get('costUSD'),
+            cost_basis=rec.get('costBasis') or '',
+            inp=0, out=rec.get('outputTokens') or 0, cw=0,
+            cr=rec.get('cacheReadTokens') or 0, recs=0,
             turns=rec.get('numTurns') or 0, tools=0,
             secs=(rec.get('durationMs') or 0) / 1000.0))
     return rows
@@ -308,6 +438,29 @@ def report(rows):
         w('')
         w(f"WARNING: {len(by['?'])} agent(s) have no resolved effort pin. Add a PINS log line to "
           "the script (see the module docstring) or supply the effort in the verdicts file.")
+
+    # Per-model: volume vs plan quota. These diverge, and the divergence is the
+    # whole point -- a cross-model call read off `cost` alone reads volume as quota.
+    bym, unweighted = {}, set()
+    for r in rows:
+        bym.setdefault(r['model'], []).append(r)
+        if r.get('qcost') is None:
+            unweighted.add(r['model'])
+    w('')
+    w(f"{'model':<24} {'n':>3} {'vol/agent':>11} {'quota/agent':>12} {'x':>5}")
+    for m, g in sorted(bym.items(), key=lambda kv: -len(kv[1])):
+        n = len(g)
+        vol = sum(x['cost'] for x in g) // n
+        weight = quota_weight(m)
+        q = f"{fmt(int(vol * weight)):>12}" if weight else f"{'?':>12}"
+        x = f"{weight:>5.2f}" if weight else f"{'?':>5}"
+        w(f"{m[:24]:<24} {n:>3} {fmt(vol):>11} {q} {x}")
+    if unweighted:
+        w('')
+        w("WARNING: no plan-quota weight for " + ', '.join(sorted(unweighted)) + ". Their "
+          "quota column is '?' rather than a guess -- add the model to QUOTA_W (relative to "
+          "sonnet = 1.0) once its ratio is known, and re-check the existing weights against "
+          "current pricing while you are there.")
     report_sidecar(side)
     _report_pending_candidates()
 
@@ -405,16 +558,27 @@ def report_sidecar(side):
           f"{'turns':>6} {'sec':>6} {'state':<10}")
         w('-' * 92)
         for r in sorted(rows, key=lambda x: x['run']):
-            w(f"{r['label'][:30]:<30} {r['effort']:<6} {r['cost_usd']:>8.4f} "
+            cu = r.get('cost_usd')
+            cell = f"{cu:>8.4f}" if isinstance(cu, (int, float)) else f"{'n/a':>8}"
+            w(f"{r['label'][:30]:<30} {r['effort']:<6} {cell} "
               f"{fmt(r['out']):>8} {fmt(r['cr']):>8} {r['turns']:>6} {r['secs']:>6.0f} {r['state']:<10}")
         w('-' * 92)
-        sub = sum(r['cost_usd'] for r in rows)
+        priced = [r for r in rows if isinstance(r.get('cost_usd'), (int, float))]
+        sub = sum(r['cost_usd'] for r in priced)
+        mean = f"${sub / len(priced):.4f}/run" if priced else 'n/a'
+        note = ''
+        if len(priced) != len(rows):
+            basis = next((r.get('cost_basis') for r in rows if r.get('cost_basis')), 'no dollar price')
+            note = f" | {len(rows) - len(priced)} unpriced ({basis}) - excluded from $ figures"
         w(f"   subtotal ${sub:.4f} | out {fmt(sum(r['out'] for r in rows))} | "
-          f"turns {sum(r['turns'] for r in rows)} | mean ${sub / len(rows):.4f}/run")
+          f"turns {sum(r['turns'] for r in rows)} | mean {mean}{note}")
 
     w('')
+    priced_all = [r for r in side if isinstance(r.get('cost_usd'), (int, float))]
+    unpriced_all = len(side) - len(priced_all)
     w(f"{len(side)} sidecar run(s) across {len(by_model)} model(s) | "
-      f"total ${sum(r['cost_usd'] for r in side):.4f} | "
+      f"total ${sum(r['cost_usd'] for r in priced_all):.4f} over {len(priced_all)} priced run(s)"
+      + (f" ({unpriced_all} unpriced)" if unpriced_all else '') + " | "
       f"out {fmt(sum(r['out'] for r in side))} | turns {sum(r['turns'] for r in side)}")
     if len(by_model) > 1:
         w("   (total is a spend figure, not a comparison - per-model subtotals above are the "
@@ -554,8 +718,12 @@ def main():
             w('-- DeepSeek sidecar (USD; requested-effort coordinate -- do not compare to rungs above) --')
             w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'$/agent':>9}")
             for (e, v), g in sorted(sby.items()):
-                w(f"{e:<8} {v:<13} {len(g):>4} {sum(x.get('cost_usd', 0) for x in g)/len(g):>9.4f}")
-            w(f"{len(side)} archived sidecar runs | total ${sum(x.get('cost_usd', 0) for x in side):.4f}")
+                gp = [x for x in g if isinstance(x.get('cost_usd'), (int, float))]
+                cell = f"{sum(x['cost_usd'] for x in gp)/len(gp):>9.4f}" if gp else f"{'n/a':>9}"
+                w(f"{e:<8} {v:<13} {len(g):>4} {cell}")
+            sp = [x for x in side if isinstance(x.get('cost_usd'), (int, float))]
+            w(f"{len(side)} archived sidecar runs | total ${sum(x['cost_usd'] for x in sp):.4f}"
+              f" over {len(sp)} priced")
         _report_candidates(rows)
         return 0
 
@@ -637,7 +805,9 @@ def main():
     stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     with open(ARCHIVE, 'a', encoding='utf-8') as f:
         for r in fresh:
-            r['date'] = stamp
+            r['date'] = stamp              # legacy key: archive date, kept for consumers
+            r['archived_date'] = stamp
+            r.setdefault('run_date', None)  # null is a legible gap; never the archive date
             f.write(json.dumps(r) + '\n')
     w(f'\nArchived {len(fresh)} agent records to {ARCHIVE}.'
       + (f' Skipped {skipped} already-archived.' if skipped else ''))

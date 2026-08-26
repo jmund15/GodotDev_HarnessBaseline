@@ -24,13 +24,34 @@ description: Autonomously drive a design topic to an approved design doc + roadm
 - Candidate ideas EXIST — idea-bank doc, mature-domain canonical patterns, or the user's own framing. Greenfield with no candidates → halt and route to `/idea_brainstorm`; ideation is pure taste and has no autonomous variant by design.
 - Run the [`common.md §1`](../skills/_brainstorm_shared/common.md) existing-doc check first. That check dispatches [`/explore`](explore.md), so it doubles as this command's exploration FLOOR — one dispatch, not two. A design doc already covering the topic → halt and surface it (resume/extend per §1.1, don't re-design). Absorb every `premise-contradiction` claim before drafting: an ungroundable premise caught here is a topic reframe, caught later it is valve (a).
 
+### User design doc intake (`<topic>` = a user-authored design doc)
+
+When the topic is a user-authored design doc — the recurring intake shape for NPCs, features, and
+systems — the preconditions above hold, with one addition: the doc IS the candidate pool, and the drive
+is refinement-plus-continuation, never ideation. Four intake steps bind before drafting:
+
+1. **Digest the doc first** — extract the heading outline + per-section intent + the explicit
+   decision-vs-idea-vs-open-question classification (`read_files`; the digest is the drive's working
+   surface). A user doc's sections are constraints to CONFIRM, not specifications to trust.
+2. **Establish implementation status before drafting** — a user doc rarely states what already shipped.
+   The `/explore` floor's claims carry this; additionally run the worklog-relevance check (session-once)
+   — prior drive/audit artifacts (e.g. session-audit findings files) are the refinement branch's PRIMARY
+   input, not optional context.
+3. **Verify every doc premise against code** — user docs carry premise divergences as a rule: 2D
+   framing for a 3D entity, authoring conventions already superseded by shipped data, values the doc
+   marks open but code already pins. Record-don't-fight the superseded claims; the divergences reshape
+   the refinement scope.
+4. **Expect mid-drive user input** — corrections (family-maturity doubts, routing directives) arrive
+   while fan-outs run. Bank them in `decisions.md` as user-stated priors the moment they arrive; they
+   are design-shaping, never afterthoughts.
+
 ## Stance
 
 **The contract is fixed; the process is yours.** Satisfy every clause of [`_brainstorm_shared/design_contract.md`](../skills/_brainstorm_shared/design_contract.md). HOW you get there — what you read, what agents you spawn, exploration order and depth — is your judgment per the `orchestration` skill, **above the `/explore` floor from the entry preconditions.** The floor removes only one option: entering design with no established state at all. Everything above it stays judgment, and the dossier's evidence-backed claims are what contract clause 1 cites for codebase state. A gnarly seam deserves a comparative deep-read of the two subsystems it joins; a wide space deserves fan-out; a constrained space deserves neither. Do NOT reproduce `architecture_brainstorm` Steps 2–4 by rote: that skill's Socratic pacing exists to let a human's taste enter continuously; here taste enters at design-lock, so pace for design quality instead. The live-option litmus (`architecture_brainstorm` Step 4) still governs any options you present at the gate — filler options are enumeration theater in any mode.
 
 Socratic questions the human-in-the-loop flow would ask the user are answered from canon per contract clause 1; whatever canon can't answer joins the taste-fork batch (clause 2) — appended to `decisions.md` `## Frontier` in that same turn, along with every fog entry and out-of-scope call ([`common.md §8`](../skills/_brainstorm_shared/common.md)). The frontier file is what makes this command resumable: a drive that dies mid-flight resumes from it, not from chat.
 
-This command authorizes `Workflow` for any stage shape — adversarial panel, exploration fan-out, competing design drafts + judge panel, or anything else `orchestration` judgment calls for (per-call `model` + `effort` pins per the CLAUDE.md ladder + `orchestration` §5).
+This command authorizes `Workflow` for any stage shape — adversarial panel, exploration fan-out, competing design drafts + judge panel, or anything else `orchestration` judgment calls for (per-call `model` + `effort` pins per the ladder in `reference/model_ladder_evidence.md` + `orchestration` §5).
 
 Where the contract binds process anyway (clause 5): Part authoring runs `architecture_brainstorm` Step 5's sub-procedures, the doc self-review runs its Step 7 checklist, and roadmaps route through `/update_roadmap`. Those are artifact gates, not exploration.
 

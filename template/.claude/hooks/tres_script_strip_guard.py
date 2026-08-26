@@ -43,6 +43,23 @@ from pathlib import Path
 # UTF-8, so a non-ASCII .tres string payload or path would raise UnicodeEncodeError on write.
 sys.stdout.reconfigure(encoding="utf-8")
 
+def tree_write_blockers():
+    """Live gate/suite runs this repair would void. Fails OPEN: an unreadable registry must
+    not stop the repair, because the corruption it fixes breaks resource loads outright.
+    Canonical rule and evidence: `activity_registry.tree_write_blockers`."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import activity_registry
+
+        repo = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return activity_registry.tree_write_blockers(repo)
+    except Exception:
+        return []
+
+
 REMOVED = re.compile(r"^-\s*script = ExtResource\(")
 ADDED = re.compile(r"^\+\s*script = ExtResource\(")
 FILE_HDR = re.compile(r"^\+\+\+ (?:b/(.*)|/dev/null)$")
@@ -184,6 +201,18 @@ def worktree_scan(revert, repair=False):
     for path, removed, added in findings:
         print(f"  {path}: script bindings removed={removed} added={added}")
     if repair:
+        blockers = tree_write_blockers()
+        if blockers:
+            who = ", ".join(
+                f"{b.get('kind')} '{b.get('label', '?')}' (pid {b.get('pid')})" for b in blockers[:3]
+            )
+            print(
+                f"[tres-script-strip-guard] Repair DEFERRED — {who} is live on this checkout and "
+                "digests the tree mid-run; writing now would void that run with no test signal. "
+                "The strip above is still present. Re-run after the run finishes:\n"
+                "  python .claude/hooks/tres_script_strip_guard.py --worktree --repair-inplace"
+            )
+            return 0
         repair_inplace(findings)
         print(f"[tres-script-strip-guard] Repaired {len(findings)} file(s) in place (bindings restored).")
     elif revert:
@@ -302,7 +331,7 @@ def repair_inplace(findings):
             text = text.replace(
                 'resource_local_to_scene = ""', f'script = ExtResource("{final_id}")', 1)
             print(f"  {path}: restored binding -> {ext_path} (id {final_id})")
-        wf.write_text(text, encoding="utf-8")
+        wf.write_text(text, encoding="utf-8", newline="\n")
 
 
 def main():

@@ -25,6 +25,8 @@ import os
 import re
 import sys
 
+from _hook_state import read_json_salvage, write_json_atomic
+
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 FILES_FIELD = "design_surface_reminder_files"
 FILES_CAP = 100  # bounded state — oldest entries drop off
@@ -93,9 +95,7 @@ def _claim_file(session_id: str, file_key: str) -> bool:
     seen.append(file_key)
     state[FILES_FIELD] = seen[-FILES_CAP:]
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
+        write_json_atomic(path, state)
     except Exception:
         pass
     return True

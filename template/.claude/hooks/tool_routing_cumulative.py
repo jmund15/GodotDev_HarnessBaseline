@@ -98,6 +98,15 @@ except ImportError:
 # -> WebSearch), not to read_files.
 WEB_TOOLS = ("WebFetch", "WebSearch")
 
+# Discovery-search tools: their OUTPUT is "which files", so `read_files` cannot be
+# their bundling target — it takes explicit `paths=[...]`, which is precisely what
+# these calls are still finding. A cascade of these reroutes to a sharper query, not
+# to a file read. (WebSearch is excluded: it belongs to the web order above.)
+DISCOVERY_SEARCH_TOOLS = (
+    "mcp__plugin_semantic-search_semantic-search__search",
+    "mcp__obsidian__obsidian_search_notes",
+)
+
 # Cap stored call list length to bound state file size.
 MAX_CALLS_RETAINED = 50
 
@@ -215,9 +224,17 @@ def _target_dir(target: str) -> str:
     """
     Bucket for diversity counting:
       - File-path targets → dirname (the directory)
-      - GREP / GLOB / SEARCH synthetic targets → a constant bucket per category,
-        because we want them to count as 'one kind of activity' rather than
-        being inflated to N distinct dirs by query variation.
+      - GREP / GLOB / web-search targets → a constant bucket per category,
+        because repeating those IS the cascade we want to catch: query variation
+        there does not represent coverage of different ground.
+      - DISCOVERY-search targets (semantic-search, obsidian search) → one bucket
+        PER QUERY. CLAUDE.md §2/§8 prescribe faceted searching ("for broad
+        discovery, search facets separately"), so N distinct queries is the
+        recommended shape, not a cascade. Collapsing them to one bucket made
+        `distinct_dirs` 1 for any amount of faceted discovery, which is ≤
+        LOW_DIVERSITY_DIR_LIMIT and so fired the nudge unconditionally — the
+        exact "legitimate exploratory triangulation" the gate exists to spare.
+        Repeating the SAME query still collapses, so a true loop still trips.
     """
     if not target:
         return ""
@@ -226,6 +243,10 @@ def _target_dir(target: str) -> str:
     if target.startswith("GLOB:"):
         return "<glob-bucket>"
     if target.startswith("SEARCH:"):
+        parts = target.split(":", 2)
+        tool = parts[1] if len(parts) > 2 else ""
+        if tool in DISCOVERY_SEARCH_TOOLS:
+            return f"<search:{parts[2]}>"
         return "<search-bucket>"
     if target.startswith("WEB:"):
         return "<web-bucket>"
@@ -247,14 +268,20 @@ def _classify(calls: list) -> dict:
 
     distinct_dirs = len({_target_dir(c.get("target") or "") for c in calls})
 
-    # Single-tool streak at the tail of the list.
+    # Single-tool streak at the tail of the list. For discovery-search tools the
+    # streak must ALSO repeat the query: consecutive DISTINCT queries are the
+    # faceted discovery CLAUDE.md §2/§8 prescribe, not a cascade. Re-running the
+    # same query still accumulates, so a genuine loop trips as before.
     tail_tool = calls[-1].get("tool", "")
+    tail_target = calls[-1].get("target", "")
+    same_query_required = tail_tool in DISCOVERY_SEARCH_TOOLS
     tail_streak = 1
     for c in reversed(calls[:-1]):
-        if c.get("tool") == tail_tool:
-            tail_streak += 1
-        else:
+        if c.get("tool") != tail_tool:
             break
+        if same_query_required and c.get("target", "") != tail_target:
+            break
+        tail_streak += 1
 
     return {
         "count": count,
@@ -274,6 +301,13 @@ def _bundle_target(signals: dict) -> str:
             "`.claude/scripts/fetch_source.sh <url> ...` (raw bytes, zero cost, quotable) "
             "— or one `mcp__ai-worker__read_web(urls=[...], question=...)` only if the "
             "answer genuinely needs multi-page synthesis"
+        )
+    if signals.get("tail_tool") in DISCOVERY_SEARCH_TOOLS:
+        return (
+            "ONE sharper query (raise `limit`, or name the distinguishing terms) — "
+            "`read_files` is NOT the target here: it takes explicit `paths=[...]`, which "
+            "is what these searches are still discovering. Bundle into `read_files` only "
+            "once you have the paths and are reading them"
         )
     return "`mcp__ai-worker__read_files(paths=[...], question=...)`"
 

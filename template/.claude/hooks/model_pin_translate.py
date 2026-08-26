@@ -50,7 +50,7 @@ On an Anthropic session this hook emits NO updatedInput and never rewrites —
 normal sessions are byte-identical to having no hook at all. It still warns when
 an agent() `model:` literal or args.__pin names a vendor model this endpoint
 cannot serve: the fix there is a mechanism change — the sidecar script — never a
-pin. Canon: CLAUDE.md §Model Delegation *Dispatch is transport-bound*.
+pin. Canon: orchestration §0 *Dispatch is transport-bound*.
 
 Fail posture: cost/routing advisory — fail OPEN (exit 0) on any error, INCLUDING an
 unusable registry, but NEVER fail silent. A degraded run falls back to flash-for-

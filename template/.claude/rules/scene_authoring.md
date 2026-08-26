@@ -92,7 +92,7 @@ If all three are "no" (truly variable-count, purely internal, purely transient),
 
 - **Source:** `project.godot` is a text file (INI format).
 - **Rule:** Edit this file directly for Global/Project settings.
-- **Autoloads:** Define under `[autoload]`. Ensure the C# class has `partial class` and `[GlobalClass]` if relevant, though Autoloads are usually scene-based or pure C# statics in this architecture.
+- **Autoloads:** Define under `[autoload]`. Ensure the C# class has `partial class` and `[GlobalClass]` if relevant, though Autoloads are usually scene-based or pure C# statics in this architecture. **An autoload scene references a content graph (dungeon/floor/encounter definitions — anything with scripted sub-resources) only as a `PropertyHint.File` path loaded at runtime, never as an `ext_resource`.** The editor instantiates autoloads at boot, before its C# registry is healthy, so every resource reachable from one deserializes bind-failed and the next flush writes it back stripped. Shallow leaf resources (input profiles, audio defaults) stay allowed. Pin the isolation with a test asserting no autoload scene reaches a scripted content graph via `ext_resource`.
 
 ## Touchpoints
 

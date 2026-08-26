@@ -1,5 +1,6 @@
 ---
 description: Sync local and user permissions into the tracked project settings.json.
+disable-model-invocation: true
 ---
 
 Sync permissions from local/user settings into the tracked project settings.json.
@@ -96,5 +97,14 @@ Do NOT scan transcript files from other sessions — only this session's ID.
 
 Ask if any should be promoted, same options as Step 4.
 
-### 8. Summary
+### 8. Fold newly-prompted Bash shapes into the guards
+A manual permission prompt for a Bash command is a signal, not a one-off — classify it and fold it in so the next occurrence auto-resolves. First check for a platform regression (`claude --version` vs the session-file version timeline, then the CHANGELOG): a reverted regression needs no local change.
+
+1. **Fail-closed shape** (heredoc/here-string `<<`, `$(...)`, backtick, background `&`, cd-compound with a write op) — the auto-mode classifier cannot analyze these and refuses delegation, so any prompt means `.claude/hooks/bash_shape_guard.py` did not cover this variant. Extend its pattern set + denial reason, pipe-test the new payload via the argv test affordance, and surface it in the session.
+2. **Clean shape missing an allow rule** — promote the exact form via Steps 2–5.
+3. **cd-compound with only safe segments** — extend `compound_cd_approver.py`'s `SAFE_SEGMENT_COMMANDS` (read-only commands only, per its docstring).
+
+Convergence: every reported prompt resolves into a guard pattern or an allow rule, so the next occurrence is denied or auto-approved instead of prompting.
+
+### 9. Summary
 Report what was added (promoted, generalized, and transcript-discovered) and remind the user to commit `settings.json` if desired.

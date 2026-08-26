@@ -2,70 +2,93 @@
 description: Run any worklog operation — drive logged items, add, complete, promote, unblock, triage, sweep, show.
 ---
 
-The single executor for all worklog operations. Source of truth is `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian); local title mirror at `.claude/worklog-titles.md`. This command file is the **operations playbook** (the recipes). For the **decision-time reference** — classification + scope rules, the domain list, the full trigger catalog, completion signals, and the which-operation-to-pick litmus — refer to the `worklog_reference` skill. DRIVE + TRIAGE recipes live in `agents/worklog_drive_triage.md` (loaded on demand).
+The single executor for all worklog operations. Source of truth: `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian); title mirror `.claude/worklog-titles.md`. This file is the **operations playbook**.
+
+**Two open tiers, both mirrored, both reachable.** `## Active` is the ready pool — hot-context plus newest, **30-item ceiling**. `## Ledger` holds unscheduled specified debt and every `When: after` item, in identical block shape. Three things read Active alone: the capacity check, DRIVE survey batching, DRIVE budget scoring. Everything else — `complete`, `unblock`, `promote`, named-item DRIVE, TRIAGE — scans both. TRIAGE Step 6 rebalances; an add never demotes. Classification + scope rules, domain list, trigger catalog, completion signals, which-operation litmus: `worklog_reference` skill. DRIVE + TRIAGE recipes: `agents/worklog_drive_triage.md` (Read on demand).
+
+**Call shorthands** used below — expand literally when invoking. `<Doc>` is `Worklog.md` / `Worklog-Archive.md` / `User-Tasks.md`; `P` = `DevProjects/{{PROJECT_NAME}}/Claude/TODO/<Doc>`.
+- `SR(<Doc>, search, replace)` = `mcp__obsidian__obsidian_search_replace(targetType="filePath", targetIdentifier=P, replacements=[{search: ..., replace: ...}], replaceAll: false)`
+- `READ(<Doc>)` = `mcp__obsidian__obsidian_read_note(filePath=P)`
+- `FM(<Doc>)` = `mcp__obsidian__obsidian_manage_frontmatter(filePath=P, operation="set", key="last_updated", value="YYYY-MM-DD")`
+- `APPEND(<Doc>, content)` = `mcp__obsidian__obsidian_update_note(targetType="filePath", targetIdentifier=P, modificationType="wholeFile", wholeFileMode="append", content=...)`
+
+**Entry formats** referenced by name below. Omit an inapplicable sub-bullet's line entirely — never leave a placeholder.
+- `BLOCK` — an Active item:
+  ```
+  - [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD
+    - Context: <one-line>
+    - Where: <path-if-any>
+    - Source: <ref-if-any>
+    - When: after <condition> | future        (omit if ready)
+    - Plan doc: [[<Doc Title>]]               (scope 4 only)
+    - Quick-win: flagged YYYY-MM-DD           (triage only)
+  ```
+- `FSLINE` — a Future Scope one-liner, `> `-prefixed, no sub-bullets; the parenthetical replaces them and stays under 80 chars: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)``
+- `XLINE` — an archive completion line: ``- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)``
+- `UTLINE` — a User-Tasks entry: `- YYYY-MM-DD — <Title> — <one-line context>`
 
 ## Forms
 
 Argument: `$ARGUMENTS`
 
-| Form | Operation |
+| Form | Operation (full recipe in the same-named section below) |
 |------|-----------|
-| (no args) or `show` | Print the Active section grouped by domain. Cite from `worklog-titles.md` if no full content needed; otherwise read the Obsidian doc. **Excludes `## Future Scope` by default.** |
-| `show all` | Same as `show`, but also prints the `## Future Scope` callout contents grouped by domain. Use when reviewing distant-horizon parking lot. |
-| `add <free text>` | Bypass auto-detect confirmation. Compose entry from free text, infer class + scope, ask for any missing fields (domain, context), append to Active, rewrite mirror. If user explicitly tags `When: future` (or composes from a strong-trigger phrase — see `worklog_reference` skill), routes to `## Future Scope` as a one-liner instead. |
-| `complete <id-or-search>` | Match an Active `[ ]` item by title or fuzzy search; delete its block from `Worklog.md` and append a `[x]` one-liner (completion date + ref) to `Worklog-Archive.md` under its domain; patch mirror. If multiple matches, ask the user to pick. |
-| `sweep` | Run three passes: add-sweep (transcript scan for missed deferrals) + completion-sweep (git diff vs `[ ]` items) + **promotion-sweep** (Future Scope items whose conditions have plausibly ripened given recent commits / current state). Each candidate is confirmation-driven. |
-| `triage` | Bulk cleanup walk. Reads Active, scores per-item dispositions (complete / do-now / quick-win flag / promote to Future Scope / delete / skip), walks them confirmation-driven, executes confirmed dispositions inline, rewrites mirror at end. Use when `/worklog show` flags overload (Active > 30) or backlog pressure builds. The "do-now" disposition executes scope-1 mechanical work this turn; "quick-win flag" defers small items to next session with a priority bump. |
-| `drive [<N> \| scope:N \| items:N \| <names>] [--plan-only]` | The agentic prioritization-and-execution op — selects logged items and drives them through to commits. Three modes, first match wins after `--plan-only` is stripped: **no argument** → *survey* (propose 2-3 prioritized batches, user picks); **budget-shaped argument** (`<N>` ≡ `scope:N`, combinable with `items:N`, more-restrictive binds) → score per-item and fill the target; **anything else** → *named-items* (comma-split, fuzzy-match, no scoring). Only ready items are selectable (no `When:` sub-bullet); quick-win-flagged items get a +3 score boost. Depth per scope tier (`_brainstorm_shared/execution_depth.md`); scope-4 is never driven — it routes to `/design_drive` or `/part_drive`. `--plan-only` stops at the drafted plan body. |
-| `unblock <condition>` | Strip `When: after <condition>` from all matching Active `[ ]` items, promoting them to ready. Fuzzy-matches condition text; shows matches before writing. |
-| `promote <title>` | Move a `When: future` item from `## Future Scope` back to `## Active`. Reconstructs a full `[ ]` block (Context preserved from one-liner; Where/Source/When dropped). Mirror image of `unblock` — for the manual or sweep-suggested case where a Future Scope item ripens. |
-| `user-add <free text>` | Append a one-line entry to the parallel `User-Tasks.md` doc (user-only addressable items: art, feel, brainstorms, design audits). De-dup search runs first, then prompt for missing fields (domain, context). Append-only from Claude's side. Never touches `Worklog.md` or the mirror. |
-| `user-show` | Read `User-Tasks.md` and print grouped by domain. Opt-in only — never folded into `show` / `show all`. The "never read passively" rule applies to passive context loading, not explicit user invocation. |
-| `history [domain]` | Read `Worklog-Archive.md` and print completed `[x]` items grouped by domain (optional single-domain filter). Opt-in only — the archive is never loaded passively (no mirror, no SessionStart, no sweep/triage/drive scan). |
+| (no args) or `show` | Print Active (the ready pool) grouped by domain, from the mirror unless full content is needed. Footer-count `## Ledger`; **exclude `## Future Scope`**. |
+| `show ledger` | Print `## Ledger` grouped by domain, same format. Opt-in — `show` prints its count, never its contents. |
+| `show all` | `show` plus the full `## Ledger` listing plus the `## Future Scope` callout contents, each grouped by domain. |
+| `add <free text>` | ADD, bypassing auto-detect's confirm. `When: future` or a strong-trigger phrase (`worklog_reference` *Trigger Catalog*) routes to Future Scope as an `FSLINE`. |
+| `complete <id-or-search>` | COMPLETE the matched Active item — its `BLOCK` leaves `Worklog.md`, an `XLINE` lands in `Worklog-Archive.md`. Multiple matches → ask. |
+| `sweep` | Three confirmation-driven passes: add-sweep, completion-sweep, promotion-sweep. |
+| `triage` | Bulk cleanup walk: score per-item dispositions, walk confirmation-driven, execute inline, rewrite mirror at end. Use when Active > 30 or backlog pressure builds. |
+| `drive [<N> \| scope:N \| items:N \| <names>] [--plan-only]` | Agentic prioritization-and-execution to commits. Three modes, first match wins after `--plan-only` is stripped: **no argument** → *survey*; **budget-shaped** (`<N>` ≡ `scope:N`, combinable with `items:N`, more-restrictive binds) → score and fill the target; **anything else** → *named-items*. Only ready items (no `When:` sub-bullet) are selectable. Scope-4 is never driven — route to `/design_drive` or `/part_drive`. `--plan-only` stops at the drafted plan body. Mode mechanics + scoring: the DRIVE recipe file. |
+| `unblock <condition>` | Strip `When: after <condition>` from all fuzzy-matching Active items; show matches before writing. |
+| `promote <title>` | Move a `When: future` item from Future Scope back to Active, reconstructing a full `BLOCK`. |
+| `user-add <free text>` | Append a `UTLINE` to `User-Tasks.md` (user-only addressable: art, feel, brainstorms, design audits). De-dup first. Append-only; never touches `Worklog.md` or the mirror. |
+| `user-show` | Print `User-Tasks.md` grouped by domain. Opt-in only — never folded into `show` / `show all`. |
+| `history [domain]` | Print `Worklog-Archive.md`'s `[x]` items grouped by domain (optional filter). Opt-in only; never loaded passively. |
 
 ## Cross-cutting rules
 
-- **Mirror maintenance (incremental — do NOT re-read the source):** `.claude/worklog-titles.md` is NOT auto-injected — `Read` it first if you haven't this session. After an Active-section write, **patch the affected line(s) in place** and `Write` the file back — never re-read `Worklog.md` to regenerate the whole mirror. The op already knows what changed:
-  - **ADD** (Active path) → append the one line you just composed.
-  - **COMPLETE** / `delete` / triage-`promote` (Active→Future Scope) → remove that item's line.
-  - **UNBLOCK** → strip the ` [after: <condition>]` suffix from the matched lines.
-  - **PROMOTE** (Future Scope→Active) → add the reconstructed item's line.
-  - **TRIAGE** → applies several of the above in one walk; rebuild the mirror once at end-of-walk from the full-Active copy it **already read in Step 1** (still no fresh re-read).
-  - Future Scope adds/removes do NOT touch the mirror (excluded by design).
-  After patching, set `Last synced:` to today's **date only** — never a change narrative; the mirror is always-loaded context. This command is the only writer of the mirror — keeps drift bounded.
-  File shape: a `## <category>` heading per domain cluster, then `- <class> · <scope> · <title>` lines beneath it. The category lives in the heading and is never repeated per line. Add a heading when a category first appears; remove it when its last item leaves.
-  **Full regeneration** (re-read `Worklog.md`, rebuild from scratch) happens ONLY in `/worklog show`'s full-read path — the drift-correction escape hatch when the mirror and source diverge (e.g. a manual Obsidian edit). Routine add/complete must never trigger it.
-  Line-format filter rules (apply when composing or regenerating a line):
+- **Mirror maintenance (incremental — do NOT re-read the source):** `.claude/worklog-titles.md` is not auto-injected — `Read` it first if you haven't this session. After an Active-section write, patch the affected line(s) and `Write` back:
+  - **ADD** (Active path) → append the line you just composed.
+  - **COMPLETE** / triage-`delete` / triage-`promote` (Active→Future Scope) → remove that item's line.
+  - **UNBLOCK** → strip the ` [after: <condition>]` suffix from matched lines.
+  - **PROMOTE** (Future Scope→Active) → add the reconstructed line.
+  - **TRIAGE** → rebuild once at end-of-walk from the full-Active copy read in its Step 1 (still no fresh re-read).
+  - Future Scope adds/removes do NOT touch the mirror.
+  Then set `Last synced:` to today's **date only** — never a change narrative; the mirror is always-loaded context. This command is the mirror's only writer.
+  File shape: two `## <tier> (<count>)` supersections — `## Active` then `## Ledger` — each holding `### <category>` headings, then `- <class> · <scope> · <title>` lines beneath. The category lives in the heading, never per line. Add a heading when a category first appears; remove it when its last item leaves. Patch the count in the supersection heading on every add/remove.
+  **Full regeneration** happens ONLY in SHOW's full-read path — the drift-correction escape hatch when mirror and source diverge (e.g. a manual Obsidian edit). Routine add/complete must never trigger it.
+  Line-format filter rules (composing or regenerating a line):
   - `[ ]` items in `## Active` → included.
   - `[x]` items live in `Worklog-Archive.md`, never in the mirror.
-  - Items in `## Future Scope` → **excluded** (deliberately hidden from always-loaded context).
-  - Items with `When: after <condition>` → included with ` [after: <condition>]` suffix appended after the title.
-  - Items with `Quick-win:` sub-bullet → included with ` [quick-win]` suffix appended after the title (set by `/worklog triage` flag disposition).
-  - Items with both `When: after` AND `Quick-win:` → suffixes stack as `... [after: <condition>] [quick-win]` (stable order: after first, quick-win second).
-  - Items with no `When:` and no `Quick-win:` line → included as plain `<category> · <class> · <scope> · <title>`.
-- **Frontmatter bump:** every Obsidian write also updates `last_updated:` to today's date via `mcp__obsidian__obsidian_manage_frontmatter`.
-- **De-duplication:** before any add, scan the in-context mirror for a near-duplicate title in the same domain. If one exists, surface the existing item — don't ask to add again unless user confirms it's distinct. **Caveat:** the mirror does NOT contain Future Scope items — for full de-dup including Future Scope, do an Obsidian read on `## Future Scope` when the candidate has Future-Scope-shaped phrasing.
-- **Class + scope are required.** Every Active item needs both. Future Scope items also carry class + scope (one-liner format encodes them). If the user's `add` text doesn't make them obvious, propose inferred values and confirm before writing.
-- **Future Scope routing:** when an `add` proposal would route to `## Future Scope`, the propose-and-confirm prompt MUST explicitly say "Future Scope" so the user knows the item will be excluded from the mirror. Format: `Add to Worklog Future Scope: <title> — <domain> · <class> · scope <n>?`. User can override to regular Active with `y, active not future`.
-- **MCP-offline:** non-event for the Worklog itself — `Worklog.md` is a vault file edited with native `Read`/`Edit`/`Write`. The one MCP touchpoint is the `last_updated:` frontmatter bump (`obsidian_manage_frontmatter`); if the MCP is down, do that bump with a native `Edit` instead.
-- **Auto-detect chain:** CLAUDE.md's detection rule fires *propose-and-confirm*; on `y`, it invokes `/worklog add <inferred-text>` (regular/Future Scope) or `/worklog user-add <inferred-text>` (User-Tasks route) to perform the actual write. The recipe lives here, not in CLAUDE.md or the skill. Strong-trigger phrases route to Future Scope; high-confidence art/feel/brainstorm phrases route to User-Tasks; regular deferral phrases route to Active. See `worklog_reference` skill *Trigger Catalog* for the phrase lists.
-- **User-Tasks parallel doc:** `User-Tasks.md` lives at `DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md`. Append-only from Claude's side (writes via `/worklog user-add`); never read passively (no mirror, no SessionStart load, no scan by sweep/triage/plan). Reads only on (a) explicit `/worklog user-show`, (b) the de-dup search inside `/worklog user-add`, or (c) the count footer inside `/worklog show` (count only — content stays in tool result, never echoed into agent output). Worklog.md operations (ADD/COMPLETE/TRIAGE/etc.) never touch `User-Tasks.md`; the only crossover is the `to-user-tasks` disposition inside `/worklog triage`, which migrates an Active item to User-Tasks via the `user-add` recipe.
+  - Items in `## Future Scope` → **excluded**.
+  - `When: after <condition>` → ` [after: <condition>]` suffix after the title.
+  - `Quick-win:` sub-bullet → ` [quick-win]` suffix after the title.
+  - Both → suffixes stack, stable order `... [after: <condition>] [quick-win]`.
+  - Neither → plain `<category> · <class> · <scope> · <title>`.
+- **Frontmatter bump:** every Obsidian write also runs `FM(<the doc written>)`.
+- **De-duplication:** before any add, scan the in-context mirror for a near-duplicate title in the same domain; surface the existing item unless the user confirms it's distinct. The mirror omits Future Scope — for Future-Scope-shaped candidates, read `## Future Scope` too.
+- **Class + scope are required** on every `BLOCK` and every `FSLINE`. If the `add` text doesn't make them obvious, propose inferred values and confirm before writing.
+- **Future Scope routing:** a Future-Scope-bound `add` proposal MUST say "Future Scope" in the confirm prompt, so the user knows the item is excluded from the mirror: `Add to Worklog Future Scope: <title> — <domain> · <class> · scope <n>?`. Override with `y, active not future`.
+- **MCP-offline:** `Worklog.md` is a vault file editable with native `Read`/`Edit`/`Write`. The one MCP touchpoint is `FM()` — do that bump with a native `Edit` when the MCP is down.
+- **Auto-detect chain:** CLAUDE.md's detection rule fires propose-and-confirm; on `y` it invokes `/worklog add <inferred-text>` or `/worklog user-add <inferred-text>` to perform the write. The recipe lives here, not in CLAUDE.md or the skill. Strong-trigger phrases route to Future Scope; high-confidence art/feel/brainstorm phrases to User-Tasks; regular deferral phrases to Active (`worklog_reference` *Trigger Catalog*).
+- **User-Tasks parallel doc:** append-only from Claude's side; never read passively (no mirror, no SessionStart, no sweep/triage/drive scan). Reads only on (a) explicit `user-show`, (b) the de-dup search inside `user-add`, (c) the count footer inside `show` (count only — content stays in the tool result). Worklog.md ops never touch it; the only crossover is triage's `to-user-tasks` disposition.
 
 ---
 
 ## Cloud fallback (CLAUDE_CODE_REMOTE=true)
 
-On cloud, Obsidian MCP is unavailable, so `Worklog.md` cannot be written. Detect cloud with the Bash form `[ "${CLAUDE_CODE_REMOTE:-}" = "true" ]` — the convention `cloud-install.sh` uses. (This is a `.md` command, not Python; do not invent an `is_cloud()` import.)
+Obsidian MCP is unavailable on cloud, so `Worklog.md` cannot be written. Detect with the Bash form `[ "${CLAUDE_CODE_REMOTE:-}" = "true" ]` (this is a `.md` command — there is no `is_cloud()` import).
 
-- **Mutating ops** (`add`, `complete`, `promote`, `unblock`, triage dispositions): do NOT touch Obsidian or the mirror. **Append** the op to the tracked queue `.claude/worklog-pending.md` under a per-session header, then stop. Entry format:
+- **Mutating ops** (`add`, `complete`, `promote`, `unblock`, triage dispositions): do NOT touch Obsidian or the mirror. Append the op to the tracked queue `.claude/worklog-pending.md`, one header per session (new header only when the session changes), then stop:
   ```
   ## <ISO timestamp> cloud session <id>
   - ADD active: <title> (<domain> · <class> · scope <n>)
   - COMPLETE: <title>
   - PROMOTE: <title>
   ```
-  Group a session's ops under one header (append lines; new header only when the session changes).
-- **Read ops**: `show` operates on the local mirror `worklog-titles.md` (it ships with the checkout). Ops needing the full Obsidian doc (`show all` Future Scope, `sweep`, `drive`) print `Obsidian unavailable on cloud — defer to a local session.` and stop.
+- **Read ops:** `show` uses the local mirror. Ops needing the full Obsidian doc (`show all` Future Scope, `sweep`, `drive`) print `Obsidian unavailable on cloud — defer to a local session.` and stop.
 - **Commit** the pending file from cloud (it is tracked); the cloud→local handoff crosses machines via git.
 
 ### Replay (local session)
@@ -73,197 +96,124 @@ On cloud, Obsidian MCP is unavailable, so `Worklog.md` cannot be written. Detect
 Any `/worklog` invocation first checks `.claude/worklog-pending.md`. If its body (below the DO-NOT-HAND-EDIT header) has un-struck `- ` lines:
 
 1. Prompt: `Replay N pending cloud-session entries to Obsidian?` (N = un-struck `- ` lines).
-2. On confirm, apply each entry as the matching native op against `Worklog.md` + mirror (ADD→add, COMPLETE→complete, PROMOTE→promote).
-3. **Conflict policy = skip-and-audit-trail:** if an entry no longer matches Obsidian state (`COMPLETE: X` but X already archived; `ADD` of an existing title), rewrite that line struck-through (`- ~~<entry>~~ (skipped: <reason>)`) and skip — never hard-fail the replay.
-4. After applying, **truncate the body, keep the header**.
-5. **Idempotency:** a later run sees a header-only (empty) body → no-op, no re-prompt.
+2. On confirm, apply each entry as the matching native op (ADD→add, COMPLETE→complete, PROMOTE→promote).
+3. **Conflict policy = skip-and-audit-trail:** an entry no longer matching Obsidian state (`COMPLETE: X` already archived; `ADD` of an existing title) is rewritten struck-through (`- ~~<entry>~~ (skipped: <reason>)`) and skipped — never hard-fail the replay.
+4. After applying, truncate the body, keep the header.
+5. **Idempotency:** a later run seeing a header-only body no-ops without re-prompting.
 
-The SessionStart hook surfaces `Cloud worklog: N pending` on local sessions when un-struck entries exist (it excludes struck-through lines).
+The SessionStart hook surfaces `Cloud worklog: N pending` on local sessions when un-struck entries exist.
 
 ---
 
 ## Operation: SHOW
 
-**Cheap path (preferred):** `Read .claude/worklog-titles.md` — SessionStart does NOT inject it. Cite from there — print the Active section grouped by domain, no tool call needed. `## <category>` headings already group the mirror; each line encodes `class · scope · title` (with optional `[after: X]` suffix). The mirror does NOT contain Future Scope items by design.
+**Cheap path (preferred):** `Read .claude/worklog-titles.md` (SessionStart does not inject it) and print Active grouped by domain — `## <category>` headings already group it. The mirror omits Future Scope by design.
 
-**Capacity check (preface every show output):** count `[ ]` lines in the printed Active section. If count > 30, prepend a one-line alarm above the show output:
-
+**Capacity check (preface every show output):** count `[ ]` lines in `## Active` only — the Ledger is uncapped by design and counting it would restore the alarm's old meaninglessness. If > 30, prepend:
 ```
-⚠ Active has <N> items (cap target: 30). Run `/worklog triage` for a guided cleanup pass.
+⚠ Active has <N> items (ceiling: 30). Run `/worklog triage` to rebalance against `## Ledger`.
 ```
+At ≤ 30, omit it entirely. Fires on `show` / `show ledger` / `show all` only, never during `add` / `complete` / `drive` / `triage`. Soft alarm — never blocking.
 
-If count ≤ 30, omit the alarm entirely. The alarm fires on `show` and `show all` only; it does NOT fire during `add` / `complete` / `drive` / `triage` itself (those have their own contexts). Soft alarm — informational, never blocking.
+**Full read** (user asks for context, dates, or sub-bullets): `READ(Worklog.md)`. Group by domain and list the `[ ]` items; `[x]` items live in the archive (`/worklog history`). Default view is title + class + scope + date — don't dump Context/Where/Source unless asked.
 
-**Full read (when user asks for context, dates, or sub-bullets):**
-```
-mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md")
-```
+**Mirror drift-resync (the full-regen escape hatch).** After that full read, regenerate `.claude/worklog-titles.md` from the `## Active > [ ]` items per *Cross-cutting rules > Mirror maintenance* and `Write` it. This is the only place the mirror is rebuilt from scratch.
 
-When showing full content, group by domain and list the `[ ]` items — `Worklog.md` holds only active work; completed `[x]` items live in `Worklog-Archive.md` and surface via `/worklog history`. Don't dump the full Context/Where/Source unless the user asks — title + class + scope + date is the default "show" view.
-
-**Mirror drift-resync (the full-regen escape hatch).** This full read is the *one* place the mirror is rebuilt from scratch: after reading, regenerate `.claude/worklog-titles.md` from the `## Active > [ ]` items per the *Cross-cutting rules > Mirror maintenance* filter rules and `Write` it. Routine add/complete patch the mirror incrementally and never reach here — `show`'s full read is the correction path if the mirror and source ever diverge (e.g. a manual Obsidian edit).
-
-**`show all` form** — also reads Obsidian (the mirror is insufficient since it omits Future Scope), then prints a Future Scope section after the Active listing:
-
+**`show all` form** — also reads Obsidian (the mirror omits Future Scope), then prints after the Active listing:
 ```
 ## Future Scope (parked, excluded from agent-facing mirror)
 ### <Domain>
 - `<class>` · scope `<n>` · <title> (added <date>; <one-line why-deferred>)
 ```
 
-When the user runs bare `/worklog show` and the agent suspects a Future Scope item is relevant to the current session work (e.g., recent commits touch the area a Future Scope item is parked against), nudge: "(N items in Future Scope; run `/worklog show all` if you want to review them.)" — single line, no auto-load.
+On bare `show`, if a Future Scope item looks relevant to current session work (recent commits touch its area), nudge in one line: "(N items in Future Scope; run `/worklog show all` if you want to review them.)" — no auto-load.
 
-**User-Tasks count footer** — at the end of every `/worklog show` output (both bare and `show all`), do one read of `User-Tasks.md` to count its dated entries (lines matching `^- \d{4}-\d{2}-\d{2} — `). If count > 0, append a single line: `(N items in User-Tasks — /worklog user-show to review)`. If count == 0, omit the line entirely. This is the **only** passive read of `User-Tasks.md` outside of explicit `/worklog user-show` — it's a count for the awareness anchor, not content surfaced into context. If `User-Tasks.md` does not yet exist (first-ever session before any user-add), skip the read silently.
+**User-Tasks count footer** — ending every `show` output (bare and `show all`), read `User-Tasks.md` once and count dated entries (`^- \d{4}-\d{2}-\d{2} — `). If > 0, append `(N items in User-Tasks — /worklog user-show to review)`; if 0, omit. This is the only passive read of `User-Tasks.md` outside `user-show`. File absent → skip silently.
 
 ## Operation: USER-SHOW
 
-Opt-in read of `User-Tasks.md`. Not folded into `/worklog show` or `show all` — those emit only the count footer; this prints content.
+Opt-in read of `User-Tasks.md`; prints content where `show` emits only the count footer.
 
-1. **Read User-Tasks.md.**
-   ```
-   mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md")
-   ```
-   If the file does not exist (no user-tasks added yet), print: `User-Tasks.md does not exist yet — no items have been routed to it. Use /worklog user-add or accept an auto-detect proposal to start populating it.` and stop.
-
-2. **Print grouped by domain.** For each `## <Domain>` section in the doc, print the heading and its entries verbatim. Preserve date order (newest at top — that's how user-add inserts). Do NOT reformat, sort across domains, or strip dates. The doc IS the source of truth — read it, show it.
-
-3. **Optional age callout.** If any entries are older than 90 days, append below the print:
-   ```
-   (N entries older than 90 days — consider whether they're still relevant, or edit/remove directly in Obsidian.)
-   ```
-   Soft nudge. User owns curation; no agent action follows.
+1. **`READ(User-Tasks.md)`.** File absent → print `User-Tasks.md does not exist yet — no items have been routed to it. Use /worklog user-add or accept an auto-detect proposal to start populating it.` and stop.
+2. **Print grouped by domain.** Per `## <Domain>` section, print the heading and its entries verbatim, preserving date order (newest at top). Do not reformat, sort across domains, or strip dates.
+3. **Optional age callout.** Any entries older than 90 days → append `(N entries older than 90 days — consider whether they're still relevant, or edit/remove directly in Obsidian.)`. Soft nudge; no agent action follows.
 
 ## Operation: HISTORY
 
-Opt-in read of `Worklog-Archive.md` — the completed-item store. Not folded into `show` / `show all`; the archive is never loaded passively (no mirror, no SessionStart, no sweep/triage/drive scan). Argument `$ARGUMENTS` is an optional domain filter.
+Opt-in read of `Worklog-Archive.md`. Never loaded passively (no mirror, no SessionStart, no sweep/triage/drive scan). `$ARGUMENTS` is an optional domain filter.
 
-1. **Read the archive.**
-   ```
-   mcp__obsidian__obsidian_read_note(filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog-Archive.md")
-   ```
-   If the file does not exist (nothing completed since the archive model landed), print: `Worklog-Archive.md does not exist yet — no items have been completed into it.` and stop.
-
-2. **Print grouped by domain.** For each `## <Domain>` section, print the heading and its `[x]` lines verbatim (newest at the bottom — append order). If `$ARGUMENTS` names a domain (fuzzy-match the canonical list), print only that section; if it matches nothing, list the available domain headings and ask.
-
-3. **Read-only.** Completions are written here by COMPLETE, never edited by this op. The archive can grow unbounded; if the user wants it pruned they edit Obsidian directly (git / Obsidian version history is the safety net). No agent-driven archive compaction exists.
+1. **`READ(Worklog-Archive.md)`.** File absent → print `Worklog-Archive.md does not exist yet — no items have been completed into it.` and stop.
+2. **Print grouped by domain.** Per `## <Domain>` section, print the heading and its `[x]` lines verbatim (newest at the bottom — append order). A domain argument fuzzy-matches the canonical list; matching nothing → list the available headings and ask.
+3. **Read-only.** COMPLETE is the only writer. The archive grows unbounded; pruning is the user's, directly in Obsidian (git / Obsidian version history is the safety net). No agent-driven compaction exists.
 
 ## Operation: ADD
 
-1. **De-dup check.** Scan `worklog-titles.md` (already in context) for a near-duplicate title in the same domain. If one exists, surface the existing item instead of asking to add. If user confirms it's distinct, proceed.
+1. **De-dup check.** Scan `worklog-titles.md` for a near-duplicate title in the same domain; surface the existing item rather than asking to add. Proceed if the user confirms it's distinct.
 
-2. **Compose the entry block — required fields.**
-   - Title: short and imperative (bold).
-   - Class: pick from `fix` / `debug` / `feature` / `refactor` / `test` / `docs` / `chore` / `design`. See `worklog_reference` skill for the inference heuristics.
-   - Scope: 1–4 (see scope table in `worklog_reference`).
-   - Domain: pick from the canonical list. If ambiguous, ask.
-   - Context: one line on *why this matters* / *what's the deferred concern*.
+2. **Required fields.**
+   - Title: short, imperative, bold.
+   - Class: `fix` / `debug` / `feature` / `refactor` / `test` / `docs` / `chore` / `design` (heuristics: `worklog_reference`).
+   - Scope: 1–4 (scope table: `worklog_reference`).
+   - Domain: from the canonical list; ask if ambiguous.
+   - Context: one line on why this matters / what the deferred concern is.
    - Date: today.
 
-3. **Compose the entry block — optional fields.**
-   - Where: file path or scene reference where the work would land.
+3. **Optional fields.**
+   - Where: file path or scene reference where the work lands.
    - Source: session name, PR ref, or commit hash that triggered the deferral.
-   - **When:** if the user's phrasing implies a prerequisite or phase gate ("once X is done", "after Y ships", "not until Z", "not until we have enemies working"), propose `When: after <condition>` or `When: future` and confirm. If no timing signal is present → omit entirely (item is ready by default).
-   - **Plan doc: REQUIRED if scope == 4.** Wikilink form: `[[Doc Title]]`. The doc itself must exist in `TODO/` and be entered in `## Linked Docs`. If the user wants to log a scope-4 item but no doc exists yet, prompt them to create one (or downgrade to scope 3 if it can fit inline).
+   - **When:** phrasing implying a prerequisite or phase gate ("once X is done", "after Y ships", "not until Z") → propose `When: after <condition>` or `When: future` and confirm. No timing signal → omit (ready by default).
+   - **Plan doc: REQUIRED if scope == 4.** Wikilink `[[Doc Title]]`; the doc must exist in `TODO/` and be listed in `## Linked Docs`. No doc yet → prompt the user to create one, or downgrade to scope 3 if it fits inline.
 
-4. **Inferred-values confirmation (if invoked from auto-detect or `add` with sparse text).**
-   When CLAUDE.md auto-detect fires, the propose line should be:
+4. **Inferred-values confirmation** (auto-detect, or sparse `add` text): `Add to Worklog: <title> — <domain> · <class> · scope <n>?`. `y` accepts; overrides land inline (`y, scope 3` / `y, refactor not feature` / `y, domain spell`).
+
+5. **Decide section.** Future Scope strong-trigger phrase (`worklog_reference` *Trigger Catalog*) OR explicit `When: future` → step **5b**. A `When: after <condition>` clause → `## Ledger > ### Domain`, step 6 (it is not ready, so it never occupies a ready-pool slot). Otherwise → `## Active > ### Domain`, step 6 — a fresh item is the newest by definition, so it belongs in the pool.
+
+   Landing above 30 is fine: report `Active is now <N> (ceiling 30) — /worklog triage rebalances.` and write anyway. **Never demote to the Ledger to hold the ceiling** — an unseen demotion is a lost item.
+
+5b. **(Future Scope path) Append an `FSLINE` under `## Future Scope > ### Domain`,** inside the `> [!example]- Future Scope (N items)` collapsed callout (every line within is `> `-prefixed).
+
+   **Sub-heading exists** — `SR(Worklog.md, search: "> ### <Domain Long-Form>\n", replace: "> ### <Domain Long-Form>\n<FSLINE>\n")`.
+   **Future Scope exists, sub-heading missing:** insert sub-heading + `FSLINE` just before the callout's close (the `> ` line immediately preceding `## Linked Docs`).
+   **`## Future Scope` missing:** create it between `## Active` and `## Linked Docs` —
    ```
-   Add to Worklog: <title> — <domain> · <class> · scope <n>?
-   ```
-   User accepts with `y`, or overrides inline: `y, scope 3` / `y, refactor not feature` / `y, domain spell`.
-
-5. **Decide section: Active vs. Future Scope.**
-
-   - If the user's `add` text used a Future Scope strong-trigger phrase (`worklog_reference` skill *Trigger Catalog*) OR the user explicitly tagged `When: future` → route to `## Future Scope`. Skip step 6 (full-block append) and jump to step **5b** (one-liner append) below.
-   - Otherwise → route to `## Active > ### Domain` (continue with step 6 below).
-
-5b. **(Future Scope path) Append a one-liner under `## Future Scope > ### Domain`.**
-
-   The Future Scope section is wrapped in a `> [!example]- Future Scope (N items)` collapsed callout — every line inside is prefixed with `> `. Use this format:
-   ```
-   > - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)
-   ```
-   No Context/Where/Source sub-bullets. The parenthetical context replaces them — keep it under 80 chars.
-
-   **If the Future Scope section's `### <Domain>` sub-heading exists:**
-   ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
-     replacements=[{
-       search: "> ### <Domain Long-Form>\n",
-       replace: "> ### <Domain Long-Form>\n> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)\n",
-     }],
-  replaceAll: false
-   )
+   search:  "## Linked Docs"
+   replace: "## Future Scope\n\n> [!example]- Future Scope (1 item)\n> <!-- Distant-horizon items (When: future). One-liner format only — excluded from `.claude/worklog-titles.md` mirror. -->\n> ### <Domain Long-Form>\n<FSLINE>\n\n## Linked Docs"
    ```
 
-   **If the Future Scope section exists but lacks this `### <Domain>` sub-heading:** insert the sub-heading + new one-liner just before the closing of the callout (the line `> ` immediately preceding `## Linked Docs`).
+   Then update the item-count: re-read the Future Scope block, count `> - ` lines, `SR` the `(N items)` substring on the callout-header line. Skip when the section was just created (already `(1 item)`).
 
-   **If `## Future Scope` does not exist at all:** create it between `## Active` and `## Linked Docs`:
+   Skip steps 6–7; jump to step 8, then step 9 (which excludes this item by design).
+
+6. **(Active path) Append a `BLOCK` under the right `### Domain` heading,** at the **top** of that section, immediately after the heading line.
+
+   **Domain section exists** — `SR(Worklog.md, search: "### <Domain Long-Form>\n", replace: "### <Domain Long-Form>\n<BLOCK>\n")`.
+   **Domain section missing:** insert it at the END of `## Active` — anchor on `## Future Scope` when that section exists, else on `## Linked Docs`. Anchoring on `## Linked Docs` while a `## Future Scope` sits between them lands the new domain OUTSIDE `## Active`, where the mirror filter and every Active-scanning op miss it.
    ```
-   replacements=[{
-     search: "## Linked Docs",
-     replace: "## Future Scope\n\n> [!example]- Future Scope (1 item)\n> <!-- Distant-horizon items (When: future). One-liner format only — excluded from `.claude/worklog-titles.md` mirror. -->\n> ### <Domain Long-Form>\n> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)\n\n## Linked Docs"
-   }]
-   ```
-
-   Then update the callout's item-count: re-read the Future Scope block, count the `> - ` lines, and `obsidian_search_replace` the `(N items)` substring on the callout-header line. Skip count-update if the Future Scope section was just created (already says `(1 item)`).
-
-   Skip steps 6–7 — jump to step 8 (frontmatter bump) and step 9 (mirror rewrite). The mirror rewrite will exclude this item by design.
-
-6. **(Active path) Append under the right `### Domain` heading in Obsidian.**
-
-   New `[ ]` items go at the **top** of the domain section, immediately after the heading line — above any existing `[ ]` items. Newest active item is always nearest to the heading. (No `[x]` history lives in Active anymore — completions move to `Worklog-Archive.md`.)
-
-   **If the domain section already exists:**
-   ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
-     replacements=[{
-       search: "### <Domain Long-Form>\n",
-       replace: "### <Domain Long-Form>\n- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD\n  - Context: <one-line>\n  - Where: <path-if-any>\n  - Source: <ref-if-any>\n  - When: after <condition> | future  (omit line entirely if ready)\n  - Plan doc: [[<Doc Title>]]  (omit line entirely if not scope 4)\n",
-     }],
-  replaceAll: false
-   )
+   search:  "## Future Scope"   // or "## Linked Docs" when no Future Scope section exists
+   replace: "### <Domain Long-Form>\n<BLOCK>\n\n## Future Scope"
    ```
 
-   **If the domain section does NOT exist yet:** insert it with the new item at the END of `## Active` — anchor on `## Future Scope` when that section exists, else on `## Linked Docs`. Anchoring on `## Linked Docs` while a `## Future Scope` section sits between them lands the new domain OUTSIDE `## Active`, where the mirror filter and every Active-scanning op will miss it.
-   ```
-   replacements=[{
-     search: "## Future Scope",   // or "## Linked Docs" when no Future Scope section exists
-     replace: "### <Domain Long-Form>\n- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD\n  - Context: <one-line>\n\n## Future Scope"
-   }]
-   ```
+7. **(Active path, scope-4 only)** If the named Plan doc isn't already in `## Linked Docs`, add it there in the same domain subsection. Skip if 5b was taken — Future Scope items carry no Plan docs.
 
-7. **(Active path, scope-4 only) If the named Plan doc isn't already in `## Linked Docs`,** add it there as well, in the same domain subsection. Skip if Future Scope path was taken (Future Scope items don't carry Plan docs — they're scope-2/3 distant work, not scope-4 design tracks).
+8. **`FM(Worklog.md)`.**
 
-8. **Bump frontmatter.**
-   ```
-   mcp__obsidian__obsidian_manage_frontmatter(
-     filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
-     operation="set",
-     key="last_updated",
-     value="YYYY-MM-DD"
-   )
-   ```
+9. **Patch the mirror (incremental).** Insert the composed line into `.claude/worklog-titles.md` under its `## <category>` heading (append a new heading at the end if absent), then `Write` back. Format per *Cross-cutting rules > Mirror maintenance*. Do NOT re-read `Worklog.md`. Set `Last synced:` to today. Future Scope adds took 5b and carry no mirror line — skip.
 
-9. **Patch the mirror (incremental).** Insert the single line you just composed into `.claude/worklog-titles.md` (already in your session context) under its `## <category>` heading — appending a new heading at the end if that category isn't present yet — then `Write` it back. Format per *Cross-cutting rules > Mirror maintenance*. Do NOT re-read `Worklog.md`. Update `Last synced:` to today's date. (Future Scope adds took step 5b and carry no mirror line — skip this step.)
-
-10. **Confirm to user:** `Added.` (terse — they don't need to re-read what they just confirmed). For Future Scope adds, `Added to Future Scope.` (so the user knows the item is parked, not active).
+10. **Confirm:** `Added.` — or `Added to Future Scope.` so the user knows the item is parked.
 
 ### Invocation contexts for ADD
 
 | Caller | Confirm-first? | Notes |
 |--------|---------------|-------|
-| User explicitly types `/worklog add <text>` | No (already explicit) | Skip the propose-and-confirm; go straight to recipe. Ask only for missing fields (class, scope, domain, context). |
-| CLAUDE.md auto-detect fires + user says `y` | Already done by CLAUDE.md | Just execute the recipe. CLAUDE.md handled the propose, including inferred class+scope. Honor any inline overrides (`y, scope 3`). |
-| `/worklog sweep` proposes an add + user says `y` | Already done by sweep | Same as above. |
+| User types `/worklog add <text>` | No (already explicit) | Ask only for missing fields (class, scope, domain, context). |
+| CLAUDE.md auto-detect + user says `y` | Already done by CLAUDE.md | Execute the recipe; honor inline overrides (`y, scope 3`). |
+| `/worklog sweep` proposes an add + `y` | Already done by sweep | Same as above. |
 
 ## Operation: USER-ADD
 
-Append a one-line entry to `User-Tasks.md` for items requiring user judgment Claude cannot tackle. Append-only — never modifies or deletes existing entries.
+Append a `UTLINE` for items needing user judgment Claude cannot supply. Append-only — never modifies or deletes existing entries.
 
-1. **De-dup search.** Quick search against `User-Tasks.md` for near-duplicate titles in the same domain. Active-operation carve-out to the "never read passively" rule — result lands in the tool response and informs the propose-and-confirm; doesn't persist into always-loaded context.
+1. **De-dup search.** Active-operation carve-out to the never-read-passively rule: the result lands in the tool response and informs the confirm prompt.
    ```
    mcp__obsidian__obsidian_global_search(
      query="<title keywords>",
@@ -272,55 +222,20 @@ Append a one-line entry to `User-Tasks.md` for items requiring user judgment Cla
    ```
    On near-match: `User-Tasks already has: <existing entry>. Add as distinct (y/n)?`. On `n`, abort.
 
-2. **Compose the entry.** Single line — no class/scope, no Where/Source sub-bullets:
-   ```
-   - YYYY-MM-DD — <Title> — <one-line context>
-   ```
-   - **Date:** today (Claude flagged it now — not the user's eventual action date).
-   - **Title:** short, imperative, ≤60 chars. No bold (flat doc, no checkbox semantics).
-   - **Context:** ≤80 chars on *why* this needs user attention.
-   - **Domain:** pick from the canonical list in `worklog_reference` *Canonical domain list* (single source — not restated here).
+2. **Compose the `UTLINE`.**
+   - **Date:** today (when Claude flagged it, not the user's eventual action date).
+   - **Title:** short, imperative, ≤60 chars, no bold.
+   - **Context:** ≤80 chars on why this needs user attention.
+   - **Domain:** from `worklog_reference` *Canonical domain list*.
 
-3. **Inferred-values confirmation** (when invoked from auto-detect). Propose line is:
-   ```
-   Route to User-Tasks: <title> — <domain>?
-   ```
-   User accepts with `y`, overrides domain inline (`y, domain spell`), or overrides the route entirely with `y, active not user-tasks` (reroutes to `/worklog add` — User-Tasks add is cancelled, Active add proceeds).
+3. **Inferred-values confirmation** (auto-detect): `Route to User-Tasks: <title> — <domain>?`. `y` accepts; `y, domain spell` overrides the domain; `y, active not user-tasks` cancels this add and reroutes to `/worklog add`.
 
-4. **Append under the right `## <Domain>` heading.**
+4. **Append under the right `## <Domain>` heading,** at the **top** of the section, immediately after the heading line.
 
-   **If the domain section already exists:**
-   ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md",
-     replacements=[{
-       search: "## <Domain Long-Form>\n",
-       replace: "## <Domain Long-Form>\n- YYYY-MM-DD — <Title> — <one-line context>\n",
-     }],
-  replaceAll: false
-   )
-   ```
-   New entries go at the **top** of the domain section (immediately after the heading line) — newest nearest the heading.
+   **Domain section exists** — `SR(User-Tasks.md, search: "## <Domain Long-Form>\n", replace: "## <Domain Long-Form>\n<UTLINE>\n")`.
+   **Domain section does NOT exist** — `APPEND(User-Tasks.md, "\n## <Domain Long-Form>\n<UTLINE>\n")`.
 
-   **If the domain section does NOT exist:** append heading + entry at the end of the file using `obsidian_update_note` (append mode):
-   ```
-   mcp__obsidian__obsidian_update_note(
-     targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md",
-     modificationType="wholeFile", wholeFileMode="append",
-     content="\n## <Domain Long-Form>\n- YYYY-MM-DD — <Title> — <one-line context>\n"
-   )
-   ```
-
-5. **Bump frontmatter** on `User-Tasks.md` (NOT Worklog.md):
-   ```
-   mcp__obsidian__obsidian_manage_frontmatter(
-     filePath="DevProjects/{{PROJECT_NAME}}/Claude/TODO/User-Tasks.md",
-     operation="set",
-     key="last_updated",
-     value="YYYY-MM-DD"
-   )
-   ```
-   **No mirror rewrite** — User-Tasks is excluded from `.claude/worklog-titles.md` by design.
+5. **`FM(User-Tasks.md)`** — NOT `Worklog.md`. **No mirror rewrite**: User-Tasks is excluded from the mirror by design.
 
 6. **Confirm:** `Routed to User-Tasks.`
 
@@ -328,157 +243,98 @@ Append a one-line entry to `User-Tasks.md` for items requiring user judgment Cla
 
 | Caller | Confirm-first? | Notes |
 |--------|---------------|-------|
-| User types `/worklog user-add <text>` | No (explicit) | Skip propose-and-confirm. Ask only for missing domain + context. |
-| CLAUDE.md auto-detect (User-Tasks route) + user says `y` | Already done by CLAUDE.md | Execute recipe with inferred title + domain. Honor inline overrides (`y, domain spell` / `y, active not user-tasks`). |
-| `/worklog triage` → `to-user-tasks` disposition | Already done by triage walk | Execute recipe from the Active item's title + Context + domain. Skip Step 1 (de-dup) — the walker has already exposed existing entries. |
+| User types `/worklog user-add <text>` | No (explicit) | Skip propose-and-confirm; ask only for missing domain + context. |
+| CLAUDE.md auto-detect (User-Tasks route) + `y` | Already done by CLAUDE.md | Execute with inferred title + domain. Honor inline overrides (`y, domain spell` / `y, active not user-tasks`). |
+| `/worklog triage` → `to-user-tasks` disposition | Already done by the triage walk | Execute from the Active item's title + Context + domain. Skip Step 1 — the walker already exposed existing entries. |
 
 ## Operation: COMPLETE
 
-Cross-doc move: the `[ ]` block leaves `Worklog.md` entirely and a `[x]` one-liner lands in `Worklog-Archive.md` under its domain. The active doc holds only live work; completions are preserved (opaque) in the archive, readable via `/worklog history`.
+Cross-doc move: the `BLOCK` leaves `Worklog.md` and an `XLINE` lands in `Worklog-Archive.md` under its domain.
 
-1. **Identify the entry.** Match by title or fuzzy search against `[ ]` items in the `## Active` section of `Worklog.md`. If multiple matches, list them and ask the user to pick. (There are no `[x]` items in `Worklog.md` to collide with — they live in the archive.)
+1. **Identify the entry.** Match by title or fuzzy search against `[ ]` items in `## Active` **and** `## Ledger`. Multiple matches → list and ask.
 
-2. **Compose the one-liner:**
-   ```
-   - [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)
-   ```
-   - `<class>` and `<n>` come from the original `[ ]` block (don't re-classify on completion unless the user explicitly asks).
-   - `<ref>` is optional but recommended: commit hash (`abc1234`), PR (`#62`), or session name. Prefer commit hash for shipped code.
-   - Title stays the same wording; just unbold it (the `[x]` line uses plain text, not `**bold**`).
+2. **Compose an `XLINE`.**
+   - `<class>` and `<n>` come from the original `BLOCK` — don't re-classify on completion unless asked.
+   - `<ref>` is optional but recommended: commit hash (`abc1234`), PR (`#62`), or session name. Prefer the commit hash for shipped code.
+   - Title keeps its wording, unbolded.
 
-3. **Append the `[x]` one-liner to `Worklog-Archive.md` FIRST (before deleting from Active — see atomicity note).**
+3. **Append the `XLINE` to `Worklog-Archive.md` FIRST** (before deleting from Active — atomicity note in step 4). Newest completion goes at the **bottom** of its domain section.
 
-   **If `Worklog-Archive.md` doesn't exist yet,** create it: frontmatter (`title: Worklog Archive`, `status: archive`, `last_updated: <today>`), an `# Worklog Archive` heading, the opacity note (`> Completed worklog items ... never mirrored, never loaded at SessionStart, never scanned by sweep/triage/drive. Read only via /worklog history.`), then a `## <Domain>` section holding the line.
+   **Archive doesn't exist:** create it — frontmatter (`title: Worklog Archive`, `status: archive`, `last_updated: <today>`), an `# Worklog Archive` heading, the opacity note (`> Completed worklog items ... never mirrored, never loaded at SessionStart, never scanned by sweep/triage/drive. Read only via /worklog history.`), then a `## <Domain>` section holding the line.
+   **Archive has the item's `## <Domain>` section** — `SR(Worklog-Archive.md, search: "<lastline-of-domain-section>\n", replace: "<lastline-of-domain-section>\n<XLINE>\n")`, i.e. just before the next `## ` heading or at end of file.
+   **Archive lacks that section** — `APPEND(Worklog-Archive.md, ...)` with a new `## <Domain>` section plus the line.
 
-   **If the archive has the item's `## <Domain>` section,** append the line at the bottom of that section (just before the next `## ` heading, or end of file):
-   ```
-   mcp__obsidian__obsidian_search_replace(
-     targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog-Archive.md",
-     replacements=[{
-       search: "<lastline-of-domain-section>\n",
-       replace: "<lastline-of-domain-section>\n- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)\n"
-     }]
-   )
-   ```
+4. **Delete the `BLOCK` from `Worklog.md`** — `SR(Worklog.md, search: "<the verbatim BLOCK>", replace: "")`, matching exactly the sub-bullets present in this block.
 
-   **If the archive lacks the item's `## <Domain>` section,** append a new `## <Domain>` section with the line at end of file (`obsidian_update_note`, append mode).
+   **Line-ending note:** both docs are LF — use `\n`. `obsidian_search_replace` matches literally, so a separator mismatch reports zero replacements without erroring: always verify the reported count. Capture the verbatim block from a targeted read of its domain section, never from memory; on a 0-hit retry with `\r\n` (re-saved CRLF) or set `flexibleWhitespace: true`. See `obsidian_conventions`.
 
-   Newest completion goes at the **bottom** of its domain section (append order = completion order).
+   **Atomicity:** if step 3 failed, do NOT execute this delete — surface the error and stop. A duplicate archive line from a retried step 3 is harmless; the archive is opaque.
 
-4. **Delete the `[ ]` block from `Worklog.md`** (checkbox + its indented sub-bullets) via `obsidian_search_replace`:
-   ```
-   replacements=[{
-     search: "- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD\n  - Context: ...\n  - Where: ...\n  - Source: ...\n  - Plan doc: ...\n",
-     replace: ""
-   }]
-   ```
-   Match all sub-bullets that exist in this specific block — be precise about which lines are present.
+5. **Remove the now-empty domain heading.** If the delete left the `### Domain` section with no remaining `- [ ]` items, remove the heading line too. Other `[ ]` items remain → leave it.
 
-   **Line-ending note:** both `Worklog.md` and `Worklog-Archive.md` are LF — use `\n` separators. `obsidian_search_replace` matches literally by default, so a separator mismatch matches nothing and the call reports zero replacements (no error — always verify the reported count). Capture the verbatim block from a targeted read of its domain section — don't reconstruct from memory or earlier-captured escaped text; if a match 0-hits, retry with `\r\n` (the file may have been re-saved as CRLF) or set `flexibleWhitespace: true` on the replacement (whitespace runs then match any whitespace). See `obsidian_conventions`.
+6. **`FM()` on BOTH `Worklog.md` and `Worklog-Archive.md`.**
 
-   **Atomicity:** if Step 3 (archive write) failed, do NOT execute this delete. Surface the error and stop — better a stuck Active item than a lost completion. (A duplicate archive line from a retried Step 3 is harmless; the archive is opaque.)
+7. **Patch the mirror (incremental).** Remove the completed item's line from `.claude/worklog-titles.md` — and its `## <category>` heading if that was the category's last item — then `Write` back. Do NOT re-read `Worklog.md`. Set `Last synced:` to today.
 
-5. **Remove the now-empty domain heading** (if applicable). If the delete left the item's `### Domain` section with no remaining `- [ ]` items, remove the `### Domain` heading line too — empty headings are noise now that completed history lives in the archive, not Active. If other `[ ]` items remain under it, leave the heading.
+8. **Confirm:** `Marked complete.`
 
-6. **Bump frontmatter `last_updated`** on BOTH `Worklog.md` and `Worklog-Archive.md`.
-
-7. **Patch the mirror (incremental).** Remove the just-completed item's line from `.claude/worklog-titles.md` (already in context) — and its `## <category>` heading too if that was the category's last item — then `Write` it back. Do NOT re-read `Worklog.md`. Update `Last synced:` to today.
-
-8. **Confirm to user:** `Marked complete.`
-
-9. **Pair-emit to tackle history (if applicable).** Read `.claude/worklog-tackle-history.jsonl` (always exists, may be empty). If any `tackle` event line has `title` matching the just-completed item AND no later `completion` event for that same title exists, append a pair-completion event:
+9. **Pair-emit to tackle history (if applicable).** Read `.claude/worklog-tackle-history.jsonl` (always exists, may be empty). If a `tackle` event line has `title` matching the completed item AND no later `completion` event for that title exists, append via `printf '...\n' >> .claude/worklog-tackle-history.jsonl`:
    ```json
    {"event": "completion", "date": "YYYY-MM-DD", "title": "<title verbatim>"}
    ```
-   Use `printf '...\n' >> .claude/worklog-tackle-history.jsonl`. The `title` MUST match the tackle event's title verbatim — agents reading this file pair by exact-string match, not fuzzy match.
-
-   If no matching `tackle` event exists, skip silently. The item was completed without ever being tackled — no anti-thrash signal to clear.
-
-   This step is what makes the DRIVE anti-thrash penalty self-clearing (DRIVE recipe: `agents/worklog_drive_triage.md`). Without it, every driven-then-completed item would forever carry the −2 penalty on re-occurrence.
+   `title` MUST match the tackle event verbatim — pairing is exact-string, not fuzzy. No matching `tackle` → skip silently. This step is what makes the DRIVE anti-thrash penalty self-clearing (`agents/worklog_drive_triage.md`).
 
 ### Edge cases for COMPLETE
 
-- **User wants to un-complete (re-open) an item:** treat as a manual `add` for now — propose a fresh `[ ]` block with the original title and a `Source: re-opened from <YYYY-MM-DD> completion` note. We don't have an `uncomplete` form.
-- **Item was scope 4 with a Plan doc:** the `[x]` line still references its plan doc implicitly via the title; the `## Linked Docs` entry can stay (the doc itself remains a useful artifact).
-- **Item was a `debug` that resolved into a `fix`:** the original class is preserved on the `[x]` line. If a follow-up `fix` item is needed, that's a separate `add`.
+- **Un-complete (re-open):** treat as a manual `add` — a fresh `BLOCK` with the original title and `Source: re-opened from <YYYY-MM-DD> completion`. There is no `uncomplete` form.
+- **Item was scope 4 with a Plan doc:** the `## Linked Docs` entry stays; the doc remains a useful artifact.
+- **A `debug` that resolved into a `fix`:** the original class is preserved on the `XLINE`. A follow-up `fix` item is a separate `add`.
 
 ## Operation: SWEEP
 
-Three passes over the recent session, each confirmation-driven:
+Three passes over the recent session, each confirmation-driven — never auto-apply. They are the deterministic backstop for the immediate-add, immediate-complete, and condition-ripening rules when inline signals were missed. Used by `/session_end` Phase 6.
 
-**Add-sweep:** scan the conversation transcript for trigger phrases I missed (see `worklog_reference` skill for the full catalog — both regular-deferral and Future-Scope triggers). For each candidate, propose `Add to Worklog: <title> — <domain> · <class> · scope <n>?` (or `Add to Worklog Future Scope: ...` if a strong-trigger phrase fired) with context citing the turn where it appeared. On `y` (or `y, <override>`), run the ADD recipe.
+**Add-sweep:** scan the transcript for missed trigger phrases (`worklog_reference` — both regular-deferral and Future-Scope catalogs). Propose `Add to Worklog: <title> — <domain> · <class> · scope <n>?` (or `Add to Worklog Future Scope: ...` on a strong-trigger phrase), citing the turn it appeared in. On `y` (or `y, <override>`), run ADD.
 
-**Completion-sweep:** read the current Active section. Diff its `[ ]` items against `git status` / `git log --since="session start"` and the session's tool calls. For each `[ ]` item that the session plausibly resolved (file mentioned in commit, test added/passing, etc.), propose `Mark complete: <title> (<commit-ref>)?`. On `y`, run the COMPLETE recipe.
+**Completion-sweep:** read Active and diff its `[ ]` items against `git status` / `git log --since="session start"` and the session's tool calls. For each plausibly resolved item propose `Mark complete: <title> (<commit-ref>)?`. On `y`, run COMPLETE.
 
-**Promotion-sweep (Future Scope ripening check):** read the `## Future Scope` section. For each one-liner, scan its title + parenthetical-context against:
-- `git log --since="session start"` (and `--since="2 weeks ago"` if today is the first session of the week — wider window once per week)
-- `git status --short`
-- The session's tool-call topics (file paths, test names, system terms touched)
+**Promotion-sweep (Future Scope ripening):** read `## Future Scope`. Scan each `FSLINE`'s title + parenthetical against `git log --since="session start"` (widen to `--since="2 weeks ago"` on the first session of the week), `git status --short`, and the session's tool-call topics (file paths, test names, system terms). On overlap propose `Promote from Future Scope: <title> — looks ripened (matched: "<short evidence>")?`. On `y`, run PROMOTE. On `n` / `n, still parked`, skip silently.
 
-For each Future Scope item where a substring of its title or context overlaps a recent commit message, file path, or session topic, propose:
-```
-Promote from Future Scope: <title> — looks ripened (matched: "<short evidence>")?
-```
-On `y`, run the PROMOTE recipe (below). On `n` or `n, still parked`, skip silently.
-
-Heuristics for the matcher (keep low false-positive rate; better to miss than to spam):
+Matcher heuristics (better to miss than to spam):
 - Require ≥2 distinct token matches OR one specific identifier match (file path, function name, version number, PR number).
-- Skip generic words ("test", "audit", "review") as match anchors — they're too noisy.
-- Cap proposals at 5 per sweep to prevent overwhelming the user. If more than 5 candidates fire, propose the top 5 by match-strength and surface the rest with `(N more Future Scope candidates — run /worklog show all to review)`.
-
-All three passes are confirmation-driven — never auto-apply. They are the deterministic backstop for the immediate-add, immediate-complete, and condition-ripening rules when signals were missed inline. Used by `/session_end` Phase 6.
+- Skip generic words ("test", "audit", "review") as match anchors.
+- Cap at 5 proposals per sweep; beyond that, propose the top 5 by match-strength and surface `(N more Future Scope candidates — run /worklog show all to review)`.
 
 ## Operation: TRIAGE
 
-Full recipe extracted to [`agents/worklog_drive_triage.md`](agents/worklog_drive_triage.md) — Read that file on any `triage` invocation and execute from its steps (disposition scoring table, confirmation walk, caps, edge cases). Do not run triage from memory of this stub.
+Full recipe: [`agents/worklog_drive_triage.md`](agents/worklog_drive_triage.md) — Read that file on any `triage` invocation and execute from its steps (disposition scoring table, confirmation walk, caps, edge cases). Do not run triage from memory of this stub.
 
 ## Operation: PROMOTE
 
-Move a `When: future` item from `## Future Scope` back to `## Active`. Argument is `$ARGUMENTS` (title or fuzzy-search string).
+Move a `When: future` item from `## Future Scope` back to `## Active`. `$ARGUMENTS` is the title or fuzzy-search string.
 
 ### Step 1 — Identify the Future Scope item
 
-Read `## Future Scope` from Obsidian. Match argument against the one-liner titles. If multiple matches, list them and ask user to pick. If no matches, suggest `/worklog show all` to review what's parked.
+Read `## Future Scope` from Obsidian and match the argument against the `FSLINE` titles. Multiple matches → list and ask. No matches → suggest `/worklog show all`.
 
-### Step 2 — Reconstruct an Active `[ ]` block
+### Step 2 — Reconstruct a `BLOCK` from the `FSLINE`
 
-The one-liner format is:
-```
-> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)
-```
-
-Reconstruct as a full `[ ]` block:
-```
-- [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD (promoted from Future Scope YYYY-MM-DD-today)
-  - Context: <one-line context from the parenthetical>
-  - Source: promoted from Future Scope on YYYY-MM-DD
-```
-
-Preserve original `added` date — promotion is a state change, not a new add. Append the promotion date in the title parenthetical so the history is visible.
+Title line gains ` (promoted from Future Scope YYYY-MM-DD-today)`; `Context:` takes the parenthetical's text; `Source: promoted from Future Scope on YYYY-MM-DD`; no other sub-bullets. Preserve the original `added` date — promotion is a state change, not a new add.
 
 ### Step 3 — Apply the move
 
-Two-step `obsidian_search_replace`:
-
-**Step A — delete the one-liner from `## Future Scope`:**
-```
-replacements=[{
-  search: "> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <context>)\n",
-  replace: ""
-}]
-```
-
-**Step B — insert the new `[ ]` block at the top of the matching `## Active > ### Domain` section.** Same anchor pattern as ADD step 6 (insert immediately after `### <Domain Long-Form>\n`).
+**Step A** — `SR(Worklog.md, search: "<the verbatim FSLINE>\n", replace: "")`.
+**Step B** — insert the reconstructed `BLOCK` at the top of the matching `## Active > ### Domain`, same anchor pattern as ADD step 6 (immediately after `### <Domain Long-Form>\n`).
 
 ### Step 4 — Cleanup
 
-- If the Future Scope `### <Domain>` sub-section is now empty (no `> - ` lines), remove the sub-heading.
-- If `## Future Scope` is now entirely empty (no `> - ` lines anywhere), remove the whole section including its `> [!example]-` callout wrapper.
-- Update the callout's `(N items)` count in the header.
+- Future Scope `### <Domain>` now empty (no `> - ` lines) → remove the sub-heading.
+- `## Future Scope` entirely empty → remove the whole section including its `> [!example]-` callout wrapper.
+- Update the callout's `(N items)` count.
 
-### Step 5 — Bump frontmatter + rewrite mirror
+### Step 5 — Bump frontmatter + patch mirror
 
-Same as ADD steps 8–9 — bump frontmatter, then **incrementally add** the promoted item's reconstructed line to the mirror (it's now ready, no longer `When: future`). Do NOT re-read the source.
+Per ADD steps 8–9: `FM(Worklog.md)`, then **incrementally add** the promoted item's reconstructed line to the mirror (it is now ready). Do NOT re-read the source.
 
 ### Step 6 — Confirm
 
@@ -488,13 +344,13 @@ Promoted: <Title> — now in Active under <Domain>.
 
 ### Edge cases for PROMOTE
 
-- **Promotion immediately followed by completion** (the item ripened *and* shipped in the same session): run PROMOTE then COMPLETE in sequence. Don't try to skip the intermediate state — it makes the history readable.
-- **User rejects a sweep-proposed promotion:** mark nothing. Do NOT add a `When: not yet` annotation — that's noise. The next sweep will re-evaluate.
-- **Title collision with an existing Active item:** ask user. Possible the same work was logged twice (once as Active, once as Future Scope). Resolve manually.
+- **Promotion then completion in one session:** run PROMOTE then COMPLETE in sequence; the intermediate state keeps the history readable.
+- **User rejects a sweep-proposed promotion:** mark nothing. Do NOT add a `When: not yet` annotation — the next sweep re-evaluates.
+- **Title collision with an existing Active item:** ask the user; the work may have been logged twice.
 
 ## Operation: DRIVE
 
-Full recipe extracted to [`agents/worklog_drive_triage.md`](agents/worklog_drive_triage.md) — Read that file on any `drive` invocation and execute from its steps (mode dispatch, scoring engine, execute phase + re-scope valve, tackle-history JSONL schema, edge cases). Do not drive from memory of this stub.
+Full recipe: [`agents/worklog_drive_triage.md`](agents/worklog_drive_triage.md) — Read that file on any `drive` invocation and execute from its steps (mode dispatch, scoring engine, execute phase + re-scope valve, tackle-history JSONL schema, edge cases). Do not drive from memory of this stub.
 
 Execution is the default: the invocation is the execution directive, and Mode D (choose-among) is the one selection gate. `--plan-only` stops at the drafted plan body.
 
@@ -502,13 +358,11 @@ Execution is the default: the invocation is the execution directive, and Mode D 
 
 ## Operation: UNBLOCK
 
-Promotes one or more `after <condition>` items to ready by stripping their `When:` sub-bullet. Argument is `$ARGUMENTS` (the condition text to match against).
+Promotes one or more `after <condition>` items to ready by stripping their `When:` sub-bullet. `$ARGUMENTS` is the condition text to match.
 
 ### Step 1 — Find matching items
 
-Read the Active section (mirror already in context for a quick scan; full Obsidian read if needed). Find all `[ ]` items where the `When: after <condition>` text fuzzy-matches the argument. Case-insensitive substring match is sufficient.
-
-Show the matches before writing:
+Read `## Ledger` — every `When: after` item lives there, so an Active-only scan finds nothing. Find all `[ ]` items whose `When: after <condition>` fuzzy-matches the argument — case-insensitive substring is sufficient. Show matches before writing:
 ```
 Unblocking items matching "<condition>":
   1. <title> (<domain>) — When: after <condition>
@@ -516,30 +370,15 @@ Unblocking items matching "<condition>":
 
 Proceed? (y/n)
 ```
-
-If no matches found: `No items found with When: after <condition>.` (check for typos, suggest alternatives if any `after` items exist).
+No matches: `No items found with When: after <condition>.` — check for typos, suggest alternatives if any `after` items exist.
 
 ### Step 2 — Strip the When: line for each matched item
 
-For each confirmed item, remove the `When: ...` sub-bullet via `obsidian_search_replace`:
-```
-mcp__obsidian__obsidian_search_replace(
-  targetType="filePath", targetIdentifier="DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md",
-  replacements=[{
-    search: "  - When: after <condition>\n",
-    replace: "",
-    replaceAll: false
-  }]
-)
-```
-
-Use the exact `When:` line text from the item, not the argument verbatim (they may differ slightly after fuzzy match).
+`SR(Worklog.md, search: "  - When: after <condition>\n", replace: "")`. Use the exact `When:` line text from the item, not the argument verbatim — fuzzy match may have differed.
 
 ### Step 3 — Bump frontmatter + patch mirror
 
-After all strips are applied:
-- Bump `last_updated` frontmatter.
-- **Incrementally patch** `.claude/worklog-titles.md` (already in context) — strip the ` [after: <condition>]` suffix from the matched lines. Do NOT re-read the source.
+`FM(Worklog.md)`, then **incrementally** strip the ` [after: <condition>]` suffix from the matched lines in `.claude/worklog-titles.md`. Do NOT re-read the source.
 
 ### Step 4 — Confirm
 
@@ -549,44 +388,6 @@ Unblocked <n> item(s). They are now ready and will appear in /worklog drive batc
 
 ### Edge cases for UNBLOCK
 
-- **`future` items:** `unblock` does not match `When: future` — those have no condition to match. To unblock a `future` item, run `/worklog add` to re-open it without a `When:` line, or edit Obsidian directly and re-sync the mirror.
-- **Multiple conditions partially matching:** show all matches and let user confirm each individually. Don't bulk-strip on a partial fuzzy match.
-- **Item already has no `When:`:** skip silently (already ready).
-
----
-
-## Examples
-
-### Add cycle (explicit, scope-2)
-
-User: `/worklog add audit _continuousTracking confidence-pin call sites`
-
-1. De-dup: no match in mirror under AI/NPCs.
-2. Compose: title `Audit _continuousTracking confidence-pin call sites`, class `refactor` (audit-and-cleanup language), scope `2` (multi-file but mechanical), domain `AI / NPCs` (inferred from `_continuousTracking` → perception). Ask user to confirm class/scope/domain.
-3. User confirms (`y` or `y, scope 3` to override). Ask for one-line Context.
-4. User provides: "follow-up from CorneredAction perception gotcha".
-5. Run ADD recipe steps 5–8. (Scope 2, no Plan doc needed.)
-6. Confirm: `Added.`
-
-### Add cycle (auto-detect, scope-4)
-
-I just said in conversation: "we should brainstorm a unified status-effect blackboard schema later — too big for this session."
-
-1. Auto-detect fires: `Add to Worklog: Brainstorm unified status-effect blackboard schema — spell · design · scope 4?`
-2. User: `y`.
-3. Recipe: scope == 4, so prompt user for Plan doc title. User provides "Status BB Schema Design".
-4. Verify the doc exists at `TODO/Status BB Schema Design.md` — if not, ask user to create it first (or downgrade to scope 3).
-5. Append `[ ]` block to `### Spell Architecture` with `Plan doc: [[Status BB Schema Design]]`.
-6. Append `## Linked Docs` entry under `### Spell Architecture`.
-7. Bump frontmatter, rewrite mirror, confirm.
-
-### Complete cycle (archive move)
-
-Test passes for `Sweep ValidateRequiredExports() into the 4 non-runner CombatEffectFactory subclasses`. Commit `f3a91b2` lands.
-
-1. Identify: matches one `[ ]` item under `### Spell Architecture`, class `refactor`, scope `2`.
-2. Compose: `- [x] \`refactor\` · scope \`2\` · Sweep ValidateRequiredExports() into the 4 non-runner CombatEffectFactory subclasses (completed 2026-04-29, f3a91b2)`
-3. Step 3 (archive FIRST): append the `[x]` line at the bottom of `## Spell Architecture` in `Worklog-Archive.md` (create the section if absent).
-4. Step 4: archive write succeeded, so delete the old `[ ]` block from `Worklog.md` (4 lines: checkbox + Context + Where + Source).
-5. Step 5: `### Spell Architecture` still has other `[ ]` items, so the heading stays. (Had it been the last item, the heading would be removed.)
-6. Bump frontmatter on both docs, patch mirror (remove the now-completed line), confirm `Marked complete.`
+- **`future` items:** `unblock` does not match `When: future` — no condition to match. Re-open one via `/worklog add` without a `When:` line, or edit Obsidian directly and re-sync the mirror.
+- **Multiple conditions partially matching:** show all matches and confirm each individually; never bulk-strip on a partial fuzzy match.
+- **Item already has no `When:`:** skip silently.

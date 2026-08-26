@@ -548,7 +548,7 @@ def _classify_websearch(tool_input: dict, last_prompt: str) -> Classification:
         rule="websearch-last-web-tier",
         reason=(
             "WebSearch is the last web tier — the godot-docs cache, fetch_source.sh, "
-            "single-URL WebFetch and context7 own first-party answers (rules/source_trust.md)"
+            "single-URL WebFetch and context7 own first-party answers (reference/source_trust.md)"
         ),
         tool="WebSearch",
     )

@@ -52,7 +52,7 @@ Initial Parts populated from architecture_brainstorm Step 5 output. Cross-roadma
 
 If 2+ Parts have cross-roadmap deps, ALSO prompt the user to author the `## Cross-roadmap dependencies` section (common.md §6.12) in this same batch — it's optional schema but high-value for sub-roadmap readers. Default: include the section; user can decline.
 
-**Forbidden alternative paths.** Never create child roadmap.md via `write_doc` / `write_code` / direct `Write`. Single-executor pattern: every roadmap.md at every depth routes through this command (enforced by [`architecture_brainstorm/SKILL.md`](../skills/architecture_brainstorm/SKILL.md) Step 6 *Roadmap.md is NOT saved here* guardrail + symmetric [`idea_brainstorm/SKILL.md`](../skills/idea_brainstorm/SKILL.md) Step 5 guardrail). Step 6 of `architecture_brainstorm` saves the design doc only; this command creates the sub-roadmap.
+**Forbidden alternative paths.** Never create child roadmap.md via `write_doc` / direct `Write`. Single-executor pattern: every roadmap.md at every depth routes through this command (enforced by [`architecture_brainstorm/SKILL.md`](../skills/architecture_brainstorm/SKILL.md) Step 6 *Roadmap.md is NOT saved here* guardrail + symmetric [`idea_brainstorm/SKILL.md`](../skills/idea_brainstorm/SKILL.md) Step 5 guardrail). Step 6 of `architecture_brainstorm` saves the design doc only; this command creates the sub-roadmap.
 
 ### Step 2 — Resolve proposed edits from inputs
 

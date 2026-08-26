@@ -1,5 +1,6 @@
 ---
 description: Measure this session's Workflow agents — cost per effort pin — and archive falsification outcomes.
+disable-model-invocation: true
 ---
 
 Empirical counterpart to `/self_evaluate`: that captures *what the agent thinks* went well, this measures *what each effort pin cost*. Feeds `/eval_dashboard` → Effort Calibration.
@@ -45,7 +46,7 @@ deferring all rating to session end loses exactly the largest runs to `unrated`,
 Calibration cannot consume.
 
 **The rule:** when you consume a dispatch's result — accept it, send it back, or throw it away —
-write its verdict immediately to `.claude/scratch/orchestration_verdicts.json`:
+write its verdict immediately to `.claude/orchestration_verdicts.json`:
 
 ```json
 { "review:config-dup": "right-sized", "author:slice-3": ["undershoot", "medium"] }
@@ -130,7 +131,7 @@ Outcomes merge before the table prints, so the roll-up you read is what gets wri
 
 Unlisted labels archive as `unrated`.
 
-**4. Report.** Print the per-effort roll-up and name any `defects`/`rework`/`discarded` agent with its cost. Overshoot is not a rated outcome — it is derived (see *Over-pin candidates*). Do **not** propose CLAUDE.md effort-table edits from one session — n is 3–5 for a typical session, and per-session conclusions are noise. Tuning happens from the aggregate.
+**4. Report.** Print the per-effort roll-up and name any `defects`/`rework`/`discarded` agent with its cost. Overshoot is not a rated outcome — it is derived (see *Over-pin candidates*). Do **not** propose edits to the ladder's `effort` column (`reference/model_ladder_evidence.md`) from one session — n is 3–5 for a typical session, and per-session conclusions are noise. Tuning happens from the aggregate.
 
 ## Cross-session roll-up
 

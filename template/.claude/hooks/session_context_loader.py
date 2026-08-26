@@ -282,20 +282,20 @@ def resolve_bash() -> str | None:
     return None
 
 
-def verify_sidecar(root: Path) -> str:
-    """Report whether the DeepSeek CLI sidecar can dispatch on this workstation.
+def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
+    """Report whether a sidecar launcher can dispatch on this workstation.
 
-    Delegates to `deepseek_sidecar.sh --check` rather than reimplementing the
+    Delegates to `<launcher>.sh --check` rather than reimplementing the
     preconditions, so availability has ONE definition and the hook cannot drift
     green while real dispatch fails. Invoking through bash is deliberate: bash is
     itself a precondition, so a missing shell is reported, not masked.
 
-    Exists so budget-pressure routing (CLAUDE.md §Model Delegation) can pick a
+    Exists so budget-pressure routing (orchestration §5b) can pick a
     provider from a fact already in context, never from a mid-session investigation.
     """
-    script = root / ".claude" / "scripts" / "deepseek_sidecar.sh"
+    script = root / ".claude" / "scripts" / script_name
     if not script.exists():
-        return "UNAVAILABLE (deepseek_sidecar.sh not present)"
+        return f"UNAVAILABLE ({script_name} not present)"
     bash = resolve_bash()
     if not bash:
         return "UNAVAILABLE (no Git Bash found; sidecar needs a POSIX shell)"
@@ -689,8 +689,10 @@ def main():
     if not cloud:
         setup_results["lsp_plugin"] = verify_lsp_plugin()
 
-    # --- DeepSeek sidecar availability ---
-    setup_results["sidecar"] = verify_sidecar(root)
+    # --- Sidecar availability, every transport (orchestration §5b routing inputs) ---
+    for _name in ("deepseek_sidecar.sh", "codex_proxy_sidecar.sh", "opencode_sidecar.sh"):
+        _key = "sidecar-" + _name.split("_")[0]
+        setup_results[_key] = verify_sidecar(root, _name)
 
     # --- Git context ---
     branch = get_git_branch()
@@ -848,49 +850,18 @@ def main():
         output_lines.append("")
         output_lines.append(docs_cache_issue)
 
-    # Queued-gate result surfacing (godot-process-identity-and-gate-queue.md Part 2).
-    # A gate queued behind an open editor can finish between sessions; without this
-    # it is silently lost. Fail-open: any error here must not break session start.
+    # Queued-gate result surfacing — a gate queued behind an open editor can finish
+    # between sessions. Seen-state and formatting live in gate_queue_surface.py, shared
+    # with activity_registry.py (the mid-session reader), so a result is announced once
+    # per session by whichever hook observes it first. Fail-open.
     try:
-        import time as _time
-        queue_dir = root / ".claude" / "scratch" / "gate_queue"
-        marker_path = queue_dir / ".last_surfaced"
-        if queue_dir.is_dir():
-            marker_mtime = marker_path.stat().st_mtime if marker_path.exists() else 0.0
-            # The gate now writes EVERY completed run (inline and queued) to the ledger; only
-            # the queued-finish signal is lost across sessions, so inline records are filtered
-            # out — they must not relabel a session's own runs as queued, crowd out the real
-            # queued signal via the marker, or advance .last_surfaced ahead of it.
-            new_results = []
-            for p in sorted(
-                queue_dir.glob("*.result.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            ):
-                if p.stat().st_mtime <= marker_mtime:
-                    continue
-                try:
-                    result = json.loads(p.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                if result.get("source") == "inline":
-                    continue
-                new_results.append((p, result))
-                if len(new_results) >= 3:
-                    break
-            if new_results:
-                output_lines.append("")
-                for result_path, result in new_results:
-                    rid = result.get("id", result_path.stem.removesuffix(".result"))
-                    status = result.get("status", "unknown")
-                    exit_code = result.get("exitCode", "?")
-                    tree_delta = result.get("treeDelta", "?")
-                    output_lines.append(
-                        f'Queued gate result: {rid} {status} exit={exit_code} treeDelta={tree_delta} '
-                        f'— read .claude/scratch/gate_queue/{result_path.name}; treeDelta=true means '
-                        'the tree changed since the run and it cannot back a "Verified" claim.'
-                    )
-                marker_path.write_text(str(_time.time()), encoding="utf-8")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from gate_queue_surface import surface_lines
+
+        queue_lines = surface_lines(root, input_data.get("session_id", "unknown"))
+        if queue_lines:
+            output_lines.append("")
+            output_lines.extend(queue_lines)
     except Exception:
         pass
 

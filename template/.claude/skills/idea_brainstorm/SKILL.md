@@ -6,15 +6,12 @@ description: >-
   pressure. Produces a curated idea-bank doc with per-cluster honed survivors; hand
   off to /architecture_brainstorm once the pool stabilizes. SKIP for mature domains
   where canonical patterns already populate the space, tactical/mechanical topics, or
-  when the user arrives with a populated idea space. Pass --fan_out for lens-diverse
-  multi-agent divergence + independent critique on a broad cluster.
+  when the user arrives with a populated idea space.
 ---
 
 # Idea Brainstorm
 
-> **Scope:** Sits **upstream of `architecture_brainstorm`**. Idea brainstorm answers *"what could exist?"*; architecture brainstorm answers *"how should we build it?"*; plan production answers *"how do we ship it?"*. Three sequential phases of design work; one skill per phase.
->
-> **Not to be confused with:** [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) — that's where Socratic narrowing, 2–3 approaches with trade-offs, and Parts-authoring (with the 5-criterion readiness gate) live. Idea brainstorm produces the candidate POOL that architecture brainstorm narrows from.
+Answers *"what could exist?"*, producing the candidate POOL that [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) (*"how should we build it?"*) narrows from. Socratic narrowing, trade-off comparison and Parts-authoring live there, not here. Shared surface: [`_brainstorm_shared/common.md`](../_brainstorm_shared/common.md).
 
 ## The Hard Gate
 
@@ -23,207 +20,161 @@ DO NOT INVOKE ARCHITECTURE BRAINSTORMING, IMPLEMENTATION SKILLS, OR
 WRITE ANY CODE FROM WITHIN IDEA BRAINSTORM.
 ```
 
-Idea brainstorm produces an idea-bank doc and STOPS. Hand off to the next phase. Skipping ahead loses the divergent-thinking value this skill exists to provide.
+Produce the idea-bank doc and STOP.
 
-**User-stated priors are NOT gate violations.** Recording user-stated commitments as `[user-canon-aligned]` Findings is allowed; the gate forbids the AGENT inventing new commitments (file paths, class names, lifecycle, BB keys). Litmus: *"Did the user say this, or am I deciding it?"* Said → per-cluster Findings. Agent-invented → defer to `/architecture_brainstorm` Step 4.
-
----
+**User-stated priors are NOT gate violations.** Record them as `[user-canon-aligned]` Findings; the gate forbids the AGENT inventing commitments (file paths, class names, lifecycle, BB keys). Litmus: *"Did the user say this, or am I deciding it?"* Said → per-cluster Findings. Agent-invented → defer to `/architecture_brainstorm` Step 4.
 
 ## 1. When to Use
 
-**Strong trigger phrases:**
-- "brainstorm X ideas"
-- "what fun / creative / interesting X are there"
-- "help me think of more X options"
-- "drip-feed ideas for X"
-- "more ideas for X" / "expand the X pool"
+**Trigger phrases:** "brainstorm X ideas" · "what fun / creative / interesting X are there" · "help me think of more X options" · "drip-feed ideas for X" · "more ideas for X" / "expand the X pool".
 
-**Enumeration-pressure phrasing is the STRONGEST trigger** (not a bypass license). When the request is wrapped in cues like *"every idea you can think of"*, *"don't filter"*, *"unfiltered"*, *"just give me ideas"*, *"throw everything at the wall"* — fire this skill, populate the idea bank via the divergence pipeline, save to the bank doc with hidden-pool reference. The chat surface stays at 3–5 honed per cluster; the doc-saved idea pool is broader (10–15); the full hidden pool exists in the agent's working context. **Inline chat-enumeration of 50+ items is the canonical Skill-bypass failure mode this clause exists to prevent.**
+**Enumeration-pressure phrasing is the STRONGEST trigger, not a bypass license.** On cues like *"every idea you can think of"*, *"don't filter"*, *"unfiltered"*, *"just give me ideas"*, *"throw everything at the wall"* — fire this skill, populate the bank via the divergence pipeline, save with a hidden-pool reference. Chat stays at 3–5 honed per cluster; the doc-saved pool is broader (10–15); the full hidden pool stays in working context. Inline chat-enumeration of 50+ items is the Skill-bypass failure this prevents.
 
-**Fire when ALL of these hold:**
+**Fire when ALL hold:**
 
-- [ ] Topic is creative / spatial (open-ended) rather than mechanical / tactical (pricing, naming, sizing of an already-decided thing).
-- [ ] No existing idea-bank or design doc covers the topic (verified via common.md §1 existing-doc check, run in Step 1).
-- [ ] Topic is not in the SKIP categories below.
-
----
+- [ ] Topic is creative / spatial (open-ended), not mechanical / tactical (pricing, naming, sizing an already-decided thing).
+- [ ] No existing idea-bank or design doc covers it (common.md §1 check, run in Step 1).
+- [ ] Not in §2 below.
 
 ## 2. When to Skip
 
 | Skip case | Why |
 |---|---|
-| **Mature domain** — agent can list 5+ named design approaches from memory without searching | Design space is already populated by canon. Go straight to `/architecture_brainstorm`. |
-| **Tactical / mechanical topic** — *"what's the right pricing for X?"* | Divergence adds noise to convergent decisions. Go straight to `/architecture_brainstorm` (or plan production if architecture is settled). |
-| **User explicitly says** *"skip the brainstorm, go straight to design"* | They've populated the space themselves. |
-| **Existing `ideation-complete` doc covers the topic** | §1 existing-doc check surfaces this; hand off to `/architecture_brainstorm`. |
-| **Worklog scope 1 or 2** | Trivial / mechanical work; brainstorming overhead exceeds benefit. |
-
----
+| **Mature domain** — agent lists 5+ named design approaches from memory, unsearched | Canon already populates the space → `/architecture_brainstorm`. |
+| **Tactical / mechanical topic** — *"what's the right pricing for X?"* | Divergence adds noise to convergent decisions → `/architecture_brainstorm`, or plan production if architecture is settled. |
+| **User says** *"skip the brainstorm, go straight to design"* | They've populated the space themselves. |
+| **Existing `ideation-complete` doc covers the topic** | §1 check surfaces it → `/architecture_brainstorm`. |
+| **Worklog scope 1 or 2** | Brainstorming overhead exceeds benefit. |
 
 ## 3. Workflow Position
 
-```
-/idea_brainstorm           /architecture_brainstorm        Implementation
-─────────────────          ─────────────────────────        ──────────────
-"What could exist?"        "How should we build it?"        (plan file,
-                                                            write code,
-                                                            tests, commit)
+`/idea_brainstorm` (scope-framing Socratic; per-cluster diverge→filter→hone→cluster; `ideas.md` at `ideation-complete`) → `/architecture_brainstorm` (architecture-narrowing Socratic; 2–3 approaches; design doc at `brainstorming-complete`) → implementation. Both brainstorm phases close by invoking `/update_roadmap`. Full flow-topology vocabulary (forward fan-out, cluster merge, ideation skip, reverse signal, zero-impl outcome, workshop terminate): [`common.md §7`](../_brainstorm_shared/common.md).
 
-• Scope-framing Socratic   • Architecture-narrowing
-  (constraints, not          Socratic (trade-offs)
-  architecture)            • 2–3 approaches with
-• Per-cluster diverge        comparison
-  → filter → hone          • Parts authored on
-  → cluster → present        roadmap.md
-• Idea-bank doc save       • Design doc save
-  Status: ideation-          Status: brainstorming-
-  complete                   complete
-• /update_roadmap          • /update_roadmap
-  applies Per-Cluster        applies authored
-  Routing → Parts            Parts → roadmap.md
-```
-
-**Cardinality and flow topology** — full vocabulary (forward fan-out, cluster merge, ideation skip, reverse signal, zero-impl outcome, workshop terminate) lives at [`_brainstorm_shared/common.md §7`](../_brainstorm_shared/common.md). The above diagram is the slim "you are here" view; common §7 is the canonical reference.
-
-Each phase has its own SKILL.md. Shared procedure surface lives in [`_brainstorm_shared/common.md`](../_brainstorm_shared/common.md).
-
----
-
-## 4. The Procedure (6 Steps)
+## 4. Procedure (6 Steps)
 
 ### Step 1: Existing-doc check
 
-**[Shared]** See [`_brainstorm_shared/common.md` §1](../_brainstorm_shared/common.md) — the required asks, dispatched as [`/explore`](../../commands/explore.md) lenses. Ideation may drop `exp-prior-art` (ideas precede architecture) but never `exp-memory`.
+**[Shared]** [`common.md §1`](../_brainstorm_shared/common.md) — required asks, dispatched as [`/explore`](../../commands/explore.md) lenses. Ideation may drop `exp-prior-art` (ideas precede architecture) but never `exp-memory`.
 
-**Two doc-hit cases — handle distinctly:**
-- **Same topic** (digest doc IS for this brainstorm's topic, status-tagged): resume per common §1.1 status table. If `ideation-active` → resume mid-procedure; if `ideation-complete` → hand off to `/architecture_brainstorm`.
-- **Adjacent design space** (digest doc covers a neighboring system whose prior commitments touch this topic but were not authored against it — e.g., a meta-economy brainstorm hitting a pre-existing event-system doc): proceed with this brainstorm. The doc's claims become **priors to validate**, not canon to respect. Surface competing ideas on merit; flag conflicts for `/architecture_brainstorm` to resolve. See §6 *Anti-Patterns* (this skill) — *deference-filter* row.
+**Two doc-hit cases:**
+- **Same topic** (digest doc IS this topic, status-tagged): resume per common §1.1. `ideation-active` → resume mid-procedure; `ideation-complete` → hand off to `/architecture_brainstorm`.
+- **Adjacent design space** (doc covers a neighboring system whose commitments touch this topic but were not authored against it — a meta-economy brainstorm hitting a pre-existing event-system doc): proceed. Its claims are **priors to validate**, not canon. Surface competing ideas on merit; flag conflicts for `/architecture_brainstorm` (§6 *deference-filter*).
 
-### Step 2: Scope-framing Socratic (lighter, often optional)
+### Step 2: Scope-framing Socratic (often optional)
 
-**Rule:** Optional. Use ONLY for **scope-framing** — establishing constraints the idea pool should respect (PvE vs multi, design pillar, target audience, tone, target system the ideas should slot into). Do NOT use for **architecture-narrowing** (*"single currency or dual?"*) — that belongs in `/architecture_brainstorm` Step 2 AFTER the idea pool exists.
+Optional, and ONLY for **scope-framing** — constraints the pool should respect (PvE vs multi, design pillar, target audience, tone, target system). Never for **architecture-narrowing** (*"single currency or dual?"*) — that is `/architecture_brainstorm` Step 2, AFTER the pool exists.
 
-- Multiple-choice preferred over open-ended. Interview mechanic — **[Shared]** [`_brainstorm_shared/common.md §9`](../_brainstorm_shared/common.md): frontier rounds for a batch of framing forks, one question per turn for a single deep one.
-- Stop asking when the FRAME is clear enough to populate ideas in-bounds.
-- Often this step is empty — if the user's prompt already establishes the frame, skip.
+- Multiple-choice over open-ended. Interview mechanic — **[Shared]** [`common.md §9`](../_brainstorm_shared/common.md): frontier rounds for a batch of framing forks, one question per turn for a single deep one.
+- Stop once the FRAME is clear enough to populate ideas in-bounds; skip the step entirely if the user's prompt already establishes it.
 
-**Litmus to distinguish scope-framing from architecture-narrowing:** *"Does answering this question rule out specific candidate IDEAS, or just specific architectural COMBINATIONS of them?"* If ruling out ideas → scope-framing, OK to ask now. If ruling out combinations → architecture-narrowing, defer to next phase.
+**Litmus:** *"Does answering this rule out specific candidate IDEAS, or just architectural COMBINATIONS of them?"* Ideas → scope-framing, ask now. Combinations → architecture-narrowing, defer.
 
-**Multi-topic scope decision:** If the topic naturally splits into independent subsystems (e.g., a roguelike meta-game = currency + per-run events + almanack), default to **one combined brainstorm with multiple top-level clusters** rather than separate `/idea_brainstorm` invocations per subsystem. The cost of "one brainstorm, three clusters" is a longer single conversation; the cost of "three separate brainstorms" is duplicated Step 1 existing-doc checks, re-context-loading, and lost cross-pollination (Step 4 hybrids only surface when clusters are visible to the same pass). Switch to separate invocations ONLY when (a) the user explicitly asks, OR (b) the subsystems are independent enough that cross-pollination would be misleading (rare).
+**Multi-topic scope.** A topic splitting into independent subsystems (roguelike meta-game = currency + per-run events + almanack) defaults to **one brainstorm with multiple top-level clusters**; separate invocations duplicate the Step 1 check, re-load context, and lose cross-pollination (Step 4 hybrids surface only when clusters are visible to one pass). Split ONLY when (a) the user asks, or (b) cross-pollination would mislead.
 
-### Step 3: Idea Generation & Curation (per cluster)
+### Step 3: Generation & Curation (per cluster)
 
-**Rule:** This is the meat of the skill. Run the pipeline once per natural cluster. Clusters typically map to user-surfaced themes; new clusters require explicit *"I'm proposing a category you didn't mention"* framing.
+Run the pipeline once per natural cluster. Clusters map to user-surfaced themes; a new one requires explicit *"I'm proposing a category you didn't mention"* framing.
 
-**Optional `--fan_out` augmentation.** When invoked as `/idea_brainstorm <topic> --fan_out` (or when a cluster is broad / enumeration-pressured), the **Diverge** phase below is dispatched to [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md): N **lens-diverse** generator agents fan out, an independent critique pass (dedup / fit / coverage-gap) annotates the merged pool, and the raw pool + annotations return here for curation. It is **opt-in** (no flag → single-agent Diverge, default flow unchanged) and replaces **only** the Diverge sub-phase — Filter → Hone → Cluster & rank → present, the per-cluster user-react loop, and the Hard Gate all run unchanged in this loop. **Curation never leaves Claude** (the worker-delegation rule): the fan-out generates and critiques; it never decides what survives. The per-step hook is marked **"Fan-out hook (`--fan_out` only)"** in the Diverge phase.
+**Optional `--fan_out`.** On `/idea_brainstorm <topic> --fan_out` (or a broad / enumeration-pressured cluster), **Diverge** dispatches to [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md): N lens-diverse generators, an independent critique pass (dedup / fit / coverage-gap), then the raw pool + annotations return here. Opt-in; no flag means single-agent Diverge. It replaces **only** Diverge — Filter → Hone → Cluster & rank → present, the per-cluster user-react loop and the Hard Gate run unchanged. **Curation never leaves Claude:** the fan-out generates and critiques, never decides what survives.
 
-**Hidden phases (agent context only):**
+**Hidden (agent context only):**
 
-1. **Diverge** — generate 15–30 raw candidates per cluster, drawing on:
-   - User-surfaced seeds (verbatim, expanded — never silently digested or condensed; see `feedback_no_unilateral_condensation.md`)
-   - Domain-canon precedents (for game design: Hades, Slay the Spire, Dead Cells, Hollow Knight, Inscryption, etc.) — cite by name when used
-   - Lateral / surprising candidates from adjacent genres or domains
-   - Cross-pollination from other clusters already processed
+1. **Diverge** — generate 15–30 raw candidates per cluster from:
+   - User-surfaced seeds (verbatim, expanded — never silently digested or condensed; `feedback_no_unilateral_condensation.md`)
+   - Domain-canon precedents (game design: Hades, Slay the Spire, Dead Cells, Hollow Knight, Inscryption) — cite by name when used
+   - Lateral candidates from adjacent genres or domains
+   - Cross-pollination from clusters already processed
 
-   **Fan-out hook (`--fan_out` only).** Rather than running the single-agent Diverge alone, dispatch [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md) for THIS cluster: assemble the cluster CONTEXT (scope / boundary / raw seeds / already-kept survivors — **pushed**, not searched, per `gotcha_workflow_fanout_search_false_absence`), pick ~4 orthogonal lenses via the command's selection rubric, and dispatch. Merge the returned raw pool **plus** the coverage-gap critic's `proposedAdditions` **plus any context-privileged candidates you can add from the live conversation** (user tone / unstated intent / chat-only seeds the generators never received — a top-up, NOT a parallel re-diverge), then continue to Filter (phase 2) using the `fit`/`dedup` critic notes as input (not gospel — Claude makes every keep call). Confirm liveness first — every generator returned `count > 0`; a silent-empty lens is not a clean lens (`arch_rule_autonomous_loop_positive_liveness`).
+   **Fan-out hook (`--fan_out` only).** Dispatch [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md) for THIS cluster: assemble the cluster CONTEXT (scope / boundary / raw seeds / kept survivors — **pushed**, not searched, per `gotcha_workflow_fanout_search_false_absence`), pick ~4 orthogonal lenses via the command's rubric, dispatch. Check liveness first — every generator returned `count > 0`; a silent-empty lens is not a clean lens (`arch_rule_autonomous_loop_positive_liveness`). Merge the raw pool + the coverage-gap critic's `proposedAdditions` + context-privileged candidates from the live conversation (user tone, unstated intent, chat-only seeds the generators never got — a top-up, NOT a re-diverge), then Filter using `fit`/`dedup` critic notes as input, not gospel.
 
-2. **Filter** — apply the explicit checklist:
-   - **Game-mechanics fit** — does this contradict established systems? If unsure, flag as `[mechanic-uncertain]` and surface for user confirmation rather than silently culling. Agent's domain knowledge is finite; uncertainty must be visible, not hidden.
-   - **Tone fit** — does this match the game's established voice / lore?
-   - **Scope fit** — can a v1 implementation reach this?
-   - **Pillar fit** — does this support or dilute the design pillar?
-   - **Redundancy** — is this a reskin of another candidate?
-   - **Novelty** — does this contribute something the user hasn't already surfaced?
+2. **Filter** — apply the checklist:
+   - **Game-mechanics fit** — contradicts an established system? If unsure, flag `[mechanic-uncertain]` for user confirmation rather than silently culling.
+   - **Tone fit** — matches the game's voice / lore?
+   - **Scope fit** — can a v1 reach it?
+   - **Pillar fit** — supports or dilutes the design pillar?
+   - **Redundancy** — a reskin of another candidate?
+   - **Novelty** — adds something the user hasn't surfaced?
 
-   **Not a filter criterion:** "Conflicts with claims in an adjacent prior doc." Prior-doc claims from neighboring design spaces are priors to validate, not filter gates — see Step 1 *adjacent-design-space* case + §6 *Anti-Patterns* (this skill) — *deference-filter* row. The litmus: if your cut rationale uses *only words from the prior doc* rather than words about the idea's own merit (tone/pillar/mechanic conflict), you've deferred, not filtered.
+   **Not a filter criterion:** "Conflicts with an adjacent prior doc." Those are priors to validate — Step 1 *adjacent-design-space* + §6 *deference-filter*. Litmus: a cut rationale using *only words from the prior doc* rather than the idea's own merit (tone / pillar / mechanic conflict) deferred, it did not filter.
 
-3. **Hone** — refine each survivor into one specific sentence grounded in named game systems / specific numbers / lore framing. Idea-stubs (*"+1 slot"*) become honed entries (*"+1 slot — appears as a new wedge in the radial-craft menu's outer ring; cost varies per archetype"*). A stub is divergence output; a honed entry is presentation-ready.
+3. **Hone** — refine each survivor into one specific sentence grounded in named game systems, numbers, or lore framing. *"+1 slot"* is divergence output; *"+1 slot — a new wedge in the radial-craft menu's outer ring; cost varies per archetype"* is presentation-ready.
 
 4. **Cluster & rank** — group survivors by sub-theme; pick the top 3–5 per cluster.
 
-**Presented phase (chat output):**
+**Presented (chat output):**
 
 5. **Present per cluster:**
    - 3–5 honed survivors, each with a one-line rationale (*"why this beat the cuts"*)
-   - 2–3 explicit cuts named, each with a one-line rejection reason (audit transparency for the filter pass)
-   - Brief note on hidden-pool size (*"started from ~N raw, kept ~M"*)
-   - Bracketed marker tags per entry (canonical vocabulary — propose a SKILL edit if you need a new form):
-     - **Provenance**: `[user-verbatim]`, `[user-canon-aligned]`, `[user-canon-honed]`, `[user-surfaced]`, `[canon-import: <source>]`, `[original]`, `[cross-cluster: N+M]` (Step 4 cross-pollination hybrids — names the spanning clusters)
+   - 2–3 named cuts, each with a one-line rejection reason (filter-pass audit trail)
+   - Hidden-pool size note (*"started from ~N raw, kept ~M"*)
+   - Bracketed marker tags per entry — canonical vocabulary; propose a SKILL edit to add a form:
+     - **Provenance**: `[user-verbatim]`, `[user-canon-aligned]`, `[user-canon-honed]`, `[user-surfaced]`, `[canon-import: <source>]`, `[original]`, `[cross-cluster: N+M]` (Step 4 hybrids — names the spanning clusters)
      - **Scope**: `[scope: v1|medium|post-MVP|late-game/DLC]`
      - **Dependency**: `[depends-on: <subsystem>]`
-     - **Tension**: `[pillar-tension flag]`, `[mechanic-uncertain]` (Step 3 Filter — surface for user confirmation)
+     - **Tension**: `[pillar-tension flag]`, `[mechanic-uncertain]`
      - **Cross-ref**: `[architecture: Finding N-X]`, `[see-cluster: M]`
 
-   Move to the next cluster only after the current one is acknowledged. The user reacts per cluster, not after all clusters are dumped.
+   Move on only after the current cluster is acknowledged — never dump every cluster, then collect reactions.
 
-6. **Checkpoint to `decisions.md`.** **[Shared]** See [`_brainstorm_shared/common.md §8`](../_brainstorm_shared/common.md) for path, schema, append-on-classify, and consumption. Per-cluster block appended under `## Decided`:
+6. **Checkpoint to `decisions.md`.** **[Shared]** [`common.md §8`](../_brainstorm_shared/common.md) for path, schema, append-on-classify, consumption. Per-cluster block appended under `## Decided`:
 
    ```markdown
    ## Cluster <N> — <Cluster Name>
    - Honed survivors: <comma-separated names>
    - Cuts: <comma-separated names>
    - Findings: <comma-separated finding IDs>
-   - Key commitments: <2–4 bullets of architectural commitments made during this cluster>
+   - Key commitments: <2–4 bullets of architectural commitments made this cluster>
    - Cross-cluster anchors: <list>
    ```
 
-   Append after the user acknowledges the cluster (accepted survivors, swapped cuts back in, raised additional categories, or said "proceed"). Worker reads the file as `reference_files` in the final `write_doc` call (Step 5).
+   Append once the user acknowledges the cluster (accepted survivors, swapped cuts back in, raised categories, or said "proceed"). The worker reads it as `reference_files` in the Step 5 `write_doc` call.
 
-### Step 4: Cross-pollination pass
+### Step 4: Cross-pollination
 
-After all clusters are processed, look for cross-cluster hybrids — ideas whose power comes from spanning two or more clusters. Present 3–5 hybrid candidates with rationale, each marked with the `[cross-cluster: N+M]` provenance tag (per Step 3 phase 5 vocabulary; the cluster numbers identify the spanning clusters).
+After all clusters are processed, find cross-cluster hybrids — ideas whose power comes from spanning two or more clusters. Present 3–5 with rationale, each tagged `[cross-cluster: N+M]` (Step 3 phase 5 vocabulary; the numbers name the spanning clusters). Hybrids often surface architectural primitives spanning subsystems — the arch skill's richest material.
 
-This step is where the architecture skill later finds its richest material: hybrids often surface architectural primitives that span multiple subsystems.
-
-**Hybrid → arch handoff.** Each accepted hybrid becomes its OWN `/architecture_brainstorm` invocation per `common.md §5.1` spawn-placement (typically same-folder via criterion-3 failure — the hybrid's design is consumed by this brainstorm-topic's parent, not by 2+ unrelated parents). The hybrid's arch session takes the hybrid's name as its cluster slug. Track via Cross-Pollination section in the saved doc (Step 5).
+**Hybrid → arch handoff.** Each accepted hybrid becomes its OWN `/architecture_brainstorm` invocation per `common.md §5.1` spawn-placement (typically same-folder via criterion-3 failure — its design is consumed by this topic's parent, not by 2+ unrelated parents), taking the hybrid's name as cluster slug. Track via the saved doc's Cross-Pollination section.
 
 ### Step 5: Save the idea-bank doc
 
-**[Shared]** Path tiebreaker + folder-per-topic + frontmatter conventions — see [`_brainstorm_shared/common.md` §5](../_brainstorm_shared/common.md). Spawn-placement decisions for downstream arch sessions — see [`§5.1`](../_brainstorm_shared/common.md).
+**[Shared]** Path tiebreaker, folder-per-topic, frontmatter — [`common.md §5`](../_brainstorm_shared/common.md); spawn-placement for arch sessions — §5.1.
 
-**Idea-bank doc-specific conventions:**
-- Folder + filename per `common.md §5` + the §5.1 spawn-placement of this ideation. **Map the placement to a path; do NOT default to the parent folder for a sub-topic:**
-  - **Fresh topic** (default): `YYYY-MM-DD-<kebab-case-topic>/ideas.md` (folder per topic; flat filename `ideas.md` inside)
-  - **Deeper-scope sub-topic** (§5.1 *child subfolder* — own ideation, parent-confined audience): **`<parent-topic-folder>/<sub-slug>/ideas.md` — inside a NEW child subfolder, NOT the parent topic folder.** ⚠ Recurring mis-save target. Create the subfolder if it doesn't exist.
-  - **Cross-cutting sibling topic** (§5.1 all 3 criteria met): `YYYY-MM-DD-<sibling-slug>/ideas.md` — a NEW top-level folder at the parent's depth.
-- Frontmatter `phase: idea_brainstorm`, `status: ideation-active` (bump to `ideation-complete` on user approval)
+**Map the placement to a path; never default to the parent folder for a sub-topic:**
+- **Fresh topic** (default): `YYYY-MM-DD-<kebab-case-topic>/ideas.md` (folder per topic, flat filename inside)
+- **Deeper-scope sub-topic** (§5.1 *child subfolder* — own ideation, parent-confined audience): `<parent-topic-folder>/<sub-slug>/ideas.md`, in a NEW child subfolder, NOT the parent folder. Recurring mis-save target; create it if absent.
+- **Cross-cutting sibling topic** (§5.1 all 3 criteria met): `YYYY-MM-DD-<sibling-slug>/ideas.md`, a NEW top-level folder at the parent's depth.
+- Frontmatter `phase: idea_brainstorm`, `status: ideation-active` (bump to `ideation-complete` on user approval).
 
-**Doc shape (lighter than architecture doc):**
+**Doc shape (lighter than an arch doc):**
 - Context & Scope
 - (Optional) Frame constraints from Step 2
-- Per-cluster sections, each containing:
-  - 5–10 honed survivors (broader than chat — sample from the full hidden pool)
-  - **Considered & Cut** subsection with 3–5 cuts + reasons
-  - Hidden-pool-size note
-  - **Architectural Findings (priors)** — declarative commitments inherited from the user, typically `[user-canon-aligned]`. Hard Gate applies.
-  - **Open Questions** — interrogative deferrals; each seeds a Step 2 Socratic question downstream.
-  - **Routing** — exactly one action + optional timing modifiers (see Per-Cluster Routing below)
+- Per-cluster sections: 5–10 honed survivors (broader than chat — sample the hidden pool) · **Considered & Cut** (3–5 cuts + reasons) · hidden-pool-size note · **Architectural Findings (priors)** — user-inherited commitments, typically `[user-canon-aligned]`, Hard Gate applies · **Open Questions** — interrogative deferrals, each seeding a downstream Step 2 Socratic question · **Routing** — one action + optional timing modifiers (below)
 - Cross-pollination section (Step 4 output)
-- (Optional) **Cross-Cluster Open Questions** — questions spanning multiple clusters; omit if empty
-- (Optional) **Cross-Cluster Workshop Topics** — `→ workshop`-routed items needing USER decision; each subsection carries its own Routing line
+- (Optional) **Cross-Cluster Open Questions** — omit if empty
+- (Optional) **Cross-Cluster Workshop Topics** — `→ workshop` items needing USER decision; each subsection carries its own Routing line
 
-**No Parts-table embedded in this doc** — Parts are roadmap-shape (per `common.md §6`), authored by `/architecture_brainstorm` against committed designs. The idea bank is a candidate POOL; architecture chooses from it and authors Parts. The closest equivalent in this doc is per-cluster Routing, which says WHAT phase comes next per cluster (and translates via Step 6 into `arch-pending` / `idea-rework` / `workshop-pending` Parts on `roadmap.md`, not directly into `plan-pending`).
+**No Parts-table in this doc.** Its nearest equivalent is per-cluster Routing, naming the next phase and translating via Step 6 into `arch-pending` / `idea-rework` / `workshop-pending` Parts, never `plan-pending` (§6 *implementation Parts directly*).
 
-**Roadmap.md is NOT saved here — load-bearing guardrail.** Step 5 saves the IDEA-BANK DOC only (`ideas.md`). The topic-folder `roadmap.md` is owned by `/update_roadmap` in Step 6 — DO NOT create roadmap.md via `write_doc` / `write_code` / direct `Write` here. Bypassing the executor silently drops Trigger validators ([`common.md §6.10`](../_brainstorm_shared/common.md)), derived-view recomputation ([§6.5](../_brainstorm_shared/common.md)), Mermaid deterministic regen ([§6.4](../_brainstorm_shared/common.md)), and the revision-log discipline ([§6.7](../_brainstorm_shared/common.md)). Single-executor pattern: every roadmap.md routes through `/update_roadmap`. The mistake-mode this guardrail prevents: a worker-prose `write_doc` call producing the topic-folder roadmap.md inline during this Step instead of waiting for Step 6's `/update_roadmap` invocation (which proposes creating it if absent — per `/update_roadmap` Step 1 *Not found* path).
+**Roadmap.md is NOT saved here.** This Step saves `ideas.md` only; `/update_roadmap` owns the topic-folder `roadmap.md` in Step 6 — never create it here via `write_doc` or direct `Write`. Bypassing the executor silently drops Trigger validators (`common.md §6.10`), derived-view recomputation (§6.5), Mermaid deterministic regen (§6.4), and revision-log discipline (§6.7). Single-executor pattern: every roadmap.md routes through `/update_roadmap`, which proposes creating it if absent (its Step 1 *Not found* path).
 
 #### Per-cluster handoff-readiness gate
 
-Before assigning a Routing action, evaluate each cluster against three load-bearing criteria. The result determines whether `→ /architecture_brainstorm` or `→ /idea_brainstorm rerun` is the correct action.
+Evaluate each cluster against three criteria before assigning a Routing action; the result decides arch vs rerun.
 
-1. **Approach-diversity** — at least 2 architecturally-distinct survivors. Cosmetic variations of one mechanic don't count; survivors must represent genuinely different ways of solving the cluster's problem. (Failure mode: arch brainstorm Step 4 cannot generate a 2–3 approach comparison — its core deliverable collapses to a single "obvious" answer.)
-2. **Concreteness floor** — each honed survivor is one specific sentence grounded in named systems, specific numbers, or lore framing. Stubs like *"+1 slot"* don't pass; *"+1 craft slot — new wedge in radial menu's outer ring; cost varies per archetype"* does. (Failure mode: arch brainstorm is forced to do honing work that belongs in this skill's Step 3 Hone phase.)
-3. **Cluster-boundary firmness** — the cluster's scope is stateable in one sentence that EXCLUDES neighboring clusters' content. New candidates stopped leaking in from adjacent design space during honing. (Failure mode: arch brainstorm scope balloons, fan-out triggers prematurely, and Step 1 cluster-scoped consumption can't anchor to a clear boundary.)
+1. **Approach-diversity** — at least 2 architecturally-distinct survivors; cosmetic variations of one mechanic don't count. Failure: arch Step 4's 2–3 approach comparison collapses to one "obvious" answer.
+2. **Concreteness floor** — each survivor meets the Step 3 Hone bar: one specific sentence grounded in named systems, numbers, or lore. Failure: arch does Hone work belonging to Step 3.
+3. **Cluster-boundary firmness** — scope is stateable in one sentence EXCLUDING neighboring clusters' content; candidates stopped leaking in from adjacent design space during honing. Failure: arch scope balloons, fan-out fires prematurely, cluster-scoped consumption can't anchor.
 
 | Pass status | Routing action | Rationale |
 |---|---|---|
-| **All 3 pass** | `→ /architecture_brainstorm` | Cluster pool is mature; arch can run productively with real material. |
-| **Any of 3 fails** | `→ /idea_brainstorm rerun` | Target the failing criterion in the rerun framing (e.g., *"rerun for approach-diversity — current survivors are 4 cosmetic variations of mechanic X"*). |
+| **All 3 pass** | `→ /architecture_brainstorm` | Pool is mature; arch runs on real material. |
+| **Any of 3 fails** | `→ /idea_brainstorm rerun` | Name the failing criterion in the rerun framing (*"rerun for approach-diversity — current survivors are 4 cosmetic variations of mechanic X"*). |
 
-**Open Questions are NOT a gate criterion.** Arch brainstorm Step 2 exists to ask Socratic questions; unanswered Open Questions are valid handoff material — they become Step 2's multi-choice seeds. Making "all questions answered" a gate would push this skill to do work that belongs in arch brainstorm.
+**Open Questions are NOT a gate criterion.** Arch Step 2 exists to ask them; unanswered ones are valid handoff material and become its multi-choice seeds. Gating on "all questions answered" pushes arch work into this skill.
 
-**`→ workshop` overrides the gate.** When a cluster surfaces a user-decision-required tension (competing design pillars, leading-hypothesis arbitration), `→ workshop` is the correct action regardless of the 3-criteria status — the gate only differentiates arch-vs-rerun.
+**`→ workshop` overrides the gate.** A cluster surfacing a user-decision-required tension (competing pillars, leading-hypothesis arbitration) routes to `→ workshop` regardless of the 3-criteria status — the gate only differentiates arch-vs-rerun.
 
-**Stop-condition for the rerun chain.** Reruns sharpen the failing criterion in-place. If a second rerun on the same cluster still fails the same criterion, the cluster's underlying problem is likely scope/boundary (criterion 3), not a populate-more-ideas issue — split the cluster, merge it into an adjacent one, or escalate to `→ workshop`.
+**Rerun stop-condition.** Reruns sharpen the failing criterion in place. If a second rerun on the same cluster fails the same criterion, the problem is scope/boundary (criterion 3): split the cluster, merge it into a neighbor, or escalate to `→ workshop`.
 
 #### Per-Cluster Routing — action × timing
 
@@ -233,19 +184,19 @@ Each cluster's `Routing` subsection: exactly ONE action + zero-or-more timing mo
 
 | Action | Meaning | Terminates chain? |
 |---|---|---|
-| `→ /architecture_brainstorm` | Cluster ready to architect. Arch session scopes to THIS cluster (`architecture_brainstorm/SKILL.md` Step 1). | No |
+| `→ /architecture_brainstorm` | Ready to architect; the arch session scopes to THIS cluster (`architecture_brainstorm/SKILL.md` Step 1). | No |
 | `→ /idea_brainstorm rerun` | Pool too thin (< 5 survivors), new sub-themes, or leading-hypothesis needs honing. | No |
-| `→ workshop` | USER decision needed before any further agent phase. User re-routes after deciding. | **Yes** |
+| `→ workshop` | USER decision needed before any further agent phase; the user re-routes after deciding. | **Yes** |
 
 **Timing modifiers (optional, stackable — controlled vocabulary):**
 
-| Modifier | Meaning |
-|---|---|
-| `(now)` | Fire immediately |
-| `(after Cluster X lands)` | Sequential dependency |
-| `(parallel-safe with Cluster X)` | Concurrent-safe |
-| `(future scope — when Y triggers)` | Deferred; name ripeness trigger |
-| `(blocked on Z)` | Blocked on external decision/asset |
+| Modifier | Meaning | Part field |
+|---|---|---|
+| `(now)` | Fire immediately | Pos=1 for the recommended starting cluster |
+| `(after Cluster X lands)` | Sequential dependency | Deps=`<Cluster X Part name>` |
+| `(parallel-safe with Cluster X)` | Concurrent-safe | same Pos as Cluster X's Part |
+| `(future scope — when Y triggers)` | Deferred; name ripeness trigger | un-sequenced Pos=`—`, Trigger=`Y` |
+| `(blocked on Z)` | Blocked on external decision/asset | Trigger=`blocked on Z` until resolved |
 
 **Worked examples:**
 
@@ -258,83 +209,58 @@ Each cluster's `Routing` subsection: exactly ONE action + zero-or-more timing mo
 - Workshop: End-Game Framing: → workshop  (B+C leading; user arbitrates)
 ```
 
-**Workshop terminates the chain.** No worklog/User-Tasks cross-write; the brainstorm doc is sole carrier.
+**Workshop terminates the chain** with no worklog/User-Tasks cross-write; the brainstorm doc is sole carrier.
 
-**Roadmap state mapping.** Cluster Routing action → Part State translation is the executor's contract: see [`/update_roadmap`](../../commands/update_roadmap.md) Step 2 (idea-brainstorm input mapping). This skill's job is to supply the per-cluster Routing line; the command authors the Parts.
+**Roadmap state mapping.** Routing action → Part State is the executor's contract: [`/update_roadmap`](../../commands/update_roadmap.md) Step 2 (idea-brainstorm input mapping). This skill supplies the Routing line; the command authors Parts.
 
-Timing modifiers translate to Part fields: `(now)` → propose Pos=1 for the recommended starting cluster; `(after Cluster X lands)` → Deps=`<Cluster X Part name>`; `(parallel-safe with Cluster X)` → same Pos as Cluster X's Part; `(future scope — when Y triggers)` → un-sequenced Pos=`—` with Trigger=`Y`; `(blocked on Z)` → Trigger=`blocked on Z` until external resolution.
+**Recommended starting cluster (required when ≥2 actionable clusters):** name the cluster firing first + one-line rationale (dependency root / unblocks downstream / earliest arch decision needed). It becomes the Pos=1 Part.
 
-**Recommended starting cluster (required when ≥2 actionable clusters):** name the cluster that fires first + one-line rationale (dependency root / unblocks downstream / earliest arch decision needed). This becomes the Part with Pos=1 in the roadmap.
-
-**[Shared] Rationale spot-check** — see [`_brainstorm_shared/common.md` §2](../_brainstorm_shared/common.md).
-
-**[Shared] User review gate** — see [`_brainstorm_shared/common.md` §4](../_brainstorm_shared/common.md).
+**[Shared] Rationale spot-check** — `common.md §2`. **[Shared] User review gate** — `common.md §4`.
 
 ### Step 6: Invoke `/update_roadmap`
 
 After the user approves the idea-bank doc:
 
-- Bump `status` to `ideation-complete` + mirror in Revision History footer (same edit; `_brainstorm_shared/common.md §5`).
-- Invoke `/update_roadmap` with:
-  - The saved `ideas.md` path (so the command identifies the topic folder)
-  - The per-cluster Routing actions (from each cluster's Routing line in Step 5) — `/update_roadmap` Step 2 translates these to Part States
-  - The recommended starting cluster (becomes Part with Pos=1)
+- Bump `status` to `ideation-complete` + mirror in the Revision History footer (same edit; `common.md §5`).
+- Invoke `/update_roadmap` with: the saved `ideas.md` path (identifies the topic folder); the Step 5 per-cluster Routing actions (its Step 2 translates them to Part States); the recommended starting cluster (becomes Pos=1).
 
-`/update_roadmap` runs in batch-propose mode (single approval applies all edits to `roadmap.md` — Parts table, Mermaid block, derived views, revision log entry). If no roadmap exists in this topic folder yet, the command proposes creating one from `common.md §6` schema — confirm and proceed.
+It runs batch-propose — one approval applies all `roadmap.md` edits (Parts table, Mermaid block, derived views, revision log). With no roadmap in the folder, it proposes creating one from `common.md §6` schema; confirm and proceed.
 
-**Do NOT hand-edit OR `write_doc` `roadmap.md` from this skill.** The command owns that surface end-to-end (Mermaid regen, validator checks, derived-view recomputation, revision-log append). The prohibition covers BOTH direct `Edit`/`Write` calls AND worker-delegated `write_doc` calls — both bypass the executor's validation gates equally. Reinforces the Step 5 *Roadmap.md is NOT saved here* guardrail above.
+**Never hand-edit OR `write_doc` `roadmap.md` from this skill** — the prohibition covers direct `Edit`/`Write` and worker-delegated `write_doc` equally (Step 5 *Roadmap.md is NOT saved here*).
 
 ### Handoff
 
-After `/update_roadmap` applies:
-- Surface per-cluster routing summary: count by action (M arch / K idea-rerun / L workshop), name the recommended starting cluster + one-line rationale.
-- The roadmap.md `Currently ready to execute` derived view shows which arch sessions can fire first; cross-cluster hybrids each get a separate arch session per `common.md §5.1` spawn-placement (typically same-folder via criterion 3 failure).
-
----
+- Surface the routing summary: count by action (M arch / K idea-rerun / L workshop), name the recommended starting cluster + one-line rationale.
+- The roadmap.md `Currently ready to execute` view shows which arch sessions fire first; each hybrid gets its own arch session per `common.md §5.1`.
 
 ## 5. MCP-Offline Policy
 
-**[Shared]** Obsidian MCP offline → non-event (native vault `Read`/`Write`/`Edit`). ai-worker/`write_doc` offline → substitute the executor per [`common.md §3`](../_brainstorm_shared/common.md) (→ CLAUDE.md OFFLINE FALLBACK).
-
----
+**[Shared]** Obsidian MCP offline → non-event (native vault `Read`/`Write`/`Edit`). ai-worker/`write_doc` offline → substitute the executor per [`common.md §3`](../_brainstorm_shared/common.md) (CLAUDE.md OFFLINE FALLBACK).
 
 ## 6. Anti-Patterns
 
 | Rationalization | Reality |
 |---|---|
-| "More ideas = better brainstorm" | Volume without filter is *dumping*, not brainstorming. The user becomes the curator; the agent fails its primary value-add. Surface the converged output (3–5 honed per cluster), not the raw pool. |
-| "Generate all clusters first, then the user filters" | A single dump across N clusters multiplies the curate-load by N. Per-cluster pacing — diverge → filter → hone → present → user-react — is mandatory. |
-| "Filter step risks killing creative ideas" | Filter is explicit and auditable (tone / pillar / scope / mechanic / redundancy / novelty checklist). Uncertain culls flag as `[mechanic-uncertain]` for user confirmation. Killing for clear tone or pillar mismatch is correct, not over-cautious. |
-| "User said *'give me everything you thought of'* — I'll surface the raw pool" | Even on explicit request, route via the converged output. The full hidden pool lives in the doc's idea-pool section, not in chat. Same litmus as the *enumeration-bypass* trigger above. |
-| "Mechanic conflicts will be caught at user-review" | User-review is for *design judgment*, not mechanic-correctness fact-checking. The Step 3 filter is where mechanic-fit lives. Surfacing ideas that contradict established game systems (e.g., proposing potions cost mana to *craft* when the model is mana-cost-at-*cast*) is a Step 3 filter failure. |
-| "Let me also commit to an architecture during ideation" | That's `/architecture_brainstorm`'s job. Premature architectural commitment narrows the idea pool before it's populated. The skills are separate precisely so this can't happen by accident. |
-| "Idea-bank output should include implementation Parts directly" | No. Parts are roadmap-shape (per `common.md §6`), authored by `/architecture_brainstorm` from a design committed at arch-brainstorm time. Idea bank's job is candidate enumeration. Per-Cluster Routing produces `arch-pending` / `idea-rework` / `workshop-pending` Parts via `/update_roadmap` (Step 6) — never `plan-pending` (that requires arch-brainstorm's 5-criterion readiness gate). Skipping the arch-brainstorm phase is the category leakage. |
-| "Let me skip the existing-doc check, this is just ideation" | Same prior-art reason applies: don't duplicate prior idea-bank work. §1 is shared with `/architecture_brainstorm` precisely so both skills respect prior artifacts. |
-| "Just one question to scope-frame — let me ask three" | Step 2 is *"often empty"* — multi-question scope-framing is usually architecture-narrowing in disguise. Ask one, populate ideas, see if more framing is even needed. |
-| "The prior doc says X, so the idea bank should respect X (deference filter)" | Adjacent prior docs were authored before this brainstorm and may not survive contact with the systems being newly designed. If your filter rationale uses *only words from the prior doc* rather than words about the idea's own merit, you've deferred, not filtered. Surface competing ideas; let `/architecture_brainstorm` arbitrate. See Step 1 *adjacent-design-space* case. |
-| "Add `workshop needed first` as a timing modifier on `→ /architecture_brainstorm`" | Workshop is an ACTION (terminates the chain), not a timing modifier. By arch time ideation must be settled. Use `→ workshop`. |
-| "Per-cluster Findings let me record new arch commitments here" | Findings are PRIORS, not new commitments. Hard Gate litmus applies. Agent-invented → `/architecture_brainstorm` Step 4. |
-| "Bundle all per-cluster open questions into one global Open Questions section" | Same monolithic-handoff failure Per-Cluster Routing fixes. Per-cluster questions stay in-cluster; only cross-cluster ones go in the optional global section. |
-
----
+| "More ideas = better brainstorm" | Volume without filter is *dumping*; the user becomes curator. Surface the converged 3–5 honed per cluster. |
+| "Generate all clusters first, then the user filters" | An N-cluster dump multiplies curate-load by N. Per-cluster pacing (diverge → filter → hone → present → user-react) is mandatory. |
+| "Filter risks killing creative ideas" | Filter is explicit and auditable (tone / pillar / scope / mechanic / redundancy / novelty); uncertain culls flag `[mechanic-uncertain]`. Killing for clear tone or pillar mismatch is correct. |
+| "User said *'give me everything you thought of'* — I'll surface the raw pool" | Route via converged output even then; the hidden pool lives in the doc's idea-pool section, not chat. Same litmus as §1's enumeration trigger. |
+| "Mechanic conflicts will be caught at user-review" | User-review is design judgment, not fact-checking. Ideas contradicting established systems (potions costing mana to *craft* when the model is mana-at-*cast*) are a Step 3 filter failure. |
+| "Let me also commit to an architecture during ideation" | That's `/architecture_brainstorm`. Premature commitment narrows the pool before it's populated. |
+| "Idea-bank output should include implementation Parts directly" | Parts are roadmap-shape (`common.md §6`), authored by `/architecture_brainstorm` from a committed design. Routing yields `arch-pending` / `idea-rework` / `workshop-pending` via `/update_roadmap`, never `plan-pending` (that needs arch's 5-criterion gate). |
+| "Skip the existing-doc check, this is just ideation" | §1 is shared with `/architecture_brainstorm` so both respect prior artifacts; don't redo prior idea-bank work. |
+| "Just one question to scope-frame — let me ask three" | Step 2 is often empty; multi-question framing is usually architecture-narrowing in disguise. Ask one, populate ideas, see if more is needed. |
+| "The prior doc says X, so the idea bank should respect X (deference-filter)" | Adjacent prior docs predate this brainstorm and may not survive contact with the systems being newly designed. Rationale using *only words from the prior doc* is deference, not filtering. Surface competing ideas; `/architecture_brainstorm` arbitrates (Step 1 *adjacent-design-space*). |
+| "Add `workshop needed first` as a timing modifier on `→ /architecture_brainstorm`" | Workshop is an ACTION and terminates the chain; by arch time ideation must be settled. Use `→ workshop`. |
+| "Per-cluster Findings let me record new arch commitments here" | Findings are PRIORS. Hard Gate litmus applies; agent-invented → `/architecture_brainstorm` Step 4. |
+| "Bundle all per-cluster open questions into one global section" | The monolithic-handoff failure Per-Cluster Routing fixes. Per-cluster questions stay in-cluster; only cross-cluster ones go global. |
 
 ## 7. Cross-references
 
-**Shared procedures:**
-- [`_brainstorm_shared/common.md`](../_brainstorm_shared/common.md) — §1 existing-doc check, §1.1 resume table, §1.2 stale-roadmap remediation, §2 rationale spot-check, §3 MCP-offline, §4 user-review gate, §5 doc path/frontmatter conventions, §5.1 spawn-placement, §6 roadmap.md schema (including §6.10 Trigger semantics), §7 workflow phase cardinality, §8 decision frontier (`decisions.md`), §9 interview mechanic (frontier rounds)
-
-**Adjacent skills:**
-- [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) — runs AFTER this skill; consumes the idea-bank doc; produces a design doc + Parts authored on `roadmap.md`
-- [`debugging`](../debugging/SKILL.md) — alternative path for bug fixes with known root cause; not idea generation
-
-**Commands:**
-- [`/update_roadmap`](../../commands/update_roadmap.md) — Step 6 invocation; applies Per-Cluster Routing → Part State mapping to `roadmap.md`
-- [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md) — Step 3 Diverge fan-out (`--fan_out`); lens-diverse divergence + independent critique; returns the raw pool for Claude to curate
-
-**File-based memory:**
+- [`common.md`](../_brainstorm_shared/common.md) — §1 existing-doc check, §1.1 resume table, §1.2 stale-roadmap remediation, §2 rationale spot-check, §3 MCP-offline, §4 user-review gate, §5 doc path/frontmatter, §5.1 spawn-placement, §6 roadmap.md schema (§6.10 Triggers), §7 phase cardinality, §8 `decisions.md`, §9 interview mechanic
+- [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) runs AFTER this skill; [`debugging`](../debugging/SKILL.md) covers known-root-cause fixes, not idea generation
+- [`/update_roadmap`](../../commands/update_roadmap.md) — Step 6; [`/idea_brainstorm_fanout`](../../commands/idea_brainstorm_fanout.md) — Step 3 `--fan_out`
 - `feedback_no_unilateral_condensation.md` — Step 3 Diverge verbatim-port discipline
 - `feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
-- `feedback_session_start_hook_does_not_override_skill_procedure.md` — Step 3 / Step 2 procedural-gate discipline (session-start hooks don't excuse skipping load-bearing gates)
-
-**CLAUDE.md sections:**
-- §9 Tool Routing — Pre-Call Litmus — relevant for §1 read_files routing (synthesis bundling)
+- `feedback_session_start_hook_does_not_override_skill_procedure.md` — session-start hooks don't excuse skipping Step 2 / Step 3 gates
+- CLAUDE.md §9 Tool Routing — §1 read_files routing (synthesis bundling)

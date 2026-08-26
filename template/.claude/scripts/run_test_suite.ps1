@@ -32,6 +32,12 @@
   command line; headless Godot by parent chain) plus unattributable orphans, never a peer
   worktree's in-flight run.
 
+  LOCK-EXPIRY CONTRACT: when WaitOne's window expires, the wrapper emits LOCKWAIT_MS=<full
+  wait> + STATUS=LOCK_TIMEOUT and exits 125 -- a live holder owns the mutex and the run never
+  started (no counts line follows). The gate's LOCKED tier routes this to the queue (never
+  INVALID); DIRECT callers read the status line and retry when the machine is quiet -- never
+  as a test failure.
+
 .NOTES
   Windows-only (uses Win32_Process + taskkill). Cloud/Linux test runs go through
   cloud_test_enforcer.py + xvfb-run, a separate path.
@@ -202,7 +208,7 @@ function Get-PeerProtectedPids {
     # printing a bare number the reader has to go identify themselves.
     $script:PeerLabels = @{}
     $actDir = Join-Path $env:TEMP 'pp-activity'
-    if (-not (Test-Path $actDir)) { return $protected }
+    if (-not (Test-Path $actDir)) { return , $protected }
 
     $roots = [System.Collections.Generic.List[int]]::new()
     $rootLabel = @{}
@@ -229,7 +235,7 @@ function Get-PeerProtectedPids {
         $sid = if ($rec.sessionId) { ([string] $rec.sessionId).Substring(0, [math]::Min(8, ([string] $rec.sessionId).Length)) } else { 'n/a' }
         $rootLabel[$rpid] = "label='$($rec.label)' session=$sid"
     }
-    if ($roots.Count -eq 0) { return $protected }
+    if ($roots.Count -eq 0) { return , $protected }
 
     # Expand to descendants: the record names the runner, but /T would take its whole tree.
     $children = @{}
@@ -437,12 +443,24 @@ try {
         }
 
         $code = $p.ExitCode
-        $skip = Select-String -Path $log, $errLog -Pattern 'GodotRuntimeExecutor failed|Connection timeout|Test Run Aborted|Failed to bind socket|The server returned an unexpected status code|gchandle\.is_released' -ErrorAction SilentlyContinue
+        # These are NOT one condition. Reporting them all as "connect failed" sends the reader after
+        # the pipe when the cause is a RefCounted Free() in some suite's teardown, so name which
+        # signature actually matched — ordered most-specific first.
+        $skipSignatures = [ordered]@{
+            'refcounted-free-fatal' = 'gchandle\.is_released'
+            'executor-connect'      = 'GodotRuntimeExecutor failed|Connection timeout|Failed to bind socket|The server returned an unexpected status code'
+            'run-aborted'           = 'Test Run Aborted'
+        }
+        $skipKind = $null
+        foreach ($sig in $skipSignatures.Keys) {
+            if (Select-String -Path $log, $errLog -Pattern $skipSignatures[$sig] -ErrorAction SilentlyContinue) { $skipKind = $sig; break }
+        }
         # Native test-host crash (0xC000001D) under IDE test-runner contention — environmental, retry-worthy.
-        if (-not $skip -and $code -eq -1073741795) { $skip = $true }
+        if (-not $skipKind -and $code -eq -1073741795) { $skipKind = 'testhost-native-crash' }
+        $skip = [bool]$skipKind
 
         if ($skip -and $attempt -lt $maxAttempts) {
-            Write-Output "RETRY=SILENT_SKIP  label=$Label  attempt=$attempt  elapsed=${secs}s  exit=$code  (runtime executor connect failed; re-running once)"
+            Write-Output "RETRY=SILENT_SKIP  label=$Label  attempt=$attempt  elapsed=${secs}s  exit=$code  signature=$skipKind  (re-running once)"
             continue
         }
 
@@ -463,7 +481,15 @@ try {
             }
         }
         if ($skip) {
-            Write-Output 'WARN=SILENT_SKIP_SIGNATURE  (persisted after retry -- runtime executor connection failed, results INVALID)'
+            Write-Output "WARN=SILENT_SKIP_SIGNATURE  signature=$skipKind  (persisted after retry -- results INVALID, counts prove nothing)"
+            if ($skipKind -eq 'refcounted-free-fatal') {
+                Write-Output 'CAUSE=REFCOUNTED_FREE  A Free() on a RefCounted (every Resource is one) released its gchandle; the finalizer then killed the host.'
+                Write-Output '  It is NOT a pipe/connect failure, and the faulting teardown is usually in a DIFFERENT suite than the one that died.'
+                Write-Output '  Name it: grep the log for "Can.t free a RefCounted" -- those ERROR lines carry the faulting type.'
+                Write-Output '  Sweep it: python .claude/hooks/refcounted_free_guard.py'
+            }
+            Write-Output '  Before bisecting the change under test: re-run this exact filter in the PRIMARY checkout. A fresh worktree is not a control'
+            Write-Output '  (.runsettings is gitignored, .godot is cold). Bisect the FILTER, not the code.'
         }
         Write-Output "LOG=$log"
         exit $code

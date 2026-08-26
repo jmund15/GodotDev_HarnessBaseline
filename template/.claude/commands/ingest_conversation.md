@@ -142,7 +142,7 @@ adjectival: something reasons about each problem before seeing the chosen answer
    blind-attempt structure).
 3. **Dispatch ONE blind job** via dispatch.js — pin `opus` — `medium` for interpersonal/process contention, `high`/`xhigh` when a brief
    turns on repo facts the arm must discover — **never the default fan-out tier** (it fabricates on open judgment —
-   CLAUDE.md ladder). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
+   per the ladder, `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
    per brief with tradeoffs. Record the pin in the run report.
 4. **Compare and write `## Outside read`** (session): delegate directions vs what was concluded vs
    the repo. Entry tiers: `missed direction` / `misframe` / `unpriced risk` /

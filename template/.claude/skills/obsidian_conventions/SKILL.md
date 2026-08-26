@@ -67,6 +67,16 @@ All cross-doc references **MUST** be wikilinks — never plain text, bold, or in
 ## File Moves and Renames
 Obsidian auto-link-update ONLY triggers through Obsidian's UI (drag-drop, right-click → Move/Rename). Programmatic moves (Bash `mv`, native `Write`, or MCP ops) do NOT update wikilinks. For reorganization, create folders via Bash but have the user move/rename via Obsidian UI.
 
+## One document, one mode
+Two questions pick it: does the content inform **action** (doing) or **understanding** (thinking), and does it serve **learning** or **work**?
+
+| | Learning | Work |
+|---|---|---|
+| **Action** | tutorial | how-to |
+| **Understanding** | explanation | reference |
+
+Don't mix modes: no reference tables inside a tutorial, no tutorial hand-holding inside reference, no arguing inside a how-to. Split and link instead. Every `write_doc` spec states the mode.
+
 ## Formatting
 - Use `> [!type]- Collapsible Title` for subsections within `##` categories.
 - Keep examples concrete — "set ProjectileCount to 3" not "configure the count property".

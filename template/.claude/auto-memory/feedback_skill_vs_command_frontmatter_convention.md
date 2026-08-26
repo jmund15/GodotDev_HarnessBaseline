@@ -3,7 +3,7 @@ name: Skill vs command frontmatter convention
 description: Custom commands and skills are the SAME mechanism post-merge — both model-invokable by default. Project convention uses `disable-model-invocation: true` on commands plus single-line `description:`; skills use multi-line `description: >-`.
 type: feedback
 originSessionId: 10c65425-68c7-4266-a24a-b35e9a15e00d
-modified: 2026-08-14T23:08:51.737Z
+modified: 2026-08-15T01:37:28.740Z
 ---
 
 **The mechanism (per current Claude Code docs, `https://code.claude.com/docs/en/skills.md`):**
@@ -21,6 +21,7 @@ Both file types support the same frontmatter spec. **Both are model-invokable by
 3. **Commands (slash-only) need terse descriptions.** Single-line `description:`, ~90 chars line 1, action-verb-first. See `feedback_command_descriptions_one_line.md`. Long descriptions are pure context tax once auto-invoke is disabled.
 4. **The skill/command split is functional, not categorical.** Both produce `/name` invocations. The meaningful axis is **procedure (executes step-by-step) vs reference (loads as context)**. Procedure → command file; reference → skill. Example: `instruction_quality` is a principle checklist consumed by `/instruction_audit` — stays as skill. `spell_balance_audit` was structured as a Step 1 / Step 2 / ... procedure — migrated to command 2026-05-11.
 5. **Invalid frontmatter to avoid:** the `triggers:` YAML field (e.g., as seen in pre-migration `spell_balance_audit/SKILL.md`) is NOT in the documented frontmatter spec. Dead metadata; strip on migration.
+6. **`paths:` gates the DESCRIPTION, not the load (behaviorally verified 2026-08-14).** A `paths:` list (YAML glob list — `paths:` then indented `- "**/*.cs"` entries, same format as path-specific rules) removes the skill's **description** from the always-loaded context and surfaces it — making the skill *available to invoke* — only when a matching file is READ. It does NOT auto-load the full body: a path-specific *rule* injects its whole content, but a path-scoped *skill* only surfaces its one-line description, and the agent still invokes `Skill(name)` to load the body (that invocation is the model's probabilistic decision, not forced by `paths:`). Verified both directions via probe: glob non-matching → description absent; glob matching → description surfaced. Consequence: path-scoping removes the description-driven (conceptual) trigger AND defers the description to file-touch, so it reduces context but does NOT make invocation deterministic — treat it as a context lever, not a reliability lever. Safe only for skills whose trigger *is* the file-touch AND nothing else (pure reference skills keyed to one file type, e.g. `project_config_reference`); a skill with a second, non-file-touch trigger (e.g. `instruction_quality`'s general-prose §6/§6b) is NOT safe — path-scoping narrows that second trigger. A procedure whose trigger is a thought (`testing`, `debugging`) loses its trigger entirely if path-scoped. Open: whether `paths:` also surfaces on Write/Create is unverified.
 
 **Litmus test:** before applying a frontmatter "fix" surfaced by an audit, check the matching artifact type's analog file. Skills compare to skills; commands to commands. And remember the merge: a command "missing" model-invocation control isn't broken — it just inherits the default `false`, which for this project is the wrong default.
 

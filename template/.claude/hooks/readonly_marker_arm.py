@@ -32,6 +32,8 @@ import os
 import sys
 import time
 
+from _hook_state import read_json_salvage, write_json_atomic
+
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 TTL_SECONDS = 1800
 
@@ -97,9 +99,7 @@ def main() -> None:
         "expires_at": int(time.time()) + TTL_SECONDS,
         "allow_prefixes": _allow_prefixes(),
     }
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(marker, "w", encoding="utf-8") as fh:
-        json.dump(state, fh)
+    write_json_atomic(marker, state)
 
 
 if __name__ == "__main__":

@@ -5,14 +5,24 @@ rails + tool-grant correction for sidecar CHILD sessions, dispatch-transport rai
 Anthropic ORCHESTRATOR sessions), the re-pitch protocol for opus sessions, and
 strict tool-routing rails for non-orchestrator session models.
 
-Delegate vs orchestrator is decided by CLAUDE_CODE_SIDECAR, which
-deepseek_sidecar.sh sets on the child only — the two need opposite rails, and a
+Delegate vs orchestrator is decided by CLAUDE_CODE_SIDECAR, which deepseek_sidecar.sh
+and codex_proxy_sidecar.sh set on the child only — the two need opposite rails, and a
 delegate reading "You ARE the orchestrator this session" is worse than none.
 
-Fable/Mythos-generation models internalize routing from CLAUDE.md §9 + the
-call-time nudge hooks (2026-07-25 evidence: 6 main-loop silent misses per
-1,178 calls). Older-generation session models (opus/sonnet) drift more under
-prose-only delivery, so they get the explicit NEVER summary at session start.
+A delegate's rails carry `guards/any.md` AND its shape file, assembled by
+tools/guard_text.py. `any` is concatenated rather than chained: it holds the rules
+binding every delegate, so its delivery must not depend on the child choosing to follow
+a pointer it finds inside another file. On the -D bare/pointer tiers no project hook fires,
+so lib/sidecar_common.sh calls guard_text.py directly — which is why that parse is a shared
+module rather than a function here.
+
+Tool-routing prohibitions are NOT injected here. They live once in CLAUDE.md §9,
+in the NEVER-list form this hook used to supply (moved 2026-08-17): CLAUDE.md is
+already injected into every session, so a second delivery path to the same audience
+bought nothing — and the old model gate exempted fable, leaving the orchestrator tier
+relying on §9 alone anyway. The form was the value, not the channel; §9 now carries it
+for every model. Re-pitch guidance likewise lives in the `wait_what` skill, whose
+description is auto-injected.
 
 Channel: SessionStart stdout at exit 0 is model-visible (verified matrix,
 archive_hook_gotchas.md). The `model` field is optional in SessionStart input
@@ -28,20 +38,16 @@ import sys
 # Windows consoles default stdout to cp1252; rails text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
-# Model ids that run with the lean always-loaded surface (no rails injection).
-# Substring match on the model id; extend when a new orchestrator-tier ships.
-LEAN_MODEL_MARKERS = ("fable", "mythos")
+# The guard tier parse lives once, in tools/guard_text.py, because the sidecar bash lib
+# calls that same module as a CLI on the -D bare/pointer tiers, where no hook fires and it
+# must assemble the rails itself. Precedent: budget_posture.py.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+try:
+    from guard_text import guard_text
+except Exception:  # advisory hook: a broken import must not brick a delegate child
+    guard_text = None
 
-RAILS = """\
-[session-model rails — strict tool-routing summary; canon: CLAUDE.md §9]
-- NEVER bare-Grep a single PascalCase identifier on .cs — anchor-then-navigate (Grep("class X"/"interface X") -> LSP documentSymbol -> findReferences).
-- NEVER bare-Grep a single PascalCase identifier on .tres/.tscn/.gd/.md/.godot/.json/.yaml/.toml/.txt — route to semantic-search. Grep stays correct for literal values, UIDs, regex alternation, attribute markers.
-- NEVER chain >=3 reads/searches for synthesis — bundle into one mcp__ai-worker__read_files(paths=[...], question=...). Exception: surgical-edit reads.
-- NEVER Read synthesis-shaped .md paths (Design/, Planning/, BrainstormingDesigns/, Documentation/, Retrospective/, Audit/, Brainstorm/, Architecture/, Review/, Postmortem/) — route through read_files, both path forms.
-- NEVER fetch a doc page ad hoc — the order is godot-docs cache (.claude/scripts/godot_docs_cache.sh; a rendered class page can't be version-pinned) -> .claude/scripts/fetch_source.sh (raw bytes to disk, zero cost, quotable) -> WebFetch for a SINGLE url, direct -> context7 -> read_web -> WebSearch.
-- NEVER treat read_web as the reflex for 3+ urls — it is the multi-page SYNTHESIS tier only, spends real dollars, and summarizes rather than quotes. Read its per-URL `mode=` / `raw=Nc, seen=Nc` preflight before recording any negative: a flagged URL was partly or never read, so its silence is not absence. Quote-bearing claims go through fetch_source.sh + .claude/tools/verify_claims.py.
-- NEVER route .claude/ markdown edits (CLAUDE.md, skills/*/SKILL.md, commands/*.md, hooks/*) through write_doc/write_code — use Edit directly.
-"""
+# Model ids that run with the lean always-loaded surface (no rails injection).
 
 # Correction printed AFTER RAILS to a sidecar child only. RAILS (and CLAUDE.md §9, injected into the
 # same child) route some lookups to a tool the child's grant lacks — it obeys an instruction naming an
@@ -73,11 +79,11 @@ DELEGATE_TOOL_GRANT = """\
 # SessionStart is the only surface that precedes the first dispatch. In orchestration
 # §5 or the registry it would arrive after the decision it governs.
 DEEPSEEK_RAILS_HEAD = """\
-[compat-endpoint session — rails; canon: CLAUDE.md §Model Delegation]
+[compat-endpoint session — rails; canon: reference/model_ladder_evidence.md §Role guidance + orchestration §5b]
 - THIS SESSION IS DRIVING {driver}.{driver_extra}
 - Unpinned subagent spawns go to {subagent} (CLAUDE_CODE_SUBAGENT_MODEL), regardless of what drives this session. Reaching the expensive tier is always deliberate.
 - Role pins resolve on this transport as: {rolemap}. Prices per 1M: {prices}.
-- You ARE the orchestrator this session — the ladder's "never the reserved floor" line describes the I/O-worker tier as a DELEGATE, not this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone.
+- You ARE the orchestrator this session — the ladder row's "never the reserved floor" clause (reference/model_ladder_evidence.md §Role guidance) describes the I/O-worker tier as a DELEGATE, not this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone.
 - DISPATCH ROUTING — pin `opus` (which resolves to the expensive tier) ONLY for large-scope architecting and complex cross-domain work. Everything else — surveys, checklist passes, mechanical authoring, validation verdicts, scoped execution under a converged spec — pins `sonnet` and resolves to the cheap tier. A Workflow fan-out here is NOT band-gated, so this is a judgment you own: state the intended tier and cost before dispatching, then check the journal's model column against it.
 - COST SHAPE — the expensive tier's bill is dominated by FRESH tokens and output, not cache reads. Bound prompts, use args.spillDir, and prefer FEW LONG agents to many short ones: each agent pays a ~56K-token cold-start toll, so width multiplies it while depth amortizes it. Chasing cache hit rate has no headroom left (95.6% measured on cheap-tier delegate runs; the expensive tier's cache profile is UNMEASURED).
 - Keep pinning ANTHROPIC role names (opus/sonnet/fable) on every dispatch. PreToolUse hooks/model_pin_translate.py resolves them per-role to the vendor model id and remaps effort to the vendor scale before the call runs. Do NOT hand-pin the vendor model id — the engines validate against the Anthropic vocabulary and will reject it.
@@ -89,19 +95,20 @@ DEEPSEEK_RAILS_HEAD = """\
 # Mirror of DEEPSEEK_RAILS: pin translation is a deepseek-session mechanism, so an
 # Anthropic session's role-name pins dispatch claude-* agents — expected, not a
 # failure. External-model work needs a separate transport; the sidecar script is
-# the deepseek one. Canon: CLAUDE.md §Model Delegation *Dispatch is transport-bound*.
+# the deepseek one. Canon: orchestration §0 *Dispatch is transport-bound*.
 ANTHROPIC_RAILS = """\
-[anthropic session — dispatch transport; canon: CLAUDE.md §Model Delegation]
+[anthropic session — dispatch transport; canon: orchestration §5b]
 - Workflow/Agent subagents run on this session's transport only: role-name pins (opus/sonnet/fable) dispatch claude-* agents — expected, not a pin-translate failure (the translate hook fires only on deepseek sessions).
-- Deepseek work is not reachable via Workflow/Agent from here — invoke .claude/scripts/deepseek_sidecar.sh (Bash, its own process/endpoint) per orchestration §5. Universal: no external model (deepseek, GPT, Gemini, local) is reachable via Workflow from an Anthropic session.
+- No external model (GPT, opencode, deepseek, local) is reachable via Workflow/Agent from here — every one dispatches through its transport's sidecar launcher: one recipe for all, `reference/sidecar_dispatch.md` (auto-injected on the launch call). Roster: `python3 .claude/tools/model_registry.py available`; excluded models are out — re-select under the ladder, never substitute by rule.
 - A vendor-model literal in an agent() pin here returns null agents and a fan-out reading "0 findings" — the pin-translate hook warns on it; verify each dispatch's journal models against the provider you intended.
-- The sidecar takes `-m pro|flash` (aliases resolved from .claude/reference/external_models.json). `pro` is GATED for agent-initiated dispatch: refused below its band floor (exit 5, `-A` overrides) and below its balance floor (exit 6, `-A` does NOT override). Band names rank by BURN RATE, so a LOW band means plan quota is going unused — spend that first.
+{sidecar_line}
 """
 
 
-OPUS_RAIL = """\
-[rail] Re-pitch protocol: when the user signals a lost thread ('wait, what?', 'huh?'), do not defend or re-expand the previous answer — restate it one altitude higher: the one-sentence version first, then at most three load-bearing points, in project vocabulary (game_vision / pp_subsystems terms).
-"""
+def sidecar_rail_line() -> str:
+    """Transport-agnostic since the recipe moved to reference/sidecar_dispatch.md; kept as a
+    format slot so the template needs no reshuffle. Returns nothing."""
+    return ""
 
 
 def sidecar_delegate_shape() -> str | None:
@@ -116,32 +123,18 @@ def sidecar_delegate_shape() -> str | None:
     return shape if shape in ("any", "survey", "review", "author") else "any"
 
 
-def guard_section(shape: str, tier: str) -> str:
-    """Inline the guard file's tier section. Workflow subagents are in-process so
-    SessionStart never fires for them and dispatch.js must inject a file REFERENCE;
-    a sidecar delegate is a real child `claude` process, so this hook fires and can
-    read the file directly — same single home, different delivery path."""
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "guards", shape + ".md"
-    )
-    with open(path, encoding="utf-8") as handle:
-        lines = handle.read().splitlines()
-    out, capturing = [], False
-    for line in lines:
-        if line.startswith("## "):
-            if capturing:
-                break
-            capturing = line[3:].strip() == tier
-            continue
-        if capturing:
-            out.append(line)
-    body = "\n".join(out).strip()
-    if not body:
-        raise ValueError("no '## %s' section in %s" % (tier, path))
-    return (
-        "[delegate rails — shape '%s', strict tier; home: .claude/guards/%s.md]\n%s"
-        % (shape, shape, body)
-    )
+def sidecar_delegate_tier() -> str:
+    """How verbosely this delegate's rails are spelled out, mirroring dispatch.js TIER_OF.
+
+    Read from the environment rather than fixed here so that adding an opus-class external
+    model is a one-line export in its launcher, not a hook edit. No launcher sets it today:
+    the roster's only external model is `luna` (registry roles sonnet,haiku) and DeepSeek sits
+    in the same band, so `strict` is correct for every transport that currently dispatches.
+    Anything unset or unrecognized therefore falls to `strict` — the safe direction, since an
+    over-explicit rail costs bytes while an under-explicit one costs adherence.
+    """
+    tier = (os.environ.get("CLAUDE_CODE_SIDECAR_TIER") or "").strip().lower()
+    return tier if tier in ("strict", "terse", "none") else "strict"
 
 
 def deepseek_rails(payload: dict) -> str:
@@ -233,7 +226,7 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
             "[session] You are a DELEGATE executing a brief, not an orchestrator. Your effort "
             "was chosen by the dispatcher — do not reason about it, and do not try to fan out: "
             "subagent spawning is outside your tool grant. Execute the brief yourself and close "
-            "by naming what you could not satisfy (CLAUDE.md §Model Delegation)."
+            "by naming what you could not satisfy (orchestration §11)."
         )
     effort = None
     for key in ("effort", "reasoningEffort", "reasoning_effort"):
@@ -245,16 +238,12 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
         return (
             f"[session] Your session effort is '{effort}'. Delegates never inherit it: "
             "fan-outs and judgment stages dispatch via Workflow with explicit model+effort "
-            "pins (CLAUDE.md §Model Delegation, Workflow-first). Long-horizon/orchestration "
-            "mandate → invoke Skill(orchestration) BEFORE the first dispatch — dispatch "
-            "mechanism canon is its §0, not CLAUDE.md."
+            "pins (orchestration §5, Workflow-first)."
         )
     return (
         "[session] Your session effort is not visible to you — treat it as expensive/unknown. "
         "Fan-outs and judgment stages dispatch via Workflow with explicit model+effort pins; "
-        "never let a dispatch inherit session effort (CLAUDE.md §Model Delegation, Workflow-first). "
-        "Long-horizon/orchestration mandate → invoke Skill(orchestration) BEFORE the first "
-        "dispatch — dispatch mechanism canon is its §0, not CLAUDE.md."
+        "never let a dispatch inherit session effort (orchestration §5, Workflow-first)."
     )
 
 
@@ -270,7 +259,9 @@ def main() -> None:
         # this session", which is actively wrong for a child that cannot even spawn
         # (deepseek_sidecar.sh disallows Task/Agent by default).
         try:
-            print(guard_section(shape, "strict"))
+            rails = guard_text(shape, sidecar_delegate_tier()) if guard_text else ""
+            if rails:
+                print(rails)
         except Exception:
             pass  # advisory hook — a missing/malformed guard file must not brick the child
         # Unconditional for a delegate: it corrects CLAUDE.md §9 as much as RAILS, so it
@@ -279,13 +270,7 @@ def main() -> None:
     elif is_deepseek_session(payload):
         print(deepseek_rails(payload))
     else:
-        print(ANTHROPIC_RAILS)
-    model = (payload.get("model") or "").lower()
-    if "opus" in model:
-        print(OPUS_RAIL)
-    if model and any(m in model for m in LEAN_MODEL_MARKERS):
-        return
-    print(RAILS)
+        print(ANTHROPIC_RAILS.format(sidecar_line=sidecar_rail_line()))
 
 
 if __name__ == "__main__":

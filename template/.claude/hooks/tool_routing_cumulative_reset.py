@@ -27,6 +27,8 @@ import os
 import sys
 import time
 
+from _hook_state import read_json_salvage, write_json_atomic
+
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 STALE_AGE_SECONDS = 24 * 3600  # 24 hours
 
@@ -62,9 +64,7 @@ def _bump_turn(session_id: str, prompt: str) -> None:
     state["last_prompt"] = (prompt or "")[:4000]  # cap; cue-word check needs only first lines
     state.setdefault("calls", [])
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
+        write_json_atomic(path, state)
     except Exception:
         pass
 

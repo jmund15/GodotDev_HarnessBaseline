@@ -33,12 +33,14 @@
   DIAGNOSE_PASS candidates=<n> (emitted after the retry pass; n = candidates classified by batch_diagnosis.ps1)
   TOTAL passed=P failed=F  baseline=B  sentinel=S
   LOCKWAIT_TOTAL_MS=<ms>     (machine-global mutex wait this invocation; excluded from the budget)
-  COMPLETENESS=OK|SHORTFALL|SILENT_SKIP|INCOMPLETE   (emitted on every exit path)
+  COMPLETENESS=OK|SHORTFALL|SILENT_SKIP|INCOMPLETE|TARGETED   (emitted on every exit path)
   STATUS=DONE|FAIL|HANG|BUDGET_EXCEEDED|LOCKED  exit codes: 0|1|124|5 (3 = shortfall)
   INCOMPLETE means batches were skipped for budget or mutex-starvation (LOCKED), not that
   anything regressed — the total is partial by construction. Recover with -RetryOnly, which
   keeps prior greens. A LOCKED-only completion (no budget skip) emits STATUS=LOCKED; the gate
   does NOT auto-retry it inline — it routes to the queue when the machine-busy signature holds.
+  TARGETED means a -Only domain filter was applied — the total is partial BY DESIGN and is
+  never tiered against the full baseline. Emitted on every exit path of a -Only run.
   State breadcrumbs: .claude/scratch/test_runs/integration_batches.json (per-batch history
   — persisted so hang concentration is diagnosable after the fact).
 
@@ -57,10 +59,16 @@
 [CmdletBinding()]
 param(
     [int] $TargetBatchSec = 60,
+    # Cap batch test-count: a batch too big for one invocation (too much pre-connect
+    # discovery + scene/asset load + object churn) deterministically wedges the Godot runtime
+    # (documented fifth trigger — gchandle crash / "too big" wedge). Duration alone under-packs
+    # many tiny-test segments into one oversized batch. Bins honor BOTH axes.
+    [int] $MaxBatchTests = 380,
     [int] $MaxBatchTimeoutMs = 300000,
     [int] $TotalBudgetMs = 690000,   # fits 6 batches at ~100-106s honest wall (~636s) + slack; bounded by the wrapper ceiling (the gate child survives the ~10-min kill), not the Bash tool's 600s
     [switch] $RetryOnly,             # rerun only non-green batches from the last state file
     [switch] $DryRun,                # print the batch plan and exit without running
+    [string[]] $Only,                # filter Integration units to the named domains' segments (mid-chain targeted runs). A domain resolves to its Tests/Integration/<D> folder segment(s) from the disk enumeration; unknown domains resolve to zero and emit COMPLETENESS=TARGETED batches=0
     [string] $BootstrapFromTrx = '', # build the manifest from an existing TRX, run nothing
     # Forwarded to run_test_suite.ps1 per batch. The gate always passes it: the gate owns editor
     # policy at its phase boundaries (inline) or via the watcher (queued), so its children must
@@ -144,6 +152,32 @@ Get-ChildItem -Path (Join-Path $repo 'Tests\Integration') -File -Filter '*.cs' |
 }
 $unitSegs = $unitSegs | Sort-Object -Unique
 
+# -Only: resolve the named domains to Integration segments FROM the enumerated set, by domain
+# folder. The enumeration is the resolution source (never a second map that can drift from disk).
+# Case-insensitive domain match; an unknown domain contributes zero segments. A targeted total is
+# partial BY DESIGN — it bypasses the full-baseline sum-check below in favour of COMPLETENESS=TARGETED.
+$allUnitSegs = @($unitSegs)   # full disk set, kept for the manifest's stale-unit drop-check
+if ($Only) {
+    # Split on comma: `pwsh -File` passes every argument as a LITERAL string, so a caller that
+    # joins domains (`-Only AI,Movement,NPCs`) hands this parameter ONE element that matches no
+    # segment. That resolved to zero, exited 0, and reported a clean targeted run over nothing
+    # (measured 2026-08-20: verify.ps1 -Scope AI,Movement,NPCs printed VERIFY=PASS having selected
+    # no integration test at all). Splitting here fixes every caller, including a human typing it.
+    $wanted = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $onlySegs = [System.Collections.Generic.List[string]]::new()
+    foreach ($seg in $unitSegs) {
+        foreach ($d in $wanted) { if ($seg -ieq $d) { $onlySegs.Add($seg); break } }
+    }
+    # An unresolvable filter is operator error, not a clean run. Exiting 0 here is what let a
+    # zero-selection run read as green; a named non-zero exit is the only thing callers can act on.
+    if ($onlySegs.Count -eq 0) {
+        Write-Output "COMPLETENESS=TARGETED domains=$($wanted -join ',') batches=0 (NO SEGMENT MATCHED — nothing ran)"
+        Write-Output "STATUS=BLOCKED reason=no Tests/Integration segment matches $($wanted -join ',') (available: $($allUnitSegs -join ', '))"
+        exit 4
+    }
+    $unitSegs = $onlySegs
+}
+
 $manifest = @{}
 $batchWall = @{}
 $counters  = @{}
@@ -178,17 +212,19 @@ function Get-BatchReservationMs {
 
 # ---------------------------------------------------------------- bin-pack (first-fit decreasing)
 $weighted = $unitSegs | ForEach-Object {
-    [pscustomobject]@{ seg = $_; sec = $(if ($manifest.ContainsKey($_)) { $manifest[$_] } else { 3.0 }) }
+    [pscustomobject]@{ seg = $_; sec = $(if ($manifest.ContainsKey($_)) { $manifest[$_] } else { 3.0 }); tests = $(if ($unitTests.ContainsKey($_)) { $unitTests[$_] } else { 1 }) }
 } | Sort-Object sec -Descending
 
 $batches = [System.Collections.Generic.List[object]]::new()
 foreach ($u in $weighted) {
     $placed = $false
     foreach ($b in $batches) {
-        if ($b.sec + $u.sec -le $TargetBatchSec) { $b.segs.Add($u.seg); $b.sec += $u.sec; $placed = $true; break }
+        if ($b.sec + $u.sec -le $TargetBatchSec -and $b.tests + $u.tests -le $MaxBatchTests) {
+            $b.segs.Add($u.seg); $b.sec += $u.sec; $b.tests += $u.tests; $placed = $true; break
+        }
     }
     if (-not $placed) {
-        $nb = [pscustomobject]@{ segs = [System.Collections.Generic.List[string]]::new(); sec = $u.sec }
+        $nb = [pscustomobject]@{ segs = [System.Collections.Generic.List[string]]::new(); sec = $u.sec; tests = $u.tests }
         $nb.segs.Add($u.seg)
         $batches.Add($nb)
     }
@@ -353,7 +389,8 @@ foreach ($p in $retrySet) {
 $counterDelta = @{ HANG = 1; SILENT_SKIP = 1; SKIPPED_BUDGET = 1 }
 foreach ($p in $plan) {
     if ($counterDelta.ContainsKey($p.status)) {
-        $counters[$p.label] = (if ($counters.ContainsKey($p.label)) { [int]$counters[$p.label] } else { 0 }) + 1
+        $prev = if ($counters.ContainsKey($p.label)) { [int]$counters[$p.label] } else { 0 }
+$counters[$p.label] = $prev + 1
     } else { $counters[$p.label] = 0 }   # GREEN, RED (adjudicated) and LOCKED (contention) all normalize to 0
 }
 if (Test-Path $manifestPath) {
@@ -403,31 +440,63 @@ $locked        = @($plan | Where-Object { $_.status -eq 'LOCKED' })
 $hung          = @($plan | Where-Object { $_.status -in 'HANG', 'SILENT_SKIP' })
 $red           = @($plan | Where-Object { $_.status -eq 'RED' })
 
-if ($budgetSkipped.Count -gt 0) {
-    # COMPLETENESS is emitted on EVERY exit path. Callers parse it to decide whether a count is a
-    # regression signal at all; omitting it here made a budget overrun indistinguishable from an
-    # untrustworthy run, and the partial total then tiered as a major regression.
-    Write-Output "COMPLETENESS=INCOMPLETE skipped=$($budgetSkipped.Count) batches=$(($budgetSkipped | ForEach-Object label) -join ',') (partial total — NOT a regression signal)"
-    Write-Output "STATUS=BUDGET_EXCEEDED skipped=$($budgetSkipped.Count) (re-invoke with -RetryOnly to run remaining batches; prior greens are kept)"
-    exit 5
-}
-if ($red.Count -gt 0)  { Write-Output "STATUS=FAIL red_batches=$(($red | ForEach-Object label) -join ',')"; exit 1 }
-# LOCKED-only completion (no budget skip, no real failure). Exit 5 with STATUS=LOCKED — the
-# gate skips its automatic -RetryOnly for this signature (the mutex may still be held) and
-# routes to the queue when the machine-busy condition holds.
-if ($locked.Count -gt 0) {
-    Write-Output "COMPLETENESS=INCOMPLETE locked=$($locked.Count) batches=$(($locked | ForEach-Object label) -join ',') (a batch could not acquire the machine-global runtime mutex — NOT a regression signal)"
-    Write-Output "STATUS=LOCKED skipped=$($locked.Count) (machine busy — re-run when quiet; the gate queues when the busy signature holds)"
-    exit 5
-}
-if ($hung.Count -gt 0) { Write-Output "STATUS=HANG hung_batches=$(($hung | ForEach-Object label) -join ',') (persisted after retry — machine state suspect; see regression_gate reboot guidance)"; exit 124 }
-if ($totalPassed -lt $sentinel) { Write-Output 'COMPLETENESS=SILENT_SKIP (total below architectural floor — results INVALID)'; exit 2 }
-if ($totalPassed -lt $baseline) {
-    Write-Output "COMPLETENESS=SHORTFALL total=$totalPassed < baseline=$baseline (a unit may be missing from every batch, or tests were removed — gate Tier-2 judgment applies)"
-    exit 3
-}
+if ($Only) {
+    # Targeted mode: the total is partial BY DESIGN, so it is never tiered against the full
+    # baseline or the architectural sentinel. COMPLETENESS=TARGETED marks it non-comparable on
+    # every exit path; the real failure signals (budget/red/locked/hang) keep their exit codes.
+    # A -Only domain resolving to zero segments falls through here with batches=0 — the loud
+    # COMPLETENESS=TARGETED ... batches=0, never a silent zero.
+    if ($budgetSkipped.Count -gt 0) {
+        Write-Output "COMPLETENESS=TARGETED domains=$($Only -join ',') batches=$($plan.Count) skipped=$($budgetSkipped.Count) (partial targeted total — NOT a regression signal)"
+        Write-Output "STATUS=BUDGET_EXCEEDED skipped=$($budgetSkipped.Count) (re-invoke with -RetryOnly to run remaining batches; prior greens are kept)"
+        exit 5
+    }
+    if ($red.Count -gt 0) {
+        Write-Output "COMPLETENESS=TARGETED domains=$($Only -join ',') batches=$($plan.Count)"
+        Write-Output "STATUS=FAIL red_batches=$(($red | ForEach-Object label) -join ',')"
+        exit 1
+    }
+    # LOCKED-only completion (no budget skip, no real failure). Exit 5 with STATUS=LOCKED — the
+    # gate skips its automatic -RetryOnly for this signature (the mutex may still be held) and
+    # routes to the queue when the machine-busy condition holds.
+    if ($locked.Count -gt 0) {
+        Write-Output "COMPLETENESS=TARGETED domains=$($Only -join ',') batches=$($plan.Count) locked=$($locked.Count) (a batch could not acquire the machine-global runtime mutex — NOT a regression signal)"
+        Write-Output "STATUS=LOCKED skipped=$($locked.Count) (machine busy — re-run when quiet; the gate queues when the busy signature holds)"
+        exit 5
+    }
+    if ($hung.Count -gt 0) {
+        Write-Output "COMPLETENESS=TARGETED domains=$($Only -join ',') batches=$($plan.Count)"
+        Write-Output "STATUS=HANG hung_batches=$(($hung | ForEach-Object label) -join ',') (persisted after retry — machine state suspect; see regression_gate reboot guidance)"
+        exit 124
+    }
+    Write-Output "COMPLETENESS=TARGETED domains=$($Only -join ',') batches=$($plan.Count)"
+} else {
+    if ($budgetSkipped.Count -gt 0) {
+        # COMPLETENESS is emitted on EVERY exit path. Callers parse it to decide whether a count is a
+        # regression signal at all; omitting it here made a budget overrun indistinguishable from an
+        # untrustworthy run, and the partial total then tiered as a major regression.
+        Write-Output "COMPLETENESS=INCOMPLETE skipped=$($budgetSkipped.Count) batches=$(($budgetSkipped | ForEach-Object label) -join ',') (partial total — NOT a regression signal)"
+        Write-Output "STATUS=BUDGET_EXCEEDED skipped=$($budgetSkipped.Count) (re-invoke with -RetryOnly to run remaining batches; prior greens are kept)"
+        exit 5
+    }
+    if ($red.Count -gt 0)  { Write-Output "STATUS=FAIL red_batches=$(($red | ForEach-Object label) -join ',')"; exit 1 }
+    # LOCKED-only completion (no budget skip, no real failure). Exit 5 with STATUS=LOCKED — the
+    # gate skips its automatic -RetryOnly for this signature (the mutex may still be held) and
+    # routes to the queue when the machine-busy condition holds.
+    if ($locked.Count -gt 0) {
+        Write-Output "COMPLETENESS=INCOMPLETE locked=$($locked.Count) batches=$(($locked | ForEach-Object label) -join ',') (a batch could not acquire the machine-global runtime mutex — NOT a regression signal)"
+        Write-Output "STATUS=LOCKED skipped=$($locked.Count) (machine busy — re-run when quiet; the gate queues when the busy signature holds)"
+        exit 5
+    }
+    if ($hung.Count -gt 0) { Write-Output "STATUS=HANG hung_batches=$(($hung | ForEach-Object label) -join ',') (persisted after retry — machine state suspect; see regression_gate reboot guidance)"; exit 124 }
+    if ($totalPassed -lt $sentinel) { Write-Output 'COMPLETENESS=SILENT_SKIP (total below architectural floor — results INVALID)'; exit 2 }
+    if ($totalPassed -lt $baseline) {
+        Write-Output "COMPLETENESS=SHORTFALL total=$totalPassed < baseline=$baseline (a unit may be missing from every batch, or tests were removed — gate Tier-2 judgment applies)"
+        exit 3
+    }
 
-Write-Output 'COMPLETENESS=OK'
+    Write-Output 'COMPLETENESS=OK'
+}
 if ($allTrxParsed -and $freshDurations.Count -gt 0) {
     # MERGE over the existing manifest — a -RetryOnly run only measures the rerun batches,
     # and wholesale replacement would silently drop every other unit's measurement.
@@ -445,8 +514,10 @@ if ($allTrxParsed -and $freshDurations.Count -gt 0) {
         }
     }
     foreach ($k in $freshDurations.Keys) { $merged[$k] = $freshDurations[$k] }
-    # Drop units that no longer exist on disk (deleted/renamed folders).
-    foreach ($k in @($merged.Keys)) { if ($k -notin $unitSegs) { $merged.Remove($k) } }
+    # Drop units that no longer exist on disk (deleted/renamed folders). Uses the FULL disk
+    # enumeration ($allUnitSegs), never a -Only-filtered subset — a targeted run must not prune
+    # other domains' duration data from the committed manifest.
+    foreach ($k in @($merged.Keys)) { if ($k -notin $allUnitSegs) { $merged.Remove($k) } }
     foreach ($p in $plan) { if ($p.workWall -gt 0) { $wallMerge[$p.label] = $p.workWall } }
     Write-Manifest -Units $merged -BatchWalls $wallMerge -Counters $counters
     Write-Output "MANIFEST_UPDATED measured=$($freshDurations.Count) total=$($merged.Count) walls=$($wallMerge.Count) (commit Tests/integration_batch_durations.json if changed)"

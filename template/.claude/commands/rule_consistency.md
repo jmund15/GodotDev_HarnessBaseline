@@ -1,5 +1,6 @@
 ---
 description: Cross-surface rule-consistency audit — gather each rule cluster across CLAUDE.md/skills/commands/memory, flag contradictions and stale refs.
+disable-model-invocation: true
 allowed-tools: Bash(git grep:*), Bash(git ls-files:*), Read, Workflow
 ---
 

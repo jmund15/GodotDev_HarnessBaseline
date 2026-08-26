@@ -4,23 +4,21 @@
 Bridges the Max plan's rate-limit telemetry (captured by ~/.claude/statusline.py
 into its per-session state file) to the model-visible channel. Emits a posture
 line on stdout (exit 0) telling the session model how delegation routing should
-lean, keyed on BURN RATE against the reset clock, not raw utilization:
+lean, keyed on BURN RATE against the reset clock, not raw utilization.
 
-    elapsed  = 1 - (resets_at - now) / window_seconds
-    pressure = used_pct / (elapsed * 100)     # >1 ahead of pace, <1 behind
+The pressure formula and the band table are NOT defined here: they live in
+.claude/tools/quota_bands.py, which is their SSOT, because a plan-quota provider's
+own usage endpoint reduces through the same arithmetic and a second copy of the
+thresholds would drift from the gate enforcing them. This module is one of two
+CALLERS — Claude's own telemetry is its data source; codex_quota_probe.py is the other.
 
 The two windows govern different decisions and are never collapsed:
-  seven_day  -> provider choice (Anthropic tier vs DeepSeek sidecar)
+  seven_day  -> provider choice (Anthropic tier vs paid/plan-quota sidecar)
   five_hour  -> fan-out width (concurrent agents per dispatch)
 
-Band table (7d pressure; SSOT for thresholds is BANDS below — this docstring
-reproduces it so the mapping is checkable in one read):
-
-    < 0.85     Surplus   nothing delegated by default — spend the plan; it expires
-    0.85-1.15  On pace   Explore / read-heavy synthesis / doc write-ups
-    1.15-1.5   Ahead     + scoped execution under a converged spec,
-                          adversarial-review lenses at flash·max
-    > 1.5      Hot       + deeper targeted exploration, architectural review passes
+What each band opens to the sidecar lives in quota_bands.BANDS and nowhere else — an
+earlier version of this docstring reproduced that column "so the mapping is checkable in
+one read" and had drifted from BANDS by two clauses before anyone noticed.
 
 Never delegated at ANY pressure: orchestration itself, the ideal-design verdict,
 gate decisions, cross-system seams. Bands widen the delegatable set; they never
@@ -47,45 +45,171 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+# The formula and the band table, imported rather than restated. quota_bands imports nothing
+# from this package, so this direction is safe where the model_registry import below is not.
+import quota_bands  # noqa: E402
+from quota_bands import BANDS, ELAPSED_FLOOR, band_for  # noqa: E402,F401 - re-exported
+
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
 SEVEN_DAY_SECONDS = 7 * 24 * 3600
 FIVE_HOUR_SECONDS = 5 * 3600
-ELAPSED_FLOOR = 0.02          # first minutes after a reset cannot divide toward infinity
 PRESSURE_DELTA = 0.15         # within-band re-emit threshold
 TURNS_BETWEEN_EMITS = 10      # heartbeat re-emit even when nothing moved
 
-# (upper_bound_exclusive, name, delegatable-to-sidecar description)
-BANDS = [
-    (0.85, "Surplus", "nothing by default - spend the plan; unused weekly capacity expires"),
-    (1.15, "On pace", "Explore / read-heavy synthesis / doc write-ups"),
-    (1.5, "Ahead", "+ scoped execution under a converged spec at flash low; execution on a looser spec at flash max;  adversarial-review lenses at flash max"),
-    (float("inf"), "Hot", "+ deeper targeted exploration, planning and architectural review passes"),
-]
 NEVER = "never delegated: orchestration, ideal-design verdict, gate decisions, cross-system seams"
 
+# Tier-within-quota, emitted beside the band because a band name alone is inert: it says how
+# much room is left, never what to spend it on. That gap is total while the sidecar is out of
+# the roster -- provider choice is moot, so the tier is the ONLY thing the band still governs.
+#
+# Deliberately a separate map rather than a 4th BANDS field: model_registry unpacks BANDS as
+# 3-tuples, and the sidecar-delegatable set and the tier default are different concerns that
+# happen to share a key. Role names only, never models (orchestration SKILL names roles).
+#
+# This is the DEFAULT. The by-dispatch-shape refinement -- which lenses stay at the executor
+# tier even under pressure -- is the orchestration SKILL's Tier-within-quota table, which is
+# strictly more information rather than a second copy of this one.
+# Conserving is GRADED, and it never names what an external model is good for.
+#
+# Graded, because the conserving moves cost DIFFERENT currencies and there are three, not two:
+# Anthropic quota, a provider's own plan quota, and real dollars. Trading the Anthropic tier down
+# spends quota already bought; a dollar-billed transport spends money; a plan-quota transport
+# spends a second prepaid allowance that ALSO expires unused. That third case is a band-vs-band
+# comparison rather than a spend decision -- route to whichever allowance is going to waste faster.
+# It stays a COST tiebreaker: it ranks below intelligence and taste, so a slack provider band never
+# promotes a model into work it cannot do.
+#
+# At Ahead the weekly window is not actually in danger, so a dollar move is a preference, not a
+# default; at Hot Anthropic quota is the expensive currency and off-quota leads.
+#
+# Agnostic, because WHICH work belongs off-quota is a property of the roster, not of this file.
+# Every registry row carries a `roles` array, so a model claiming a role IS the off-quota route
+# for that role -- including roles this file would never have guessed. Naming work classes here
+# ("send execution to the sidecar") freezes today's roster into doctrine and silently blocks a
+# future model that is strong somewhere else. Read the roster instead:
+#   .claude/tools/model_registry.py available   ->  roles, effort rungs, price
+_ROSTER = "roster: model_registry.py available (roles/effort/price)"
+TIER_SPEND = "tier: executor at low - spend quota on judgment"
+TIER_LEAN = (
+    "tier: conserve - trade the Anthropic tier down first (converged-spec execution and closed "
+    "lenses to the fan-out tier at medium); weigh an off-quota route above its usual bar for any "
+    "dispatch whose ROLE a roster model claims. A plan-quota transport spends no dollars and its "
+    "allowance expires unused too, so compare ITS band with this one; a dollar-billed transport "
+    "is still a spend decision"
+)
+TIER_OFFQUOTA_FIRST = (
+    "tier: off-quota FIRST - for every dispatch, if an available model claims that ROLE, route "
+    "there; Anthropic quota is now the expensive currency. Prefer a plan-quota transport whose own "
+    "band is slacker than this one - neither side is dollars, and both allowances expire unused. "
+    "Trade the Anthropic tier down only for roles nothing in the roster claims"
+)
+TIER_NO_TRANSPORT = (
+    "tier: conserve, no off-quota transport in the roster - converged-spec execution and closed "
+    "lenses to the fan-out tier at medium"
+)
+# Band-independent and stated in both conserving lines because it is the one route that spends
+# NEITHER currency. Legality is COPYABLE-vs-DERIVED, never budget pressure.
+LOCAL = "copyable reads/synthesis/prose to the free local tier (spends neither currency)"
 
-def band_for(pressure):
-    for bound, name, desc in BANDS:
-        if pressure < bound:
-            return name, desc
-    return BANDS[-1][1], BANDS[-1][2]
+
+def tier_for(band, off_quota_available=None):
+    """The band's default dispatch advice, graded by band and by what the roster actually holds.
+
+    Never the whole answer: the by-dispatch-shape refinement is the orchestration SKILL's
+    Tier-within-quota table, and what each available model is FOR is the registry's `roles`.
+    """
+    if band not in ("Ahead", "Hot"):
+        return TIER_SPEND
+    if off_quota_available is None:
+        off_quota_available = sidecar_available()
+    if not off_quota_available:
+        return f"{TIER_NO_TRANSPORT}; {LOCAL}"
+    lead = TIER_OFFQUOTA_FIRST if band == "Hot" else TIER_LEAN
+    return f"{lead}; {LOCAL}; {_ROSTER}"
+
+
+def sidecar_available():
+    """Is ANY off-quota transport selectable? Unknown counts as available (fail open).
+
+    Asks the roster rather than naming a transport. An earlier version checked `deepseek` by
+    name, which was indistinguishable from the general question while deepseek was the only
+    row -- and became a false negative the moment a second transport landed, in the one band
+    where the answer changes what gets dispatched.
+
+    Read from the registry rather than restated here, so the advisory cannot disagree with the
+    gate that enforces it. The import is late and guarded because an advisory hook must fail
+    OPEN: an unreadable registry should cost a routing hint, never the turn.
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+        import model_registry  # noqa: WPS433 - deliberate late import, see above
+
+        return bool(model_registry.available_models())
+    except Exception:
+        return True
 
 
 def pressure_for(window, window_seconds, now):
-    """None when the window can't produce a trustworthy pressure."""
+    """None when the window can't produce a trustworthy pressure.
+
+    Adapter only: unwraps Claude's telemetry field NAMES and hands the numbers to the shared
+    formula. Every provider spells the same three quantities differently, so the unwrapping
+    stays with the caller that knows its own schema and the arithmetic stays in one place.
+    """
     if not isinstance(window, dict):
         return None
-    used = window.get("used_percentage")
-    resets = window.get("resets_at")
-    if not isinstance(used, (int, float)) or not isinstance(resets, (int, float)):
-        return None
-    if resets < now:
-        return None  # window already reset since capture — stale beyond usefulness
-    elapsed = 1.0 - (resets - now) / window_seconds
-    elapsed = max(ELAPSED_FLOOR, min(1.0, elapsed))  # clamp skew; emit rather than suppress
-    return used / (elapsed * 100.0)
+    return quota_bands.pressure_for(
+        window.get("used_percentage"), window.get("resets_at"), window_seconds, now)
+
+
+# Entrypoints whose statusline payload carries no `rate_limits` block at all. The band is
+# unreadable there BY CONSTRUCTION, not broken: statusline.py still runs and still writes
+# cc-cachestat every turn; only the field is absent. Confirmed 2026-08-23 for claude-desktop.
+TELEMETRY_LESS_ENTRYPOINTS = ("claude-desktop",)
+
+
+def telemetry_gap_reason():
+    """One line naming why rate_limits is absent, or None when the cause is unknown.
+
+    Separates "this entrypoint never sends it" from "the writer stopped". Different
+    problems with different fixes — and the sidecar's refusal text names the wrong one
+    (`restore the statusline`) whenever the writer is in fact healthy.
+    """
+    ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "")
+    if ep in TELEMETRY_LESS_ENTRYPOINTS:
+        return (f"entrypoint '{ep}' sends no rate_limits in the statusline payload - "
+                "unreadable by construction, not a broken writer")
+    return None
+
+
+def emit_gap_notice(session_id):
+    """Say ONCE per session that the band is structurally unreadable.
+
+    Silence is what costs: an orchestrator seeing no posture line cannot tell "no data"
+    from "nothing changed", and CLAUDE.md makes reading the band mandatory before any
+    fan-out. Deduped through the same per-session state file as the posture line.
+    """
+    reason = telemetry_gap_reason()
+    if not reason:
+        return
+    dpath = dedupe_path(session_id)
+    try:
+        with open(dpath, encoding="utf-8") as fh:
+            if json.load(fh).get("gap_notified"):
+                return
+    except Exception:
+        pass
+    print(f"[budget-posture] band UNREADABLE - {reason}. Not a low band and not a defect: "
+          "pick tier/effort on work shape (orchestration SKILL, Tier-within-quota); "
+          "sidecar band gates will refuse and need -A.")
+    try:
+        with open(dpath, "w", encoding="utf-8") as fh:
+            json.dump({"gap_notified": True, "turns_since_emit": 0}, fh)
+    except Exception:
+        pass
 
 
 def find_state(session_id):
@@ -134,7 +258,8 @@ def band_cli():
     reuses find_state()'s glob fallback over the cc-cachestat files statusline writes
     every turn. Rate limits are account-wide, so any session's snapshot is valid.
 
-    Keeps ONE home for the band computation: callers must never re-derive pressure.
+    Callers must never re-derive pressure; the one home for the computation is
+    .claude/tools/quota_bands.py, which this module reads Claude's telemetry into.
 
     Exit 0 with the band name on stdout; exit 3 printing `unknown` when no state is
     findable. Exit 3 is NOT a band — a gate treats it as not-satisfied, and says the
@@ -173,11 +298,12 @@ def main():
     session_id = payload.get("session_id", "unknown")
 
     state_file = find_state(session_id)
-    if not state_file:
-        return
-    with open(state_file, encoding="utf-8") as fh:
-        rl = (json.load(fh) or {}).get("rate_limits")
+    rl = None
+    if state_file:
+        with open(state_file, encoding="utf-8") as fh:
+            rl = (json.load(fh) or {}).get("rate_limits")
     if not isinstance(rl, dict):
+        emit_gap_notice(session_id)
         return
 
     now = time.time()
@@ -215,8 +341,22 @@ def main():
         if age_min is not None and age_min > 120:
             age_txt += " - treat as a hint, not a fact"
         bits = ["[budget-posture]"]
-        if p7 is not None:
+        # The band's delegatable list describes what the SIDECAR takes, so it is dropped when the
+        # sidecar is not in the roster. Dropped, not annotated: an option that cannot be chosen costs
+        # attention every turn it is explained, and the band itself is still true and still governs
+        # fan-out width.
+        # Resolved once and threaded into tier_for: it decides both whether the delegatable
+        # set is worth printing and which conserving move is actually available.
+        off_quota = sidecar_available()
+        if p7 is not None and off_quota:
             bits.append(f"7d pressure {p7:.2f} -> {band} band (sidecar-delegatable: {delegatable})")
+        elif p7 is not None:
+            bits.append(f"7d pressure {p7:.2f} -> {band} band")
+        # The tier default rides with the band in BOTH cases. It is the only thing the band
+        # still governs once the sidecar leaves the roster, and it is what makes the band name
+        # actionable without loading a skill.
+        if band is not None:
+            bits.append(tier_for(band, off_quota))
         if p5 is not None:
             bits.append(f"5h pressure {p5:.2f} (governs fan-out width; >1.3 means narrow concurrent dispatches)")
         bits.append(NEVER)
@@ -239,6 +379,15 @@ if __name__ == "__main__":
     # unreadable" signal the sidecar gate depends on. It also reads no stdin.
     if "--band" in sys.argv[1:]:
         sys.exit(band_cli())
+    # `--why`: one line explaining an unreadable band, for a caller that already got
+    # exit 3 from --band. Exit 1 when the cause is not one this file can name, so a
+    # consumer can tell "no explanation" from an empty explanation.
+    if "--why" in sys.argv[1:]:
+        reason = telemetry_gap_reason()
+        if not reason:
+            sys.exit(1)
+        print(reason)
+        sys.exit(0)
     try:
         main()
     except Exception:

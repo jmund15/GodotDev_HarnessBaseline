@@ -115,7 +115,7 @@ python3 "${JSON_MERGE}" "${SETTINGS_LOCAL}" << 'SETTINGS_EOF' && echo "  Merged:
     "context7@claude-plugins-official": true,
     "claude-code-setup@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
-    "explanatory-output-style@claude-plugins-official": true
+    "explanatory-output-style@claude-plugins-official": false
   }
 }
 SETTINGS_EOF

@@ -34,7 +34,7 @@ State checks Transitions[] → each Transition has Conditions[] → first all-tr
 ```csharp
 // BAD - condition has side effects
 public override bool Check(Node agent, IBlackboard bb) {
-    bb.Set(BBDataSig.SelfInteruptible, true);  // NO! Check() must be side-effect-free
+    bb.Set(BBDataSig.CurrentTarget, agent);  // NO! Check() must be side-effect-free
     return true;
 }
 ```
@@ -170,61 +170,28 @@ Result: 0.0 (confidence too low)
 
 ---
 
-## AIAgentComponent - Auto-Wiring
+## Blackboard Provisioning
 
-### Why This Exists
-AI entities require boilerplate to wire components (Stats, Health, Affinities) to the Blackboard. `AIAgentComponent` eliminates this repetition by auto-discovering and wiring components.
-
-### Before (Manual Wiring)
-```csharp
-public override void _Ready() {
-    // Repeated for EVERY AI entity
-    _blackboard.Set(BBDataSig.Agent, this);
-    _blackboard.Set(BBDataSig.Affinities, _affinities);
-    _blackboard.Set(BBDataSig.Stats, _stats);
-    _blackboard.Set(BBDataSig.HealthComponent, _health);
-}
-```
-
-### After (Auto-Wiring)
-```
-EnemyWizard (CharacterBody3D)
-  ├── AIAgentComponent      ← Just add this!
-  ├── AIAffinitiesComponent
-  ├── StatController
-  ├── HealthComponent
-  └── HSM
-```
-
-No manual wiring code needed - `AIAgentComponent` handles it automatically.
-
-### What It Wires
-
-| Component | BB Key | Found Via |
-|-----------|--------|-----------|
-| Parent node | `BBDataSig.Agent` | Always wired |
-| `AIAffinitiesComponent` | `BBDataSig.Affinities` | `TryGetFirstChildOfType<>` |
-| `IStatProvider` | `BBDataSig.Stats` | `TryGetFirstChildOfInterface<>` |
-| `IHealth` | `BBDataSig.HealthComponent` | `TryGetFirstChildOfInterface<>` |
-
-### Interface: IAIAgent
+Each component declares what it publishes; `EntityNodeComponentsInitializer` collects every
+declaration in Phase 0, before any `IComponent.Initialize(bb)` runs, so a component resolving a
+sibling from the blackboard always finds it.
 
 ```csharp
-public interface IAIAgent : IGodotNodeInterface {
-    IBlackboard Blackboard { get; }
-    AIAffinitiesComponent? Affinities { get; }
-    IStatProvider? Stats { get; }
-    IHealth? Health { get; }
-    void Initialize();
+public partial class AISteeringProcessor3D : Node, IBlackboardProvider
+{
+    public (StringName Key, object Value)? Provision => (BBDataSig.SteeringComp, this);
 }
 ```
 
 ### Rules
 
-1. **Add as child of AI entity** - Discovers siblings, not children
-2. **Missing components are OK** - Logs what was found, doesn't fail
-3. **Manual wiring still works** - Coexists with legacy patterns
-4. **Call `Initialize()` in tests** - `_Ready()` calls it automatically
+1. **Declare `IBlackboardProvider`, do not hand-wire** - a wiring component that discovers siblings
+   and sets keys on their behalf fights Phase 0 and constructs its own `Blackboard` child, which the
+   entity template scene (its `BlackboardGraph/Blackboard` node) already owns.
+2. **One key per provider** - `Provision` returns a single pair; a component publishing two concepts
+   is two components.
+3. **Phase 0 re-runs on pooled reuse** - `Provision` is read again per activation, so return live
+   state rather than a value captured at `_Ready`.
 
 ---
 
@@ -296,4 +263,4 @@ See [squad_formations.md](squad_formations.md) for the full deep-dive.
 - States can run **BT** for complex sub-behaviors (BTState)
 - Perception feeds into **BB** values that conditions check
 - Navigation outputs to **MovementProcessor** for execution
-- **AIAgentComponent** auto-wires components to BB at `_Ready()`
+- **IBlackboardProvider** components publish their BB keys in ENCI Phase 0, before any `Initialize` runs

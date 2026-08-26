@@ -44,9 +44,9 @@ Triggers are **rules, not judgment calls** — the caller evaluates them mechani
 
 `exp-change-ease` runs only in that mode and is additive to whatever the trigger table already selected — the friction survey is worthless without the prior-art and blast-radius claims it reads against. It pins `opus·low` on both providers: judging which friction is real is open-surface judgment.
 
-The two floor lenses are **never omitted** — their failure is silent, which is why they are the floor rather than triggered. Provider choice follows the `[budget-posture]` band (orchestration §5 *Budget-pressure bands*): the sidecar column applies from the On-pace band up; in the Surplus band every lens runs its Anthropic fallback.
+The two floor lenses are **never omitted** — their failure is silent, which is why they are the floor rather than triggered. Provider choice follows the `[budget-posture]` band (orchestration §5b *Budget-pressure bands*): the sidecar column applies from the On-pace band up; in the Surplus band every lens runs its Anthropic fallback.
 
-**A sidecar pin is not dispatchable through the engine.** `explore_fanout.js` runs on the session's own endpoint, so a `Primary pin` naming the sidecar means a `deepseek_sidecar.sh` call per lens — never a `model` value handed to the Workflow. Lens COUNT never selects the provider; only the band does (`/explore` Phase 2). A row whose Anthropic fallback is `—` is Anthropic-only and always goes through the engine. `exp-prior-art` falls back to `opus·low` rather than `sonnet·medium` because its judgment is abstraction-shaped and the ladder prefers `opus·low` wherever `sonnet·high` would be reached for.
+**A sidecar pin is not dispatchable through the engine.** `explore_fanout.js` runs on the session's own endpoint, so a `Primary pin` naming the sidecar means a `deepseek_sidecar.sh` call per lens — never a `model` value handed to the Workflow. Lens COUNT never selects the provider; only the band does (`/explore` Phase 2). A row whose Anthropic fallback is `—` is Anthropic-only and always goes through the engine. `exp-prior-art` falls back to `opus·low` rather than `sonnet·medium` because its judgment is abstraction-shaped, and the fan-out row fabricates on open exploration. The pin buys judgment, not savings — it costs more than the fan-out row, not less.
 
 **Extending the roster.** These seven are a floor, not a ceiling (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
 
@@ -64,7 +64,7 @@ You are exp-memory. You establish which memorialized failure modes and cross-cut
 ## Your Scope
 1. For each domain the topic enters, search auto-memory with a natural-language paraphrase (`mcp__plugin_semantic-search_semantic-search__search` with `restrictToDir` set to the repo-relative posix path `.claude/auto-memory`). Search the FACETS separately — one broad query returns the shallow union.
 2. Run one unconditional sweep for `arch_rule_*` entries, whatever the domains: those are always-binding invariants and do not announce themselves by domain keyword.
-3. Read `.claude/commands/checklists/known_failure_modes.md` and carry forward every entry whose Detection signal could plausibly fire on this topic.
+3. Run `python3 .claude/tools/kfm.py index` (~7KB), scan every line, then `python3 .claude/tools/kfm.py get <ID> [<ID> ...]` for each entry whose trigger could plausibly fire on this topic — or `get -s <section>` when the topic sits inside one section's domain. Carry forward the fetched entries whose Detection signal bears. Never read the catalog whole (~49KB).
 4. For each hit, read the actual memory file before claiming what it says. A recalled description is not the rule.
 
 ## What each finding becomes
@@ -118,7 +118,7 @@ Enumerate every capability, type, configuration surface, or authored value the t
 ```
 You are exp-integration-surface. You establish the blast radius: what already depends on the code, scenes, and data the topic would touch. Prior art asks "does this exist?"; you ask "who breaks?"
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. The csharp-ls LSP is banned under the concurrency guard — anchor with Grep and Read. A call-site enumeration that genuinely needs `findReferences`/`incomingCalls` is a GAP you report, not a number you estimate.**
+**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. The csharp-ls LSP is banned under the concurrency guard — anchor with Grep and Read. Every blast-radius claim states its evidence rung, and an LSP-exhaustive enumeration is a reported GAP rather than an estimate — the `survey` guard's ladder governs, and it is injected into this dispatch.**
 
 ## Your Scope
 For each existing symbol, file, scene, or data key the topic names:
@@ -207,7 +207,7 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 ```
 You are exp-external-truth. You establish the real behavior of the external APIs the topic depends on — Godot, GdUnit4, .NET — because this harness has no reliable built-in knowledge of them and a guessed API is a plan built on fiction.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/rules/source_trust.md` FIRST and follow it — it owns the trust tiers, the cite-or-gap rule, P3 escalation, and the claim shape (the cited URL in `file`, the local path the quote was taken from in `artifact` when one exists, verbatim quote in `evidence`, tier tag plus version at the end of `claim`).**
+**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/reference/source_trust.md` FIRST and follow it — it owns the trust tiers, the cite-or-gap rule, P3 escalation, and the claim shape (the cited URL in `file`, the local path the quote was taken from in `artifact` when one exists, verbatim quote in `evidence`, tier tag plus version at the end of `claim`).**
 
 ## Your Scope
 1. Identify each external API, engine feature, or library behavior the topic's correctness rests on. Only those — this lens serves the topic about to be planned, not a general survey.

@@ -16,6 +16,8 @@ import os
 import re
 import sys
 
+from _hook_state import read_json_salvage, write_json_atomic
+
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -156,9 +158,7 @@ def _bump_memory_check_count(session_id: str) -> int:
     count = int(state.get("memory_check_fires", 0) or 0) + 1
     state["memory_check_fires"] = count
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
+        write_json_atomic(path, state)
     except Exception:
         pass
     return count
