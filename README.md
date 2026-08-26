@@ -161,7 +161,20 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   source game's folders to review domains; replace the folder lists with yours.
 - `skills/sprite_authoring/SKILL.md` — the *Project Prototype Style* section is the
   source game's style spec (palette, faction looks, reference sprites); rewrite it
-  for your game's art direction, keeping the pipeline mechanics.- pure files with source-domain nouns as inline examples only (mechanism is
+  for your game's art direction, keeping the pipeline mechanics.
+- `reference/memory_domains.md` — the domain → search-seed → companion-skill table.
+  `hooks/plan_memory_reminder.py` mirrors it as `DOMAINS`; replace both with your
+  game's content domains, and keep the two in sync.
+- `commands/agents/plan_check_agents.md`, `commands/agents/worklog_drive_triage.md`,
+  `commands/plan_check.md`, `skills/testing/SKILL.md` — each names a Logic-Domain
+  subsystem list (the strict-TDD set) as though it were canonical; substitute your
+  project's Logic-Domain subsystems.
+- `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
+  artifact paths excluded from the tree digest; add your project's.
+- `tools/lens.py` — `REGISTRIES` pairs each agent-registry file with the ID prefix
+  its lenses use. The shipped `review` entry assumes unprefixed IDs; set your own
+  prefix if your `review_agents.md` namespaces them.
+- pure files with source-domain nouns as inline examples only (mechanism is
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,
   `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,
