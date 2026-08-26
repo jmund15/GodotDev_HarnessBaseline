@@ -1052,6 +1052,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_hook_state.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_transcript_summary.py",
       "layer": "pure",
       "sync": "auto"
@@ -1112,6 +1117,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/dispatch_mechanism_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/duplicate_test_double_baseline.json",
       "layer": "godot",
       "sync": "auto"
@@ -1127,6 +1137,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/gate_cadence_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/gate_queue_surface.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/generate_family_manifest.py",
       "layer": "godot",
       "sync": "auto"
@@ -1139,6 +1159,16 @@
     {
       "path": ".claude/hooks/harness_edit_skill_reminder.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/harness_growth_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/indexed_reference_guard.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -1197,6 +1227,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/provisional_totality_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/readonly_lens_write_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -1229,6 +1264,21 @@
     {
       "path": ".claude/hooks/session_model_rails.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/sidecar_dispatch_context.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/skill_load_marker.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/subagent_dispatch_guard.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -1307,8 +1357,33 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/reference/claim_confidence.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/reference/external_models.json",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/memory_domains.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/model_ladder_evidence.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/sidecar_dispatch.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/source_trust.md",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -1334,6 +1409,11 @@
     {
       "path": ".claude/rules/godot_files.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/rules/harness_tooling.md",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -1372,17 +1452,17 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/rules/source_trust.md",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/rules/test_authoring.md",
       "layer": "coding",
       "sync": "auto"
     },
     {
       "path": ".claude/rules/visual_layers.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/GateQueue.ps1",
       "layer": "godot",
       "sync": "auto"
     },
@@ -1412,6 +1492,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/codex_proxy_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/codex_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/deepseek_sidecar.sh",
       "layer": "pure",
       "sync": "auto"
@@ -1437,7 +1527,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/godot_bin.sh",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/godot_docs_cache.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/lib/sidecar_common.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/opencode_sidecar.sh",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1464,6 +1569,11 @@
     {
       "path": ".claude/scripts/validate_commands.py",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/verify.ps1",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -1752,12 +1862,37 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/guard_text.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/kfm.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/lens.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/model_registry.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tools/orchestration_metrics.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/provider_bands.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/quota_bands.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1769,6 +1904,11 @@
     {
       "path": ".claude/tools/setup-csharp-ls.sh",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/sidecar_launch.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
