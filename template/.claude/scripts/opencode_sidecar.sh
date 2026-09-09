@@ -38,12 +38,18 @@
 # CLAUDE_CODE_MAX_CONTEXT_TOKENS is set whenever the registry states a window
 # (source: models.dev — the OpenCode team's own catalog). Never hardcode a figure here.
 #
-# AUTH IS KEYLESS ON THE FREE TIER: Zen accepts the literal bearer token `public` for the
-# -free models and 401s anything else unauthenticated (garbage keys measured failing). The
-# proxy therefore sends api_key `public` unless OPENCODE_API_KEY is populated in
-# ~/.env.ai-worker.cmd — which a FUTURE PAID row will require (a gated model with no real
-# key refuses here, exit 3). The child's own ANTHROPIC_AUTH_TOKEN is the usual `unused`
-# placeholder: host-auth exclusion is sc_scrub_env's job, not the token's.
+# AUTH IS KEYLESS ON THE ANONYMOUS FREE TIER: Zen accepts the literal bearer token `public`
+# for the -free models and 401s anything else unauthenticated (garbage keys measured
+# failing). The proxy therefore sends api_key `public` unless OPENCODE_API_KEY is populated
+# in ~/.env.ai-worker.cmd. ONE row, muse (Contributor-Free), is gated on this transport —
+# NOT because the endpoint technically requires it (the anonymous `public` bearer answers
+# muse fine too, verified 2026-09-04) but because Contributor-Free's own terms describe an
+# account-attributable training-consent exchange; keep using the real key as the documented,
+# sanctioned path regardless. A gated model with no real key refuses here, exit 3. Muse's
+# actual 500-on-every-call defect (verified 2026-09-03, ~20+ attempts, every client) was the
+# call SHAPE, not auth — see apiMode in oc_proxy_start below, the real fix. The child's own
+# ANTHROPIC_AUTH_TOKEN is the usual `unused` placeholder: host-auth exclusion is
+# sc_scrub_env's job, not the token's.
 #
 # COST: registry prices are authored $0 because the calls ARE $0 (`cost: "0"` in every Zen
 # response) — costUSD 0.0 in the run record is a measured fact here, not the artifact it
@@ -93,7 +99,7 @@ oc_win_home() {
 OC_USER_HOME="$(oc_win_home)"
 ENV_FILE="$OC_USER_HOME/.env.ai-worker.cmd"
 
-SC_MODEL="preview"   # resolved through the registry; alias or full id both fine
+SC_MODEL="muse"   # resolved through the registry; alias or full id both fine
 
 OC_PROBE="$SC_ROOT/scripts/lib/oc_proxy_probe.py"
 OC_LOG="${OC_LOG:-$OC_USER_HOME/.local/state/litellm-opencode/sidecar-serve.log}"
@@ -108,6 +114,26 @@ oc_litellm_bin() {
   local installed="$OC_USER_HOME/.local/bin/litellm.exe"
   [ -x "$installed" ] && { printf '%s' "$installed"; return 0; }
   command -v litellm >/dev/null 2>&1 && { printf '%s' "$(command -v litellm)"; return 0; }
+  return 1
+}
+
+# Version floor for apiMode=responses models: litellm <1.81.10 silently drops the
+# function_call block when translating a Responses-API reply to Anthropic tool_use — no
+# error, just commentary text, so a stale wheel degrades every tool-bearing dispatch without
+# a symptom to grep for (BerriAI/litellm#16215, fixed by PR #20243; verified fixed on 1.99.0,
+# 2026-09-03: two sequential Read calls in one turn, correct file content both times).
+# Chat-Completions-shaped models don't hit this path, so the check is scoped to apiMode.
+OC_LITELLM_MIN_VERSION="1.81.10"
+oc_litellm_version_ok() {
+  local bin="$1" ver
+  ver="$("$bin" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  [ -z "$ver" ] && return 0   # can't determine -- fail open rather than block on a parse miss
+  python3 -c "
+import sys
+t = lambda v: tuple(int(x) for x in v.split('.'))
+sys.exit(0 if t('$ver') >= t('$OC_LITELLM_MIN_VERSION') else 1)
+" && return 0
+  echo "[opencode-sidecar] litellm $ver < $OC_LITELLM_MIN_VERSION -- Responses-API tool calls silently drop (BerriAI/litellm#16215, fixed by PR #20243). Run: uv tool install 'litellm[proxy]' --upgrade" >&2
   return 1
 }
 
@@ -141,11 +167,54 @@ oc_credential() {
   esac
 }
 
+# Zen gates the free tier on the OpenCode client's own identity headers: without them every
+# free-tier call answers 400 `MissingSessionID` ("OpenCode's free tier can only be used in
+# OpenCode"), real key or `public` alike; with them the same call answers 200. The session id
+# is per-dispatch; the values mirror what the CLI sends (see ~/.local/share/opencode/log).
+# OC_CLIENT_HEADERS=off drops them — the planted-violation switch for proving --check fires,
+# and the way to re-test whether the provider still requires them.
+OC_CLIENT_UA="opencode/1.18.27 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13"
+oc_client_headers_on() { [ "${OC_CLIENT_HEADERS:-on}" != "off" ]; }
+# YAML block for litellm_params.extra_headers (6-space indent under litellm_params).
+oc_client_headers_yaml() {
+  oc_client_headers_on || return 0
+  printf '      extra_headers:\n        User-Agent: "%s"\n        x-opencode-client: cli\n        x-opencode-project: global\n        x-opencode-request: msg_sidecar_%s\n        x-opencode-session: ses_sidecar_%s\n' "$OC_CLIENT_UA" "$$" "$$"
+}
+# curl -H arguments for the same headers (used by the --check live probe).
+oc_client_headers_curl() {
+  oc_client_headers_on || return 0
+  printf '%s\n' "-H" "User-Agent: $OC_CLIENT_UA" "-H" "x-opencode-client: cli" "-H" "x-opencode-project: global" \
+    "-H" "x-opencode-request: msg_sidecar_check_$$" "-H" "x-opencode-session: ses_sidecar_check_$$"
+}
+
+# One real call on the model's registry-stated surface (responses → /responses, else
+# /chat/completions), 1 output token, same credential and headers a dispatch sends. The
+# catalog probe (GET /models) cannot see an auth or header gate, so --check exercises the
+# call path itself (why: gotcha_zen_free_tier_gates_on_client_headers.md).
+# Prints "<http-code> <first line of body>"; returns 0 only on HTTP 200.
+oc_live_probe() {
+  local model="$1" apimode="$2" cred="$3" url body out code
+  if [ "$apimode" = "responses" ]; then
+    url="$ZEN_BASE_URL/responses"
+    body="{\"model\":\"$model\",\"input\":\"Reply with the single word OK.\",\"max_output_tokens\":16}"
+  else
+    url="$ZEN_BASE_URL/chat/completions"
+    body="{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}],\"max_tokens\":16}"
+  fi
+  local -a hdrs=()
+  while IFS= read -r line; do hdrs+=("$line"); done < <(oc_client_headers_curl)
+  out="$(curl -s --max-time 45 -w '\n%{http_code}' "$url" -H "Authorization: Bearer $cred" -H "Content-Type: application/json" "${hdrs[@]}" -d "$body" 2>/dev/null)" || { printf '000 curl failed'; return 1; }
+  code="${out##*$'\n'}"
+  printf '%s %s' "$code" "$(printf '%s' "${out%$'\n'*}" | head -c 160 | tr -d '\r\n')"
+  [ "$code" = "200" ]
+}
+
 # Start this dispatch's own proxy carrying its config pin. PYTHONUTF8 matters: without it
 # the server crashes at startup printing its banner through a cp1252 console (measured).
 oc_proxy_start() {
   local bin cfg port_log
   bin="$(oc_litellm_bin)" || { echo "litellm not found (uv tool install 'litellm[proxy]'; set OC_LITELLM_BIN)" >&2; return 4; }
+  [ "$SC_API_MODE" = "responses" ] && { oc_litellm_version_ok "$bin" || return 4; }
   OC_PORT="$(python3 "$OC_PROBE" freeport)"
   mkdir -p "$(dirname "$OC_LOG")"
 
@@ -155,8 +224,24 @@ oc_proxy_start() {
   cfg="$OC_USER_HOME/.local/state/litellm-opencode/config-$$.yaml"
   sc_on_exit 'rm -f "$OC_CFG_PATH" 2>/dev/null || :'
   OC_CFG_PATH="$cfg"
-  printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: openai/%s\n      api_base: %s\n      api_key: %s\n\nlitellm_settings:\n  drop_params: true\n' \
-    "$SC_MODEL" "$SC_MODEL" "$ZEN_BASE_URL" "$SC_CREDENTIAL" > "$cfg"
+
+  # Registry-stated call shape (apiMode): most Zen models answer on the ordinary Chat
+  # Completions surface litellm assumes by default. muse-spark specifically only answers on
+  # the OpenAI Responses API (/v1/responses) — every Chat Completions call 500s instantly
+  # regardless of client, headers, or payload (verified 2026-09-04); opencode's own client
+  # works because it calls /v1/responses. litellm's "openai/responses/<id>" model prefix
+  # forces that call shape end-to-end, verified through a live proxy on the same Anthropic
+  # Messages surface this launcher's child speaks — not just the SDK.
+  OC_LLM_MODEL="$SC_MODEL"
+  [ "$SC_API_MODE" = "responses" ] && OC_LLM_MODEL="responses/$SC_MODEL"
+
+  # extra_headers: the OpenCode client identity headers Zen's free tier gates on (see
+  # oc_client_headers_yaml).
+  { printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: openai/%s\n      api_base: %s\n      api_key: %s\n' \
+      "$SC_MODEL" "$OC_LLM_MODEL" "$ZEN_BASE_URL" "$SC_CREDENTIAL"
+    oc_client_headers_yaml
+    printf '\nlitellm_settings:\n  drop_params: true\n'
+  } > "$cfg"
 
   echo "[opencode-sidecar] starting litellm on :$OC_PORT (model=$SC_MODEL, log: $OC_LOG)" >&2
   env PYTHONUTF8=1 nohup "$bin" --config "$cfg" --host 127.0.0.1 --port "$OC_PORT" >>"$OC_LOG" 2>&1 &
@@ -173,7 +258,7 @@ oc_proxy_start() {
 
 # --check: zero-argument availability probe. Prints ONE line, exits, dispatches nothing.
 if [ "${1:-}" = "--check" ]; then
-  oc_litellm_bin >/dev/null || { echo "UNAVAILABLE (litellm not installed; uv tool install 'litellm[proxy]' or set OC_LITELLM_BIN)"; exit 4; }
+  _check_bin="$(oc_litellm_bin)" || { echo "UNAVAILABLE (litellm not installed; uv tool install 'litellm[proxy]' or set OC_LITELLM_BIN)"; exit 4; }
   oc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
   _check_reg="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" 2>&1)" || {
     echo "UNAVAILABLE (model registry unusable: ${_check_reg%%$'\n'*})"; exit 2; }
@@ -194,7 +279,18 @@ except Exception:
     "") echo "UNAVAILABLE (zen endpoint returned nothing)"; exit 3 ;;
     *) echo "UNAVAILABLE (model '$SC_MODEL' not in zen's live catalog)"; exit 2 ;;
   esac
-  echo "OK (model=${_check_reg%%|*} endpoint=$ZEN_BASE_URL key=public-tier proxy=per-dispatch)"
+  _check_apimode="$(printf '%s' "$_check_reg" | cut -d'|' -f12)"
+  if [ "$_check_apimode" = "responses" ]; then
+    oc_litellm_version_ok "$_check_bin" || { echo "UNAVAILABLE (litellm too old for this model's apiMode; see stderr)"; exit 4; }
+  fi
+  _check_cred="$(oc_credential)"
+  _check_keylabel="public-tier"; [ "$_check_cred" != "public" ] && _check_keylabel="real-key"
+  # SC_MODEL is still the alias here (sc_resolve_model runs after --check); the registry id
+  # is the first sidecar-fields column.
+  _check_model="${_check_reg%%|*}"
+  _check_live="$(oc_live_probe "$_check_model" "$_check_apimode" "$_check_cred")" || {
+    echo "UNAVAILABLE (live probe on $_check_model answered HTTP ${_check_live%% *}: ${_check_live#* } -- the catalog lists it, the call path refuses it; headers=${OC_CLIENT_HEADERS:-on})"; exit 3; }
+  echo "OK (model=${_check_reg%%|*} endpoint=$ZEN_BASE_URL key=$_check_keylabel live-probe=200 proxy=per-dispatch)"
   exit 0
 fi
 
@@ -241,6 +337,8 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
+SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "")"
+[ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env
 
@@ -272,6 +370,7 @@ run_claude() {
       ${SC_APPEND_ARGS[@]+"${SC_APPEND_ARGS[@]}"} \
       ${SC_MAX_TURNS:+--max-turns "$SC_MAX_TURNS"} \
       ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+      ${SC_RESUME_SID:+--resume} ${SC_RESUME_SID:+"$SC_RESUME_SID"} \
       --add-dir "$SC_WORKDIR" \
       ${SC_ADD_DIRS[@]+"${SC_ADD_DIRS[@]}"} \
       <<< "$SC_PROMPT"
@@ -283,6 +382,7 @@ else
   OUTPUT="$(run_claude)"
 fi
 rc=$?
+sc_resume_loop run_claude "$SC_PROGRESS"
 printf '%s\n' "$OUTPUT"
 [ $rc -eq 124 ] && echo "opencode sidecar timed out after ${SC_TIMEOUT}s" >&2
 

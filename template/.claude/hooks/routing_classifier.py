@@ -22,7 +22,7 @@ Design contract:
   `from routing_classifier import is_pascal_identifier, LITERAL_INTENT_CUES, ...`.
 - The high-level `classify_call(tool, tool_input, last_prompt)` returns a
   `Classification` dataclass. Severity values:
-    - COMPLIANT          : call followed §9; no rule applies → no nudge expected
+    - COMPLIANT          : call followed §Tool Routing; no rule applies → no nudge expected
     - NUDGE_WARRANTED    : call violated a clear rule (PascalCase Grep on
                            indexed file; synthesis-shaped Obsidian read; etc.)
                            Silent-miss if the existing nudge channel doesn't fire.
@@ -31,7 +31,7 @@ Design contract:
                            verified-unique-name, audit-shape carve-out).
     - ADVISORY_APPLICABLE: soft-nudge category (memory_search, broad obsidian
                            search) — informational, not a violation.
-    - NOT_ROUTABLE       : tool has no §9 routing rules (Bash, Edit, Write,
+    - NOT_ROUTABLE       : tool has no §Tool Routing routing rules (Bash, Edit, Write,
                            Glob, etc.) OR the call shape doesn't match the
                            rule (e.g. `Read` of a non-`.md` file — Read is
                            classified only when path is a `.md` synthesis
@@ -39,8 +39,9 @@ Design contract:
                            shape detection for these; this classifier does
                            not duplicate that logic.
 
-  The audit hook logs only NUDGE_WARRANTED and CUE_EXEMPT. The other three are
-  noise from the dashboard's perspective.
+  The audit hook logs NUDGE_WARRANTED, CUE_EXEMPT and CENSUS (vault doc writes, direct
+  vs worker — measured, never judged). The other three are noise from the dashboard's
+  perspective.
 
 This module is the single home for these helpers and cue lists — the former
 inline copies in tool_routing_nudge.py / tool_routing_post_grep.py /
@@ -92,7 +93,7 @@ VERIFIED_UNIQUE_CUES = (
     "no other class defines",
 )
 
-# Audit-shape carve-out (CLAUDE.md §9 Exception clause): line-precision direct
+# Audit-shape carve-out (CLAUDE.md §Tool Routing Exception clause): line-precision direct
 # reads are warranted only when user explicitly framed the task as audit/
 # debug/security-review/fact-check at source-code level. Source: tool_routing_
 # cumulative.py:80-97.
@@ -144,7 +145,7 @@ EDIT_INTENT_CUES = (
 )
 
 # Path fragments that are agent-runtime instruction surfaces, never synthesis
-# targets. CLAUDE.md §9 write-routing forbids routing `.claude/` markdown
+# targets. CLAUDE.md §Tool Routing write-routing forbids routing `.claude/` markdown
 # through the worker at all — so a Read here can only be an execute/edit read,
 # and the digest nudge is always wrong. Matched case-insensitively on the path
 # with separators normalized.
@@ -296,12 +297,13 @@ Severity = Literal[
     "cue-exempt",
     "advisory-applicable",
     "not-routable",
+    "census",  # logged for measurement, never a verdict (vault doc writes)
 ]
 
 
 @dataclass(frozen=True)
 class Classification:
-    """Result of classifying a single tool call against §9 routing rules.
+    """Result of classifying a single tool call against §Tool Routing routing rules.
 
     Fields:
       severity : See `Severity` literal — the routing-correctness bucket.
@@ -326,9 +328,10 @@ def classify_call(
     tool_name: str,
     tool_input: dict | None,
     last_prompt: str = "",
+    agent_id: str = "",
 ) -> Classification:
     """
-    Classify a single tool call against the §9 routing rules.
+    Classify a single tool call against the §Tool Routing routing rules.
 
     Inputs:
       tool_name   : The tool that was called (e.g. "Grep").
@@ -336,6 +339,9 @@ def classify_call(
                     May be None or empty.
       last_prompt : The user's most recent prompt text (for cue-word checks).
                     May be empty — in that case cue exemptions don't fire.
+      agent_id    : Non-empty for a dispatched subagent. A subagent handed a synthesis doc
+                    IS the bundling delegate, so the native-read rule exempts it here — the
+                    one home both the nudge and the audit log read.
 
     Returns:
       Classification dataclass.
@@ -353,7 +359,7 @@ def classify_call(
 
     # Native Read of synthesis-shaped `.md` path.
     if tool_name == "Read":
-        return _classify_native_read(tool_input, last_prompt)
+        return _classify_native_read(tool_input, last_prompt, agent_id)
 
     # Obsidian read of synthesis-shaped doc.
     if tool_name == "mcp__obsidian__obsidian_get_note":
@@ -373,14 +379,20 @@ def classify_call(
     if tool_name == "mcp__ai-worker__read_web":
         return _classify_read_web(tool_input, last_prompt)
 
-    # Tools without §9 routing rules.
+    # Vault doc writes — a census, never a verdict. Judgment-dense vs templated is the model's
+    # call (CLAUDE.md §3 Obsidian); the audit only measures the direct/worker split, so a model
+    # that silently skips `write_doc` shows up in the log instead of in a manual transcript count.
+    if tool_name in ("Write", "mcp__ai-worker__write_doc"):
+        return _classify_vault_write(tool_name, tool_input)
+
+    # Tools without §Tool Routing routing rules.
     return Classification("not-routable", None, None, tool_name)
 
 
 def _classify_grep(tool_input: dict, last_prompt: str) -> Classification:
     pattern = tool_input.get("pattern") or ""
     if not is_pascal_identifier(pattern):
-        # Literal/regex/UID/attribute Grep — §9 carves these out as legitimate.
+        # Literal/regex/UID/attribute Grep — §Tool Routing carves these out as legitimate.
         return Classification("compliant", None, None, "Grep")
 
     family = grep_target_family(tool_input)
@@ -404,7 +416,7 @@ def _classify_grep(tool_input: dict, last_prompt: str) -> Classification:
         return Classification(
             severity="nudge-warranted",
             rule="pascal-grep-on-cs",
-            reason="bare PascalCase Grep on .cs bypasses LSP anchor-then-navigate (§9)",
+            reason="bare PascalCase Grep on .cs bypasses LSP anchor-then-navigate (§Tool Routing)",
             tool="Grep",
         )
 
@@ -424,18 +436,18 @@ def _classify_grep(tool_input: dict, last_prompt: str) -> Classification:
         severity="nudge-warranted",
         rule="pascal-grep-on-indexed",
         reason=(
-            "PascalCase Grep on indexed-other family bypasses semantic-search (§9 — "
+            "PascalCase Grep on indexed-other family bypasses semantic-search (§Tool Routing — "
             ".tscn/.tres/.gd/.md/etc. are indexed)"
         ),
         tool="Grep",
     )
 
 
-def _classify_native_read(tool_input: dict, last_prompt: str) -> Classification:
+def _classify_native_read(tool_input: dict, last_prompt: str, agent_id: str = "") -> Classification:
     """Native `Read` of a `.md` file under a synthesis-shaped path. Mirrors
     `_classify_obsidian_read` but consumes the snake_case `file_path` arg
     used by the native Read tool. Restricted to `.md` to avoid flagging
-    .cs/.tres at synthesis-named folders — those have their own §9 rules."""
+    .cs/.tres at synthesis-named folders — those have their own §Tool Routing rules."""
     path = tool_input.get("file_path") or ""
     if not path:
         return Classification("not-routable", None, None, "Read")
@@ -459,6 +471,16 @@ def _classify_native_read(tool_input: dict, last_prompt: str) -> Classification:
             ),
             tool="Read",
         )
+    if agent_id:
+        return Classification(
+            severity="cue-exempt",
+            rule="native-read-synthesis-doc",
+            reason=(
+                f"native Read of synthesis-shaped path ({path}) by a dispatched subagent "
+                "[subagent: bundling delegate]"
+            ),
+            tool="Read",
+        )
     return Classification(
         severity="nudge-warranted",
         rule="native-read-synthesis-doc",
@@ -468,6 +490,35 @@ def _classify_native_read(tool_input: dict, last_prompt: str) -> Classification:
         ),
         tool="Read",
     )
+
+
+# A vault path is one under the Obsidian vault root (CLAUDE.md §3); doc-sized means a write
+# the Documentation Delegation Rule would have routed, not a frontmatter or one-line touch-up.
+VAULT_PATH_MARKER = "/obsidianvault/"
+VAULT_WRITE_MIN_CHARS = 3000
+
+
+def is_vault_path(path: str) -> bool:
+    return VAULT_PATH_MARKER in (path or "").replace("\\", "/").lower()
+
+
+def _classify_vault_write(tool_name: str, tool_input: dict) -> Classification:
+    """`Write` or `write_doc` landing a doc-sized `.md` in the vault. Both are logged at the
+    `census` tier so the dashboard shows the direct/worker split per session; neither is a miss."""
+    if tool_name == "mcp__ai-worker__write_doc":
+        path = tool_input.get("doc_path") or ""
+        if not is_vault_path(path):
+            return Classification("not-routable", None, None, tool_name)
+        return Classification("census", "vault-write-worker",
+                              f"write_doc ({tool_input.get('doc_type') or 'design'}) -> {path}", tool_name)
+    path = tool_input.get("file_path") or ""
+    if not is_vault_path(path) or not path.lower().endswith(".md"):
+        return Classification("not-routable", None, None, tool_name)
+    size = len(tool_input.get("content") or "")
+    if size < VAULT_WRITE_MIN_CHARS:
+        return Classification("not-routable", None, None, tool_name)
+    return Classification("census", "vault-write-direct",
+                          f"direct Write of {size} chars -> {path}", tool_name)
 
 
 def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classification:

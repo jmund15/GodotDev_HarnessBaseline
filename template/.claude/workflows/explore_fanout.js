@@ -34,11 +34,13 @@ if (SPILL_DIR) {
   log('SPILL-DIR ' + SPILL_DIR)
 }
 
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
+// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
 // Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
 // script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+const PIN = (m) => m
+const EFF = (e) => e
 
 // Strict, matching dispatch.js and worklog_relevance.js rather than review_fanout.js's floor: which
 // lens runs where is a budget-posture + ladder decision the CALLER makes, and exploration is the
@@ -63,7 +65,7 @@ if (lenses.length === 0 || bad.length > 0) {
 // hold even at the tier where the doctrine reference is suppressed.
 const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'none' }
 // Off-Anthropic the RECEIVING model is deepseek whatever role name was pinned — strict band.
-const tierOf = (m) => A.__pin ? 'strict' : (TIER_OF[m] || 'strict')
+const tierOf = (m) => A.__transport ? 'strict' : (TIER_OF[m] || 'strict')
 const CONCURRENT = lenses.length > 1
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
@@ -168,7 +170,6 @@ const CLAIMS_SCHEMA = {
 const LABEL = typeof A.labelPrefix === 'string' && A.labelPrefix.trim() ? A.labelPrefix.trim() : 'explore'
 const resolved = lenses.map(l => ({ ...l, label: LABEL + ':' + l.key }))
 log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(l => [l.label, PIN(l.model) + '/' + EFF(l.effort) + ' guards:survey@' + tierOf(l.model)]))))
-if (A.__pin) log('ENDPOINT-TRANSLATED: ' + resolved.map(l => l.model + '->' + PIN(l.model) + '/' + EFF(l.effort)).join(', '))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 const contextPre = A.contextPrefixPath
@@ -196,7 +197,7 @@ for (const r of raw) {
   if (!r) { flags.push({ kind: 'lens-no-return', lens: '(unknown)', detail: 'the engine received no result object for one lens — treat its dimension as UNCOVERED' }); continue }
   const res = r.result
   if (!res || typeof res !== 'object') {
-    flags.push({ kind: 'lens-no-return', lens: r.key, detail: 'lens returned no schema object — its dimension is UNCOVERED, not clear' + (SPILL_DIR ? '. Recover the deliverable from ' + spillPath(r.key) + ' (or the agent transcript) BEFORE re-dispatching' : '') })
+    flags.push({ kind: 'lens-no-return', lens: r.key, detail: 'lens returned no schema object — its dimension is UNCOVERED, not clear. Recover BEFORE re-dispatching: ' + (SPILL_DIR ? 'read ' + spillPath(r.key) + ', else ' : '') + 'run /salvage_fanout <transcriptDir> ' + r.key + ' (the agent transcript holds the paid-for work)' })
     perLens.push({ key: r.key, claims: 0, stoppedAt: null, basis: null })
     continue
   }

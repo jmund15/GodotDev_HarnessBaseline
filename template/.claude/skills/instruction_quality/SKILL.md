@@ -36,7 +36,7 @@ Two artifacts covering one rule drift. One canonical home; the rest cross-refere
 
 - Section-number, line-number (`lines N–M`) and "see line 42" cites rot silently. Use named anchors or file links.
 - Verbatim quotes: re-verify the source still says it; compression paraphrases.
-- **Mechanical outbound checks run on every audit:** every cited path resolves (`Glob`), every `§N`/anchor exists in its target (`Grep`), every named skill/command is registered.
+- **Mechanical outbound checks run on every audit:** every cited path resolves (`Glob`), every `§N`/anchor exists in its target (`Grep`), every named skill/command is registered. A cited `.claude/` path is doctrine only if it is tracked — `git log --all -- <path>` non-empty; in a shared checkout a resolving path can be a peer session's transient file.
 - **A count or scale owned by another file is a cross-reference, not a mirror.** "The seven-question litmus" restates a cardinality the source owns and matches no mechanical check. Use the countless form; two numbering scales for one concept is the same defect compounded.
 - **Inbound rot:** when a target is revised, `Grep` its name across `.claude/{tests,hooks,skills,commands}/` — consumers (fixtures especially) may still encode the pre-revision behavior and reward the obsolete one.
 
@@ -168,7 +168,7 @@ A **leading word** (*adversarial*, *litmus*, *invariant*, *seam*, *loud*) is a p
 
 ## Anti-patterns
 
-- Trigger accuracy is `skill-creator`'s eval; adversarial resistance is `/test_skill`.
+- Adversarial resistance is `/test_skill`'s eval, not this skill's.
 - Path-scoped rule size is amortized across only the sessions that load them.
 - Numeric targets are heuristics; a specific 220-line file beats a vague 180-line one.
 - Don't audit actively-edited targets — diff churn fakes positives.
@@ -179,8 +179,7 @@ A **leading word** (*adversarial*, *litmus*, *invariant*, *seam*, *loud*) is a p
 |---|---|
 | Static structural quality; hook validity; claim freshness | `/instruction_audit` |
 | Cross-surface rule consistency | `/rule_consistency` |
-| Trigger accuracy | `anthropic-skills:skill-creator` |
 | Adversarial content resistance | `/test_skill` |
 | CLAUDE.md size + compression | `/claudemd_compact` |
-| Auto-memory cleanup | `anthropic-skills:consolidate-memory` |
+| Auto-memory cleanup | `/memory_audit` (dedup pass by hand) |
 | Size/density report on harness edits | `hooks/harness_growth_guard.py` (automatic) |

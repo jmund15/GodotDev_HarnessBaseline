@@ -5,7 +5,7 @@ Hook: PreToolUse on read/search tools — advisory routing nudge + optional
 hard block for the highest-confidence smell (bare-PascalCase Grep on .cs).
 
 Why:
-- CLAUDE.md §9 codifies tool routing (ai-worker for bulk prose, LSP for C#
+- CLAUDE.md §Tool Routing codifies tool routing (ai-worker for bulk prose, LSP for C#
   symbols, semantic-search for NL code discovery), but the harness defaults
   to Read/Grep/direct-MCP-read out of habit. The existing `Read >400 lines`
   PostToolUse nudge does NOT see Obsidian-MCP reads or Grep PascalCase
@@ -65,7 +65,7 @@ first — behavior decides, vocabulary is only QoL:
    harness_edit_skill_reminder.py on any Write|Edit, cleared per turn by
    tool_routing_cumulative_reset.py. Unambiguous; needs no vocabulary guessing.
    Suppresses the worker-routing advisories only; Grep/LSP rules still fire.
-2. STRUCTURAL — `.claude/` paths (§9 forbids routing harness markdown through
+2. STRUCTURAL — `.claude/` paths (§Tool Routing forbids routing harness markdown through
    the worker at all) and windowed reads (`offset`/`limit`, surgical by
    construction) never nudge. Owned by routing_classifier so routing_audit.py's
    silent-miss split can't drift from this hook.
@@ -73,9 +73,10 @@ first — behavior decides, vocabulary is only QoL:
    the reads that PRECEDE the turn's first edit, where the prompt is the sole
    available evidence. Cues are context-padded ("edit the", not "edit"): an
    over-match silently drops a real routing violation.
-Independent of intent: every nudge is delivered at most ONCE per (tool, target)
-per session (`nudge_targets_seen`). Repetition is what trains the model to
-ignore the channel.
+Independent of intent: every nudge is delivered at most ONCE per session per
+(tool, target), recorded in `nudge_targets_seen`. For Grep the target is the
+FAMILY (`cs` / `indexed-other` / `unrestricted`): the advisory reads identically
+for every pattern in one family. Repetition trains the model to ignore the channel.
 
 Boundaries:
 - Never blocks. Exit 0 in all paths.
@@ -92,7 +93,7 @@ import json
 import os
 import sys
 
-from _hook_state import read_json_salvage, write_json_atomic
+from _hook_state import read_json_salvage, state_path, write_json_atomic
 
 # Shared classifier — extracted 2026-05-04 to eliminate cue-list duplication
 # across nudge.py / post_grep.py / cumulative.py and provide the API the new
@@ -114,9 +115,9 @@ from routing_classifier import (
 # verifies it doesn't fire spuriously in their normal workflow.
 HARD_BLOCK_ENV_VAR = "PP_ROUTING_HARD_BLOCK_CS_GREP"
 
-# State file location — same as tool_routing_post_grep.py and
-# tool_routing_cumulative_reset.py (which populates last_prompt).
-_STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
+# State file: `_hook_state.state_path` — the same per-session file
+# tool_routing_post_grep.py and tool_routing_cumulative_reset.py (which populates
+# last_prompt) read and write.
 
 
 def _hard_block_enabled() -> bool:
@@ -139,7 +140,7 @@ def _edit_seen_this_turn(session_id: str) -> bool:
     reads that precede the turn's first edit."""
     if not session_id:
         return False
-    path = os.path.join(_STATE_DIR, f"{session_id[:8]}.json")
+    path = state_path(session_id)
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -158,8 +159,7 @@ def _read_last_prompt(session_id: str) -> str:
     """
     if not session_id:
         return ""
-    sid_short = session_id[:8]
-    path = os.path.join(_STATE_DIR, f"{sid_short}.json")
+    path = state_path(session_id)
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -212,13 +212,11 @@ def _build_block_message(pattern: str) -> str:
         )
     return (
         f"[tool-routing] BLOCKED: bare `Grep('{pattern}')` on `.cs` is a documented "
-        "LSP-bypass smell (CLAUDE.md §9). Retry with " + retry_path + ". "
+        "LSP-bypass smell (CLAUDE.md §Tool Routing). Retry with " + retry_path + ". "
         "If your task genuinely needs literal-text scan including comments (K1 case) "
         "or verified-unique-name override (L6 case), restate the user's intent in "
         "your response — the next call will succeed because the cue-word allowlist "
-        "covers those cases. Hard block is gated on "
-        f"PP_ROUTING_HARD_BLOCK_CS_GREP={os.environ.get(HARD_BLOCK_ENV_VAR, 'unset')}; "
-        "set to false in env to disable and revert to advisory nudges."
+        "covers those cases."
     )
 
 
@@ -236,21 +234,21 @@ def _nudge_obsidian_read(tool_input: dict, last_prompt: str) -> str | None:
         f"`{path}` to summarize / extract context (not for surgical citation), "
         "prefer `mcp__ai-worker__read_files(paths=[<path>], question=...)` — "
         "cheap model reads, returns a 1-2 KB digest instead of loading the full "
-        "doc into your context. See CLAUDE.md §9."
+        "doc into your context. See CLAUDE.md §Tool Routing."
     )
 
 
-def _nudge_read(tool_input: dict, last_prompt: str) -> str | None:
+def _nudge_read(tool_input: dict, last_prompt: str, agent_id: str = "") -> str | None:
     """Native `Read` of a synthesis-shaped `.md` path. Companion to
     `_nudge_obsidian_read` — closes the gap where an agent reads a
     synthesis-shaped doc by absolute path instead of routing through
     `read_files`. Schema note: native Read uses `file_path` (snake_case),
-    not `filePath`. Suppression (edit-anchor false-positives) is owned by
-    `routing_classifier._classify_native_read`."""
+    not `filePath`. Suppression (edit-anchor false-positives, subagent
+    bundling delegate) is owned by `routing_classifier._classify_native_read`."""
     path = tool_input.get("file_path") or ""
     if not path:
         return None
-    if classify_call("Read", tool_input, last_prompt).severity != "nudge-warranted":
+    if classify_call("Read", tool_input, last_prompt, agent_id).severity != "nudge-warranted":
         return None
     return (
         "[tool-routing] Synthesis-shaped doc path detected on native `Read`. If "
@@ -259,7 +257,7 @@ def _nudge_read(tool_input: dict, last_prompt: str) -> str | None:
         "question=...)` — cheap model reads, returns a 1-2 KB digest instead of "
         "loading the full doc into your context. The synthesis-shape rule is "
         "path-based, not Obsidian-MCP-only — using native `Read` on a "
-        "`BrainstormingDesigns/` doc still burns context. See CLAUDE.md §9."
+        "`BrainstormingDesigns/` doc still burns context. See CLAUDE.md §Tool Routing."
     )
 
 
@@ -278,7 +276,7 @@ def _nudge_obsidian_search(tool_input: dict, last_prompt: str) -> str | None:
         "for the same investigation, bundle the whole investigation into ONE "
         "`mcp__ai-worker__read_files` call with `files=[doc1, doc2, ...]` and a "
         "specific question — saves context vs chained search-then-read. "
-        "See CLAUDE.md §9."
+        "See CLAUDE.md §Tool Routing."
     )
 
 
@@ -300,12 +298,12 @@ def _nudge_grep(tool_input: dict, last_prompt: str) -> str | None:
                 f"[tool-routing] `Grep('{pattern}')` on `.cs` — LSP bypass smell; cloud "
                 "session, use "
                 f"`mcp__plugin_semantic-search_semantic-search__search(query='{pattern}')`. "
-                "CLAUDE.md §7 + §9."
+                "CLAUDE.md §7 + §Tool Routing."
             )
         return (
             f"[tool-routing] Bare `Grep('{pattern}')` on `.cs` — LSP bypass smell. "
             f"Anchor-then-navigate: `Grep('class {pattern}\\b' -g '*.cs')` → "
-            f"`LSP documentSymbol` → `findReferences`. CLAUDE.md §7 + §9."
+            f"`LSP documentSymbol` → `findReferences`. CLAUDE.md §7 + §Tool Routing."
         )
 
     # Indexed-but-not-`.cs` (.tscn/.tres/.gd/.md/etc.) or mixed → semantic-search.
@@ -315,7 +313,26 @@ def _nudge_grep(tool_input: dict, last_prompt: str) -> str | None:
     return (
         f"[tool-routing] `Grep('{pattern}')` against {target_label} bypasses "
         f"semantic-search. Use `mcp__plugin_semantic-search_semantic-search__search(query='{pattern}')`. "
-        "CLAUDE.md §9."
+        "CLAUDE.md §Tool Routing."
+    )
+
+
+def _nudge_vault_write(tool_input: dict, last_prompt: str) -> str | None:
+    """Doc-sized direct `Write` into the vault. Not a miss — judgment-dense docs are written
+    directly by rule (CLAUDE.md §3 Obsidian) — but the class decision must be VISIBLE: a model that
+    skips `write_doc` without saying why is indistinguishable in the transcript from one that never
+    read the rule (measured 2026-09-08: one direct vault Write, zero deliberation, found only by a
+    manual transcript census)."""
+    c = classify_call("Write", tool_input, last_prompt)
+    if c.rule != "vault-write-direct":
+        return None
+    name = (tool_input.get("file_path") or "").replace("\\", "/").rsplit("/", 1)[-1]
+    size = len(tool_input.get("content") or "")
+    return (
+        f"[tool-routing] Direct `Write` of `{name}` ({size} chars) into the vault. Name its class "
+        "in this turn: judgment-dense (assessment, review, design verdict, retrospective — direct "
+        "Write is right) or templated/mechanical (route to `mcp__ai-worker__write_doc`). The routing "
+        "audit logs this write either way; unclassified reads as a silent bypass. CLAUDE.md §3 Obsidian."
     )
 
 
@@ -326,6 +343,7 @@ _DISPATCH = {
     "mcp__obsidian__obsidian_search_notes": _nudge_obsidian_search,
     "Grep": _nudge_grep,
     "Read": _nudge_read,
+    "Write": _nudge_vault_write,
 }
 
 
@@ -335,6 +353,7 @@ _DISPATCH = {
 _RULE_KEYS = {
     "mcp__obsidian__obsidian_get_note": "obsidian-synthesis-doc-direct-read",
     "Read": "native-read-synthesis-doc",
+    "Write": "vault-write-direct",
 }
 
 
@@ -345,13 +364,16 @@ _SEEN_CAP = 200
 
 
 def _nudge_target_key(tool_name: str, tool_input: dict) -> str:
-    if tool_name == "Read":
+    if tool_name in ("Read", "Write"):
         target = tool_input.get("file_path") or ""
     elif tool_name == "mcp__obsidian__obsidian_get_note":
         t = tool_input.get("target") or {}
         target = (t.get("path") if isinstance(t, dict) else "") or ""
     elif tool_name == "Grep":
-        target = tool_input.get("pattern") or ""
+        # Keyed by FAMILY, not by pattern: the advisory says the same thing for every
+        # PascalCase pattern in one family, so a per-pattern key re-delivers known text
+        # on each new symbol.
+        target = grep_target_family(tool_input)
     else:
         target = ""
     return f"{tool_name}:{target.replace(chr(92), '/').lower()}"
@@ -360,7 +382,7 @@ def _nudge_target_key(tool_name: str, tool_input: dict) -> str:
 def _seen_before(session_id: str, key: str) -> bool:
     """True if this nudge target already fired this session. Records it on the
     first sighting. Fail-open: any state error returns False (nudge delivered)."""
-    path = os.path.join(_STATE_DIR, f"{session_id[:8] if session_id else 'default'}.json")
+    path = state_path(session_id)
     try:
         state: dict = {}
         if os.path.exists(path):
@@ -384,7 +406,7 @@ def _record_pre_nudge(session_id: str, rule: str) -> None:
     (`tool_routing_cumulative_reset.py` clears the list each turn)."""
     if not rule:
         return
-    path = os.path.join(_STATE_DIR, f"{session_id[:8] if session_id else 'default'}.json")
+    path = state_path(session_id)
     try:
         state: dict = {}
         if os.path.exists(path):
@@ -408,6 +430,7 @@ def process(input_data: dict) -> tuple[str | None, str | None]:
     tool_name = input_data.get("tool_name") or ""
     tool_input = input_data.get("tool_input") or {}
     session_id = input_data.get("session_id") or ""
+    agent_id = input_data.get("agent_id") or ""
 
     # Fix 2: hard-block path — checked before advisory dispatch. Only fires
     # for Grep tool, only when env var toggle is on, only for bare-PascalCase
@@ -422,7 +445,7 @@ def process(input_data: dict) -> tuple[str | None, str | None]:
             return (
                 "[tool-routing] BLOCKED: bare-PascalCase Grep on .cs is an "
                 "LSP-bypass smell. Retry with anchor-then-navigate or "
-                "semantic-search. See CLAUDE.md §9.",
+                "semantic-search. See CLAUDE.md §Tool Routing.",
                 None,
             )
 
@@ -434,7 +457,9 @@ def process(input_data: dict) -> tuple[str | None, str | None]:
         return (None, None)
 
     try:
-        nudge = handler(tool_input, _read_last_prompt(session_id))
+        last_prompt = _read_last_prompt(session_id)
+        nudge = (handler(tool_input, last_prompt, agent_id) if handler is _nudge_read
+                 else handler(tool_input, last_prompt))
     except Exception:
         # Hook must never break the tool call. Swallow any handler bug.
         return (None, None)

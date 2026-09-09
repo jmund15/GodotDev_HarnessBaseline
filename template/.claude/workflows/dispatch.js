@@ -15,16 +15,22 @@ try {
 }
 const jobs = Array.isArray(A.jobs) ? A.jobs : []
 
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
-// Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
-// script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Anthropic role names stay canonical and are ALWAYS legal; on a provider session
+// that transport's own registry ids become legal too, which is what makes a sibling model
+// reachable by Workflow pin with no sidecar. Absent the key nothing changes. Inlined per script
+// because the Workflow sandbox has no require/import.
+const TRANSPORT_IDS = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
+const PIN = (m) => m
+const EFF = (e) => e
 
 // Strict by design — this engine IS the enforcement point for explicit pins (CLAUDE.md §Model
 // Delegation, Workflow-first). No silent model floor, no silent effort default: a missing pin is
 // the caller's bug, surfaced loudly. review_fanout.js is the lenient sibling for review lenses.
-const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
+// On a provider session the transport's ids REPLACE the Anthropic vocabulary rather than
+// joining it: concat left `opus`/`sonnet` legal in the engine while the guard denied them,
+// so the two homes of one rule disagreed and the engine was the permissive one.
+const VALID_MODELS = TRANSPORT_IDS.length ? TRANSPORT_IDS : ['opus', 'sonnet', 'haiku', 'fable']
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
 
 // OPTIONAL third pin. `Explore` and `Plan` are read-only built-ins that receive NO project
@@ -44,7 +50,7 @@ const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
 // REQUIRED, not optional, and deliberately so. This engine mixes read-only and authoring jobs in
 // one run, so it cannot default safely in either direction — and an omitted field would default to
 // the EXPENSIVE side silently, which is the failure this harness already refuses for `model` and
-// `effort`. Pick `general-purpose` only when the job must APPLY project rules (§9 tool routing,
+// `effort`. Pick `general-purpose` only when the job must APPLY project rules (CLAUDE.md §Tool Routing,
 // naming conventions, the TDD domain split): those live in files Explore never receives, and an
 // agent cannot follow a rule it was not given.
 const VALID_AGENT_TYPES = ['Explore', 'Plan', 'general-purpose']
@@ -59,7 +65,7 @@ if (jobs.length === 0 || bad.length > 0) {
 }
 
 log('PINS ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, PIN(j.model) + '/' + EFF(j.effort) + (j.agentType ? '/' + j.agentType : '')]))))
-if (A.__pin) log('ENDPOINT-TRANSLATED: ' + jobs.map(j => j.model + '->' + PIN(j.model) + '/' + EFF(j.effort)).join(', '))
+if (A.__transport) log('ENDPOINT: ' + A.__transport.name + ' — pins are that transport\'s own ids; role names are denied by the provider guard')
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // Concurrency safety: with >1 concurrent job, tests and the csharp-ls LSP are machine-wide
@@ -83,14 +89,14 @@ const CONCURRENCY_GUARD = jobs.length > 1 ? [
 // Unlike model/effort, a missing or unrecognized shape is NOT a caller bug — it means the
 // orchestrator asserts no specific shape applies, which is exactly what `any` covers.
 const VALID_SHAPES = ['any', 'survey', 'review', 'author']
-const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'none' }
+const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'fable' }
 const shapeOf = (j) => VALID_SHAPES.includes(j.shape) ? j.shape : 'any'
 // Off-Anthropic, the RECEIVING model is deepseek whatever role name the caller pinned, and deepseek
 // sits in the strict band — so endpoint translation overrides the role-derived tier.
-const tierOf = (j) => A.__pin ? 'strict' : (TIER_OF[j.model] || 'strict')
+// Off-Anthropic ids carry no TIER_OF row, so a provider session reads at the strict tier.
+const tierOf = (j) => A.__transport ? 'strict' : (TIER_OF[j.model] || 'strict')
 const guardRef = (j) => {
   const tier = tierOf(j)
-  if (tier === 'none') { return '' }
   const shape = shapeOf(j)
   const files = shape === 'any'
     ? '.claude/guards/any.md'
@@ -134,7 +140,7 @@ const spillContract = (j) => spills(j) ? [
   '',
   '=== RETURN-PATH CONTRACT (overrides any "return the full result" wording in your brief) ===',
   'Write your FULL deliverable to ' + spillPath(j.label) + ' using the Write tool. That file is yours alone — no other agent writes it.',
-  'Then return ONLY: (a) a digest of at most ' + DIGEST_WORDS + ' words covering what the caller must decide or act on, and (b) a final line exactly `FULL: ' + spillPath(j.label) + '`.',
+  'Then return ONLY: (a) a digest of at most ' + DIGEST_WORDS + ' words covering what the caller must decide or act on, (b) one line `couldNotSatisfy:` naming every unmet item with what stopped it (denial, missing input, out-of-lane file) and the exact intended change, or `couldNotSatisfy: none`, and (c) a final line exactly `FULL: ' + spillPath(j.label) + '`.',
   'Do NOT restate the full deliverable in your final message. If you could not write the file, say so in the digest instead of pasting the content.',
 ].join('\n') : ''
 
@@ -176,6 +182,20 @@ const results = await parallel(jobs.map(j => () => {
 // `inlineLabels` rides the RETURN value, not just log(): the caller reads this object, and an
 // exemption visible only in the progress narrator is the same silent omission this guard exists to end.
 const out = Object.fromEntries(results.filter(Boolean))
+// A null result is a dead or stalled agent, not an empty deliverable. Name it and the recovery
+// route in the RETURN value: the work it paid for sits in its spill file or transcript, and
+// `/salvage_fanout` lives in commands/, which a caller reaching this engine directly never read.
+// A dead agent still yields the truthy pair [label, null], so filter(Boolean) keeps it and it
+// lands in `out` as label: null — test the VALUE, not membership.
+const NO_RETURN_JOBS = jobs.filter(j => !(j.label in out) || out[j.label] == null)
+const NO_RETURN = NO_RETURN_JOBS.map(j => j.label)
+let noReturn = null
+if (NO_RETURN.length > 0) {
+  const route = NO_RETURN_JOBS.map(j => j.label + ' -> ' + (spills(j) ? spillPath(j.label) + ' else ' : '') + '/salvage_fanout <transcriptDir> ' + j.label).join('; ')
+  log('NO-RETURN ' + NO_RETURN.join(', ') + ' — recover before re-dispatching: ' + route)
+  noReturn = { labels: NO_RETURN, recover: route }
+}
+// `noReturn` rides beside spillDir/digests, never inside `digests` (callers iterate it as labels).
 return SPILL_DIR
-  ? (INLINE_LABELS.length > 0 ? { spillDir: SPILL_DIR, inlineLabels: INLINE_LABELS, digests: out } : { spillDir: SPILL_DIR, digests: out })
-  : out
+  ? Object.assign({ spillDir: SPILL_DIR, digests: out }, INLINE_LABELS.length > 0 ? { inlineLabels: INLINE_LABELS } : {}, noReturn ? { noReturn } : {})
+  : (noReturn ? Object.assign({ noReturn }, out) : out)

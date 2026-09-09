@@ -4,6 +4,7 @@ export const meta = {
   phases: [
     { title: 'Review', detail: 'dispatch each supplied agent prompt in parallel (single-flight guard appended)' },
     { title: 'Consolidate', detail: 'merge, dedup by file:line, sort by critical→tier→category' },
+    { title: 'Merge', detail: 'optional one-agent semantic consolidation (args.consolidate; default on at >=12 deduped findings) — merges same-defect findings anchored to different lines, never filters' },
   ],
 }
 
@@ -18,11 +19,14 @@ try {
 }
 const agents = Array.isArray(A.agents) ? A.agents : []
 
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
-// Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
-// script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Anthropic role names stay canonical and are ALWAYS legal; on a provider session
+// that transport's own registry ids become legal too, which is what makes a sibling model
+// reachable by Workflow pin with no sidecar. Absent the key nothing changes. Inlined per script
+// because the Workflow sandbox has no require/import.
+const TRANSPORT_IDS = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
+const PIN = (m) => m
+const EFF = (e) => e
 const contextPrefix = A.contextPrefix || '' // optional shared CONTEXT prepended to every agent prompt
 if (agents.length === 0) {
   return { error: 'No agents in args. The calling command (Claude) must assemble each agent prompt (from review_agents.md / session_audit_agents.md / etc.) and pass them via args.agents = [{key, prompt?, promptPath?, model?, effort?}] (+ optional args.contextPrefixPath, args.justification).' }
@@ -36,11 +40,12 @@ if (agents.length === 0) {
 // must hold even at the tier where the doctrine reference is suppressed.
 // Tier is per-agent (instruction_quality §3, "tier rails by the model that RECEIVES them"), so the
 // reference is built per agent below rather than as one shared constant.
-const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'none' }
+const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'fable' }
 // Off-Anthropic the RECEIVING model is deepseek whatever role name was pinned — strict band.
-const tierOf = (m) => A.__pin ? 'strict' : (TIER_OF[m] || 'strict')
-// MACHINE SAFETY + delivery mechanics, owned by this engine and shipped at EVERY tier including
-// `none`. Only DOCTRINE tiers by model — a fable lens that wedges the single-flight GdUnit4 pipe or
+// Off-Anthropic ids carry no TIER_OF row, so a provider session reads at the strict tier.
+const tierOf = (m) => A.__transport ? 'strict' : (TIER_OF[m] || 'strict')
+// MACHINE SAFETY + delivery mechanics, owned by this engine and shipped at EVERY tier (strict,
+// terse, fable). Only DOCTRINE tiers by model — a fable lens that wedges the single-flight GdUnit4 pipe or
 // writes to the tree does the same damage a sonnet lens would, and this engine is read-only by
 // construction, so those bars are not the receiving model's to earn out of.
 const CONCURRENT = agents.length > 1
@@ -56,7 +61,6 @@ const BASE_CONTRACT = [
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3).
 const guardRef = (m) => {
   const tier = tierOf(m)
-  if (tier === 'none') { return BASE_CONTRACT }
   return BASE_CONTRACT + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
@@ -98,10 +102,15 @@ const FINDINGS_SCHEMA = {
 }
 
 // 'fable' is requestable but never a default — reserve for explicit high-fidelity dispatch.
-const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
+// On a provider session the transport's ids REPLACE the Anthropic vocabulary rather than
+// joining it: concat left `opus`/`sonnet` legal in the engine while the guard denied them,
+// so the two homes of one rule disagreed and the engine was the permissive one.
+const VALID_MODELS = TRANSPORT_IDS.length ? TRANSPORT_IDS : ['opus', 'sonnet', 'haiku', 'fable']
 // Floor: a caller that omits (or mis-spells) model must NOT silently inherit the session model —
 // under Fable that turns a 6-lens fan-out into 6 Fable agents. Default to sonnet; callers escalate explicitly.
-const DEFAULT_MODEL = 'sonnet'
+// Transport-aware: on a provider session `sonnet` is unserviceable, so an omitted pin must
+// fall to that transport's own default rather than to a name the endpoint will reject.
+const DEFAULT_MODEL = (A.__transport && A.__transport.default) || 'sonnet'
 // Effort floor (two-class rule, orchestration §5): review/judgment lenses are bounded-by-construction —
 // measured: medium lenses matched high findings at ~43% cost (plan-check, sub-architectural plans ONLY:
 // P-D pin comparison 2026-07-29 found opus-high lenses catching 2.5x the defects of sonnet-medium on an
@@ -110,6 +119,19 @@ const DEFAULT_MODEL = 'sonnet'
 // args.justification naming the ambiguity it resolves.
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
 const DEFAULT_EFFORT = 'medium'
+
+// A MISSING model still falls to DEFAULT_MODEL -- that floor exists so an omitted pin cannot
+// inherit the session model. A PRESENT-but-unrecognized one is a different animal: silently
+// coercing it means a fan-out pinned to a typo, or to a transport id the engine was never told
+// about, runs as sonnet and reports a clean sweep. Fail loudly instead.
+const badModels = agents.filter(a => a.model && !VALID_MODELS.includes(a.model))
+if (badModels.length) {
+  return { error: 'review-fanout: unrecognized model pin(s): '
+    + badModels.map(a => (a.key || 'agent') + '->' + a.model).join(', ')
+    + '. Legal here: ' + VALID_MODELS.join(', ')
+    + (A.__transport ? ' (transport ' + A.__transport.name + ')' : ' (Anthropic session)')
+    + '. Omit `model` to take the ' + DEFAULT_MODEL + ' floor deliberately.' }
+}
 
 const resolved = agents.map(a => ({
   ...a,
@@ -142,7 +164,7 @@ const merged = []
 const flags = []
 for (const r of raw) {
   if (!r || !r.result || typeof r.result !== 'object') {
-    flags.push({ kind: 'lens-no-return', lens: r ? r.key : '(unknown)', detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. Recover its transcript (or spill) before re-dispatching.' })
+    flags.push({ kind: 'lens-no-return', lens: r ? r.key : '(unknown)', detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + (r ? r.key : '<key>') + ' (this engine writes no spill file; the transcript holds the paid-for work).' })
     continue
   }
   if (Array.isArray(r.result.findings)) { merged.push(...r.result.findings) }
@@ -176,13 +198,81 @@ deduped.sort((a, b) => {
   return (CAT[a.category] ?? 9) - (CAT[b.category] ?? 9)
 })
 
-const counts = {
-  total: deduped.length,
-  critical: deduped.filter(f => f.critical).length,
-  fix: deduped.filter(f => f.action === 'FIX').length,
-  ask: deduped.filter(f => f.action === 'ASK').length,
-  plan: deduped.filter(f => f.action === 'PLAN').length,
+// Semantic consolidation — OPTIONAL, after the deterministic dedup, never instead of it.
+// The dedup above keys on the exact `file:line` string, so one defect anchored to three different
+// lines survives three times (observed: four such families in one /plan_check run). This stage
+// merges by MEANING. It is a merge, never a filter: nothing is dropped, re-tiered down, or
+// summarized away, and a return that loses an input id is discarded in favour of the deterministic
+// list — a consolidation that swallows findings is worse than none.
+const MERGE_ITEM = FINDINGS_SCHEMA.properties.findings.items
+const MERGE_SCHEMA = {
+  type: 'object', additionalProperties: true,
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: true,
+        properties: Object.assign({}, MERGE_ITEM.properties, {
+          merged_from: { type: 'array', items: { type: 'string' }, description: 'ids of every source finding this entry represents; every input id appears in exactly one entry' },
+        }),
+        required: MERGE_ITEM.required.concat(['merged_from']),
+      },
+    },
+  },
+  required: ['findings'],
 }
-log('review-fanout: ' + agents.length + ' agents → ' + counts.total + ' findings (' + counts.critical + ' critical, ' + counts.fix + ' FIX / ' + counts.ask + ' ASK / ' + counts.plan + ' PLAN)')
 
-return { findings: deduped, counts, flags, perAgent: raw.map(r => ({ key: r.key, count: (r && r.result && Array.isArray(r.result.findings)) ? r.result.findings.length : 0 })) }
+const consolidate = (typeof A.consolidate === 'boolean') ? A.consolidate : (deduped.length >= 12)
+let final = deduped
+if (consolidate && deduped.length > 1) {
+  phase('Merge')
+  const numbered = deduped.map((f, i) => Object.assign({ id: 'F' + (i + 1) }, f))
+  const mergePrompt = [
+    'You are consolidating the findings of a multi-lens review. Several lenses read the same material, so ONE defect often appears two or three times anchored to different lines.',
+    '',
+    'RULE: MERGE, NEVER FILTER.',
+    '- Merge two findings only when they are the same defect: same file AND the same claim, regardless of line number. Different defects in one file stay separate.',
+    '- A merged entry keeps EVERY source `agent` value (join them with ", "), every evidence quote from every source, the most specific `old`/`new` pair among the sources, and `critical: true` if ANY source was critical.',
+    '- Never drop a finding, never lower its `critical`/`action`/`category`, never replace its text with a summary. A finding you are unsure about stays as its own entry.',
+    '- Every input id appears in exactly one output entry\'s `merged_from`. A finding you did not merge is returned unchanged with `merged_from: ["<its own id>"]`.',
+    '',
+    'INPUT FINDINGS (JSON):',
+    JSON.stringify(numbered),
+    '',
+    'OUTPUT: only the JSON object {"findings": [...]} per the schema. No prose.',
+  ].join('\n')
+  log('PINS ' + JSON.stringify({ 'review:consolidate': 'opus/low/general-purpose' }))
+  const res = await agent(mergePrompt, {
+    label: 'review:consolidate', phase: 'Merge', schema: MERGE_SCHEMA,
+    // Engine-internal pin: not a caller's, so neither the widening nor the guard's scanner
+    // covers it. Falls to the transport's default so consolidation does not null out on a
+    // provider session after every lens has already run.
+    model: (A.__transport && A.__transport.default) || 'opus', effort: 'low', agentType: 'general-purpose',
+  })
+  const out = (res && Array.isArray(res.findings)) ? res.findings : null
+  if (!out) {
+    flags.push({ kind: 'consolidate-no-return', detail: 'the consolidation agent returned no schema object — the deterministic list is returned unmerged.' })
+  } else {
+    const seen = new Set()
+    for (const f of out) { for (const id of (f.merged_from || [])) { seen.add(id) } }
+    const missing = numbered.filter(f => !seen.has(f.id)).map(f => f.id)
+    if (missing.length) {
+      flags.push({ kind: 'consolidate-dropped-findings', detail: 'ids absent from every merged_from: ' + missing.join(', ') + ' — the merge was discarded and the deterministic list is returned unmerged.' })
+    } else {
+      final = out
+    }
+  }
+}
+
+const counts = {
+  raw: deduped.length,
+  merged: final.length,
+  total: final.length,
+  critical: final.filter(f => f.critical).length,
+  fix: final.filter(f => f.action === 'FIX').length,
+  ask: final.filter(f => f.action === 'ASK').length,
+  plan: final.filter(f => f.action === 'PLAN').length,
+}
+log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' deduped / ' + counts.merged + ' after merge (' + counts.critical + ' critical, ' + counts.fix + ' FIX / ' + counts.ask + ' ASK / ' + counts.plan + ' PLAN)')
+
+return { findings: final, counts, flags, perAgent: raw.map(r => ({ key: r.key, count: (r && r.result && Array.isArray(r.result.findings)) ? r.result.findings.length : 0 })) }

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Hook: PostToolUse routing-audit log — continuous classification of every
-tool call against CLAUDE.md §9 routing rules. Persists silent-misses + cue-
+tool call against CLAUDE.md §Tool Routing routing rules. Persists silent-misses + cue-
 exempt overrides to logs/routing_audit.jsonl for /eval_dashboard aggregation.
 
 Why this exists:
@@ -23,7 +23,7 @@ What gets logged (and what doesn't):
 - COMPLIANT        : skip. Routine routing wins, not interesting.
 - ADVISORY_APP.    : skip. Soft-nudge categories (memory_search, broad obsidian
                      search) — too noisy to log every one.
-- NOT_ROUTABLE     : skip. Tool has no §9 routing rules.
+- NOT_ROUTABLE     : skip. Tool has no §Tool Routing routing rules.
 
 Each entry also records `nudge_fired: bool` — whether the existing nudge
 channel (tool_routing_post_grep.py / tool_routing_nudge.py stderr) actually
@@ -69,14 +69,17 @@ except ImportError:
 
 # === State + log paths =======================================================
 
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
+STATE_DIR = os.environ.get("PP_HOOK_STATE_DIR") or os.path.expanduser("~/.claude/.routing_state")
 
 # Anchored to CLAUDE_PROJECT_DIR: hook cwd is USUALLY the project root, but
 # sessions with a different cwd scattered stray logs/ dirs under .claude/commands/,
 # .claude/auto-memory/, and arbitrary code folders (observed 2026-07-25).
 # Worktree sessions keep their own project dir — that split is intended.
+# PP_ROUTING_AUDIT_LOG_PATH overrides the log path so a proof never writes the real one.
 _PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
-AUDIT_LOG_PATH = os.path.join(_PROJECT_DIR, "logs", "routing_audit.jsonl")
+AUDIT_LOG_PATH = os.environ.get("PP_ROUTING_AUDIT_LOG_PATH") or os.path.join(
+    _PROJECT_DIR, "logs", "routing_audit.jsonl"
+)
 
 # Cap each log entry's prompt-excerpt to bound JSONL size on long-prompt turns.
 PROMPT_EXCERPT_CAP = 400
@@ -227,15 +230,15 @@ def process(input_data: dict) -> None:
     state = _read_state(session_id, agent_id)
     last_prompt = state.get("last_prompt") or ""
 
-    # Classify the call against §9 routing rules.
+    # Classify the call against §Tool Routing routing rules.
     try:
-        classification = classify_call(tool_name, tool_input, last_prompt)
+        classification = classify_call(tool_name, tool_input, last_prompt, agent_id)
     except Exception:
         # Classifier should be exception-free, but defensively skip on bug.
         return
 
-    # Only log the interesting tiers.
-    if classification.severity not in ("nudge-warranted", "cue-exempt"):
+    # Only log the interesting tiers. `census` rows (vault doc writes) are measurement, not misses.
+    if classification.severity not in ("nudge-warranted", "cue-exempt", "census"):
         return
 
     nudge_fired = _detect_nudge_fired(classification, tool_name, tool_input, state, session_id, agent_id)

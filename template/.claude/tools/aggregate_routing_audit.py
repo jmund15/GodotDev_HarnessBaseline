@@ -110,7 +110,7 @@ def _parse_iso(ts: str) -> datetime | None:
 def _classification_bucket(entry: dict) -> str:
     """
     Map (classification, nudge_fired) pair to dashboard bucket.
-    Returns one of: "silent_miss", "nudged", "cue_exempt", "other".
+    Returns one of: "silent_miss", "nudged", "cue_exempt", "census", "other".
     """
     cls = entry.get("classification", "")
     nudge = entry.get("nudge_fired", False)
@@ -118,6 +118,8 @@ def _classification_bucket(entry: dict) -> str:
         return "nudged" if nudge else "silent_miss"
     if cls == "cue-exempt":
         return "cue_exempt"
+    if cls == "census":
+        return "census"
     return "other"
 
 
@@ -234,6 +236,12 @@ def aggregate(entries: list[dict], active_window_days: int = 30) -> dict:
         "silent_misses_subagent": bucket_totals.get("silent_miss_sub", 0),
         "nudged_routing_misses": bucket_totals.get("nudged", 0),
         "cue_exempt_overrides": bucket_totals.get("cue_exempt", 0),
+        # Vault doc writes by route (vault-write-direct vs vault-write-worker): the measured
+        # direct/worker split the Documentation Delegation Rule is judged against.
+        "vault_writes": {
+            rule: counts.get("census", 0)
+            for rule, counts in by_rule_counts.items() if counts.get("census", 0)
+        },
         "by_rule": {
             rule: dict(counts) for rule, counts in by_rule_counts.items()
         },
