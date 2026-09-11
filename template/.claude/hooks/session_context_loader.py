@@ -6,10 +6,10 @@ Hook: SessionStart - Worktree setup + development context loader
 On every session start:
 1. Detects if running in a git worktree or cloud environment
 2. On cloud: runs cloud-install.sh if dependencies are missing
-3. Re-syncs any submodule whose checkout differs from the recorded pointer
+3. Initializes empty submodules; reports and preserves existing divergent checkouts
 4. Generates .runsettings from template if missing (worktree/cloud)
 5. Regenerates .godot import cache if missing (headless)
-6. Runs dotnet build to verify compilation health
+6. Runs dotnet build to verify compilation health (startup/clear only; resume/compact report the stored verify)
 7. Injects git context (branch, commits, submodule status)
 8. On cloud: persists env vars via CLAUDE_ENV_FILE
 """
@@ -119,109 +119,90 @@ def is_worktree() -> bool:
 # Setup steps
 # ---------------------------------------------------------------------------
 
-def submodule_status(root: Path) -> list[tuple[str, str, str]]:
-    """Return [(prefix, sha, path)] from `git submodule status --recursive`.
-
-    Prefix is the authoritative sync tell, and the only one that needs no build:
-      ' ' in sync | '-' uninitialized | '+' checkout != recorded pointer
-      'U' merge conflicts inside the submodule
-    Empty list on any failure (caller treats that as "nothing to do").
-    """
+def submodule_status(root: Path) -> list[tuple[str, str, str]] | None:
+    """[(prefix, sha, path)]; None means the probe failed, [] means no submodules."""
     try:
         result = subprocess.run(
             ["git", "submodule", "status", "--recursive"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=str(root)
         )
         if result.returncode != 0:
-            return []
+            return None
         entries = []
         for line in result.stdout.splitlines():
-            # Match on the sha rather than fixed columns — the in-sync prefix is
-            # a leading space, which any upstream strip() would silently eat.
+            if not line.strip():
+                continue
             match = _SUBMODULE_RE.match(line.strip())
-            if match:
-                entries.append((match.group(1) or " ", match.group(2), match.group(3)))
+            if not match:
+                return None
+            entries.append((match.group(1) or " ", match.group(2), match.group(3)))
         return entries
     except Exception:
-        return []
+        return None
 
 
-def _submodule_is_dirty(root: Path, sub_path: str) -> bool:
-    """True if the submodule working tree has uncommitted changes."""
+def _submodule_is_dirty(root: Path, sub_path: str) -> bool | None:
+    """Dirty state, or None when the working tree cannot be inspected."""
     try:
         result = subprocess.run(
             ["git", "-C", str(root / sub_path), "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
         )
-        return result.returncode == 0 and bool(result.stdout.strip())
+        return bool(result.stdout.strip()) if result.returncode == 0 else None
     except Exception:
-        return False
+        return None
 
 
 def setup_submodule(root: Path) -> str:
-    """Re-sync every submodule whose checkout differs from the recorded pointer.
-
-    Why not "is the directory non-empty": that only catches a never-initialized
-    submodule (day one of a worktree). The recurring break is a POPULATED
-    submodule left at the wrong commit — `git worktree add` does not init
-    submodules and `git checkout`/merge does not move an already-checked-out
-    one, so a worktree whose branch later advanced the pointer builds against a
-    Jmodot the superproject does not record. Failure signature and both drift
-    directions: auto-memory gotcha_concurrent_session_hazards.
-
-    Auto-fix is gated on a CLEAN submodule working tree. A dirty submodule means
-    live in-progress work (the develop-in-Jmodot-then-bump-the-pointer flow), and
-    `git submodule update` would move HEAD out from under it — so that case is
-    reported loudly instead. Discarded checkouts are never lost: the pre-update
-    sha is printed for `git -C <sub> checkout <sha>`.
-    """
+    """Initialize empty submodules; preserve existing checkouts, including clean divergence."""
     entries = submodule_status(root)
-    if not entries:
-        return "OK"
+    if entries is None:
+        return "UNKNOWN (submodule status failed; no automatic changes)"
 
-    actionable = []   # (prefix, sha, path) safe to update
-    blocked = []      # (reason, path)
+    actionable = []
+    blocked = []
     for prefix, sha, path in entries:
         if prefix == " ":
             continue
-        if prefix == "U":
-            blocked.append((f"{path}: merge conflicts inside submodule", path))
-        elif prefix == "+" and _submodule_is_dirty(root, path):
-            blocked.append((f"{path}: checkout {sha[:8]} != recorded, but working tree is dirty", path))
+        if prefix == "-":
+            target = root / path
+            try:
+                if target.exists() and (not target.is_dir() or any(target.iterdir())):
+                    blocked.append(f"{path}: uninitialized but nonempty; preserved")
+                else:
+                    actionable.append(path)
+            except OSError:
+                blocked.append(f"{path}: cannot inspect directory; preserved")
+        elif prefix == "+":
+            blocked.append(f"{path}: checkout {sha[:8]} differs from recorded pointer; preserved")
         else:
-            actionable.append((prefix, sha, path))
+            blocked.append(f"{path}: conflict or unknown state; preserved")
 
-    if not actionable and not blocked:
-        return "OK"
+    preserved = "; ".join(blocked)
+    if not actionable:
+        return "BROKEN (not auto-fixed): " + preserved if blocked else "OK"
 
-    notes = []
-    if actionable:
-        cmd = ["git", "submodule", "update", "--init", "--recursive"] + [p for _, _, p in actionable]
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, cwd=str(root)
-            )
-            if result.returncode != 0:
-                return f"FAILED: {result.stderr.strip()[:120]}"
-        except subprocess.TimeoutExpired:
-            return "FAILED: timeout"
-        except Exception as e:
-            return f"FAILED: {e}"
-        for prefix, sha, path in actionable:
-            if prefix == "-":
-                notes.append(f"{path} initialized")
-            else:
-                notes.append(f"{path} re-synced to recorded pointer (was {sha[:8]}; "
-                             f"restore with: git -C {path} checkout {sha[:8]})")
+    try:
+        result = subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive", "--", *actionable],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, cwd=str(root)
+        )
+        if result.returncode != 0:
+            return f"FAILED: {result.stderr.strip()[:120]}"
+    except subprocess.TimeoutExpired:
+        return "FAILED: timeout"
+    except Exception as exc:
+        return f"FAILED: {exc}"
 
-    if blocked:
-        detail = "; ".join(r for r, _ in blocked)
-        prefix_str = f"FIXED ({'; '.join(notes)}) but " if notes else ""
-        return (f"{prefix_str}BROKEN (not auto-fixed): {detail} — "
-                f"commit or stash inside the submodule, then run "
-                f"`git submodule update --init --recursive`")
-
-    return f"FIXED ({'; '.join(notes)})"
+    after = submodule_status(root)
+    if after is None:
+        return "UNKNOWN (initialization returned success; follow-up status failed)"
+    if not set(actionable).issubset({path for prefix, _, path in after if prefix == " "}):
+        return "BROKEN (initialization did not establish the recorded checkout)" + ("; " + preserved if blocked else "")
+    initialized = "initialized " + ", ".join(actionable)
+    if blocked or any(prefix != " " for prefix, _, _ in after):
+        return "BROKEN (" + initialized + "); " + (preserved or "other submodules are not at the recorded checkout")
+    return "FIXED (" + initialized + ")"
 
 
 def setup_runsettings(root: Path) -> str:
@@ -280,6 +261,20 @@ def resolve_bash() -> str | None:
     if found and "system32" not in found.lower():
         return found
     return None
+
+
+def sidecar_launchers(registry, seat: str):
+    """Launchers worth probing from this seat."""
+    available = {m.get("transport") for m in registry.available_models()}
+    launchers = []
+    for transport in registry.transports():
+        if transport == seat or transport not in available:
+            continue
+        config = registry.transport_meta(transport) or {}
+        launcher = config.get("launcher")
+        if launcher:
+            launchers.append((transport, os.path.basename(launcher)))
+    return launchers
 
 
 def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
@@ -440,7 +435,7 @@ def setup_import_cache(root: Path) -> str:
         if (imported_dir.exists() and any(imported_dir.iterdir())):
             return "FIXED (regenerated)"
         if result.returncode == 0:
-            return "FIXED (regenerated)"
+            return "FAILED: import returned success but produced no imported resources"
         return f"FAILED: exit {result.returncode}"
     except subprocess.TimeoutExpired:
         return "FAILED: timeout (>120s)"
@@ -448,10 +443,8 @@ def setup_import_cache(root: Path) -> str:
         return f"FAILED: {e}"
 
 
-# Build-verify freshness gate: a full `dotnet build` on EVERY session start
-# costs up to 120s and can collide with a concurrent session's build/test
-# (shared obj/ locks, gdunit4 pipe). Skip when a successful verify for the
-# same HEAD is recent; failures are never cached (always re-verify).
+# Re-entry reports prior verification without spawning another build. A recent,
+# clean, same-HEAD cache may also avoid a startup build, but never claims current health.
 BUILD_VERIFY_TTL_SECONDS = 30 * 60
 
 
@@ -461,7 +454,7 @@ def _git_head(root: Path) -> str:
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, cwd=str(root)
         )
-        return result.stdout.strip()
+        return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -477,10 +470,13 @@ def cached_build_result(root: Path) -> str | None:
         cache = json.loads(_build_cache_path(root).read_text(encoding="utf-8"))
         if not cache.get("result", "").startswith("OK"):
             return None
-        if time.time() - float(cache.get("ts", 0)) > BUILD_VERIFY_TTL_SECONDS:
+        age = time.time() - float(cache.get("ts", 0))
+        if not 0 <= age <= BUILD_VERIFY_TTL_SECONDS:
             return None
         head = _git_head(root)
         if not head or cache.get("head") != head:
+            return None
+        if cache.get("clean") is not True or _submodule_is_dirty(root, ".") is not False:
             return None
         return cache["result"]
     except Exception:
@@ -490,14 +486,49 @@ def cached_build_result(root: Path) -> str | None:
 def store_build_result(root: Path, result: str) -> None:
     try:
         import time
+        from _hook_state import write_json_atomic
         path = _build_cache_path(root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"ts": time.time(), "head": _git_head(root), "result": result}),
-            encoding="utf-8",
-        )
+        write_json_atomic(str(path), {
+            "ts": time.time(), "head": _git_head(root), "result": result,
+            "clean": _submodule_is_dirty(root, ".") is False,
+        })
     except Exception:
         pass
+
+
+# Re-entry does not establish unchanged build inputs; retained results are labelled PREVIOUS.
+NO_BUILD_SOURCES = ("resume", "compact")
+
+
+def stored_build_result(root: Path, source: str) -> str:
+    """The last stored verify, tagged with its age and whether HEAD moved since; never builds."""
+    try:
+        import time
+        cache = json.loads(_build_cache_path(root).read_text(encoding="utf-8"))
+        result = str(cache.get("result") or "")
+        if result:
+            age_min = int((time.time() - float(cache.get("ts", 0))) / 60)
+            moved = "" if cache.get("head") == _git_head(root) else ", HEAD moved since"
+            return f"PREVIOUS: {result} [last verify {age_min}m ago{moved}; {source} skips the build]"
+    except Exception:
+        pass
+    return f"SKIPPED ({source}: no stored verify)"
+
+
+def build_status(root: Path, source: str, submodule_ready: bool, verify=None) -> str:
+    """Build verdict for this SessionStart: no build when the submodule is not ready or the
+    source is a re-entry; a fresh same-HEAD OK verify is served from cache
+    (BUILD_VERIFY_TTL_SECONDS); otherwise dotnet runs and the result is stored."""
+    if not submodule_ready:
+        return "SKIPPED (submodule not ready)"
+    if source in NO_BUILD_SOURCES:
+        return stored_build_result(root, source)
+    cached = cached_build_result(root)
+    if cached:
+        return f"PREVIOUS: {cached} [cached <{BUILD_VERIFY_TTL_SECONDS // 60}m; not a current build]"
+    result = (verify or verify_build)(root)
+    store_build_result(root, result)
+    return result
 
 
 def verify_build(root: Path) -> str:
@@ -548,16 +579,18 @@ def get_git_branch() -> str:
         return "unknown"
 
 
-def get_uncommitted_count() -> int:
+def get_uncommitted_count() -> int | None:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
+        if result.returncode != 0:
+            return None
         lines = [l for l in result.stdout.strip().split("\n") if l]
         return len(lines)
     except Exception:
-        return 0
+        return None
 
 
 def get_recent_commits(count: int = 3, cwd: str | None = None) -> list[str]:
@@ -671,33 +704,33 @@ def main():
     setup_results["submodule"] = setup_submodule(root)
     if worktree or cloud:
         setup_results["runsettings"] = setup_runsettings(root)
-    setup_results["import_cache"] = setup_import_cache(root)
+    submodule_ready = setup_results["submodule"] == "OK" or setup_results["submodule"].startswith("FIXED (")
+    setup_results["import_cache"] = setup_import_cache(root) if submodule_ready else "SKIPPED (submodule not ready)"
 
-    # Only build if submodule is ready; skip when a fresh same-HEAD OK verify
-    # is cached (see BUILD_VERIFY_TTL_SECONDS rationale above).
-    if "FAILED" not in setup_results["submodule"]:
-        cached = cached_build_result(root)
-        if cached:
-            setup_results["build"] = f"{cached} [cached <{BUILD_VERIFY_TTL_SECONDS // 60}m]"
-        else:
-            setup_results["build"] = verify_build(root)
-            store_build_result(root, setup_results["build"])
-    else:
-        setup_results["build"] = "SKIPPED (submodule not ready)"
+    setup_results["build"] = build_status(
+        root, str(input_data.get("source") or "startup"), submodule_ready)
 
     # --- LSP plugin health check (local only) ---
     if not cloud:
         setup_results["lsp_plugin"] = verify_lsp_plugin()
 
-    # --- Sidecar availability, every transport (orchestration §5b routing inputs) ---
-    for _name in ("deepseek_sidecar.sh", "codex_proxy_sidecar.sh", "opencode_sidecar.sh"):
-        _key = "sidecar-" + _name.split("_")[0]
-        setup_results[_key] = verify_sidecar(root, _name)
+    # --- Sidecar availability, every reachable off-transport route ---
+    try:
+        sys.path.insert(0, os.path.join(root, ".claude", "tools"))
+        import model_registry as _mr
+        import _session_transport as _st
+        _launchers = sidecar_launchers(_mr, _st.resolve()[0])
+    except Exception:
+        _launchers = [("deepseek", "deepseek_sidecar.sh"), ("codex", "codex_proxy_sidecar.sh"),
+                      ("opencode", "opencode_sidecar.sh")]
+    for _tname, _name in _launchers:
+        setup_results["sidecar-" + _tname] = verify_sidecar(root, _name)
 
     # --- Git context ---
     branch = get_git_branch()
     uncommitted = get_uncommitted_count()
-    uncommitted_str = f"{uncommitted} uncommitted" if uncommitted > 0 else "clean"
+    uncommitted_str = ("working tree UNKNOWN" if uncommitted is None else
+                       f"{uncommitted} uncommitted" if uncommitted > 0 else "clean")
 
     main_commits = get_recent_commits(1)
     jmodot_commits = get_jmodot_commits(root, 1)
@@ -738,7 +771,7 @@ def main():
         output_lines.append("  GODOT_BIN: NOT FOUND (tests requiring Godot runtime will fail)")
 
     if any_fixed:
-        output_lines.append("  ** Auto-fixed issues above. Ready to develop. **")
+        output_lines.append("  Auto-fixed the items marked FIXED; see remaining statuses above.")
 
     # Git context
     output_lines.append("")
@@ -869,6 +902,10 @@ def main():
     output_lines.append("")
     output_lines.append("<context-reload-reminder>")
     output_lines.append("If resuming from compaction: search auto-memory (semantic-search) for task-relevant gotchas.")
+    output_lines.append("Picking up another session's work (after /clear, a handoff, or a parallel session): "
+                        "`python3 .claude/tools/session_digest.py --session <id-prefix> --brief` prints its prompts, "
+                        "friction, files touched and last message; holding a pasted message from it, "
+                        "`--match-file <paste.txt>` finds the transcript.")
     output_lines.append("</context-reload-reminder>")
 
     print("\n".join(output_lines))

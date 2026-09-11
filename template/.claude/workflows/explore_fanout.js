@@ -36,17 +36,20 @@ if (SPILL_DIR) {
 
 // Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
 // {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
-// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
-// Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
-// script because the Workflow sandbox has no require/import.
+// registry ids replace Anthropic role names. Absent the key, the Anthropic vocabulary applies.
+// Inlined per script because the Workflow sandbox has no require/import.
 const PIN = (m) => m
 const EFF = (e) => e
+function validModels(A) {
+  const transportIds = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
+  return transportIds.length ? transportIds : ['opus', 'sonnet', 'haiku', 'fable']
+}
 
 // Strict, matching dispatch.js and worklog_relevance.js rather than review_fanout.js's floor: which
 // lens runs where is a budget-posture + ladder decision the CALLER makes, and exploration is the
 // most frequently-dispatched surface in the harness, so a silent default here would quietly bill the
 // whole floor to the wrong provider on every drive.
-const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
+const VALID_MODELS = validModels(A)
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
 
 const bad = lenses.filter(l => !l || !l.key || !(l.promptPath || l.prompt) || !VALID_MODELS.includes(l.model) || !VALID_EFFORTS.includes(l.effort))

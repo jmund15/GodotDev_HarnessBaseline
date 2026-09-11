@@ -10,20 +10,20 @@ description: >-
 
 # Orchestration
 
-The mechanism layer for delegating work: which dispatch mechanism fits, how to fan out, how to pin model + effort per stage. This file names **roles, never models**: the role → model ladder is `reference/model_ladder_evidence.md` §Role guidance; aliases, prices and gates are `reference/external_models.json` (`python3 .claude/tools/model_registry.py available`); sidecar launch recipe is `reference/sidecar_dispatch.md`; spawn rules (MANDATORY / PARALLEL / NO POLLING) are `commands/agents/review_agents.md`. CLAUDE.md §Model Delegation keeps the two spec-time decisions: copyable-vs-derived, and which currency a fan-out spends.
+The mechanism layer for delegating work: `/delegate` is the canonical route for ordinary ad hoc jobs; fixed-panel commands keep their own entry points. This file names **roles, never models**: the role → model ladder is `reference/model_ladder_evidence.md` §Role guidance; aliases, prices and gates are `reference/external_models.json` (`python3 .claude/tools/model_registry.py available`); sidecar launch recipe is `reference/sidecar_dispatch.md`; spawn rules (MANDATORY / PARALLEL / NO POLLING) are `commands/agents/review_agents.md`. CLAUDE.md §Model Delegation keeps the two spec-time decisions: copyable-vs-derived, and which currency a fan-out spends.
 
 ## 0. Dispatch Shape — decide this FIRST
 
 | mechanism | use for | never for |
 |---|---|---|
-| **Single `Agent`** | one bounded chunk (a plan slice, one TDD cycle, one survey); `subagent_type: "fork"` when it needs the session's conversation context; one exploratory dispatch to discover an item set | a fan-out — `Agent` inherits session effort invisibly and records no per-agent usage |
-| **Workflow** (`Workflow` tool, `.claude/workflows/*.js`) | every fan-out (≥2 agents) and every judgment/verification stage: enumerable items, pipeline/barrier, scripted merge — per-call `model`+`effort` pins, schemas, resume. Generic engines `dispatch.js` (strict pins, prompts as file paths) and `review_fanout.js` (read-only lenses, FINDINGS schema) make the pinned route zero-authoring | reaching an external model — pins never cross transports; **a nested fan-out** — a Workflow agent has neither the Workflow tool nor the Agent tool, and an Agent-tool subagent has no Workflow tool, so "delegate the command that fans out" runs its lenses unpinned or not at all. The orchestrator materializes every lens (`tools/lens_briefs.py`) and runs the fan-out itself (`gotcha_subagents_have_no_workflow_tool`) |
+| **Single `Agent`** | one exploratory dispatch when the item set is unknown; `subagent_type: "fork"` when it needs the session conversation | an ordinary pinned job — use `/delegate`; a fan-out — `Agent` inherits session effort and records no per-agent usage |
+| **Workflow** (`Workflow` tool, `.claude/workflows/*.js`) | every fan-out and judgment stage: enumerable items, pipeline/barrier, pins, schemas, resume. `/delegate` routes native work to `dispatch.js`, `dispatch_chains.js`, or `review_fanout.js` | reaching another transport; **a nested fan-out** — subagents cannot invoke Workflow. The orchestrator materializes every lens (`tools/lens_briefs.py`) and dispatches it (`gotcha_subagents_have_no_workflow_tool`) |
 | **Backgrounded `Agent` lane** | independent lanes, the orchestrator has work for the interval, each return consumed from a spill file | never when the next step needs the result; the pin is stated at dispatch as for any job, but the lane logs no PINS row — record the pin in the plan file, and state the trade at dispatch |
 | **Sidecar script** | ANY model on a transport this session is not running on — GPT, opencode, deepseek, local, and Anthropic itself from a provider session: a separate `claude` child on that transport's endpoint. Bash, one job per call; recipe `reference/sidecar_dispatch.md` | — |
 
 **Dispatch is transport-bound.** Workflow/Agent run on the session's endpoint only: an Anthropic session runs `claude-*` agents, a codex session GPT agents, a deepseek session deepseek agents. Sibling models on the session's OWN transport are reachable in-harness by Workflow pin — no sidecar. Pin that transport's ids; `hooks/workflow_provider_guard.py` denies the wrong vocabulary and names the roster. A pin the endpoint cannot serve returns null, which `.filter(Boolean)` renders as "0 findings" — a clean-looking run that ran nothing, which is why the guard denies rather than warns. Check each fan-out's journal model column against the currency you intended.
 
-**Litmus:** *can I enumerate the jobs now?* Yes → Workflow. No → ONE exploratory `Agent`, then Workflow over what it found. "No need for a workflow file" is a named rationalization. **A command that prescribes `Task`/`Agent` for a fan-out is stale text, not a carve-out** — this skill wins, and the command is fixed in the same session; the only carve-outs are the measurement batteries named in §5. Workflow as a pinned-dispatch wrapper is standing-authorized; only *scale* beyond the task's natural shape needs the user's words, ultracode, or a command that invokes it. A recurring shape becomes a command invoking `Workflow({scriptPath})`; a command whose prose shouts anti-drift warnings at itself ("spawn exactly N in one message") is a drift fossil — move the determinism into a script.
+**Litmus:** *can I enumerate the jobs now?* Yes → `/delegate`. No → one exploratory `Agent`, then `/delegate` over what it found. Direct Workflow remains for fixed-panel commands and workflow authoring. A recurring shape becomes a command invoking `Workflow({scriptPath})`. A nested command that fans out is denied by `dispatch_mechanism_guard.py`; the main session owns the fan-out.
 
 **Fixed panels are floors, not ceilings.** A command's prescribed lens set always runs; extend it with bespoke lenses when the risk profile warrants, each naming the concrete failure mode it hunts.
 
@@ -89,16 +89,35 @@ CONSTRAINTS: <hard rules; done-condition>
 
 ### Tier by lens shape
 
-Litmus: *would a wrong answer be caught by re-reading the input, or only by out-reasoning it?*
+Litmus: *would a wrong answer be caught by re-reading the input, or only by out-reasoning it?* Which work shapes each tier covers is the ladder's `§Role definitions` table; the rules below are the routing on top of it.
 
-- **Executor tier — floor for reasoning-heavy lenses:** red-team, architectural analysis, design semantics, refactor-parity gating, fix authorship — anywhere a miss ships a defect. Architecture authoring splits by altitude: scoped → executor; cross-domain → orchestrator tier (un-scopable, so not delegable).
-- **Default fan-out tier — floor for read-heavy and mechanical lenses:** surveys, enumeration, text-comparison audits, rubric checklists, schema extraction. Never a design-judgment lens here to save cost.
+- **Executor tier — floor for reasoning-heavy lenses:** anywhere a miss ships a defect. Architecture authoring splits by altitude: scoped → executor; cross-domain → orchestrator tier (un-scopable, so not delegable).
+- **Default fan-out tier — floor for read-heavy and mechanical lenses.** Never a design-judgment lens here to save cost.
 - **Validation tier:** verify a PASS, re-check a finding, cheap-to-reject lookups — same model as default fan-out; the lever is a lower effort pin.
 - **Orchestrator tier as a delegate is a cost default, not a capability rule** — off by default; open it per lens via `/pin_ab`, never by blanket pin.
 - **Escalation is per-lens**, raised for a specific heavier input, never a blanket panel bump.
 - **Scout = `agentType: 'Explore'` + explicit model pin.** Locate/enumerate/extract verifiable without doctrine — Explore/Plan receive no CLAUDE.md and no memory index, so never a lens that must APPLY project rules. It is a third Workflow pin (`dispatch.js` per-job `agentType`), never a reason to drop to the `Agent` tool (no effort param → inherited session effort).
 
 **The one inherit carve-out:** measurement batteries that test the session model's own behavior (`routing_battery.md`, `doc_workflow_battery.md`) omit `model` and `effort` on purpose. Do not "fix" them.
+
+### Per-dispatch harness cost
+
+A third pin beside model and effort: how much harness the child loads, charged PER AGENT — a 10-lens fan-out pays it ten times.
+
+| mechanism | knob | where |
+|---|---|---|
+| Workflow `agent()` | `opts.agentType` (`dispatch.js` requires it per job) | table below |
+| `Agent` tool | `subagent_type` (same agent types; no effort pin — fan-outs don't go here) | table below |
+| Sidecar | `-D bare\|pointer\|full` × `-G` | `reference/sidecar_dispatch.md` agent-type table |
+
+First-turn input tokens, identical trivial prompt (Anthropic transports):
+
+| agentType | Sonnet | Haiku |
+|---|---|---|
+| `Explore` / `Plan` | 27.8K | 15.1K |
+| `general-purpose` / default workflow subagent | 53.4K | 33.6K |
+
+`Explore`/`Plan` receive no project CLAUDE.md and no memory index — read-only locate/enumerate/extract only, never a lens that must APPLY project rules (`bare` is the sidecar analog; `full` ≈ `general-purpose`). An unpinned agent inherits the SESSION model whatever its agentType.
 
 ### Effort (Workflow `agent()` only)
 
@@ -110,6 +129,7 @@ Litmus: *would a wrong answer be caught by re-reading the input, or only by out-
 - **Each rung ≈1.4× the one below, within one model** (measured on opus; re-sweep per model — level names do not map across models) — pull effort before tier; trading tier crosses a price ratio and buys verification work.
 - **On a SIDECAR model, effort can gate engagement, not depth.** An investigative lens (review, red-team, exploration, root-cause) pins the vendor's top rung: below it, a lens answers from its inlined context and never opens a file — measured on Luna, 3 turns and 0 tool calls at `medium` against 79 tool calls and 5 findings at `max`, same input. Anthropic rungs still buy steps within an already-engaged process; do not port one model's calibration to another (ladder row owns each cell).
 - **A sharp mandate substitutes for effort on sub-architectural inputs** — a lens's named failure mode does the work; on architecturally-loaded plans it does not, and executor-tier `high` finds what default-tier `medium` misses.
+- **Compare the read set against the ARM's context window, not against the input's size.** A row with a quarter-million-token window compacts partway through a sweep a million-token row would finish in one pass, so the same mandate is cheap on one and mid-run on another; `model_registry.py context-window <id>` gives the number. Compaction is survivable, not degrading — `sidecar_fanout.py` sends `-P` always and `-S` on every review shape, and with both the arm resumes into its structured deliverable. Without `-S` it resumes into prose, which is a dispatch error and never the row's ceiling.
 - **Bounded-ambiguity stages hard-set effort in the script** (judges, verifiers, extraction); per-invocation stages (arms, executors) take a script default plus an `args` override that carries a named justification.
 - **Unsure between `low` and `medium` → `medium`.** Never characterize a tier from one observation; tier claims need the `/eval_dashboard` floor.
 - **Before pinning, check `.claude/orchestration_candidates.json`** — a listed shape runs one rung below default on its next dispatch (`/orchestration_metrics` *Over-pin candidates*).
@@ -118,9 +138,16 @@ Litmus: *would a wrong answer be caught by re-reading the input, or only by out-
 
 Order: (1) is the model selectable — `model_registry.py available`; an excluded model is out, re-select under the ladder, never substitute by rule; (2) what the band allows; (3) how much quota the dispatch spends; (4) if it leaves Anthropic, the sidecar recipe.
 
-**Bands are per CURRENCY, and a seat has two.** A Workflow/Agent dispatch is governed by its own transport's band; a hop spends the TARGET's — read it with `budget_posture.py --band --transport <name>`. On a provider seat `[budget-posture]` prints both, labelled.
+**Bands are per CURRENCY, and a seat has two.** A Workflow/Agent dispatch is governed by its own transport's band; a hop spends the TARGET's — read it with `python3 .claude/hooks/budget_posture.py --band --transport <name>`. On a provider seat `[budget-posture]` prints both, labelled.
 
-**Bands** (`.claude/tools/quota_bands.py` `BANDS` is the only home; the `[budget-posture]` hook emits the current band's set): `pressure = used% / pace%` per window. `seven_day` governs provider choice and tier-within-quota; `five_hour` governs fan-out width. **Surplus** <0.85 (low pressure — spend plan quota first, it expires), **On pace**, **Ahead**, **Hot** >1.5 (paid transport becomes the cheaper currency). A band authorizes a CLASS of work; the roster supplies who does it — a band never names models. Bands govern PAID currencies only: the free local tier (`ai-worker`) takes copyable digest reads, extraction and doc prose in every band. Pressure widens the delegatable set; it never shrinks the reserved floor — orchestration, gate decisions, cross-system seams, the ideal-design VERDICT. The floor reserves those DECISIONS, not the work shape: a **scoped** judgment, review or architecting LENS is delegable in every band, to the ladder's row for that work shape, by sidecar hop when that row is off-transport. What comes home is the verdict on its findings. Two hooks enforce it: the sidecar's band gate (exit codes in `reference/sidecar_dispatch.md`), and `hooks/workflow_provider_guard.py`, which under **Ahead/Hot** DENIES every Workflow/Agent dispatch carrying a model pin — claimed by a roster model or not — unless the call states the currency: `args.currency: "anthropic"` + `args.currencyReason` (Agent: a `CURRENCY: anthropic — <why>` prompt line), stated once per band and then held on the session record. **A pin is not its own justification.** A pin the engine defaulted to, or one a command's own table supplied, is not a constraint, so the reason names a constraint independent of the pin — engine lock, MCP tools the sidecar child lacks, a capability the roster genuinely lacks. "The lens is pinned opus" is circular, and a command's pin table is subordinate to its own band rule.
+**Bands.** `pressure = used% / pace%` per window; `.claude/tools/quota_bands.py` `BANDS` is the only home, and the `[budget-posture]` hook emits the current band's set.
+
+- **Surplus** <0.85 (spend plan quota first — it expires), **On pace**, **Ahead**, **Hot** >1.5 (paid transport becomes the cheaper currency). `seven_day` governs provider choice and tier-within-quota; `five_hour` governs fan-out width.
+- **A band authorizes a CLASS of work; the roster supplies who does it** — a band never names models. Bands govern PAID currencies only: the free local tier (`ai-worker`) takes copyable digest reads, extraction and doc prose in every band.
+- **Pressure widens the delegatable set and never shrinks the reserved floor** — orchestration, gate decisions, cross-system seams, the ideal-design VERDICT.
+- **The floor reserves those DECISIONS, not the work shape.** A *scoped* judgment, review or architecting LENS is delegable in every band, to the ladder's row for that work shape, by sidecar hop when that row is off-transport. What comes home is the verdict on its findings.
+- **Two hooks enforce it.** The sidecar's band gate (exit codes in `reference/sidecar_dispatch.md`), and `hooks/workflow_provider_guard.py`: under **Ahead/Hot** it DENIES every Workflow/Agent dispatch carrying a model pin — claimed by a roster model or not — unless the call states the currency. `args.currency: "anthropic"` + `args.currencyReason`; Agent takes a `CURRENCY: anthropic — <why>` prompt line. Stated once per band, then held on the session record.
+- **A pin is not its own justification.** A pin the engine defaulted to, or one a command's own table supplied, is not a constraint, so the reason names one independent of the pin — engine lock, MCP tools the sidecar child lacks, a capability the roster genuinely lacks. "The lens is pinned opus" is circular, and a command's pin table is subordinate to its own band rule.
 
 **Tier-within-quota.** Plan quota is model-weighted: the executor tier at `low` matches the default fan-out tier on quality at ~2.6× the quota — buy it for judgment or wall-clock, never to save budget. First ask whether the work can leave quota at all (local tier, or an external model that *claims the role* in the registry's `roles`). What stays on quota:
 
@@ -132,11 +159,11 @@ Order: (1) is the model selectable — `model_registry.py available`; an exclude
 
 Pressure moves the *tier*; ambiguity moves the *effort*. An architecting dispatch never drops to `low` for budget — off-quota transport or smaller scope instead. Record `clean`/`defects`/`rework` on every traded-down dispatch; an unrecorded trade-down is a saving you cannot defend.
 
-**Authoring/verdict split.** Pressure may delegate large-scope architecture *authoring* to a strong external model; the *verdict* comes home. In an external-model-led session, gate decisions and the ideal-design verdict still warrant an Anthropic session or explicit user sign-off — and a Workflow fan-out there is not band-gated (`session_model_rails.py` states the session's tier and role map at SessionStart instead).
+**On an external-model-led session** the floor above still binds: gate decisions and the ideal-design verdict warrant an Anthropic session or explicit user sign-off, even though large-scope architecture *authoring* is delegable there. A Workflow fan-out from that seat is not band-gated — `session_model_rails.py` states the session's tier and role map at SessionStart instead.
 
 **Sidecar:** `reference/sidecar_dispatch.md` — one launcher per transport from the registry's `launcher` field, one flag surface, the `-D`×`-G` agent-type table, exit codes. Prefer few long agents to many short ones on a paid tier — each dispatch pays a cold-start toll.
 
-**Script pins need no resolver preamble** (the vocabulary rule itself is §0). Nothing translates, so a script's pins are correct for exactly one transport and the committed `.claude/workflows/*.js` are Anthropic-session tools; off-Anthropic the guard injects `args.__transport = {name, ids, default}`, which `dispatch.js`/`review_fanout.js` use as their legal set and as the pin for engine-internal stages. **Two more dispatch args:** `j.shape` (`any|survey|review|author`) selects the `.claude/guards/` rail family; `args.spillDir` makes each agent write its full deliverable to `<spillDir>/<label>.md` and return a ≤200-word digest — default ON for report/prose-shaped output, since unbounded returns are what force lossy compaction.
+**Generic engines are provider-aware, not cross-transport.** The provider guard injects `args.__transport = {name, ids, default}` off-Anthropic; `dispatch.js`, `dispatch_chains.js`, and `review_fanout.js` then accept that transport's ids. Another transport still needs its registry launcher. `/delegate` keeps executor `route` separate from delegate-rail `shape`: only `shape` (`any|survey|review|author`) reaches sidecar `-G`. `args.spillDir` defaults on for prose output and stays under `.claude/scratch/` or `$TEMP/claude`.
 
 ## 6. The 15-Agent Cap (manual `Agent` dispatch only)
 
@@ -150,13 +177,13 @@ Parallel agents share one working tree: second write wins or fails on lock; `.ts
 
 Dedupe by `file:line` (keep the more specific / `critical` one); reconcile contradictions as orchestrator-only `## Notes`; run `/regression_gate` if fixes landed; never claim completion unverified — cite output or use future tense.
 
-**A lens that stalls or returns null is recovered before any re-dispatch:** its spill file, else `/salvage_fanout <transcriptDir> <key>` (the engines name the label: `lens-no-return`, `noReturn`). **Check deliverable rules against the delivered artifact, not the research spill** — URL + speaker, `UNVERIFIED`, `file:line` drop at synthesis.
+**A lens that stalls or returns null is recovered before any re-dispatch:** its spill file, else `/salvage_fanout`, which owns recovery. **Check deliverable rules against the delivered artifact, not the research spill.** `/delegate` records outcomes on consumption, then joins each expanded label to exactly one Workflow or sidecar row through `orchestration_metrics.py --manifest-seed`; missing or duplicate evidence fails.
 
 ## 9. Authoring a Workflow on the Fly
 
 The tool description documents the API; this is the project layer on top.
 
-- **`Write` the script, invoke `Workflow({scriptPath})`, prompts INSIDE the script** — prompt text through the JSON `args` payload is what dies (`gotcha_workflow_args_generation_fidelity.md`, `gotcha_workflow_args_permission_control_chars.md`). `args` carries short scalars only, parse-guarded (arrives as a string on some versions); bulk context goes to a scratch `.md` agents `Read` by absolute path.
+- **Pass new scripts inline via `Workflow({script})`; iterate with the returned `scriptPath`** — keep prompts inside the script: prompt text through JSON `args` can die (`gotcha_workflow_args_generation_fidelity.md`, `gotcha_workflow_args_permission_control_chars.md`). `args` carries short scalars only; bulk context goes to a scratch `.md` agents `Read` by absolute path.
 - **`log('PINS ' + JSON.stringify({label: effort, …}))` for EVERY dispatched label**, verify/adjudicate stages included — `/orchestration_metrics` refuses an unresolved `?`.
 - **Record each dispatch's outcome when you consume it** (`clean`/`defects`/`rework`/`discarded`) — cost survives compaction, the verdict doesn't.
 - **Write-shaped schemas carry `couldNotSatisfy`** (+ `redVerification` on TDD stages).

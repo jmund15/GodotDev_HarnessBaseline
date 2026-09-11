@@ -32,6 +32,24 @@ if (agents.length === 0) {
   return { error: 'No agents in args. The calling command (Claude) must assemble each agent prompt (from review_agents.md / session_audit_agents.md / etc.) and pass them via args.agents = [{key, prompt?, promptPath?, model?, effort?}] (+ optional args.contextPrefixPath, args.justification).' }
 }
 
+const SPILL_DIR = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
+const NORMAL_SPILL_DIR = SPILL_DIR ? SPILL_DIR.replace(/\\/g, '/') : null
+const spillEscapesRoot = NORMAL_SPILL_DIR && /(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR)
+const spillRootAllowed = !NORMAL_SPILL_DIR
+  || (!spillEscapesRoot && /(^|\/)\.claude\/scratch(?:\/|$)/i.test(NORMAL_SPILL_DIR))
+  || (!spillEscapesRoot && /(^|\/)temp\/claude(?:\/|$)/i.test(NORMAL_SPILL_DIR))
+if (!spillRootAllowed) {
+  return { error: 'review-fanout: spillDir must stay under .claude/scratch/ or $TEMP/claude so the read-only lens write guard permits it. Received: ' + SPILL_DIR }
+}
+const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
+const readOnlyContract = (a) => SPILL_DIR
+  ? 'Read-only: do NOT modify, create, or delete any file EXCEPT your own spill file ' + spillPath(a.label) + '.'
+  : 'Read-only: do NOT modify, create, or delete any file.'
+const spillContract = (a) => SPILL_DIR ? [
+  'Write your FULL JSON deliverable to ' + spillPath(a.label) + ' BEFORE returning the same object through structured output. That file is yours alone.',
+  'If structured output fails after the write, the caller recovers this paid-for review from that exact path.',
+].join('\n') : ''
+
 // Rails appended to EVERY fanned agent — protects all consumers by construction, in two layers.
 // DOCTRINE (what a good review looks like) lives in .claude/guards/{any,review}.md, ONE home shared
 // with dispatch.js and hooks/session_model_rails.py; this engine injects a reference, never a copy.
@@ -51,17 +69,18 @@ const tierOf = (m) => A.__transport ? 'strict' : (TIER_OF[m] || 'strict')
 const CONCURRENT = agents.length > 1
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
-const BASE_CONTRACT = [
+const BASE_CONTRACT = (a) => [
   '',
   '=== ENGINE CONTRACT ===',
-  'Read-only: do NOT modify, create, or delete any file.',
+  readOnlyContract(a),
   CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run tests, builds, or /regression_gate (the GdUnit4 named pipe is machine-wide single-flight), and do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read. If your mandate requires a test or build run, STOP and report that it needs a serialized dispatch.' : null,
   'OUTPUT: return ONLY the JSON object `{"findings": [...]}` per the schema — no prose around it.',
+  spillContract(a) || null,
 ].filter(l => l !== null).join('\n')
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3).
-const guardRef = (m) => {
-  const tier = tierOf(m)
-  return BASE_CONTRACT + '\n' + [
+const guardRef = (a) => {
+  const tier = tierOf(a.model)
+  return BASE_CONTRACT(a) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
     'Read .claude/guards/review.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md. Read ONLY those sections — the other tiers are for other models.',
@@ -71,6 +90,10 @@ const guardRef = (m) => {
 const FINDINGS_SCHEMA = {
   type: 'object', additionalProperties: true,
   properties: {
+    // Lens-level structured report the brief mandates beside its findings (a per-file density
+    // table, a coverage census). A schema field survives compaction and the metrics collector
+    // can read it; prose beside the JSON does neither (audit S3-11, 2026-09-09).
+    report: { type: ['string', 'null'], description: 'lens-level table or census the brief asked for, markdown; null when the brief asked for none' },
     findings: {
       type: 'array',
       items: {
@@ -132,6 +155,21 @@ if (badModels.length) {
     + (A.__transport ? ' (transport ' + A.__transport.name + ')' : ' (Anthropic session)')
     + '. Omit `model` to take the ' + DEFAULT_MODEL + ' floor deliberately.' }
 }
+const badKeys = agents.filter(a => typeof a.key !== 'string' || !a.key.trim())
+if (badKeys.length) {
+  return { error: 'review-fanout: every agent needs a non-empty key.' }
+}
+const duplicateKeys = agents.map(a => a.key).filter((key, i, keys) => keys.indexOf(key) !== i)
+if (duplicateKeys.length) {
+  return { error: 'review-fanout: duplicate agent key(s): ' + [...new Set(duplicateKeys)].join(', ') }
+}
+if (SPILL_DIR) {
+  const spillPaths = agents.map(a => spillPath('review:' + a.key))
+  const spillCollisions = spillPaths.filter((path, i, paths) => paths.indexOf(path) !== i)
+  if (spillCollisions.length) {
+    return { error: 'review-fanout: agent keys collide after spill-path sanitization: ' + [...new Set(spillCollisions)].join(', ') }
+  }
+}
 
 const resolved = agents.map(a => ({
   ...a,
@@ -153,7 +191,7 @@ const raw = await parallel(resolved.map(a => () => {
   const body = a.promptPath
     ? 'Your full lens mandate is at: ' + a.promptPath + ' — read it with the Read tool and execute it exactly (retry once if the read fails).'
     : (a.prompt || '')
-  const prompt = contextPre + body + guardRef(a.model)
+  const prompt = contextPre + body + guardRef(a)
   // Preserve null (a schema rejection after retries, or a dead agent): it MUST NOT collapse into an
   // empty findings array — a dead lens reading as "clean review" is the silent-coverage-loss shape.
   return agent(prompt, opts).then(r => ({ key: a.key, result: r }))
@@ -162,12 +200,18 @@ const raw = await parallel(resolved.map(a => () => {
 phase('Consolidate')
 const merged = []
 const flags = []
+const reports = {}  // lens key -> lens-level report (schema `report`), passed through untouched
 for (const r of raw) {
   if (!r || !r.result || typeof r.result !== 'object') {
-    flags.push({ kind: 'lens-no-return', lens: r ? r.key : '(unknown)', detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + (r ? r.key : '<key>') + ' (this engine writes no spill file; the transcript holds the paid-for work).' })
+    const lens = r ? r.key : '(unknown)'
+    const recovery = SPILL_DIR
+      ? 'Recover the paid-for review from ' + spillPath('review:' + (r ? r.key : 'unknown')) + ' before re-dispatching.'
+      : 'Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + (r ? r.key : '<key>') + '.'
+    flags.push({ kind: 'lens-no-return', lens, detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. ' + recovery })
     continue
   }
   if (Array.isArray(r.result.findings)) { merged.push(...r.result.findings) }
+  if (typeof r.result.report === 'string' && r.result.report.trim()) { reports[r.key] = r.result.report }
 }
 
 // Step 1 dedup by file:line — keep critical:true, else the one with more specific old/new
@@ -241,13 +285,14 @@ if (consolidate && deduped.length > 1) {
     '',
     'OUTPUT: only the JSON object {"findings": [...]} per the schema. No prose.',
   ].join('\n')
-  log('PINS ' + JSON.stringify({ 'review:consolidate': 'opus/low/general-purpose' }))
+  const consolidationModel = (A.__transport && A.__transport.default) || 'opus'
+  log('PINS ' + JSON.stringify({ 'review:consolidate': consolidationModel + '/low/general-purpose' }))
   const res = await agent(mergePrompt, {
     label: 'review:consolidate', phase: 'Merge', schema: MERGE_SCHEMA,
     // Engine-internal pin: not a caller's, so neither the widening nor the guard's scanner
     // covers it. Falls to the transport's default so consolidation does not null out on a
     // provider session after every lens has already run.
-    model: (A.__transport && A.__transport.default) || 'opus', effort: 'low', agentType: 'general-purpose',
+    model: consolidationModel, effort: 'low', agentType: 'general-purpose',
   })
   const out = (res && Array.isArray(res.findings)) ? res.findings : null
   if (!out) {
@@ -275,4 +320,9 @@ const counts = {
 }
 log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' deduped / ' + counts.merged + ' after merge (' + counts.critical + ' critical, ' + counts.fix + ' FIX / ' + counts.ask + ' ASK / ' + counts.plan + ' PLAN)')
 
-return { findings: final, counts, flags, perAgent: raw.map(r => ({ key: r.key, count: (r && r.result && Array.isArray(r.result.findings)) ? r.result.findings.length : 0 })) }
+const output = { findings: final, counts, flags, reports, perAgent: raw.map(r => ({ key: r.key, count: (r && r.result && Array.isArray(r.result.findings)) ? r.result.findings.length : 0 })) }
+if (SPILL_DIR) {
+  output.spillDir = SPILL_DIR
+  output.spills = Object.fromEntries(resolved.map(a => [a.key, spillPath(a.label)]))
+}
+return output

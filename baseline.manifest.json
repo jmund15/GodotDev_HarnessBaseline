@@ -757,6 +757,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/delegate.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/design_drive.md",
       "layer": "pure",
       "sync": "auto"
@@ -833,7 +838,7 @@
     },
     {
       "path": ".claude/commands/memory_audit.md",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -1063,7 +1068,7 @@
     },
     {
       "path": ".claude/hooks/activity_registry.py",
-      "layer": "pure",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -1472,6 +1477,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/anthropic_quota_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/autolearn.sh",
       "layer": "pure",
       "sync": "auto"
@@ -1488,6 +1498,11 @@
     },
     {
       "path": ".claude/scripts/claude_profile_functions.ps1",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/codex_effort_probe.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1832,6 +1847,26 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_anthropic_quota_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_codex_effort_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_delegate_command.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_rate_limit_record.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/aggregate_routing_audit.py",
       "layer": "pure",
       "sync": "auto"
@@ -1923,6 +1958,11 @@
     },
     {
       "path": ".claude/workflows/dispatch.js",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/workflows/dispatch_chains.js",
       "layer": "coding",
       "sync": "auto"
     },

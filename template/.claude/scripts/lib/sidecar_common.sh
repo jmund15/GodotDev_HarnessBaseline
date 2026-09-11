@@ -31,6 +31,31 @@
 # would send a reader to the wrong one.
 
 SC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# A launcher runs for up to an hour, and bash reads a script INCREMENTALLY: editing the launcher file
+# mid-run corrupts the live launcher at its next read (measured 2026-09-08: an edit to
+# codex_proxy_sidecar.sh killed a running luna curator's resume loop with "unexpected EOF", losing a
+# resumable session). Every launcher re-execs itself from a snapshot copy before doing any work;
+# SC_LAUNCHER_DIR keeps lib resolution on the real tree. This lib is sourced whole, so editing it is safe.
+sc_reexec_snapshot() {
+  [ -n "${SC_SNAPSHOT_OF:-}" ] && return 0
+  local launcher="${BASH_SOURCE[1]}" snapdir snap
+  snapdir="${TEMP:-${TMPDIR:-/tmp}}/sidecar-snapshots"
+  mkdir -p "$snapdir" 2>/dev/null || return 0
+  # Age alone is not evidence a snapshot is dead — a >24h run is still reading its own copy, and
+  # the owning pid is in the filename. Sweep only the ones whose process is gone.
+  local _old _p
+  for _old in "$snapdir"/*.sh; do
+    [ -e "$_old" ] || continue
+    [ -n "$(find "$_old" -mmin +1440 2>/dev/null)" ] || continue
+    _p="${_old%.sh}"; _p="${_p##*.}"
+    kill -0 "$_p" 2>/dev/null && continue
+    rm -f "$_old" 2>/dev/null
+  done
+  snap="$snapdir/$(basename "$launcher").$$.sh"
+  cp "$launcher" "$snap" 2>/dev/null || return 0   # cannot snapshot -> run live, as before
+  SC_SNAPSHOT_OF="$launcher" SC_LAUNCHER_DIR="$SC_LAUNCHER_DIR" exec bash "$snap" "$@"
+}
 SC_REGISTRY_CLI="$SC_ROOT/tools/model_registry.py"
 SC_BUDGET_HOOK="$SC_ROOT/hooks/budget_posture.py"
 
@@ -63,8 +88,10 @@ SC_SCHEMA_FILE=""
 # `-N` opts out for a caller that genuinely wants no transcript on disk.
 SC_PERSIST=1
 SC_RESUME=""
-SC_PERM_MODE="auto"   # Headless auto-DENIES out-of-grant tools, which hard-fails a write
-                      # delegate whose Bash command falls outside the project allowlist.
+SC_PERM_MODE="auto"   # -t pre-approves; it does not grant. Under auto, read-shaped MCP tools
+                      # (ai-worker, semantic-search, godot, LSP) run off-list with no denial
+                      # (measured 2026-09-03). Writes need the list: a write delegate whose
+                      # Bash/Edit falls outside it hard-fails.
 SC_LEDGER="__default__"
 SC_LABEL=""
 SC_SHAPE=""
@@ -83,7 +110,7 @@ SC_LEDGER_DEFAULT="$HOME/.claude/deepseek_spend.jsonl"
 sc_parse_flags() {
   local opt
   OPTIND=1
-  while getopts "m:e:t:n:o:d:f:T:R:x:P:S:sNr:p:L:l:a:G:AUD:C:" opt; do
+  while getopts "m:e:t:n:o:d:f:T:R:x:P:S:sNr:p:L:l:a:G:AUD:C:Z:" opt; do
     case "$opt" in
       m) SC_MODEL="$OPTARG" ;;
       A) SC_AUTHORIZED=1 ;;
@@ -113,6 +140,7 @@ sc_parse_flags() {
       G) SC_SHAPE="$OPTARG" ;;
       D) SC_DISCLOSURE="$OPTARG" ;;
       C) SC_CONTEXT_FILES+=("$OPTARG") ;;
+      Z) SC_STALL_SEC="$OPTARG" ;;
       *) echo "bad usage; see header" >&2; exit 2 ;;
     esac
   done
@@ -201,6 +229,7 @@ sc_resolve_model() {
   fi
   IFS='|' read -r SC_MODEL SC_ALIAS SC_AUTH_TIER SC_MIN_BAND SC_MIN_BALANCE SC_FRESH_RATE \
     SC_BALANCE_URL SC_TRANSPORT_STATE SC_TRANSPORT_REASON SC_COST_MODEL SC_MAX_PROVIDER_BAND \
+    SC_API_MODE \
     <<< "$fields"
 }
 
@@ -229,6 +258,25 @@ sc_gate_availability() {
     echo "  Re-enable: model_registry.py set-status $SC_TRANSPORT available   ·   override once: -U"
   } >&2
   exit 7
+}
+
+# ------------------------------------------------- benchmark-arm escape guard (settings merge)
+# Every launcher passes its child settings through this. When run_grid.sh exports BENCH_ARM=1 the
+# child gets hooks/bench_arm_escape_guard.py on PreToolUse (vault/holdout reads denied outside
+# BENCH_ARM_INPUT_DIR); otherwise the settings pass through unchanged. One --settings flag per
+# child: the CLI keeps only the last one, so fragments are merged here, never appended.
+sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on stdout ("" if nothing to pass)
+  python3 - "$1" "$SC_ROOT/hooks/bench_arm_escape_guard.py" "${BENCH_ARM:-}" <<'PY'
+import json, sys
+base = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
+if sys.argv[3] == "1":
+    hooks = base.setdefault("hooks", {})
+    hooks.setdefault("PreToolUse", []).append({
+        "matcher": "Read|Glob|Grep|Bash|Edit|Write|LS|MultiEdit|NotebookEdit",
+        "hooks": [{"type": "command", "command": 'python3 "%s"' % sys.argv[2], "timeout": 10}],
+    })
+print(json.dumps(base) if base else "")
+PY
 }
 
 # --------------------------------------------------------------- gate 2: our own band
@@ -387,6 +435,121 @@ sc_run_cleanups() {
   # first.
   for (( i=${#SC_CLEANUP[@]}-1; i>=0; i-- )); do eval "${SC_CLEANUP[$i]}"; done
 }
+# ---------------------------------------------------------------- resume (universal)
+# Re-invoke a child whose run ended on a rescuable ending, keeping the turns already paid for.
+# RESUME IS NOT RETRY: --resume continues the same session; a fresh dispatch re-buys it. That is
+# what keeps this inside the rule against auto-retrying a billed call rather than in breach of it.
+# Policy and the two endings: reference/sidecar_dispatch.md §Resume. Classifier:
+# tools/sidecar_resume_check.py (deterministic faults are rejected there, never resumed here).
+#
+# The launcher owns flag assembly, so it passes its own run function in; this owns the policy.
+# Usage, after `rc=$?` and BEFORE the final `printf '%s\n' "$OUTPUT"`:
+#     sc_resume_loop run_claude "$SC_PROGRESS"
+# Reads and rewrites OUTPUT and rc in the caller's scope; exports SC_RESUME_SID for run_claude.
+# ------------------------------------------------------------------ stall watchdog
+# Stalls kill paid calls, never duration: a run that emits nothing for SC_STALL_SEC seconds is
+# dead (an upstream that never answers, a classifier that never returns, a child wedged on a
+# socket), and without this it sits until a human notices — measured 2026-09-08: three shells
+# over an hour, one over two days, every one found by the owner, not the harness. The watch is
+# on the -P progress stream (stream-json only: `-o json` emits nothing until the end, so there is
+# nothing to watch and the watchdog stays off with a notice). -Z <sec> / SIDECAR_STALL_SEC
+# override; 0 disables. A stall is recorded as a synthetic result event (terminal_reason
+# "stall"), exit code 9, and is NOT auto-resumed: the record names the session id for a
+# deliberate -r.
+SC_STALL_SEC="${SIDECAR_STALL_SEC:-900}"
+SC_STALLED=0
+
+sc_kill_tree() {
+  # $1 = the bash pid of the watched subshell; taskkill /T needs its Windows pid.
+  local w
+  w="$(ps -W 2>/dev/null | awk -v p="$1" '$1==p{print $4}')"
+  [ -n "$w" ] && MSYS_NO_PATHCONV=1 taskkill /PID "$w" /T /F >/dev/null 2>&1
+  kill "$1" 2>/dev/null
+  return 0
+}
+
+# sc_run_watched <run_fn> [<progress-file>] -> sets OUTPUT and rc, appends to the progress file.
+sc_run_watched() {
+  local run_fn="$1" progress="${2:-}" tmp w now last idle line
+  case "${SC_STALL_SEC:-0}" in
+    ''|*[!0-9]*) echo "[sidecar] -Z/SIDECAR_STALL_SEC='${SC_STALL_SEC:-}' is not a whole number of seconds; refusing rather than running unwatched" >&2; exit 2 ;;
+  esac
+  if [ "${SC_STALL_SEC:-0}" -le 0 ] || [ -z "$progress" ] || [ "$SC_FORMAT" != "stream-json" ]; then
+    [ "${SC_STALL_SEC:-0}" -gt 0 ] && [ -z "$progress" ] && \
+      echo "[sidecar] no -P progress stream: the stall watchdog is OFF for this run (nothing to watch)" >&2
+    if [ -n "$progress" ]; then OUTPUT="$("$run_fn" | tee -a "$progress")"; else OUTPUT="$("$run_fn")"; fi
+    rc=$?
+    return 0
+  fi
+  tmp="$(mktemp)"
+  local started; started=$(date +%s)
+  ( "$run_fn" | tee -a "$progress" > "$tmp" ) &
+  w=$!
+  while kill -0 "$w" 2>/dev/null; do
+    sleep 10
+    now=$(date +%s); last=$(stat -c %Y "$progress" 2>/dev/null || echo "$now")
+    # A pre-existing -P file carries the PREVIOUS run's mtime: silence is measured from this run.
+    [ "$last" -lt "$started" ] && last="$started"
+    idle=$((now - last))
+    if [ "$idle" -ge "$SC_STALL_SEC" ]; then
+      echo "[sidecar] STALL: no output for ${idle}s (limit ${SC_STALL_SEC}s, -Z/SIDECAR_STALL_SEC) — killing the child tree" >&2
+      sc_kill_tree "$w"
+      SC_STALLED=1
+      break
+    fi
+  done
+  wait "$w" 2>/dev/null; rc=$?
+  OUTPUT="$(cat "$tmp")"; rm -f "$tmp"
+  if [ "$SC_STALLED" = 1 ]; then
+    line="$(printf '{"type":"result","subtype":"stall","is_error":true,"terminal_reason":"stall","num_turns":0,"result":"STALLED: the sidecar watchdog killed the child after %ss without output (limit %ss). Resume deliberately with -r <session_id> if the work is worth keeping."}' "$idle" "$SC_STALL_SEC")"
+    OUTPUT="${OUTPUT}"$'\n'"${line}"
+    printf '%s\n' "$line" >> "$progress"
+    rc=9
+  fi
+  return 0
+}
+
+sc_resume_loop() {
+  local run_fn="$1" progress="${2:-}" det n=0 max="${SC_COMPACT_RESUMES:-3}" _r sid reason
+  det="$SC_ROOT/tools/sidecar_resume_check.py"
+  # stream-json only: `-o json` emits no compact_boundary and no per-event stream, so neither
+  # ending is detectable. Say so once rather than failing silently.
+  if [ "$SC_FORMAT" != "stream-json" ]; then
+    echo "[sidecar] -o $SC_FORMAT: resume is unavailable (needs stream-json; -P sets it). A run that compacts or hits a transient upstream fault will end there and the record will store that ending as the deliverable." >&2
+    return 0
+  fi
+  [ -f "$det" ] || { echo "[sidecar] resume classifier missing: $det — resume disabled this run" >&2; return 0; }
+
+  [ "${SC_STALLED:-0}" = 1 ] && return 0
+  while [ "$n" -lt "$max" ]; do
+    _r="$(printf '%s\n' "$OUTPUT" | python3 "$det" 2>/dev/null)"
+    [ -n "$_r" ] || return 0
+    sid="${_r%%$'\t'*}"; reason="${_r#*$'\t'}"
+    n=$((n + 1))
+    # A caller-supplied -r already pushed its own --resume; drop it so the detected sid is the only one.
+    if [ -n "${SC_RESUME:-}" ]; then
+      local _keep=() _a
+      for _a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+        [ "$_a" = '--resume' ] || [ "$_a" = "$SC_RESUME" ] || _keep+=("$_a")
+      done
+      EXTRA_ARGS=(${_keep[@]+"${_keep[@]}"}); SC_RESUME=''
+    fi
+    echo "[sidecar] run ended on a $reason ending; resuming session $sid with the brief ($n/$max)" >&2
+    SC_RESUME_SID="$sid"; export SC_RESUME_SID
+    sc_run_watched "$run_fn" "$progress"
+    [ "${SC_STALLED:-0}" = 1 ] && return 0
+  done
+
+  # Budget spent and STILL rescuable. Without this line a run that burned its resumes records
+  # exactly like one that finished, which is the failure this whole path exists to prevent.
+  _r="$(printf '%s\n' "$OUTPUT" | python3 "$det" 2>/dev/null)"
+  if [ -n "$_r" ]; then
+    reason="${_r#*$'\t'}"
+    echo "[sidecar] RESUME BUDGET EXHAUSTED after $n resumes: the run STILL ended on a $reason ending, so the result below is that ending, NOT the deliverable. Raise SC_COMPACT_RESUMES, or shrink the read footprint (-D pointer, bounded Reads)." >&2
+  fi
+  return 0
+}
+
 sc_on_exit() {
   SC_CLEANUP+=("$1")
   trap sc_run_cleanups EXIT
@@ -394,14 +557,30 @@ sc_on_exit() {
 
 # ------------------------------------------------------------------- disclosure tier
 # Constructive disclosure: the child runs isolated and the tier appends exactly what it
-# names. `full` = in-repo, no appends; `bare`/`pointer` = scratch run-cwd, with the repo
-# grant unchanged so the child keeps Read access either way.
+# names. `full` = in-repo, no DISCLOSURE appends; `bare`/`pointer` = scratch run-cwd, with the
+# repo grant unchanged so the child keeps Read access either way. One append rides EVERY tier
+# and every model: the autonomy rail below. It is transport, not disclosure — a sidecar child
+# has no human on the other end, and a `-D full` child in a sealed arm root reads that root's
+# frozen hooks, so no guard file in this repo can reach it.
 # Appended paths must be ABSOLUTE: the child resolves them against its own cwd, not this
 # script's — a relative path breaks in the isolated tiers exactly where these appends are
 # the only context.
 sc_build_disclosure() {
   SC_RUN_CWD="$SC_WORKDIR"
   SC_APPEND_ARGS=()
+  # Autonomy rail (user ruling 2026-09-04): three Luna benchmark cells ended on "which should I
+  # lock, A or B?" / "please choose: fix, commit or abort" after 47–99 turns and were scored as
+  # delivered-nothing. Any model that halts on a question gets the same text; it names the
+  # consequence rather than forbidding the behaviour.
+  local auto_tmp auto_arg
+  auto_tmp="$(mktemp)"
+  cat > "$auto_tmp" <<'SC_AUTONOMY'
+[sidecar] You run UNATTENDED. No human reads anything you write until you exit, so a question in your final message is answered by nobody and the run is recorded as having delivered nothing. Never end on a question or a request for direction. When a choice is yours to make, make it, state it in the deliverable as an assumption, and finish. When a gate, a failing suite or a missing input blocks a step, record the blocker in the deliverable and still return everything the brief asked for.
+SC_AUTONOMY
+  sc_on_exit "rm -f \"$auto_tmp\" 2>/dev/null || :"
+  auto_arg="$auto_tmp"
+  command -v cygpath >/dev/null 2>&1 && auto_arg="$(cygpath -m "$auto_tmp")"
+  SC_APPEND_ARGS+=(--append-system-prompt-file "$auto_arg")
   case "$SC_DISCLOSURE" in
     bare|pointer)
       SC_RUN_CWD="$(mktemp -d)"
@@ -461,6 +640,35 @@ sc_claude_bin() {
   return 1
 }
 
+# ------------------------------------------------------------- --check model override
+# `--check` is intercepted BEFORE getopts (it must answer with no prompt and no dispatch), so a
+# `-m ALIAS` on a --check call never reaches flag parsing. Without this scan, `--check -m terra`
+# silently probes the launcher's DEFAULT model and reports OK for a row it never touched -- the
+# availability answer would be about luna while the caller asked about terra.
+sc_check_model_override() {
+  local prev="" a
+  for a in "$@"; do
+    [ "$a" = "-A" ] && SC_AUTHORIZED=1
+    [ "$a" = "-U" ] && SC_UNSUSPEND=1
+    if [ "$prev" = "-m" ]; then SC_MODEL="$a"; fi
+    prev="$a"
+  done
+  return 0
+}
+
+# `--check` runs the SAME refusal gates a dispatch runs (availability 7, band floor 5, provider
+# ceiling 8), so a refusal arrives synchronously — hooks/sidecar_dispatch_context.py runs this for
+# every launch and denies the Bash call on a non-zero exit. Measured 2026-09-08: a backgrounded
+# dispatch refused at exit 8 surfaced only when its task "completed" minutes later.
+sc_check_gates() {
+  sc_resolve_model
+  sc_gate_availability
+  sc_gate_balance
+  [ -n "${SC_MIN_BAND:-}" ] && sc_gate_band
+  sc_gate_provider_band
+  return 0
+}
+
 # --------------------------------------------------------------- parent-env scrub
 # PARENT-ENV SCRUB (measured 2026-08-04). A `claude` child inherits the parent session's
 # CLAUDE_*/ANTHROPIC_* vars. `CLAUDE_CODE_ENTRYPOINT=claude-desktop` (exported by every Bash
@@ -482,6 +690,16 @@ sc_scrub_env() {
   while IFS='=' read -r name _; do
     case "$name" in CLAUDE*|ANTHROPIC*) SC_SCRUB+=(-u "$name") ;; esac
   done < <(env)
+  # PASS-THROUGH after the unsets (`env -u X X=v` re-sets): the print-mode background-wait
+  # ceiling. `claude -p` kills a child whose Workflow/background task is still running at 600 s and
+  # exits 0 with no deliverable; a caller that sets the ceiling means it, and a child allowed the
+  # Workflow tool needs it lifted (0 = wait; the -Z stall watchdog still bounds silence).
+  local ceiling="${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-}"
+  if [ -z "$ceiling" ]; then
+    case ",${SC_TOOLS:-}," in *,Workflow,*) ceiling=0 ;; esac
+  fi
+  [ -n "$ceiling" ] && SC_SCRUB+=(CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="$ceiling")
+  return 0
 }
 
 # ------------------------------------------------------------------------ run record
@@ -497,9 +715,13 @@ sc_to_native() {
 sc_write_record() {
   local output="$1" rc="$2"
   [ -n "$SC_RECORD" ] || return 0
-  local hb hs raw_tmp ledger_default
+  local hb hs dsha raw_tmp ledger_default
   hb="$(git -C "$SC_WORKDIR" describe --tags --exact-match HEAD 2>/dev/null || echo unknown)"
   hs="$(git -C "$SC_WORKDIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  # bench_overlay_doctrine (benchmark_campaign/lib.sh) drops this marker when it refreshes
+  # $SC_WORKDIR/.claude from BENCH_DOCTRINE_REF; absent on a root whose .claude/ is still the
+  # task tag's own frozen copy (BENCH_DOCTRINE_REF=none, or a non-benchmark dispatch entirely).
+  dsha="$(cat "$SC_WORKDIR/.claude/.bench-doctrine-sha" 2>/dev/null || echo "")"
   # Payload goes via temp file: `python3 -` reads its PROGRAM from stdin, so a heredoc and a
   # data pipe cannot share the channel.
   raw_tmp="$(mktemp)"
@@ -507,12 +729,12 @@ sc_write_record() {
   ledger_default="$SC_LEDGER_DEFAULT"
 
   RAW_V="$(sc_to_native "$raw_tmp")" EFFORT_V="$SC_EFFORT" MODEL_V="$SC_MODEL" RC_V="$rc" \
-    HB_V="$hb" HS_V="$hs" REC_V="$(sc_to_native "$SC_RECORD")" \
+    HB_V="$hb" HS_V="$hs" DSHA_V="$dsha" REC_V="$(sc_to_native "$SC_RECORD")" \
     SCHEMA_V="$(sc_to_native "$SC_SCHEMA_FILE")" LEDGER_V="$SC_LEDGER" LABEL_V="$SC_LABEL" \
     DISCLOSURE_V="$SC_DISCLOSURE" LEDGER_DEFAULT_V="$ledger_default" \
     TRANSPORT_V="$SC_TRANSPORT" COSTMODEL_V="$SC_COST_MODEL" \
     ATTEST_V="${SC_ATTESTED_MODEL:-}" PARSER_V="${SC_RECORD_PARSER:-claude}" \
-    REGCLI_V="$SC_REGISTRY_CLI" python3 - <<'PYEOF'
+    REGCLI_V="$SC_REGISTRY_CLI" CTXWIN_V="${SC_CONTEXT_TOKENS:-}" python3 - <<'PYEOF'
 import json, os, sys, time
 raw = open(os.environ["RAW_V"], encoding="utf-8", errors="replace").read()
 parser = os.environ.get("PARSER_V") or "claude"
@@ -594,6 +816,16 @@ else:
         fresh = usage.get("input_tokens") or 0
         cache_read = usage.get("cache_read_input_tokens") or 0
         out_tok = usage.get("output_tokens") or 0
+rate_limit_info = None
+if parser != "codex":
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if (isinstance(event, dict) and event.get("type") == "rate_limit_event"
+                and isinstance(event.get("rate_limit_info"), dict)):
+            rate_limit_info = event["rate_limit_info"]
 # costUSD is COMPUTED from raw token counts at the per-model rates in
 # .claude/reference/external_models.json (the ONE price home - never re-author a rate here,
 # in code or in a comment). NEVER read total_cost_usd: Claude Code prices non-Anthropic tokens
@@ -616,6 +848,26 @@ else:
     except Exception as exc:
         # Never lose the record over pricing: keep the tokens, flag the gap.
         cost, cost_basis = None, f"UNPRICED ({exc})"
+def _turn1_context(sid):
+    import glob
+    if not sid:
+        return None
+    for path in glob.glob(os.path.join(os.path.expanduser('~'), '.claude', 'projects', '*', sid + '.jsonl')):
+        try:
+            with open(path, encoding='utf-8') as fh:
+                for line in fh:
+                    row = json.loads(line)
+                    if row.get('type') == 'assistant':
+                        u = (row.get('message') or {}).get('usage') or {}
+                        return sum(u.get(k) or 0 for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
+        except Exception:
+            return None
+    return None
+turn1 = _turn1_context(data.get('session_id'))
+ctxwin = int(os.environ.get('CTXWIN_V') or 0) or None
+if turn1:
+    pct = f' ({100.0 * turn1 / ctxwin:.0f}% of {ctxwin})' if ctxwin else ''
+    print(f'[sidecar] turn-1 context {turn1} tokens{pct}', file=sys.stderr)
 record = {
     "label": os.environ.get("LABEL_V") or None,
     "transport": os.environ.get("TRANSPORT_V") or None,
@@ -626,6 +878,9 @@ record = {
     "disclosureTier": os.environ.get("DISCLOSURE_V") or None,
     "harnessBase": os.environ["HB_V"],
     "harnessSession": os.environ["HS_V"],
+    # The .claude/ actually loaded, distinct from harnessBase/harnessSession (which are the
+    # CODE tag) -- absent means the root's .claude/ is that tag's own frozen native copy.
+    "doctrineSha": os.environ.get("DSHA_V") or None,
     "inputTokens": fresh,
     "cacheReadTokens": cache_read,
     "outputTokens": out_tok,
@@ -644,8 +899,15 @@ record = {
     "apiErrorStatus": data.get("api_error_status"),
     "permissionDenials": data.get("permission_denials") or [],
     "exitCode": int(os.environ["RC_V"]),
+    # Turn-1 context = system prompt + hooks + brief, read from the child's own transcript (its
+    # first assistant usage). Measured per run so the -D cost is never a stale constant.
+    "turn1ContextTokens": turn1,
+    "contextWindow": ctxwin,
+    "turn1ContextPct": (round(100.0 * turn1 / ctxwin, 1) if (turn1 and ctxwin) else None),
     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
 }
+if rate_limit_info is not None:
+    record["rateLimitInfo"] = rate_limit_info
 if parser == "codex":
     # Reasoning tokens are a BREAKDOWN of outputTokens, never an addition — recorded so a
     # reader can see how much of the output was thinking without re-deriving it wrongly.
