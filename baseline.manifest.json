@@ -2417,6 +2417,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_launch.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_rate_limit_record.sh",
       "layer": "pure",
       "sync": "auto"

@@ -414,6 +414,7 @@ PURE_PATTERNS = [
     '.claude/tests/test_codex_effort_probe.py',
     '.claude/tests/test_delegate_command.py',
     '.claude/tests/test_sidecar_rate_limit_record.sh',
+    '.claude/tests/test_sidecar_launch.py',
     '.claude/tools/model_registry.py',
     '.claude/tools/orchestration_metrics.py',
     '.claude/tools/guard_text.py',
