@@ -23,7 +23,7 @@ When doc commands scan the Documentation folder, classify each item by content:
 
 1. **Archived** — name contains `(Archived)` → skip (preserved in Archived table)
 2. **Structural** — `Claude/`, `Prototypes/`, `Start Here.md` → skip (not systems or domains)
-3. **Entity-doc folder** — contains per-entity `.md` files (not system-template docs) and may contain subfolders of the same kind. Example: `NPC/` with individual NPC docs and a `BuildingBlocks/` subfolder. These follow `/doc_npc` conventions, not the 4-doc system template. Skip template compliance checks (S1-S4).
+3. **Collection folder** — contains per-item `.md` files rather than system-template docs and may contain subfolders of the same kind. Example: `Components/` with individual component docs and an `Examples/` subfolder. Skip template compliance checks (S1-S4).
 4. **Domain folder** — contains subfolders that are themselves system folders (may also contain `_Hub.md`)
 5. **System folder** — contains doc-template files directly: `Quick Reference.md`, `Architecture.md`, `Designer Usage.md`, `Retrospective.md`, or any `.md` with "Design Document" in the filename
 6. **Everything else** — ignored
@@ -33,12 +33,12 @@ Classification is content-based. Folders transition between types automatically 
 ## Folder Naming Convention
 Applies to `Documentation/` system and domain folders. (Brainstorm topic folders use a different `YYYY-MM-DD-<kebab-topic>/` convention — see `_brainstorm_shared/common.md §5`.)
 
-- **PascalCase, no spaces:** `SpellReaction/` not `Spell Reaction/`
+- **PascalCase, no spaces:** `RequestPipeline/` not `Request Pipeline/`
 - **Descriptive compound noun** — the name should pass the scan test: "Can someone unfamiliar with the codebase guess what this folder documents?"
-- **No uniform suffix** — don't append "System" to everything. Add a qualifier word only when the bare name is ambiguous (e.g., `EntityPhysics` not `Physics`, but `Explosion` is fine alone)
-- **No domain prefix** if inside a domain parent: `Steering/` inside `AI/`, not `AISteering/`
-- **No implementation details** in names: `WaveSpell/` not `WaveSpellOverhaul/`, `CritterAI/` not `HSM-BT Critter AI/`
-- Normalize user input before creating: `"Affinity System"` → `Affinity`
+- **No uniform suffix** — don't append "System" to everything. Add a qualifier word only when the bare name is ambiguous (e.g., `NetworkTransport` not `Transport`, but `Caching` is fine alone)
+- **No domain prefix** if inside a domain parent: `Retries/` inside `Networking/`, not `NetworkRetries/`
+- **No implementation details** in names: `RequestQueue/` not `LockFreeRequestQueueRewrite/`
+- Normalize user input before creating: `"Cache Policy System"` → `CachePolicy`
 
 ## Domain Folder Routing
 New system docs go inside their domain parent folder (read Start Here "By Domain" to determine domain):

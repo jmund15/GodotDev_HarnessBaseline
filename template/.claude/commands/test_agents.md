@@ -11,7 +11,7 @@ Run synthetic integration tests that verify review and audit agents produce corr
 **Arguments:** `$ARGUMENTS`
 - Empty or `all`: run all smoke fixtures
 - Agent name (e.g., `error-hunter`): run only fixtures targeting that agent
-- Specific fixture path (e.g., `smoke/pp_error_hunter`): run one fixture
+- Specific fixture path (e.g., `smoke/project_error_hunter`): run one fixture
 
 ---
 
@@ -67,7 +67,7 @@ Present the summary table from `results`:
 ╠═══════════════════════════════════════════════════════════╣
 
 FIXTURE                   AGENT                    RESULT  FINDINGS  VALIDATED
-pp_code_reviewer          code-reviewer         PASS    2         YES
+project_code_reviewer          code-reviewer         PASS    2         YES
 ...
 
 ╠═══════════════════════════════════════════════════════════╣

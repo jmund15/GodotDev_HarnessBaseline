@@ -57,7 +57,7 @@ Use the System Overview text and Related Systems callout to classify into one of
 
 | Domain | Signals |
 |--------|---------|
-| **\<Core Content Pipeline>** | *(project-specific — your game's central content lifecycle, e.g. spell/projectile/item spawn → collision → reaction → propagation)* |
+| **\<Core Content Pipeline>** | *(project-specific — your game's central content lifecycle, e.g. ability/projectile/item spawn → collision → reaction → propagation)* |
 | **Environment** | world objects, destructibles, item/resource drops, contact effects, environment |
 | **Visual Effects** | rendering, particles, animation, trails, sprites, VFX, mesh, fragment, cloud |
 | **Combat & Stats** | damage, knockback, status effects, stat management, hitbox, hurtbox, combat |

@@ -5,7 +5,7 @@ disable-model-invocation: true
 
 Inspect and aggregate the continuous routing-audit log.
 
-> Surfaces silent-misses against CLAUDE.md §9 routing rules. Complements `/routing_battery` (synthetic, periodic) with continuous, real-traffic data.
+> Surfaces silent-misses against CLAUDE.md §Tool Routing routing rules. Complements `/routing_battery` (synthetic, periodic) with continuous, real-traffic data.
 
 ## Quick reference
 
@@ -21,12 +21,12 @@ Inspect and aggregate the continuous routing-audit log.
 
 The `routing_audit.py` PostToolUse hook (wired at `settings.json`) classifies every routing-relevant tool call and appends an event to `logs/routing_audit.jsonl` when the call falls into one of two tiers:
 
-- **`nudge-warranted`** — call violated a clear §9 rule (PascalCase Grep on indexed file, synthesis-shaped Obsidian read, etc.). Each entry records `nudge_fired: bool` indicating whether the existing nudge channel (`tool_routing_post_grep.py` / stderr) actually reached the agent.
+- **`nudge-warranted`** — call violated a clear §Tool Routing rule (PascalCase Grep on indexed file, synthesis-shaped Obsidian read, etc.). Each entry records `nudge_fired: bool` indicating whether the existing nudge channel (`tool_routing_post_grep.py` / stderr) actually reached the agent.
   - `nudge_fired=false` → **silent-miss** (the gap this audit log exists to find).
   - `nudge_fired=true` → **nudged routing miss** (channel works; agent ignored or accepted the nudge).
 - **`cue-exempt`** — would warrant nudge BUT user prompt invokes K1 (literal-intent), L6 (verified-unique-name), or audit-shape carve-out. These count as compliant overrides.
 
-Compliant calls and tools without §9 routing rules (Bash, Edit, Write, Read, Glob, etc.) are NOT logged — would drown the silent-miss signal in noise.
+Compliant calls and tools without §Tool Routing rules (Bash, Edit, Write, Read, Glob, etc.) are NOT logged — would drown the silent-miss signal in noise.
 
 ## How to read the output
 

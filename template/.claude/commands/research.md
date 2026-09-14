@@ -44,7 +44,7 @@ Land the bytes first. Godot class questions resolve against `.claude/cache/godot
 
 `mcp__ai-worker__read_web(urls=[...], question=...)` only when the questions genuinely need synthesis ACROSS pages that no single artifact answers: it spends real dollars and its extractor silently truncates (measured 101,558 bytes → 71,478 chars), so a claim sourced through it cannot be machine-verified. When used, ask for the answer written to a scratchpad path with a bounded digest returned, so page text never lands in this context.
 
-Sidecar unavailable or Surplus band → CLAUDE.md §9 *Offline fallback* governs the substitution; the bundling rule holds and only the executor changes.
+Sidecar unavailable or Surplus band → CLAUDE.md §Tool Routing *Offline fallback* governs the substitution; the bundling rule holds and only the executor changes.
 
 ### Shape B — three source-class lenses through the explore engine
 

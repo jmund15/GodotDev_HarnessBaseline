@@ -1,4 +1,5 @@
 ---
+description: Audit production code for test-only accessors that should sit behind a TOOLS guard.
 disable-model-invocation: true
 ---
 
@@ -19,7 +20,7 @@ Search non-test `.cs` files for these patterns:
 
 **Pattern A — Explicit test naming** (highest confidence):
 ```
-internal .* _Test\w+\(          # _TestSimulateHit, _TestSetReactiveComponent
+internal .* _Test\w+\(          # _TestSetState, _TestSetDependency
 internal .* SetTestValues?\(    # SetTestValues, SetTestValue
 internal .* SetTestCurve\(      # SetTestCurve
 internal .* SetTestModifiers\(  # SetTestModifiers
@@ -30,13 +31,13 @@ internal .* ForTest\w*\(        # ForTestOnly, ForTesting
 
 **Pattern B — Property setters** (high confidence — must be `internal void SetXxx(type value)`):
 ```
-internal void Set[A-Z]\w+\(     # SetDamageMultiplier, SetAttackerOutcome
+internal void Set[A-Z]\w+\(     # SetThreshold, SetPolicy
 ```
 Exclude if the method body does more than assign a single property (i.e., has logic beyond `=> Prop = value;`).
 
 **Pattern C — Simulation helpers** (high confidence):
 ```
-internal void Simulate\w+\(     # SimulateIngredientEntered
+internal void Simulate\w+\(     # SimulateReady
 ```
 
 ### 2. CLASSIFY — Separate guarded from unguarded
@@ -63,7 +64,7 @@ Format as a markdown table per pattern category:
 
 | File | Method | Pattern | Status | Callers |
 |------|--------|---------|--------|---------|
-| `Combat/Reaction.cs:46` | `SetAttackerMatcher` | B | UNGUARDED | Tests only |
+| `Systems/Example.cs:46` | `SetPolicy` | B | UNGUARDED | Tests only |
 
 Summary statistics:
 - Total test-only methods found

@@ -301,4 +301,3 @@ Rules for the block:
 - **Push-don't-pull.** Claude reads Start Here + folder structure and injects them into the CONTEXT; the workflow's agents do NOT re-read Start Here.
 - **No hallucinated findings.** Only report issues verified by reading actual files. If uncertain, skip it. Absence-shaped claims (*missing / broken / not found*) are never trusted from a lens — every one goes through the Phase-4a verification gate.
 - **3-lens delegation lives in the workflow.** The workflow spawns exactly 3 agents — do not perform the audit inline or combine lenses.
-- **Time-bounded.** Full audit (inventory → report) should complete in under 15 minutes.

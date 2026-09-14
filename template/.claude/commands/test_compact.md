@@ -53,7 +53,7 @@ Search the `Tests/` directory for these categories, in priority order:
   Prioritize families with **no baseline entry at all** — those are wholly new duplication, not inherited debt. Consolidate by promoting one double to `Tests/Framework/Mocks` as a public double parameterised over whatever the variants differ on, then delete the copies. **After consolidating, rerun with `--write-baseline`** to lock the reduction in; the baseline only ever ratchets down through this command.
 
   > New files under `Tests/Framework/Mocks/` are untracked. A pathspec-scoped commit that stages only the edited test files silently drops the new mock and breaks the build for everyone else — stage the mock too (`feedback_pathspec_commit_stage_infra_deps.md`).
-- **Setup boilerplate**: Repeated `new SpawnContext { ... }` or archetype loading → extract factory methods into fixtures/builders
+- **Setup boilerplate**: Repeated `new <Context> { ... }` or archetype loading → extract factory methods into fixtures/builders
 - **Event assertion pattern**: `bool fired = false; comp.Event += () => fired = true; ...` → extract helper if 5+ instances
 
 **Category D — File Organization (Low Priority)**
@@ -71,7 +71,7 @@ Search the `Tests/` directory for these categories, in priority order:
 Scan ALL test files for `res://` paths that point OUTSIDE `res://Tests/`. Classify each by fragility:
 
 - **FRAGILE (value assertions)**: Tests that `GD.Load` a production `.tres` and assert on specific numeric values (damage multipliers, priorities, stat values, health amounts, counts). These WILL break when designers rebalance. **Action:** Replace with frozen test data in `Tests/Fixtures/Data/` or remove the value assertion.
-- **FRAGILE (config guards)**: Tests asserting configuration correctness that prevents game-breaking bugs (e.g., `DoNotInherit == true` on MultiShot, collision system config). These are *intentionally* fragile safety nets. **Action:** Keep, but document as intentional. Consider moving the guarded values to constants or comments so the intent is clear.
+- **FRAGILE (config guards)**: Tests asserting configuration correctness that prevents severe runtime bugs (e.g., a stacking policy flag or collision-system config). These are *intentionally* fragile safety nets. **Action:** Keep, but document as intentional. Consider moving the guarded values to constants or comments so the intent is clear.
 - **MODERATELY FRAGILE**: Tests asserting on types, identity names, or category membership from production data. **Action:** Evaluate case-by-case — some are legitimate integration smoke tests.
 - **LESS FRAGILE (structural)**: Tests loading production scenes only to verify they instantiate without crashing, or using them as scaffolds for behavioral testing. **Action:** Generally acceptable for Integration/Sanity domains. Flag only if a test fixture equivalent exists.
 
@@ -83,7 +83,7 @@ ISceneRunner.Load.*res://(?!Tests/)  # Scene runner loads
 "res://(?!Tests/)                    # Any production res:// path string
 ```
 
-**Special attention:** Check `Tests/Framework/Fixtures/` for centralized production path dictionaries (e.g., `GameplayTestFixture.ArchetypePaths`). These are coupling multipliers — every test inheriting from the fixture is transitively coupled.
+**Special attention:** Check `Tests/Framework/Fixtures/` for centralized production path dictionaries (e.g., a shared fixture's `ArchetypePaths`). These are coupling multipliers — every test inheriting from the fixture is transitively coupled.
 
 **Correct pattern (already in use):** `Tests/Fixtures/Data/` contains frozen test archetypes (`test_light_arch.tres`, `test_medium_arch.tres`, …) with known stat values. New tests should use these instead of production resources.
 

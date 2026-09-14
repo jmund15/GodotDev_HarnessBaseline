@@ -13,7 +13,7 @@ Analyze Godot log files with mode-based presets and token-efficient JSON output.
 | "Just the errors" | `--json --mode errors` | <500 tok |
 | "What just happened?" | `--json --mode tail --last 20` | ~3K tok |
 | "[Tag] frequency" | `--json --mode tags` | ~150 tok |
-| "Everything HoarderCritter did" | `--json --mode entity --node HoarderCritter` | varies |
+| "Everything ExampleAgent did" | `--json --mode entity --node ExampleAgent` | varies |
 | "Targeted timeline" | `--json --target HSM --target Transition` | varies |
 | "Previous game session" | add `--log previous` to any | varies |
 | "Check the test run" | add `--log test` to any (reads `TestResults/godot_test.log`) | varies |
@@ -41,7 +41,7 @@ Apply in order, stop at first match:
 
 1. **Crash/freeze/quit mentioned?** → add `--log previous` (the active `godot.log` was truncated by re-launch; the timestamped historical log holds the crash state). Examples: "crashed", "froze", "had to quit", "Alt-F4'd", "the app stopped responding".
 
-2. **Specific system / entity / domain mentioned?** → use the Domain Mapping table below for `--target`/`--node`. Examples: "HSM", "the hoarder", "spell spawning", "navigation".
+2. **Specific system / entity / domain mentioned?** → use the Domain Mapping table below for `--target`/`--node`. Examples: "HSM", "the example agent", "ability spawning", "navigation".
 
 3. **Temporal/recency cue?** → `--mode tail --last 20`. Examples: "what just happened", "last few seconds", "right before X", "after I pressed Y".
 
@@ -57,9 +57,9 @@ Multiple signals stack. Examples:
 
 | User says | Inferred invocation |
 |---|---|
-| "the hoarder crashed during pathfinding" | `--log previous --mode errors --node HoarderCritter --target Navigator` |
+| "the example agent crashed during pathfinding" | `--log previous --mode errors --node ExampleAgent --target Navigator` |
 | "what HSM transitions just happened?" | `--mode tail --last 30 --target HSM Transition` |
-| "any spell pool errors recently?" | `--mode errors --target Pool` |
+| "any ability pool errors recently?" | `--mode errors --target Pool` |
 | "check the logs after the rock pillar test" | `--log previous --mode summary` (or `--target Rock Pillar` if recent discussion was about it) |
 | "what's going on?" | `--mode summary` (no other signal — cheapest first pass) |
 | "warnings about navigation" | `--target Navigator --level warning` |
@@ -68,11 +68,11 @@ Multiple signals stack. Examples:
 
 If the conversation has been about a specific topic for the last few turns, **assume that topic is the implicit subject** even if not restated. Examples:
 
-- Last 5 turns discussed HoarderCritter perception → "check the logs" → `--target Perception --node HoarderCritter`
-- User just edited spell-spawning code → "look at the logs" → `--target Spawn`
+- Last 5 turns discussed ExampleAgent perception → "check the logs" → `--target Perception --node ExampleAgent`
+- User just edited ability-spawning code → "look at the logs" → `--target Spawn`
 - User just ran `--target HSM` and got results → "now check warnings" → `--target HSM --level warning` (preserve the prior filter)
 
-**Surface inferred context in your response**: *"Inferring from earlier discussion you want HoarderCritter perception — running `--target Perception --node HoarderCritter`. If that's not right, say what to filter on instead."*
+**Surface inferred context in your response**: *"Inferring from earlier discussion you want ExampleAgent perception — running `--target Perception --node ExampleAgent`. If that's not right, say what to filter on instead."*
 
 ### When to ask vs when to default
 
@@ -109,7 +109,7 @@ python .claude/hooks/analyze_godot_logs.py [LOG_PATH] --json --mode <MODE> [FILT
 | `timeline` | chronological matched blocks, max 100 | all (raw_lines stripped) | targeted investigation, walk through events in order |
 | `tail` | last N blocks (default 20, set with `--last`) | all (raw_lines stripped) | "what happened most recently?" |
 | `tags` | `{tag: count}` histogram + tag-by-level breakdown | n/a | "which subsystems are noisy? [HSM] vs [DIAG] frequency" |
-| `entity` | filtered to one entity (requires `--node`) | all (raw_lines stripped) | "everything HoarderCritter did across all systems" |
+| `entity` | filtered to one entity (requires `--node`) | all (raw_lines stripped) | "everything ExampleAgent did across all systems" |
 
 If you give filters (`--target`, `--level`, `--node`, `--type`) without `--mode`, mode defaults to `timeline`.
 
@@ -161,28 +161,28 @@ Translate the user's natural language into script flags. **Always use `--json`.*
 | User says | Script flags | What to examine in results |
 |-----------|-------------|---------------------------|
 | "perception" / "detection" / "sensing" | `--target Perception` | confidence values, category matches, `hasMemory`, `activeMemoryCount` |
-| "hoarder" / "hoarder critter" | `--node HoarderCritter` | All events for the hoarder entity across all systems |
+| "example agent" / "example agent entity" | `--node ExampleAgent` | All events for the example agent entity across all systems |
 | "HSM" / "state transitions" / "state machine" | `--target HSM Transition` | from→to chains, urgent flags, propagation, missing transitions |
 | "behavior tree" / "BT" | `--target BehaviorTree` | Task status changes, tree resets, enter/exit balance |
-| "spell" / "spell spawning" | `--target Spawn` or `--target SpellPool` | Pool issues, archetype, SpawnEffect, spawner errors |
+| "ability" / "ability spawning" | `--target Spawn` | Pool issues, archetype resolution, spawner errors |
 | "pool" / "pooling" | `--target Pool` | acquire vs return balance, PooledArchetype missing |
 | "navigation" / "pathfinding" | `--target Navigator` or `--target AINavigator` | Target reached, path computation, ClearPath |
 | "steering" / "avoidance" | `--target Steering` or `--target Consideration` | Score values, direction weights, override layers |
 | "cornered" / "cornered state" | `--target Cornered` | Shuffle waypoints, threat position, entry/exit |
 | "scurry" / "flee" | `--target Scurry` or `--target Flee` | Flee triggers, fade actions, threat detection |
-| "forage" / "foraging" | `--target Forage` | Consume actions, ingredient collection, target selection |
-| "wizard" / "player" | `--target Wizard` or `--node Player` | Player state machine, input handling |
-| "ingredient" / "crafting" | `--target Ingredient` | Spawn counts, trait assignment, selector weights |
+| "forage" / "foraging" | `--target Forage` | Consume actions, material collection, target selection |
+| "player" / "player" | `--target Player` or `--node Player` | Player state machine, input handling |
+| "material" / "assembly" | `--target Material` | Spawn counts, trait assignment, selector weights |
 | "errors only" | `--mode errors` | All errors and exceptions, minimal fields |
 | "warnings" | `--level warning` | All warnings |
 | "what's been happening" / "recent" | `--mode tail --last 20` | Last 20 blocks chronologically |
 | "what subsystems are talking" | `--mode tags` | Tag frequency histogram |
 
 **Compound queries** (filters + modes are orthogonal):
-- "hoarder perception issues" → `--mode timeline --node HoarderCritter --target Perception`
+- "example agent perception issues" → `--mode timeline --node ExampleAgent --target Perception`
 - "HSM warnings in last run" → `--target HSM --level warning`
-- "spell pool errors from previous session" → `--log previous --mode errors --target Pool`
-- "what HoarderCritter just did" → `--mode tail --node HoarderCritter --last 20`
+- "ability pool errors from previous session" → `--log previous --mode errors --target Pool`
+- "what ExampleAgent just did" → `--mode tail --node ExampleAgent --last 20`
 
 **When the user's topic is NOT in the table**: Use their literal terms with `--target`. The script searches across all block fields (class name, node path, owner, message text, source file, method, tags, backtraces).
 
@@ -243,11 +243,11 @@ python .claude/hooks/analyze_godot_logs.py --json --mode errors
 # Just the errors from the previous run (after a crash)
 python .claude/hooks/analyze_godot_logs.py --json --log previous --mode errors
 
-# What happened most recently for the player wizard
-python .claude/hooks/analyze_godot_logs.py --json --mode tail --node Wizard --last 30
+# What happened most recently for the player player
+python .claude/hooks/analyze_godot_logs.py --json --mode tail --node Player --last 30
 
-# All HSM transitions across the spell-cast subsystem
-python .claude/hooks/analyze_godot_logs.py --json --target HSM Spell
+# All HSM transitions across the ability-cast subsystem
+python .claude/hooks/analyze_godot_logs.py --json --target HSM Ability
 
 # Tag frequency to discover what's noisy
 python .claude/hooks/analyze_godot_logs.py --json --mode tags

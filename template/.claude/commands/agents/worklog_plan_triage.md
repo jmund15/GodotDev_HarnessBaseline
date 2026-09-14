@@ -361,7 +361,9 @@ For the fill-set, produce a ready-to-execute body:
 After landing: `/worklog complete <title>` (commit hash <pending>).
 ```
 
-**Logic-domain note:** if a fill-set item lives in a Logic-domain area (`SpellArchitecture`, `Synergies`, `Jmodot.Core`, `Inventory`, `Math/Parsing`, `Data Structures` per CLAUDE.md), its **Steps** MUST start with a RED test (failing test that pins the bug or proves the new behavior is missing). No production-code step before a verifying test.
+**Logic-domain note:** if the owning subsystem is assigned to the project's Logic domain, its **Steps**
+MUST start with a RED test that proves the behavior is missing. No production-code step may precede it.
+Resolve ownership from `skills/project_subsystems/SKILL.md`; do not maintain another path list here.
 
 **Multi-item drafting:** if the fill-set has 2+ items, draft ONE plan covering them all — not separate plans. Find the shared invariant and structure Steps as "do X once, then apply across A, B, C". If the items have no shared invariant, structure Steps as labelled sub-sequences but keep a single Verification section.
 
@@ -369,7 +371,7 @@ After landing: `/worklog complete <title>` (commit hash <pending>).
 - `class: design` items: do NOT draft an implementation plan inline. Instead, suggest invoking `/architecture_brainstorm` (which will route to `/idea_brainstorm` first if the design space is greenfield): `Picked a design item — recommend running /architecture_brainstorm first; it will route to /idea_brainstorm if the candidate pool is empty. Re-run plan once the design exists.` Stop without drafting that item (draft the rest of the fill-set if any).
 - **Audit-shape items** (title starts `Audit`/`Verify`/`Review`/`Inspect`/`Check`, or Context is read-and-decide): execute the reads while drafting and render the verdict in the plan body; plan only consequent code changes. Compliant verdict → plan collapses to `/worklog complete` with verdict as `[x]` ref. Same for read-only `debug` reproduction.
 - `class: debug` items: structure Steps per the `debugging` skill's 6-phase discipline (feedback loop → reproduce → patterns → hypothesise → fix → cleanup). Don't propose fixes before reproduction.
-- `class: test` items: Steps describe what to assert and which fixture (`SpellTestFixture` / `CastingTestFixture`), not implementation.
+- `class: test` items: Steps name the behavior to assert and the existing fixture that owns it; do not invent an implementation.
 
 #### 4e — Conditional `/plan_check` recommendation
 
@@ -433,10 +435,10 @@ Plan drafted with pre-execution gate flagged. Recommend running /plan_check befo
 User: `/worklog plan`
 
 1. Read Worklog.md → 8 `[ ]` items across 4 domains.
-2. `git status` shows changes in `Tests/Logic/AI/*`. `git log` shows recent BehaviorTree commits.
+2. `git status` shows changes in `Tests/Logic/Rules/*`. `git log` shows recent RuleEngine commits.
 3. Score every ready item (Step 3 signal sums):
-   - Hot-context: 2 items reference BehaviorTree (matches uncommitted Tests).
-   - Cohesion: 2 items in `### AI / NPCs` (one overlaps Hot-context).
+   - Hot-context: 2 items reference RuleEngine (matches uncommitted Tests).
+   - Cohesion: 2 items in `### Rules` (one overlaps Hot-context).
    - Quick-wins: 3 scope-1 items across `docs` + `chore` + `tooling`.
    - Stale: 1 item > 30 days old in `ui`.
    - Big-ticket: 1 scope-4 `design` item with linked doc — flag for spawn_task.
@@ -449,17 +451,17 @@ User types: `/worklog tackle`
 
 1. Read Worklog.md → 12 ready items across 5 domains. Read git context.
 2. Score (Step 3):
-   - `Migrate spell charge duration from charge-visual scene to statsheet` — `Where:` overlaps `git status` (uncommitted changes in `spell/charge_visual/*.tscn`). Hot-context +3, scope-2 +1 = **4**.
-   - `Per-enemy status duration resistance` — scope-3 +2, no hot match = **2**.
-   - `Convention for collision-chain ordering` — scope-1, no signals = **0**.
+   - `Move retry timeout from a view scene to the owning policy Resource` — `Where:` overlaps `git status` (uncommitted changes in `rules/retry_view/*.tscn`). Hot-context +3, scope-2 +1 = **4**.
+   - `Add per-consumer retry limits` — scope-3 +2, no hot match = **2**.
+   - `Document ordering for chained rules` — scope-1, no signals = **0**.
    - Other items < 3.
 3. Step 4-Draft 4a: target `scope:3`. Fill-set = the score-4 scope-2 item (adding the next item would push the scope sum past 3). 4b → Mode C `auto-confirm` (top score 4, second-place 2 = 50% of top). Print:
    ```
-   Tackling: Migrate spell charge duration from charge-visual scene to statsheet — total scope ~2
-     Why: Where path matches uncommitted spell/charge_visual/* changes (hot-context).
+   Tackling: Move retry timeout from a view scene to the owning policy Resource — total scope ~2
+     Why: Where path matches uncommitted rules/retry_view/* changes (hot-context).
      Scores: 4
    ```
-4. 4c: no scope-4 ready items → no big-ticket flag. 4d: draft the plan body. Logic-domain item (SpellArchitecture) → Steps start with a RED test against the new statsheet field's expected behavior.
+4. 4c: no scope-4 ready items → no big-ticket flag. 4d: draft the plan body. Logic-domain item → Steps start with a RED test against the Resource's expected behavior.
 5. 4e `/plan_check` evaluation: 2 files touched, no new types, no subclass refactor → no gate trigger. Skip the block.
 6. 4f: append one `tackle` event to `.claude/worklog-tackle-history.jsonl`.
 7. 4g: print `Plan drafted. Say the word when ready to start, or refine first.`
@@ -468,13 +470,13 @@ User types: `/worklog tackle`
 
 User: `/worklog plan scope:3`
 
-1. Score → the only meaningfully-scored ready item is `Core Elemental Spells tier-1 implementation` (scope 4, −5 penalty). No viable smaller fill-set exists.
+1. Score → the only meaningfully-scored ready item is `Large subsystem migration` (scope 4, −5 penalty). No viable smaller fill-set exists.
 2. 4b Mode B fires. Print:
    ```
    Top candidate is scope-4 (one-session viability cap is scope-3).
 
-     Core Elemental Spells tier-1 implementation — spell · scope 4
-     Plan doc: [[Core Elemental Spells Brainstorm v1.1]]
+     Large subsystem migration — framework · scope 4
+     Plan doc: [[Subsystem Migration]]
 
    Recommended: start a parallel session for it with the linked plan doc as context. Or: re-run with a larger items:N target to surface smaller candidates.
    ```

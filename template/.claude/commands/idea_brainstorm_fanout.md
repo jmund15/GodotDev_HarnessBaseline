@@ -84,7 +84,7 @@ Workflow({
       { key: "systems-exploit",     instr: "<mandate only>" }
     ],
     genFields: [
-      { name: "winAxis",   desc: "CompletionRule axis the candidate maps to", required: true },
+      { name: "winAxis",   desc: "win-condition axis the candidate maps to", required: true },
       { name: "dependsOn", desc: "which referenced system it leans on" }
     ]
     // critics omitted -> engine defaults (dedup / fit / coverage-gap); pass args.critics:[{key,instr}] for cluster-specific mandates

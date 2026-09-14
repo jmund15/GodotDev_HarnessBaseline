@@ -77,7 +77,7 @@ After all agents complete, present:
 ║ PR #5  │ feat: Split project overview  │ LOW  │ ✅ APPROVE  ║
 ║ PR #6  │ feat: Launch jitter           │ MED  │ ⚠️  CHANGES ║
 ║ PR #7  │ feat: Cast recoil             │ MED  │ ⚠️  CHANGES ║
-║ PR #8  │ refactor: Spell scenes        │ HIGH │ ✅ APPROVE  ║
+║ PR #8  │ refactor: Ability scenes        │ HIGH │ ✅ APPROVE  ║
 ╚══════════════════════════════════════════════════════════╝
 Issues: X Critical, Y Important
 ```
@@ -89,7 +89,7 @@ Issues: X Critical, Y Important
 ╠═══════════════════════════════════════════════╣
 ║ PR #6 ↔ PR #7                                 ║
 ║   ⚠️ base_spell_statsheet.tres  (both modify) ║
-║   ⚠️ PushinPotionRegistry.cs    (both modify) ║
+║   ⚠️ ProjectRegistry.cs    (both modify) ║
 ║   → Recommend: merge #6 first, rebase #7      ║
 ╠═══════════════════════════════════════════════╣
 ║ PR #5 ↔ PR #8                                 ║

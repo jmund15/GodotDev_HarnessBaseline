@@ -5,7 +5,7 @@ disable-model-invocation: true
 
 Audit a single skill, command, or CLAUDE.md against instruction-loading principles.
 
-Static structural review — sibling to `/claudemd_compact`. Does NOT measure trigger accuracy (use `anthropic-skills:skill-creator`) or adversarial pressure (use `/test_skill`). Principles live in the `instruction_quality` skill.
+Static structural review — sibling to `/claudemd_compact`. Does NOT measure trigger accuracy (unowned — Claude Code dropped its bundled `skill-creator`) or adversarial pressure (use `/test_skill`). Principles live in the `instruction_quality` skill.
 
 ## Argument
 

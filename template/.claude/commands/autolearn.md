@@ -1,6 +1,5 @@
 ---
 description: Detect this session's corrections and preferences; propose minimal Skill/memory edits.
-disable-model-invocation: true
 ---
 
 Phase 2 of `/session_end`. Detect corrections and recurring preferences from the session; propose minimal reversible edits to active Skills or auto-memory. Filter for quality and overfit before proposing.
@@ -13,38 +12,17 @@ Trigger on explicit requests:
 
 Do NOT activate for one-off corrections or when the user declines skill modifications.
 
-## Step 0: Recover Context from Compaction (MANDATORY FIRST STEP)
+## Step 0: Session digest (MANDATORY FIRST STEP)
 
-**BEFORE signal detection**, check if this session has compacted. If compaction occurred, you MUST read transcript backups first—critical corrections are often lost to compaction.
+Signal detection runs over the digest, never over what survived compaction. In `/session_end` Phase 0 already printed it; standalone, run it now:
 
-**Step 1: Check for compaction**
-Look for compaction indicators in the conversation:
-- "This session is being continued from a previous conversation that ran out of context"
-- References to pre-compaction summaries
-- Presence of a `pre_compact.json` file with recent entries
-
-**Step 2: Read transcript backups**
-If compaction occurred, read transcript backups from `logs/transcript_backups/`:
-
-```
-logs/pre_compact.json                    # Index of all backup files with summary_path
-logs/transcript_backups/*.summary.json   # PRE-PARSED summaries (PREFERRED - use these first)
-logs/transcript_backups/*.jsonl          # Raw transcripts (fallback if summary missing)
+```bash
+python3 .claude/tools/session_digest.py --prompt-tail autolearn
 ```
 
-**Workflow:**
-1. Read `logs/pre_compact.json` to find recent backups for the current session ID
-2. **PREFERRED:** Read the `.summary.json` file (if `summary_path` exists in pre_compact.json entry)
-   - Contains pre-extracted `user_messages` with `signals` and `matched_patterns`
-   - Contains `tdd_feedback_loops` (error→resolution pairs)
-   - Contains `errors.resolved` and `errors.unresolved` lists
-3. **FALLBACK:** If no summary, read the `.jsonl` transcript and search manually
-4. Extract signals from the full session history, not just post-compaction context
-5. **Nuance recall (conditional):** if this was a complex/long/pivot-heavy session, run
-   [Transcript Nuance Recall](agents/transcript_nuance_recall.md) to catch implicit signals
-   the regex digest misses. Candidates enter at MEDIUM confidence through the normal filter.
+It rebuilds the whole session from the live transcript (append-only across compactions): every real user prompt verbatim, every tool error / denial / interrupt with your next move, the compaction count. JSON at `logs/session_digest_<sid8>.json`; older pre-compaction backups (`logs/pre_compact.json` → `.summary.json`) are the same schema and only needed if the live transcript is gone.
 
-**Why:** Critical corrections often happen early in long sessions and get lost during compaction. The transcript backups preserve the full conversation history.
+**Nuance recall (conditional):** if the digest shows 3+ compactions or the session had redesigns/go-backs, run [Transcript Nuance Recall](agents/transcript_nuance_recall.md) for the implicit signals a regex misses. Candidates enter at MEDIUM confidence through the normal filter.
 
 ## Surface routing
 
@@ -73,6 +51,11 @@ Scan the session for:
 - `DELEGATION:` entries in the self-evaluate archive, or user feedback about work that should have been dispatched
 - Each carries a rationalization + proposed harness edit (per `/self_evaluate` step 5); when the same rationalization recurs across sessions, propose the named edit against the ladder (`reference/model_ladder_evidence.md`) or the grain/litmus rules (`orchestration` §5/§11) (or the recording session's proposed file) rather than re-describing the failure
 
+**Friction** (mandatory disposition — the class that is otherwise glossed over and never fixed)
+- Every digest friction row: a denied tool call, an error that needed a workaround, a blocking wait, a user interrupt, a user complaint about process ("this used to not happen", "why do you keep…")
+- Each row → `fixed` / `harness` (name the file and the edit shape: allow rule, hook fix, skill line, launcher flag) / `worklog` / `accepted: <why>`. Same friction twice in the digest, or already in a prior archive entry → `harness`, never `accepted`
+- Unlike corrections, friction needs no user words to count: the tool error is the signal
+
 **Ignore:**
 - Context-specific one-offs ("use X here" without "always")
 - Ambiguous feedback
@@ -99,12 +82,12 @@ Only redesign if the procedure is fundamentally flawed. If execution skipped a s
 
 ### Anti-pattern: Overfit-to-Specific
 
-A captured rule that names a specific file path, PR number, spell name, commit SHA, or session date is overfit. The rule will not survive being re-read in 6 months when those details are stale. **Rewrite as a principle, or revert.**
+A captured rule that names a specific file path, PR number, ability name, commit SHA, or session date is overfit. The rule will not survive being re-read in 6 months when those details are stale. **Rewrite as a principle, or revert.**
 
 The concrete details still have value as **evidence** — keep them in the `Signal:` line of the proposal (and as `Concrete:` / `Source:` / `Why:` lines on the resulting memory entry), where they prove the principle was observed in the wild. They do not belong in the principle itself.
 
 **Litmus test before saving:**
-1. Does the rule name a specific file, function, PR, spell, or commit?
+1. Does the rule name a specific file, function, PR, ability, or commit?
 2. Could a reader from another project apply this rule without that name?
 3. If the answer is "no, only {{PROJECT_NAME}}'s `<thing>`" — rewrite or skip.
 
@@ -112,7 +95,7 @@ The concrete details still have value as **evidence** — keep them in the `Sign
 
 **Why this matters here.** The `MEMORY.md` index auto-loads into every session and is capped (~200 lines). Special-case rules accumulate faster than they age out, and each one that names a specific thing instead of a class of things is a future search miss — a semantic-search for "data file" or "Logic Domain" should surface the rule; a title that only says `burn_effect.tres` won't.
 
-This same gate is applied retroactively to existing entries by `/memory_audit`'s overfit lens (lens 2). (`anthropic-skills:consolidate-memory` handles the orthogonal dedup / durable-vs-dated / index-pruning surface — it does not apply this gate.)
+This same gate is applied retroactively to existing entries by `/memory_audit`'s overfit lens (lens 2).
 
 ### What counts as "new information"
 
@@ -149,6 +132,7 @@ The `MEMORY.md` index auto-loads into every session (first 200 lines / 25KB), an
 |---|---|---|
 | MEMORY.md index entry | ≤ 120 chars | 150 |
 | Links on ONE index line | ≤ 3 | 4 = merge the cluster (Step 1) |
+| Comma-labels on ONE index line | ≤ 3 | 4 = split into one line per rule |
 | Hot topic file body (rule + Why + How) | as short as the rule allows | ~500 chars |
 | Cold archive file body | as long as the reference genuinely needs | n/a |
 
@@ -156,9 +140,9 @@ A budget-violation on a hot entry signals *split into two principles* (or demote
 
 The per-line link cap is the one budget that binds in *aggregate* rather than per-entry: the index hits its byte cap through link count, not through any single entry being too long, so a store of individually-compliant entries can still blow it. Bytes bind before the 200-line budget does — a dense index reaches 25KB at ~90 lines.
 
-### Anti-patterns that produced the 2026-04-30 compaction debt
+### Anti-patterns in memory-entry prose
 
-Don't write observations that look like any of these. Each was a real entry the compaction had to rewrite or delete:
+Don't write observations that look like any of these — each is a shape a compaction pass has had to rewrite or delete:
 
 - **Stacked errata.** "CORRECTION 2026-04-30 (supersedes obs #1 + #3): ..." — *consume* the correction by editing obs 1+3 in place; never leave both versions.
 - **Incremental followups.** "EXPANDED PATTERN (2026-04-26 followup): the int-Export bug ALSO bites bool fields ..." — *merge* into one general rule covering all variants the day the second variant lands.
@@ -167,7 +151,7 @@ Don't write observations that look like any of these. Each was a real entry the 
 - **Multi-paragraph observations.** A gotcha is one paragraph + (optional) one `Concrete:` line. If you find yourself writing "Furthermore," or starting a second paragraph, you have two observations.
 - **Inline implementation tour.** "Root cause is in src/metrics/symbol-match.ts where COLUMN_WEIGHTS aggregation can only amplify existing scoring ..." — code-internal reasoning belongs in source comments or commit messages, not memory. The memory entry is the *consumer-facing rule*.
 - **Symptom + Detection + Fix + Recovery + Prevention sections.** This is documentation, not a memory observation. If a gotcha needs all five, it's a runbook — write it as a cold `archive/` memory file or a skill section, then a one-line `MEMORY.md` pointer if it warrants hot-tier surfacing.
-- **"Discovered 2026-04-25 in PR #59 — wizard.tscn line 2110 ...".** PR # / line number / file path in the rule itself is overfit (existing Anti-pattern: Overfit-to-Specific). Move to `Concrete:`.
+- **"Discovered 2026-04-25 in PR #59 — player.tscn line 2110 ...".** PR # / line number / file path in the rule itself is overfit (existing Anti-pattern: Overfit-to-Specific). Move to `Concrete:`.
 
 Litmus before saving: *would a future-me searching for this rule benefit from any of those extra words, or would they just have to skim past them?* If the latter, cut.
 

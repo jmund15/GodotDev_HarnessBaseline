@@ -217,7 +217,7 @@ new records:
   and only `pattern`-or-better lines are eligible — a skim bullet that drops the tier launders a
   single-conversation datapoint into a fact, which is what the tier system exists to prevent.
 
-Apply the approved profile diff to `Meta/Collaboration-Profile.md` with direct `Edit` — an evidence ledger whose structure step 5 dictates, per the CLAUDE.md §9 write-routing carve-out; the `## Standing read` paragraph is the one prose block and is small enough that the round-trip costs more than the writing. Bump `updated`, increment `conversations`, and append one trend-log row per promotion, demotion, and sentiment move.
+Apply the approved profile diff to `Meta/Collaboration-Profile.md` with direct `Edit` — an evidence ledger whose structure step 5 dictates, per the CLAUDE.md §Tool Routing write-routing carve-out; the `## Standing read` paragraph is the one prose block and is small enough that the round-trip costs more than the writing. Bump `updated`, increment `conversations`, and append one trend-log row per promotion, demotion, and sentiment move.
 
 **Design-shaped actions are STAGED, never run** — the digest names the seed list and the downstream command. Running a drive inside ingest is out of scope by design: a digest gate approving "explore this design" is not a design-lock approval.
 

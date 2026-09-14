@@ -42,7 +42,7 @@ For inline Python data processing on Windows, always write `.py` files instead o
 **`.cs` files are the primary unit of batch complexity.** Data files (`.tres`/`.tscn`) are structurally simpler (key-value pairs, resource references) and should NOT count equally toward batch limits.
 
 - **~15 `.cs` files** per batch — the hard unit that drives agent context load
-- **Associated `.tres`/`.tscn` files** — bundled with their `.cs` counterparts at no count cost. "Associated" means: data files that configure, instantiate, or are defined by `.cs` files in the same batch (e.g., `SlotModifier.cs` + `supercharged_slot_modifier.tres`)
+- **Associated `.tres`/`.tscn` files** — bundled with their `.cs` counterparts at no count cost. "Associated" means: data files that configure, instantiate, or are defined by `.cs` files in the same batch (e.g., `Modifier.cs` + `boosted_modifier.tres`)
 - **Soft ceiling of ~30 total files** per batch — if a batch of 15 `.cs` files has 15+ associated data files, consider splitting further
 - **Orphaned data files** (`.tres`/`.tscn` with no `.cs` counterpart in any batch) get grouped into a dedicated data-only batch reviewed by data-integrity alone
 
@@ -169,11 +169,11 @@ You are test-analyzer, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for TDD comp
 
 ## Your Checklist
 
-- **Logic Domain TDD**: For every new/modified file in `SpellArchitecture/`, `Synergies/`, `Inventory/`, `Jmodot.Core/`:
-  - Does a corresponding test exist in `Tests/Logic/`?
-  - Check commit order via `git log main..{{BRANCH}} --name-only --reverse`: test file committed BEFORE or IN SAME commit as implementation?
-  - `.tres` edits affecting Logic Domain behavior: was a test written asserting the expected value BEFORE the data edit?
-- **Gameplay Domain**: For scene/physics/UI changes:
+- **Logic Domain TDD**: For every new or changed artifact assigned to the project's Logic domain:
+  - Does a matching test exist under the project's Logic test root?
+  - Check commit order via `git log main..{{BRANCH}} --name-only --reverse`: was the test committed before or with the implementation?
+  - For authored-data edits that change Logic behavior, did a test pin the intended behavior before the data edit?
+- **Gameplay Domain**: For changes assigned to the project's Gameplay domain:
   - Deterministic behavior has ISceneRunner test (`Tests/Integration/` or `Tests/Sanity/`)
   - `await runner.AwaitInputProcessed()` called after every `SimulateActionPressed`/`SimulateKeyPress`
 - **Shared test quality checklist**: Check every item below:

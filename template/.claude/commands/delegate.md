@@ -36,7 +36,7 @@ For `review`, expand each logical lens before dispatch:
 - Add one Anthropic arm from the available fan-out role.
 - Add every other available roster model that claims the fan-out role.
 - Keep each arm's native model id, transport, effort rung, currency, and launcher.
-- Give every arm a unique namespaced label. The expanded seed job count is the required evidence count; zero or duplicate matches fail manifest generation.
+- Give every arm a unique namespaced key. For a current-transport review, its manifest evidence label is `review:<key>`; this must match the workflow agent label exactly. The expanded seed job count is the required evidence count; zero or duplicate matches fail manifest generation.
 
 Write the expanded manifest seed under `.claude/scratch/` before dispatch. Keep requested values separate from later effective evidence. Set unknown effective effort to `null`; never copy the requested effort into it.
 
@@ -46,12 +46,12 @@ Split a mixed run by transport, but preserve one run key and one expanded seed.
 
 - Current-transport `single` or `parallel` → `Workflow({scriptPath: ".claude/workflows/dispatch.js", args: {jobs: [{label, promptPath, model, effort, agentType, shape}], contextPath, spillDir}})`.
 - Current-transport `chain` → `Workflow({scriptPath: ".claude/workflows/dispatch_chains.js", args: {chains: [{name, jobs: [{label, promptPath, model, effort, agentType, shape}]}], contextPath, spillDir}})`. Every chain stays on one transport.
-- Current-transport `review` → `Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {agents: [{key, promptPath, model, effort}], contextPrefixPath, spillDir}})`. Map the effective label to `key`; do not pass a dispatch-job object to this engine.
+- Current-transport `review` → `Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {agents: [{key, promptPath, model, effort, agentType}], contextPrefixPath, spillDir}})`. Map the effective label to `key`, retain its required `agentType`, and use `review:<key>` as the expanded seed's evidence label.
 - Every off-transport group → convert each job to `{label, alias: model, promptFile: promptPath, effort, disclosure, shape, contextFiles, schemaFile, transport}` and run `python3 .claude/tools/sidecar_fanout.py <jobs.json> --out-dir <record-dir>`. The tool resolves the launcher from `alias` and `transport`. `shape` alone maps to sidecar `-G`.
 
 Do not use a bare Agent call for exact pins. Workflow and Agent stay on the current endpoint; neither can reach another transport. Use `dispatch.js`, `dispatch_chains.js`, and `review_fanout.js` as the native executor family, and `sidecar_fanout.py` as the cross-transport owner.
 
-Large prompts and context live in files. Workflow `args` carries paths and short scalar values. Use a legal `.claude/scratch/` or `$TEMP/claude` spill directory. Paid sidecars never auto-retry; recover a null return from the declared spill file or transcript before considering another dispatch.
+Large prompts and context live in files. Workflow `args` carries paths and short scalar values. Use a repository-relative spill directory under `.claude/scratch/`. Paid sidecars never auto-retry; recover a null return from the declared spill file or transcript before considering another dispatch.
 
 ## 4. Consume and finalize
 

@@ -310,7 +310,7 @@ The body's **artifact** follows the ladder tier: tier 1 needs none; tier 2 keeps
 After landing: `/worklog complete <title>` (commit hash <pending>).
 ```
 
-**Logic-domain note:** a fill-set item in a Logic-domain area (`SpellArchitecture`, `Synergies`, `Jmodot.Core`, `Inventory`, `Math/Parsing`, `Data Structures` per CLAUDE.md) MUST open its **Steps** with a RED test pinning the bug or proving the new behavior missing. No production-code step before a verifying test.
+**Logic-domain note:** a fill-set item in a Logic-domain area (`DomainCore`, `Combinations`, `Jmodot.Core`, `Inventory`, `Math/Parsing`, `Data Structures` per CLAUDE.md) MUST open its **Steps** with a RED test pinning the bug or proving the new behavior missing. No production-code step before a verifying test.
 
 **Multi-item drafting:** partition the fill-set by `PLAN_SHAPE` — never one plan spanning both shapes ([*Plan-file format*](../../skills/_brainstorm_shared/plan_file_format.md) → *One shape per plan file*). Within a shape, default to one plan and split further only on that rule's cohesion litmus (one `Constraints` block and one `Verification` section genuinely cover the set). Items sharing an invariant get Steps shaped "do X once, then apply across A, B, C"; items with no shared invariant but one plan's worth of spine get labelled sub-sequences under a single Verification section.
 
@@ -318,7 +318,7 @@ After landing: `/worklog complete <title>` (commit hash <pending>).
 - `class: design`: draft no implementation plan. Say `Picked a design item — recommend running /architecture_brainstorm first; it will route to /idea_brainstorm if the candidate pool is empty. Re-run drive once the design exists.` and stop on that item (drive the rest of the fill-set if any).
 - **Audit-shape items** (title starts `Audit`/`Verify`/`Review`/`Inspect`/`Check`, or Context is read-and-decide): execute the reads while drafting, render the verdict in the plan body, plan only consequent code changes. Compliant verdict → the plan collapses to `/worklog complete` with the verdict as the `XLINE` ref. Same for read-only `debug` reproduction.
 - `class: debug`: structure Steps per the `debugging` skill's 6 phases (feedback loop → reproduce → patterns → hypothesise → fix → cleanup). No fixes before reproduction.
-- `class: test`: Steps describe what to assert and which fixture (`SpellTestFixture` / `CastingTestFixture`), not implementation.
+- `class: test`: Steps describe what to assert and which shared fixture, not implementation.
 
 #### 4e — Conditional `/plan_check`
 

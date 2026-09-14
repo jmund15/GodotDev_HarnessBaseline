@@ -20,7 +20,7 @@ Review every changed test file and every changed production file against these i
 
 ## Quality
 
-- [ ] **Behavioral over implementation**: Tests assert observable outcomes, not internal state checks (e.g., test spell behavior, not private field values)
+- [ ] **Behavioral over implementation**: Tests assert observable outcomes, not internal state checks (e.g., test ability behavior, not private field values)
 - [ ] **No documentation-only tests**: `AssertThat(true).IsTrue()` or equivalent gives false confidence — test real behavior
 - [ ] **Test isolation**: No shared mutable state between tests (each test stands alone)
 

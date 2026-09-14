@@ -386,7 +386,7 @@ For each domain that has misaligned systems but no parent folder yet:
 - Create the folder on disk via Bash `mkdir -p` at the vault path
 - This is safe — empty folders have no wikilink impact
 
-Domain folder naming convention: match the Start Here domain header name, using PascalCase without spaces for multi-word names (e.g., "Visual Effects" → `VisualEffects/`, "Physics & Movement" → `PhysicsAndMovement/`, "Jmodot Framework" → `JmodotFramework/`).
+Domain folder naming convention: match the Start Here domain header name, using PascalCase without spaces for multi-word names (e.g., "Data Access" → `DataAccess/`, "Runtime Services" → `RuntimeServices/`).
 
 ### 8e. Present Reorganization Plan
 
@@ -399,19 +399,14 @@ The following system folders should be moved into their domain parent folders.
 **Action:** In Obsidian's file explorer, drag each system folder into its domain parent.
 Obsidian will automatically update all wikilinks.
 
-### SpellPipeline/ (already exists)
-- [ ] ReactionSystem/
-- [ ] WaveSpellOverhaul/
-- [ ] FabledVariantSystem/
-- [ ] SiblingCollisionSystem/
-- [ ] Pooling/
-- [ ] SpellCollision/
-- [ ] EmitterTimingSystem/
+### Runtime/ (already exists)
+- [ ] Scheduling/
+- [ ] ResourceLoading/
+- [ ] StateController/
 
-### AI/ (created)
-- [ ] AI Steering System/
-- [ ] Affinity System/
-- [ ] HSM-BT Critter AI/
+### Presentation/ (created)
+- [ ] Hud/
+- [ ] Animation/
 
 ### {Domain}/ ({status})
 - [ ] {SystemFolder}/
@@ -421,7 +416,7 @@ Obsidian will automatically update all wikilinks.
 - Start Here.md
 - Claude/
 - Prototypes/
-- SpellReactionSystem (Archived)/
+- LegacySystem (Archived)/
 ```
 
 **Skip aligned domains:** If all systems in a domain are already nested under their parent folder, omit that domain from the plan.
@@ -429,8 +424,8 @@ Obsidian will automatically update all wikilinks.
 **Empty orphan detection:** If the folder listing reveals folders that are NOT in any domain's system list and NOT classified as Structural/Archived (per `agents/documentation_structure.md` — content-based classification, no exclusion list), flag them:
 ```
 ### Possible Orphan Folders (verify before deleting)
-- AIFramework/ — not assigned to any domain
-- JmodotModifiers/ — not assigned to any domain
+- LegacyRuntime/ — not assigned to any domain
+- SharedUtilities/ — not assigned to any domain
 ```
 
 ### 8f. Naming Consistency Audit
@@ -440,8 +435,8 @@ After the hierarchy plan, audit system folder names for consistency. The naming 
 **Rules:**
 1. **PascalCase, no spaces** — `ReactionSystem/` not `Reaction System/`
 2. **Descriptive but not verbose** — name should identify the system's scope
-3. **Consistent suffix pattern** — use `System` suffix when the folder represents a self-contained system (e.g., `ReactionSystem/`, `MovementSystem/`). Omit when the name is already a clear noun (e.g., `Pooling/`, `CombatSubsystem/`)
-4. **No redundant prefixes** — don't prefix with the parent domain name (e.g., `AI/SteeringSystem/` not `AI/AISteeringSystem/`)
+3. **Consistent suffix pattern** — use `System` suffix when the folder represents a self-contained system (e.g., `SchedulerSystem/`, `CacheSystem/`). Omit it when the name is already a clear noun (e.g., `Pooling/`, `Serialization/`)
+4. **No redundant prefixes** — don't repeat the parent domain in a child name (e.g., `Runtime/SchedulerSystem/` not `Runtime/RuntimeSchedulerSystem/`)
 
 **Procedure:**
 1. List all system folder names from the domain mapping
@@ -453,9 +448,9 @@ After the hierarchy plan, audit system folder names for consistency. The naming 
 
 | Current Name | Recommended Name | Reason |
 |-------------|-----------------|--------|
-| AI Steering System | AISteeringSystem (or SteeringSystem under AI/) | Contains spaces |
-| HSM-BT Critter AI | CritterAI | Verbose, implementation detail in name |
-| Affinity System | AffinitySystem | Contains space |
+| Runtime Scheduler | SchedulerSystem (or Scheduler under Runtime/) | Contains spaces |
+| Layered-State Controller | StateController | Verbose, implementation detail in name |
+| Input Router | InputRouter | Contains space |
 | {current} | {recommended} | {reason} |
 
 **Action:** Rename in Obsidian (right-click → Rename). Obsidian auto-updates wikilinks on rename.

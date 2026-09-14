@@ -29,8 +29,6 @@ Steps 2–6 are `/part_drive` steps 2–6 verbatim (plan in-session → `/plan_c
 6. Commits — `/part_drive` step 6 (categorical split, submodule-first, index hygiene, no push).
 7. **Close out (no roadmap)** — no `/update_roadmap`. Instead: surface any tracked-roadmap-topic touchpoints in the final report; route deferrals through `/worklog`; offer `/pr_ready` on feature branches.
 
-**Context checkpointing** applies throughout (`orchestration` SKILL §10) — same contract as `/part_drive`.
-
 ## Halt valves
 
 `/part_drive` valves (a)–(e) and (g) apply unchanged. Valve (f) is replaced by entry-gate rule 2: taste forks ask via `AskUserQuestion` instead of halting — the user is same-session (a (g) non-convergence that resolves to a taste fork routes there too).

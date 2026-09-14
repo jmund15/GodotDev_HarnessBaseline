@@ -19,11 +19,11 @@ User-requested after a plan proposal (auto-invokable on the frontmatter trigger 
 - **3+ files** touched
 - a **new type, folder, or top-level concept**
 - a **new `[Export]`/authored field or behavior-selecting bool/enum** on an existing class — especially where the folder/base carries a `*Strategy`/`*Config` sibling
-- a **subclass added to an existing 2+ family**, or a refactor of a domain that has one (StatusEffect, SpellEffect, StateBase, IBlackboardProvider, ISpell, SpellBehavior)
+- a **subclass added to an existing 2+ family**, or a refactor of a domain that has one (StatusEffect, AbilityEffect, StateBase, IBlackboardProvider, IAbility, AbilityBehavior)
 - **deleting or replacing existing files** — gives `/session_audit` Phase 1.5 a pre-enumerated surface
 - an edit to an **always-loaded harness surface** (`CLAUDE.md`, `MEMORY.md`, a `paths:`-globbed rule, a skill `description:`), or doctrine changes across **3+ `.claude/` files** — the `meta` shape. No `/regression_gate` (meta commits are exempt), no compiler, no test: plan-time is their only gate.
 
-Below that, trust the planner — `plan_memory_reminder.py` (PostToolUse on `Write`/`Edit` to `.claude/plans/*.md`) covers routine plans passively. **Coverage hole:** that hook emits nothing below a 50-word plan floor, and SKIP-eligible plans are the terse ones most likely to sit under it.
+Below that, trust the planner — `plan_memory_reminder.py` (PostToolUse on `Write`/`Edit` to `.claude/plans/*.md`) covers routine plans passively. Nothing auto-fires this command: it is not wired into `/session_end` or `/regression_gate` (both post-implementation), nor into a SessionStart/UserPromptSubmit hook. **Coverage hole:** that hook emits nothing below a 50-word plan floor, and SKIP-eligible plans are the terse ones most likely to sit under it.
 
 ## Composition with other audits
 
@@ -81,7 +81,7 @@ A `meta` plan is EXPECTED to match no domain (the table maps gameplay subsystems
 
 Per domain, run the auto-memory single-keyword search; concatenate into `MEMORY_HITS`, preserving entity/file names for citation. `Harness/Meta` has no table row — seed it from auto-memory searches for instruction-quality, tool-routing, harness-file and process-discipline rules (`MEMORY.md`'s *Communication & process discipline*, *Tool routing & workflow*, *Harness files* clusters). This search is a **seed/floor**: Phase 2's *Dispatch doctrine* mandates the memory lens to search itself and exceed it.
 
-**Ordering-hazard subset (feeds `plc-memory-alignment`).** Always add the step-*ordering* gotchas so the lens checks step sequence, not just individual steps: autoload subscription order (`gotcha_autoload_to_autoload_subscription_order`), `OnExit` clobbering a consumer's `OnEnter` read (`arch_rule_onexit_must_not_clobber_consumer_onenter`), init-timing (spell spawn pipeline), spawn-marker-inside-trigger-volume.
+**Ordering-hazard subset (feeds `plc-memory-alignment`).** Always add the step-*ordering* gotchas so the lens checks step sequence, not just individual steps: autoload subscription order (`gotcha_autoload_to_autoload_subscription_order`), `OnExit` clobbering a consumer's `OnEnter` read (`arch_rule_onexit_must_not_clobber_consumer_onenter`), init-timing (ability spawn pipeline), spawn-marker-inside-trigger-volume.
 
 ### 1e. Load known-failure-mode catalog
 
@@ -133,8 +133,8 @@ Pre-load into agent CONTEXT; agents do not re-read them.
 **Sub-agent delegation is MANDATORY, dispatched via Workflow.** Write the assembled CONTEXT block (Phase 1 outputs, full plan text inline) to a scratchpad file, then:
 `Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {agents: [{key, prompt: <lens template text>, model, effort}], contextPrefixPath: <context file path>}})` — this command's instruction IS the Workflow authorization.
 
-- **Provider is chosen by BAND before any pin is read; lens count never selects it.** Read the `[budget-posture]` line first (bands: `orchestration` §5b). **Surplus → the engine, every lens. On-pace or above → the sidecar** — a plan audit is the adversarial/architectural-review class the Ahead and Hot bands widen. `Workflow` dispatches on the session's own endpoint, so **the engine cannot reach the sidecar**: routing there means one `deepseek_sidecar.sh` call per lens (`-m flash -e max -G review`, plus `-R` and `-l "plancheck:<key>"` for attributable spend), consolidated by the orchestrator instead of the engine. Bound lens output in the MANDATE, never with `-S` — a schema cap discards the whole deliverable (`feedback_schema_caps_must_not_invalidate_delegate_work`). The verdict stays the orchestrator's either way.
-- **Per-lens pins.** Design-judgment lenses are opus-floored per `orchestration` §5. Sub-architectural plans: `plc-pattern-fit` + `plc-architecture-quality` at `opus·low`. **Architecturally-loaded plans** (new abstractions, framework-boundary changes, 2+ subsystem reach) raise `plc-architecture-quality` to `opus·high` — the one lens doing open-ended structural judgment — and `plc-pattern-fit` + `plc-memory-alignment` to `opus·medium`, since the symbol inventory and memory seed anchor them. `plc-test-readiness` is `sonnet·medium` everywhere; `plc-memory-alignment` defaults `sonnet·medium` sub-architecturally. Raises pass `args.justification` naming the ambiguity. Pin evidence: `reference/model_ladder_evidence.md`.
+- **Provider is chosen by BAND before any pin is read; lens count never selects it.** Read the `[budget-posture]` line first (bands: `orchestration` §5b). **Surplus → the engine, every lens. On-pace or above → the sidecar** — a plan audit is the adversarial/architectural-review class the Ahead and Hot bands widen. `Workflow` dispatches on the session's own endpoint, so **the engine cannot reach the sidecar**: routing there means one sidecar call per lens (`-G review`, plus `-R` and `-l "plancheck:<key>"` for attributable spend), consolidated by the orchestrator instead of the engine. Take the launcher, alias and effort from `python3 .claude/tools/model_registry.py available` — never a transport named in this file, which goes stale the day that transport is excluded. **A stale route name is not a reason to fall back to Anthropic**: re-select from the roster. Pass `-S .claude/schemas/review_findings.json`, the uncapped house shape (`sidecar_fanout.py` adds it to every `shape: review` job): without a schema a lens that compacts mid-sweep hands back prose. Bound LENGTH in the mandate and never author a capped schema — a `maxLength`, `maxItems` or tight `enum` discards the whole deliverable (`feedback_schema_caps_must_not_invalidate_delegate_work`). The verdict stays the orchestrator's either way.
+- **Per-lens pins.** Design-judgment lenses are opus-floored per `orchestration` §5. Sub-architectural plans: `plc-pattern-fit` + `plc-architecture-quality` at `opus·low`. **Architecturally-loaded plans** (new abstractions, framework-boundary changes, 2+ subsystem reach) raise `plc-architecture-quality` to `opus·xhigh` — the one lens doing open-ended structural judgment, and the review shape where `high` finds a fraction of the planted defects (ladder §Pick by work shape) — and `plc-pattern-fit` + `plc-memory-alignment` to `opus·medium`, since the symbol inventory and memory seed anchor them. `plc-test-readiness` is `sonnet·medium` everywhere; `plc-memory-alignment` defaults `sonnet·medium` sub-architecturally. Raises pass `args.justification` naming the ambiguity. Pin evidence: `reference/model_ladder_evidence.md`. **These are the engine-route defaults and the band rule above outranks them** — an `opus` pin taken from this table is never itself the reason to stay on Anthropic, and `workflow_provider_guard.py` denies a conserving-band dispatch that offers one.
 - **`plc-evidence-grounding` pins `opus·low` on every plan, both shapes, never escalated.** Its mandate is closed — enumerate load-bearing assertions, check each against its backing — so effort buys steps it does not need, and it runs universally.
 - **No inline audit, no collapsed lenses, no unpinned fallback.** Fall back to parallel `Task` dispatch ONLY if Workflow is unavailable (bare subagents inherit session effort unpinned).
 
@@ -211,7 +211,7 @@ One `CONTEXT` string injected into every agent prompt. It MUST contain:
 
 Follow the **Orchestrator Action Protocol** in [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md):
 
-1. **Merge & deduplicate** findings across lenses.
+1. **Merge & deduplicate** findings across lenses. `review_fanout.js` dedups on the exact `file:line` string, then runs its **Merge** phase — one `opus·low` agent that merges same-defect findings anchored to different lines (default on at ≥12 deduped findings; `args.consolidate` overrides). Report `counts.raw` and `counts.merged`. The merge never verifies: a fabricated finding survives it, so still confirm one refuting quote first-party before dismissing anything.
 2. **Sort:** critical first, then FIX → ASK → PLAN, then bug → rule → improvement.
 3. **Present unified report:**
 
@@ -268,17 +268,8 @@ Follow the Action Protocol's Step 4. FIX findings rewrite the plan text (not cod
 - **Read-only by default.** No code edits. The only file potentially modified is the plan file, and only with explicit per-finding approval.
 - **Pre-execution stance.** Findings are about plan content, not existing code.
 - **Never run this against a plan you are concurrently executing.** The lenses read the live tree, so landed work reads as a stale plan claim and is reported `critical`/`FIX` — a lens cannot distinguish "already done" from "wrong", and the artifacts crowd out genuine criticals. Finish the audit before executing, or re-scope the plan text to what remains.
-- **Time-bounded.** Full audit (spawn → consolidate) under 5 minutes for plans <2000 words; larger may exceed.
 - **Cloud compatible.** Grep fallback for csharp-ls; no Godot MCP / Obsidian MCP dependencies.
 - **MANDATORY Workflow dispatch through `review_fanout.js`** — lens set per Phase 2's shape-conditional composition (5 on a default `code` plan, 4 on a `meta` one), pins per Phase 2. The engine is lens-agnostic: it takes whatever `args.agents` it is handed, so adding a shape means composing a different list, never editing the engine. No inline run; no collapse into one generic agent; bare `Task` only as Workflow-unavailable fallback.
 - **Evidence-quoting for refuting claims.** Any finding that REFUTES the plan on empirical grounds ("this type already exists / file missing / already refactored") must quote the raw tool output (grep line, read excerpt). The orchestrator first-party-verifies at least one quote before the finding counts — agents fabricate confident file-state claims (`feedback_delegate_output_trust`); paraphrase survives fabrication, verbatim output rarely does.
 - **Detect-and-report only for `plc-test-readiness` + the Phase-1b DoD/stub scan.** They surface findings; they never emit auto-applicable `old`/`new` edits. Test content and Definition-of-Done are scope decisions — a downstream auto-apply loop (`/part_drive`) must never silently fill in scope from them.
 
----
-
-## When to run (suggested)
-
-- Right after the plan file is drafted and BEFORE presenting it for approval, when the litmus above triggers.
-- Before user approval of any plan involving cross-domain refactors, new abstractions, or deletions.
-- NOT wired into `/session_end` or `/regression_gate` — those are post-implementation.
-- NOT auto-fired from SessionStart or UserPromptSubmit hooks — too noisy; `plan_memory_reminder.py` covers passive enforcement.

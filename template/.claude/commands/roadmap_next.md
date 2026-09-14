@@ -1,5 +1,5 @@
 ---
-description: Scan all roadmaps ({{PROJECT_NAME}} + Jmodot trees) for actionable Parts (deps satisfied), score by Leverage + State-Proximity + Readiness + MVP-Demand, recommend top 3. Optional scope (pp-only / jmodot-only); bare invocation excludes idea-pending, user-owned, workshop-pending, prototype-pending.
+description: Scan all roadmaps ({{PROJECT_NAME}} + Jmodot trees) for actionable Parts (deps satisfied), score by Leverage + State-Proximity + Readiness + MVP-Demand, recommend top 3. Optional scope (project-only / jmodot-only); bare invocation excludes idea-pending, user-owned, workshop-pending, prototype-pending.
 ---
 
 # /roadmap_next
@@ -33,13 +33,13 @@ User-typed at the start of a planning session, or when:
 | `/roadmap_next` | Default: state set `plan-pending`, `arch-pending`, `arch-rework`, `idea-rework`; scope **both** ({{PROJECT_NAME}} + Jmodot). |
 | `/roadmap_next plan-pending` | Single state filter. |
 | `/roadmap_next plan-pending arch-rework` | Multi-state filter (positional, space-separated). |
-| `/roadmap_next pp-only` | Scope filter — recommend only {{PROJECT_NAME}} Parts (`pp` accepted). |
+| `/roadmap_next project-only` | Scope filter — recommend only {{PROJECT_NAME}} Parts (`pp` accepted). |
 | `/roadmap_next jmodot-only` | Scope filter — recommend only Jmodot Parts (`jmodot` accepted). |
-| `/roadmap_next plan-pending pp-only` | Scope + state tokens compose, any order. |
+| `/roadmap_next plan-pending project-only` | Scope + state tokens compose, any order. |
 | `/roadmap_next --all` | Include `idea-pending` + `workshop-pending` + `submap-pending` + `prototype-pending` in the filter. `user-owned` always excluded. |
 | `/roadmap_next --recommend-only` | Skip the full actionable table; show top-3 only. |
 
-**Scope** narrows which Parts are *recommended*, never which are *analyzed* — both vault trees are always discovered + parsed so cross-tree Leverage stays accurate (Phase 1, Anti-patterns). Scope vocabulary: `both` (default) / `pp` / `pp-only` / `jmodot` / `jmodot-only`.
+**Scope** narrows which Parts are *recommended*, never which are *analyzed* — both vault trees are always discovered + parsed so cross-tree Leverage stays accurate (Phase 1, Anti-patterns). Scope vocabulary: `both` (default) / `pp` / `project-only` / `jmodot` / `jmodot-only`.
 
 **Excluded states (never reported):**
 - `complete` / `abandoned` — no work to do.
@@ -125,8 +125,8 @@ Counts the **incomplete MVPs** (per `## MVP Checkpoints` §6.11; an MVP is incom
 1. `Glob` for `BrainstormingDesigns/**/roadmap.md` under **both** vault trees, tagging each result with its `tree` (`pp` | `jmodot`):
    - **{{PROJECT_NAME}}** — `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\BrainstormingDesigns\`
    - **Jmodot** — `{{VAULT_ROOT}}\DevProjects\Jmodot\Claude\BrainstormingDesigns\`
-2. Parse positional args. Match each token against the **scope set** {`both`, `pp`, `pp-only`, `jmodot`, `jmodot-only`} first, then the **state set**. Empty state args → default state set; no scope token → `both`. `--all` flag adds `idea-pending`, `workshop-pending`, `submap-pending`, `prototype-pending`. `--recommend-only` toggles output verbosity.
-3. **Scope filters the candidate pool, NOT discovery.** Always glob + parse BOTH trees regardless of scope, so Phase 3 builds the complete cross-tree dep graph — a `pp-only` Part's Leverage must still count Jmodot dependents (e.g. {{PROJECT_NAME}}'s `Graph Engine Core` is depended on by Jmodot procgen Parts; {{PROJECT_NAME}} `hub-world` depends on Jmodot `grab→jmodot`). The scope token is applied in Phase 4 to gate which Parts can be *recommended*.
+2. Parse positional args. Match each token against the **scope set** {`both`, `pp`, `project-only`, `jmodot`, `jmodot-only`} first, then the **state set**. Empty state args → default state set; no scope token → `both`. `--all` flag adds `idea-pending`, `workshop-pending`, `submap-pending`, `prototype-pending`. `--recommend-only` toggles output verbosity.
+3. **Scope filters the candidate pool, NOT discovery.** Always glob + parse BOTH trees regardless of scope, so Phase 3 builds the complete cross-tree dep graph — a `project-only` Part's Leverage must still count Jmodot dependents (e.g. {{PROJECT_NAME}}'s `Graph Engine Core` is depended on by Jmodot procgen Parts; {{PROJECT_NAME}} `hub-world` depends on Jmodot `grab→jmodot`). The scope token is applied in Phase 4 to gate which Parts can be *recommended*.
 4. If a positional token ∉ scope set ∪ known states → emit usage table and exit.
 
 ### Phase 2 — Parse Parts tables (bundled)
@@ -193,7 +193,7 @@ Format (full version; truncate full actionable table if `--recommend-only`):
 ╔══════════════════════════════════════════════════════╗
 ║   ROADMAP NEXT — <DATE>                              ║
 ╠══════════════════════════════════════════════════════╣
-║ Scope:         <both ({{PROJECT_NAME}} + Jmodot) | pp-only | jmodot-only> ║
+║ Scope:         <both ({{PROJECT_NAME}} + Jmodot) | project-only | jmodot-only> ║
 ║ State filter:  <comma-separated list>                ║
 ║ Scanned:       <N> roadmaps (<a> {{PROJECT_NAME}} + <b> Jmodot), <M> Parts║
 ║ Actionable:    <K> (scope ∧ state ∈ filter ∧ deps ✓) ║
@@ -242,7 +242,7 @@ Format (full version; truncate full actionable table if `--recommend-only`):
 | "Read the `## Currently ready to execute` derived view; faster than parsing the full table" | Derived views drift from Parts tables when `/update_roadmap regen` lags Part transitions. Empirically observed 2026-05-19: derived view listed P7 (which was `complete` per Parts table) and omitted P10 (which was actionable per Parts table). Always parse the canonical table. |
 | "Skip the reverse dep graph; score Parts in isolation" | Leverage is the highest-signal component for next-pickup priority. Computing it requires the full graph; skipping it ranks leaves equal to bottlenecks. |
 | "Ignore cross-roadmap deps — surveys one roadmap at a time" | Cross-roadmap fan-out is what distinguishes high-leverage shared-infrastructure Parts (P10 Hub Scaffold, Graph Engine Core) from leaf one-offs. Single-roadmap surveys understate leverage. |
-| "`pp-only` should skip the Jmodot tree entirely — it's faster and the user only wants {{PROJECT_NAME}}" | Scope filters the *candidate pool* (Phase 4), not the *dep graph* (Phase 3). Skip Jmodot discovery and cross-tree dep edges vanish — a shared-infra {{PROJECT_NAME}} Part (Graph Engine Core, depended on by Jmodot procgen) loses Leverage and gets under-ranked. Same failure as the single-roadmap-survey row above. Always parse both trees; gate recommendations only. |
+| "`project-only` should skip the Jmodot tree entirely — it's faster and the user only wants {{PROJECT_NAME}}" | Scope filters the *candidate pool* (Phase 4), not the *dep graph* (Phase 3). Skip Jmodot discovery and cross-tree dep edges vanish — a shared-infra {{PROJECT_NAME}} Part (Graph Engine Core, depended on by Jmodot procgen) loses Leverage and gets under-ranked. Same failure as the single-roadmap-survey row above. Always parse both trees; gate recommendations only. |
 | "Treat all `arch-pending` and `arch-rework` Parts as equally actionable" | `arch-rework` is closer to ship (design exists, needs revisit) than `arch-pending` (design needs initial brainstorm). State-Proximity rubric reflects this. |
 | "Recommend top 3 by total score only; skip tie-breakers" | Score ties are common with 0–12 range across small candidate pools. Tie-breakers (closes-MVP → proximity → recency → focus) encode the project's "ship next" intuition. |
 | "Treat `user-owned` Parts as recommendable" | `user-owned` is not agent-runnable. Surface them via `/worklog` triage if they're blocking downstream Parts; never in `/roadmap_next` recommendations. |

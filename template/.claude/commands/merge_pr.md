@@ -85,14 +85,14 @@ If the sync in Step 1 produces merge conflicts (whether from rebase or merge), r
 | Both modify the SAME method body | **Ask user** — behavioral intent matters | **Yes** |
 | One branch renames/moves, other modifies | Apply modifications to the renamed version | No, unless semantics changed |
 | `using` statement conflicts | Union all `using` statements, remove duplicates | No |
-| Registry/Dictionary additions (e.g., `PushinPotionRegistry`) | Keep ALL entries from both branches | No |
+| Registry/Dictionary additions (e.g., `ProjectRegistry`) | Keep ALL entries from both branches | No |
 
 #### C# Test Files (`.cs` in `Tests/`)
 
 | Scenario | Resolution | Escalate? |
 |----------|-----------|-----------|
 | Both branches add new test methods | Keep ALL tests from both branches | No |
-| Shared fixture changes (e.g., `SpellTestFixture`, `ArchetypePaths`) | Union additions — keep all new fixture entries from both | No |
+| Shared fixture changes (e.g., `AbilityTestFixture`, `ArchetypePaths`) | Union additions — keep all new fixture entries from both | No |
 | Test modifies assertion on same method | **Ask user** — expected values may reflect different design intent | **Yes** |
 | `[DataPoint]` / `[TestCase]` additions | Keep all data points from both branches | No |
 
@@ -263,7 +263,7 @@ This checklist is the gate decision before the actual `gh pr merge` runs in Step
 
 Strip the `claude/` prefix from the branch name, replace `/` with `-`. This matches the `/pr_test_checklist` filename convention.
 
-Example: `claude/critter-scurry-ingredients-bVx4D` → `critter-scurry-ingredients-bVx4D`
+Example: `claude/entity-scurry-materials-bVx4D` → `entity-scurry-materials-bVx4D`
 
 ### 7.2 List the PRTesting Folder
 

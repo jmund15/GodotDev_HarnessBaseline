@@ -1,44 +1,23 @@
 ---
 description: Reflect on this session's SKILL and memory usage; archive findings for /eval_dashboard.
-disable-model-invocation: true
 ---
 
 Reflect on the session's SKILL/memory usage; archive findings for `/eval_dashboard`.
 
 ## Step 0: Recover Full Session Context
 
-### 0a. Assess session complexity
-Read `logs/pre_compact.json` and filter entries matching the current session ID. Count compactions.
+### 0a. Session digest
+`/session_end` Phase 0 printed it; standalone, run `python3 .claude/tools/session_digest.py --prompt-tail self_evaluate`. It holds every user prompt verbatim, every friction row and the compaction count, rebuilt from the live transcript — post-compaction memory is not the record, the digest is.
 
-**Deep read triggers** (if ANY are true, do Step 0b):
-- 3+ compactions for this session ID
-- Session involved large system design or architecture refactor
-- Session had redesigns, go-backs, or direction changes
-- User explicitly mentions the session was complex or long
-- You only have post-compaction context and aren't sure what happened earlier
-
-### 0b. Deep read: transcript summaries
-For each compaction entry matching this session, find the corresponding `.summary.json`:
-- Replace `.jsonl` extension with `.summary.json` in the `backup_path`
-- Path: `logs/transcript_backups/transcript_<session_id_prefix>_<trigger>_<timestamp>.summary.json`
-
-Read ALL `.summary.json` files for this session. Extract from each:
-- `metadata.total_messages` / `metadata.total_tool_calls` — session scale
-- `user_messages[]` where `signals` contains `"correction"` — **these are user corrections that may be invisible in post-compaction context**
-- `user_messages[]` where `content_preview` contains direction changes ("simplify", "go back", "different approach", "revert", "stop")
-- `user_messages[]` where `signals` contains `"instruction"` — requirements that may have been given pre-compaction
-
-### 0c. Synthesize across summaries
-For complex sessions, build a chronological timeline:
+### 0b. Timeline (any session with 1+ compaction, redesigns or go-backs)
+From the digest's prompts, in order:
 1. What was the original task/plan?
-2. Where did corrections or pivots happen? (Which compaction segment?)
-3. Was the same mistake repeated across segments?
-4. Did corrections from early segments get applied in later segments?
+2. Where did corrections or pivots happen, and in which compaction segment?
+3. Was the same mistake repeated across segments? Did early corrections hold in later ones?
+4. Which friction rows recur (same tool, same error class)?
 
-**Critical:** Post-compaction context is lossy. The more compactions, the more likely that corrections and context were lost. The summaries are your ground truth for the FULL session.
-
-### 0d. Nuance recall (conditional)
-If any *Deep read trigger* (0a) fired, run [Transcript Nuance Recall](agents/transcript_nuance_recall.md)
+### 0c. Nuance recall (conditional)
+If the digest shows 3+ compactions, or the session had redesigns/go-backs, run [Transcript Nuance Recall](agents/transcript_nuance_recall.md)
 after synthesizing the summaries. It surfaces implicit corrections/themes the deterministic
 digest's keyword signals can't — feed them into `corrections[]` and `key_takeaway`. This command
 is read-only re: long-term memory: do NOT write to auto-memory here — those writes
@@ -56,7 +35,7 @@ route through `/autolearn`, which (in `/session_end`) runs first and has already
 
 ### Step 5: Archive Entry Format
 
-> **Primary-key contract (load-bearing):** the archive holds **exactly ONE entry per Claude Code session**. The composite primary key is `session_id` (preferred, when available) or `(title, date)` (fallback for legacy entries that pre-date the `session_id` field). If `/self_evaluate` runs more than once on the same session, you MUST edit the existing entry in-place — never append a duplicate. The 31% duplication rate observed in the 2026-02 → 2026-05 archive (per `/eval_dashboard` audit on 2026-05-03) is what this rule prevents.
+> **Primary-key contract (load-bearing):** the archive holds **exactly ONE entry per Claude Code session**. The composite primary key is `session_id` (preferred, when available) or `(title, date)` (fallback for legacy entries that pre-date the `session_id` field). If `/self_evaluate` runs more than once on the same session, you MUST edit the existing entry in-place — never append a duplicate.
 
 #### 5a. Resolve session identity FIRST
 
@@ -71,7 +50,7 @@ Before drafting the entry:
 |---|---|
 | **No match** (first eval for this session) | APPEND a new entry per the schema below. Assign `id` = max existing id + 1. |
 | **One match** (re-run on same session) | EDIT the existing entry in-place per the merge semantics below. Do NOT append a new record, do NOT change its `id`. |
-| **Two+ matches** | This is a pre-existing duplication artifact. Edit the **earliest** (lowest `id`) and mark the others for cleanup in `notes` (`"DUPE_PENDING_CLEANUP: see id=N"`). Do not auto-delete; flag it for the next `consolidate-memory`-style sweep. |
+| **Two+ matches** | This is a pre-existing duplication artifact. Edit the **earliest** (lowest `id`) and mark the others for cleanup in `notes` (`"DUPE_PENDING_CLEANUP: see id=N"`). Do not auto-delete; flag it for the next dedup sweep. |
 
 #### 5c. Merge semantics (re-run case)
 
@@ -80,6 +59,7 @@ When editing an existing entry, fields update with these rules — do not blindl
 | Field | Merge rule | Reasoning |
 |---|---|---|
 | `session_id`, `id`, `date` | **Frozen** (never change) | Primary key + chronological anchor |
+| `shape` | **Last-wins** (replace with current values) | Reflects the session's shape at the time of this eval, not the first |
 | `title` | **Frozen** unless wildly inaccurate; if updated, preserve the original in `notes` | Stable for `(title, date)` fallback lookup |
 | `outcome` | **Escalate-only**: `clean` → `correction` → `failure`. Never downgrade. | A correction discovered on re-run means the session was not clean; demoting hides drift. |
 | `pattern` | If new pattern is more severe (A > B > C; E > A), update; else keep | Pattern A trumps Pattern C; failure-cascade E is sticky |
@@ -100,11 +80,15 @@ When editing an existing entry, fields update with these rules — do not blindl
   "id": <sequential, assigned at creation, NEVER changed on re-run>,
   "title": "Brief phrase-length session title",
   "date": "YYYY-MM-DD",
+  "shape": {"compactions": <int>, "duration_min": <int>, "slices": <int|null>, "drive_command": "<command|null>"},
   "outcome": "clean | correction | failure",
   "pattern": "A | B | C | D | E | null",
   "domains": ["pooling", "testing", "combat", "refactoring", "UI", "meta", ...],
   "corrections": [
     "Short description of each user correction (empty array if clean)"
+  ],
+  "friction": [
+    {"what": "<tool + error class, or the user's process complaint>", "workaround": "<what was done instead>", "disposition": "fixed | harness: <file + edit> | worklog | accepted: <why>"}
   ],
   "skills_used": ["architecture_philosophy", "spell_authoring", ...],
   "memory_searches": <count of searches performed>,
@@ -121,15 +105,17 @@ When editing an existing entry, fields update with these rules — do not blindl
 
 **Field guidance:**
 - `session_id`: REQUIRED for new entries. NULL is acceptable only when the Claude Code session UUID is genuinely unrecoverable (rare).
+- `shape`: `compactions` and `duration_min` copied from the Phase 0 digest header; `slices` = executed plan slices or `null`; `drive_command` = the drive command that owned the session or `null`.
 - `outcome`: "clean" = zero user corrections. "correction" = user caught 1+ issues. "failure" = critical failure (data loss, repeated user frustration, etc.)
 - `pattern`: Classify using established patterns from `Self_Evaluate_Themes.patterns` (A/B/C/D/E). **A `correction` or `failure` outcome MUST carry a non-null pattern (A/B/D/E)** — `null` is reserved for `clean` sessions. If a correction fits no existing pattern, add a new letter to `Self_Evaluate_Themes.patterns` rather than leaving it null; a null-on-correction is invisible to `/eval_dashboard`'s pattern distribution. (Clean sessions: `null` and the legacy `C` both read as "clean" — `/eval_dashboard` normalizes them.)
 - `domains`: Tag ALL domains the session touched. Common values: `pooling`, `testing`, `combat`, `refactoring`, `UI`, `animation`, `meta`, `brainstorm`, `debugging`, `data-files`, `environment`, `collision`, `HSM`, `spell-effects`, `orchestration`
 - `corrections`: Be specific. "Skipped TDD for .tres edit" not "made a mistake"
-- `memory_hits`: Only list memory entries that **actually informed a decision** — not every search result
+- `friction`: one row per digest friction class (dedupe identical errors); `accepted` carries its reason. Empty array only when the digest's friction section is empty
+- `memory_hits`: Seed from `python3 .claude/tools/memory_hits.py --session <id>` (every auto-memory path this session read or searched), then keep only entries that **actually informed a decision** — not every logged read
 - `tests.tdd_followed`: `false` if you wrote implementation before a failing test in Logic Domain
 - `key_takeaway`: Compare with past entries. If the same takeaway repeats, note it as a recurring theme
 
-**Anti-pattern: append-without-lookup.** If you reach Step 5 and immediately draft a new entry without first reading the archive and searching for the current session_id, STOP. That's exactly the failure mode that produced the 38 duplicate entries flagged on 2026-05-03. Read the archive, search for the key, then branch on 5b.
+**Anti-pattern: append-without-lookup.** If you reach Step 5 and immediately draft a new entry without first reading the archive and searching for the current session_id, STOP. Read the archive, search for the key, then branch on 5b.
 
 **DO NOT save self-evaluate data to auto-memory — it pollutes recall.**
 

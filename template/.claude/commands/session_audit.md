@@ -11,14 +11,14 @@ Audit all code changes from this session for code smells, sub-optimal design, an
 
 ### 1a. Identify session-modified files
 
-**MANDATORY: Read** [Session File Identification Procedure](agents/session_file_identification.md) **and execute ALL steps.** Do not rely on conversation memory alone — after compaction, it is incomplete. Filter results to `*.cs` and `*.tres` files only.
+**MANDATORY: Read** [Session File Identification Procedure](agents/session_file_identification.md) **and execute ALL steps.** Do not rely on conversation memory alone — after compaction, it is incomplete. Keep two sets: the **code set** (`*.cs`, `*.tres`) and the **harness set** (`.claude/**`, `CLAUDE.md`, `MEMORY.md`, committed or not).
 
 **Scoping rule:** Only audit files identified by the [Session File Identification Procedure](agents/session_file_identification.md) as session work. Follow the procedure completely — especially Step 2 (Compaction Recovery) after compaction. If git shows changes to files not in Steps 1+2, they belong to other sessions — **exclude them** and note:
 ```
 Excluded from audit (not modified this session): [list of files]
 ```
 
-If there are no code changes from this session, report "No code changes to audit" and exit. **Exception:** if the session modified `.claude/skills/`, `.claude/commands/`, or `CLAUDE.md`, suggest running `/instruction_audit` on each before exit — harness-doc edits carry cross-reference rot and structural defects this command's `*.cs`/`*.tres` filter does not cover.
+If both sets are empty, report "No changes to audit" and exit. A non-empty harness set fires `sa-harness-quality` (Phase 2); `/instruction_audit` stays the per-file deep audit for cross-reference rot and structure, suggested per file when that lens returns a structural ASK.
 
 **Scope cap (>20 files):** Follow the [Shared Scoping Rules](agents/review_agents.md#shared-scoping-rules). Ask the user before proceeding.
 
@@ -66,13 +66,15 @@ For each session-changed file in a directory where another file was DELETED in t
    - **Reproduces** the behavior (point at the new line that does it), OR
    - **Explicitly notes removal** in a comment, docstring, or PR description.
 
-Any retired surface item NOT accounted for is a MERGE-BLOCKER finding. Examples that would have caught PR #58:
-- Old `CraftWheelState.OnEnter` instantiated `BulletTimeController`; new `CraftMenuOpenState.OnEnter` doesn't.
-- Old state resolved BB refs in `OnEnter`; new state did it in `OnInit` (silent semantic change).
+Any retired surface item not accounted for is a MERGE-BLOCKER. Examples:
+- An old state's `OnEnter` created a time-scale controller; its replacement does not.
+- An old state resolved blackboard references in `OnEnter`; its replacement moved that work to
+  initialization, changing lifecycle semantics.
 
 ### 1.5c. Gameplay-domain regression note
 
-If session-changed files touch `Wizard/`, `UI/`, `VFX/`, or `Prototype/` and the parity check found ANY drops, append:
+Read the subsystem registry. If changed behavior belongs to a `gameplay` subsystem and parity lost any
+behavior, append:
 ```
 GAMEPLAY-DOMAIN regressions cannot be verified by automated tests alone.
 Recommend manual playtest before merge: <list specific behaviors to test>
@@ -100,15 +102,20 @@ The agent fan-out and Step-1 consolidation run deterministically in the `review-
 
 ### Agent Templates & Spawn Rules
 
-Fetch the templates: `python3 .claude/tools/lens.py get --shared sa-design-semantics sa-robustness-performance sa-intuitiveness-testability` — add `sa-architecture-sweep` only when the trigger below fires, and never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole. The registry holds:
+Fetch the templates: `python3 .claude/tools/lens.py get --shared sa-design-semantics sa-robustness-performance sa-intuitiveness-testability` — add `sa-architecture-sweep` and `sa-harness-quality` only when their triggers below fire, and never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole. The registry holds:
 - Agent Spawn Rules (referenced from `review_agents.md`)
 - Finding Schema & Reporting Filter (referenced from `orchestrator_action_protocol.md`)
 - 3 always-on agent templates: `sa-design-semantics` (opus), `sa-robustness-performance` (opus), `sa-intuitiveness-testability` (sonnet)
 - 1 conditional template: `sa-architecture-sweep` (opus) — design-ideality judgment (existing-seam reuse, cleaner/more-modular/data-driven alternatives, dedup-similar-logic-into-one-source)
+- 1 conditional template: `sa-harness-quality` (opus) — every session-authored harness hunk held to `instruction_quality` (no-op sentences, second homes, evidence inline, clause storms, weak words, hook docstring parity)
 
 ### Architecture-Sweep Trigger (conditional 4th agent)
 
 Add `sa-architecture-sweep` to the fan-out when the session shipped **design-scale** work — any of: a new subsystem/type family or top-level concept, a multi-file feature design (3+ production files forming one mechanism), a refactor of a 2+ subclass/consumer family, a new cross-system seam, **or any new `[Export]`/authored field added to a pre-existing class** (the export-surface failures — bypassed families, dual-concern knobs, re-authored values — ship in small diffs that "design-scale" alone never catches). (Mirror of the `/plan_check` litmus; when in doubt on a large session, include it.) Pure tuning/data/bug-fix sessions skip it. When triggered, fill its `{{DESIGN_LIST}}` with the session's major designs — name each mechanism and its key files/seams so the agent judges designs, not diffs. Its findings join the same consolidation; its SUPERIOR-ALTERNATIVE findings default to being implemented this session when effort is S/M and the migration closes a live gap (user preference: "move to the superior design"), deferred-with-worklog otherwise.
+
+### Harness-Quality Trigger (conditional 5th agent)
+
+Add `sa-harness-quality` when the harness set from 1a is non-empty. Fill `{{HARNESS_HUNKS}}` with one block per file: `git diff <session-base>..HEAD -- <file>` plus `git diff -- <file>` for the uncommitted part, headed by `bytes: <git show <base>:<file> | wc -c> → <wc -c>`; an untracked file is one hunk of its whole content with `bytes: 0 → N`.
 
 ### Shared Context Block
 
@@ -172,6 +179,8 @@ Each axis's verdict is set by its **worst surviving finding** — not the averag
 - **MINOR POLISH** — worst surviving finding is non-critical. Ship it, improve later.
 - **REVIEW RECOMMENDED** — worst surviving finding is `critical: true`, a MERGE-BLOCKER from Phase 1.5, or a PLAN-tier systemic defect. Address before commit.
 
+**Harness sessions close with one context-cost line** (harness set non-empty): always-loaded delta (`CLAUDE.md`, `MEMORY.md`), conditional-surface delta (rules/commands/skills touched, bytes), and any new per-call hook emission — from `git show <base>:<file> | wc -c` vs `wc -c` and the `sa-harness-quality` per-file table. A harness session's verdict is incomplete without its cost.
+
 ### Execute Actions
 
 Follow the protocol's Step 4:
@@ -189,4 +198,3 @@ Follow the protocol's Step 4:
 - **Respect TDD.** Any approved fix in Logic Domain must have test coverage.
 - **The agent fan-out lives in the `review-fanout` workflow** — it spawns the 3 always-on agents plus the conditional `sa-architecture-sweep` (templates in [`session_audit_agents.md`](agents/session_audit_agents.md)) in parallel and consolidates. Do not perform the audit inline or re-spawn agents manually.
 - **Report honestly.** False positives waste time. When in doubt, don't report.
-- **Time-bounded.** The full audit (spawn → consolidate) should complete in under 10 minutes.

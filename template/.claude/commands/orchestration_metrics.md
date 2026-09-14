@@ -1,6 +1,5 @@
 ---
 description: Measure this session's Workflow agents — cost per effort pin — and archive falsification outcomes.
-disable-model-invocation: true
 ---
 
 Empirical counterpart to `/self_evaluate`: that captures *what the agent thinks* went well, this measures *what each effort pin cost*. Feeds `/eval_dashboard` → Effort Calibration.
@@ -35,6 +34,8 @@ If the collector prints `No Workflow runs found`, stop and say so. A session tha
 
 If confirmed synthetic, append nothing here — those belong in `Claude/Meta/Model Effort Calibration Baseline.md`.
 
+**Not synthetic:** the multi-model arms `orchestration` §0 prescribes for exploration, plan drafts, plan-check and review. Every arm's output was consumed into the shipped work, so they archive normally — rate each arm on what happened to its output (`clean` / `discarded` for the draft that lost).
+
 Nothing else halts. The script's own refusals (already-archived run, unresolved `?` pin) are agent-resolvable and are reported, not escalated.
 
 ## Incremental rating — rate on consumption, not at session end
@@ -55,39 +56,30 @@ write its verdict immediately to `.claude/orchestration_verdicts.json`:
 Same `{label: outcome | [outcome, effort] | [outcome, effort, "probe"]}` shape as `--verdicts`;
 the collector merges this file automatically, and an explicit `--verdicts` file layers on top for
 anything still unrated. A `null` value is a **debt marker**, not an outcome — it names a dispatch
-awaiting judgment. The third element (`"probe"`) marks a substituted downgrade (see *Over-pin
+awaiting judgment. The third element (`"probe"`) marks a deliberate candidate comparison (see *Over-pin
 candidates*).
 
-The `PreCompact` hook (`transcript_backup.py`) seeds still-unrated labels into that file as nulls and
-prints them, so a compaction cannot silently erase the debt. That is a backstop, not the mechanism:
-by the time it fires, the context needed to rate well is already going. Rate at consumption.
+The per-turn backstop is `budget_posture.py`'s `[rating-debt]` clause: it names the live unrated
+count on any turn it changes, so a debt that survives a compaction is never silent for long. Rate
+at consumption.
 
-## Over-pin candidates — detection at the aggregate, action at the next dispatch
+## Over-pin candidates — advisory, not a new default
 
-Overshoot is the one direction no participant can observe from a dispatch's output: extra effort
-produces no defect, so nothing falsifies it — and no orchestrator will ever spend an *extra*
-dispatch to test the floor. It is therefore not rated at consumption; it is **computed** at the
-aggregate, where the archive holds the cross-rung comparison:
+`--archive-summary` groups historical rows by shape family and emits provisional candidates in
+`.claude/orchestration_candidates.json`. The clean-only, cost-ratio and turn-count heuristics
+screen for a comparison worth running; they do not establish matched tasks, equal coverage or
+avoidable effort. Zero candidates does not prove convergence.
 
-- `--archive-summary` groups by shape family (label prefix before the first `:`). A cell at rung
-  *E* that is clean-only, whose next-lower rung cell is also clean-only, but which cost ≥2× as
-  much per agent for comparable work volume (mean turns ≤1.5×) is a **provisional over-pin
-  candidate**. The thresholds are starting heuristics: adjacent rungs cost ~1.5–2× by pricing
-  design alone, so the gap must exceed that AND the work volume must match — same work, deeper
-  reasoning, no better outcome.
-- **Action = substituted downgrade, never a parallel probe.** When the family's next natural
-  dispatch comes up, it runs one rung lower *as that dispatch* — marginal cost is one review
-  pass, and a failure there is an ordinary falsification record that clears the candidate at the
-  next summary (the floor is real). A clean probe confirms the floor and the pin table moves.
-- The queue persists in `.claude/orchestration_candidates.json` (recomputed on every summary,
-  printed at the top of every session report so the pin decision sees it). Mark the substituted
-  dispatch in the verdicts file: `{label: ["clean", "medium", "probe"]}` — the `probe` marker is
-  archived with the record.
-- **Convergence:** K consecutive summaries with zero candidates AND zero falsification events
-  means the pin table has converged for the archived shape distribution — per-dispatch rating
-  downgrades to watch-mode (failure events + one substituted downgrade per session on the largest
-  converged family). Convergence is per-shape-distribution: a new Part type, harness surface, or
-  model row resets the clock.
+Before testing a candidate, declare the changed factor, frozen inputs, required quality floor,
+independent review and complete-task accounting: parent work, delegates, failures and rework.
+Keep currencies and cost bases separate. A missing cost or outcome is unknown, not zero.
+Retain failed and partial arms. Use `probe` in the verdict record for a deliberate candidate test;
+it is provenance, not permission to lower a pin.
+
+Promote only when comparable complete-task evidence meets the quality floor across the required
+sample. `/eval_dashboard` owns the minimum archive sample for ladder proposals. Until then,
+retain the current default; no automatic substituted downgrade or pin-table update follows
+from a clean result, a cheaper delegate, or candidate-list membership.
 
 ## Procedure
 

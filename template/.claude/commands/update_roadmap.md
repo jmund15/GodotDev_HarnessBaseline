@@ -46,7 +46,7 @@ Search the current topic folder (parent of just-saved design doc, OR current wor
 | `status` | `active` |
 | `last_revised` | today |
 | `parent-composite-part` *(optional)* | `"<parent-Part name>" (submap-pending on parent)` — human-legible linkage |
-| `brainstorm-source` *(optional)* | **Default `./arch.md` / `./ideas.md`** — the submap's own design doc is co-located in THIS child subfolder (the deeper-scope fresh-brainstorm case per common.md §5.1; the brainstorm Step 6/5 saves it here). Use `../arch-<slug>.md` ONLY when the submap decomposes a pre-existing parent-folder cluster doc that legitimately stays in the parent (e.g. `arch-encounter-definition.md`). Prefer co-location; a `../` pointer with a freshly-authored submap doc is the mis-save signal. |
+| `brainstorm-source` *(optional)* | **Default `./arch.md` / `./ideas.md`** — the submap's own design doc is co-located in THIS child subfolder (the deeper-scope fresh-brainstorm case per common.md §5.1; the brainstorm Step 6/5 saves it here). Use `../arch-<slug>.md` ONLY when the submap decomposes a pre-existing parent-folder cluster doc that legitimately stays in the parent (e.g. `arch-<cluster>.md`). Prefer co-location; a `../` pointer with a freshly-authored submap doc is the mis-save signal. |
 
 Initial Parts populated from architecture_brainstorm Step 5 output. Cross-roadmap deps preserved with `(parent) <Part>` prefix or `[[../<parent>/roadmap#Part]]` wikilink (per common.md §6.8 lazy-resolution policy).
 

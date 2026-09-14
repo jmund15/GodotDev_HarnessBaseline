@@ -34,13 +34,9 @@ Read `agents/documentation_structure.md` (folder structure) and the `obsidian_co
 
 ## Phase 2 — Parallel Documentation
 
-Spawn all 3 agents **in parallel** using the Task tool in a **single message** (one tool call per agent).
+Dispatch all 3 agents in one `dispatch.js` run (`orchestration` §0 — every fan-out is a Workflow): write each brief to `.claude/scratch/doc_full/prompt_<label>.md` and pass `jobs: [{ label, promptPath, model: "opus", effort: "medium", agentType: "general-purpose" }, …]`. `opus` for creative and technical depth; `medium` because the folder structure is supplied and the prose is not. Results return together when the run completes; never poll.
 
-**Agent waiting strategy:** Launch all agents **without** `run_in_background` in a single message. They execute in parallel and all results return together when the slowest agent finishes — no polling or manual checking needed. Do NOT use `run_in_background: true` followed by `TaskOutput` polling.
-
-**Model:** Use `opus` for all 3 agents (creative + technical depth required).
-
-**`write_doc` availability:** `mcp__ai-worker__write_doc` is offline on this machine (as of 2026-07-04 — ai-worker lives on another PC; see `environment_bootstrap` skill). When offline, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
+**`write_doc` availability:** check it live — `ToolSearch("select:mcp__ai-worker__write_doc")` returns no match ⇒ offline (the SessionStart `[ai-worker]` line prints `Ollama OK` when it is up). When offline, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
 
 ### Usage Agent
 

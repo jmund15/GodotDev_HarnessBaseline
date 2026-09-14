@@ -14,7 +14,7 @@ Single source of truth for regression verification. Called by `/session_end`, `/
 
 ## When Exempt
 
-- Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs)
+- Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness commits instead need a green `harness_tests.py` stamp (CLAUDE.md §Build & Test Commands)
 - Pure configuration/asset commits with no code coupling
 
 ## Invocation

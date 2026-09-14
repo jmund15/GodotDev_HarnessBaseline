@@ -54,8 +54,8 @@ Parse conventional commit format: `type(scope): description`
 | `VFX`, `visual`, `animation` | Visual Effects |
 | `HSM`, `state`, `transition` | State Machine |
 | `UI`, `dashboard`, `debug` | UI & Debug |
-| *(your entity scopes, e.g. `critter`, `enemy`)* | *\<Entity> Behavior* |
-| *(your content scopes, e.g. `spell`, `trait`, `item`)* | *\<Content> System* |
+| *(your entity scopes, e.g. `entity`, `enemy`)* | *\<Entity> Behavior* |
+| *(your content scopes, e.g. `ability`, `trait`, `item`)* | *\<Content> System* |
 
 ### Target Range
 
@@ -141,15 +141,15 @@ This checklist is for a **designer playtesting the game**. Every checkbox should
 ### What Makes a Good Checkbox
 
 - Describes **observable positive behavior**: what the game DOES, not what it doesn't break
-- Uses concrete values from the code: "Critter pauses 1-3 seconds between wander cycles"
+- Uses concrete values from the code: "Entity pauses 1-3 seconds between wander cycles"
 - Is independently verifiable in a single action or observation
-- Starts with a verb: "Observe...", "Walk into...", "Cast a spell and watch..."
+- Starts with a verb: "Observe...", "Walk into...", "Cast a ability and watch..."
 - Describes the expected outcome, not the implementation
 
 ### What Does NOT Belong
 
 - **Error-absence checks**: "No errors in console" — you can obviously see errors. Don't waste a checkbox on it.
-- **Internal implementation details**: "BB key `Critter_Threatened` set to true" — the tester can't see BB keys
+- **Internal implementation details**: "BB key `Entity_Threatened` set to true" — the tester can't see BB keys
 - **Code correctness**: "Method returns SUCCESS" — that's TDD's job
 - **Redundant negative checks**: "No crashes", "No warnings", "No orphaned nodes"
 - **Inspector/data audits**: "Verify `_penaltyMaxWeight = 5.0` in Inspector" — put these in a `> [!note]` callout as setup context, not as checkboxes
@@ -158,11 +158,11 @@ This checklist is for a **designer playtesting the game**. Every checkbox should
 
 | Bad (verbose/pointless) | Good (gameplay-focused) |
 |-------------------------|------------------------|
-| "No `NodeConfigurationException` errors" | "Critter spawns and begins wandering immediately" |
-| "BB key `Critter_Scurried=true` set" | "After fleeing, critter returns to wandering" |
-| "Console shows `CritterEntity: Ready`" | "Both critters are alive and moving on scene load" |
-| "Verify `_maxTurnRateDegrees = 180.0`" | "Critter arcs into turns smoothly, full U-turn takes ~1 second" |
-| "`OnCollected` event fires" | "Critter visibly grows after eating an ingredient" |
+| "No `NodeConfigurationException` errors" | "Entity spawns and begins wandering immediately" |
+| "BB key `Entity_Scurried=true` set" | "After fleeing, entity returns to wandering" |
+| "Console shows `EntityEntity: Ready`" | "Both entities are alive and moving on scene load" |
+| "Verify `_maxTurnRateDegrees = 180.0`" | "Entity arcs into turns smoothly, full U-turn takes ~1 second" |
+| "`OnCollected` event fires" | "Entity visibly grows after eating an material" |
 | "No `JmoLogger.Error` messages" | *(don't include — errors are self-evident)* |
 
 ### Quantity Rules
@@ -180,11 +180,11 @@ This checklist is for a **designer playtesting the game**. Every checkbox should
 
 ### Categories of Checks (in priority order)
 
-1. **Behavioral**: "Critter flees away from the wizard when threatened" — the core gameplay loop
+1. **Behavioral**: "Entity flees away from the player when threatened" — the core gameplay loop
 2. **Feel/polish**: "Movement is smooth with gentle arcing turns, not jerky snapping" — subjective quality
-3. **Interaction**: "Cast a spell near critter, it immediately bolts in the opposite direction" — cause and effect
-4. **Visual**: "Critter grows visibly larger after consuming each ingredient" — observable state change
-5. **Edge case**: "When surrounded by threats on both sides, critter enters cornered state" — boundary behavior
+3. **Interaction**: "Cast a ability near entity, it immediately bolts in the opposite direction" — cause and effect
+4. **Visual**: "Entity grows visibly larger after consuming each material" — observable state change
+5. **Edge case**: "When surrounded by threats on both sides, entity enters cornered state" — boundary behavior
 
 ## 5. Stale Value Detection
 

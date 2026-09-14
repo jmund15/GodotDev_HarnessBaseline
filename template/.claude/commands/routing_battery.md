@@ -9,7 +9,7 @@ Run the routing-compliance battery against current hooks + doctrine. The test ro
 
 ## When to use
 
-- Validating a routing-doctrine change (CLAUDE.md §9, `csharp_lsp.md`, `feedback_tool_routing_discipline.md`).
+- Validating a routing-doctrine change (CLAUDE.md §Tool Routing, `csharp_lsp.md`, `feedback_tool_routing_discipline.md`).
 - Validating a hook change (`tool_routing_nudge.py`, `tool_routing_post_grep.py`, `tool_routing_cumulative.py`).
 - Validating a new tool addition (semantic-search reindex, MCP server change, etc.).
 - Periodic regression check — at least once per quarter, more often if hooks churn.
@@ -91,7 +91,7 @@ The audit produces a per-row final grade that supersedes the scorer's `NO-TOOL-C
 The orchestrator MUST NOT:
 - Tell subagents this is a routing-compliance test.
 - Inject any routing-doctrine reminders into the subagent prompts beyond what the fixture's standardized prefix already contains.
-- Mention CLAUDE.md §9 / §7 / `csharp_lsp.md` / specific tool routing rules in the subagent prompts.
+- Mention CLAUDE.md §Tool Routing / §7 / `csharp_lsp.md` / specific tool routing rules in the subagent prompts.
 - Use the `Plan` or `Explore` subagent types — they have their own protocols and aren't equivalent to general-purpose.
 
 The orchestrator MAY (and should):
@@ -103,4 +103,4 @@ The orchestrator MAY (and should):
 
 - **Subagent tool-surface mismatch** — subagents inherit the dispatcher's MCP server registry but not always cleanly; tests requiring `mcp__obsidian__*` or `mcp__ai-worker__*` may hit refusals where the agent identifies the correct tool but cannot call it. These rows score `NO-TOOL-CALLS` from the scorer; orchestrator audit reclassifies them as `FLAG` (environmental issue, verify subagent toolkit before treating as doctrine miss). To rescue: dispatch the failing tests as fresh top-level Claude Code sessions instead of subagents.
 - **Subagent session_id sharing** — hooks fire on the parent's session_id, so cumulative-counter state may misattribute in parallel-subagent dispatches. Mitigation in place: 3-second burst-suppression in `tool_routing_cumulative.py`. May still fire spurious cumulative nudges; don't penalize subagents that received an inflated count.
-- **C2 documentSymbol coordinate gotcha** — agents may organically walk into the silent-wrong-symbol trap (column 53 → 216 wrong refs for ApplySynergies). This is a known LSP wrapper bug documented in `csharp_lsp.md`. If C2 fails via this path, the failure validates the documentation rather than indicating a doctrine miss — note in the report.
+- **C2 documentSymbol coordinate gotcha** — agents may organically walk into the silent-wrong-symbol trap (column 53 → 216 wrong refs for ApplyModifiers). This is a known LSP wrapper bug documented in `csharp_lsp.md`. If C2 fails via this path, the failure validates the documentation rather than indicating a doctrine miss — note in the report.

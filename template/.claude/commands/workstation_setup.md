@@ -149,7 +149,7 @@ The test stack uses a patched `gdUnit4.api` fork (pipe salt via `GDUNIT4_PIPE_SU
    Verify with `timeout 3 node <plugin-cache>/bin/server.js` — exit 0 (from timeout) means clean
    stdio wait.
 3. The index (`.search-index/search.db`) is gitignored — always absent on a fresh clone.
-   Run `/reindex_search` to build it. Verify with one query (e.g. "spell spawn pipeline")
+   Run `/reindex_search` to build it. Verify with one query (e.g. "ability spawn pipeline")
    returning results.
 
 ## Phase 6 — Obsidian vault

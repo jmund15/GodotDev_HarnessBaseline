@@ -35,12 +35,17 @@ For the **parity** lens, also capture the OLD version of each changed method/fil
 git -C "$ROOT" show main:<path>            # per changed .cs file
 ```
 
-Run the three **cheap BLOCKER greps Claude-side** (do NOT spend an agent on them) and fold results into the snapshot as pre-computed BLOCKER candidates:
-```bash
-git -C "$ROOT" grep -nE "\[DIAG-|GD\.Print" -- $(changed .cs paths)        # leftover diagnostics
-git -C "$ROOT" grep -nE "{{PROJECT_NAME}}\." -- 'Jmodot/**/*.cs'               # framework-boundary leak
-git -C "$ROOT" status --porcelain -- .claude/scratch                        # orphaned scratch
-```
+Run these cheap BLOCKER checks Claude-side and add their results to the snapshot:
+- grep changed C# files for `\[DIAG-|GD\.Print`;
+- read the subsystem registry, then grep every `framework_paths` C# root for the project namespace;
+- check `git status --porcelain -- .claude/scratch`;
+- compare changed paths with every subsystem whose default `domain` is `gameplay`.
+
+**Playtest-route BLOCKER (Gameplay/Mixed diffs).** If a changed behavior is Gameplay and subjective,
+require either a changed scene under one of the registry's `playtest_scenario_paths` or a branch log at
+`.claude/scratch/playtest_artifact/<slug>.log` carrying `[Lifecycle] DIRECT RUN`. A playtest-artifact
+report that names every subject as already routed also clears the blocker. Do not maintain a separate
+subject-folder list here.
 
 Also read into the snapshot: `.claude/worklog-titles.md` (worklog state) and the relevant topic-folder `roadmap.md` Parts table (roadmap state) for the reconcile lens.
 
@@ -84,18 +89,20 @@ Distinct GROUPS are the health metric, not raw count — repeated-identical warn
 
 ## Step 1: Dispatch the battery
 
-**Generation-fidelity guard.** The heaviest lens — `parity` — carries verbatim OLD+NEW `.cs` (escape-dense, nested), the exact payload that makes a single nested `Workflow` `args` blob die at generation (`gotcha_workflow_args_generation_fidelity.md`: 4ms / 0-agent / 0-byte, the throw is `review_fanout.js`'s own `JSON.parse(args)`). So run `parity` as a **standalone `Agent()` call** (one flat prompt — the low-infidelity shape) and the five lighter lenses through `review_fanout`. Triage any 4ms/0-agent/0-byte death as **malformed args, not a broken tool** — re-dispatch that lens as an `Agent()` call.
+**Generation-fidelity guard.** The heaviest lens — `parity` — carries verbatim OLD+NEW `.cs` (escape-dense, nested), the exact payload that makes a `Workflow` `args` blob die at generation (`gotcha_workflow_args_generation_fidelity.md`: 4ms / 0-agent / 0-byte, the throw is `review_fanout.js`'s own `JSON.parse(args)`). So `parity` runs through `dispatch.js`, whose brief travels as a file path and never enters `args`; the five lighter lenses go through `review_fanout`. Triage any 4ms/0-agent/0-byte death as **malformed args, not a broken tool** — move the offending lens's payload into a brief file.
 
-### Step 1a: parity lens — standalone `Agent()`
+### Step 1a: parity lens — `dispatch.js`, brief as a file
+
+Write the brief (mandate + OLD from `git show main:…` + NEW per changed `.cs`, verbatim with file:line) to `.claude/scratch/pr_ready/parity_<branch>.md`, then:
 
 ```
-Agent({
-  description: "Refactor parity diff",
-  subagent_type: "general-purpose",
-  model: "opus", // executor role per the ladder (`reference/model_ladder_evidence.md` §Role guidance) — reasoning-heavy floor (`orchestration` §5): line-precision OLD-vs-NEW regression audit that gates the PR, where a missed dropped branch ships a bug. Standalone Agent() bypasses review_fanout.js's engine floor, so this MUST be set explicitly (else it inherits the session model). If the ladder's role→model mapping changes, this literal follows it.
-  prompt: "<parity mandate + OLD (from git show main:…) + NEW per changed .cs, verbatim with file:line>"
+Workflow({
+  scriptPath: ".claude/workflows/dispatch.js",
+  args: { jobs: [ { label: "parity", promptPath: "<abs>/.claude/scratch/pr_ready/parity_<branch>.md", model: "opus", effort: "low", agentType: "general-purpose", readOnly: true } ] }
 })
 ```
+
+`opus`: executor role (`reference/model_ladder_evidence.md` §Role guidance) — a line-precision OLD-vs-NEW audit that gates the PR, where a missed dropped branch ships a bug. `low`: the lens is anchored (both versions supplied, rubric explicit) so there is no residual ambiguity for effort to buy (`orchestration` §5). Run it in the same message as Step 1b — two Workflow calls in flight together.
 
 Mandate (`parity`): diff OLD vs NEW per changed method. Flag every dropped/weakened branch, stub, `TODO`, `// deferred`, removed validation, or silently-changed default as a **BLOCKER** (`critical:true`). Quote old vs new verbatim with file:line. Return a JSON findings array (`{agent, action, category, critical, file, description, old, new, rationale}`). This is audit-shape line-precision work — read OLD AND NEW; treat critical findings as candidates Claude verifies, not final truth.
 

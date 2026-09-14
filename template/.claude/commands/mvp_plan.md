@@ -67,7 +67,7 @@ For each Part, the Source-column wikilink points to a design-doc section. Bundle
 - Per-Part test plan (acceptance criteria candidates)
 - Per-Part scene/feature deliverable (goal candidates)
 
-This is the **only** synthesis-shaped read in this command (per CLAUDE.md §9). All subsequent reasoning runs in Claude.
+This is the **only** synthesis-shaped read in this command (per CLAUDE.md §Tool Routing). All subsequent reasoning runs in Claude.
 
 If a Part's design doc is missing or its section header doesn't resolve → flag the Part as *"design-source missing; user supplies MVP fields manually"* and continue.
 
@@ -84,9 +84,9 @@ Suggest an initial MVP count based on Part count + dep graph topology:
 Propose initial Part-to-MVP grouping based on dep graph: Parts that unblock a playable surface together cluster into one MVP. Show the proposal as a table:
 
 ```
-MVP-1 (proposed): "Combat parity through encounter abstraction"
-  Required Parts: Pos 1, (parent) Trait-Weight Resource Family
-MVP-2 (proposed): "One playable room with combat encounter"
+MVP-1 (proposed): "Input reaches the authored scene through shared routing"
+  Required Parts: Pos 1, (parent) Input Routing
+MVP-2 (proposed): "One complete interaction loop"
   Required Parts: Pos 1, Pos 2
 ...
 ```
@@ -103,13 +103,13 @@ For each MVP-N in approved order, walk the 7 fields per the `common.md §6.11` s
 
 3. **Excluded** — propose what the MVP scopes out. Pull candidates from (a) Parts assigned to later MVPs, (b) abandoned Parts, (c) explicit design-doc Open Questions. Frames scope-creep boundaries. *"MVP-N excludes: <candidates>. Add / remove?"*
 
-4. **Acceptance** — propose the **cross-Part integration** checks this MVP verifies — assertions no single Required Part's completion guarantees (e.g. *"enemy spawns AND trail renders AND room loads together in one scene"*). Do NOT restate per-Part criteria: a Part can't reach `complete` without its own tests passing the gate, so per-Part acceptance rides on the Required-Part check-mark (§6.11). Each criterion verifiable without ambiguity (named integration test, multi-Part behavioral assertion, full-scene check). Vague checks (*"feels responsive"*) belong in Playtest plan. These cross-Part checks are confirmed at playtest, not auto-computed.
+4. **Acceptance** — propose the **cross-Part integration** checks this MVP verifies — assertions no single Required Part's completion guarantees (e.g. *"input reaches the subject AND its response renders AND the scene transition completes"*). Do NOT restate per-Part criteria: a Part can't reach `complete` without its own tests passing the gate, so per-Part acceptance rides on the Required-Part check-mark (§6.11). Each criterion verifiable without ambiguity (named integration test, multi-Part behavioral assertion, full-scene check). Vague checks (*"feels responsive"*) belong in Playtest plan. These cross-Part checks are confirmed at playtest, not auto-computed.
 
 5. **Playtest plan** — **REQUIRED field (per common.md §6.11)** — the roadmap field carries a 2–3 line summary + wikilink; the **full content is authored in the topic's `playtest.md`** (colocated with `roadmap.md`, one section per MVP; create it here if absent, carrying over the summary shape). The doc holds the rubric + operational runbook — verify each runbook step against the codebase's actual editor surface: exact `[ExportToolButton]` labels in order, plugin main-screen tabs, scene paths, launch path. A rubric-only plan is incomplete. This is where *"feels responsive"* belongs — subjective rubric. Pull candidates from each Part's design-doc playtest moment. The walk completes this field with ONE of two branches:
    - **Manual surface** — the playtest.md section: named scene path + step-by-step procedure + what to look for (the Acceptance's cross-Part checks, verified by hand). If the playtest needs a scene/artifact that must be authored (stacking frame, demo scenario), name it as a **Checkpoint artifact** (next field) and make it a deliverable of a Required Part's Trigger — the plan's scene path must exist by Status-flip time, not after.
    - **`Automated-only — no manual surface`** — the explicit carve-out when every Acceptance criterion is a deterministic test with no human verdict. An absent plan is NOT the carve-out; a `🧪` with neither branch is a lie by omission.
 
-6. **Checkpoint artifact** — *optional, ask when the Playtest plan names a surface that must be authored.* Propose the named deliverable (scene, demo scenario, hand-authored data) + which Required Part's Trigger carries it (per common.md §6.11). The artifact is the playtest surface's existence guarantee; `🧪` presumes it.
+6. **Checkpoint artifact** — *optional, ask when the Playtest plan names a surface that must be authored.* Propose the named deliverable + which Required Part's Trigger carries it (per common.md §6.11). Default deliverable: the scenario scene emitted by [`/playtest_artifact --part <Required Part>`](playtest_artifact.md); cite the path that command returns. The artifact is the playtest surface's existence guarantee; `🧪` presumes it.
 7. **Validates** — propose design commitments being exercised. Pull from each Required Part's design-doc commitments. This field is the *"why this MVP earns its slot"* — connects the milestone narrative back to architectural commitments.
 
 After the 7 fields, **initialize Status** to `🔨 In progress (0/Y parts)` (Y = Required-Parts count) — non-Socratic, no user input; `/update_roadmap` recomputes it on its next run. Never author `🧪`/`✅` at creation.
@@ -118,7 +118,7 @@ Get user approval per MVP before moving to the next. Save approved MVPs to scrat
 
 ### Step 5 — Render, present diff, apply
 
-Compose the full `## MVP Checkpoints` section per the §6.11 schema. Placement: between `## Ready for you (user-owned)` (last §6.5 derived view) and `## Spawned sub-brainstorms` (§6.6). If the existing roadmap has a non-canonical ordering (e.g., MVP section already between Mermaid and Blocked, per the encounter-extraction example), preserve the existing position — don't relocate; this command is appending content, not restructuring.
+Compose the full `## MVP Checkpoints` section per the §6.11 schema. Placement: between `## Ready for you (user-owned)` (last §6.5 derived view) and `## Spawned sub-brainstorms` (§6.6). If the existing roadmap has a non-canonical ordering, preserve it — don't relocate; this command is appending content, not restructuring.
 
 Show the user the full proposed section + the revision log entry:
 

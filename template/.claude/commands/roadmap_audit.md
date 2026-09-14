@@ -145,8 +145,8 @@ For each enabled check, walk the relevant structure and emit findings. Each find
    Fix:       /update_roadmap (resync submap denormalized references)
 
 ### [mvp] <roadmap> — MVP-4
-   Observed:  cites "Pos 6 (Multi-encounter rooms + procgen CSP)"; that Part is now Pos 7
-   Expected:  "Pos 7 ..." (encounter-extraction renumber 2026-05-18)
+   Observed:  cites "Pos 6 (Multi-room floors)"; that Part is now Pos 7
+   Expected:  "Pos 7 ..." (renumbered after an extraction, 2026-05-18)
    Fix:       /mvp_plan refine MVP-4
 
 ### [deps] <roadmap> — <Part>

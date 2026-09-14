@@ -4,61 +4,61 @@ disable-model-invocation: true
 
 # PR Classification
 
-<!-- Single source of truth for domain classification, type classification, and label application. -->
-<!-- Referenced by: /review_pr, /create_pr, /merge_pr, /pr_test_checklist (via pr_test_checklist_conventions.md) -->
+Single source for domain, type, and label classification. Used by PR review, creation, merge, and test
+checklists.
 
-## Domain Classification
+## Domain classification
 
-Classify based on **what the PR enables in the game**, not what file types were changed.
+Classify what the PR enables, not its file extensions. Read the project's `Domain Split` and subsystem
+registry before classifying paths.
 
-**Key question:** Does this PR add or modify player-facing behavior — something a player would *see*, *feel*, or *interact with differently*? If yes → Gameplay or Mixed.
+| Domain | Signal | User testing? |
+|---|---|---|
+| **Logic** | behavior assigned to the project's Logic domain | No; automated tests suffice |
+| **Gameplay** | player-visible or player-felt behavior assigned to the Gameplay domain | Yes for subjective feel |
+| **Data** | authored data only, with no new runtime behavior | No; validate the data |
+| **Meta** | harness, docs, build, or repository-only changes | No |
+| **Framework** | reusable-framework change or submodule pointer | Depends on the changed behavior |
+| **Mixed** | more than one runtime domain | Yes if any subjective Gameplay behavior changed |
 
-| Domain | Signals (real top-level folders — no `Source/` prefix exists in this repo) | User Testing? |
-|--------|---------|---------------|
-| **Logic** | `SpellArchitecture/`, `SpellEffects/`, `Synergies/`, `Jmodot/Core/`, `Tests/Logic/`, pure-logic cores inside gameplay subsystems (e.g. `Factions/Disposition/`, `Scoring/`, `Currency/`) | No — automated tests sufficient |
-| **Gameplay** | Scenes (`.tscn`), `Wizard/`, `AI/` / `NPCs/` / `Minions/`, `Crafting/` / `PvE/`, `Dungeon/`, `Prototype/`, `Spawning/`, `Movement/`, `Visual/` / `Animation/` / `Camera/`, `UI/`, `Tests/Integration/`, `Tests/Sanity/` | **Yes** — subjective feel |
-| **Data** | `.tres` or `.tscn` files only | No — automated tests sufficient |
-| **Meta** | `.claude/` (incl. `skills/`, `commands/`), `Docs/`, `harness-baseline/`, `.gitignore`, `CLAUDE.md` | No — not runtime code |
-| **Jmodot** | Submodule pointer change | Depends on what changed |
-| **Mixed** | Logic + Gameplay in same PR | **Yes** — if any Gameplay changes |
+A tested source file is not Logic by default. Collision response, interaction behavior, animation, UI,
+and other player-facing changes remain Gameplay when the project domain split says so.
 
-> **Signal maintenance (as of 2026-07-04):** the path signals above are the actual top-level folders. The canonical folder→subsystem registry is `.claude/skills/pp_subsystems/SKILL.md` (machine-readable YAML `paths`), kept in sync with the tree by `/sync_subsystems`. A changed path not listed here → classify via that registry, and update this table.
+If a changed path has no subsystem owner, classify its behavior and report registry drift. Do not add a
+new hardcoded path table here.
 
-> **Common mistake:** A PR with well-tested `.cs` files (e.g., new collision response, new spell behavior) is NOT "Logic" just because it has unit tests. If the feature introduces new **game behavior**, it is **Gameplay** regardless of test coverage. Automated tests validate *correctness*; user testing validates *feel*.
+## Type classification
 
-## Type Classification
-
-Derive from conventional commit prefix (in PR title or majority of commits):
+Use the PR title, or the majority conventional-commit prefix when the title lacks one.
 
 | Prefix | Label |
-|--------|-------|
+|---|---|
 | `feat` | `feature` |
 | `fix` | `fix` |
 | `refactor` | `refactor` |
 | `chore` | `chore` |
 | `test` | `test` |
 
-## Label Colors
+## Label colors
 
 | Label | Color |
-|-------|-------|
+|---|---|
 | `meta` | `#808080` |
 | `logic` | `#0075ca` |
 | `gameplay` | `#a2eeef` |
 | `data` | `#d4c5f9` |
+| `framework` | `#5319e7` |
 | `feature` | `#0e8a16` |
 | `fix` | `#d73a4a` |
 | `refactor` | `#fbca04` |
 | `chore` | `#ededed` |
 | `test` | `#bfd4f2` |
 
-## Applying Labels
+## Applying labels
 
 ```bash
-# Create labels if they don't exist (silent fail if already exists)
 gh label create "<label>" --color "<hex>" --description "<desc>" 2>/dev/null || true
-# Apply labels
 gh pr edit <N> --add-label "<label1>,<label2>"
 ```
 
-**Labels are additive** — never remove existing labels, only add based on classification.
+Labels are additive. Never remove an existing label during classification.

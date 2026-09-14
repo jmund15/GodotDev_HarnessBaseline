@@ -17,7 +17,7 @@ description: Autonomously drive a design topic to an approved design doc + roadm
 | A well-trodden shape on an existing Part (plan → ship) | `/part_drive` — add `--plan-only` to stop at an approved plan |
 | A large or novel design run autonomously, taste batched to one gate | **this command** |
 
-**Preflight (before any exploration):** load `architecture_philosophy` — plus `jmodot` and/or `pp_subsystems` when the topic touches those surfaces. Contract clause 1 makes the doctrine a citable grounding source, and an unloaded skill cannot be cited. Do not treat the auto-loaded `rules/design_litmus.md` as the doctrine; it is the pointer to it. Read `Claude/Meta/Development-Focus.md`; name any misalignment between the topic and the current focus in the preflight summary — advisory, never a gate.
+**Preflight (before any exploration):** load `architecture_philosophy` — plus `jmodot` and/or `project_subsystems` when the topic touches those surfaces. Contract clause 1 makes the doctrine a citable grounding source, and an unloaded skill cannot be cited. Do not treat the auto-loaded `rules/design_litmus.md` as the doctrine; it is the pointer to it. Read `Claude/Meta/Development-Focus.md`; name any misalignment between the topic and the current focus in the preflight summary — advisory, never a gate.
 
 **Entry preconditions (halt, don't improvise):**
 

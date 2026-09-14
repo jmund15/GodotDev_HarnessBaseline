@@ -37,7 +37,7 @@ Every agent finding MUST conform to this JSON schema:
 | `ASK` | Beneficial change needing user input | `question` with a specific, answerable question; `options` with ranked alternatives (best guess first) | Describe the issue, propose ranked options (recommended option first), formulate one clear question. First option is always the agent's best-guess recommendation. |
 | `PLAN` | Systemic issue requiring multi-file redesign or architectural discussion | `scope` listing affected files/areas; `options` with ranked approaches if enumerable | Describe the problem, propose ranked approaches if possible, explain scope and impact. |
 
-**Omission rule:** If a potential finding would NOT prevent a bug, enforce an explicit project rule, or meaningfully improve correctness/safety — do not report it. There is no "low priority" tier. Either it's worth acting on or it's not worth reporting.
+**Routing rule:** A finding that neither prevents a bug nor enforces a rule is reported as `category: improvement` at the action its shape warrants, or in the orchestrator's Step-3 Notes — never dropped. Severity is triage, not a correctness filter (`guards/review.md`).
 
 ### Category Tags
 
@@ -53,7 +53,7 @@ The `critical` field is an optional boolean (default: `false`). Set to `true` ON
 - Runtime crashes or data corruption
 - Silent failures that mask bugs (e.g., `?.` skipping required cleanup)
 - Security vulnerabilities
-- Pool state corruption or lifecycle violations that cause cross-spell contamination
+- Pool state corruption or lifecycle violations that cause cross-ability contamination
 
 The flag is a **positive signal** — its absence simply means "normal finding." Do not agonize over the threshold.
 
@@ -68,6 +68,7 @@ When an orchestrator receives agent findings, it processes them in this order:
 - Parse each agent's JSON findings array
 - Deduplicate findings referencing the same `file:line` from different agents (keep the one with more specific `old`/`new` snippets, or the one with `critical: true`)
 - Sort: critical findings first, then by action tier (FIX → ASK → PLAN), then by category (bug → rule → improvement)
+- `file:line` dedup misses one defect anchored to several lines. `review_fanout.js`'s **Merge** phase — one `opus·low` agent, merge-never-filter — closes that gap; it is on by default at ≥12 deduped findings and switched by `args.consolidate`. Report `counts.raw` beside `counts.merged`. Merging is not verification: Step 1.5 still runs, and a fabricated finding is refuted by a first-party quote, never by the merge.
 
 ### Step 1.5: Verify FIX Findings Against Actual File Content
 
@@ -218,4 +219,4 @@ Changes:
 - Added optional `options` field to Finding Schema (ranked alternatives for ASK/PLAN, best guess first)
 - Added PLAN-to-ASK promotion rule (prefer ASK with ranked options over PLAN when alternatives are enumerable)
 - Updated ASK presentation format to show ranked options with recommended marker
-- Added Step 1.5 (Finding Verification) — orchestrator grep-checks every FIX `old` field against actual file content with whitespace tolerance; unverifiable findings surface in a dedicated ⚠️ UNVERIFIED section above FIX. Counters subagent hallucination (Haiku `mooyum_milk.tres` class). See `orchestration` skill §5 *Model & Effort Selection*.
+- Added Step 1.5 (Finding Verification) — orchestrator grep-checks every FIX `old` field against actual file content with whitespace tolerance; unverifiable findings surface in a dedicated ⚠️ UNVERIFIED section above FIX. Counters subagent hallucination (Haiku `example_item.tres` class). See `orchestration` skill §5 *Model & Effort Selection*.

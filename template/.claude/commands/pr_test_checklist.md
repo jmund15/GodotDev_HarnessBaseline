@@ -12,7 +12,7 @@ Generate or update a **PR Gameplay Test Checklist** in Obsidian from the current
 
 `$ARGUMENTS` — optional display title override.
 - `/pr_test_checklist` — auto-derive title from branch name
-- `/pr_test_checklist "Critter System"` — use "Critter System" as the document title
+- `/pr_test_checklist "Entity System"` — use "Entity System" as the document title
 
 ## References
 
@@ -40,8 +40,8 @@ Strip the `claude/` prefix from the branch name, replace `/` with `-`.
 
 | Branch | Filename |
 |--------|----------|
-| `claude/critter-scurry-ingredients-bVx4D` | `critter-scurry-ingredients-bVx4D` |
-| `claude/spell-fire-rework-Abc12` | `spell-fire-rework-Abc12` |
+| `claude/entity-scurry-materials-bVx4D` | `entity-scurry-materials-bVx4D` |
+| `claude/ability-fire-rework-Abc12` | `ability-fire-rework-Abc12` |
 | `feature/new-ui` | `feature-new-ui` |
 
 ### 1.3 Determine Mode

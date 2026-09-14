@@ -164,7 +164,7 @@ Opt-in read of `Worklog-Archive.md`. Never loaded passively (no mirror, no Sessi
    - **When:** phrasing implying a prerequisite or phase gate ("once X is done", "after Y ships", "not until Z") → propose `When: after <condition>` or `When: future` and confirm. No timing signal → omit (ready by default).
    - **Plan doc: REQUIRED if scope == 4.** Wikilink `[[Doc Title]]`; the doc must exist in `TODO/` and be listed in `## Linked Docs`. No doc yet → prompt the user to create one, or downgrade to scope 3 if it fits inline.
 
-4. **Inferred-values confirmation** (auto-detect, or sparse `add` text): `Add to Worklog: <title> — <domain> · <class> · scope <n>?`. `y` accepts; overrides land inline (`y, scope 3` / `y, refactor not feature` / `y, domain spell`).
+4. **Inferred-values confirmation** (auto-detect, or sparse `add` text): `Add to Worklog: <title> — <domain> · <class> · scope <n>?`. `y` accepts; overrides land inline (`y, scope 3` / `y, refactor not feature` / `y, domain ability`).
 
 5. **Decide section.** Future Scope strong-trigger phrase (`worklog_reference` *Trigger Catalog*) OR explicit `When: future` → step **5b**. A `When: after <condition>` clause → `## Ledger > ### Domain`, step 6 (it is not ready, so it never occupies a ready-pool slot). Otherwise → `## Active > ### Domain`, step 6 — a fresh item is the newest by definition, so it belongs in the pool.
 
@@ -228,7 +228,7 @@ Append a `UTLINE` for items needing user judgment Claude cannot supply. Append-o
    - **Context:** ≤80 chars on why this needs user attention.
    - **Domain:** from `worklog_reference` *Canonical domain list*.
 
-3. **Inferred-values confirmation** (auto-detect): `Route to User-Tasks: <title> — <domain>?`. `y` accepts; `y, domain spell` overrides the domain; `y, active not user-tasks` cancels this add and reroutes to `/worklog add`.
+3. **Inferred-values confirmation** (auto-detect): `Route to User-Tasks: <title> — <domain>?`. `y` accepts; `y, domain ability` overrides the domain; `y, active not user-tasks` cancels this add and reroutes to `/worklog add`.
 
 4. **Append under the right `## <Domain>` heading,** at the **top** of the section, immediately after the heading line.
 
@@ -244,7 +244,7 @@ Append a `UTLINE` for items needing user judgment Claude cannot supply. Append-o
 | Caller | Confirm-first? | Notes |
 |--------|---------------|-------|
 | User types `/worklog user-add <text>` | No (explicit) | Skip propose-and-confirm; ask only for missing domain + context. |
-| CLAUDE.md auto-detect (User-Tasks route) + `y` | Already done by CLAUDE.md | Execute with inferred title + domain. Honor inline overrides (`y, domain spell` / `y, active not user-tasks`). |
+| CLAUDE.md auto-detect (User-Tasks route) + `y` | Already done by CLAUDE.md | Execute with inferred title + domain. Honor inline overrides (`y, domain ability` / `y, active not user-tasks`). |
 | `/worklog triage` → `to-user-tasks` disposition | Already done by the triage walk | Execute from the Active item's title + Context + domain. Skip Step 1 — the walker already exposed existing entries. |
 
 ## Operation: COMPLETE

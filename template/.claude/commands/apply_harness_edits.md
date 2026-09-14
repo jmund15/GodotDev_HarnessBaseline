@@ -1,24 +1,22 @@
 ---
-description: Apply queued injected-file harness edits from pending_harness_edits.md — run as the FIRST act of a fresh session.
+description: Apply queued harness edits after checking target drift and preserving unresolved entries
+argument-hint: [--check-baseline]
 ---
 
-Applies edits that a prior session deferred because their target files are prompt-prefix-resident (CLAUDE.md, MEMORY.md — editing them mid-session invalidates the prompt cache at full-context cost; in a fresh session's first turn the same edit lands in the cold prefix for ~free).
+Apply `.claude/pending_harness_edits.md`. No argument runs the normal queue; `--check-baseline` also surfaces baseline drift. Unknown arguments → report the accepted form and stop.
 
 ## Procedure
 
-1. **Read the queue:** `.claude/pending_harness_edits.md`. If absent or empty below the header → report `No pending harness edits.` and stop.
-2. **Timing check:** if this session already has substantial context (not within the first few turns), warn that applying now pays a proportionally larger cache re-write and ask whether to proceed or leave queued. First-turn invocation proceeds without asking.
-3. **Apply each entry** with direct `Edit` against the target file, exactly as specified (entries carry verbatim insertion text and an anchor). Injected-file edits route direct — never `write_doc` (CLAUDE.md §9 write routing).
-4. **Conflict policy = skip-and-audit-trail** (mirrors `/worklog` cloud replay): if an entry's anchor no longer matches (target drifted since queueing), strike the entry through with `(skipped: anchor drifted)` and continue — never hard-fail the batch.
-5. **Clean up:** all entries applied → delete the queue file. Any struck entries remain → keep the file with only struck lines and note them.
-6. **Commit** the applied edits + queue deletion as one `docs(harness)` commit (meta — regression-gate exempt). Baseline classification is **opt-in**: mention `/sync_baseline` only when invoked with `--check-baseline`, matching `/commit_push` and `/clean_push`.
+1. **Read the queue.** Absent or empty below the header → report `No pending harness edits.` and stop.
+2. **Check targets and ownership.** Read each target and its current diff. A conflicting peer edit, active audit freeze, missing anchor or changed premise leaves that entry pending with its reason; continue independent entries. Do not overwrite drift or treat it as completed work.
+3. **Apply exact entries** with `Edit`. Runtime instruction files use direct edits, never `write_doc`. Verify the changed decision, inbound references and relevant tests. A changed disk file does not evict text already loaded in this session.
+4. **Reconcile the queue.** Remove only successfully applied entries. Keep unresolved entries and their evidence. Delete an empty queue only after verifying it still contains no peer additions.
+5. **Close within the user's Git authority.** Propose a commit unless already authorized; stage only these changes. Run the gate required by the actual staged file classes in CLAUDE.md §Build & Test Commands. With `--check-baseline`, surface `/sync_baseline` drift without publishing it.
 
 ## Queue-entry contract (for sessions WRITING the queue)
 
-Each entry must be applyable context-free: target file, a durable anchor (named paragraph/heading — never a line number or commit hash), verbatim content to insert/replace, and a one-line why.
+Each entry names the target, a durable anchor, exact replacement text and the decision it fixes. Merge into the existing queue without dropping another session's entries.
 
-**Surface taxonomy (canonical home — CLAUDE.md §9 references this):** queue ONLY prefix-resident surfaces, whose mid-session edit re-writes the prompt cache:
-- Natively-injected files: CLAUDE.md (project + user-global), auto-memory `MEMORY.md`.
-- Unverified, treat as prefix-resident until tested: skill/command FRONTMATTER and agent definitions (they feed system-prompt listings; listing-refresh behavior unmeasured).
+**Loading and timing:** queue non-load-bearing edits to likely startup-loaded surfaces when they can wait for a clean boundary: user/project CLAUDE.md, `MEMORY.md`, and registered catalog metadata. Apply corrections needed for the current task now when ownership permits. Follow the same-turn memory-index rule when saving a memory.
 
-Everything loaded on demand is cache-free — edit directly, never queue: skill/command bodies, `rules/*.md`, `hooks/*.py`, auto-memory topic files, `worklog-titles.md`, and hook-STDOUT-injected content (hook output is a frozen transcript event, not refreshed on file change).
+Skill/command bodies, path-scoped rules and reference files load through their triggers; inspect the actual registration before calling them deferred. Their text costs context when loaded. Hooks execute on matching events; emitted instructions are separate transcript content. Disk edits, catalog refresh and prompt-cache reuse are different events, and their timing depends on the client. Do not infer token savings from file bytes or promise cache-free edits.

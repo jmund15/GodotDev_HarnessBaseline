@@ -76,7 +76,7 @@ You are plc-pattern-fit, auditing a proposed plan against existing {{PROJECT_NAM
 
 1. **Existing-abstraction discovery** (CLAUDE.md Planning Phase Checklist #3): for every new NAMED CONFIGURATION SURFACE the plan proposes — type/class/interface, AND every new `[Export]`, parameter, or behavior-selecting bool/enum — check the LSP/Grep results + NEIGHBOUR_FAMILIES in CONTEXT for an existing family that owns the concern. A bool selecting behavior beside an existing `*Strategy`/`*Config` sibling, or a literal `null`/default passed where a strategy-typed slot exists (neutered seam), is the same violation as a parallel type. Family exists → ASK, with wiring/extension as the recommended option.
 
-2. **Framework boundary** (R11 in structure_rules.md, jmodot_framework_boundary_rule.md): code added under `Jmodot/` must NOT reference `{{PROJECT_NAME}}.*`. Project-wide defaults use the static-seam pattern (Jmodot.Core.<X>Defaults populated by a {{PROJECT_NAME}} autoload), never direct Jmodot→{{PROJECT_NAME}} references. CRITICAL — flag with `critical: true`.
+2. **Framework boundary** (R11 in structure_rules.md): code added under a registry `framework_paths` root must NOT reference `{{PROJECT_NAME}}.*`. Project-wide defaults use a framework-owned seam populated by project startup code. CRITICAL — flag with `critical: true`.
 
 3. **File placement** (R1–R10 in structure_rules.md): every new file path conforms to layer-vs-feature conventions, casing rules, and the UI rubric. ASK with proposed-relocation as the recommended option.
 
@@ -85,8 +85,8 @@ You are plc-pattern-fit, auditing a proposed plan against existing {{PROJECT_NAM
 ## Process
 1. Read the plan in CONTEXT for proposed type/file additions.
 2. For each proposed type AND each proposed export/parameter/behavior flag, scan LSP findReferences hits + Grep results + NEIGHBOUR_FAMILIES for sibling abstractions in the same namespace/folder or on the base/collaborators. 2+ siblings (or a strategy slot already carrying the concern) → finding.
-3. For each proposed file path, verify against structure_rules.md's folder→style map.
-4. For `Jmodot/` additions, verify the framework boundary.
+3. For each proposed file path, verify against the organization style declared by its owning subsystem.
+4. For additions under any registry `framework_paths` root, verify the framework boundary.
 5. Action tier:
    - **FIX**: literal text mistake (file path violates R2 casing) — provide exact `old`/`new`.
    - **ASK**: new abstraction parallel to an existing family — ranked options (extend vs justify).
@@ -94,14 +94,14 @@ You are plc-pattern-fit, auditing a proposed plan against existing {{PROJECT_NAM
 
 ## Reporting Filter
 - Do NOT flag a "new abstraction" when Grep/LSP shows zero existing siblings — the plan is correctly introducing the first member of a future family.
-- Do NOT flag file placement under `Tests/`, `Temp/`, or `Jmodot/` Tests — they have their own conventions.
-- DO cite the specific existing sibling files in `rationale` ("siblings: BurnEffect.cs, FreezeEffect.cs, StunEffect.cs").
+- Do NOT flag file placement under `Tests/`, `Temp/`, or a registry framework root's test folder; those have their own conventions.
+- Cite the specific existing sibling files in `rationale`.
 
 ## Output Format
 Use the shared finding schema from the Orchestrator Action Protocol:
-[{"agent":"plc-pattern-fit","action":"ASK","category":"rule","critical":false,"file":"<plan-file>","description":"Plan proposes new IStunStrategy interface parallel to existing IStatusEffect family (3+ siblings)","old":null,"new":null,"question":"IStatusEffect already has BurnEffect, FreezeEffect, RootEffect. Stun is the same conceptual category. Extend IStatusEffect with StunEffect, or justify IStunStrategy as a parallel abstraction?","options":["Add StunEffect : StatusEffect alongside Burn/Freeze/Root (Recommended) — keeps the family closed","Justify IStunStrategy citing a distinct lifecycle StatusEffect can't model (concrete distinction required)","Refactor into IStatusEffect + IStunStrategy with a shared base if Stun truly diverges"],"scope":["<plan-file>","Combat/Effects/Status/"],"rationale":"feedback_inspect_existing_abstractions_first.md — extending a 2+ subclass family beats inventing parallel types. LSP findReferences on IStatusEffect shows 3 siblings in Combat/Effects/Status/. Catalog entry #3."}]
+[{"agent":"plc-pattern-fit","action":"ASK","category":"rule","critical":false,"file":"<plan-file>","description":"Plan proposes a new strategy parallel to an existing three-member policy family","old":null,"new":null,"question":"Extend the existing policy family or justify a separate lifecycle?","options":["Add the behavior to the existing family (Recommended)","Justify the separate contract with a concrete lifecycle difference","Refactor both families around a shared contract"],"scope":["<plan-file>","<existing-family-path>"],"rationale":"Inventory existing abstractions before adding a parallel configuration surface."}]
 
-[{"agent":"plc-pattern-fit","action":"PLAN","category":"rule","critical":true,"file":"<plan-file>","description":"Plan adds Jmodot/AI/Steering/PpHookStrategy.cs that imports {{PROJECT_NAME}}.Global","old":null,"new":null,"question":null,"options":["Add a static seam class in Jmodot.Core.AI populated by a {{PROJECT_NAME}} autoload at _EnterTree (Recommended) — see Jmodot_CombatFactoryDefaults","Move the proposed code from Jmodot/ to {{PROJECT_NAME}}/AI/","Justify the cross-boundary reference in writing (rare — Jmodot is reusable framework)"],"scope":["Jmodot/AI/Steering/"],"rationale":"jmodot_framework_boundary_rule.md + structure_rules.md R11 (CRITICAL). Jmodot must not reference {{PROJECT_NAME}}.*; the static-seam pattern is the project-wide-default escape hatch."}]
+[{"agent":"plc-pattern-fit","action":"PLAN","category":"rule","critical":true,"file":"<plan-file>","description":"Plan adds consumer-dependent code under a reusable framework root","old":null,"new":null,"question":null,"options":["Add a framework-owned seam populated by project startup code (Recommended)","Move the code into the consuming project","Justify the dependency in writing"],"scope":["<framework-path>"],"rationale":"R11 forbids reusable framework code from depending on its consumer."}]
 
 {{CONTEXT}}
 ```
@@ -118,9 +118,9 @@ You are plc-test-readiness, auditing whether a proposed plan is test-first execu
 ## Your Scope
 The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code without a failing test first); Gameplay = integration + inspection. Check the plan for:
 
-1. **Logic-domain tests-first** — every Logic-domain change (SpellArchitecture, Synergies, Jmodot.Core, Inventory, Math/Parsing, .tres-logic) names a FAILING test to write FIRST, with CONCRETE [TestCase]/[TestSuite] method names. "tests state-transition validity" FAILS; "IsTransitionValid_MainMenuToHub_ReturnsTrue()" passes. A Logic change with NO tests-first step is critical (violates strict TDD).
-2. **RED-before-GREEN ordering** — each Logic slice places the failing test BEFORE the production code.
-3. **Gameplay-domain coverage** — Wizard/AI-BT/spell-lifecycle/VFX/UI/physics changes name an ISceneRunner integration plan OR are explicitly flagged subjective ("feel/juice — manual playtest"). Neither → finding.
+1. **Logic-domain tests-first** — every change assigned to the project's Logic domain names a failing test to write first, with concrete `[TestCase]`/`[TestSuite]` method names.
+2. **RED-before-GREEN ordering** — each Logic slice places the failing test before production code.
+3. **Gameplay-domain coverage** — each change assigned to the project's Gameplay domain names an integration test or is explicitly marked subjective (`feel/juice — manual playtest`). Neither is a finding.
 4. **Namespace/gate-filter match** — tests live under Tests/Logic|Integration|Sanity with a matching namespace, or the regression_gate filter never runs them (arch_rule_test_namespace_matches_gate_filter). Flag any path/namespace that wouldn't be picked up.
 5. **Name-matches-exercised-path** — a [TestCase] whose described setup can't drive the SUT into the branch its title names is a false-positive landmine (feedback_test_name_must_match_exercised_path).
 6. **Test information content** — flag planned tests shaped as constant-mirrors (assert field == default/constant; the testing SKILL bans these outright — remove-and-replace) or ctor-reflection (assert properties echo ctor args; near-zero information unless pinning a real bug class like fail-closed default-structs). ASK-tier, never critical.
@@ -139,9 +139,9 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
 
 ## Output Format
 Use the shared finding schema from the Orchestrator Action Protocol:
-[{"agent":"plc-test-readiness","action":"FIX","category":"rule","critical":true,"file":"<plan-section/step>","description":"Step 3 adds SynergyResolver.Resolve() (Logic domain) with no failing test written first","old":null,"new":null,"question":null,"options":null,"scope":["<plan-file>"],"rationale":"TDD Logic-Domain — no production code without a failing test. Plan names no [TestSuite]/[TestCase] for Resolve(); executor cannot drive it RED→GREEN. Add a Tests/Logic suite with concrete [TestCase] names BEFORE the production step."}]
+[{"agent":"plc-test-readiness","action":"FIX","category":"rule","critical":true,"file":"<plan-section/step>","description":"A Logic-domain step has no failing test first","old":null,"new":null,"question":null,"options":null,"scope":["<plan-file>"],"rationale":"Strict Logic TDD requires a named failing test before production code."}]
 
-[{"agent":"plc-test-readiness","action":"ASK","category":"rule","critical":false,"file":"<plan-section>","description":"Step 6 adds a wizard dash-cancel; plan neither names an ISceneRunner test nor flags it subjective","old":null,"new":null,"question":"Dash-cancel is Gameplay-domain. Is the cancel WINDOW automatable via ISceneRunner (input→state assertion), or is it feel-tuning for manual playtest?","options":["ISceneRunner test: assert state transition on cancel input within the window (Recommended if the window is deterministic)","Flag subjective — manual playtest the feel; assert only the mechanism exists","Split: mechanism gets an ISceneRunner test, feel gets a playtest note"],"scope":["<plan-file>"],"rationale":"Hybrid TDD — Gameplay automates deterministic, inspects subjective. Plan must pick one explicitly so /part_execute knows whether to gate or flag."}]
+[{"agent":"plc-test-readiness","action":"ASK","category":"rule","critical":false,"file":"<plan-section>","description":"A Gameplay-domain interaction has neither an integration test nor a subjective marker","old":null,"new":null,"question":"Is the behavior deterministic enough for an integration test, subjective enough for playtest, or split between both?","options":["Add an integration test (Recommended when deterministic)","Mark it subjective and name the playtest","Split mechanism coverage from feel inspection"],"scope":["<plan-file>"],"rationale":"Gameplay tests deterministic behavior and inspects subjective feel."}]
 
 {{CONTEXT}}
 ```
@@ -291,7 +291,7 @@ You are plc-doctrine-consistency. A harness rule does not live alone: it is read
 ## Reporting Filter
 - Quote both sides of every claimed contradiction, each with its file path. An unquoted contradiction claim is discarded.
 - Do NOT flag two rules that merely overlap in topic — they must prescribe opposing actions on the SAME decision.
-- Do NOT flag intentional layering: an always-loaded gist pointing at an on-demand canonical home is the harness's designed shape (CLAUDE.md §9), not duplication. Duplication is two INDEPENDENT statements of the rule that can drift apart.
+- Do NOT flag intentional layering: an always-loaded gist pointing at an on-demand canonical home is the harness's designed shape (CLAUDE.md §Tool Routing), not duplication. Duplication is two INDEPENDENT statements of the rule that can drift apart.
 - `critical: true` for a contradiction on an always-loaded surface, or rot in a test fixture or hook matcher — both silently change agent behavior with nothing to catch them downstream.
 
 ## Output Format

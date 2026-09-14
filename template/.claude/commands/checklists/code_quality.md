@@ -18,7 +18,7 @@ Review every changed file against each item. Skip items not applicable to the fi
 - [ ] **Node retrieval**: `GetNode()` used instead of `NodeExts` (`.GetFirstChildOfType<T>()`, `.TryGetNode<T>()`, `.GetChildrenOfInterface<T>()`)
 - [ ] **Logging**: `GD.Print` or `GD.PrintErr` used instead of `JmoLogger` (Info/Warning/Error)
 - [ ] **Control flow**: Nested if/else without early returns. Missing brackets `{}` on any if/else/for/while
-- [ ] **Naming**: PascalCase files/classes, snake_case directories, `IngredientTrait` naming convention
+- [ ] **Naming**: PascalCase files/classes, snake_case directories, `MaterialTrait` naming convention
 - [ ] **Nullability**: `[Export] = null!` without `[RequiredExport]`. Missing `this.ValidateRequiredExports()` in `_Ready()`
 - [ ] **Events**: `public event Action X;` without `= delegate { };` initializer
 - [ ] **Interfaces**: Concrete types where interfaces should be used (`IDamageable`, `IGodotNodeInterface`)
@@ -38,7 +38,7 @@ Review every changed file against each item. Skip items not applicable to the fi
 - [ ] **Dead code / magic numbers**: Unreachable code, unnamed numeric literals, unclear variable/function names
 - [ ] **God methods**: Methods doing too many things (>40 lines) — should be decomposed
 - [ ] **Pattern consistency**: New code inconsistent with dependency injection, lifecycle, or architectural patterns used in neighboring files
-- [ ] **Hidden dependencies**: GlobalRegistry/singleton access in constructors or methods where injection ([Export], Blackboard, or parameter) is possible
+- [ ] **Hidden dependencies**: registry/singleton access in constructors or methods where injection ([Export], Blackboard, or parameter) is possible
 - [ ] **Duplicate logic**: Tested helper class or static method exists but production code reimplements the same calculation inline — divergence risk
 
 ## Semantics (S)

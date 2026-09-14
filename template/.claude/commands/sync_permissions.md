@@ -97,14 +97,16 @@ Do NOT scan transcript files from other sessions — only this session's ID.
 
 Ask if any should be promoted, same options as Step 4.
 
-### 8. Fold newly-prompted Bash shapes into the guards
-A manual permission prompt for a Bash command is a signal, not a one-off — classify it and fold it in so the next occurrence auto-resolves. First check for a platform regression (`claude --version` vs the session-file version timeline, then the CHANGELOG): a reverted regression needs no local change.
+### 8. Identify the denial layer before changing permissions
+Record the tool input, exact denial reason, permission mode, and `claude --version`. A prompt alone proves neither a missing allow rule nor a platform regression. Check the current official [permission modes](https://code.claude.com/docs/en/permission-modes) and [denial review](https://code.claude.com/docs/en/auto-mode-config#review-denials) documentation before proposing a change.
 
-1. **Fail-closed shape** (heredoc/here-string `<<`, `$(...)`, backtick, background `&`, cd-compound with a write op) — the auto-mode classifier cannot analyze these and refuses delegation, so any prompt means `.claude/hooks/bash_shape_guard.py` did not cover this variant. Extend its pattern set + denial reason, pipe-test the new payload via the argv test affordance, and surface it in the session.
-2. **Clean shape missing an allow rule** — promote the exact form via Steps 2–5.
-3. **cd-compound with only safe segments** — extend `compound_cd_approver.py`'s `SAFE_SEGMENT_COMMANDS` (read-only commands only, per its docstring).
+1. **Project hook denial** — identify the named hook and its matching predicate. Change it only after a narrow reproduction distinguishes an intended block from a false positive. Do not reactivate dormant shell-shape blocks merely because a prompt returned.
+2. **Auto-mode classifier denial** — inspect `/permissions` → **Recently denied** and `claude auto-mode config`. For an intended one-off action, have the user select it and press `r` for manual review. Do not retry under another tool. A generic “Blocked by classifier” leaves the matched rule UNKNOWN; preserve that limit rather than guess.
+3. **Classifier unavailable or no verdict** — distinguish the failure from a policy block using the returned reason. These may lack a Recently denied entry. Follow the recovery documented for that error. If neither the error nor the docs gives a recovery, stop and report the exact error. Adding an allow rule does not repair a failed classifier request.
+4. **Protected-path write** — `.claude/` writes, including project scratch, receive extra review. A settings-file `Edit(.claude/**)` allow rule does not bypass that review. Do not broaden interpreter permissions or move a denied write to evade it.
+5. **Verified allow-rule gap** — route the scoped rule through “Extract and diff permissions,” “Present the diff,” “Ask which to promote,” and “Apply”. For a `cd` compound, extend `compound_cd_approver.py` only when every newly accepted segment is read-only and tests prove both accepted and rejected cases.
 
-Convergence: every reported prompt resolves into a guard pattern or an allow rule, so the next occurrence is denied or auto-approved instead of prompting.
+Close with the observed cause, change, and verification, or the exact unresolved permission decision. No new guard, blanket allow, or automatic retry is the default outcome.
 
 ### 9. Summary
 Report what was added (promoted, generalized, and transcript-discovered) and remind the user to commit `settings.json` if desired.

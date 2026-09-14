@@ -18,7 +18,7 @@ A canonical analysis script lives at `.claude/tools/analyze_eval_archive.py`. It
 
 **If the script is missing or broken** (deleted, syntax error, archive schema change): fall back to the manual procedure below. After the fallback run, verify the script is restored and runnable before calling the dashboard complete.
 
-**Pre-step: archive dedup audit.** The script prints `Duplicate-rate: X%` near the top of its output. If duplicate rate is non-zero AND `/self_evaluate` v2 (one-entry-per-session) has been in effect for ≥5 new entries, run a `consolidate-memory`-style cleanup pass on `self_evaluate_archive.json` BEFORE generating the dashboard — the duplication is now a data-integrity bug, not a historical artifact.
+**Pre-step: archive dedup audit.** The script prints `Duplicate-rate: X%` near the top of its output. If duplicate rate is non-zero AND `/self_evaluate` v2 (one-entry-per-session) has been in effect for ≥5 new entries, run a dedup cleanup pass on `self_evaluate_archive.json` BEFORE generating the dashboard — the duplication is now a data-integrity bug, not a historical artifact.
 
 ## Data Source
 Read `/.claude/self_evaluate_archive.json` — contains two data formats:
@@ -95,8 +95,8 @@ Analyze which domains generated the most corrections vs. clean execution:
 > | Pooling | N | N | X% |
 > | Testing | N | N | X% |
 > | Refactoring | N | N | X% |
-> | Combat/Effects | N | N | X% |
-> | UI/Animation | N | N | X% |
+> | Rendering | N | N | X% |
+> | Interface | N | N | X% |
 > | Meta/Tooling | N | N | X% |
 
 ### Section 4b: Skill Performance
@@ -107,9 +107,9 @@ The per-skill mirror of Section 4. For each skill that appeared in `skills_used[
 > | Skill | Sessions Loaded | Clean | Correction | Failure | Clean Rate | Trend |
 > |-------|-----------------|-------|-----------|---------|-----------|-------|
 > | architecture_philosophy | N | N | N | N | X% | ↑/↓/→ |
-> | spell_authoring | N | N | N | N | X% | ↑/↓/→ |
+> | debugging | N | N | N | N | X% | ↑/↓/→ |
 > | testing | N | N | N | N | X% | ↑/↓/→ |
-> | jmodot | N | N | N | N | X% | ↑/↓/→ |
+> | refactor_procedure | N | N | N | N | X% | ↑/↓/→ |
 > | autolearn | N | N | N | N | X% | ↑/↓/→ |
 > | (skills with <3 loads omitted as low-signal) | | | | | | |
 
@@ -166,7 +166,7 @@ Sections 4/4b measure whether *skills* carry their declared compliance. This mea
 **Reading the distribution:**
 - **Any `defects`/`rework`** → the falsification signal — that shape's floor is too low. One instance is noise; two on the same family means the floor moved.
 - **`discarded` → audit the spec, not the pin.** It usually means an open decision was pushed into an agent instead of settled first, which no effort level fixes.
-- **`clean` is a null measurement, not a certification** — nothing here says a lower pin would have failed. Overshoot is not a row in this table: it is the **over-pin candidates section** the summary prints (same-family higher rung at ≥2× cost for comparable work, both rungs clean-only). Render it verbatim; the action is a substituted downgrade on the family's next dispatch. Canon: `/orchestration_metrics` *Over-pin candidates*.
+- **`clean` is a null measurement, not a certification** — it does not show a lower pin would pass. Render over-pin candidates as advisory. `/orchestration_metrics` *Over-pin candidates* owns promotion: matched quality and complete-task cost, including parent work and rework. No automatic downgrade follows from this table.
 - **`?` efforts in the archive** → scripts are missing the `PINS` log line (`orchestration` §9); the data is unattributable until that lands.
 
 **Minimum N before proposing a ladder edit:** ≥8 archived agents at the tier in question, spanning ≥3 sessions. Below that, per-session variance dominates — say so rather than tuning on it.

@@ -16,7 +16,7 @@ Idempotent diagnostic. Runs a minimal verification per tool and reports status. 
 5.  **WebFetch:** Fetch `https://example.com` (round-trip verification only).
 6.  **WebSearch:** Minimal search for `current unix timestamp` — confirm matcher returns ≥1 result.
 7.  **Godot:** `mcp__godot__run_project` briefly (≤3 s), then `mcp__godot__get_debug_output` — confirm no startup errors. Call `mcp__godot__stop_project` if step left it running.
-8.  **Semantic-search:** `mcp__plugin_semantic-search_semantic-search__search` for a known symbol (e.g. `SpellArchitecture`) — confirm index responding; warn if zero results (likely stale, run `/reindex_search`).
+8.  **Semantic-search:** `mcp__plugin_semantic-search_semantic-search__search` for a known symbol (e.g. `DomainCore`) — confirm index responding; warn if zero results (likely stale, run `/reindex_search`).
 
 ## Output
 
@@ -32,7 +32,7 @@ Obsidian MCP     Active   <N notes in project scope>
 WebFetch         Active
 WebSearch        Active
 Godot MCP        Active   <no startup errors>
-Semantic-search  Active   <N hits for SpellArchitecture>
+Semantic-search  Active   <N hits for DomainCore>
 ```
 
 Failed tools should include the exact error message returned and a single-line remediation hint (e.g. "MCP disconnected — run `/mcp` to reconnect").
