@@ -12,16 +12,9 @@ user-invocable: false
 
 # VFX Patterns
 
-Reference for {{PROJECT_NAME}} visual effect, animation, and composition systems.
+Reference for Jmodot visual effects, animation, and composition.
 
-> **History note (2026-04-26):** A major refactor replaced the legacy
-> `VisualSlot` / `VisualSlotConfig` / `BaseModulationTracker` /
-> `IVisualSpriteProvider` types with `VisualSlotNode` / `SlotKey` /
-> `VisualEffectService` / `IVisualNodeProvider`. This skill describes the
-> current architecture. Slot configs are scene-graph children, not array
-> resources; persistent tints layer via a query-based API; node providers
-> emit `NodeAdded` / `NodeRemoved` typed events instead of a single
-> `VisualNodesChanged` broadcast.
+The current contract uses `VisualSlotNode`, `SlotKey`, `VisualEffectService`, and `IVisualNodeProvider`. Slot configurations are scene children. Persistent tints use query-based APIs. Providers emit typed `NodeAdded` and `NodeRemoved` events.
 
 ## Architecture Overview
 
@@ -80,7 +73,7 @@ composer.Unequip(slotKey);
 composer.Push(slotKey, item, options);                   // transient swap
 composer.Pop(slotKey);                                   // restores prior item
 composer.GetVisualNodes(VisualQuery.Slot(slotKey));      // typed query
-composer.GetVisualNodes(VisualQuery.Tagged("PlayerColored"));
+composer.GetVisualNodes(VisualQuery.Tagged("TeamTinted"));
 composer.GetVisualNodes(VisualQuery.AllExceptSlot(slotKey));
 composer.GetVisibleNodes(VisualQuery.All);               // LIVE visibility — see Gotcha 8
 composer.Effects;  // VisualEffectService for persistent-tint registration
@@ -88,7 +81,7 @@ composer.Effects;  // VisualEffectService for persistent-tint registration
 
 **Critical patterns:**
 - Default-item equip is `CallDeferred` from `_Ready` (parent tree may be locked at that point)
-- Slot ordering matters when consumers `Equip` synchronously from `_Ready` (HSM, HandMovementComponent) — those wins over the deferred default pass. The composer's `_GetConfigurationWarnings` flags missing `SyncMode = Master` slots
+- Slot ordering matters when consumers call `Equip` synchronously from `_Ready`; those calls win over the deferred default pass. The composer's `_GetConfigurationWarnings` flags a missing `SyncMode = Master` slot.
 - Atomic event firing: `Equip` clears the prior instance (firing `NodeRemoved` for each gone handle) BEFORE installing the new prefab and firing `NodeAdded` for each new handle. Subscribers querying inside event handlers see consistent state
 
 ### 2. CompositeAnimatorComponent — Time Sync
@@ -99,7 +92,7 @@ Master/slave architecture for multi-part characters:
 - Master sets duration; slaves follow normalized position
 - If Body at 50% of 2s animation, Hat jumps to 50% of its 4s animation
 - **Partial match**: Slots without matching animation name are silently skipped (intentional — allows independent animations)
-- **No default-master adoption**: `_masterAnimator` stays null until an explicit `SyncMode = Master` claim arrives. Reads are null-guarded everywhere (`?.HasAnimation`, early-return in `SyncChildToMaster`). The legacy `else if (_masterAnimator == null)` placeholder fallback was removed 2026-04-26 — see `feedback_default_adoption_lies_about_state.md`
+- **No implicit master**: `_masterAnimator` stays null until an explicit `SyncMode = Master` claim arrives. Reads must stay null-guarded.
 - **Master loss**: when the master unregisters, the composite elects an arbitrary remaining animator and re-issues `StartAnim(_lastRequestedAnim)` so subsequent sync calls compute against an actually-playing animator
 
 ### 3. AnimationOrchestrator — Directional Suffixes
@@ -131,10 +124,10 @@ service.UnregisterSprite(node);
 
 **Persistent tints** (set by gameplay code, layer over base):
 ```csharp
-EffectId id = service.TintByQuery(VisualQuery.AllExceptSlot(potionSlot), playerColor);
+EffectId id = service.TintByQuery(VisualQuery.AllExceptSlot(itemSlot), teamColor);
 service.RemoveTint(id);     // surgical removal — preserves other overlapping tints
 ```
-`TintByQuery` applies to current matches AND auto-applies to future-added matching handles via the service's internal `IVisualNodeProvider.NodeAdded` subscription. **This is the API to use for player color, status tints, sabotage flashes, and any "this color belongs to all matching nodes from now on" effect** — do NOT subscribe to `Composer.NodeAdded` and re-walk the composer per event (see `feedback_consume_new_apis_or_migration_is_incomplete.md`).
+`TintByQuery` applies to current matches and future matching handles through the service's `IVisualNodeProvider.NodeAdded` subscription. Use it for persistent identity, team, or status colors. Do not subscribe to `Composer.NodeAdded` and re-walk the composer per event.
 
 **Layering rule**: effective color = base × product-of-matching-persistent-tints. Multiplication is commutative, so registration order doesn't change the result. `RemoveTint` recomputes effective color for matched nodes — overlapping tints survive removal.
 
@@ -142,18 +135,18 @@ service.RemoveTint(id);     // surgical removal — preserves other overlapping 
 
 **Location**: `Jmodot/Implementation/Visual/Effects/VisualEffectController.cs`
 
-Central hub for transient timed effects (flash, tint pulse, freeze tint). Distinct from `VisualEffectService`'s persistent tints — controller effects have a finite duration and a tween.
+Central hub for transient timed effects such as flashes and tint pulses. Unlike `VisualEffectService` persistent tints, controller effects have a finite duration and a tween.
 
 **Inspector surface:**
 - `[Export] VisualComposer? Composer` — primary node source
 - `[Export] Node? Root` — fallback for single-sprite props (no composer)
 
 **Blend Modes:**
-- **Mix**: Multiply all effect colors together (red damage + blue freeze = purple)
-- **Override**: Highest priority wins completely (invincibility flash)
+- **Mix**: Multiply all effect colors together
+- **Override**: Highest priority wins completely
 
 **Effect Lifecycle:**
-1. `PlayEffect(VisualEffect)` → constructs `IEffectApplier` (today: `ModulateTweenApplier`), which owns the Godot `Tween` + `VisualEffectHandle` lifetime
+1. `PlayEffect(VisualEffect)` → constructs an `IEffectApplier`, which owns the Godot `Tween` and `VisualEffectHandle` lifetime
 2. Each frame: composite all active effect colors via single-pass foreach (no LINQ allocation) → apply to tracked sprites
 3. `FinalColor = BaseColor * EffectColor`
 4. On finish: `applier.End()`, remove effect, reset to base
@@ -161,8 +154,8 @@ Central hub for transient timed effects (flash, tint pulse, freeze tint). Distin
 **IEffectApplier**: future effect kinds (glow shaders, particles, gradients) ship their own appliers; the controller composes blend modes and tracks sprites.
 
 **Built-in Effects:**
-- `FlashEffect` — ON/OFF white flash cycles (hit feedback)
-- `TintEffect` — Gradual color shift via easing curve (damage, freeze)
+- `FlashEffect` — on/off flash cycles
+- `TintEffect` — gradual color shift through an easing curve
 
 **Node tracking:**
 - Subscribes to `Composer.NodeAdded` / `NodeRemoved` for incremental updates (no full re-scan per handle event)
@@ -207,55 +200,9 @@ queryA.Or(queryB)
 
 When `Rig` is null, the slot falls back to a recursive sprite walk (tagless, partless handles) and applies overrides to the first sprite found. Both paths use `VisualNodeAggregator.CollectSprites` for the recursive walk (no type-NAME string match — that bug was fixed in the refactor).
 
-### 8. SpellVisuals — Spell Visual Identity
+## Consumer-owned visual systems
 
-**Location**: `SpellArchitecture/Visuals/SpellVisuals.cs`
-
-Master configuration for a spell's complete visual identity:
-- `SpellBodyScene` — Root implements `ISpell` + `ISpellBodyVisuals`
-- `ChargeVisualScene` — Root implements `IChargeVisuals`
-- `OnCastParticle`, `OnHitParticle`, `OnDestroyParticle` — Intrinsic particles
-- `TieredVisuals` — Charge tier visuals (for Flexible charge mode)
-
-**Trait Integration**: Traits can swap the entire `SpellVisuals` resource → complete theme transformation.
-
-### 9. One-Shot Effects
-
-**Location**: `Visual/OneShot/`
-
-Burst animations triggered on spell lifecycle events:
-
-- `SpellOneShotEffect` — Simple animation burst, size scales from spell stats
-- `SpellOneShotHitboxEffect` — Animation + deals damage via hitbox
-- `DynamicExplosionOneShotEffect` — Multi-phase: flash → cloud → particles → dust
-
-**Explosion System** (`Visual/Explosion/`):
-- `ExplosionProfile` — Configuration resource
-- Phases run in parallel (not sequential)
-- Ground raycast for dust placement
-- Point cloud particle distribution with tier configs
-
-### 10. Bloom-Based Glow — Edge Emission
-
-**Location**: `Visual/Shaders/bloom_emitter.gdshader`, `Potion/Potion.cs` (`ConfigureGlowSprite`)
-
-Architecture for soft bloom halos around sprites (used on potions):
-
-1. **Main sprite** — No shader, renders normally with `Modulate = BaseColor`
-2. **GlowSprite** (same transform) — Custom ShaderMaterial writes to EMISSION at edges only
-3. **Godot bloom post-processing** — Extracts HDR pixels, Gaussian-blurs into soft halos
-
-**Shader approach** (`bloom_emitter.gdshader`):
-- `render_mode blend_add, depth_draw_never, cull_disabled` (transparent pass, no Z-fighting)
-- Opaque pixels → `discard` (main sprite handles these)
-- Transparent pixels near edges → sample neighbors, write `EMISSION = glow_color * energy * edge_strength`
-- Bloom blurs the edge emission into a soft halo extending beyond the sprite
-
-**Pulse animation**: Tween GlowSprite `modulate:a` (0.7↔1.0, looping Sine) for gentle bloom pulsing.
-
-**Critical**: StandardMaterial3D emission does NOT produce HDR on Sprite3D. Must use custom ShaderMaterial. `render_mode unshaded` ignores EMISSION — must use shaded mode.
-
-**Environment requirements**: `glow_hdr_threshold < 1.0`, explicit `glow_levels/1-5`, `glow_blend_mode = 1` (Screen).
+Ability identities, one-shot effects, bloom helpers, and authored visual data belong to the consuming project. Locate their roots through `skills/project_subsystems/SKILL.md`; do not copy another project's classes or folder layout into this framework reference.
 
 ## Conventions
 
@@ -263,7 +210,7 @@ Architecture for soft bloom halos around sprites (used on potions):
 ```
 Base: "run"
 Directional: "run_left", "run_up", "run_downRight"
-Style variant: "fire_run_left" or "run_left_fire"
+Style variant: "armored_run_left" or "run_left_armored"
 Fallback chain: "run_left" → "run" → (skip)
 ```
 
@@ -273,20 +220,20 @@ Fallback chain: "run_left" → "run" → (skip)
 - Never key full `frame_coords` in AnimationPlayer — conflicts with row selection
 
 ### Color Tinting
-**For permanent tints** (player color, sabotage tint, status overlay):
+**For permanent tints** (identity color, team tint, status overlay):
 ```
 gameplay code → effects.TintByQuery(query, color) → returns EffectId
 auto-applies to current AND future matching handles via NodeAdded
 remove via effects.RemoveTint(id) — preserves overlapping tints
 ```
 
-**For per-equipment base color** (sword vs lance, dye system):
+**For per-item base color**:
 ```
 VisualItemData.ModulateOverride → VisualSlotNode.ApplyOverrides
   → effects.RegisterBaseColor(sprite, color) + sprite.Modulate = color
 ```
 
-**For transient effects** (hit flash, freeze pulse):
+**For transient effects**:
 ```
 controller.PlayEffect(VisualEffect) → IEffectApplier.Begin (Tween + handle)
 each frame: Final = BaseColor * effectColor (mix product or override winner)
@@ -296,7 +243,7 @@ each frame: Final = BaseColor * effectColor (mix product or override winner)
 1. Author `SlotKey` `.tres` (one per logical slot — body, right_hand, etc.)
 2. Add `VisualSlotNode` children under the entity's `VisualComposer` node
 3. Wire `Key`, `SyncMode`, `IsOptional`, `DefaultItem` per slot in inspector
-4. For consumer code (HSM, HandMovementComponent, etc.), wire `[Export, RequiredExport] SlotKey ...SlotKey` to the same `.tres`
+4. Consumer code wires `[Export, RequiredExport] SlotKey ...SlotKey` to the same `.tres`
 
 ## Key Interfaces
 
@@ -315,17 +262,17 @@ each frame: Final = BaseColor * effectColor (mix product or override winner)
 | **Composition** | `VisualComposer.cs`, `VisualSlotNode.cs`, `SlotKey.cs`, `VisualItemData.cs`, `VisualRig.cs`, `VisualPartBinding.cs`, `VisualNodeHandle.cs`, `VisualQuery.cs` |
 | **Animation** | `AnimationOrchestrator.cs`, `CompositeAnimatorComponent.cs`, `AnimatedSprite3DComponent.cs`, `AnimationVisibilityCoordinator.cs` |
 | **Effects** | `VisualEffectService.cs`, `VisualEffectController.cs`, `IEffectApplier.cs`, `Appliers/ModulateTweenApplier.cs`, `FlashEffect.cs`, `TintEffect.cs`, `VisualNodeAggregator.cs` |
-| **Spell Visuals** | `SpellVisuals.cs`, `SpellOneShotEffect.cs`, `DynamicExplosionOneShotEffect.cs` |
-| **Data** | `Animation/AnimationLibraries/*.res`, `Animation/AnimVariantSources/*.tres`, `Visual/Wizard/SlotKeys/*.tres` |
+
+Consumer-owned visual data and effect classes live under paths declared in `skills/project_subsystems/SKILL.md`.
 
 ## Gotchas
 
-1. **Default-item equip is deferred**: `VisualComposer._Ready` schedules `EquipAllDefaults` via `CallDeferred`. Synchronous equips from HSM `OnEnter` and component `_Ready` (e.g., `HandMovementComponent`) fire FIRST. Master slot must explicitly claim via `SyncMode = Master` — relying on registration order is incorrect (placeholder-master fallback was removed). See `feedback_default_adoption_lies_about_state.md`.
-2. **Use TintByQuery for permanent tints**: don't subscribe to `Composer.NodeAdded` and re-walk the composer per event. The persistent-tint API exists for this exact case — see `feedback_consume_new_apis_or_migration_is_incomplete.md` for the bug shape this prevents.
+1. **Default-item equip is deferred**: `VisualComposer._Ready` schedules `EquipAllDefaults` through `CallDeferred`. Synchronous consumer equips fire first. A master slot must explicitly use `SyncMode = Master`; registration order is not ownership.
+2. **Use `TintByQuery` for permanent tints**: do not subscribe to `Composer.NodeAdded` and re-walk the composer per event.
 3. **Sprite sheet rows**: never key `frame_coords` as full vector in AnimationPlayer — VisualItemData's `SpriteSheetRowOverride` writes the Y component, AnimationPlayer keys only X.
 4. **Master animator**: only ONE `SyncMode = Master` per composite. The composer's `_GetConfigurationWarnings` flags the no-master case at edit time.
 5. **Time seeking**: `AnimatedSprite3D` uses `frame / FPS` for time conversion — mismatched FPS breaks sync.
 6. **Slot composition is `_Ready`-time only**: reparenting a `VisualSlotNode` away from a composer at runtime is unsupported — the composer keeps event subscriptions and slot dictionary entries until `_ExitTree`. Add `ChildExitingTree` handling if runtime composition becomes a need.
-7. **Push/Pop semantics**: `Push(item, AsAnimationIndependent)` saves the prior item AND its options; `Pop` restores both. The `AsAnimationIndependent` flag suppresses composite-animator registration for the duration of the push only — the body keeps animating normally during a `PotionAdd` overlay.
-8. **`GetVisualNodes(VisualQuery.VisibleOnly)` is not the live-visibility query — use `GetVisibleNodes(query)`.** `VisualQuery.VisibleOnly` matches `handle.IsVisible`, a snapshot taken when the slot built the handle; only `GetVisibleNodes` re-checks the node live. For any slot an `AnimationVisibilityCoordinator` drives, every handle is snapshotted hidden, so the `VisibleOnly` form returns an **empty set** with no error — measured on a coordinator-driven entity: every handle snapshotted hidden, `GetVisualNodes(VisibleOnly)` → 0 while `GetVisibleNodes(All)` returned the shown sprites.
+7. **Push/Pop semantics**: `Push(item, AsAnimationIndependent)` saves the prior item and options; `Pop` restores both. `AsAnimationIndependent` suppresses composite-animator registration only for the pushed item.
+8. **`GetVisualNodes(VisualQuery.VisibleOnly)` is not the live-visibility query — use `GetVisibleNodes(query)`.** `VisualQuery.VisibleOnly` uses the handle's creation-time visibility snapshot. `GetVisibleNodes` checks the node's current state. Animation-driven visibility can therefore make the snapshot query return an empty set without error.
 9. **Never size an attached visual off an arbitrary composer sprite.** A composer keeps every animation of every slot resident, and their frames span art regimes — hidden legacy frames can measure ~2× the shown body's height. A tree walk that takes the first (or tallest) `SpriteBase3D` is silently wrong by that factor. Measure only live-visible nodes; if none, return neutral rather than guessing.

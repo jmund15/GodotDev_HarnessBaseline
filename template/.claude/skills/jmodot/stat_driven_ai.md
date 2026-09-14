@@ -9,13 +9,13 @@ Stat-driven AI enables AI behavior parameters to be controlled by the stat syste
 
 ## AI Attributes
 
-Base attributes in `Global/Attributes/AI/` (the directory also holds tide-modifier `.tres` like `tide_eclipse_sight_x0p7.tres` — glob the dir for the current inventory):
+A consuming project authors its AI attribute Resources under the owning path declared by `skills/project_subsystems/SKILL.md`. Useful generic shapes include:
 
-| Attribute | File | Type | Description |
-|-----------|------|------|-------------|
-| `SightRange` | `sight_range.tres` | `float` | Perception/detection range in meters |
-| `ReactionTime` | `reaction_time.tres` | `float` | Decision delay in seconds |
-| `TurnRate` | `turn_rate.tres` | `float` | Steering strength in degrees/second |
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `SightRange` | `float` | Perception/detection range in meters |
+| `ReactionTime` | `float` | Decision delay in seconds |
+| `TurnRate` | `float` | Steering strength in degrees/second |
 
 ### Designer-Intuitive Values
 
@@ -123,7 +123,7 @@ A steering consideration that reads stat values to parameterize its behavior.
 
 ## Integration with Perception
 
-NOT implemented (as of 2026-07-04 — `SightRange` is consumed only by `StatDrivenConsideration3D`, tests, and a tide-debuff `.tres`; no PerceptionManager consumption. Re-verify: `Grep "SightRange" -g "*.cs"`). The intended integration pattern:
+A project may use an AI attribute such as `SightRange` to set sensor radius. Verify the current consumers before wiring it; the stat-driven steering types do not prove that perception reads the same attribute.
 
 ```
 PerceptionManager
@@ -137,4 +137,4 @@ AI decisions based on what's in range
 
 ## Test Coverage
 
-Suites: `Tests/Logic/AI/StatConsiderationTests.cs` (normalization, curves, inversion, edge cases) and `Tests/Logic/AI/StatDrivenConsideration3DTests.cs` (stat integration, defaults, range gating). Test counts drift — scan the suite (`Grep "\[TestCase\]" Tests/Logic/AI/Stat*.cs -c`) instead of trusting numbers written here.
+Locate the focused suites for `StatConsideration` and `StatDrivenConsideration3D`. Cover normalization, curves, inversion, edge cases, stat integration, defaults, and range gating; do not rely on a recorded test count.

@@ -37,7 +37,7 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 
 **Rule:** Nodes should interact via Interfaces, not concrete classes.
 
-- *Bad:* `public WarriorEnemy Target;`
+- *Bad:* `public ConcreteTarget Target;`
 - *Good:* `public IDamageable Target;`
 - *Implementation:* Use `IGodotNodeInterface` on components to expose the underlying `Node` when passing interfaces around.
 - *Adapter Conflicts:* When interface members conflict with Godot base class (e.g., `ICharacterController3D.IsOnFloor` vs `CharacterBody3D.IsOnFloor()`), use **explicit interface implementation**: `bool ICharacterController3D.IsOnFloor => _controller.IsOnFloor;`
@@ -48,7 +48,7 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 
 - *Why:* Semantic targeting is more flexible, self-documenting, and decoupled from physics configuration.
 - *Pattern:* Query with `uint.MaxValue` collision mask (all layers), then filter by `IIdentifiable.GetIdentity().Categories`.
-- *Example:* `TargetingCapability` filters targets by Category ("Wizard", "Entity") rather than checking collision layers.
+- *Example:* `TargetingCapability` filters targets by semantic categories such as "Hostile" or "Interactable" rather than checking collision layers.
 - *Benefit:* Adding a new targetable type only requires assigning the correct Category, not updating the collision matrix.
 
 ### Godot Groups vs Interfaces
@@ -69,9 +69,9 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 
 | Phase | Scans | Calls | Contract |
 |---|---|---|---|
-| 0 | `IBlackboardProvider` — *independently* of `IComponent` | reads `Provision` → `bb.Set` | Publishes component refs and lazy POCOs. **`Provision` MUST be idempotent** — it is evaluated more than once per entity lifetime (spell scenes run Phase 0 at `_Ready` and again at `Initialize`; pool reuse re-runs it; the retraction step below re-reads it), so cache lazy payloads on a field (`_x ??= new()`). A publisher may implement only this property; `IComponent` on top of it is ceremony when `Initialize` just sets `IsInitialized` and `OnPostInitialize` is empty — acceptable, but not the shape to copy. A component that provisions AND resolves real dependencies is the opposite case: it earns both. Reusable outside ENCI via `EntityNodeComponentsInitializer.RunPhase0(Node entity, IBlackboard bb)` (spell/beam bootstrap paths call it). Two providers on one key is a scene-authoring DEFECT, never intentional — last-writer-wins makes the entity silently inert and ENCI currently only Warns. Fix the scene: override the template node in place; never add a sibling with the same role. |
+| 0 | `IBlackboardProvider` — *independently* of `IComponent` | reads `Provision` → `bb.Set` | Publishes component refs and lazy POCOs. **`Provision` MUST be idempotent** — it may be evaluated more than once per entity lifetime, so cache lazy payloads on a field (`_x ??= new()`). A publisher may implement only this property; `IComponent` on top of it is ceremony when `Initialize` only sets `IsInitialized` and `OnPostInitialize` is empty. A component that provisions and resolves real dependencies earns both. Reusable outside ENCI via `EntityNodeComponentsInitializer.RunPhase0(Node entity, IBlackboard bb)`. Two providers on one key is a scene-authoring defect: last-writer-wins can make the entity silently inert. Fix the scene; never add a sibling with the same role. |
 | 1 | `IComponent` | `Initialize(bb)` | Resolve dependencies only. Unordered — **must not** subscribe to sibling component events and must not assume any sibling is initialized. |
-| 2 | components that returned `true` | `OnPostInitialize()` | Post-barrier: all siblings are initialized. **Subscriptions belong here**, and must be idempotent — ENCI calls this unconditionally for every component that returned `true`, so a second init pass re-subscribes. Carve-out: an `[Export]`-resolved dependency is a scene-load-time reference not subject to the ordering race, so subscribing to it in `_Ready` is correct (canonical: `VisualEffectController.Composer`). |
+| 2 | components that returned `true` | `OnPostInitialize()` | Post-barrier: all siblings are initialized. **Subscriptions belong here**, and must be idempotent because repeated initialization can invoke this phase again. Carve-out: an `[Export]`-resolved dependency is a scene-load-time reference, so subscribing to it in `_Ready` is correct. |
 
 - *Why the barrier:* Phase-1 order is scene-tree order, i.e. arbitrary. Cross-component wiring done in `Initialize` is an order-dependent race; in `OnPostInitialize` it is order-independent by construction. Producer/consumer races also dissolve by moving the published value to a Phase-0 `Provision`.
 - **Never self-call `OnPostInitialize()` from inside `Initialize`** — the phase driver invokes it after the Phase-1 barrier (ENCI for scene-authored components; `ComponentInitHelper` for components that delegate their lifecycle). The house tail of `Initialize` is `IsInitialized = true; Initialized(); return true;`.
@@ -97,10 +97,10 @@ Mechanical patterns live in path-scoped rules under `.claude/rules/` that auto-l
 
 | Category | Condition | Examples |
 |---|---|---|
-| Spell-pipeline runners / bodies | Parameters are computed per cast; there is no pre-cast entity BB for them to live on | spell behavior runners, spell physics bodies |
+| Invocation-scoped runners / transient bodies | Parameters are computed per operation; there is no persistent entity BB for them to live on | behavior runners, transient physics bodies |
 | Programmatic environment helpers | Constructed in code, never scene-authored under an entity root | `Jmodot/Implementation/Environment/CentralPullForceArea.cs`, `VelocityDragForceArea.cs` |
-| Run/floor-scope systems | Scope is an `IBlackboardGraph`, not one entity's BB | run/session-scope controllers and runtimes |
-| Service-injection interactables | The dependency is a session/run service pushed by an installer, not an entity sibling | interactables wired by a service installer |
+| Graph-scoped services | Scope is an `IBlackboardGraph`, not one entity's BB | session- or world-scope controllers and runtimes |
+| Service-injected consumers | The dependency is a scoped service pushed by an installer, not an entity sibling | consumers wired by a service installer |
 
 **Editor-time dependency visibility.** A component whose hard dependency is a *sibling node* should surface the gap in the editor via `_GetConfigurationWarnings()`. Use `ConfigWarnings.RequireEntitySibling<T>(this, message)` rather than hand-rolling `GetParent()` + a child scan — a bare parent check false-warns on any component nested below the entity root, which ENCI's descendant walk resolves fine. Concat `base._GetConfigurationWarnings() ?? []` so a future base's warnings are not swallowed. Godot only displays warnings from `[Tool]` scripts — so such a component takes `[Tool]` plus `Engine.IsEditorHint` early-returns in every lifecycle hook running game logic (`_Ready`, `_PhysicsProcess`, `ValidateRequiredExports`). This is exactly the selective-on-Nodes case in the *`[Tool]` Attribute Policy* below (editor-time code) — no policy exception. **A non-`[Tool]` `_GetConfigurationWarnings` override is dead code**; either promote the script or delete the override.
 
@@ -135,7 +135,7 @@ Two obligations follow:
 **Rule:** Do NOT bypass the Blackboard with direct-reference calls, even for single-consumer optimizations. The BB exists specifically so producers and consumers don't need direct references — producer `.Set()`s a key, consumer `.TryGet()`s it, they stay mutually ignorant.
 
 - *Anti-pattern:* Installer calls `component.AttachThing(thing)` directly "for efficiency" after setting `BB.Set(key, thing)`. Parallel-wires data through a direct channel that duplicates BB's job. Creates inconsistency (why does X use BB but Y use direct?) and doesn't scale (every new installer must enumerate dependent components).
-- *Correct pattern for late-population:* When a consumer needs a key that isn't yet on BB at Initialize time, use BB-mediated bounded-retry (polling with cap + Warning log on timeout). Preserves decoupling. Canonical example: `Crafting/IngredientCollectorComponent.cs` deferred-attach.
+- *Correct pattern for genuine late population:* use Blackboard-mediated bounded retry with a cap and a Warning on timeout. This preserves decoupling without hiding an unbounded wait.
 - *Why this matters:* Every direct-push shortcut is a coupling channel future code must reason about. The BB is the decoupling layer; bypassing it defeats its purpose.
 
 ### Typed-Owned State over Blackboard Flags
@@ -145,16 +145,16 @@ Two obligations follow:
 - *Why:* A BB flag is public-field-equivalent — any system can read or write it at any time, no scope guarantees, no lifecycle hooks. Setters and clearers must be paired by hand; missing a clearer produces silent desync. Owner-bound state (e.g., a HSM state that exists IFF the entity is in that state) has compile-time guarantees: state lifetime IS the data's validity window.
 - *Litmus:* *"Does this state have a meaningful owner whose lifetime IS the state's lifetime?"* Yes → owner-bound. No (genuinely cross-cutting, no natural owner) → BB.
 - *Corollary — state-bound attribution:* when chain-attribution data (or any time-windowed metadata) has a bounded window matching a state's lifetime, store it on the state, not in a parallel tracker component. State entry sets it; state exit clears it. No separate "tracker" component with parallel set/clear discipline.
-- *Concrete (Jmodot):* `LaunchedState.AttributedSource` (impulse-launch chain attribution) — state lifetime IS attribution lifetime; no `ImpulseAttributionTracker` component. `IControlLossState` capability query (per *Marker Interface as Capability Query* below) replaces ad-hoc `BB.IsLaunched`/`BB.IsStunned`/`BB.IsCaptured` flags.
+- *Concrete shape:* a response state's `AttributedSource` field exists only while that state is active; no parallel attribution-tracker component. A marker capability query (per *Marker Interface as Capability Query* below) replaces ad-hoc Blackboard flags for each concrete response state.
 
 ### Marker Interface as Capability Query
 
 **Rule:** When dispatching on N+ subtypes of a base type to extract a shared capability, prefer a **marker interface exposing that capability** over a pattern-match-switch over concrete subtypes. Consumers filter via `x is ICapability cap` and read `cap.Property`.
 
-- *Why:* Open/Closed. Adding a new subtype that should participate (e.g., a future `ExplosionResult` carrying force, a future `RagdollState` representing control loss) requires editing every consumer with the switch approach; the marker-interface approach is a one-line `: ICapability` addition with zero consumer changes.
+- *Why:* Open/Closed. Adding a new subtype that should participate requires editing every consumer with the switch approach; the marker-interface approach adds the capability at the subtype with zero consumer changes.
 - *Litmus:* *"If a third subtype were added next month, how many existing files would need to change?"* Switch → all consumers. Marker → zero.
-- *Concrete (Jmodot):* `IForceCarrier { Vector3 Direction; float Force; }` implemented by `DamageResult` + `KnockbackResult`; force receivers filter via `result is IForceCarrier c && c.Force > 0`. Symmetric: `IControlLossState { Node? AttributedSource; }` implemented by `CapturedState`, `LaunchedState`, future stun/knockdown states; AI/BT/spell systems query via `bb.StateMachine.ActiveLeafState is IControlLossState`. Both surfaced from the 2026-05-04 Wind Blast brainstorm.
-- *NOT the default — it's the MIDDLE of a three-way choice.* Capability query is right only when the capability is **optional**, the consumer is **decoupled**, and absence → a **uniform graceful no-op** (e.g. {{PROJECT_NAME}}'s spell-capability system: a `SpellEffect` calls `spell.GetCapability<ITargeting>()`; a body lacking it — `BeamScene.GetCapability` returns `default` for all — makes the effect skip). The two neighbours it gets mistaken for:
+- *Framework example:* an `IVectorCarrier` capability can expose a direction and magnitude across several result types; an `IRestrictedState` capability can expose attribution across several state types. Consumers query the capability instead of naming each subtype.
+- *NOT the default — it's the MIDDLE of a three-way choice.* Capability query is right only when the capability is **optional**, the consumer is **decoupled**, and absence means a **uniform graceful no-op**. The two neighbours it gets mistaken for:
   - **Polymorphic member** (virtual/interface method — NO `is` check): the behavior is **intrinsic to the object** and **total** — every variant must provide it. The tell is an `else` branch that is a *specific alternative behavior*, not a skip: `host is IKinematic k ? k.Reflect() : ApplyNative()` — `ApplyNative()` is real behavior, so all variants belong behind the member (e.g. a collision host enacting its own physics: kinematic velocity-reflect vs RigidBody Jolt-defer vs beam ray-reflect).
   - **Central semantic dispatch** (pattern-match switch in the consumer): variants are **data a central consumer interprets** — they don't act on themselves (e.g. `Damage`/`Heal`/`Stat`/`Status` effect application; pattern matching IS correct there).
   - *Litmus:* else-branch is a uniform skip → capability query; a specific alternative behavior → polymorphic member; "I'm a central interpreter of object-as-data" → dispatch.
@@ -191,16 +191,16 @@ Two obligations follow:
 
 **Anti-patterns:**
 
-- **Unbounded silent polling.** Every retry MUST be bounded (counter + cap) AND every cap-hit MUST log (Warning at minimum). Historical offenders: pre-2026-04-19 `IngredientCollectorComponent`, `NavigationServer3D` nav-map waits.
+- **Unbounded silent polling.** Every retry MUST be bounded and every cap hit MUST log at Warning or above.
 - **Direct push when BB mediation exists.** Parallel-wires data through two channels. See *Blackboard Decoupling Principle*.
 - **Registry / autoload access in constructor.** Godot native side not ready yet.
 
-**Canonical in-codebase examples:**
+**Canonical patterns:**
 
-- BB late-population bounded retry: `Crafting/IngredientCollectorComponent.cs` `_PhysicsProcess` (2026-04-19) — match-level installer genuinely can't write per-entity BB key at Wizard `_Ready` time. (Path matters: an unrelated `NPCs/AI/IngredientCollectorComponent.cs` shares the class name.)
-- Physics broadphase bounded retry: `HitboxComponent3D._pendingOverlapRetries` (small cap, const `PendingOverlapRetryFrames`) — silent miss acceptable when "miss" manifests as a missed hit, not missed state.
-- Known single-frame `CallDeferred`: `MatchController.PostSpawnSetup`, `CraftingInstaller.Install` (docblock).
-- `SetDeferred` property sync await: spell pool activation (`archive_pooling_spawn_sibling_gotchas.md`, auto-memory).
+- Blackboard late population: bounded retry only when install order cannot make the value ready.
+- Physics broadphase: a small bounded retry may be valid because monitoring changes take a few frames.
+- `CallDeferred`: use for a known one-frame scene-tree ordering boundary.
+- `SetDeferred`: await the documented number of process frames before reading the property.
 
 ## Lifecycle Patterns
 
@@ -210,17 +210,15 @@ Two obligations follow:
 
 - Each phase has a single responsibility and explicit ordering rationale.
 - *Convention:* Name phases numerically (`Phase0_RegisterSelf`, `Phase1_ResolveDeps`) or semantically.
-- *Examples:* `SpellBehavior` (9-phase Init, 6-phase Destroy), `EntityBootstrapper` (5-phase init).
+- *Examples:* a runtime object may separate registration, dependency resolution, behavior setup, and teardown into named phases.
 - *Why:* Makes ordering dependencies explicit and debuggable. A failure in Phase 2 immediately tells you that Phase 0-1 succeeded.
-
-**Phase-2 visibility gotcha (SpellBehavior):** `HealthDamageCouplingEffect.OnInitialize` runs at SpellBehavior Phase 2 and can only see `DamageEffect`s already in `Behavior.BaseCombatEffects`. DamageEffects added later (by other SpellEffect.OnCast hooks, trait-tier effects, or runtime composition) are NOT visible to HDC and won't be coupled to health. By design — HDC owns a snapshot, not a subscription — but trait-injected DamageEffects must either land in `BaseCombatEffects` ahead of HDC's Initialize or be wired through a separate scaling path. Concrete invariant: if a coupling target is added after Phase 2, the addition is silent and unscaled.
 
 ### Static Bootstrapper Pattern
 
 **Rule:** When multiple Node types need identical initialization but cannot share a base class (C# single-inheritance + different Godot physics body types), extract shared logic into a static bootstrapper.
 
 - *Pattern:* `DomainBootstrapper.Initialize(Node target, ...)` — takes the root node as parameter.
-- *Example:* `EntityBootstrapper` handles init for `CharacterBody3D`, `RigidBody3D`, and `StaticBody3D` environment entities.
+- *Example:* an entity bootstrapper handles init for `CharacterBody3D`, `RigidBody3D`, and `StaticBody3D` environment entities.
 - *Why not interfaces with default methods:* C# interfaces cannot access Godot scene tree APIs.
 
 ### Singleton Autoload Pattern
@@ -245,21 +243,19 @@ public override void _ExitTree()
 - *Two variants:*
     - **Node autoloads** (registered in `project.godot`): Use `_EnterTree`/`_ExitTree` lifecycle with `QueueFree()` guard.
     - **Static lazy singletons** (no scene tree): `Instance ??= new T()` with thread-safe lock. Use when the singleton doesn't need Node features.
-- *`[RequiredExport]` autoloads need a `.tscn` wrapper:* a Node autoload with an Inspector-wired `[Export]` cannot be a bare `.cs` autoload (no scene to hold the export value). Register a `<name>.tscn` (node + script + wired exports) as the autoload instead — see `overlay_stack.tscn`, `transition_orchestrator.tscn`, `settings_repository.tscn`.
+- *`[RequiredExport]` autoloads need a `.tscn` wrapper:* a Node autoload with an Inspector-wired `[Export]` cannot be a bare `.cs` autoload. Register a scene containing the node, script, and wired exports.
 - *Test isolation:* Include `internal static void ResetForTesting()` — autoloads persist across test cases. Without it, state leaks between tests.
-- *Examples:* `GlobalRegistry`, `EventBus`, `PlayerRegistry`, `SpellPoolManager`, `SpellCollisionCoordinator`.
 
 ## Extensibility Patterns
 
 ### Default Value Pattern
 
-**Rule:** When designing configurable components, default to the global registry for quick iteration, allow override for modular customization.
+**Rule:** When a component has a sensible project-wide default, resolve it through the project-owned registry while allowing an explicit per-instance override.
 
-- **Pattern:** `ConfigOverride ?? GlobalRegistry.DB.DefaultAttribute`
-- **Example:** `var sizeAttr = EffectSizeOverride ?? GlobalRegistry.DB.ProjectileSizeAttr;`
-- **Why:** Enables rapid prototyping (no configuration needed) while preserving flexibility for special cases.
-- **Application:** Use this pattern for any attribute/stat that has a sensible project-wide default but may need per-instance customization.
-- **Framework boundary caveat:** This pattern applies INSIDE the consuming project only. Inside Jmodot (framework) it inverts — Jmodot code MUST NOT reach into `{{PROJECT_NAME}}.Global.*`. Instead introduce a framework-agnostic static seam class in `Jmodot.Core.*` (example: `CombatFactoryDefaults` with nullable static fields) and have the game's autoload forward values into it at `_EnterTree`. The seam owns its own `Reset()` for test isolation so Jmodot-only tests don't depend on the consuming project's reset path.
+- **Pattern:** `InstanceOverride ?? ProjectDefaults.DefaultValue`
+- **Why:** Keeps common authoring terse while preserving explicit customization.
+- **Application:** Use only when a real project-wide default exists.
+- **Framework boundary caveat:** Inside Jmodot, the framework must not reach into `{{PROJECT_NAME}}.*`. Add a framework-owned configuration seam and let project startup populate it. The seam owns a reset path for test isolation.
 
 ### Lazy-Loading Registry Pattern
 
@@ -272,27 +268,26 @@ public override void _ExitTree()
 
 ### ConditionalWeakTable for Per-Instance Caching
 
-**Rule:** When extension methods or static helpers need per-instance mutable state for objects with dynamic lifetimes (spells, enemies), use `ConditionalWeakTable<TKey, TValue>` instead of `Dictionary`.
+**Rule:** When extension methods or static helpers need per-instance mutable state for objects with dynamic lifetimes, use `ConditionalWeakTable<TKey, TValue>` instead of `Dictionary`.
 
-- Entries are automatically removed when the key is garbage-collected — no memory leaks.
-- *Anti-pattern:* `Dictionary<ISpell, CachedData>` leaks entries for freed spells unless manually cleaned up.
-- *Example:* `SpellExtensions` uses `ConditionalWeakTable<ISpell, EffectSnapshotCache>`.
+- Entries are automatically removed when the key is garbage-collected.
+- *Anti-pattern:* `Dictionary<Node, CachedData>` leaks entries for freed nodes unless manually cleaned up.
 
 ### Composable Configuration Resources
 
 **Rule:** When configuration is shared across multiple effects/components, extract it as a standalone Resource.
 
 - **Pattern:** Create a `[GlobalClass] Resource` subclass with `[Export]` properties and behavior methods.
-- **Example:** `SiblingCollisionConfig` encapsulates collision mode + grace period + `ApplyCollisionExceptions()` method.
+- **Example:** a `RetryPolicyConfig` can hold delay, cap, and backoff behavior shared by several consumers.
 - **Benefits:**
-    - Reusable across different effect types (SpawnEffect, MultiShotEffect)
+    - Reusable across different consumer types
     - Designer-configurable via `.tres` files
     - Testable in isolation (logic methods can be unit tested)
 - **When to Apply:** If 2+ effects need the same configuration options, extract to a shared Resource.
 
 ### Resource Strategy Hierarchies
 
-**Rule:** When behavior varies by configuration, use an abstract `[GlobalClass] Resource` base class with concrete subclasses saved as `.tres` files. This is the project's **dominant extensibility pattern** (10+ hierarchies).
+**Rule:** When behavior varies by authored configuration, use an abstract `[GlobalClass] Resource` base class with concrete subclasses saved as `.tres` files.
 
 - *Shape:* Abstract base defines the contract (e.g., `abstract void Apply(...)`). Concrete subclasses implement specific behavior. Designers create `.tres` instances per variant.
 - *Composite variant:* When a single slot needs multiple strategies simultaneously, create a `Composite<Base>Strategy` that holds `Array<Base>` and iterates.
@@ -317,22 +312,14 @@ public override void _ExitTree()
 - *Litmus:* "Is this abstraction supposed to be how we always do X?" Yes → refactor it to fit. No → parallel may be fine.
 - *Distinction:* this is the third path beyond "extend the family" (works when the abstraction is already open) and "fork a parallel type" (the anti-pattern) — it applies precisely when extension is blocked by closedness.
 
-### Reaction & Status Responsibility Boundaries
-
-**Rule:** Two-axis division of post-impact effect logic. **Statuses** own *state on the affected entity* (tags + stat modifiers + lifecycle hooks bounded by their own duration). **Reactions** own *interactions between two specific elements / situations* ("X meets Y" → consequence). Choosing the wrong axis silently scatters logic — a "status that fires on collision with fire" smells like a reaction; a "reaction that lingers for 5s" smells like a status.
-
-- *Stacking semantics on the new path:* when multiple Reactions match the same event, **all matches fire** and any numeric multipliers compose **multiplicatively** (not additively, not first-match-wins). A trait granting 2x burn damage + a synergy granting 1.5x burn damage produces 3x, not 2.5x and not 2x.
-- *Collision responses as stat-driven dispatch:* prefer a `StatChainResponse` shape over per-response hardcoded behavior. Archetypes declare the **possibility space** of responses (which response types CAN fire); traits select WHICH responses fire via **stat amps** (a trait amping `BurnChance` from 0 to 1 enables the burn response). Data-flow is archetype → declared space → trait amps → realised dispatch. Adding a new response type requires authoring the response Resource + amping its enabling stat in the relevant trait, not editing the archetype's switch statement.
-- *Source:* 2026-04-30 Icicle plan derivations.
-
 ### Factory→Runner State Pattern
 
 **Rule:** Shared Resources must never cache per-instance mutable state. Multiple instances sharing the same `.tres` will overwrite each other.
 
 | Variant | When | Pattern | Examples |
 |---------|------|---------|----------|
-| **A: Struct** (preferred) | Pure computation, per-frame updates | `CreateState()` → struct. Consumer owns it. `Tick(state, delta)`, `Compute(input, state)`. | `AnimSpeedProfile`→`AnimSpeedState`, `SpellRotationProfile`→`RotationState` |
-| **B: Node** (pragmatic) | Timers, Tweens, signals, physics | `CreateRunner()` → Node. Consumer adds to tree. Runner holds internal state. | `LifetimeFactory`→`LifetimeRunner`, `CollisionFactory`→`CollisionRunner` |
+| **A: Struct** (preferred) | Pure computation, per-frame updates | `CreateState()` → struct. Consumer owns it. `Tick(state, delta)`, `Compute(input, state)`. | `SamplingProfile` → `SamplingState` |
+| **B: Node** (pragmatic) | Timers, Tweens, signals, physics | `CreateRunner()` → Node. Consumer adds to tree. Runner holds internal state. | `TimerFactory` → `TimerRunner` |
 
 **Default to Variant A.** Use B only when the runner genuinely needs Node features.
 
@@ -351,7 +338,7 @@ The Inspector is an API surface: exports and `.tres` fields carry the same contr
 
 **Rule:** Every `DestroyStrategy` implementation MUST invoke the `onFinished` callback exactly once.
 
-- Skipping the callback stalls the cleanup chain — the spell never returns to pool and the instance leaks.
+- Skipping the callback stalls the cleanup chain — the object never returns to its pool and the instance leaks.
 - *Common mistake:* Early-return paths that skip the callback.
 - *Testing:* Assert that `onFinished` is invoked in all code paths (success, failure, edge cases).
 
@@ -383,7 +370,7 @@ The Inspector is an API surface: exports and `.tres` fields carry the same contr
 
 **Heuristic:** if your interface signature lists every parameter the implementation needs, the module is shallow. Deep modules narrow the interface and absorb decisions internally.
 
-**{{PROJECT_NAME}}-specific signal:** a `*Helper` / `*Utils` / `*Service` / `*Manager` class with one or two static methods that each forward 90%+ of their arguments to a different class is almost always shallow. Either:
+**Signal:** a `*Helper` / `*Utils` / `*Service` / `*Manager` class with one or two static methods that forward most of their arguments to another class is usually shallow. Either:
 
 1. **Inline at the call site** (delete the indirection), OR
 2. **Deepen the module** — move more decisions inside, narrow the parameter list, take an `IBlackboard` / context object instead of 6 individual parameters.
@@ -407,13 +394,13 @@ The Inspector is an API surface: exports and `.tres` fields carry the same contr
 
 **Editor-only failure:** the cast fires in the EDITOR process; at runtime every script is its real type. **No GdUnit4 / runtime test can catch a cascade gap** — detection is static (the type graph) or headless-editor import.
 
-**Escape hatch (typed-as-base):** type the `[Export]` as base `Resource`/`Node` and cast at runtime (`prop as ISomeInterface`). Breaks the cascade at the cost of Inspector drag-drop type hints. Example: `StatusPlayerEffect.Factory` (`SpellArchitecture/PlayerEffects/StatusPlayerEffect.cs` — `[Export] Resource`, runtime-cast to `CombatEffectFactory`; full rationale in the *black-box* paragraph below). Static analysis can't follow this — the blanket-on-Resources policy + headless gate cover it.
+**Escape hatch (typed-as-base):** type the `[Export]` as base `Resource`/`Node` and cast at runtime (`prop as ISomeInterface`). This breaks the cascade at the cost of Inspector drag-and-drop type hints. Static analysis cannot follow this path; the blanket-on-Resources policy and headless gate cover it.
 
-**Jmodot is black-box (submodule):** the framework blankets `[Tool]` across its AI families but NOT everywhere (e.g. the `CombatEffectFactory` family is `[GlobalClass]` without `[Tool]`). Jmodot is a git submodule — its `[Tool]` gaps need a paired Jmodot-repo PR, not a {{PROJECT_NAME}} edit. When a {{PROJECT_NAME}} `[Tool]` Resource must `[Export]` a non-`[Tool]` Jmodot Resource, apply the **escape hatch** — type the field as base `Resource` and cast at runtime (external-ref does NOT help). Precedent: `StatusPlayerEffect.Factory` is typed `Resource` and cast to `CombatEffectFactory` at its use site, so the `[Tool]` setter never casts the (non-`[Tool]`) Jmodot `TickEffectFactory` it holds.
+**Jmodot is a black box to the consumer:** the framework blankets `[Tool]` across some families but not every Resource family. Jmodot-side gaps need a paired Jmodot-repo change, not a consumer edit. When a consumer `[Tool]` Resource must export a non-`[Tool]` Jmodot Resource, type the field as base `Resource` and cast at runtime; an external reference does not avoid the cast.
 
 **Enforcement (three layers — the cascade is editor-only, so these replace the test that can't exist):**
-- **Edit-time:** `pattern_enforcer.py` blocks writing a `[GlobalClass]` Resource without `[Tool]` (uses the `tool_resource_classes.txt` allowlist to recognize indirect Resource bases like `: SpellEffect`).
-- **Static gate:** `.claude/hooks/tool_cascade_audit.py` in `/regression_gate` (step 1c) — builds the typed-`[Export]` graph, fails on any {{PROJECT_NAME}} `[GlobalClass]` Resource missing `[Tool]`; emits `logs/tool_audit_inventory.md`. `apply_blanket_tool.py` fixes all flagged at once.
+- **Edit-time:** `pattern_enforcer.py` blocks writing a `[GlobalClass]` Resource without `[Tool]` and uses `tool_resource_classes.txt` to recognize indirect Resource bases.
+- **Static gate:** `.claude/hooks/tool_cascade_audit.py` in `/regression_gate` builds the typed-`[Export]` graph, fails on any consumer `[GlobalClass]` Resource missing `[Tool]`, and emits `logs/tool_audit_inventory.md`. `apply_blanket_tool.py` fixes all flagged at once.
 - **Headless gate:** `godot --headless --import` in `/regression_gate` (step 2b) — surfaces the actual `InvalidCastException`; catches Node, escape-hatch, and Jmodot-side gaps the static graph can't see.
 
 **After any `[Tool]` edit, fully restart the editor** before concluding a gap is real — hot-reload can leave a stale BiMap script registration that MIMICS a cascade gap (`archive_godot_build_gotchas.md`, auto-memory).
@@ -422,8 +409,8 @@ The Inspector is an API surface: exports and `.tres` fields carry the same contr
 
 | Feature | `enum` | `static class` `StringName` | `Resource` (.tres) |
 | :--- | :--- | :--- | :--- |
-| **Purpose** | Finite logic states | Keys / decoupled lookups | Game content / database |
-| **Workflow** | Finite state machines | Blackboard keys, registries | Items, spells, stats |
-| **Example** | `PlayerState.Idle` | `BB.CurrentTarget` | `Fireball.tres` |
-| **Use for** | FSMs, quality settings, directions | Decoupling systems; BB shouldn't know about your enum | Items, archetypes, categories, spells |
+| **Purpose** | Finite logic states | Keys / decoupled lookups | Authored data / database |
+| **Workflow** | Finite state machines | Blackboard keys, registries | Records, policies, configuration |
+| **Example** | `JobState.Idle` | `BB.ActiveJob` | `JobDefinition.tres` |
+| **Use for** | FSMs, quality settings, directions | Decoupling systems; BB should not know about your enum | Extensible authored records and categories |
 | **Avoid for** | Lists of content | Internal state logic | Simple boolean states |

@@ -56,20 +56,18 @@ public class MyResource : Resource, IGodotResourceInterface {
 
 ## JmoRng
 
-**Rule:** `JmoRng` is an **instance class** wrapping a seeded `Godot.RandomNumberGenerator` (xoshiro256++, contract-stable across Godot versions). Every consumer holds its own instance; same seed → same sequence, always. The pre-refactor static `JmoRng.Rnd` singleton was retired by `arch-seed-system.md`.
+**Rule:** `JmoRng` is an **instance class** wrapping a seeded `Godot.RandomNumberGenerator`. Every consumer holds its own instance; the same seed produces the same sequence.
 
-**Runtime requirement (empirically confirmed 2026-05-17):** `JmoRng` construction allocates a `Godot.RandomNumberGenerator`, whose constructor runs `Godot.StringName..cctor` via native — SIGSEGVs the test host without engine bootstrap. Tests that construct `JmoRng` MUST carry `[RequireGodotRuntime]` (analyzer `GdUnit0501` enforces). Pure-Logic call sites that need randomness MUST either:
-- **(a) inject the roll as a parameter** — `Lag.CalculateEffectiveDuration(duration, additiveVariation, float variationRoll)`. Caller (in a Godot-runtime-safe lifecycle hook like `OnEnter`/`_Ready`) supplies `_rng.GetRndFloat()`. Static helper stays pure-CLR-testable.
-- **(b) decouple via delegate** — `ModifierPool.GetRandom(category, available, Func<int, int> nextIndex)`. Production passes `_rng.GetRndInt` (method group); tests pass `new Random(seed).Next` (legitimate fixture seam per `feedback_system_random_test_fixture_carveout.md`) and stay pure-CLR.
+**Runtime requirement:** constructing `JmoRng` enters Godot-native code. Tests that construct it require `[RequireGodotRuntime]`. Keep pure-CLR code testable by injecting a roll, an index function, or another narrow random-source seam; production supplies the `JmoRng` method and tests supply a deterministic value or seeded host-language generator.
 
-Also forbidden by this rule: **eager field initializers** that allocate `JmoRng.NonDeterministic()` on `Resource`-derived types (gets called at Godot type-registration and at `.tres` load AND would SIGSEGV any pure-CLR test that constructs the Resource without calling the entry method). Field-init to `null!`; assign in the entry method.
+Do not allocate `JmoRng.NonDeterministic()` in eager field initializers on `Resource` types. Type registration and resource loading can run those initializers before the engine-backed context is ready. Initialize the field at the owning lifecycle boundary instead.
 
 **Construction (pick by need):**
 - `new JmoRng(int seed)` — explicit seed (deterministic).
-- `JmoRng.FromRawStreamName(string streamName, int parentSeed)` — deterministic factory taking a *raw* string; derives a per-stream child seed via `SeedManager.DeriveChild(parentSeed, streamName)`. {{PROJECT_NAME}} consumers prefer the strongly-typed registry, which pins each stream's key via `[SeedStreamKey]`: `SeedStreams.X.CreateRng(parentSeed)` / `SeedStreams.X.GetSeed(parentSeed)` (see `Global/SeedStreamsExtensions.cs`).
+- `JmoRng.FromRawStreamName(string streamName, int parentSeed)` — derives a deterministic child seed from a raw stream name. A consuming project may wrap this in a strongly typed stream registry; declare that owner in `skills/project_subsystems/SKILL.md`.
 - `JmoRng.NonDeterministic()` — Guid-seeded, **migration debt marker**. Every call site is a tracked backlog item to be replaced with a seeded construction. `Grep "NonDeterministic\("` for the current backlog.
 
-**Lifetime convention** (per `arch-seed-system.md §6`): per-scope materialization. Cache as a member field on the owning node/component, or as a method-local where appropriate. **Never** allocate per-call inside loops — drawing each sample from a fresh `NonDeterministic()` instance breaks xoshiro256++ spectral guarantees. **Never** use a static singleton `JmoRng` (the anti-pattern the audit retired).
+**Lifetime convention:** materialize one RNG per owning scope. Cache it on the owning node/component, or keep it method-local when the whole sequence lives in one call. Never create a fresh non-deterministic instance for each sample, and never share one static RNG across independent consumers.
 
 **Instance methods** (full signatures in `<summary>` XML on `Jmodot/Implementation/Shared/JmoRng.cs`):
 - `GetRndFloat()` — float in [0, 1)

@@ -10,7 +10,7 @@ Mechanical patterns for writing or editing `.cs`: lifecycle ordering, nullabilit
 ## Core Conventions (project-level)
 
 - **Pure functions** wherever possible. **Control flow:** no nested if/else, early returns, ALWAYS brackets `{}`.
-- **Logging:** `JmoLogger.Info/Warning/Error`, never `GD.Print`. Log STATE CHANGES, not state. `JmoLogger.Error` fails tests only in suites installing `JmoLoggerSpy` (`Tests/Framework/JmoLoggerSpy.cs`) — opt-in; engine ERROR lines never fail tests.
+- **Logging:** `JmoLogger.Info/Warning/Error`, never `GD.Print`. Log STATE CHANGES, not state. `JmoLogger.Error` fails tests only in suites installing a logger-spy helper — opt-in; engine ERROR lines never fail tests.
 - **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT; never cite task/PR/"Phase X"/dates/CLAUDE.md rules; never project history (vault-only, unlinked from source). Litmus: *"If I delete this, will a maintainer 6 months out make a wrong decision?"* No → don't write it. Doc-only commits to recent code are a smell; cut over clarify. **A sanctioned WHY is 1–3 lines stating the invariant itself** — build-up, the bug it prevents and alternatives go in the commit message.
 - **Trust radius — a `///` is authoritative about its own member and nothing else.** `<summary>` states that member's contract; `<remarks>` carries longer supplemental explanation. Nothing validates doc comments, so outside the radius they are unowned claims that rot silently.
 - **Obligation, not observation.** *Obligation* = a constraint a caller must honour, or a guarantee the member makes: invariants, call-ordering, required configuration, failure modes, what it throws. Cross-file by nature, REQUIRED on seams (`design_litmus.md` #7); a collaborator-owned constraint (a driver's phase ordering, a base's contract) is still an obligation. *Observation* = a report on code elsewhere: who calls this, what another implementation does, whether two bodies match, what happened historically. **Litmus: must a caller honour this to use the member correctly?** Yes → obligation, write it richly. No → observation, cut it.
@@ -19,6 +19,8 @@ Mechanical patterns for writing or editing `.cs`: lifecycle ordering, nullabilit
 - **`<summary>` on `[Export]` is softer** — it surfaces on IDE hover and as the Inspector tooltip via Jmodot's `Tools/DocTooltips/` (wired by `addons/csharp_doc_tooltips`); the engine supplies none (`CSharpScript::get_documentation()` is an empty stub at 4.7.1). Put the `///` above **ALL** the member's attributes, `[ExportGroup]` included — between them it is orphaned (CS1587), dropped from the XML sidecar, and the tooltip silently vanishes. Hovering the export's VALUE WIDGET shows the summary; its label shows nothing. `#if TOOLS` setters need no `///`.
 - **Repair on sight.** Fix a false or dangling doc comment in the turn you find it (`feedback_dont_defer_immediately_addressable.md`). Enforced at commit by the `DOCS` check in `/regression_gate`; full-tree sweep: `.claude/scripts/doc_warning_check.sh`.
 - **Strings:** prefer `StringName` for Godot identifiers (node paths, signal/animation names).
+- **A helper a second consumer needs moves to the family home** (`NodeExts`, `JmoMath`), never copied privately; match that family's conventions and migrate the existing hand-rolled call sites (`feedback_shared_helper_belongs_in_the_family_home_not_duplicated_locally`).
+- **Name a nullable-returning helper `Find*` or `Try*`, never `Get*`.** `Get*` reads as guaranteed resolution and callers skim past the compiler warning; the name is the cheapest enforcement of the contract, at the read site (`feedback_nullable_return_naming`).
 
 ## Lifecycle & Constructors
 
@@ -40,8 +42,8 @@ Godot has no typical C# constructor, so properties start null until `_Ready()`.
 
 **Pattern:** `[RequiredExport]` + `this.ValidateRequiredExports()` in `_Ready()`:
 ```csharp
-[Export, RequiredExport] public SpellArchetype Archetype { get; set; } = null!;
-[Export] public SpellArchetype? OptionalOverride { get; set; }  // No RequiredExport = optional
+[Export, RequiredExport] public AbilityArchetype Archetype { get; set; } = null!;
+[Export] public AbilityArchetype? OptionalOverride { get; set; }  // No RequiredExport = optional
 
 public override void _Ready()
 {
@@ -50,11 +52,7 @@ public override void _Ready()
 ```
 `= null!` suppresses IDE warnings at every access site; `[RequiredExport]` throws `NodeConfigurationException` (Nodes) / `ResourceConfigurationException` (Resources) with a clear message when the Inspector slot is empty; manual null checks instead would draw "unnecessary null check" warnings and boilerplate.
 
-**Rule:** Every `[Export] = null!` **MUST** use `[RequiredExport]`:
-- Declare: `[Export, RequiredExport] public Type Prop { get; set; } = null!;`
-- Validate: `this.ValidateRequiredExports()` as first line in `_Ready()` (Nodes) or during initialization (Resources)
-- **Resources:** works on `Resource` subclasses too (via `ResourceExts`, global namespace); call during initialization since Resources have no `_Ready()`.
-- Enforced by `pattern_enforcer.py` — `[Export]...= null!` without `RequiredExport` is blocked.
+**Rule:** every `[Export] … = null!` pairs with `[RequiredExport]` and one `this.ValidateRequiredExports()` — first line of `_Ready()` for Nodes, during initialization for Resources (which have no `_Ready()`; `ResourceExts`, global namespace). `pattern_enforcer.py` blocks the unpaired form at edit time.
 
 ## Defensive Patterns
 
@@ -107,11 +105,14 @@ NaN in a threshold comparison **inverts** the gate rather than breaking it — `
 
 *Litmus:* for each float guard, ask what happens when the value is NaN — if the answer is "the branch I wrote to be safe doesn't run", the test is inverted. Sibling of the range guard above.
 
+### Guard Symmetry Across Siblings
+**Rule:** a guard added to one of N parallel siblings goes on all of them or none. The unguarded sibling degrades to a quiet wrong state instead of a loud error; grep the sibling set for the same entry shape and replicate (`feedback_symmetric_guards_across_siblings`).
+
 ## Signals vs Events
 
 - **Gameplay Logic:** use **C# native events** (`public event Action`) — faster, type-safe, refactor-friendly. Do NOT use Godot Signals for game logic.
 - **UI / Engine Interaction:** use **Godot Signals** (`[Signal]`, `.Connect`) — required for UI Nodes (`Button.Pressed`) and Area3D detections. Connect in `_Ready`, or via Editor if strictly visual.
-- **Cross-Cutting vs Domain Events:** a centralized `EventBus` autoload carries events spanning multiple unrelated systems (UI notifications any subscriber might care about); domain registries (`PlayerRegistry`, `IngredientRegistry`) carry events scoped to one subsystem. Prefer domain registries; EventBus only for events belonging to no single domain.
+- **Cross-Cutting vs Domain Events:** a centralized `EventBus` autoload carries events spanning multiple unrelated systems (UI notifications any subscriber might care about); domain registries (`ActorRegistry`, `ItemRegistry`) carry events scoped to one subsystem. Prefer domain registries; EventBus only for events belonging to no single domain.
 
 ## Exports & Inspector
 
@@ -150,7 +151,7 @@ Tests and production share one `.csproj`, so `internal` provides no access contr
 #region Test Helpers
 #if TOOLS
 internal void SetDamageMultiplier(float value) => DamageMultiplier = value;
-internal void _TestSimulateHit(ReactionContext ctx) => HandleHit(ctx);
+internal void _TestSimulateHit(HitContext ctx) => HandleHit(ctx);
 internal event Action<PackedScene, Vector3>? _TestOnVFXSpawnRequested;
 #endif
 #endregion
@@ -158,7 +159,7 @@ internal event Action<PackedScene, Vector3>? _TestOnVFXSpawnRequested;
 - *Why `#if TOOLS`:* Godot's `Debug` configuration (editor, `dotnet build`, `dotnet test`) defines `TOOLS`, NOT `DEBUG`, so those members are available in development and stripped from exported builds. **Do NOT use `#if DEBUG`** — it is NOT defined during `dotnet test` in Godot. Public setters instead would break encapsulation in the API surface.
 - *Production invocations:* a production site invoking a test-hook event (`_TestOnVFXSpawnRequested?.Invoke(...)`) MUST also be wrapped in `#if TOOLS`, or export builds get a dangling reference.
 - *Production usage:* a "test helper" setter called from production code is NOT a test helper — move it out of `#region Test Helpers` into the regular API.
-- *Route observable-state setters through the production pathway:* when production mutates a property via a method that fires events/signals (`StartPhase(p)` → `RunPhaseChanged`), the helper calls that method rather than assigning directly. Direct mutation splits semantics silently — tests see the new value without the side-effects, and subscribers depending on them don't fire. Either route through the production method, or rename to `SetForTest_BypassEvents(...)` so the divergence is intentional and grep-visible.
+- *Route observable-state setters through the production pathway:* when production mutates a property via a method that fires events/signals (`SetMode(m)` → `ModeChanged`), the helper calls that method rather than assigning directly. Direct mutation splits semantics silently — tests see the new value without the side effects, and subscribers don't fire. Either route through the production method, or rename to `SetForTest_BypassEvents(...)` so the divergence is intentional and grep-visible.
 - *Enforcement:* run `/audit_test_accessors` periodically to catch unguarded methods and dangerous production callers.
 
 ## Builder Pattern for Test Fixtures
@@ -166,13 +167,13 @@ internal event Action<PackedScene, Vector3>? _TestOnVFXSpawnRequested;
 **Rule:** complex test setup uses a fluent Builder: static `Create()` → `.With*()` → terminal `.Build()` or `.Execute()`.
 - Eliminates duplicated setup code and makes test intent readable at a glance.
 - *Location:* `Tests/Framework/Builders/`
-- *Example:* `GameplayScenarioBuilder.Create().WithIngredients(...).WithSynergies(...).CraftSpell()`
-- *Note:* a Builder in production code is rarely needed — `SpellCrafter` and factory classes already serve this role.
+- *Example:* `ScenarioBuilder.Create().WithInput(...).WithExpectedOutput(...).Execute()`
+- *Note:* a Builder in production code is rarely needed when an existing factory already owns construction.
 
 ## Touchpoints
 
 - `pattern_enforcer.py` — hook enforcing the `[Export] = null!` + `[RequiredExport]` pairing.
-- `Tests/Framework/Builders/GameplayScenarioBuilder` — canonical Builder example.
+- `Tests/Framework/Builders/ScenarioBuilder` — representative Builder shape.
 - Sibling rules on `**/*.cs`: [`csharp_lsp.md`](csharp_lsp.md) for symbol navigation; [`jmodot_utilities.md`](jmodot_utilities.md) for Jmodot utilities (NodeExts, JmoRng, JmoMath, Map, configuration exceptions, IComponent gotcha).
 - Sibling rule on `Jmodot/**/*.cs` only: [`jmodot_framework_authoring.md`](jmodot_framework_authoring.md) for 2D/3D parity, framework boundary, static seam pattern.
 - Companion skill: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) for design-time decisions (Resource Strategy Hierarchies, DI, Marker Interfaces).

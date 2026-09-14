@@ -20,7 +20,7 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 
 | Operation | Tool |
 |---|---|
-| Read a vault file | `Read` on the path — synthesis-shaped reads route to `read_files` (CLAUDE.md §9) |
+| Read a vault file | `Read` on the path — synthesis-shaped reads route to `read_files` (CLAUDE.md §Tool Routing) |
 | Search the vault | `Grep` (literal) / `semantic-search` (natural language) |
 | List vault files | `Glob` |
 | Write / overwrite / append | `Write` / `Edit` — confirmed safe on a doc open in the Obsidian app (writes propagate, no conflict prompt) |
@@ -32,12 +32,12 @@ MCP tool names verified against the live server 2026-08-06: `obsidian_read_note`
 
 > Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — but `obsidian_update_note` has no real advantage there (both land on disk; the unsaved buffer conflicts either way). In practice the agent is directed, not hand-editing the same file simultaneously.
 
-## Vault taxonomy — live vs legacy (as of 2026-07-04)
+## Vault taxonomy — live vs legacy
 
-- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
-- **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.
-- The current design bible is the repo skill `game_vision`, not a vault doc — vault searches for "vision" find only the deprecated PvP-era doc under `Claude/Archived/`.
-- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (schema + append rules: `_brainstorm_shared/common.md` §8). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.
+- **Live project surface:** `<vault>/DevProjects/{{PROJECT_NAME}}/Claude/` (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/DevProjects/Jmodot/Claude/`. Agent reads and writes land here.
+- **Legacy folders:** content outside those `Claude/` roots is not current by location alone. Treat it as read-only history unless the project registry or a live doc links to it. If the named source for a formula or design rule is missing or empty, ask the user; never infer the value from legacy files.
+- The current project design bible is the repo seed skill `game_vision`, unless the consumer project explicitly names another owner.
+- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries `decisions.md` beside `ideas.md`, `arch*.md`, and `roadmap.md`. `_brainstorm_shared/common.md` §8 owns its schema and append rules. Keep it through doc-save; never mirror it into `.claude/scratch/`.
 - **`Claude/Research/`** — `/research` artifacts, transient by design. Frontmatter carries `expires-with:` (engine/library version); stale the moment that version moves — re-run or delete, never edit in place. Durable findings promote to cold auto-memory or the design doc first.
 
 ## `obsidian_search_replace` — literal line-ending matching
@@ -60,7 +60,7 @@ All cross-doc references **MUST** be wikilinks — never plain text, bold, or in
 
 **Common verbatim pitfalls** — all three fail SILENTLY (anchor falls through to file-top, no error):
 - `## Section N — Title` headings: keep BOTH the `Section ` prefix AND the ` — ` em-dash. `[[doc#Section 6 — Migration Plan]]` resolves; `[[doc#6 Migration Plan]]` does not.
-- `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — EncounterPersistence × BBScope Mapping]]` resolves; `[[doc#1.4 EncounterPersistence × BBScope Mapping]]` does not.
+- `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — Persistence × Scope Mapping]]` resolves; `[[doc#1.4 Persistence × Scope Mapping]]` does not.
 - **Parts in roadmap.md tables are NOT headings.** `[[other-roadmap#Part Name]]` will never resolve regardless of capitalization. Cross-roadmap Part references use file wikilink + prose: `[[../folder/roadmap\|folder]] § "Part Name"` (see `_brainstorm_shared/common.md` §6.8). Intra-roadmap Part references use `[[#Parts\|Part Name]]` (links to the `## Parts` heading, displays the Part name).
 - A single Part / claim that spans 2+ design-doc sections needs 2+ wikilinks joined by ` + ` — fabricating `#A and B` joined anchors never resolves.
 

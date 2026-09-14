@@ -25,6 +25,8 @@ The mechanism layer for delegating work: `/delegate` is the canonical route for 
 
 **Litmus:** *can I enumerate the jobs now?* Yes → `/delegate`. No → one exploratory `Agent`, then `/delegate` over what it found. Direct Workflow remains for fixed-panel commands and workflow authoring. A recurring shape becomes a command invoking `Workflow({scriptPath})`. A nested command that fans out is denied by `dispatch_mechanism_guard.py`; the main session owns the fan-out.
 
+A denied first attempt does not change that verdict. Load the missing canon and re-issue the selected mechanism. If Workflow approval is absent, ask the user; never downgrade enumerable jobs to a direct Agent.
+
 **Fixed panels are floors, not ceilings.** A command's prescribed lens set always runs; extend it with bespoke lenses when the risk profile warrants, each naming the concrete failure mode it hunts.
 
 **Non-destructive fan-outs run as multi-model arms.** Exploration, plan drafts, plan-check and review lenses dispatch one Anthropic arm plus each available sidecar model (`python3 .claude/tools/model_registry.py available`; sidecar lenses take `-S <schema>` + `-P` so a compaction auto-resumes), and each arm's outcome lands in the dispatch ledger so `/orchestration_metrics` can contrast them; execution under a converged spec stays single-arm.
@@ -52,19 +54,21 @@ Related failures (one investigation, one fix; parallelize only the fix-write); s
 
 ### Sizing the width
 
-**Width is bounded by integration cost.** Read-only lanes integrate for free — width bounded only by spend and the cap. Write-parallel lanes integrate superlinearly — keep to a handful; one strong builder plus running critics beats six builders.
+**Width is bounded by integration cost.** Read-only lanes still cost reconciliation, verification and parent context. Retain required lenses and independent review; add width for distinct coverage, not because merging prose appears free. Write-parallel lanes also pay conflict resolution.
 
 ## 3. The Dispatch Procedure (manual `Agent`, legacy fallback)
 
 1. Write each agent's exact scope; verify no dependency on another's output.
 2. Self-contained tasks — no mid-flight context requests.
 3. Pin model per agent (§5).
-4. Dispatch all lanes in ONE message. **Block** (`run_in_background: false`) when your next action needs a lane's result. **Background** when the lanes are independent and you have work for the interval: the runtime backgrounds by default and notifies on completion, and `SendMessage` continues a lane with its context intact. Never poll for a result you will be notified about. Consume a backgrounded lane by its artifact (`args.spillDir`), never by liveness — the `[killed]` reaping measured for **Bash** `run_in_background` is unattested here, and an artifact check is correct either way. Backgrounded `Agent` lanes carry no effort pin and no PINS row: say what you are trading before you dispatch.
+4. Dispatch all lanes in ONE message. When your next action needs the result, wait for its completion notification; do not pass an unsupported blocking flag. **Background** when the lanes are independent and you have work for the interval: the runtime backgrounds by default and notifies on completion, and `SendMessage` continues a lane with its context intact. Never poll for a result you will be notified about. Consume a backgrounded lane by its artifact (`args.spillDir`), never by liveness — the `[killed]` reaping measured for **Bash** `run_in_background` is unattested here, and an artifact check is correct either way. Backgrounded `Agent` lanes carry no effort pin and no PINS row: say what you are trading before you dispatch.
 5. Integrate: dedupe by `file:line`, reconcile contradictions, verify with the suite if fixes landed.
 
 ## 4. Agent Prompt Structure
 
 Focused (one deliverable) · self-contained (context INLINE — orchestrator pushes, agents never pull) · exact output format (JSON / table / one-line verdict) · no coordination implied · **verification in the FOREGROUND, report in the same turn** (a delegate's own **Bash** test run — the `[killed]` reaping is measured for Bash `run_in_background`; whether it reaches Agent lanes is unattested (assessment R3, probe in C2); artifact consumption is correct either way) · **never widen its own permissions** — a tool denial is a STOP, reported under `couldNotSatisfy`; re-attempting a refused edit through another mechanism (Bash `sed`/`python` after `Edit` denial) is an auto-mode bypass · **every user-stated exclusion travels in CONSTRAINTS** (docs not to read, sources not to use, folders not to write) — delegates and `write_doc` (`include_session_chat=false`, `reference_files=[]`) inherit nothing from chat.
+
+**Check load-bearing premises at each handoff.** Mark supplied claims as unverified until checked against their source and local inputs. A source quote alone does not prove applicability. Preserve known values; reject invalid inferences even when the resulting value is unknown. Reconcile conflicting findings against evidence, not vote counts.
 
 **Root-cause investigation/fix lanes embed `debugging` §The Recurrence Law** (subagents never auto-load skills): the spec carries evidence-before-hypothesis and the discriminating-evidence bar, and a lane returning a fix without that evidence is rejected at review, not merged.
 
@@ -129,10 +133,10 @@ First-turn input tokens, identical trivial prompt (Anthropic transports):
 - **Each rung ≈1.4× the one below, within one model** (measured on opus; re-sweep per model — level names do not map across models) — pull effort before tier; trading tier crosses a price ratio and buys verification work.
 - **On a SIDECAR model, effort can gate engagement, not depth.** An investigative lens (review, red-team, exploration, root-cause) pins the vendor's top rung: below it, a lens answers from its inlined context and never opens a file — measured on Luna, 3 turns and 0 tool calls at `medium` against 79 tool calls and 5 findings at `max`, same input. Anthropic rungs still buy steps within an already-engaged process; do not port one model's calibration to another (ladder row owns each cell).
 - **A sharp mandate substitutes for effort on sub-architectural inputs** — a lens's named failure mode does the work; on architecturally-loaded plans it does not, and executor-tier `high` finds what default-tier `medium` misses.
-- **Compare the read set against the ARM's context window, not against the input's size.** A row with a quarter-million-token window compacts partway through a sweep a million-token row would finish in one pass, so the same mandate is cheap on one and mid-run on another; `model_registry.py context-window <id>` gives the number. Compaction is survivable, not degrading — `sidecar_fanout.py` sends `-P` always and `-S` on every review shape, and with both the arm resumes into its structured deliverable. Without `-S` it resumes into prose, which is a dispatch error and never the row's ceiling.
+- **Size the read set against the arm's usable context.** `model_registry.py context-window <id>` supplies the catalog limit, not measured request headroom. Compaction can lose evidence. `sidecar_fanout.py` supplies `-P` and review schemas for structured recovery; neither proves preserved coverage. After resume, verify required inputs and decisions before accepting the result.
 - **Bounded-ambiguity stages hard-set effort in the script** (judges, verifiers, extraction); per-invocation stages (arms, executors) take a script default plus an `args` override that carries a named justification.
 - **Unsure between `low` and `medium` → `medium`.** Never characterize a tier from one observation; tier claims need the `/eval_dashboard` floor.
-- **Before pinning, check `.claude/orchestration_candidates.json`** — a listed shape runs one rung below default on its next dispatch (`/orchestration_metrics` *Over-pin candidates*).
+- **Before pinning, check `.claude/orchestration_candidates.json`.** Candidates are advisory, not an automatic downgrade. `/orchestration_metrics` *Over-pin candidates* owns the quality and complete-task evidence needed to change a default.
 
 ## 5b. Budget, Availability & Transport
 

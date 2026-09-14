@@ -38,6 +38,19 @@ above had 22 cases and not one of them read the file. A proof classifies an exit
 {0, 2}, or a traceback, as CRASH — never as allow: a hook that cannot import passes a proof that
 only asks "was it denied?".
 
+`python3 .claude/scripts/harness_tests.py` runs every proof and stamps the tree per file, so a peer's
+edit to an untouched hook does not stale your commit. `git_guardrails.py` denies: a commit touching
+`.claude/{hooks,tools,scripts,workflows,tests}` or `.claude/settings.json` without a fresh stamp; a
+staged `hooks/`/`tools/` `.py` without a git-TRACKED `tests/test_<name>*.py` proof (`.claude/tests/`
+is gitignored — `git add -f` it); a `merge`/`cherry-pick`/`revert` bringing harness content in
+without `--no-commit`. `HARNESS_ALLOW_UNSTAMPED_HARNESS=1 git commit …` (inline prefix) bypasses the
+stamp — for a commit that repairs the runner itself, never for a hurry.
+
+**Every commit guard parses the command through `hooks/_git_commit.py`** (its docstring lists the
+bypass shapes it closes). A `"git commit" in cmd` check re-opens every one of them. Order: `git add` new files
+(`.claude/tests/` is gitignored — `-f`), run the stamp, then commit in a SEPARATE Bash call — the hash
+covers the tracked set, and the guard reads the command text before a chained stamp can run.
+
 ## Unknown values fail CLOSED, on the safe side of the comparison
 
 A lookup with a permissive default (`WIDTH.get(tier, 2)` where 2 means "widest") turns an unrecognized

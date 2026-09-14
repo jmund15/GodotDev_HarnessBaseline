@@ -36,7 +36,7 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 - "should we build Y? what would that look like?"
 - "let's design X" / "design X" (when candidates exist)
 - "I want to design X but need to think it through"
-- "design a stamina system for the wizard" (or any new-system request with candidates)
+- "design a stamina system for the player" (or any new-system request with candidates)
 - "what would Z look like architecturally?"
 - "we need a Z system but I'm not sure how to structure it"
 
@@ -103,7 +103,7 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 **Key invariants:**
 - Plan Mode is a **Claude Code built-in**, not a local skill. This skill describes the *handoff*, not Plan Mode internals.
 - The user invokes Plan Mode (or chooses inline implementation). This skill does NOT enter Plan Mode for them.
-- A Plan Mode plan should reference the design doc AND the corresponding Part on roadmap.md (e.g., *"Implements Part 'Foundation+Refactor' per `BrainstormingDesigns/2026-04-29-stamina-system/arch.md#session-1`"*).
+- A Plan Mode plan should reference the design doc AND the corresponding Part on roadmap.md (e.g., *"Implements Part 'Foundation+Refactor' per `BrainstormingDesigns/YYYY-MM-DD-stamina-system/arch.md#session-1`"*).
 - Plan Mode's first action must be **bounded file enumeration** — if files can't be enumerated, Plan Mode HARD-STOPS (per Step 5 Plan Mode handoff requirement).
 - An `ideation-complete` idea-bank doc upstream is GENUINELY useful context — load it during §1 so the approaches step (Step 4) draws from a curated pool rather than generating candidates from thin air.
 
@@ -165,7 +165,7 @@ See [`common.md §5.1`](../_brainstorm_shared/common.md) — three placements (s
 
 This step **applies the discipline documented in [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Coupling & Discovery* sections (*Node Retrieval & Coupling*, *Interface Usage*)**. Don't restate the rules; surface them as a step in the design process:
 
-- **First move:** run `mcp__plugin_semantic-search_semantic-search__search` against the relevant abstraction. Works for known type names (`"BBDataSig"`, `"IIdentifiable"`, `"PoolableProjectileBehavior"` — returns the class declaration in one shot) AND for fuzzy domain queries (`"synergy resolution"`, `"effect lifecycle"`, `"ingredient trait composition"`). Especially useful for abstractions whose names don't follow `abstract*` / `I*` conventions. See CLAUDE.md §9.
+- **First move:** run `mcp__plugin_semantic-search_semantic-search__search` against the relevant abstraction. Works for known type names (`"BBDataSig"`, `"IIdentifiable"`, `"MovementProcessor3D"` — returns the class declaration in one shot) AND for fuzzy domain queries (`"combination resolution"`, `"effect lifecycle"`, `"modifier composition"`). Especially useful for abstractions whose names don't follow `abstract*` / `I*` conventions. See CLAUDE.md §9.
 - **Then:** LSP `findReferences` on the candidate base type to enumerate all subclasses / implementers (semantic-search returns the declaration; LSP returns every usage — the latter is what reveals the 2+ subclass family).
 - **Backup:** Grep for `abstract class` and `interface I` patterns in `{{PROJECT_NAME}}/` and `Jmodot/` if semantic-search misses something.
 - Identify which existing hierarchies a new design could extend instead of inventing parallel abstractions.
@@ -259,7 +259,6 @@ Don't author Parts whose shape depends on a `*-pending` sibling's output — tha
 When a single cross-cutting concern — a cleanup, a migration, a retirement of a dead/legacy surface — spans the surface of 2+ Parts, it MUST have **one named owner Part** (or an explicit purge-first → consume-after sequence via Deps). Never split it so that a slice is left unowned, especially not as a side-note on a Part framed as "mechanical." A downstream Part told its job is mechanical relocation/eviction will faithfully *propagate* an un-purged surface rather than remove it — multiplying the contamination across every target the mechanical Part writes to.
 
 - **Litmus:** *"If the owning Part is skipped or its plan_check doesn't fire, does a later 'mechanical' Part move/copy the un-resolved surface instead of deleting it?"* Yes → the concern is split with an unowned slice; assign one owner or sequence purge-first.
-- **Empirical:** 2026-05-16 foundation arch split the PvP-GameUI purge across P2 ("PvP-shaped fields"), P11 ("mechanical eviction"), and Open Questions ("dead-code purge, separate from P11"). P11 would have relocated a still-PvP-wired `GameUI` (GameOverUI instance + "First to N" label) into per-arena scenes — propagating, not purging — had P2's `/plan_check` not caught it. See `feedback_arch_part_sizing_axis.md`.
 
 #### User-owned question (ask once per Part, BEFORE the 5-criterion gate runs)
 
@@ -314,14 +313,14 @@ See `feedback_arch_part_sizing_axis.md`.
 
 Each Part authored at `plan-pending` enumerates the cross-subsystem call sites or seams it'll touch, referencing `project_subsystems` IDs. Format: bullet list of `<subsystem-id>: <touch-point description>`. Lives in the design doc (the source linked from the Part's `Source` cell), not the roadmap Parts table.
 
-If touch-point count **≥3 distinct subsystem boundaries**, scope-review flag: either split the Part into smaller Parts (each scope-bounded) OR audit the integration shape now (additional Socratic pass). Crossing 3+ subsystem boundaries is the canonical scope-creep failure mode — see `project_subsystems`' *Cross-cutting Flows* section for known examples (Spell cast touches 5 subsystems; not a single-session impl).
+If touch-point count **≥3 distinct subsystem boundaries**, scope-review flag: either split the Part into smaller Parts (each scope-bounded) OR audit the integration shape now (additional Socratic pass). Crossing 3+ subsystem boundaries is the canonical scope-creep failure mode.
 
 #### API + Test Pin (per `plan-pending` Part, BEFORE Step 8)
 
 For every Part declared `plan-pending`, write the content criteria 2 and 4 demand into the doc body BEFORE invoking `/update_roadmap`:
 
-- **Criterion 2** → 2–5 `[TestCase]` method names per `[TestSuite]` (Logic-Domain) OR `ISceneRunner` test method names + playtest rubric (Gameplay-Domain). Prose descriptions like *"tests state-transition validity"* do NOT satisfy this — write `IsTransitionValid_MainMenuToHub_ReturnsTrue()`.
-- **Criterion 4** → C# class signature (fields + key methods) for every new type. *"`GameLifecycleManager` autoload owning lifecycle state"* does NOT satisfy this — write `public partial class GameLifecycleManager : Node { public GameLifecycle CurrentState { get; private set; } public void RequestTransition(GameLifecycle target, ...); ... }`.
+- **Criterion 2** → 2–5 `[TestCase]` method names per `[TestSuite]` (Logic-Domain) OR `ISceneRunner` test method names + playtest rubric (Gameplay-Domain). Prose descriptions like *"tests state-transition validity"* do NOT satisfy this — write `IsTransitionValid_IdleToActive_ReturnsTrue()`.
+- **Criterion 4** → C# class signature (fields + key methods) for every new type. *"`SessionLifecycleManager` autoload owning lifecycle state"* does NOT satisfy this — write `public partial class SessionLifecycleManager : Node { public SessionPhase CurrentState { get; private set; } public void RequestTransition(SessionPhase target, ...); ... }`.
 
 If you can't write them, the Part is `arch-rework` with Trigger naming the missing API surface. Naming a class and saying *"methods TBD in Plan Mode"* is the canonical failure shape — it passes the criteria's letter while violating their spirit. **Litmus:** would a future implementer have to invent method signatures + test names, or can they read them verbatim from this doc?
 
@@ -403,11 +402,11 @@ Before declaring the design complete, scan the doc for:
 
 - [ ] **Placeholder scan** — no `TBD`, `TODO`, `<fill in>`, `???` markers. Either resolve or escalate to the user as an open question.
 - [ ] **Contradiction check** — sections shouldn't claim opposing things (e.g., *"stamina is a resource"* in §2, *"stamina is a cooldown"* in §5).
-- [ ] **Ambiguity check** — every concrete claim has a concrete file path or class name. *"It uses the existing event system"* is ambiguous; *"It emits `WizardStaminaChanged` via `EventBus.Publish` (see `Jmodot/Implementation/Events/EventBus.cs:42`)"* is concrete.
+- [ ] **Ambiguity check** — every concrete claim has a concrete file path or class name. *"It uses the existing event system"* is ambiguous; *"It emits `CapacityChanged` via `EventBus.Publish` (see `src/Events/EventBus.cs:42`)"* is concrete.
 - [ ] **Scope check** — the design doc matches the topic. If discussion drifted, either expand scope (and the topic) or trim the off-topic sections.
 - [ ] **Parts authored** — Step 5 produced a list of Parts, each with State (per common.md §6.3 vocabulary), Deps, Source link back into this doc, and (for `plan-pending` Parts) Integration touch points enumeration. At least one Part is required; zero-Part outcome = doc terminates without bridging to either implementation or further design work.
-- [ ] **No-orphans check** — every architectural claim in the design body maps to exactly one of: {a Part on the roadmap, an explicit worklog deferral, abandoned with stated reason}. No design claim with no path forward. If a section says *"the system will use X"* but X is neither committed in a Part nor explicitly punted to worklog nor abandoned, that's an orphan — promote it to a Part or punt it explicitly. Orphans are the failure mode that produces *"we wrote a design doc and then nothing happened"* months later. **Open Questions and Memory-Anchor footnotes do NOT count as a "path forward" for a Part-scoped scope decision** — a deletion/migration/retirement that bears on a named Part but lives only in Open Questions or as a cited-but-un-actioned memory anchor is an orphan. (Empirical: 2026-05-16 foundation arch cited `project_pvp_retired` in Memory Anchors + parked the GameUI PvP purge in Open Questions; neither committed it to P2's scope, so the purge survived to `/plan_check`.)
-- [ ] **Seam-ownership check** — for every item the design explicitly scopes OUT to a neighboring or future brainstorm, name the interface **contract** at that boundary and assign an **owner**: a Part on this roadmap, an existing Part on a cross-referenced roadmap (cite it), or an explicit worklog deferral. A claim that defers work to *"their own Parts"* / *"a future session"* is an orphan **unless that Part demonstrably exists**. Clean scoping *creates* seams; seams need owners too. (Empirical: 2026-05-16 foundation arch deferred InRun scene-wiring to "their own Parts" that were never authored, and left the player-lifetime/scene-transfer seam between the lifecycle layer and the deferred dungeon-floor arch unowned — surfaced only in a later audit.)
+- [ ] **No-orphans check** — every architectural claim in the design body maps to exactly one of: {a Part on the roadmap, an explicit worklog deferral, abandoned with stated reason}. No design claim with no path forward. If a section says *"the system will use X"* but X is neither committed in a Part nor explicitly punted to worklog nor abandoned, that's an orphan — promote it to a Part or punt it explicitly. Orphans are the failure mode that produces *"we wrote a design doc and then nothing happened"* months later. **Open Questions and Memory-Anchor footnotes do NOT count as a "path forward" for a Part-scoped scope decision** — a deletion, migration, or retirement that bears on a named Part but lives only in Open Questions or a cited memory is an orphan.
+- [ ] **Seam-ownership check** — for every item the design explicitly scopes OUT to a neighboring or future brainstorm, name the interface **contract** at that boundary and assign an **owner**: a Part on this roadmap, an existing Part on a cross-referenced roadmap (cite it), or an explicit worklog deferral. A claim that defers work to *"their own Parts"* / *"a future session"* is an orphan **unless that Part demonstrably exists**. Clean scoping *creates* seams; seams need owners too.
 - [ ] **No-speculative-downstream check** — every Part depends only on (a) Parts in this roadmap at `plan-pending` or stronger, OR (b) already-shipped infra. No Part may depend on `*-pending` output (that belongs to the future session and authors its own Parts). Litmus per Step 5 *Downstream-of-fork guard*: *"If this Part's upstream session decided differently, would this Part change shape?"* Yes = speculative; remove. See `feedback_arch_part_sizing_axis.md`.
 - [ ] **Readiness-gate audit** — for each Part with State=`plan-pending`, verify the 5 criteria from Step 5 actually hold. If any fails, demote to `arch-pending` with the open piece named in Trigger.
 - [ ] **Plan-pending cohesion audit** — for any run of 3+ sequential `plan-pending` Parts, the *Plan-pending cohesion litmus* (Step 5) ran: thin + tightly-coupled adjacent Parts were merged, or each kept-split Part states its keep-separate reason. Catches type-surface-layer over-split (clean dependency ordering ≠ right Part sizing).
@@ -437,7 +436,7 @@ After the design doc is saved and the user has approved both doc and Parts list,
 
 `/update_roadmap` is the single executor for roadmap.md edits. It runs in batch-propose mode — assembles the full diff (Parts table + Mermaid + derived views + revision log entry), shows it, applies on single approval. Do NOT hand-edit `roadmap.md` from within this skill; the command owns that surface.
 
-If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creating one — confirm and proceed. The initial creation pulls frontmatter from the design doc's frontmatter (`topic`, `scope-level`, `scope` → `pp-game` / `jmodot-framework`).
+If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creating one — confirm and proceed. The initial creation pulls frontmatter from the design doc's frontmatter (`topic`, `scope-level`, `scope` → `project-game` / `jmodot-framework`).
 
 ---
 

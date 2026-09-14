@@ -7,7 +7,7 @@ Provenance: the reference project's art_pipeline (its test suites
 verify the original of this file).
 """
 # --- original file follows ---
-"""palette.py -- the binding color contract for all Draconic Wars art generation.
+"""palette.py -- the binding color contract for all of the project's art generation.
 
 Loads ``palette.json`` (Resurrect 64 + named ramps + element mapping). Every
 generator selects colors EXCLUSIVELY through this API as (ramp, index) lookups

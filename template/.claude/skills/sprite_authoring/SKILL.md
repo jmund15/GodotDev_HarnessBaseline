@@ -24,7 +24,7 @@ Author sprites as **editable text sources** (SVG, pixel-grid scripts, .tres), ba
 | Glows, orbs, soft particles, noise blobs | **Procedural** | `.tres` (GradientTexture2D radial fill, NoiseTexture2D, GradientTexture1D ramps) |
 | Animated/procedural surface looks (pulse, swirl, dissolve) | **Shader** | `.gdshader` — see `shader_authoring` |
 
-Commit the text source next to the baked/imported asset, in the owning domain folder (this repo: `Spells/<Name>/`, `Ingredients/<Name>/` — no central art dir). The source IS the editable artifact; never hand-edit a baked PNG.
+Commit the text source next to the baked/imported asset under the owning path declared by `skills/project_subsystems/SKILL.md`. The source is the editable artifact; never hand-edit a baked PNG.
 
 ## Asset Classes
 
@@ -39,10 +39,10 @@ Scale and palette conventions are **per-project** — if not yet recorded, ask o
 ## Authoring Rules
 
 **All tracks:**
-- **Decompose into named parts** before writing coordinates (cork / neck / body / liquid…). One comment or group per part — targeted edits stay tractable.
+- **Decompose into named parts** before writing coordinates (base / body / detail). One comment or group per part keeps edits tractable.
 - **Compute coordinates on a small grid** (16/32/64 viewBox or canvas); no freehand values. Spatial coherence degrades fast with canvas size — this is the dominant LLM failure mode (symmetry drift, disconnected parts).
-- **Style guardrails for cohesion:** flat fills, dark outline, 2–3 value steps per material, one limited project palette (e.g. Resurrect-64), fixed size tiers (16/32/64px). Strong silhouette and value contrast outrank detail.
-- **Color-code gameplay role** (faction/element/interactable) — playtest readability is the point.
+- **Style guardrails for cohesion:** flat fills, dark outline, 2–3 value steps per material, one limited project palette (e.g. project palette), fixed size tiers (16/32/64px). Strong silhouette and value contrast outrank detail.
+- **Color-code the project's semantic role or state** when readability depends on it.
 
 **SVG track:** Godot rasterizes via ThorVG ≈ SVG Tiny 1.2. Safe: shapes, paths, groups, linear/radial gradients, opacity, `clipPath`. Avoid: `<text>` (silently invisible — convert to paths), `<pattern>`, filters, CSS selectors beyond tag/class. Resolution comes from the `svg/scale` import param — never upscale the node (blur).
 
@@ -61,7 +61,7 @@ func _init() -> void:
     DirAccess.make_dir_recursive_absolute("res://.review")   # gitignore .review/
     var img := Image.new()
     img.load_svg_from_string(FileAccess.get_file_as_string("res://art/icon.svg"), 4.0)
-    img.save_png("res://.review/potion_x4.png")   # also save a 1.0-scale render = game size
+    img.save_png("res://.review/item_x4.png")   # also save a 1.0-scale render = game size
     quit()
 ```
 
@@ -106,9 +106,9 @@ xvfb-run --auto-servernum godot --path <proj> --rendering-driver opengl3 \
 
 **Transparency sorting — `sorting_use_aabb_center` / `sorting_offset`.** Both are `GeometryInstance3D` properties affecting **only geometry in the transparent pass**; sprites at `alpha_cut = 1`/`2` are depth-buffer sorted per-pixel and ignore them entirely, which is why DISCARD is the default above. When they do apply, `sorting_use_aabb_center` (default `true`) selects the depth reference point — AABB center vs. the node's global origin — and `sorting_offset` is added to whichever point was selected. Under a pitched camera a tilted sprite's local `+Y` also carries world `+Z`, so the AABB center of a ground-anchored sprite sits *further from the camera* than its base: tall sprites sort as though standing behind their own footprint. **Set `sorting_use_aabb_center = false` on any world-space sprite whose origin is its ground-contact point** — that restores sort-by-feet, the 2.5D rule. Leave it default for center-anchored sprites (projectiles, pickups, stacked particle layers): the two points coincide and the flag buys nothing. The engine tooltip's "more accurate for 3D models" is about solid volumes, where the centroid is a fair depth proxy; for a flat quad standing at an angle it is not.
 
-Because the offset is measured from the selected point, flipping the flag on a rig of hand-tuned siblings re-bases every `sorting_offset` at once. Equal-size siblings survive (the AABB delta is constant and cancels); mixed-height comparisons shift — which is the intended effect and also the regression surface. Flip per-rig with a visual check, never as a project-wide find-and-replace. Reference instances: `Dungeon/Encounters/Doors/door.tscn`, `Dungeon/Encounters/Walls/reveal_wall.tscn`, `Environment/Prototype2/breakable_wall.tscn` (`false` + `sorting_offset = -4.0`), `Environment/RockPillar/rock_pillar_entity.tscn` (`false` + `-0.1`).
+Because the offset is measured from the selected point, flipping the flag on a rig of hand-tuned siblings re-bases every `sorting_offset` at once. Equal-size siblings survive because the AABB delta is constant; mixed-height comparisons shift. Flip per rig with a visual check, never by project-wide replacement.
 
-**Texture filtering is always Nearest, never left at engine default.** Every sprite/spritesheet node in this project — 2D (`Sprite2D`/`AnimatedSprite2D`, CanvasItem enum) or 3D (`Sprite3D`/`AnimatedSprite3D`, BaseMaterial3D enum) — must have `texture_filter` explicitly set to the Nearest variant, matching the hard-pixel-grid style (no anti-aliasing). The engine default is Linear-with-mipmaps, which blurs pixel art; leaving the field unset silently ships blurred sprites. Set it on the node itself (not the `.import` file — filtering is a rendering property, not an import param). Reference instances: `Spells/Fire/Tier1Fireball/fireball_spell_visuals.tscn` (`Sprite3D`, `texture_filter = 0`), `Wizard/wizard.tscn` (`Sprite3DComponent`, `texture_filter = 0`).
+**Texture filtering follows the project's art direction.** Set `texture_filter` explicitly on every sprite or spritesheet node instead of relying on the engine default. Pixel art normally uses the Nearest variant; smooth art may use a filtered variant. CanvasItem and BaseMaterial3D use different enum values, so verify the node type.
 
 **Godot 4.5+ `DPITexture`** (SVG kept as source, auto re-rasterized) exists but ignores oversampling on SpriteBase3D — for shared 2D/3D assets stay on the classic texture importer + `svg/scale`.
 
@@ -119,21 +119,14 @@ Because the offset is measured from the selected point, flipping the flag on a r
 - **One-shot vs loop is an end-state decision.** Loop: the last frame must flow into the first — review the filmstrip as a cycle. One-shot: decide what shows after the final frame (hide / free / revert to idle) and wire it (`animation_finished` or AnimationPlayer queue) — a frozen last frame is the default bug.
 - **Review:** Rung 1 per frame plus an 8× nearest-upscaled filmstrip of the whole sheet; Rung 2 steps `frame` (and any shader `phase` uniform) deterministically in the review scene — one capture per step, never timed waits.
 
-**{{PROJECT_NAME}}/Jmodot handoff** (integration canon: `vfx_patterns`):
+**Jmodot handoff** (integration canon: `vfx_patterns`):
 - Clip names use the DirectionSet vocabulary — `run`, `run_left`, `run_downLeft` (camelCase diagonals). Partial directional coverage is safe: `AnimationOrchestrator` falls back nearest-direction → undirected base.
 - AnimationPlayer keys ONLY `frame_coords:x`; the Y row belongs to `VisualItemData.SpriteSheetRowOverride` — author sheets so rows are swappable variants of the same frame columns.
 - Never key `Modulate` in authored animations — tints/flashes flow through `VisualEffectService`/`VisualEffectController` exclusively.
 
-## {{PROJECT_NAME}} prototype style (project spec)
+## Project-specific style
 
-Direction (canonical): [`game_vision`](../game_vision/SKILL.md) → *Art Style*. This section is the **technical authoring methodology** realizing that direction. Anchored to the wizard reference (`Wizard/Visual/Base/*.png`: chibi proportions, one dominant silhouette feature, 3/4 top-down view). All prototype art follows:
-
-- **Look:** whimsical fantasy **pixel art** — exaggerated/goofy features (big mismatched eyes, underbites, floppy bits) resolved on a **hard pixel grid (no anti-aliasing)**: flat fills, 2–3 value steps per material, ONE dark contour around the composed silhouette, integer-coordinate shapes. Earth faction = organic/rounded/asymmetric; alien faction = geometric/symmetric/floaty (cosmic-serene). NPCs/props get **baked color** from `art_pipeline/palette.json` (faction readability + avoids the `VisualEffectController` Modulate race); the wizard alone stays grayscale + runtime tint.
-- **Pipeline (bulk track):** `art_pipeline/` Pillow generators (parameterized_asset_pipeline Track A instance). Creatures = spec dicts composing stateless parts (`creature_parts.py` registries; roster modules `parts_*.py`/`specs_*.py`). Author in **pixel mode** — `Canvas(cell, pixel_mode=True)` draws at native resolution (`SS=1`, integer coords, no supersample) and `finish()` resamples `NEAREST`, then palette-quantize → binary alpha (`alpha_cut=DISCARD`-ready) → contour stamp (`raster.finish`). Avoid `width>0` strokes — they anti-alias. The legacy 4×-supersample→LANCZOS smooth path is retiring (Worklog: pipeline restyle); all new art is pixel-mode. NO banding lint (flat fills are the style); `lint_on_palette` stays mandatory. Bake: `python art_pipeline/gen_<domain>.py [name…]`; review filmstrips land in `art_pipeline/.review/` — the Read-the-image inspect gate is mandatory per revision. This SVG/pixel-grid skill remains the track for one-off assets inside the style.
-- **Sheet/clip contract:** rows = clips in fixed order `idle_down, idle_up, move_down, move_up, attack_down, attack_up`; columns = frames (idle 4 @6fps loop, move 6 @10fps loop, attack 5 @12fps one-shot); cells 128px (bosses 176–192). Two directions only — `AnimationOrchestrator` nearest-direction fallback covers the rest; undirected `idle/move/attack` aliases (→ down row) satisfy its tier-3 base fallback.
-- **Sprite3D directional convention:** for creatures on the `Sprite3DComponent` stack, the undirected base clip is the side row and `FacingFlipController` mirrors it; optional directional rows use `_down` and `_up` through `SideUpDownAnimationSuffixes` (`["", "down", "up"]`). `sheet.py` emits the matching `AnimationLibrary` as `<name>_anims.tres`, including directional clips and undirected base aliases.
-- **State-affordance tells:** a gameplay-readable state (breakable, interactable) is communicated by **palette/material difference alone while intact** — damage marks (cracks, chips) are damage feedback and appear only from the damaged frame onward. The tell must read from **every camera-exposed surface**: at the 45° ortho camera, east/west walls expose only their top caps, so a face-only tell is invisible there (2026-07-09 wall-block correction).
-- **Integration:** per-enemy artifacts in `NPCs/Enemies/Art/` — `<name>_sheet.png` + `<name>_sheet.manifest.json` + `<name>_frames.tres` (SpriteFrames of AtlasTextures; emitted by `sheet.py`, never hand-edited). Scenes consume via the existing `AnimSprite` (`AnimatedSprite3DComponent`) — production art swap = regenerate/replace PNG + SpriteFrames, zero scene/code refactor.
+Read the consuming project's `game_vision` skill before authoring. Keep palette, silhouette language, clip roster, frame sizes, directional coverage, and asset output paths there or in the owning subsystem docs. This baseline defines the authoring loop, not a game's visual taxonomy.
 
 ## Anti-patterns
 

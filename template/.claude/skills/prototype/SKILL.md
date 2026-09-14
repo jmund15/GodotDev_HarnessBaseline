@@ -45,14 +45,14 @@ Write `prototypes/<slug>/QUESTION.md`: the question, plus **the shape of its ans
 
 The file carries two inventories that set the verification tier (§4b):
 
-- **Design forks** — every semantic choice the design does not settle ("does cower only fire when cornered?"). Ask each via `AskUserQuestion` at question time; a guessed fork is a shipped bug.
-- **Seams** — every production surface the probe drives (a shed call, an HSM transition evaluation, a sensor, an emitter wiring) **and the host scene's authored wiring** (spawn layout vs sensor reach, scene-authored values, the frame order two driven surfaces meet in). The seam list IS the verification scope; a probe naming no seams needs none.
+- **Design forks** — every semantic choice the design does not settle (for example, whether a transition fires only after a threshold). Ask each via `AskUserQuestion` at question time; a guessed fork is a shipped bug.
+- **Seams** — every production surface the probe drives, plus the host scene's authored wiring and the frame order between driven surfaces. The seam list is the verification scope; a probe naming no seams needs none.
 
 ### 2. Pick the branch and the host
 
 | Branch | Question it answers | Examples |
 |---|---|---|
-| **MODEL** | Does this model produce sane outcomes? | synergy resolution shapes, an HSM transition graph with reachable dead states, data-model expressiveness |
+| **MODEL** | Does this model produce sane outcomes? | combination resolution shapes, an HSM transition graph with reachable dead states, data-model expressiveness |
 | **FEEL** | Does this read and respond right? | movement, camera, input response, timing, telegraph readability, juice |
 
 Both branches are **C#** — Godot forbids a GDScript file inheriting from a C# script, so a GDScript prototype cannot extend the component/state classes it must integrate with.
@@ -72,7 +72,7 @@ Different *approaches*, not tuned constants — a constant sweep is a tuning pas
 
   Prototypes INVERT the production logging rule (CLAUDE.md: log state changes, not state) — here the log IS the instrument. Two constraints:
   - **Gate it behind an `[Export]`.** Verification pass on, feel pass off — per-event logging costs framerate and buries the log.
-  - **Emit `key=value` data, never prose.** `variant=SprayAndStains stains=5 rayHit=5 rayMiss=0` is verifiable at a glance.
+  - **Emit `key=value` data, never prose.** `variant=Wide hits=5 misses=0` is verifiable at a glance.
 
 ### 4b. Prove it runs before handing it over
 
@@ -84,22 +84,22 @@ Before handing over, the prototype must have been OBSERVED executing its own mec
 - the whole body is exception-guarded;
 - the agent runs it and reads the output. `dotnet build` + `godot --headless --import` show only that code compiles and a class registers; "built and imported" is never the handover bar.
 
-**Verification tier — set by the QUESTION, not the probe's size.** Count the seams driven and the open forks. **Tier 1** (0–1 seams, no open forks): the bar above suffices. **Tier 2** (2+ seams, or any open fork) adds four obligations, because per-seam drivers can each be green while the composed encounter is broken — failures live BETWEEN mechanisms (spawn spread vs sensor reach, shed vs hitbox frame order):
+**Verification tier — set by the question, not the probe's size.** Count driven seams and open forks. **Tier 1** (0–1 seams, no open forks) uses the bar above. **Tier 2** (2+ seams, or any open fork) adds:
 
-- a **deterministic `ISceneRunner` driver per seam** — throwaway, under `Tests/Integration/Prototypes/`, deleted at parking. Two sub-obligations. **Reproduce the authored precondition** of the scenario claimed — the group size the gate requires, the sensor's acquisition wait, the trio (not a solo, whose flee IS the design), the environment the owner plays on (the playtest's own floor/walls, never a synthetic stand-in). **Pin the seam itself** — defects live in seams (a composite's child collection, a condition's raycast mask, a spec's pin pair, a collision layer), so assert the seam directly: child list == authored children, condition false in the open, the playtest floor's layer;
-- an **encounter driver** — one driver over the REAL authored playtest host (actual enemy scenes and player, real spawn layout), driving input and asserting playtest-visible OUTCOMES, not mechanism states ("punch 1 leaves the attached rider alive, punch 2 kills"). Constants a playtest round produced get their intent asserted here;
-- an **agent-observed playtest before handover** — drive the real authored host (MCP boot with driven input, or the real encounter root + roster + layout under an `ISceneRunner`) and read the playtest-visible state out of the log. The handover note says what was observed; a boot to the menu observes nothing, and "suites green" is a report about mechanisms;
-- a **filtered adjacent-suite run** (`dotnet test --filter` over suites whose domain overlaps the probe) — a probe can turn a shipped suite red (submodule moves, seam edits) and hand it over broken; 5–15 s catches it;
-- a **correctness-gap pass** — one independent read of QUESTION.md + the drivers + the host scene, hunting playtest-observable paths no driver covers, and auditing the DRIVERS' own premises against the authored design. Findings are obligations: every uncovered path gets driven, or the handover note names it owner-verification WITH the reason. A gap the round's own fix opened (a widened sensor reaching a neighbor encounter, a retuned constant's untested tail) may not be deferred at all — it gets a driver. A finding implicating a framework seam (Jmodot) is fixed in the framework (paired submodule branch, pushed before the parent pointer), never worked around in the scene.
+- a deterministic `ISceneRunner` driver per seam that reproduces the authored precondition and asserts the seam itself;
+- one driver over the real authored host that asserts the visible outcome rather than an internal state;
+- one agent-observed run of that host, with the observed state recorded from structured logs;
+- one filtered run of adjacent suites whose domains overlap the probe;
+- one independent correctness-gap pass over `QUESTION.md`, the drivers, and the host scene. Drive each uncovered path or name a user-owned check and why automation cannot cover it. Fix framework findings in the framework rather than hiding them in consumer wiring.
 
-**A bare `run_project` does not satisfy this.** `run/main_scene` is `boot.tscn`, so a plain run lands in the lifecycle/menu flow — the tree is real, the gameplay context is not, and anything that raycasts, collides, or reads run state behaves differently. Pass `run_project`'s optional `scene` parameter, targeting a scene that hosts the mechanism.
+**A bare `run_project` does not satisfy this unless the configured main scene hosts the mechanism.** A lifecycle or menu scene can boot cleanly while the probe never runs. Pass the optional `scene` argument and target the real host.
 
 | What the probe needs in order to execute at all | Route |
 |---|---|
 | Nothing beyond its own node | isolated `prototypes/<slug>/prototype.tscn` + `run_project(scene:)` |
 | World geometry to query (raycast, collision, overlap) | isolated scene CONTAINING that geometry |
 | A real subsystem to drive it (spawn pipeline, HSM transitions, damage flow) | `ISceneRunner` harness — the only route with deterministic ticks and real wiring |
-| Cross-system emergence (traits x reactions x AI) | the real gameplay scene; self-check reports data, human judges |
+| Cross-system emergence | the real gameplay scene; self-check reports data, human judges |
 
 Row 3 is the carve-out to the auto-stop tripwire, which targets tests as DELIVERABLE, not as instrument. An isolated `prototype.tscn` is often warranted ALONGSIDE the real-scene host: isolation makes the self-check meaningful, the real host is the venue for the feel judgment.
 
@@ -153,7 +153,7 @@ A closed design shipped deliberately minimal because full implementation is defe
 
 **Marker rules.** Marker prose must avoid the FULL session_audit 1.5a merge-blocker alternation (`deferred|TODO|FIXME|follow-up|follow up|stub|not yet wired|no-op until|placeholder`; `PROVISIONAL` itself does not collide). The marker is disposition metadata, the justified exception to comment-discipline default-none (`feedback_comment_discipline`); marker lines carry no other commentary. Markers are `.cs`-only: a provisional `.tscn`/`.tres` is tracked by the registry entry alone.
 
-**Boundaries.** Provisional is NOT the probe auto-stop tripwire — tests and persistence here are the production obligations above. Asset-maturity gates still bind: prototype-grade art never drives a design decision. `Prototype/` (capital) remains off-limits.
+**Boundaries.** Provisional is not the probe auto-stop tripwire; tests and persistence remain production obligations. Asset-maturity gates still bind. Any project-owned production directory that resembles `prototypes/` remains outside this skill; resolve it through `skills/project_subsystems/SKILL.md`.
 
 **Shared-tree discipline.** Pathspec commits, never `git add` + `git commit` on a shared tree; commit the registry entry with the code — untracked files can silently vanish (`gotcha_concurrent_session_hazards`).
 
@@ -186,7 +186,7 @@ C# needs a rebuild per change, and building while the Godot editor is open is a 
 
 **Inline by default — no fan-out in the loop.** Only the human playing the build produces the verdict. Optional second opinion: when the verdict is judgment-heavy, dispatch ONE independent critic lens (QUESTION.md + screenshots + `[PROTO-<slug>]` logs) to test whether the evidence settles the question.
 
-**Log-first — after you play, mine the log BEFORE diagnosing.** Every fix starts from `/analyze_godot_logs` on the playtest log (CLAUDE.md *Logs are Truth*). **Capture the log before it moves** — appdata `godot.log` is shared by every worktree and gate run, and any of them truncates it on launch; copy it to a stable name the moment the playtest ends.
+**Log-first — after a playtest, mine the log before diagnosing.** Copy the configured Godot log to a stable project-local artifact before another worktree or gate run can replace it.
 
 ## Guardrails
 

@@ -15,7 +15,7 @@ Reference index for the framework submodule. Most mechanical content has been ex
 
 ## Framework/consumer seam (applies to every deep-dive below)
 
-The deep-dives document Jmodot's **generic framework surface**. The consuming project reaches it through two seams: **attribute resources** resolved via `GlobalRegistry.DB` (autoload `Global/GlobalRegistry.cs` exposing the project registry — e.g. `GlobalRegistry.DB.MaxSpeedAttr`), and **project-side BBDataSig keys** (the project partial, below). Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` — project defaults flow through static seams (`rules/jmodot_framework_authoring.md`, auto-loads on `Jmodot/**/*.cs`).
+The deep-dives document Jmodot's **generic framework surface**. A consuming project supplies authored defaults through a project-owned registry and adds project-only Blackboard keys through its own `BBDataSig` partial. Declare those owning paths in `skills/project_subsystems/SKILL.md`; do not hardcode a source project's topology here. Jmodot code MUST NOT reference `{{PROJECT_NAME}}.*` — project defaults flow through framework-owned seams (`rules/jmodot_framework_authoring.md`, auto-loads on `Jmodot/**/*.cs`).
 
 ## Companion files
 
@@ -61,10 +61,10 @@ Subsystem deep-dives (read on demand when designing in a specific area):
 
 | Partial | File | Holds |
 |---|---|---|
-| Framework | `Jmodot/Implementation/AI/BB/BBDataSig.cs` | `Agent`, `Stats`, `HealthComponent`, `CombatLog`, `CurrentTarget`, `Formation*`, `EntitySeed`, … |
-| Project game | `AI/BB/BBDataSig.cs` (repo root) | Casting/crafting/spell/run-scope keys (`CastStarted`, `CraftingSession`, `RunCurrencyAggregator`, …) |
+| Framework | `Jmodot/Implementation/AI/BB/BBDataSig.cs` | Framework-owned keys such as agent, stats, movement, and formation data |
+| Consuming project | Project-owned partial; path declared in `skills/project_subsystems/SKILL.md` | Keys owned by that project's subsystems |
 
-Grepping one file for the other's keys returns nothing — **search both** (pinning test: `Tests/Logic/JmodotTests/BBDataSigFrameworkGrabKeysTest.cs`). Constant name ≠ runtime string in places: `BBDataSig.StatusEffects` → `"StatusEffectComponent"`, `BBDataSig.HolderComponent` → `"HandMovementComponent"` — match on the constant, not the string. When new keys are added, refresh this table.
+Grepping one partial for another partial's keys returns nothing — locate and search every `BBDataSig` partial before claiming a key is absent. Constant name may differ from its runtime string; match on the constant first.
 
 | Key | Type | Purpose |
 |-----|------|---------|
@@ -87,7 +87,7 @@ Grepping one file for the other's keys returns nothing — **search both** (pinn
 
 ## Provenance & maintenance
 
-Facts verified 2026-07-04. Re-verify:
-- BBDataSig split + keys: `Grep "partial class BBDataSig" -g "*.cs"` (expect the two files above), then read both.
-- Quick-ref key existence: `Grep "<KeyName> = new" -g "*BBDataSig.cs"`.
-- Seam accessor: `Grep "public static PushinPotionRegistry DB" Global/GlobalRegistry.cs`.
+Re-verify against the current checkout:
+- BBDataSig split: locate every `partial class BBDataSig` declaration, then read each partial.
+- Quick-ref key existence: locate the named constant in the declaring partial.
+- Consumer seams: read the registry and owning roots declared in `skills/project_subsystems/SKILL.md`.

@@ -1,46 +1,42 @@
 ---
 name: Project Subsystems
 description: >-
-  Auto-load when scoping subsystem breadth, navigating across 2+ subsystems, or asking
-  "where does X live / who owns Y". Triggers: "subsystem", "cross-cutting", "scope this
-  change", "where does X live", "what owns X". SKIP for symbol lookups (semantic-search /
-  LSP), file placement (`structure_rules`), patterns (`architecture_philosophy`), Jmodot
-  internals (`jmodot`), game vision (`game_vision`).
+  Auto-load when scoping work across subsystems or finding which subsystem owns a path.
+  Skip symbol lookup, file-placement rules, reusable-framework internals, and game vision.
 ---
 
 # {{PROJECT_NAME}} — Subsystem Registry
 
-<!-- SEED TEMPLATE — this skill is project-owned. Populate the registry as your
-     project grows; `/sync_subsystems` proposes updates when the top-level folder
-     shape changes. The YAML block below is machine-read — keep its field shape. -->
+<!-- PROJECT-OWNED SEED. Replace placeholders as the project grows. The YAML block is
+     machine-read by /sync_subsystems and /structure_audit; keep its field shape. -->
 
 ## Registry (machine-readable)
 
-Consumed by `/sync_subsystems` and the `architecture_brainstorm` subsystem-breadth scope-litmus (≤2 subsystems per implementation session — multi-subsystem work needs a design pass first). `id` is the stable identifier; `paths` is the breadth-calculation token set. `summary` is a one-line at-a-glance gloss — full prose lives in *Subsystem Details* below.
+- `id` is stable.
+- `paths` contains project-relative ownership roots.
+- `organization` is `feature`, `layer`, `ui`, or `hybrid` as defined by
+  [`structure_rules.md`](../architecture_philosophy/structure_rules.md).
+- `domain` is the default `logic`, `gameplay`, `data`, `meta`, or `framework` PR/test route; classify
+  changed behavior when a subsystem mixes domains.
+- `summary` is one line. Put boundaries and exceptions under *Subsystem Details*.
 
 ```yaml
+conventions:
+  project_folder_case: PascalCase
+  namespace_root: "{{PROJECT_NAME}}"
+  framework_paths: [<FrameworkRoot/>]
+  playtest_scenario_paths: [<ScenarioRoot/>]
+  reserved_paths: [.claude/, .git/, .godot/, addons/, bin/, obj/, Tests/]
 subsystems:
   - id: <subsystem-id>
     paths: [<TopLevelFolder/>, <OtherFolder/>]
-    summary: <one-line gloss>
-  - id: ai
-    paths: [AI/]
-    summary: Behavior Trees, HSM substrate, blackboard, agent entities.
-  - id: movement
-    paths: [Movement/]
-    summary: MovementProcessor3D, external force receivers, friction strategies (Jmodot-backed).
-  - id: stats
-    paths: [Stats/]
-    summary: Stat sheets and controller configs (Jmodot Attribute + Modifier pipeline).
-  - id: visual
-    paths: [Visual/, Animation/]
-    summary: VFX controllers, sprite/animation orchestrators.
-  - id: ui
-    paths: [UI/]
-    summary: HUD and menus.
+    organization: <feature|layer|ui|hybrid>
+    domain: <logic|gameplay|data|meta|framework>
+    summary: <one-line ownership gloss>
 ```
 
 ## Subsystem Details
 
 ### <subsystem-id>
-<ownership boundaries, key types, invariants, what does NOT belong here.>
+
+<Ownership boundaries, key types, invariants, organization exceptions, and exclusions.>

@@ -99,8 +99,8 @@ stats.GetStatValue<float>("MaxSpeed", 5f);
 ```
 
 ```csharp
-// GOOD - Attribute resource (project-side accessor: GlobalRegistry.DB, Global/GlobalRegistry.cs)
-stats.GetStatValue<float>(GlobalRegistry.DB.MaxSpeedAttr, 5f);
+// GOOD - Attribute resource resolved by the consuming project
+stats.GetStatValue<float>(projectAttributes.MaxSpeed, 5f);
 ```
 
 **Forgetting to clean up modifiers** - Always use ownership or handles.
@@ -116,6 +116,6 @@ stats.GetStatValue<float>(GlobalRegistry.DB.MaxSpeedAttr, 5f);
 - **Combat effects** can apply modifiers via TryAddModifier
 - **Status runners** own their modifiers for automatic cleanup
 - **HSM states** apply a `StatContext` while active (`State.ActiveStatContext` — added on enter, removed on exit)
-- project consumption seam (attributes via `GlobalRegistry.DB`): [SKILL.md](SKILL.md) §Framework/consumer seam
+- Consuming projects resolve attribute Resources through the owning registry declared in [`../project_subsystems/SKILL.md`](../project_subsystems/SKILL.md).
 
-Stage roster verified 2026-07-04. Re-verify: `Grep "StageId =" Jmodot/Core/Modifiers/StageRules/ -n`.
+Before changing the stage family, locate the current `StageRule` declarations and data-authored rule Resources; recorded rosters can drift.

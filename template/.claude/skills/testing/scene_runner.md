@@ -1,6 +1,6 @@
 # ISceneRunner Reference
 
-> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. Version provenance: the `gdUnit4.api` pin in `{{PROJECT_NAME}}.csproj` (5.1.0-rc4 as of 2026-07-04); this copy may drift from upstream. If an API call misbehaves, cross-check the trusted GdUnit4 URLs in CLAUDE.md §4.
+> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. The `gdUnit4.api` package pin in `{{PROJECT_NAME}}.csproj` owns the version. Cross-check the trusted GdUnit4 sources in CLAUDE.md when an API call differs.
 
 Complete API reference for GdUnit4's scene runner - used for integration testing with input simulation.
 
@@ -8,9 +8,9 @@ Complete API reference for GdUnit4's scene runner - used for integration testing
 
 ```csharp
 [TestCase, RequireGodotRuntime]
-public async Task Test_Player_Movement()
+public async Task Test_Input_Moves_Subject()
 {
-    using ISceneRunner runner = ISceneRunner.Load("res://Player/player.tscn");
+    using ISceneRunner runner = ISceneRunner.Load("res://Tests/Fixtures/Scenes/movable_subject.tscn");
 
     // Simulate input
     runner.SimulateActionPressed("move_right");

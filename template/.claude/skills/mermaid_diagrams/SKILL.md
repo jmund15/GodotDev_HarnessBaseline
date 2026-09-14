@@ -33,10 +33,10 @@ Hard rules for both renderers:
 | Need | Type | Project examples |
 |---|---|---|
 | Dependency, structure, data flow | `flowchart` / `graph` | roadmap Parts graph, architecture system diagram |
-| State machine, lifecycle, behavior phases | `stateDiagram-v2` | Wizard HSM, NPC behavior flow, dev phases |
-| Time-ordered interaction between actors | `sequenceDiagram` | spell-cast pipeline, signal causality, runtime flow |
+| State machine, lifecycle, behavior phases | `stateDiagram-v2` | Player HSM, NPC behavior flow, dev phases |
+| Time-ordered interaction between actors | `sequenceDiagram` | ability-cast pipeline, signal causality, runtime flow |
 | Type relationships / composition | `classDiagram` | Component / Blackboard / BehaviorTree structure |
-| Data-model entities and relations | `erDiagram` | Trait → Synergy → Spell Instance |
+| Data-model entities and relations | `erDiagram` | Trait → Combination → Ability Instance |
 | Genuine time-axis schedule | `gantt` | only when the X-axis is literally time — not for status tables |
 
 Wrong-type smell: reaching for `gantt` to show pass/fail status, or `flowchart` for what is really a state machine.
@@ -44,7 +44,7 @@ Wrong-type smell: reaching for `gantt` to show pass/fail status, or `flowchart` 
 ## House style
 
 - **Direction.** Match the reader's dominant scan. `TD` is the safe default (dependency graphs, top-down architecture). `LR` only for wide relationship webs or left-to-right timelines. One direction per diagram.
-- **Node IDs.** Hand-authored: self-explanatory (`WebPortal`, `SpellFactory`) — never single letters (`A`, `B`). Generated: short slugs are fine.
+- **Node IDs.** Hand-authored: self-explanatory (`WebPortal`, `AbilityFactory`) — never single letters (`A`, `B`). Generated: short slugs are fine.
 - **Node text vs edge labels.** Node text = states/actions/entities. Edge labels = conditions/transitions (`|valid|`, `|on death|`). Never duplicate the same fact in both. Keep edge labels to 1–3 words.
 - **Subgraphs.** Group by logical concern; 5–7 nodes per subgraph max; declare nodes first, then nest. Subgraphs are how you draw a real system without spaghetti.
 - **Spacing.** For hand-authored flowcharts, emit the config block:

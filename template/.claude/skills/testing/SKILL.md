@@ -2,8 +2,8 @@
 name: Testing
 description: >-
   Auto-load when writing, running, or debugging tests, or doing TDD — anything touching
-  GdUnit4 suites, the shared fixtures (SpellTestFixture / CastingTestFixture / ISceneRunner),
-  runtime-test attributes, run commands/filters, or orphan management. SKIP for code
+  GdUnit4 suites, shared fixtures, ISceneRunner, runtime-test attributes,
+  run commands/filters, or orphan management. SKIP for code
   reviews of test files (use `checklists:test_quality`).
 ---
 
@@ -23,11 +23,11 @@ dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedNa
 - **Full prefix `~Tests.<Suite>` is mandatory** — short `~Logic` matches only a subset, mimicking a silent skip. Canonical form: `.claude/commands/regression_gate.md`.
 - **`--filter ~` is SUBSTRING, not regex** — escaped metacharacters (`Visual\.`) match literally and hit nothing, mimicking an empty suite rather than erroring. Disambiguate sibling prefixes with a trailing plain dot (`~Tests.Integration.Visual.` excludes `Visuals`).
 - **`--list-tests` ignores `--filter`** (VSTest) — it dumps the whole assembly, so it cannot verify a filter's coverage; use group-sum arithmetic against the baseline.
-- **Batch multi-suite evidence runs with `|` into ONE invocation** — `--filter "FullyQualifiedName~Tests.Logic.A|FullyQualifiedName~Tests.Integration.B"`. Each invocation pays a full rebuild + test-host boot (~40–90s). Split only when runs must be attributed separately (a RED proof, isolating one suite's wedge).
+- **Batch multi-suite evidence runs with `|` into ONE invocation** — `--filter "FullyQualifiedName~Tests.Logic.A|FullyQualifiedName~Tests.Integration.B"`. Each invocation pays for a rebuild and test-host boot. Split only when runs must be attributed separately, such as a RED proof or one wedged suite.
 - **ALWAYS `--verbosity quiet`** — the implicit rebuild otherwise floods Bash output with compiler warnings; counts and error messages survive quiet.
 - **NEVER `--no-build`** — stale DLLs silently mask broken tests after branch switches/merges; `dotnet test` rebuilds automatically.
-- **ALWAYS `--settings .runsettings`** — GODOT_BIN fallback, 30min safety timeout, `TreatNoTestsAsError`, `MaxCpuCount=1`.
-- **Bash timeout: 600000** — the 120s default kills the command but not the Godot subprocess, orphaning it against the named pipe.
+- **ALWAYS `--settings .runsettings`** — runtime executable fallback, safety timeout, `TreatNoTestsAsError`, and `MaxCpuCount=1`.
+- **Set the shell timeout above the wrapper's wall-clock limit** — a shorter caller timeout can leave the Godot subprocess holding the named pipe.
 - **NEVER pipe test output through `| tail` / `| head`** — they buffer the whole stream and hang on long runs. Use `2>&1` alone.
 - **Add `[RequireGodotRuntime]` only for tests using Godot features** (GD.Load, Nodes, scenes).
 
@@ -35,11 +35,11 @@ dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedNa
 
 **Hang-safe runs (Windows) — the wrapper underneath:** `pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter "FullyQualifiedName~Tests.<Suite>" -Label <Suite>` file-redirects output and tree-kills on a hard wall-clock cap; bare `dotnet test`'s testhost→Godot grandchildren otherwise hold the caller's stdout pipe open so the read never EOFs. Returns `STATUS=DONE`/`STATUS=HANG` + the count line; `/regression_gate` uses it. The bare commands above stay valid as the **cloud path** (`xvfb-run`; both runners are Windows-only). Recovery: `archive_gdunit4_process_kill_and_orphans.md`.
 
-**Size `-TimeoutMs` proportionally — it is a hang-DETECTION deadline, so detection latency = the cap.** `cap ≈ clamp(2–2.5× expected run time, floor 90s)`; expected time from `Tests/integration_batch_durations.json` or a prior run's `Duration:` line. Do NOT under-cap: full Logic runs ~160s healthy (cap 6–8 min), and the FIRST run after `.tscn`/`.tres` edits pays reimport in-process (+60–90s) — a false HANG kill is worse than late detection, executor recovery being non-monotonic. Unknown expected time + fresh scene edits is the one case a generous blanket cap is correct. Executor briefs pass sized caps, never a copied 300000.
+**Size `-TimeoutMs` from a known healthy run.** It is a hang-detection deadline, so use enough headroom for rebuild and import work. Do not copy a fixed timeout from another project.
 
-**Do NOT add `-NoGodotRuntime` to Logic runs** — ~95% of the Logic suite is `[RequireGodotRuntime]`, and concurrent Godot test instances on one machine crash CLR `0xc000001d` (`--headless` is no escape — the pipe server needs a display). All suites serialize on the machine-global run-lock. The flag is only for a filter provably containing zero runtime tests (per-worktree lock, no pipe drain). Shipped for parallel dev instead: worktree-scoped pre-flight tree-kill (unattributable orphans still reaped), per-worktree pipe salt (`GDUNIT4_PIPE_SUFFIX` + forked gdUnit4.api, so overlapping runs mis-connect instead of cross-talking), per-worktree `TestResults/godot_test.log`. Detail: `gotcha_runtime_suite_pipe_contention.md`.
+**Do not add `-NoGodotRuntime` unless the selected filter contains zero runtime tests.** Concurrent Godot test instances can collide through shared runtime resources. Use the harness's scoped locks and process-ownership checks; never kill or reuse another checkout's run.
 
-**Integration runs batched:** `pwsh -NoProfile -File .claude/scripts/run_integration_batched.ps1` splits the suite into ~3 serial duration-balanced batches (weights: `Tests/integration_batch_durations.json`, committed + auto-refreshed on green), each through the wrapper with a batch-sized cap — a wedge costs one ~1-min retry, and each batch's fresh Godot process resets orphan accumulation. Ends with a sum-check vs baseline (`COMPLETENESS=OK` required). On `STATUS=HANG`/`BUDGET_EXCEEDED`, re-invoke `-RetryOnly` (greens skipped). Batches stay SERIAL — the gdunit4 connect pipe is machine-global per assembly. Per-batch boot (~40s) buys low variance; tune with `-TargetBatchSec` (default 60).
+**Batch large integration runs through the repository's wrapper.** Keep batches serial when the runtime transport is single-flight. Require a final count sum against the recorded baseline; a set of green partial batches is not complete evidence.
 
 ---
 
@@ -49,10 +49,10 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 
 | Domain | Location | Rule | When |
 |--------|----------|------|------|
-| **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) | SpellArchitecture, Synergies, Data |
-| **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel | Wizard, VFX, UI, Physics |
+| **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) | Pure calculations, data pipelines, reusable framework code |
+| **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel | Scenes, input, visuals, physics |
 
-**Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. A new top-level `Tests/<X>/` tree is **silently un-gated** until both the gate filters and `Tests/regression_baseline.json` are extended. Live deliberate example: `Tests/ProcGenSim/` (manual-only, via `/procgen_sim`).
+**Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs only the configured suite prefixes. A new top-level test tree is un-gated until both the gate filters and regression baseline are extended.
 
 ### Logic Domain Flow
 ```
@@ -95,7 +95,7 @@ Only genuinely-subjective items remain deferrable: visual aesthetics, timing/jui
 **Is this test about a reusable building block, or one composed instance?**
 
 - **Building blocks** (components, systems, strategies, Resources with behavior) get the full three-level treatment below — coverage here protects every entity composed from them.
-- **Composed entities/scenes** (a specific enemy, a specific spell scene) get (a) one **parameterized roster wiring-contract suite** over all instances (`[TestCase]` rows over a discovered set — exemplar `Tests/Integration/Enemies/NewEnemyDataTests.cs`), and (b) a few **representative** full-composition E2Es — NOT one per entity. No per-entity logic suites; no per-instance resource pins.
+- **Composed entities/scenes** get one parameterized roster wiring-contract suite over all discovered instances and a few representative full-composition E2Es. Do not create one suite or resource pin per entity.
 - **Data-integrity pins are per-SCHEMA, never per-instance.** A project-wide convention (iso facing, sprite scale anchor) is pinned once over a discovered set.
 - *Litmus:* if this test fails, is the defect in the block or in one instance's wiring? Block → test the block. Wiring → the roster suite already owns it.
 
@@ -105,32 +105,32 @@ New/complex systems need all three levels:
 
 | Level | Scope | Example |
 |-------|-------|---------|
-| **Unit** | Single component | `ReactionMatcher.FindMatch()` returns correct reaction |
-| **Integration** | Components together | `ReactionComponent` processes collision and fires handler |
-| **E2E** | Full path | Spell collision → reaction triggers → outcome visible |
+| **Unit** | Single component | `ScorePolicy.Evaluate()` returns the expected score |
+| **Integration** | Components together | A controller consumes a policy result and emits its event |
+| **E2E** | Full path | Scene input reaches the visible outcome |
 
 Unit tests passing ≠ system works. Cross-domain systems especially need E2E coverage.
 
 ### Primary Observable Behavior (POB) Rule
 
-Every new system with player-observable behavior MUST include at least one E2E/integration test asserting the primary observable outcome — what a player would notice if the system broke.
+Every new system with player-observable behavior MUST include at least one E2E/integration test asserting the primary observable outcome — what a player would notice if the system broke. One POB test per system, not per behavior — the roster suite owns the rest.
 
 | System | POB Test Assertion |
 |--------|--------------------|
-| Critter AI | "at least one critter position changes over 2s" |
-| Spell casting | "spell instance spawns when cast input simulated" |
-| Status effect | "movement speed stat reduced while effect active" |
-| Drop system | "ingredient spawns when trigger fires" |
+| Moving actor | "position changes after movement input" |
+| Spawn flow | "an instance appears after the trigger" |
+| Timed modifier | "the observable value changes while active" |
+| UI action | "the bound state changes after button input" |
 
 Unit tests at integration boundaries miss the engine-lifecycle failure class (`_Ready` order, nav-map timing, signal wiring, physics-frame delivery); the POB test is the last line of defense against it.
 
-**Refusal stance:** POB is non-waivable and unit-test depth is not the axis. Negotiating it on the basis of unit-test coverage — **STOP**.
+POB is non-waivable, and unit-test coverage is not an argument against it — unit depth is a different axis.
 
 ### Test Level Philosophy
 
-Prefer behavioral tests over implementation checks for game mechanics:
-- ❌ `AssertThat(blueprint.ActiveTraits.Count == 0).IsTrue()` — tests check logic
-- ✅ `AssertSpellCount(runner, 0)` — tests observable outcome
+Prefer behavioral tests over implementation checks:
+- ❌ `AssertThat(subject.InternalItems.Count == 0).IsTrue()` — pins storage
+- ✅ `AssertThat(subject.CanPerformAction()).IsFalse()` — tests observable behavior
 
 A unit test on internal logic can pass while gameplay is broken. Test what the player would observe.
 
@@ -156,11 +156,11 @@ public void Test_Feature_Documentation() {
 
 **Deletion gate:** a carve-out case is a *rewrite*, not a delete — replace the property-mechanics test with a behavioral test on the consumer. Before deleting any test as redundant, verify the successor exists (`git grep` the symbol); an assumed successor that isn't there turns a coverage regression into a closed finding.
 
-**Anti-pattern: Rationalizing strict TDD away on integration regressions** — when the change IS the prevention of a memorialized integration regression class (hot-loop, restart-loop, process-ordering race, BB-flag-soup, perception-staleness), an integration test exercising the symptom is mandatory however the diff splits across `.cs`/`.tscn` and however trivial the C# looks. Hot-loop and ordering bugs live at the SEAM between layers (BT+BTState, BehaviorTree+RestartPolicy switch, HSM+child-state lifecycle, Pool+Spawn callback) — test the seam, not the leaves. Logic Domain tests CAN exercise seams when the participants are framework primitives instantiable in code. Litmus: *"if this change re-introduced the bug it claims to fix, would my suite catch it?"* Answer "manual playtest" ⇒ write the seam test first. Template: `Tests/Logic/AI/BehaviorTreeRestartPolicyTests.cs`. **Refusal stance:** reclassify the *bug*, not the *file* — the modified file's domain is irrelevant. Accepting "Logic Domain file → unit test sufficient" as the axis — **STOP**.
+**Anti-pattern: Rationalizing strict TDD away on integration regressions.** If a change prevents a known seam failure such as a hot loop, restart loop, ordering race, or stale event state, write an integration test that exercises the symptom. Test the seam, not only its leaves. File location does not reclassify the bug. Litmus: *"If this change reintroduced the failure, would this suite catch it?"*
 
 ### Measurement Harnesses (generative domains)
 
-For generative/distributional domains (procgen, spawning, loot, crafting outcomes), prefer ONE corpus-style measurement harness over accumulating example pins: N seeds × M representative profiles through the real entry point, asserting success-rate / distribution / ceiling thresholds **pinned from the first observed run with headroom**, with a typed-cause histogram composed into the failure message so a regression names its dominant cause. Asserts the property gameplay depends on and doubles as tuning telemetry. Template: a corpus test under `Tests/Logic/<GenerativeDomain>/`.
+For generative/distributional domains (procgen, spawning, loot, assembly outcomes), prefer ONE corpus-style measurement harness over accumulating example pins: N seeds × M representative profiles through the real entry point, asserting success-rate / distribution / ceiling thresholds **pinned from the first observed run with headroom**, with a typed-cause histogram composed into the failure message so a regression names its dominant cause. Asserts the property gameplay depends on and doubles as tuning telemetry. Template: a corpus test under `Tests/Logic/<GenerativeDomain>/`.
 
 ### Test Hygiene
 - Never leave tests broken, even if unrelated to current work.
@@ -173,7 +173,7 @@ Run `/regression_gate` before committing code changes; the command owns the proc
 - Run AFTER the final staged state, never from a cached previous run.
 - ALL 3 suites (Logic, Integration, Sanity) must pass — one domain is insufficient.
 - Windows pipe crashes can silently drop tests — always `--filter` batches, never bare `dotnet test`.
-- Exempt: pure meta commits (`.claude/`, skills, docs) touching no code.
+- Exempt: pure meta commits (`.claude/`, skills, docs) touching no code — harness commits instead need a green `harness_tests.py` stamp (CLAUDE.md §Build & Test Commands).
 
 ### Modular Test Modules (Create On-Demand)
 
@@ -183,13 +183,7 @@ First test for HSM  → Inline setup (quick, specific)
 Second test for HSM → Extract into reusable module
 ```
 
-**Existing:** `SpellTestFixture`, `CastingTestFixture`, `GameplayScenarioBuilder`, `SpellAssertions`, `BehaviorTreeTestFixture`
-
-| Candidate system | Module | Purpose |
-|--------|--------|---------|
-| HSM | `HSMTestRunner` | Simulate state transitions |
-| Movement | `MovementTestHarness` | Spawn, apply forces, assert positions |
-| Combat | `CombatLogAssertions` | Assert combat events logged |
+**Existing modules:** inspect the test-support path declared in `skills/project_subsystems/SKILL.md` before adding another fixture, builder, assertion helper, or scenario runner.
 
 ### Retention & Curation Policy
 
@@ -203,10 +197,10 @@ Mock at **system boundaries**, never at internal collaborators. Applies to every
 
 | Mock | Don't mock |
 |------|------------|
-| External services Jmodot doesn't own | Your own classes, components, States |
-| Time-of-day / wall-clock | Anything in `{{PROJECT_NAME}}.*` you control |
-| RNG seeds (use `JmoRng` seeding, not a mock) | Anything in `Jmodot.*` you control |
-| File system reads (sometimes — prefer fixture files) | `IBlackboard`, `IComponent`, `ISpell`, etc. — use real instances or fixtures |
+| External services the project does not own | Project-owned classes, components, and states |
+| Time-of-day / wall-clock | Collaborators under the project's control |
+| RNG seeds (use the framework's seeded source, not a mock) | Reusable framework collaborators you can instantiate |
+| File system reads (sometimes — prefer fixture files) | Internal interfaces — use real instances or shared fixtures |
 
 **Warning sign:** the test breaks when you refactor an internal collaborator though *behavior* is unchanged — you mocked too deep, and the test now pins implementation, not contract.
 
@@ -215,17 +209,17 @@ Mock at **system boundaries**, never at internal collaborators. Applies to every
 **Testability of system-boundary code:**
 - Inject dependencies (`IRngSource` parameter) rather than `new`-ing externally inside the method.
 - Prefer specific operations (one method per external call shape) over generic `Fetch(string endpoint, params...)` interfaces — each becomes independently mockable without conditional logic in the mock setup.
-- For Components, lean on `IBlackboard` + fixture-driven setup (`SpellTestFixture`, `CastingTestFixture`, `BehaviorTreeTestFixture`) rather than mock collaborators.
+- For internal components, use real collaborators and the shared fixture modules declared by the consuming project rather than mocks.
 
-**Refusal stance:** the Don't Mock column is a boundary constraint, not a cost/benefit tradeoff; setup cost is not a counterweight. Writing "the setup cost is real, but..." — **STOP**. Name the fixture and proceed.
+The Don't Mock column is a boundary constraint, not a cost/benefit tradeoff — setup cost is not a counterweight. Name the fixture and proceed.
 
-**Reference:** `archive_testing_design_patterns.md` for fixture-vs-mock tradeoffs in {{PROJECT_NAME}}-specific contexts (real `Blackboard` instance vs. fake).
+**Reference:** `archive_testing_design_patterns.md` for fixture-vs-mock tradeoffs in project-specific contexts (real `Blackboard` instance vs. fake).
 
 ---
 
 ## Logic Domain — Red Flags & Rationalizations
 
-> **Scope:** Logic Domain only (`SpellArchitecture`, `Synergies`, `Jmodot.Core`, `Inventory`, `Math/Parsing`, `Data Structures`). Gameplay has its own rubric — the Gameplay Domain Flow above, and CLAUDE.md *Development Philosophy: Hybrid TDD* owns the split.
+> **Scope:** Logic Domain only. CLAUDE.md *Development Philosophy: Hybrid TDD* owns the consuming project's Logic/Gameplay split; the Gameplay Domain Flow above owns the other route.
 
 ### The Iron Law (Logic Domain only)
 
@@ -241,21 +235,14 @@ Production logic-domain code written before the test: **delete it and start over
 
 **Refusal stance for every row:** state the rule as non-negotiable, then prescribe the action. Don't justify it technically under pushback; don't frame Logic-Domain TDD as a tradeoff. Writing "the reason this is better is..." — **STOP**.
 
-Catching yourself thinking any of these ⇒ **stop, delete, restart with a failing test**:
+Catching yourself thinking any of these ⇒ **stop, delete, restart with a failing test**. The other seven excuses are tabled under `## strict` at the end of this file:
 
 | Excuse | Reality |
 |---|---|
-| "Too simple to test" | Simple code breaks. The test takes 30 seconds. |
-| "I'll test after" | Tests written after pass immediately — that proves nothing. If code exists, delete it before any test work; do not adapt. |
 | "Already manually tested" | Ad-hoc ≠ systematic. No record, can't re-run on the next change. |
 | "Deleting X hours of work is wasteful" | Sunk cost — non-negotiable, not a tradeoff. Unverified code is debt; the hours are spent either way. |
-| "Keep as reference, write tests first" | You'll adapt it. That's testing-after with extra steps. |
-| "Tests after achieve the same goals" | Tests-after document existing behavior including bugs; tests-first specify intended behavior. Descriptive, not specificational. |
-| "TDD will slow me down" | TDD is faster than debugging. The shortcut is the long way around. |
-| "Existing code has no tests" | You're changing it — tests for the logic you modify ship in the same change, not a future sweep. |
-| "It's a small refactor" | If logic changes, behavior changes. Test the change. |
 
-**Coverage deferral is not an option:** lifting coverage for the logic you're modifying is part of the current task. Writing "I'll do a coverage sweep later" / "tests in the next PR" — **STOP**. Deferred sweeps don't happen; the debt compounds.
+**Coverage deferral is not an option:** lifting coverage for the logic you're modifying is part of the current task — a later sweep or a next-PR promise is not a plan, and the debt compounds.
 
 ### Stop signals
 
@@ -263,15 +250,14 @@ If the test feels hard to write, **listen to the test**: hard-to-test usually me
 
 ### Cross-references
 
-- `feedback_strict_tdd_for_integration_regressions.md` — even when domain classification says "Gameplay," if the bug class IS the integration (hot-loop, race, BB-flag-soup, perception-staleness), write the seam-level integration test BEFORE shipping.
+- `feedback_strict_tdd_for_integration_regressions.md` — even when domain classification says "Gameplay," a seam-level regression still needs a failing integration test before the fix.
 - The Anti-pattern subsections above — how Logic-Domain tests fail in practice once written.
-- `debugging` skill Phase 5 — surviving record of the Wave-2 hot-loop domain-misclassification case.
 
 ---
 
 ## GdUnit4 Essentials
 
-Since v5, tests run **WITHOUT the Godot runtime by default** (10x faster). Add `[RequireGodotRuntime]` only when needed.
+Since v5, tests run **WITHOUT the Godot runtime by default**. Add `[RequireGodotRuntime]` only when needed.
 
 | Attribute | Use For |
 |-----------|---------|
@@ -304,29 +290,18 @@ With `new NodeType()`, `_Ready()` is **NOT called** (the node never enters the s
 
 ## Testing Framework
 
-Base fixtures, builders, mocks, assertions live in `Tests/Framework/`. **Exception:** `CastingTestFixture` is at `Tests/Integration/Casting/CastingTestFixture.cs` (extends `SpellTestFixture`).
+Keep base fixtures, builders, mocks, and assertions under the test-support path declared in `skills/project_subsystems/SKILL.md`.
 
 ### Fixtures
 
-**GameplayTestFixture** (base): `LoadIngredient("Apple")` / `LoadArchetype("Watergun")`; `CraftFromIngredients(...)` / `CraftFromIngredientNames(...)`.
+- Build a shared fixture when a second suite repeats setup.
+- Keep domain-specific fixtures with their owning integration suites.
+- Expose behavior-focused helpers; do not copy another project's resources, actors, or factory APIs.
+- Let the repository wrapper own runtime isolation. Never clear a peer checkout's singleton, pool, process, or transport.
 
-**SpellTestFixture** (extends above): `Crafter` property (fresh per test); `HasEffect<T>()`, `GetEffects<T>()`, `GetCollisionSystemType()`.
+### Runtime waits
 
-**CastingTestFixture** (E2E spell tests):
-- `LoadCasterScene()` / `GetCaster(runner)` — load scene with SpellCasterService
-- `LoadArchetype("Fireball")` / `CreateTestBlueprint(archetype, ...effects)` — create test spells
-- `CountSpawnedSpells(runner)` / `GetSpawnedSpells(runner)` — count/get active spells
-- **Pool isolation:** call `SpellPoolManager.Instance?.ClearAllPools()` in `[BeforeTest]`
-- **SetExportProperty helper:** prefer `#if TOOLS` test helpers (`architecture_philosophy` skill); reflection only for third-party types you can't modify
-
-| E2E wait | Purpose |
-|------|---------|
-| `100ms` | Charge/initialization, physics server registration after AddChild |
-| `200ms` | Collision processing (Area3D overlap) |
-| `400ms` | Pool return completion |
-| `500-800ms` | SpellSpawner spawn-count assertions (heavy synchronous per-spawn work) |
-
-**SpellSpawner timing caveat:** `SpawnChild()` does heavy synchronous work per spawn (scene instantiation, visual loading, collision shape adoption, combat wiring), eating frame budget — use `Duration >= 0.3s`, `SpawnInterval <= 0.05s`, and generous `AwaitMillis` (500-800ms) for spawn-count assertions.
+Wait for the engine condition the assertion needs: a processed frame, physics frame, signal, or node state. Avoid copied millisecond delays. If no event is available, derive a bounded deadline from a healthy run and keep the wait local to the fixture.
 
 ### Production Resource Coupling
 
@@ -340,9 +315,9 @@ Tests loading production `.tres`/`.tscn` from outside `Tests/` are fragile to de
 
 **Baseline comparison pattern** (modifier tests):
 ```csharp
-var baseline = crafter.Create(Array.Empty<Ingredient>(), null);
-var withIngredient = crafter.Create(new[] { compass }, null);
-AssertThat(withIngredient.Stat).IsGreater(baseline.Stat);
+var baseline = subject.Evaluate(baseInput);
+var modified = subject.Evaluate(inputWithModifier);
+AssertThat(modified.Score).IsGreater(baseline.Score);
 ```
 
 ### Seam-Injected Dependencies Need One Real-Scene Test
@@ -364,7 +339,7 @@ await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 **Programmatic nodes need explicit setup:**
 - `AddChild()` does NOT set `Owner` — set `hurtbox.Owner = target` explicitly.
 - `Initialize()` calls using `SetDeferred` (Monitorable, etc.) need scene tree + 2 frames.
-- Wait 100ms after `AddChild(target)` for the physics server to register Area3D nodes.
+- After `AddChild(target)`, await the physics frames or signal required for server registration; do not copy a fixed sleep from another suite.
 - `SetDeferred` properties don't take effect on nodes outside the scene tree.
 
 **Float accumulation in duration tests** — testing time-based BT actions or timers, avoid accumulating small deltas (`60 × 1f/60f ≠ 1.0f`, IEEE 754). Use a single large delta:
@@ -383,20 +358,6 @@ bool flag = value is true;
 bool flag = value is Variant v && v.AsBool();
 ```
 
-### Usage
-```csharp
-[TestSuite]
-public partial class MyTests : SpellTestFixture
-{
-    [TestCase, RequireGodotRuntime]
-    public void Test_Spell_Has_Effect()
-    {
-        var blueprint = CraftFromIngredientNames("Apple");
-        AssertThat(HasEffect<SomeEffect>(blueprint)).IsTrue();
-    }
-}
-```
-
 ---
 
 ## Teardown Doctrine & Orphan Prevention
@@ -409,7 +370,7 @@ public partial class MyTests : SpellTestFixture
 | Out-of-tree Node (`new NodeType()`) | `Free()` in `[AfterTest]`/`[After]` |
 | Resource / RefCounted (loaded `.tres`, `new SomeResource()`) | Drop references — no Free/QueueFree call at all |
 
-**No numeric orphan/leak ceiling exists today.** At process exit Godot prints one engine ERROR per leaked Node (`Cannot get path of node...` in the ObjectDB leak dump), so `TestResults/godot_test.log` error counts scale with orphan count, not bug count — and exit code `-1073740791` correlates with accumulation. Leak-dump math and log interpretation: `diagnostics_toolkit` skill.
+**Do not infer a universal orphan ceiling from one project's logs.** Godot can emit one engine error per leaked Node at process exit, so error volume scales with leaked objects rather than distinct defects. Use the consuming project's recorded sentinel and the `diagnostics_toolkit` skill to interpret the run.
 
 ```csharp
 // 1. Use 'using' with ISceneRunner (auto-cleanup)
@@ -427,27 +388,18 @@ public void TearDown() => _node?.QueueFree();
 
 ## Exit Codes & Troubleshooting
 
-| Code | Meaning | Action |
-|------|---------|--------|
-| `0` | Pass | ✓ |
-| `100` | Failures OR executor timeout | Check test count - may be cosmetic |
-| `101` | Warnings | Review orphan warnings |
-| `-1073740791` | Godot crash (orphan accumulation) | Run in batches — never the full suite unfiltered |
+Treat the repository wrapper's structured status and test counts as authoritative. A process exit code alone can conflate assertion failures, runtime transport failure, timeout, and engine crash.
 
-### "GodotRuntimeExecutor timed out"
-**This is a SILENT TEST SKIP.** All `[RequireGodotRuntime]` tests report "Passed" while never running — the regression gate is INVALID.
-- **~388 is a silent-skip SENTINEL, not a suite size.** It is the count of Logic tests passing WITHOUT the Godot runtime — the signature when the executor fails to connect. The real Logic baseline is ~19× larger; current counts and machine-readable floors (`silent_skip_sentinels`, e.g. `Logic_min: 500`) live in `Tests/regression_baseline.json`, auto-updated on green by `/regression_gate` — never hardcode them. Logic ≈ 388 ⇒ silent skip however green the output looks. The sentinel does not drift with test growth.
-- **Pre-test checklist:** kill orphaned Godot processes BEFORE running (positive identification only — Editor/Playtest/Unknown are constitutionally spared):
-  ```powershell
-  . .claude/scripts/GodotProcess.ps1
-  $map = Get-ProcSnapshot
-  Get-ReapableGodot -Checkout (Get-Location).Path -Map $map |
-      ForEach-Object { taskkill /F /T /PID $_.ProcessId }
-  ```
-- **Post-test validation:** scan output for `GodotRuntimeExecutor failed` or `Connection timeout`. Present ⇒ results invalid; fix and re-run.
-- **If the sentinel fires:** the executor isn't reaching Godot — kill orphans (above), then verify `GODOT_BIN`: User env var (`setx GODOT_BIN "C:\path\to\godot.exe"`) and/or `--settings .runsettings` (which hardcodes a machine-specific path — `environment_bootstrap` skill on a new machine).
+### Runtime executor failure
 
-**More gotchas:** search auto-memory (semantic-search) for "GdUnit4" or "Godot C# test gotchas".
+A `GodotRuntimeExecutor failed` or `Connection timeout` message invalidates every apparent pass from runtime-required tests.
+
+- Compare the executed count with the project-owned suite floor or silent-skip sentinel. Do not copy counts from another project.
+- Use the wrapper's scoped ownership checks to clear only proven orphan processes. Never kill an editor, playtest, or peer-owned runner.
+- Verify the runtime executable through the project's environment bootstrap and `.runsettings`; do not publish a machine path.
+- Re-run the affected suite and require both a valid count and no runtime-transport failure signature.
+
+**More gotchas:** search auto-memory for "GdUnit4" or "Godot C# test gotchas".
 
 ---
 
@@ -457,3 +409,19 @@ public void TearDown() => _node?.QueueFree();
 |-----------|----------|
 | [scene_runner.md](scene_runner.md) | ISceneRunner API: accessors, input simulation, frame control (vendored GdUnit4 docs) |
 | [advanced.md](advanced.md) | Lifecycle hooks, parameterized tests, utilities, FAQ (vendored GdUnit4 docs) |
+
+## strict
+
+Read this section only if your session tier line says `strict`.
+
+### Rationalizations to refuse — the remaining rows
+
+| Excuse | Reality |
+|---|---|
+| "Too simple to test" | Simple code breaks. Write the small test first. |
+| "I'll test after" | Tests written after pass immediately — that proves nothing. If code exists, delete it before any test work; do not adapt. |
+| "Keep as reference, write tests first" | You'll adapt it. That's testing-after with extra steps. |
+| "Tests after achieve the same goals" | Tests-after document existing behavior including bugs; tests-first specify intended behavior. Descriptive, not specificational. |
+| "TDD will slow me down" | TDD is faster than debugging. The shortcut is the long way around. |
+| "Existing code has no tests" | You're changing it — tests for the logic you modify ship in the same change, not a future sweep. |
+| "It's a small refactor" | If logic changes, behavior changes. Test the change. |

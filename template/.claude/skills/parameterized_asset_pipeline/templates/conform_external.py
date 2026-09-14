@@ -11,7 +11,7 @@ verify the original of this file).
 
 Companion to ``generate_unit.py``. Where generate_unit DRAWS palette-correct
 pixels from templates, conform_external PROJECTS arbitrary external pixel art
-(e.g. a CC0 Luiz Melo sheet) onto the same contract: Resurrect-64 palette,
+(e.g. a CC0 third-party sheet) onto the same contract: project palette palette,
 1px-feet-on-ground-line framing, and a tick-faithful manifest. The external
 RGB never reaches the canvas -- only its luminance *level* (which ramp step) and
 hue *material* (which ramp) survive, so palette compliance holds by construction
@@ -30,7 +30,7 @@ Pipeline (art-pipeline-uplift.md Track 2):
 
 Mapping dict / JSON (the per-source spec):
     {
-      "name": "luiz_wizard",
+      "name": "example_subject",
       "typeclass": "melee_biped",      # body_size floors come from this
       "element": "fire",
       "canvas": "32x32",               # target canvas (32x32 or 48x64)
@@ -44,7 +44,7 @@ Mapping dict / JSON (the per-source spec):
       "body_fill": 0.85,               # optional; body height as fraction of the
                                        # canvas (decouples hero size from class)
       "body_height": 52,              # optional; absolute px, wins over body_fill
-      "source_sheet": "external/sources/wizard.png",  # path (CLI only)
+      "source_sheet": "external/sources/player.png",  # path (CLI only)
       "source_grid": {"frame_w": 64, "frame_h": 64},  # source cell size
       "rows": [                        # source row -> target animation
         {"animation": "idle",   "src_row": 0, "frames": 4, "fps": 7,  "loop": true},
@@ -150,7 +150,7 @@ def _material_for(rgb, materials: list[dict], neutral: dict | None = None,
 
     A desaturated pixel (near-white/grey: book pages, beard, highlights) has no
     meaningful hue, so hue-matching it against chromatic materials misfiles it
-    onto whatever anchor is nearest 0deg (skin) -- which fused the wizard's book
+    onto whatever anchor is nearest 0deg (skin) -- which fused the player's book
     into his face. When a ``neutral`` material is declared, pixels below
     ``neutral_sat_max`` saturation route there instead. Otherwise: single
     material -> that ramp; else nearest chromatic material by circular hue."""

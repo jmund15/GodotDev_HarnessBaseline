@@ -19,10 +19,10 @@ The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_log
 
 | Level | Use for | Examples |
 |---|---|---|
-| **`Error`** | Invariant violation. Production-impossible state. | `[Caster] holder component null after Initialize` |
+| **`Error`** | Invariant violation. Production-impossible state. | `[Controller] required component null after Initialize` |
 | **`Warning`** | Recoverable issue. Designer/data oversight that has a defensible default. | `[Pool] cap exceeded, allocating fresh instance` |
-| **`Info`** | State transitions. Discrete game events. Cross-system signals. **One Info ≈ one user-visible thing happened.** | `[HSM] WizardSM Idle→Casting`, `[Match] wave 3 started`, `[Crafter] cast fizzled — mana depleted` |
-| **`Debug`** | Decision branches inside a system. Numeric tunables. Per-collision / per-event detail. **Off by default** — emitted only when `JmoLogger.MinimumLevel` reaches `Debug`. | `[EscapeCheck] no threats in perception → ESCAPE`, `[Collision] periodic prune: removed 4 dead refs`, `[Pool] request hit, reused id=17` |
+| **`Info`** | State transitions. Discrete game events. Cross-system signals. **One Info ≈ one user-visible thing happened.** | `[HSM] AgentSM Idle→Active`, `[Match] round 3 started`, `[Inventory] operation rejected — capacity reached` |
+| **`Debug`** | Decision branches inside a system. Numeric tunables. Per-collision / per-event detail. **Off by default** — emitted only when `JmoLogger.MinimumLevel` reaches `Debug`. | `[Decision] no valid targets`, `[Collision] periodic prune: removed 4 dead refs`, `[Pool] request hit, reused id=17` |
 
 **Every level is silenceable.** `JmoLogger.MinimumLevel` (project setting `debug/jmodot/minimum_log_level`, default `Info`) is the emission threshold; only `Error` is ungated. `DebugEnabled` still works as a derived accessor. Two consequences for call-site choice:
 
@@ -41,35 +41,29 @@ The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_log
 Every `Info` and `Debug` call site MUST begin with a bracketed subsystem tag:
 
 ```csharp
-JmoLogger.Info(this, $"[Crafter] cast fizzled — mana depleted at release");
+JmoLogger.Info(this, $"[Inventory] operation rejected — capacity reached");
 JmoLogger.Debug(this, $"[Collision] sibling registered: {newBody.Name} (count={_active.Count})");
 ```
 
-Why mandatory: `/analyze_godot_logs --target Crafter` and `--mode tags` both rely on the analyzer's `\[(\w+)\]` regex. Untagged calls are invisible to subsystem slicing and pollute the summary mode.
+Why mandatory: `/analyze_godot_logs --target Inventory` and `--mode tags` both rely on the analyzer's `\[(\w+)\]` regex. Untagged calls are invisible to subsystem slicing and pollute the summary mode.
 
-### Canonical tags
+### Project-owned tags
 
-Use these. Don't invent new ones unless the subsystem genuinely has no fit — and if you do, append it to this list in the same commit.
+Keep the canonical tag list with the project's subsystem registry or logging configuration; declare that owner in `skills/project_subsystems/SKILL.md`. Use one stable tag per subsystem, such as `[Inventory]`, `[Movement]`, `[Pool]`, or `[Match]`. Add a new tag to the project-owned list in the same commit.
 
-**Combat & spells:** `[Crafter]` `[Pool]` `[Spawn]` `[Collision]` `[Cast]` `[Reaction]` `[Spell]` `[Impact]` `[SpawnEffect]` `[Status]`
-**State machines:** `[HSM]` `[BT]` `[BasicRespawnState]` `[KOState]` `[ChargeState]` (state-named tags acceptable when the state IS the subsystem)
-**AI / perception:** `[Perception]` `[EscapeCheck]` `[Steering]` `[Navigator]` `[Critter]`
-**Game flow:** `[Match]` `[Wave]` `[Wizard]` `[Player]` `[Registry]`
-**Systems:** `[Inventory]` `[Crafting]` `[Throw]` `[Holder]`
-
-Tags are flat (`[Spell]`), not nested (`[Spell.Crafter]`) — the analyzer's regex captures only the first word-token, so a nested tag would parse as `[Spell]` and lose its suffix.
+Tags are flat (`[Inventory]`), never qualified (`[Inventory.Actions]`, `[Inventory:Add]`). The analyzer matches `\[(\w+)\]`; a `.` or `:` inside the brackets makes the line invisible to `--target` and `--mode tags`. Put the qualifier in a field: `[Inventory] action=Add`.
 
 ### Typo discipline
 
 Subsystem tags are **magic strings**, not constants. Constants would force {{PROJECT_NAME}} taxonomy into Jmodot (violates the framework boundary rule in `jmodot_framework_boundary_rule.md`). Typo drift instead self-reports: `/analyze_godot_logs --mode tags` after any play session shows the histogram; a `[Colision]` outlier surfaces on first run and gets fixed at the call site.
 
-### Exception — `InstrumentationTags` for cross-cutting hypothesis tags
+### Exception — project-owned constants for cross-cutting measurement tags
 
-`{{PROJECT_NAME}}.Global.InstrumentationTags` (`Global/InstrumentationTags.cs`) IS a constants class — but its scope is deliberately narrow. It holds tags for **MVP hypothesis tracking** (H2 craft completion, H3 spell-cast volume, H4 recipe switching, H5 wizard hit-while-wheel-open) where the same string must be referenced from multiple unrelated sites AND from external log-mining scripts that compare across playtests. Examples: `[Craft]`, `[Cast]`, `[RecipeSwitch]`, `[Hit]`.
+A project may keep constants for product-hypothesis tags when the same string must be referenced from unrelated call sites and external log-mining scripts. Declare the constants file in `skills/project_subsystems/SKILL.md`; the baseline does not prescribe its namespace or path. Examples: `[OnboardingComplete]`, `[FeatureUsed]`, `[ModeChanged]`.
 
-Use the constants at call sites: `JmoLogger.Info(this, $"{InstrumentationTags.Hit} damage={dmg}, hp={hp}");`
+Use the constants at call sites: `JmoLogger.Info(this, $"{InstrumentationTags.FeatureUsed} feature={featureId}");`
 
-This file's own docstring is the governance rule: **subsystem/debug tags do NOT belong in `InstrumentationTags`.** New hypothesis tags get a constant; new subsystem tags stay as magic strings. The litmus: *"Is this tag tracking a measurable hypothesis across playtests, or is it identifying which subsystem emitted the log?"* Hypothesis → constant; subsystem → magic string.
+Subsystem/debug tags do not belong in this constants class. The litmus: *"Is this tag measuring one hypothesis across sessions, or identifying which subsystem emitted the log?"* Hypothesis → constant; subsystem → magic string.
 
 Note for analyzer-side reasoning: calls using `$"{InstrumentationTags.X} ..."` look untagged to a naïve regex (first char after `"` is `{`, not `[`) but ARE compliant — the constant value embeds the bracket. The `check_logger_tag_prefix.py` hook recognizes this pattern.
 
@@ -78,10 +72,10 @@ Note for analyzer-side reasoning: calls using `$"{InstrumentationTags.X} ..."` l
 When using `JmoLogger.Debug` for short-lived diagnostic instrumentation during a debugging session (Phase 4 of `Debugging` skill), compose the diagnostic tag **after** the subsystem tag:
 
 ```csharp
-JmoLogger.Debug(this, $"[Spell][DIAG-a4f2] cast state={state} target={target?.Name ?? "null"}");
+JmoLogger.Debug(this, $"[Inventory][DIAG-a4f2] state={state} item={item?.Name ?? "null"}");
 ```
 
-**Composition rule:** `[Subsystem][DIAG-<id>]`, never `[DIAG-<id>]` alone. Without the subsystem prefix, `--target Spell` skips the diag log, defeating the filter that gets you to the right slice.
+**Composition rule:** `[Subsystem][DIAG-<id>]`, never `[DIAG-<id>]` alone. Without the subsystem prefix, `--target Inventory` skips the diagnostic log.
 
 Pick four random hex chars for `<id>` per debugging session. Single grep `[DIAG-` removes all of a session's instrumentation at Phase 6 cleanup.
 
@@ -106,10 +100,10 @@ What the `/analyze_godot_logs` flag does depends on what the call site emits.
 ## Anti-patterns
 
 1. **Every-frame logs** — never inside `_Process`, `_PhysicsProcess`, `Tick`, or update loops. Even Debug. Move to a transition edge or a periodic-sampling guard.
-2. **State dumps** — `Info("current health is 30")` when health hasn't changed. Log the *transition* (`[Combat] {target} health 35 → 30 from {source}`), not the current value.
-3. **Narrative / developer talk** — `Info("checking branch A because foo")`. Either it's a decision point (→ Debug with `[Subsystem]`) or it's noise (delete).
-4. **Unprefixed Info** — discovered as ~45% of the corpus at audit time. The single biggest source of analyzer blind spots.
-5. **Info catch-all for what should be Debug** — top audit offenders were `SpellCrafter` (28), `SpellPoolManager` (19), `MatchController` (17) emitting per-cast / per-pool-op narrative at Info. Demote to Debug; let `DebugEnabled=true` + `--target [Crafter]` retrieve when needed.
+2. **State dumps** — `Info("current health is 30")` when health has not changed. Log the transition (`[Health] {target} health 35 → 30 from {source}`), not the current value.
+3. **Narrative / developer talk** — `Info("checking branch A because foo")`. Either it is a decision point (→ Debug with `[Subsystem]`) or noise (delete).
+4. **Unprefixed Info** — invisible to subsystem filters.
+5. **Info catch-all for what should be Debug** — repeated operation detail belongs at Debug. Keep Info for state transitions and user-visible events.
 6. **Demoting Warning to Error to be louder** — fails tests. See `archive_jmologger_gotcha.md`.
 
 ## Workflow recipes
@@ -129,8 +123,8 @@ If summary is empty of the system you care about, the producer side is missing l
 Keep the toggle on. Narrow via the analyzer:
 
 ```
-/analyze_godot_logs --target Spell --mode timeline --last 50
-/analyze_godot_logs --node WizardA --mode entity
+/analyze_godot_logs --target Inventory --mode timeline --last 50
+/analyze_godot_logs --node AgentA --mode entity
 ```
 
 Don't flip Debug back off — you'll lose the diagnostic detail you just enabled. The analyzer's job is to slice; let it.

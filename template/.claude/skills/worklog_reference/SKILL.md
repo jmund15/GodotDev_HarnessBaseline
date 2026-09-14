@@ -1,19 +1,17 @@
 ---
 name: worklog_reference
 description: >-
-  Decision-time companion to the `/worklog` command — load when a deferral
-  surfaces and you must classify or route it: class/scope inference, domain
-  pick, regular-vs-future-vs-user-tasks routing, the full trigger catalog,
-  completion signals. Triggers: "worklog", "deferred", "defer", "follow-up",
-  "out of scope", "park this", "next pass", "future scope", "user-tasks".
-  SKIP for ad-hoc todos unrelated to the Obsidian worklog system, and for
-  executing a `/worklog` operation — the command is self-contained for mechanics
-  (classification heuristics live here).
+  Decision-time companion to the `/worklog` command — load when a deferral, follow-up,
+  or out-of-scope item surfaces and you must classify or route it: class/scope
+  inference, domain pick, regular-vs-future-vs-user-tasks routing, completion signals.
+  SKIP for ad-hoc todos unrelated to the Obsidian worklog system, and for executing a
+  `/worklog` operation — the command is self-contained for mechanics (classification
+  heuristics live here).
 ---
 
 # Worklog Reference
 
-The **decision-time** half of the worklog system: it tells you *whether* a deferral should be logged, *how* to classify it, and *where* it routes. The `/worklog` slash command is the **execution** half — it owns the operation recipes (show / add / complete / sweep / triage / plan / unblock / promote / user-add). Reach for this skill when CLAUDE.md's auto-detect fires on a deferral phrase and you need to compose a correct `Add to Worklog` proposal; reach for `/worklog` when you need to actually perform a write.
+The **decision-time** half of the worklog system: it tells you *whether* a deferral should be logged, *how* to classify it, and *where* it routes. The `/worklog` slash command is the **execution** half — it owns the operation recipes (show / add / complete / sweep / triage / drive / unblock / promote / user-add). Reach for this skill when CLAUDE.md's auto-detect fires on a deferral phrase and you need to compose a correct `Add to Worklog` proposal; reach for `/worklog` when you need to actually perform a write.
 
 The worklog itself is one Obsidian doc with two live buckets — **Active** (in-flight, mirror-visible) and **Future Scope** (distant-horizon `When: future` items, one-liner format, mirror-excluded) — plus two opaque sibling docs: **Worklog-Archive.md** (completed `[x]` items, moved out of Active on completion, read only via `/worklog history`) and **User-Tasks.md** (user-only-addressable, fully agent-opaque). Active soft-caps at 30 items; `/worklog show` alarms over the cap and recommends `/worklog triage`.
 
@@ -28,6 +26,8 @@ The worklog itself is one Obsidian doc with two live buckets — **Active** (in-
 | Linked-from per-topic TODO docs | `DevProjects/{{PROJECT_NAME}}/Claude/TODO/*.md` (excluding `PRTesting/`) |
 
 **The mirror is a discovery index, not a spec.** When planning or scoping a logged item, read its full `Context` / `Where` / `Source` block in `Worklog.md` — the title-only mirror (`worklog-titles.md`) can mislead about scope entirely (a title naming one concept whose Context is about a different subsystem). Plan from the source block, not the mirror line.
+
+**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the once-per-session relevance check (CLAUDE.md §The Worklog *Relevance check*) — `.claude/workflows/worklog_relevance.js` or `.claude/scripts/worklog_relevance_sidecar.sh`, both driven by `.claude/workflows/worklog_relevance.prompt.md`. It returns structured overlaps or an empty array without loading the backlog into your context.
 
 ## Classification (required on every item)
 
@@ -45,6 +45,8 @@ Pick the best match. If genuinely ambiguous, ask the user.
 | `design` | Brainstorming/planning, no implementation yet | 4 (always paired with a linked doc) |
 
 **Reclassification rule:** when an item's nature changes (e.g., `debug` resolves into a known root cause), update its class in-place — don't open a new entry. Bump the date stamp via `- updated YYYY-MM-DD` if the change is non-trivial.
+
+**Title the diagnosis, not the presumed fix.** If you cannot cite direct evidence isolating the cause, the item is `debug`, and its title names the bisection — not a hypothesized remedy. A title like "isolate X" commits a future session to one mechanism and biases it away from cheaper explanations; put the candidate mechanisms in Context as branches. Symptom codes and error strings are especially prone to this — check whether the project already attributes that signature to more than one cause before naming a fix. (Same gate as `/autolearn`'s *Overfit-to-Specific*, applied to task titles.)
 
 ## Scope (required on every item)
 
@@ -75,7 +77,7 @@ A readiness classifier: *can this item be worked on now?* Distinct from scope (e
 - `When:` is a sub-bullet, parallel to `Where:` and `Source:`. Omitting it means ready.
 - The `condition` in `after <condition>` is free text — a human signal, not a machine gate.
 - If you find yourself tagging many items `future`, that's a signal some should be removed entirely or promoted to a Linked Doc.
-- `/worklog plan` only scores ready items; `after` items appear in a separate "Waiting" section; `future` items aren't surfaced there at all.
+- `/worklog drive` only selects ready items; `after` items appear in a separate "Waiting" section; `future` items aren't surfaced there at all.
 
 **`future` vs. normal deferral — the litmus.** Most "defer this" / "for now" / "next pass" / "follow up" signals → regular Active item, no `When:` line (ready). Only escalate to `When: future` when ALL of these hold:
 
@@ -92,11 +94,11 @@ When deciding which `### Header` an item belongs under, pick the closest match (
 
 | Long form (Active section header) | Short form (mirror line) |
 |-----------------------------------|--------------------------|
-| AI / Critters | `ai` |
-| Wizard | `wizard` |
-| Spell Architecture | `spell` |
-| Synergies / Ingredients | `synergy` |
-| Inventory / Crafting | `crafting` |
+| AI / Entities | `ai` |
+| Player | `player` |
+| Ability Architecture | `ability` |
+| Combinations / Materials | `combination` |
+| Inventory / Assembly | `assembly` |
 | Encounter | `encounter` |
 | Currency | `currency` |
 | UI / UX | `ui` |
@@ -162,7 +164,7 @@ These signal "not now, but could come up next session". Default routing.
 These signal "ready when X happens". Item stays in Active mirror with `[after: X]` suffix.
 
 - **Phrase patterns:** "after X ships", "once Y is done", "when Z lands", "blocked on W", "we can do this once...", "as soon as we have..."
-- **Inferred from context:** if a deferral mentions a specific PR/spell/system as prerequisite (`"do this after Core Elemental tier-1 ships"`), capture the prereq as the `<condition>`.
+- **Inferred from context:** if a deferral mentions a specific PR/ability/system as prerequisite (`"do this after Core Elemental tier-1 ships"`), capture the prereq as the `<condition>`.
 - **Litmus:** can you write a one-line condition that, when true, would make this item ready? Yes → `after`. No → either ready (regular) or `future`.
 
 ### Future-scope triggers (→ `## Future Scope` section, `When: future`)
@@ -194,13 +196,13 @@ If unsure whether something qualifies as Future Scope → **ask, don't auto-rout
 - **Litmus:** is the missing input "what feels good" rather than "what is correct"? Yes → User-Tasks. (Note: "deterministic stat balance" with measurable criteria stays a `design` worklog item, not User-Tasks.)
 
 #### Open-ended brainstorms without a Claude-anchor
-- **My-side:** "brainstorm synergies between X and Y" *when* the output is a creative direction, not technical alternatives; "design the flavor of X", "decide what the lore around X should be"
-- **Your-side:** "I want to brainstorm X", "let me think on X synergies"
+- **My-side:** "brainstorm combinations between X and Y" *when* the output is a creative direction, not technical alternatives; "design the flavor of X", "decide what the lore around X should be"
+- **Your-side:** "I want to brainstorm X", "let me think on X combinations"
 - **Litmus:** does "brainstorming this with Claude" produce a design Claude can implement? Yes → `design` worklog item, scope 4, paired Plan doc. No (output is *your* preference, not technical) → User-Tasks.
 - **Anti-trigger:** "brainstorm a unified status-effect blackboard schema" is technical — Claude can run `architecture_brainstorm` (routed via `idea_brainstorm` first if greenfield) and produce a design doc. → `design` worklog, NOT User-Tasks.
 
 #### Cross-doc design audits driven by user vision
-- **My-side:** "your game vision changed — your design docs need an audit pass", "the lore and spell docs disagree on X — needs your reconciliation"
+- **My-side:** "your game vision changed — your design docs need an audit pass", "the lore and ability docs disagree on X — needs your reconciliation"
 - **Your-side:** "audit my design docs for X", "reconcile my docs against the new vision"
 - **Litmus:** is the missing input *your* intent / *your* taste? Yes → User-Tasks. (Claude can audit *for inconsistencies* — that stays `docs` worklog. But audit *for vision-alignment* requires the user's vision as input.)
 
@@ -209,7 +211,7 @@ If unsure whether something qualifies as Future Scope → **ask, don't auto-rout
 Parts on a brainstorm `roadmap.md` whose execution is inherently user-domain (spatial design, manual content authoring, taste-driven tuning) but carry roadmap deps and dependents. Examples: "design 10–15 static prototype floor scenes." Route to roadmap State=`user-owned` (see `_brainstorm_shared/common.md §6.3`), NOT `User-Tasks.md` — the Part must stay on the roadmap to preserve the dependency graph.
 
 #### Anti-triggers (do NOT route to User-Tasks on these)
-- Technical tasks that *touch* art (e.g., "wire the visuals component to the new spell") — Claude can do this; the art existing is a prerequisite, not the work.
+- Technical tasks that *touch* art (e.g., "wire the visuals component to the new ability") — Claude can do this; the art existing is a prerequisite, not the work.
 - Bug fixes that *block* feel-tuning (e.g., "fix the shake parameter not respecting amplitude") — the fix is Claude's; only the post-fix tuning is yours.
 - Brainstorms with defined technical output ("brainstorm the IBlackboardProvider migration order") — Claude tackles those via `architecture_brainstorm`.
 
@@ -253,7 +255,7 @@ Mark **immediately**, in the same turn the resolution lands. The Active section'
 The `/worklog` command's Forms table is the full operation list. Three routing decisions worth internalizing before you reach for the command:
 
 - **`/worklog add` vs. `/worklog user-add`** — use `user-add` when the item needs user judgment Claude fundamentally can't produce: production art, feel-tuning, open-ended brainstorms whose output is the user's preference, cross-doc audits requiring the user's vision. Use `add` (default) for everything Claude can plausibly tackle — including `design`-class items with technical output. **Litmus:** *"If Claude wrote a perfect plan body for this and the user said 'go', would the result be a working artifact?"* Yes → `add`. No (output is taste / art / a personal decision) → `user-add`. When in doubt → `add` — false-routing to User-Tasks is a permanent leak (the doc isn't agent-surveyed); false-routing to Active just costs one mirror line.
-- **`/worklog plan` — survey vs. draft mode** — `plan` with no target *surveys* candidate batches (pick later); `plan scope:N` / `items:N` (or the `tackle` alias for `plan scope:3`) *drafts* — fills the target with the highest-scoring ready items and produces a ready-to-execute plan body. Both share the Step 1–3 scoring engine; they differ only in what they emit.
+- **`/worklog drive` — which mode you get** — the argument decides, first match wins: no argument *surveys* candidate batches (pick later); a budget-shaped argument (`<N>` ≡ `scope:N`, combinable with `items:N`) *fills* the target from the highest-scoring ready items; anything else is read as *named items* (comma-split, fuzzy-matched, no scoring). Survey and budget share the Step 1–3 scoring engine. Every mode executes through to commits at the item's scope tier — append `--plan-only` to stop at the drafted plan body instead.
 - **Worklog item vs. `spawn_task`** — the worklog holds deferrals that fit a *future session*. If an item grows beyond inline scope (typically a scope-4 that must be acted on *now*), graduate it via `mcp__ccd_session__spawn_task`, then run the COMPLETE recipe so it moves to `Worklog-Archive.md` — with a `(spawned task <id>)` ref in place of a commit hash.
 
 ## MCP-offline

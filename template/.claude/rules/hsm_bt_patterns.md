@@ -18,30 +18,30 @@ paths:
 
 - **Determination lives in `TransitionCondition.Check()`.** Conditions may freely read BB, query stateful components (`CombatLog.GetMostRecent<T>(window)`, `ICharacterController3D.Velocity`, perception lists), and process the result (band comparisons, eligibility math against config exports). The *processing* is fine; what's forbidden is **outsourcing the decision** — an external "detector" component that reads state, pre-classifies the transition, and sets a BB flag the condition reads as a dumb boolean. The condition must own the *if-then*, not just consume a pre-computed answer.
 - **Calculator / data-processor components ARE fine.** `KnockbackComponent3D` writes `KnockbackResult`; `MovementProcessor3D` exposes `Velocity`; `AIPerceptionManager3D` updates threat lists; `CombatLog` accumulates events. These publish raw observations; conditions interpret them. The line is *who owns the predicate*: data-producer (✅) vs decision-maker writing a flag the condition trusts (❌).
-- **Reactive vs active states — only reactive states are restricted from authoring physics.** A **reactive state** (response to a *received* event: `KnockedUpState`, `LaunchedState`, `StunnedState`, `HitState`, `CapturedState`, `DyingState`) must NOT author the event that triggered it. The impulse / damage / faction change predates the state; the state's job is animation + strategy-swap + stat-context for the response. `LaunchedState.OnEnter` calling `ApplyImpulse` is upside-down; `DyingState.OnEnter` calling `SetHealth(0)` is upside-down. An **active state** (chosen action: `SlapState`, `ThrownState`, `JumpState`, `DashState`, `CastChargeState`) IS the action — applying its action's mechanics from `OnEnter` is standard FSM semantics, not a violation. Whether to extract those mechanics into a reusable `*Component` is a separate DRY / multi-invoker call, not an HSM-layering question.
-- **Litmus (reactive only):** *"If I deleted the HSM, would the **received event** still occur? Would I only lose the animation + strategy-swap response?"* Yes → stratified correctly. No → causal authority for an external event leaked into the wrong layer. For active states the litmus inverts trivially (deleting the HSM removes the action-decision itself, which is expected) and doesn't apply.
-- *Concrete:* `VerticalVelocityCondition` reads `ICharacterController3D` directly from BB and evaluates `IsOnFloor && Velocity.Y > MinY` — no `KnockedUpDetector` component, no `BBDataSig.KnockedUp` flag (KnockedUp Session 2, 2026-05-07).
+- **Reactive vs active states — only reactive states are restricted from authoring physics.** A **reactive state** responds to a received event and must NOT author the event that triggered it. The impulse, damage, or other input predates the state; the state owns animation, strategy swap, and stat context for the response. An **active state** represents a chosen action and may apply that action's mechanics from `OnEnter`. Whether to extract those mechanics into a reusable component is a separate reuse decision.
+- **Litmus (reactive only):** *"If I deleted the HSM, would the received event still occur? Would I only lose the routed response?"* Yes → stratified correctly. No → causal authority for an external event leaked into the wrong layer.
+- **Concrete shape:** a condition may read controller velocity from BB and evaluate `IsOnFloor && Velocity.Y > MinY` directly. Do not add a detector component that precomputes the answer into a BB flag.
 - *Meta-principle for:* `Observation_Over_Computation_Pattern`, `BB_Flag_Cross_System_Anti_Pattern`, `TransitionCondition_Stateless_Rule` (auto-memory) — the design-time stance those entries memorialize specific rejections of.
 
 ## HSM vs. Orchestration Flows
 
-**Rule:** The Jmodot HSM is for **entity behavior routing** — an agent reacting to events/perception over an autonomous physics substrate. **Sequential lifecycle/orchestration flows** (scene transitions, wave spawning, telegraph timing, UI animation sequences) use a **bespoke phase enum + pure advance-function + entry-action switch**, NOT the HSM.
+**Rule:** The Jmodot HSM is for **entity behavior routing** — an agent reacting to events or perception over an autonomous substrate. **Sequential lifecycle or orchestration flows** such as scene transitions, staged jobs, and UI animation sequences use a **bespoke phase enum + pure advance function + entry-action switch**, NOT the HSM.
 
 - **Litmus:** *"Is this routing an agent's response to external events, or IS it the orchestrated action itself?"* Observer-over-substrate → HSM. The flow *is* the action (no autonomous substrate to observe, no agent/Blackboard) → bespoke phase machine.
 - Forcing an orchestration flow into the HSM bolts on Blackboard injection, a Node-hierarchy, and condition Resources for zero reuse — the states aren't reused and carry no agent. The entry-action `switch` in a phase orchestrator is legitimate dispatch (each case does different work), not the closed-set-switch smell.
-- *Examples (bespoke, correct):* `TransitionOrchestrator` + `TransitionPhaseLogic`, `RunPhase`, `WavePhase`, `TelegraphedTimingHandler`, `AnimationPlan`.
+- *Example shape:* `PhaseCoordinator` + a pure `PhaseLogic` helper.
 
 ## State Transitions
 
 Hybrid Transitions: It is perfectly fine and recommended to use both `EmitSignal` and `TransitionCondition`s depending on the situation.
 
 - **`EmitSignal`:** Use for Internal Logic Completion (e.g., "I finished my animation", "I am fully charged"). The State knows it's done. **Caveat:** `AnimFinished` is valid only when the animation *is* the completion criterion. When the clip is cosmetic over a physical process (turn-pivot bleeding momentum, landing settling velocity), exit on the physics fact via a `TransitionCondition` (e.g. velocity threshold) — the clip length is tuning, the physics state is truth.
-- **`TransitionCondition`s:** Use for External Interrupts (e.g., "Player pressed Cancel", "Player took damage"). The State doesn't need to know about these; the transition system handles them.
+- **`TransitionCondition`s:** Use for external interrupts such as cancel input or received damage. The state does not need to know about these; the transition system handles them.
 
 ## Blackboard Transition Conditions
 
-- **`BBFlagCondition`** — Edge-triggered. Auto-clears flag after transition fires (via `OnTransitionCommitted`). Use for one-time events ("cast completed", "charge ready"). **Never manually clear the flag — the condition handles it.**
-- **`BBBoolCondition`** — Level-triggered. Checks value without modifying it. Use for persistent state ("is grounded", "has target").
+- **`BBFlagCondition`** — Edge-triggered. Auto-clears the flag after the transition fires through `OnTransitionCommitted`. Use for one-time events such as operation completion. **Never manually clear the flag.**
+- **`BBBoolCondition`** — Level-triggered. Checks a value without modifying it. Use for persistent facts such as grounded or target-present.
 - Both live under `Jmodot/Examples/AI/HSM/TransitionConditions/` — production-consumed despite the `Examples/` path; do not treat as sample-only code.
 
 ## HSM Override Rule
@@ -66,26 +66,21 @@ unclaimed fallback on driver entities. Resolution is innermost-first: BT task > 
 Authority follows **behavioral granularity** — entities differ in where they put granularity, never in
 the rule:
 
-- **No BT under the state** (pure-HSM entities — e.g. a driverless player-character entity): the leaf
-  state is the narrowest scope by construction → every leaf state claims, 1:1 state-to-clip. When such
-  an entity's locomotion *phases* are first-class states, the locomotion fallback tier never fires there.
-- **BT under the state**: ask per subtree — does the STATE know the look for its whole duration (pursue:
-  tree is navigation-only → state claims), or does the look depend on WHICH TASK runs (combat → state
-  silent, leaves claim)? "Does this scope know the look for its whole active duration?" is the per-node
-  authoring litmus.
+- **No BT under the state**: the leaf state is the narrowest active scope, so it claims the clip. If locomotion phases are first-class states, the locomotion fallback does not fire there.
+- **BT under the state**: ask per subtree whether the state knows the look for its whole duration. If the tree only steers, the state claims. If the clip depends on the active task, the state stays silent and the task claims.
 
 Four sanctioned shapes — pick by who knows the clip:
 
 | Shape | When | Example |
 |---|---|---|
-| **Container-silent / leaf-claims** | The state can't know (depends on which task runs); between tasks, locomotion correctly shows movement | `CombatState` silent; attack/`AttachToTarget` leaves claim |
-| **State-claims / leaves-silent** | The state IS the look for its whole duration; its tree does steering/nav/logic only | pursue/flee states; `AttachedState` ("run") over a silent damage tick |
-| **All-silent** | Pure locomotion — velocity-derived clips are correct | wander on driver entities only |
-| **One-shot** (shape, no marker interface) | The clip is the completion criterion — the state claims AND gates its exit on `AnimFinished` | getup/recover/craft states |
+| **Container-silent / leaf-claims** | The state can't know because the active task selects the clip; between tasks, locomotion shows movement | action leaves claim |
+| **State-claims / leaves-silent** | The state owns one look for its whole duration; its tree only steers or routes | state claims over silent navigation tasks |
+| **All-silent** | Pure locomotion — velocity-derived clips are correct | movement-only behavior |
+| **One-shot** (shape, no marker interface) | The clip is the completion criterion — the state claims AND gates its exit on `AnimFinished` | recovery or interaction state |
 
 - **Enter-order invariant:** an animated `BTState` claims (`StartAnim`) BEFORE `base.OnEnter()` enters
   its tree — clips are last-start-wins at enter time, so the outer claim must land first for an animated
-  leaf to override it. On entities with a `LocomotionAnimationDriver` the per-frame push corrects a wrong
+  leaf to override it. On entities with a locomotion animation driver the per-frame push corrects a wrong
   order within a frame; on driverless entities the order is the only enforcement.
 - **Both a state and its always-running leaf claiming** = the state's clip is permanently shadowed —
   author one of them silent.
@@ -96,11 +91,11 @@ Four sanctioned shapes — pick by who knows the clip:
 
 **Rule:** BT actions fall into two categories based on whether they have a spatial destination:
 
-**1. Destination behaviors** — the agent has a specific place to go (flee to a safe point, forage an ingredient, patrol a waypoint). Express the goal as a **waypoint** via `WaypointSelectionStrategy`. `NavigationPath3DConsideration` provides nav-mesh-routed pathfinding. Other considerations (obstacle avoidance, zone bounds, light reactive flee) are **supplementary modifiers** on the journey.
+**1. Destination behaviors** — the agent has a specific place to go, such as a safe point, resource, or waypoint. Express the goal as a **waypoint** via `WaypointSelectionStrategy`. `NavigationPath3DConsideration` provides nav-mesh-routed pathfinding. Other considerations are supplementary modifiers on the journey.
 
 **2. Reactive behaviors** — the agent has no destination, only a directional tendency (continuous flee from a moving threat, idle milling, formation cohesion). Considerations are the **primary driver**. No waypoint is set.
 
-**Transition hygiene:** When switching from a destination behavior to a reactive behavior (e.g., WanderState → ScurryState), **clear the active nav path** so `NavigationPath3DConsideration` returns zero scores and doesn't compete with the reactive considerations.
+**Transition hygiene:** When switching from a destination behavior to a reactive behavior, **clear the active nav path** so `NavigationPath3DConsideration` returns zero scores and does not compete with the reactive considerations.
 
 - *Decision heuristic:*
     - Does the behavior have a **specific place** to reach? → Waypoint
@@ -108,13 +103,11 @@ Four sanctioned shapes — pick by who knows the clip:
     - Is the behavior **bounded with a spatial objective** but the target moves? → Waypoint with re-evaluation on reach
 - *Why:* This mirrors the HSM/BT control-authority split at a finer grain. HSM = strategic (WHAT to do), BT = tactical (HOW). Within BT: WaypointStrategy = strategic (WHERE to go), Considerations = tactical (HOW to move there).
 - *Examples:*
-    - `WanderState` → destination (zone waypoint), wander noise as modifier
-    - `ScurryState (hoarder)` → reactive (indefinite flee from moving wizard), flee consideration as primary
-    - `ScurryState (test_critter)` → destination (bounded 3s flee to safe point), flee consideration as modifier
+    - A bounded patrol route → destination; noise or avoidance modifies the route.
+    - Indefinite separation from a moving threat → reactive; flee consideration drives movement.
+    - Bounded movement to a recalculated safe point → waypoint with re-evaluation on reach.
 
 ## Touchpoints
 
-- `VerticalVelocityCondition` — canonical example of HSM-routes/physics-drives layering.
-- `KnockbackComponent3D` / `CombatLog` / `AIPerceptionManager3D` — calculator/data-producer components conditions read from.
-- `WanderState` / `ScurryState` — destination vs reactive BT shapes.
-- Companion: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) covers the broader *Typed-Owned State over BB Flags* and *Marker Interface as Capability Query* design rules that this layering invariant rests on.
+- Jmodot's controller, movement, perception, and observation components are data producers that conditions may read.
+- Companion: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) covers the broader *Typed-Owned State over BB Flags* and *Marker Interface as Capability Query* rules.

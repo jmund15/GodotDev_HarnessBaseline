@@ -1,8 +1,7 @@
 ---
 paths:
-  - "**/Movement/**"
+  - "**/*Movement*.cs"
   - "**/*Strategy*.cs"
-  - "**/*MovementProcessor*.cs"
   - "**/*Body3D*.cs"
 ---
 
@@ -14,8 +13,8 @@ paths:
 
 | Body Type | Use For | Examples |
 |-----------|---------|----------|
-| **CharacterBody3D** | Gameplay entities requiring deterministic movement | Wizard, Ingredients, Environment objects (barrels, crates) |
-| **RigidBody3D** | Non-gameplay-critical cosmetic physics | Sprite fragments, debris, visual-only particles |
+| **CharacterBody3D** | Gameplay objects requiring deterministic movement | Controllable actors, moving hazards, authored props |
+| **RigidBody3D** | Non-critical cosmetic physics | Fragments, debris, visual-only particles |
 
 - *Why CharacterBody3D for gameplay:* `MoveAndSlide()` is frame-deterministic (multiplayer safe), fully designer-tunable, and leverages the existing Jmodot `MovementProcessor3D` pipeline.
 - *Why not RigidBody3D for gameplay:* Non-deterministic physics (jitter, stacking instability) breaks online multiplayer. Jolt doesn't fix determinism.
@@ -35,7 +34,7 @@ paths:
 - Use `ProjectileStrategy` for fixed-velocity, hitscan-like projectiles where impulses, wind, and knockback should NOT take effect. Returns `desiredDirection` wholesale (treated as pre-scaled velocity, not a unit vector).
 - Use `MomentumProjectileMovementStrategy3D` when a projectile must respect external impulses — its horizontal velocity accelerates toward `desiredDirection * _maxSpeed` at `_acceleration` u/s while preserving Y for gravity, mirroring `LinearMovementStrategy3D`'s impulse-respecting feel for stock characters. Treats `desiredDirection` as a unit vector.
 - Use `LinearMovementStrategy3D` for character-driven entities where designer-tunable acceleration/friction shape the feel.
-- Use `ProjectileMovementStrategy3D` (in `SpellArchitecture/`, not Jmodot) only when the projectile needs `LaunchArc` decomposition for ballistic spells.
+- Use a project-owned strategy only when the framework family lacks the required motion contract; register its owning path in `skills/project_subsystems/SKILL.md`.
 
 **Contract gotcha:** the family is split on what `desiredDirection` represents — `ProjectileStrategy` consumes it as a pre-scaled velocity, while `LinearMovementStrategy3D` and `MomentumProjectileMovementStrategy3D` consume it as a normalized unit vector and resolve speed from their own `BaseFloatValueDefinition` exports. Match the strategy to the consumer's contract; mixing conventions silently produces wrong-magnitude motion.
 
@@ -43,7 +42,7 @@ paths:
 
 - `Jmodot/Implementation/Actors/MovementProcessor3D.cs` — pipeline entry (interface: `Jmodot/Core/Actors/IMovementProcessor3D.cs`).
 - `Jmodot/Implementation/Movement/Strategies/` — `ProjectileStrategy`, `LinearMovementStrategy3D`, `MomentumProjectileMovementStrategy3D`.
-- `SpellArchitecture/Modules/Movement/Strategies/ProjectileMovementStrategy3D.cs` — project-specific ballistic strategy with `LaunchArc`.
-- Companion: [`hsm_bt_patterns.md`](hsm_bt_patterns.md) covers the HSM-routes/physics-drives layering invariant — knockback magnitude × mass × `MovementStrategy` is the *drives* layer this rule selects.
+- Project-owned motion strategies — locate their owning roots through `skills/project_subsystems/SKILL.md` before editing.
+- Companion: [`hsm_bt_patterns.md`](hsm_bt_patterns.md) covers the HSM-routes/physics-drives layering invariant — force magnitude × mass × `MovementStrategy` is the *drives* layer this rule selects.
 
-Paths verified 2026-07-04. Re-verify: `Grep "class (MovementProcessor3D|ProjectileStrategy|LinearMovementStrategy3D|MomentumProjectileMovementStrategy3D|ProjectileMovementStrategy3D)" -g "*.cs"`.
+Re-verify framework types by locating their declarations before editing; inventories and paths can move.

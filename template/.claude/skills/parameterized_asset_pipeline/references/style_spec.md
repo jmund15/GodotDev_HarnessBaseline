@@ -8,7 +8,7 @@ Fill this BEFORE instantiating any pipeline code. A style spec is a frozen decla
 
 | Axis | What it decides | DW worked example |
 |---|---|---|
-| Palette discipline | ramp+index lookups only vs freer | Resurrect-64, computed shades forbidden |
+| Palette discipline | ramp+index lookups only vs freer | project palette, computed shades forbidden |
 | Projection | side / top-down / isometric | side-view, facing right |
 | Resolution & pixel density | canvas sizes per unit class | 32–96px by size tier, 640×360 native |
 | Fidelity target | chunky / detailed / painterly | chunky pixel, HD-2D finish stack |

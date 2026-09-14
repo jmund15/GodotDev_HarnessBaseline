@@ -10,7 +10,7 @@ verify the original of this file).
 """theme_gen.py -- UI Art System theme-gen CORE (ui-art-system.md, Phase 1).
 
 Bakes the neutral chrome: 24x24 9-patch StyleBoxTexture tiles from theme_spec.json
-(Resurrect-64 ramp+index lookups ONLY -- lint_theme() enforces the palette
+(project palette ramp+index lookups ONLY -- lint_theme() enforces the palette
 contract) plus theme_manifest.json with fully-resolved values (no palette logic
 leaks to the runtime; ThemeBuilder consumes the manifest verbatim).
 

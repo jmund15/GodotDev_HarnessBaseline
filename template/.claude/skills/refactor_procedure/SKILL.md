@@ -22,15 +22,14 @@ description: >-
 3.  **Execute:** Move/Rename the file. If folder is deleted, create new scene file with same UID.
 4.  **Patch:** Update `.tscn` text:
     *   `[ext_resource]` paths to new locations
-    *   Node names if convention changed (e.g., `CauldronUI` → `PotionUI`)
+    *   Node names if a naming convention changed
     *   Node path references in properties
     *   *Caution:* Preserve existing UIDs when file moved (same UID, new path). Remove `metadata/_custom_type_script` when script path changes (auto-regenerated).
 5.  **Verify:** Fix ALL scene references BEFORE running Godot `update_project_uids` tool.
 6.  **Verify Legacy Data:** When deprecating/refactoring exported fields:
     *   Search `.tres` and `.tscn` files for references to the old pattern
     *   Ensure legacy `[Export]` fields still function (not just present in code)
-    *   Test with existing data files to catch silent breaking changes
-    *   *Example:* `MultiShotEffect.ChildModifiers` was kept as a property but wasn't being applied after refactor.
+    *   Test one existing data file through the migrated behavior; keeping a legacy property without consuming it is not compatibility.
 7.  **Build:** `dotnet build`.
 8.  **Regression gate:** `/regression_gate` is mandatory for `.cs` changes — see CLAUDE.md *Build & Test Commands*.
 
@@ -38,7 +37,7 @@ description: >-
 
 - [`testing`](../testing/SKILL.md) — `/regression_gate` step 8; legacy-data tests for step 6.
 - [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — Deletion Test before refactoring; *Consume new APIs or migration is incomplete* (`feedback_consume_new_apis_or_migration_is_incomplete.md`).
-- `.claude/rules/scene_authoring.md` (auto-loads on `**/*.tscn`, `project.godot`, `UI/**/*.cs`) — scene-vs-programmatic construction, teardown anti-patterns.
+- `.claude/rules/scene_authoring.md` (auto-loads on scenes, resources, and `project.godot`) — scene-vs-programmatic construction and teardown ownership.
 - `.claude/rules/csharp_lsp.md` (auto-loads on `**/*.cs`) — LSP-first call-site enumeration for step 1.
 - `feedback_refactor_parity_audit.md` — line-by-line behavior diff before merge.
 - `feedback_consume_new_apis_or_migration_is_incomplete.md` — audit motivating call sites after introducing a new API.

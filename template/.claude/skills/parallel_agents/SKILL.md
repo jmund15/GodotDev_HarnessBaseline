@@ -45,7 +45,7 @@ Before fanning out:
 Use parallel dispatch when:
 
 - [ ] **3+ independent investigations:** Multiple unrelated test failures, each with its own root cause. Each agent gets one failure.
-- [ ] **Multiple subsystems broken independently:** A merge brought in changes to AI + VFX + Spell Architecture; each subsystem can be audited in isolation.
+- [ ] **Multiple subsystems broken independently:** A merge brought in changes to AI + VFX + Ability Architecture; each subsystem can be audited in isolation.
 - [ ] **Batch PR/audit operations:** `/review_prs` reviewing N PRs; `/session_audit` running 3 orthogonal axes.
 - [ ] **Cross-domain audits:** A check that walks the entire codebase but each agent owns a different domain (AI, Combat, UI, Inventory).
 - [ ] **Per-test-category fix-ups:** N independent Logic-domain unit-test failures with no shared root cause.
@@ -63,7 +63,7 @@ Use parallel dispatch when:
 
 Do NOT parallelize when:
 
-- [ ] **Related failures** → "if all 5 test failures cascade from one `Wizard.cs` change, parallelize the fix-write step but NOT the root-cause investigation — one investigation, one fix."
+- [ ] **Related failures** → "if all 5 test failures cascade from one `Player.cs` change, parallelize the fix-write step but NOT the root-cause investigation — one investigation, one fix."
 - [ ] **Shared file state** → "two agents editing the same `.tscn` file race the file write — Godot's editor scene format is not merge-friendly."
 - [ ] **Exploratory debugging** → "early-stage investigation where one agent's finding reframes the next agent's prompt — sequential is faster overall; you don't want to launch 5 agents and discard 4 results."
 - [ ] **Need full context** → "the work requires the orchestrator to hold the full picture. Parallel agents cannot share intermediate findings without a slow round-trip back to the orchestrator."
@@ -135,7 +135,7 @@ Omitting `model` does NOT pick a cheap model — it inherits the **session model
 - [ ] **`general-purpose` + `haiku`** — Validation steps (verify a PASS verdict, re-check a finding), mechanical lookups/data-extraction where a wrong answer is cheap to reject and re-prompt.
 - [ ] **`general-purpose` + `opus`** — Genuinely deep reasoning lenses where a miss is costly: design-semantics (`session_audit`), domain-coherence/reference-integrity (`structure_audit`), refactor-parity regression gating (`pr_ready`). **Escalation is per-lens and deliberate** — the orchestrator may raise a *specific* lens to opus when its input is genuinely architecturally heavy (multi-subsystem boundary redesign), never a blanket bump of the whole panel.
 - [ ] **`fable`** — **Reserved for explicit user request / stated max-fidelity demand ONLY.** Never a default, never inherited, never the orchestrator's unilateral pick for a routine fan-out. If you're reaching for fable without the user asking, stop — sonnet or opus is the answer.
-- [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths (`mooyum_milk.tres`, Phase 1e.2). Use only for scoped lookups where a wrong answer is cheap to reject. Most {{PROJECT_NAME}} commands use `general-purpose` + an explicit model selector instead.
+- [ ] **`Explore`** — **WARNING:** built-in `Explore` runs on Haiku and has hallucinated paths (`example_item.tres`, Phase 1e.2). Use only for scoped lookups where a wrong answer is cheap to reject. Most {{PROJECT_NAME}} commands use `general-purpose` + an explicit model selector instead.
 
 ### Effort pins: the Agent tool has no `effort` parameter
 

@@ -128,8 +128,8 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 | Topic shape | Destination |
 |---|---|
-| {{PROJECT_NAME}}-game-specific (spell mechanics, gameplay design, content) | `DevProjects/{{PROJECT_NAME}}/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
-| Jmodot-framework-general (AI architecture, framework design, cross-game patterns) | `DevProjects/Jmodot/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
+| {{PROJECT_NAME}}-game-specific (content rules, project mechanics, game design) | `DevProjects/{{PROJECT_NAME}}/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
+| Jmodot-framework-general (framework design, reusable architecture, cross-game patterns) | `DevProjects/Jmodot/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
 
 **Folder-per-topic convention (always-folder default):** Every brainstorm topic is a folder. Folder name: `YYYY-MM-DD-<kebab-case-topic>/` (date = topic inception). Promoting a flat file later costs more than starting with a folder.
 
@@ -151,7 +151,7 @@ created: YYYY-MM-DD
 author: Claude [Model]
 status: <skill-specific status>
 topic: <one-line description>
-scope: pp-game | jmodot-framework
+scope: project-game | jmodot-framework
 phase: idea_brainstorm | architecture_brainstorm
 derived_from: ../ideas.md               # arch docs only — points to upstream ideas.md or external source
 cluster: <cluster-slug>                 # arch-<cluster>.md only — names the upstream cluster
@@ -226,9 +226,9 @@ last_revised: YYYY-MM-DD
 
 | Value | Meaning | Parts are sized as… |
 |---|---|---|
-| `subsystem` | A single named subsystem (per `project_subsystems` registry) — e.g., the Currency System, the Combat Reaction system | Impl-unit Parts (one `plan-pending` Part ≈ one Plan Mode session) |
-| `feature` | A narrower scope inside a subsystem — e.g., a single new HSM transition family, one spell archetype | Impl-unit Parts; usually 1–5 total |
-| `whole-game` | Spans 2+ subsystems — meta-progression rework, cross-system retheme | Subsystem-shaped Parts per §6.9 (each row links a child roadmap) |
+| `subsystem` | A single named subsystem (per `project_subsystems` registry) — e.g., persistence or input routing | Impl-unit Parts (one `plan-pending` Part ≈ one Plan Mode session) |
+| `feature` | A narrower scope inside a subsystem — e.g., one parser mode or one transition family | Impl-unit Parts; usually 1–5 total |
+| `whole-game` | Spans 2+ subsystems — cross-system overhaul or retheme | Subsystem-shaped Parts per §6.9 (each row links a child roadmap) |
 
 ### §6.2 Parts table
 
@@ -240,13 +240,13 @@ Sequence-ordered, with un-sequenced Parts below a divider rule. Parallel-safe Pa
 | Pos | Part | State | Deps | Trigger | Source |
 |---|---|---|---|---|---|
 | 1 | Foundation+Refactor | plan-pending | — | — | [[arch#Session 1 — Foundation+Refactor\|arch.md §S1]] |
-| 2 | Static Prototypes | plan-pending | Foundation+Refactor | — | [[arch#Session 2 — Static Prototypes\|arch.md §S2]] |
-| 2 | Graph Engine Core | plan-pending | Foundation+Refactor | — | [[arch#Session 3 — Graph Engine Core\|arch.md §S3]] |
-| 3 | Tiered Destruction | plan-pending | Graph Engine Core, Currency System | — | [[arch#Session 4b — Tiered Destruction\|arch.md §S4b]] |
+| 2 | Static Fixtures | plan-pending | Foundation+Refactor | — | [[arch#Session 2 — Static Fixtures\|arch.md §S2]] |
+| 2 | Routing Core | plan-pending | Foundation+Refactor | — | [[arch#Session 3 — Routing Core\|arch.md §S3]] |
+| 3 | Data Migration | plan-pending | Routing Core, Storage Contract | — | [[arch#Session 4b — Data Migration\|arch.md §S4b]] |
 |   | ─── unsequenced ─── |   |   |   |   |
-| — | Currency System | idea-rework | — | next idea session | [[2026-05-12-roguelike-replayability-ideas/ideas#Cluster 1 — Meta Currency / Economy\|ideas.md §c1]] |
-| — | Lorekeeper | arch-pending | Currency System | when Currency advances | [[2026-05-12-roguelike-replayability-ideas/ideas#Cluster 3 — Almanack Reward Economy\|ideas.md §c3]] |
-| — | Hidden 6th Floor | idea-pending | — | post-MVP playtest | [[2026-05-12-roguelike-replayability-ideas/ideas#Hidden 6th Floor / True Ending\|ideas.md §future]] |
+| — | Storage Contract | idea-rework | — | next idea session | [[YYYY-MM-DD-platform-redesign/ideas#Cluster 1 — Storage Contract\|ideas.md §c1]] |
+| — | Audit Dashboard | arch-pending | Storage Contract | when Storage Contract advances | [[YYYY-MM-DD-platform-redesign/ideas#Cluster 3 — Audit Dashboard\|ideas.md §c3]] |
+| — | Optional Tutorial | idea-pending | — | after user trial | [[YYYY-MM-DD-platform-redesign/ideas#Optional Tutorial\|ideas.md §future]] |
 ```
 
 **Columns:**
@@ -295,11 +295,11 @@ config:
 ---
 graph TD
     %% Generated from Parts table; do not hand-edit
-    P1[Foundation+Refactor]:::plan --> P2a[Static Prototypes]:::plan
-    P1 --> P2b[Graph Engine Core]:::plan
-    P2b --> P3[Tiered Destruction]:::plan
-    CS[Currency System]:::rework --> P3
-    CS --> LK[Lorekeeper]:::arch
+    P1[Foundation+Refactor]:::plan --> P2a[Static Fixtures]:::plan
+    P1 --> P2b[Routing Core]:::plan
+    P2b --> P3[Data Migration]:::plan
+    SC[Storage Contract]:::rework --> P3
+    SC --> AD[Audit Dashboard]:::arch
     classDef plan fill:#d4c5f9,stroke:#6a4fb8
     classDef arch fill:#ffe0b2,stroke:#fb8c00
     classDef idea fill:#bbdefb,stroke:#1e88e5
@@ -327,12 +327,12 @@ Parts where State ∈ {idea-pending, arch-pending, plan-pending, idea-rework, ar
 
 ## Blocked / awaiting deps
 Parts where State ∈ {idea-pending, arch-pending, plan-pending, idea-rework, arch-rework} blocked by incomplete deps.
-- Tiered Destruction — waiting on Graph Engine Core (plan-pending), Currency System (idea-rework)
-- Lorekeeper — waiting on Currency System (idea-rework)
+- Data Migration — waiting on Routing Core (plan-pending), Storage Contract (idea-rework)
+- Audit Dashboard — waiting on Storage Contract (idea-rework)
 
 ## Ready for you (user-owned)
 Parts where State=user-owned AND every Dep has State=complete. Trigger names the user deliverable.
-- Static Prototype Floors — design 10–15 static map scenes (Pos 2, no deps)
+- Example Dataset — author the representative sample files (Pos 2, no deps)
 ```
 
 `submap-pending` Parts are excluded from all three derived views by design — the sub-roadmap owns the *Currently ready* / *Blocked* views for its own Parts. The parent's submap-pending Part appears only in the *Spawned sub-brainstorms* section (§6.6) pointing to the child roadmap, plus as an un-completed Dep of any sibling Part that depends on it (which then surfaces in *Blocked* — the standard mechanism).
@@ -343,8 +343,8 @@ Cross-references to child docs that feed back to this roadmap or spawned their o
 
 ```markdown
 ## Spawned sub-brainstorms
-- `arch-body-tissue-affinity.md` — spawned from Part "Tiered Destruction" on 2026-05-15. Same folder (sub-component; §5.1 criterion 3 fails). Status: brainstorming-complete.
-- `../meta-progression/roadmap.md` — sibling folder spawned 2026-05-20 (cross-cutting; all 3 §5.1 criteria met).
+- `arch-parser-strategy.md` — spawned from Part "Parser Strategy" on YYYY-MM-DD. Same folder (sub-component; §5.1 criterion 3 fails). Status: brainstorming-complete.
+- `../observability/roadmap.md` — sibling folder spawned YYYY-MM-DD (cross-cutting; all 3 §5.1 criteria met).
 ```
 
 A child sub-roadmap's entry names at most the bare child Part count — **never a per-state breakdown** (`N complete, M arch-pending`). Same denormalization-drift rule as §6.10: child state is child-owned.
@@ -355,14 +355,14 @@ Append-only. One line per state transition. Date-stamped.
 
 ```markdown
 ## Revision Log
-- 2026-05-13 — Initial roadmap from `arch.md`. 7 Parts in sequence (Pos 1-7), 12 un-sequenced.
-- 2026-05-15 — Tiered Destruction's body-tissue dep spawned `arch-body-tissue-affinity.md` (same folder).
-- 2026-05-20 — Currency System: idea-pending → idea-rework (insufficient diversity surfaced in arch attempt).
+- YYYY-MM-DD — Initial roadmap from `arch.md`. N Parts in sequence, M unsequenced.
+- YYYY-MM-DD — Parser Strategy spawned `arch-parser-strategy.md` (same folder).
+- YYYY-MM-DD — Storage Contract: idea-pending → idea-rework (insufficient diversity surfaced in arch attempt).
 ```
 
 ### §6.8 Cross-folder dep resolution
 
-Deps can cross folders. **Canonical shape:** `Deps: (parent) <Part Name>` — short form, default, integrates with the Mermaid `external` classDef per §6.4. When the dep targets a sibling-folder roadmap (not a parent), substitute the folder slug for `parent` (e.g., `(currency) Tide Stub`). When a clickable file link adds value (typically Source cells, not Deps), use `[[../<folder>/roadmap\|<folder>]] § "<Part Name>"` — file wikilink + prose Part name.
+Deps can cross folders. **Canonical shape:** `Deps: (parent) <Part Name>` — short form, default, integrates with the Mermaid `external` classDef per §6.4. When the dep targets a sibling-folder roadmap (not a parent), substitute the folder slug for `parent` (e.g., `(storage) Schema Contract`). When a clickable file link adds value (typically Source cells, not Deps), use `[[../<folder>/roadmap\|<folder>]] § "<Part Name>"` — file wikilink + prose Part name.
 
 **Forbidden:** `../<folder>/roadmap.md#<part-name>` and `[[../<folder>/roadmap#<part-name>]]`. Parts live in table rows, not `##`/`###` headings, so any `#<part>` anchor falls through silently to file-top — the canonical silent-failure mode this section's shape rules exist to prevent.
 
@@ -370,17 +370,17 @@ Resolution is **lazy** — `/update_roadmap` reads referenced roadmaps only when
 
 ### §6.9 Hierarchical roadmaps (scope-level: whole-game)
 
-For scope spanning 2+ subsystems, the parent roadmap is intentionally **subsystem-shaped**, not Part-shaped: each row is a subsystem (e.g., Currency, Combat, Dungeon), and each row's `Source` links to that subsystem's child-folder `roadmap.md`.
+For scope spanning 2+ subsystems, the parent roadmap is intentionally **subsystem-shaped**, not Part-shaped: each row is a subsystem (e.g., storage, synchronization, interface), and each row's `Source` links to that subsystem's child-folder `roadmap.md`.
 
 Child roadmaps own Part-level state; parent absorbs only subsystem-level transitions (when a whole subsystem reaches `complete`). Cross-folder edit-noise stays bounded.
 
 ```markdown
 | Pos | Part (subsystem) | State | Deps | Source |
 |---|---|---|---|---|
-| 1 | Currency System | arch-pending | — | [currency/roadmap.md](../currency/roadmap.md) |
-| 2 | Dungeon Floor & Room | plan-pending | Currency System | [dungeon/roadmap.md](./roadmap.md) |
-| 2 | Combat Core | plan-pending | Currency System | [combat/roadmap.md](../combat/roadmap.md) |
-| — | Hub World | idea-pending | Currency System | (no folder spawned yet) |
+| 1 | Storage | arch-pending | — | [storage/roadmap.md](../storage/roadmap.md) |
+| 2 | Synchronization | plan-pending | Storage | [synchronization/roadmap.md](./roadmap.md) |
+| 2 | Interface | plan-pending | Storage | [interface/roadmap.md](../interface/roadmap.md) |
+| — | Optional Tutorial | idea-pending | Storage | (no folder spawned yet) |
 ```
 
 The 200-row table failure mode is structurally prevented: at scale, each row represents a subsystem (not an impl unit), and the implementation detail lives one level deeper.
@@ -401,7 +401,7 @@ The `Trigger` field is required for any Part whose State leaves un-resolved work
 
 **Rationale (`*-rework` case):** `*-rework` States map to dashed-stroke Mermaid class (signaling "came back" history); the Trigger preserves the WHY across sessions. Without it, the next-session reader sees the dashed stroke but can't reconstruct the gap.
 
-**Rationale + denormalization discipline (`submap-pending` case):** The Trigger is a path because the decomposition IS the artifact — future readers follow the path to find live work. **Denormalize as little child state into the parent as possible.** The bare `(N child Parts)` count is the ONLY child figure permitted in the parent's submap Trigger; the per-state distribution (e.g. `3 complete, 8 arch-pending`) MUST NOT be copied into the Trigger, the §6.6 Spawned-sub-brainstorms entry, or §6.11 MVP claims — it drifts on *every* child Part transition, and the child roadmap is the sole source of truth for child state. Even the bare count drifts when the child splits/adds/removes Parts (rarer, structural); `/update_roadmap` Step 3 emits a parent-staleness warn on those, and `/roadmap_audit submap` is the periodic catch. (The earlier "stale-mirror is structurally prevented" claim was aspirational — denormalizing the breakdown anyway is what rotted it four times across the dungeon + replayability roadmaps.)
+**Rationale + denormalization discipline (`submap-pending` case):** The Trigger is a path because the decomposition IS the artifact — future readers follow the path to find live work. **Denormalize as little child state into the parent as possible.** The bare `(N child Parts)` count is the ONLY child figure permitted in the parent's submap Trigger; the per-state distribution (e.g. `3 complete, 8 arch-pending`) MUST NOT be copied into the Trigger, the §6.6 Spawned-sub-brainstorms entry, or §6.11 MVP claims — it drifts on *every* child Part transition, and the child roadmap is the sole source of truth for child state. Even the bare count drifts when the child splits, adds, or removes Parts; `/update_roadmap` Step 3 emits a parent-staleness warn on those, and `/roadmap_audit submap` is the periodic catch.
 
 **Consumers:**
 - `architecture_brainstorm` SKILL Step 5 — authors `*-pending` and `*-rework` Triggers; runs user-owned question for `user-owned` Triggers. Step 8's `/update_roadmap` invocation handles `submap-pending` transitions when spawn-placement is child-subfolder.
@@ -412,7 +412,7 @@ The `Trigger` field is required for any Part whose State leaves un-resolved work
 
 For top-level roadmaps whose Parts span enough surface that *operational readiness* (per §6.5 derived views) is hard to distinguish from *playable-milestone progress*, an optional `## MVP Checkpoints` section frames the roadmap as a sequence of playable surfaces — each MVP defined by which Parts MUST complete + what playtest validates the milestone. The authored fields are owned by `/mvp_plan`; `/update_roadmap` Step 5 additionally recomputes two derived elements in-place each run — the per-Required-Part check-marks and the non-terminal Status line — both pure idempotent functions of the Parts table (recomputed both directions, so they cannot drift). It never authors or edits the narrative fields. The terminal `✅ Verified` status is user-set via `/mvp_plan verify` and preserved across runs (downgraded only when a Required Part regresses out of `complete`). `/roadmap_next` additionally consumes this section read-only: its MVP-Demand scoring criterion counts the incomplete MVPs (Status ≠ `✅ Verified`) that list a candidate Part — or a direct dependent of it — among their Required Parts, so the checkbox membership feeds next-pickup ranking, not just display.
 
-**Roadmap-level applicability — top-level only.** MVPs are authored on TOP-LEVEL roadmaps only — those whose frontmatter has no `parent-roadmap` field, OR whose `scope-level` is `whole-game`. **Sub-roadmaps (per §5.1 *deeper scope* outcome, having `parent-roadmap: ../...` frontmatter) do NOT carry their own MVP Checkpoints section.** Parent MVPs reference sub-roadmap Parts directly (`encounter-extraction Pos 1 (Part Name) complete`, `encounter-extraction sub-roadmap fully complete`, etc.) — never sub-roadmap MVPs.
+**Roadmap-level applicability — top-level only.** MVPs are authored on TOP-LEVEL roadmaps only — those whose frontmatter has no `parent-roadmap` field, OR whose `scope-level` is `whole-game`. **Sub-roadmaps (per §5.1 *deeper scope* outcome, having `parent-roadmap: ../...` frontmatter) do NOT carry their own MVP Checkpoints section.** Parent MVPs reference sub-roadmap Parts directly (`<sub-roadmap> Pos 1 (<Part>) complete`, `<sub-roadmap> fully complete`, etc.) — never sub-roadmap MVPs.
 
 *Rationale:* MVPs frame *player-facing playable surfaces*. The playable surface emerges at the project level where the player actually experiences the game, not at the subsystem / sub-roadmap level (which is impl-validation territory — that work belongs in test plans, acceptance criteria, and integration touch points within each Part, NOT in MVP-shaped milestones). Two MVP sections in the same brainstorm-topic folder is a category confusion AND a drift surface: readers would have to reconcile "subsystem playable surface" vs "project playable surface" framings that purport to be the same vocabulary at different scopes.
 
@@ -476,7 +476,7 @@ This sub-roadmap depends on parent-roadmap Parts at these edges:
 
 **Composition with sub-roadmap auto-promotion** — when all sub-roadmap Parts reach `complete`, the parent's `submap-pending` Part auto-promotes (per §6.3). At that point this section's content becomes historical — preserve it for audit trail; don't delete.
 
-**Closing paragraph (conventional, not strict schema):** below the table, a one-sentence narrative naming the auto-promotion condition is helpful for the reader. Example: *"When all 8 sub-roadmap Parts reach `complete`, the parent-roadmap composite Part 'EncounterDefinition extraction' (currently `submap-pending`) auto-promotes to `complete`. No separate close-out PR needed — sub-roadmap completion is the close-out."*
+**Closing paragraph (conventional, not strict schema):** below the table, a one-sentence narrative naming the auto-promotion condition is helpful for the reader. Example: *"When all child Parts reach `complete`, the parent-roadmap composite Part 'Data Pipeline' (currently `submap-pending`) auto-promotes to `complete`. No separate close-out PR is needed."*
 
 ---
 

@@ -31,6 +31,7 @@ paths:
 - *Pattern for project defaults:* Introduce a framework-agnostic static seam in `Jmodot.Core.*` with nullable static fields; the consuming game's autoload forwards values into it at `_EnterTree`.
 - *Canonical example:* `Jmodot.Core.Combat.CombatFactoryDefaults` — six combat factories resolve project defaults via static fields wired from {{PROJECT_NAME}} autoload.
 - *Test isolation:* Every static seam owns its own `Reset()` so Jmodot-only tests don't depend on the consuming project's reset path.
+- *No premature deferral:* before writing "X varies per project — consumers resolve their own", grep `Jmodot.Core` and `BBDataSig` for the abstraction; if the framework already committed to it, integrate it now (`feedback_dont_defer_existing_framework_abstractions`).
 - *No carve-outs:* "Temporary" violations during refactor are not accepted — fix the design instead. See auto-memory `jmodot_framework_boundary_rule.md` for the no-carve-out pattern.
 
 ## Static Seam Pattern (full shape)

@@ -42,7 +42,7 @@ These three accumulate the most "this bit me before" knowledge. Beyond them, sea
 1. **Failing GdUnit4 test at the right seam.** Pick the suite that matches the bug class:
    - **Logic** (`Tests/Logic/`) — pure functions, data, math, parsing, no Godot runtime.
    - **Sanity** (`Tests/Sanity/`) — fast smoke tests on real scenes, runtime required.
-   - **Integration** (`Tests/Integration/`) — multi-system seams (e.g. Spell + Pool + Collision, BT + BTState + RestartPolicy).
+   - **Integration** (`Tests/Integration/`) — multi-system seams (e.g. Ability + Pool + Collision, BT + BTState + RestartPolicy).
    - **E2E** — full scene path with input simulation through `ISceneRunner`.
    - See `testing/SKILL.md` for domain classification rules.
 2. **`ISceneRunner` harness on a fixture scene.** Load a minimal `.tscn` under `Tests/Fixtures/`, simulate input, assert observable outcome. Works headless via `xvfb-run` on cloud sessions.
@@ -127,10 +127,10 @@ Do not proceed until you reproduce the bug.
 
 **Verify scene configuration first.** Before instrumenting, read the entity's `.tscn` to confirm which components/strategies are actually wired. Don't assume an entity uses a particular strategy — a mismatch between code-expected wiring and scene-actual wiring is itself the bug a surprising fraction of the time.
 
-**Canonical {{PROJECT_NAME}} boundary chain** (when debugging a spell flow):
+**Canonical {{PROJECT_NAME}} boundary chain** (when debugging a ability flow):
 
 ```
-Wizard → SpellCaster → SpellArchitecture → SpellBehavior → ProjectileBody
+Player → AbilityCaster → DomainCore → AbilityBehavior → ProjectileBody
 ```
 
 Each arrow is a `JmoLogger.Info("[<scope>] <state-change>", node)` call. The bug lives at whichever boundary the log message disagrees with the next log message.
@@ -141,7 +141,7 @@ Each arrow is a `JmoLogger.Info("[<scope>] <state-change>", node)` call. The bug
 
 **Rule:** When the visible symptom is N layers downstream of the cause, walk backward one layer at a time. Don't fix at the symptom layer until you've identified the cause.
 
-**Worked example:** `feedback_modulate_dual_tracking.md` — visible symptom was *"wizard washes white after a hit."* The hit-flash component was correctly setting `Modulate`, but `VisualEffectController._Process` was overwriting it via `ApplyEffects` every frame. The root cause was three layers downstream of the symptom: VEC's transient-effect `ResetVisuals` stomped `Modulate` with a bare base color, wiping persistent tints registered via VisualEffectService. Fix required tracing backward: *wash* → *ResetVisuals* → *ComputeEffectiveColorForNode* → *service layering*. Premature fixes at the symptom layer (re-applying tint after every hit) would have masked, not resolved, the contention.
+**Worked example:** `feedback_modulate_dual_tracking.md` — visible symptom was *"player washes white after a hit."* The hit-flash component was correctly setting `Modulate`, but `VisualEffectController._Process` was overwriting it via `ApplyEffects` every frame. The root cause was three layers downstream of the symptom: VEC's transient-effect `ResetVisuals` stomped `Modulate` with a bare base color, wiping persistent tints registered via VisualEffectService. Fix required tracing backward: *wash* → *ResetVisuals* → *ComputeEffectiveColorForNode* → *service layering*. Premature fixes at the symptom layer (re-applying tint after every hit) would have masked, not resolved, the contention.
 
 **Cross-reference:** `archive_architectural_symptom_vs_rootcause_preference.md` (auto-memory cold tier) — *"Why is X using Y?"* is a retire-Y signal. Compatibility flags, axis-restricted geometry, and approximations of engine primitives are all symptom-fix tells.
 
@@ -154,7 +154,7 @@ Each arrow is a `JmoLogger.Info("[<scope>] <state-change>", node)` call. The bug
 ### Find working examples
 
 - LSP `findReferences` on the type/method to find every consumer (per [`.claude/rules/csharp_lsp.md`](../../rules/csharp_lsp.md) — LSP for C# semantics).
-- `Grep` for similar patterns (e.g., other spells that call the same method without failing).
+- `Grep` for similar patterns (e.g., other abilities that call the same method without failing).
 - Diff: what does the working call site do that the failing one doesn't?
 
 ### Identify differences
@@ -204,10 +204,10 @@ If the top hypothesis is refuted, re-rank the remaining 2–4. Don't generate ne
 Use **`JmoLogger.Debug`** as the diagnostic channel — ephemeral, won't trigger test failure (unlike `Error`), won't pollute `Warning` signal in production. Compose tags as `[Subsystem][DIAG-<4-char-id>]`, e.g.:
 
 ```csharp
-JmoLogger.Debug(this, $"[Spell][DIAG-a4f2] cast state={state} target={target?.Name ?? "null"}");
+JmoLogger.Debug(this, $"[Ability][DIAG-a4f2] cast state={state} target={target?.Name ?? "null"}");
 ```
 
-The subsystem prefix keeps the diag log visible to `/analyze_godot_logs --target Spell`; the `[DIAG-]` half is unique-to-this-session so Phase 6 cleanup is a single grep. Pick four random hex chars per session.
+The subsystem prefix keeps the diag log visible to `/analyze_godot_logs --target Ability`; the `[DIAG-]` half is unique-to-this-session so Phase 6 cleanup is a single grep. Pick four random hex chars per session.
 
 Full level rules, canonical tag list, composition rule, and producer↔consumer pairing table live in **`logging_methodology` skill** — load it if you're authoring new instrumentation rather than just adding a few diag lines.
 
@@ -253,14 +253,14 @@ A correct seam is one where the test exercises the **real bug pattern** as it oc
 Reference `testing/SKILL.md` domain classification:
 
 - **Pure logic / data / math:** `Tests/Logic/` (no Godot runtime).
-- **Cross-system seam** (BT+BTState, Pool+Spawn, HSM+child-state, Spell+Collision+Reaction): `Tests/Integration/` — even if the C# diff looks trivial. Memorialised integration regressions REQUIRE a seam test (see `feedback_strict_tdd_for_integration_regressions.md`).
+- **Cross-system seam** (BT+BTState, Pool+Spawn, HSM+child-state, Ability+Collision+Reaction): `Tests/Integration/` — even if the C# diff looks trivial. Memorialised integration regressions REQUIRE a seam test (see `feedback_strict_tdd_for_integration_regressions.md`).
 - **Player-observable behavior:** `Tests/Sanity/` or E2E with `ISceneRunner` (POB rule from `testing/SKILL.md`).
 
 ### If no correct seam exists, that itself is the finding
 
 Note it explicitly. The codebase architecture is preventing the bug from being locked down. Hand off to the **Worklog** with `arch | <description>` — flag for future architectural work.
 
-Do **not** invent a new slash command in this skill. Do **not** repurpose `/spell_arch_audit` (too narrow — Spell-only) or `/session_audit` (post-hoc, wrong shape). A general-purpose `/arch_audit` may exist later; today, the Worklog is the right escalation target.
+Do **not** invent a new slash command in this skill. Do **not** repurpose `/spell_arch_audit` (too narrow — Ability-only) or `/session_audit` (post-hoc, wrong shape). A general-purpose `/arch_audit` may exist later; today, the Worklog is the right escalation target.
 
 ### If a correct seam exists
 
@@ -319,7 +319,7 @@ If the correct hypothesis surfaced a non-obvious gotcha that would bite again, s
 Pick the placement per CLAUDE.md §2 *Memory (One Store, Two Tiers)*:
 
 - Surprising / cross-cutting rule worth surfacing every session → new hot topic file (`gotcha_*.md`) + a `MEMORY.md` pointer in the same turn.
-- Bulk domain detail → extend the matching cold bucket under `archive/` (e.g. `archive_godot_disposal_gotchas.md`, `archive_godot_physics_gotchas.md`, `archive_pooling_lifecycle_gotchas.md`, `archive_gdunit4_assertion_gotchas.md`, `archive_critter_ai_architecture.md`, `archive_testing_setup_gotchas.md`) — no index pointer.
+- Bulk domain detail → extend the matching cold bucket under `archive/` (e.g. `archive_godot_disposal_gotchas.md`, `archive_godot_physics_gotchas.md`, `archive_pooling_lifecycle_gotchas.md`, `archive_gdunit4_assertion_gotchas.md`, `archive_entity_ai_architecture.md`, `archive_testing_setup_gotchas.md`) — no index pointer.
 
 ### Architectural recommendation, after the fix
 
