@@ -27,35 +27,45 @@ const SPILL_DIR = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spil
 const spillPath = (key) => SPILL_DIR + '/' + String(key).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
 if (SPILL_DIR) {
   const seen = {}
-  const collided = lenses.filter(l => { const p = spillPath(l.key); const dup = !!seen[p]; seen[p] = true; return dup })
+  const collided = lenses.filter(l => { const p = spillPath(l.key).toLowerCase(); const dup = !!seen[p]; seen[p] = true; return dup })
   if (collided.length > 0) {
     return { error: 'args.spillDir is set, but these lens keys collide after filename sanitization ([^A-Za-z0-9._-] -> _) and would overwrite each other: ' + collided.map(l => l.key).join(', ') + '.' }
   }
   log('SPILL-DIR ' + SPILL_DIR)
 }
 
-// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
-// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
-// registry ids replace Anthropic role names. Absent the key, the Anthropic vocabulary applies.
-// Inlined per script because the Workflow sandbox has no require/import.
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic.
+// Presence means provider mode: incomplete registry data fails before dispatch rather than reopening
+// the Anthropic vocabulary. Inlined because the Workflow sandbox has no require/import.
 const PIN = (m) => m
 const EFF = (e) => e
-function validModels(A) {
-  const transportIds = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
-  return transportIds.length ? transportIds : ['opus', 'sonnet', 'haiku', 'fable']
+const HAS_TRANSPORT = Object.prototype.hasOwnProperty.call(A, '__transport')
+const TRANSPORT = A.__transport
+const validStringList = (value) => Array.isArray(value) && value.length > 0
+  && value.every(item => typeof item === 'string' && item.trim())
+const transportValid = !HAS_TRANSPORT || (
+  TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && validStringList(TRANSPORT.efforts)
+  && typeof TRANSPORT.default === 'string' && TRANSPORT.default.trim()
+  && TRANSPORT.ids.includes(TRANSPORT.default)
+)
+if (!transportValid) {
+  return { error: 'explore-fanout: args.__transport needs non-empty string arrays `ids` and `efforts`, plus a non-empty `default` contained in `ids`.' }
 }
 
-// Strict, matching dispatch.js and worklog_relevance.js rather than review_fanout.js's floor: which
-// lens runs where is a budget-posture + ladder decision the CALLER makes, and exploration is the
-// most frequently-dispatched surface in the harness, so a silent default here would quietly bill the
-// whole floor to the wrong provider on every drive.
-const VALID_MODELS = validModels(A)
-const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
+// A missing effort takes a bounded floor. A present invalid pin fails before dispatch.
+const VALID_MODELS = HAS_TRANSPORT ? TRANSPORT.ids : ['opus', 'sonnet', 'haiku', 'fable']
+const VALID_EFFORTS = HAS_TRANSPORT ? TRANSPORT.efforts : ['low', 'medium', 'high', 'xhigh']
+const DEFAULT_EFFORT = VALID_EFFORTS.includes('medium') ? 'medium' : VALID_EFFORTS[0]
+const hasEffort = (l) => Object.prototype.hasOwnProperty.call(l, 'effort') && l.effort !== undefined
+const effortOf = (l) => hasEffort(l) ? l.effort : DEFAULT_EFFORT
 
-const bad = lenses.filter(l => !l || !l.key || !(l.promptPath || l.prompt) || !VALID_MODELS.includes(l.model) || !VALID_EFFORTS.includes(l.effort))
+const bad = lenses.filter(l => !l || !l.key || !(l.promptPath || l.prompt) || !VALID_MODELS.includes(l.model)
+  || (hasEffort(l) && !VALID_EFFORTS.includes(l.effort)))
 if (lenses.length === 0 || bad.length > 0) {
   return {
-    error: 'Every lens needs {key, promptPath (or prompt), model, effort} with model in [' + VALID_MODELS.join('|') + '] and effort in [' + VALID_EFFORTS.join('|') + ']. Mandates live in .claude/commands/agents/explore_agents.md (or .claude/commands/research.md for res-* lenses) — write the resolved text to a scratchpad file and pass its path; never inline a large mandate into args (gotcha_workflow_args_generation_fidelity).',
+    error: 'Every lens needs {key, promptPath (or prompt), model}; optional effort must be in [' + VALID_EFFORTS.join('|') + '] and model in [' + VALID_MODELS.join('|') + ']. Mandates live in .claude/commands/agents/explore_agents.md (or .claude/commands/research.md for res-* lenses) — write the resolved text to a scratchpad file and pass its path; never inline a large mandate into args (gotcha_workflow_args_generation_fidelity).',
     badLenses: bad.map(l => (l && l.key) || '(unkeyed)'),
   }
 }
@@ -171,7 +181,7 @@ const CLAIMS_SCHEMA = {
 // `labelPrefix` namespaces the PINS log so a /research fan-out through this engine is separable from
 // an /explore one in /orchestration_metrics. Cosmetic to the run, load-bearing to the cost record.
 const LABEL = typeof A.labelPrefix === 'string' && A.labelPrefix.trim() ? A.labelPrefix.trim() : 'explore'
-const resolved = lenses.map(l => ({ ...l, label: LABEL + ':' + l.key }))
+const resolved = lenses.map(l => ({ ...l, label: LABEL + ':' + l.key, effort: effortOf(l) }))
 log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(l => [l.label, PIN(l.model) + '/' + EFF(l.effort) + ' guards:survey@' + tierOf(l.model)]))))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 

@@ -46,7 +46,7 @@ Set-StrictMode -Version Latest
 $repo        = (Get-Item $PSScriptRoot).Parent.Parent.FullName
 $scripts     = Join-Path $repo '.claude\scripts'
 $queueDir    = Join-Path $repo '.claude\scratch\gate_queue'
-$activityDir = Join-Path $env:TEMP 'pp-activity'
+$activityDir = Join-Path $env:TEMP 'harness-activity'
 $logP        = Join-Path $queueDir 'watcher.log'
 $gateP       = Join-Path $scripts 'regression_gate.ps1'
 

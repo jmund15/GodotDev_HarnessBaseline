@@ -1,22 +1,98 @@
 {
-  "revision": "2026-08-12",
-  "_comment": "SSOT for external (non-Anthropic-transport) models: per-transport role resolution, prices, limits, authorization gates. Policy prose home: .claude/skills/orchestration/SKILL.md section 5. CLAUDE.md's ladder owns role SEMANTICS and the Anthropic-transport mapping; this file owns per-transport resolution. Model churn is an edit in exactly one of the two, never both. Validate with: python3 .claude/tools/model_registry.py --check",
+  "revision": "2026-09-03",
+  "_comment": "SSOT for DISPATCHABLE models on every transport, host included (the `anthropic` transport was added 2026-09-04; before that this file was external-only): per-transport role resolution, prices, limits, authorization gates. Policy prose home: .claude/skills/orchestration/SKILL.md section 5. The ladder in .claude/reference/model_ladder_evidence.md owns role SEMANTICS and the Anthropic-transport mapping; this file owns per-transport resolution. Model churn is an edit in exactly one of the two, never both. Validate with: python3 .claude/tools/model_registry.py --check",
   "transports": {
     "deepseek": {
       "baseUrl": "https://api.deepseek.com/anthropic",
       "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "DEEPSEEK_API_KEY",
       "balanceUrl": "https://api.deepseek.com/user/balance",
-      "launcher": ".claude/scripts/deepseek_sidecar.sh"
+      "launcher": ".claude/scripts/deepseek_sidecar.sh",
+      "costModel": "marginal-usd",
+      "status": {
+        "state": "unavailable",
+        "since": "2026-08-18",
+        "reason": "API balance not being replenished; per-token prices rose."
+      }
+    },
+    "codex": {
+      "_comment": "OpenAI Codex, billed against a ChatGPT Plus plan — NOT an OpenAI API key, and unrelated to the failure_archaeology `codex/*` git branches. ONE launcher (2026-08-20): the proxy path, which runs the real `claude` binary against a local proxy translating Anthropic Messages traffic to the Codex backend, so the full .claude harness applies. The former `codex exec` launcher (codex_sidecar.sh) is a retired refusing stub — it passed the prompt as argv (dies on the Windows command-line length limit) and its child loaded none of .claude. Proxy is raine/claude-code-proxy v0.1.35 — caixiaoshun/claudex v1.0.0 was tested and REJECTED: its Anthropic->OpenAI tool-schema conversion emits invalid schemas (widens `required` to every property; adds `type:object` beside an `anyOf`), and all three tool-bearing E2E runs failed while the tools-disabled run passed.",
+      "launcher": ".claude/scripts/codex_proxy_sidecar.sh",
+      "costModel": "plan-quota",
+      "quotaProbe": {
+        "command": "python",
+        "args": [
+          ".claude/scripts/codex_quota_probe.py"
+        ]
+      },
+      "modelAttestation": {
+        "_comment": "A proxied child CANNOT report which model served it. Claude Code's system prompt asserts a Claude identity, so the arm parrots it; worse, a run with CCP_CODEX_MODEL forcing gpt-5.6-luna reported `modelUsage: [gpt-5.4-mini]` — the child's own pin, not the served model. Any void-check reading modelUsage mislabels the arm. The proxy's own capture is the only valid attestation.",
+        "env": {
+          "CCP_TRAFFIC_LOG": "1"
+        },
+        "capturePath": "~/.local/state/claude-code-proxy/traffic/<session>/<request>/004-*-upstream-request.json",
+        "modelField": "model",
+        "effortField": "reasoning.effort"
+      },
+      "serverSidePins": {
+        "_comment": "Model and effort are forced at the PROXY, not via the child's --model, so a role-name pin cannot silently redirect an arm: this transport's alias surface accepts `opus`/`sonnet`/`haiku`/`fable` and full `claude-*` ids as aliases onto GPT models, inverting DeepSeek's behavior of hard-erroring on them. CCP_CODEX_EFFORT's vocabulary is identical to the sidecar's own -e, so no translation table exists.",
+        "model": "CCP_CODEX_MODEL",
+        "effort": "CCP_CODEX_EFFORT",
+        "effortValues": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    "opencode": {
+      "_limitsSource": "models.dev, the OpenCode team's own catalog (first-party metadata, not a benchmark) - refreshed by scripts/opencode_refresh_models.py. Recorded once here because ONE catalog sourced every row on this transport.",
+      "_comment": "OpenCode Zen FREE tier (https://opencode.ai/zen) — keyless (`Authorization: Bearer public`; any other unauthenticated key 401s, measured 2026-08-22). ONE shape: the proxy path — Zen's own Anthropic surface (/v1/messages) serves free models TEXT-ONLY (any request carrying `tools` upstream-errors [1210] on every free id tested) while its OpenAI surface (/v1/chat/completions) carries function-calling, streaming and tool loops, verified end-to-end including a real `claude` child completing tool-bearing work. Proxy is LiteLLM (uv tool install 'litellm[proxy]' --with 'fastapi<0.120'; newer fastapi removed get_flat_dependant and this LiteLLM imports it), started PER DISPATCH from a generated config pinning exactly one deployment under the requested id — unknown ids fail routing loudly ('No deployments available'), there is NO alias surface, so unlike the codex transport the child's own modelUsage.canonicalModel IS trustworthy identity evidence. costModel is marginal-usd WITH $0-AUTHORED PRICES because the calls ARE $0 (`cost:\"0\"` in every Zen response); the legal costModel set has no 'free', and plan-quota would demand a quotaProbe nothing here can satisfy — so costUSD 0.0 in records is measured truth, not the pricing artifact it would be on a priced model. Privacy: Zen documents some free ids as permitted to train on submissions during their free period — check its Privacy section before dispatching proprietary material. ONE row on this transport (muse) is Contributor-Free rather than anonymous-free: it needs a real logged-in-account key (credentialVar below), trains on submissions by design, and 500s under the anonymous `public` bearer — see the muse model row's own comment.",
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "launcher": ".claude/scripts/opencode_sidecar.sh",
+      "credentialFile": "~/.env.ai-worker.cmd",
+      "credentialVar": "OPENCODE_API_KEY",
+      "costModel": "marginal-usd",
+      "status": {
+        "state": "available",
+        "since": "2026-09-03",
+        "reason": "Re-enabled for muse-spark-1.3 only, after the owner supplied a real Zen account key (2026-09-03). Every other registered row on this transport is individually excluded (owner tested directly -- usage limits too low) -- see each row's own status. x-preview-f-free and hy3-free were removed outright: gone from Zen's live catalog, not an owner exclusion."
+      }
+    },
+    "anthropic": {
+      "_comment": "The HOST transport, added 2026-09-04. This file's scope deliberately now includes it: an Anthropic session is not the only kind of session, so a non-Anthropic host reaching claude-* needs a launcher and a roster row like every other transport, and `model_registry.py available` should be the ONE answer to 'what can I dispatch to'. The ladder still owns role SEMANTICS (roleSource below) -- these rows assert dispatchability only. No baseUrl: the child talks to Anthropic directly. No credentialFile: the credential is the host's own OAuth on disk at credentialPath, which an env scrub does not touch -- see anthropic_sidecar.sh, which deliberately inverts the scrub's original intent (gotcha_claude_code_entrypoint_leaks_host_auth_to_child) for this one transport.",
+      "launcher": ".claude/scripts/anthropic_sidecar.sh",
+      "credentialPath": "~/.claude/.credentials.json",
+      "roleSource": "reference/model_ladder_evidence.md",
+      "costModel": "plan-quota",
+      "quotaProbe": {
+        "command": "python",
+        "args": [
+          ".claude/scripts/anthropic_quota_probe.py"
+        ]
+      },
+      "status": {
+        "state": "available",
+        "since": "2026-09-04",
+        "reason": "Host transport. Dispatchable whenever the machine has a working Claude login; --check spawns a real minimal child rather than trusting that credentialPath exists."
+      }
     }
   },
   "models": [
     {
+      "_limitsSource": "UNRECORDED - these values predate the 2026-09-04 provenance rule and no source was captured at the time. Re-derive from DeepSeek's published model card before relying on them; do not treat as first-party.",
       "id": "deepseek-v4-flash",
       "alias": "flash",
       "transport": "deepseek",
       "version": "DeepSeek-V4-Flash-0731",
-      "roles": ["sonnet", "haiku", "fable"],
+      "roles": [
+        "sonnet",
+        "haiku",
+        "fable"
+      ],
       "price": {
         "cacheHitPer1M": 0.0028,
         "cacheMissPer1M": 0.14,
@@ -33,20 +109,25 @@
       "effort": {
         "converged": "low",
         "open": "max",
-        "avoid": ["high"],
+        "avoid": [
+          "high"
+        ],
         "evidence": "measured"
       },
-      "authTier": "open",
+      "authTier": "gated",
       "gate": {
-        "minBand": "On pace"
+        "minBand": "On pace",
+        "minBalanceUSD": 1.0
       }
     },
     {
+      "_limitsSource": "UNRECORDED - these values predate the 2026-09-04 provenance rule and no source was captured at the time. Re-derive from DeepSeek's published model card before relying on them; do not treat as first-party.",
       "id": "deepseek-v4-pro",
       "alias": "pro",
       "transport": "deepseek",
+      "_comment": "roles emptied 2026-09-04. This row asserted `roles: [\"opus\"]` while its own effort block said `evidence: unmeasured` -- an unbacked routing assertion, surfaced when _validate began rejecting that pair. The transport is suspended, so nothing routed on it; if DeepSeek returns, this row earns its role from a battery cell like every other, and until then it is dispatchable by alias only (-m pro). The sibling `flash` row keeps its roles: its evidence is `measured`.",
       "version": "DeepSeek-V4-Pro-0813",
-      "roles": ["opus"],
+      "roles": [],
       "price": {
         "cacheHitPer1M": 0.003625,
         "cacheMissPer1M": 0.435,
@@ -71,6 +152,407 @@
         "minBand": "Ahead",
         "minBalanceUSD": 1.0
       }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "alias": "luna",
+      "transport": "codex",
+      "_comment": "The live catalog also carries gpt-5.5, gpt-5.4, gpt-5.4-mini and codex-auto-review (captured 2026-08-19; raine additionally registers `-fast` variants and a `[1m]` long-context suffix); those remain unregistered. terra and sol WERE registered 2026-09-04 and are still UNROUTED -- the rule stands unchanged: a `roles` array is a routing assertion, and nothing measured establishes where terra/sol sit relative to this row, so both carry `roles: []` and are reachable only by explicit alias. Registering an id asserts it is dispatchable; only a benchmark asserts what it is FOR.",
+      "roles": [
+        "sonnet",
+        "haiku"
+      ],
+      "_limitsComment": "context_window/max_context_window read from OpenAI's own models cache (~/.codex/models_cache.json, written by the codex CLI from the backend) on 2026-08-20 -- first-party metadata, not a benchmark or a community figure. contextTokens is the DEFAULT window; maxContextTokens is the ceiling the model can be opted into, which nothing in this harness currently requests. Claude Code defaults an unrecognized model to 200000, which UNDER-declares this one by 72K, so a launcher must set CLAUDE_CODE_MAX_CONTEXT_TOKENS from contextTokens rather than accept the default. maxOutputTokens stays null: the 32000 a proxied child reports is Claude Code's own default and the cache states no value, so authoring it would record a client artifact as a model fact.",
+      "limits": {
+        "contextTokens": 272000,
+        "maxContextTokens": 872000,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": [],
+        "byShape": {
+          "convergedOrTightSpec": "low",
+          "openArchitecting": "max",
+          "thickPlanning": "high",
+          "parityMigration": "max"
+        },
+        "neverCapTurns": true,
+        "_avoidComment": "Empty deliberately. `medium` measured flat, but on T2 alone -- one task is not grounds for a never. `high` is the opposite of avoid: it is the measured pin for thick planning.",
+        "evidence": "measured",
+        "evidenceRef": "reference/model_ladder_evidence.md, gpt-5.6-luna section (model-effort-v1.0, 16 engagement-verified cells, 2026-08-20)",
+        "_evidenceComment": "model-effort-v1.0, 16 engagement-verified cells, 2026-08-20 (reference/model_ladder_evidence.md, gpt-5.6-luna section). low: T6 22/22 and T10 18/18 kills, both at ceiling already at the floor pin. max: T2 monotone low->max 41->58/151, and T9 parity refactor 12/20 at low -> 20/20 at max, the battery's largest effort movement. high: T4 11/16->14.5/16 at 3x turns and 6x api. medium: flat on T2, one task only. Never cap turns -- T2 triples api time across its bracket while turns plateau at 99->102, so a cap truncates depth rather than cost."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Ahead"
+      }
+    },
+    {
+      "id": "gpt-6-astra",
+      "alias": "astra",
+      "transport": "codex",
+      "_comment": "Registered 2026-09-05 for the model-effort benchmark: gpt-6 Astra via the codex proxy, same transport and attestation rules as gpt-5.6-luna. Probe: `codex exec -m gpt-6-astra` answered (4,239 tokens); `gpt-6.0-astra` is rejected by codex. MEASURED at high: review, debugging and expansive architecting (T2) are its strongest shapes, scoped architecting (T12) mid-board, chained research below opus/flash; scores in evidenceRef. EXCLUDED from dispatch (status block) — ladder row keeps the verdicts.",
+      "roles": [
+        "astra",
+        "debugging",
+        "review"
+      ],
+      "limits": {
+        "contextTokens": 272000,
+        "maxContextTokens": 872000,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": [],
+        "byShape": {
+          "convergedOrTightSpec": "low",
+          "openArchitecting": "max",
+          "thickPlanning": "high",
+          "parityMigration": "max"
+        },
+        "neverCapTurns": true,
+        "evidence": "measured",
+        "evidenceRef": "2026-09-05 at high: T11 17/28 (2nd of 10; opus·xhigh 18), T12 37/77 (4th of 6), T8 19/20 (1st; first arm past the 16 tie), T1 R 27.4 (4th of 7); T2 r1 VOID (read the design source in the vault); guarded rerun astra-t2-r2: R 51.7 / R_disc 47.6 (59/124), 0 fabrications [inst 1.1]; under instrument 1.2 (2026-09-05, fabrications beside, 146/119): R 52.1 / R_disc 48.7 (58/119), 0 fabrications, still 1st; [inst 1.3] R_disc_firm 37.8 (45/119 firm, arguable +10.9) — T2 is a recall probe, not a ranking — 1st of the T2 board (prior best 39)",
+        "_evidenceComment": "Only the high rung is measured; the other rungs stay unmeasured placeholders copied from gpt-5.6-luna. Excluded from dispatch by the owner (codex quota) — the row stays so the ladder can cite it."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Ahead"
+      },
+      "_limitsSource": "UNVERIFIED placeholder copied from gpt-5.6-luna on 2026-09-05; codex has published no window for gpt-6-astra. Replace when a catalog or a measured context event names it.",
+      "status": {
+        "state": "unavailable",
+        "scope": "all",
+        "reason": "excluded from DELEGATION by owner decision 2026-09-08: not a delegation target from any seat, a codex one included. Launching it as a session's own driver (claude-gpt-astra) is unaffected — availability gates dispatch, never the driver. Measured and on the ladder. To re-enable as a delegate, delete this block; to forbid only the cross-transport hop and keep it pinnable from a codex seat, set scope to 'sidecar'."
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "alias": "terra",
+      "transport": "codex",
+      "_comment": "Registered 2026-09-04, deliberately UNROUTED. `roles: []` means dispatchable by explicit alias (-m terra) and never auto-selected to fill a role -- the rule the luna row states holds: a `roles` array is a measured routing assertion, and nothing has measured where terra sits. Upstream reachability IS measured: a request pinning this id reached upstream as gpt-5.6-terra (probe2.sh, 2026-09-04, proxy traffic capture). Effort is unmeasured, so any -e is a guess, not a pin you can defend.",
+      "roles": [],
+      "limits": {
+        "contextTokens": null,
+        "maxContextTokens": null,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": [],
+        "evidence": "unmeasured",
+        "_evidenceComment": "No battery cell has run on this row. The converged/open values are the transport's shape (identical vocabulary to luna's -e), NOT a measurement. Do not cite them as evidence."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Ahead"
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "alias": "sol",
+      "transport": "codex",
+      "_comment": "Registered 2026-09-04, deliberately UNROUTED -- see the terra row. Upstream reachability measured the same day: a request pinning gpt-5.6-sol-fast resolved upstream to gpt-5.6-sol (probe3.sh; `-fast` is a service-tier flag, not a distinct model, which is why no -fast row exists).",
+      "roles": [],
+      "limits": {
+        "contextTokens": null,
+        "maxContextTokens": null,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": [],
+        "evidence": "unmeasured",
+        "_evidenceComment": "No battery cell has run on this row. See the terra row."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Ahead"
+      }
+    },
+    {
+      "_rosterComment": "The opencode rows below are the Zen FREE tier, refreshed live 2026-09-03. Windows/prices are FIRST-PARTY metadata from models.dev (the OpenCode team's own catalog), not benchmarks. Each row's `roles` is its own alias — a self-identity placeholder that asserts NO Anthropic-tier equivalence; tier claims land only on scored evidence from the model-effort battery. Until then nothing routes to these by role — dispatch by -m alias or id. x-preview-f-free (\"preview\") and hy3-free were removed 2026-09-03: both gone from Zen's live catalog entirely.",
+      "id": "big-pickle",
+      "alias": "pickle",
+      "transport": "opencode",
+      "status": {
+        "state": "unavailable",
+        "since": "2026-09-03",
+        "reason": "Owner tested directly: usage limits too low for dispatch (2026-09-03). Re-enable only on the owner's word."
+      },
+      "roles": [
+        "pickle"
+      ],
+      "limits": {
+        "contextTokens": 200000,
+        "maxOutputTokens": 32000,
+        "concurrency": null
+      },
+      "price": {
+        "cacheHitPer1M": 0.0,
+        "cacheMissPer1M": 0.0,
+        "outputPer1M": 0.0,
+        "currency": "USD",
+        "asOf": "2026-08-22",
+        "source": "https://models.dev (opencode catalog)"
+      },
+      "effort": {
+        "evidence": "unmeasured"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus"
+      }
+    },
+    {
+      "id": "mimo-v2.5-free",
+      "alias": "mimo",
+      "transport": "opencode",
+      "status": {
+        "state": "unavailable",
+        "since": "2026-09-03",
+        "reason": "Owner tested directly: usage limits too low for dispatch (2026-09-03). Re-enable only on the owner's word."
+      },
+      "roles": [
+        "mimo"
+      ],
+      "limits": {
+        "contextTokens": 200000,
+        "maxOutputTokens": 32000,
+        "concurrency": null
+      },
+      "price": {
+        "cacheHitPer1M": 0.0,
+        "cacheMissPer1M": 0.0,
+        "outputPer1M": 0.0,
+        "currency": "USD",
+        "asOf": "2026-08-22",
+        "source": "https://models.dev (opencode catalog)"
+      },
+      "effort": {
+        "evidence": "unmeasured"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus"
+      }
+    },
+    {
+      "id": "nemotron-3-ultra-free",
+      "alias": "nemotron-ultra",
+      "transport": "opencode",
+      "status": {
+        "state": "unavailable",
+        "since": "2026-09-03",
+        "reason": "Owner tested directly: usage limits too low for dispatch (2026-09-03). Re-enable only on the owner's word."
+      },
+      "roles": [
+        "nemotron-ultra"
+      ],
+      "limits": {
+        "contextTokens": 1000000,
+        "maxOutputTokens": 128000,
+        "concurrency": null
+      },
+      "price": {
+        "cacheHitPer1M": 0.0,
+        "cacheMissPer1M": 0.0,
+        "outputPer1M": 0.0,
+        "currency": "USD",
+        "asOf": "2026-08-22",
+        "source": "https://models.dev (opencode catalog)"
+      },
+      "effort": {
+        "evidence": "unmeasured"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus"
+      }
+    },
+    {
+      "id": "nemotron-3.5-lightning-free",
+      "alias": "lightning",
+      "transport": "opencode",
+      "status": {
+        "state": "unavailable",
+        "since": "2026-09-03",
+        "reason": "Owner tested directly: usage limits too low for dispatch (2026-09-03). Re-enable only on the owner's word."
+      },
+      "roles": [
+        "lightning"
+      ],
+      "limits": {
+        "contextTokens": 262144,
+        "maxOutputTokens": 262144,
+        "concurrency": null
+      },
+      "price": {
+        "cacheHitPer1M": 0.0,
+        "cacheMissPer1M": 0.0,
+        "outputPer1M": 0.0,
+        "currency": "USD",
+        "asOf": "2026-08-22",
+        "source": "https://models.dev (opencode catalog)"
+      },
+      "effort": {
+        "evidence": "unmeasured"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus"
+      }
+    },
+    {
+      "id": "laguna-s-2.1-free",
+      "alias": "laguna",
+      "transport": "opencode",
+      "status": {
+        "state": "unavailable",
+        "since": "2026-09-03",
+        "reason": "Owner tested directly: usage limits too low for dispatch (2026-09-03). Re-enable only on the owner's word."
+      },
+      "roles": [
+        "laguna"
+      ],
+      "limits": {
+        "contextTokens": 256000,
+        "maxOutputTokens": 32000,
+        "concurrency": null
+      },
+      "price": {
+        "cacheHitPer1M": 0.0,
+        "cacheMissPer1M": 0.0,
+        "outputPer1M": 0.0,
+        "currency": "USD",
+        "asOf": "2026-08-22",
+        "source": "https://models.dev (opencode catalog)"
+      },
+      "effort": {
+        "evidence": "unmeasured"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus"
+      }
+    },
+    {
+      "id": "muse-spark-1.3-contributor-free",
+      "alias": "muse",
+      "transport": "opencode",
+      "_comment": "Contributor-Free tier (OpenCode's own docs): trains future Meta models on submissions in exchange for access. 1.2 is retired in favor of 1.3 -- 1.2 401s 'Model is disabled' on every call, key or no key; 1.3 answers cleanly on both. The 500s that looked like an auth/account gate (verified 2026-09-03, ~20+ attempts: curl anon+authed, litellm openai+nvidia_nim providers, raw Node fetch, all failing identically) were NEVER about the key -- see apiMode below, the actual cause. The anonymous `public` bearer also answers fine via /v1/responses (verified), so authTier=gated here is the DOCUMENTED/sanctioned path for this tier's training-consent framing, not a technically-enforced gate -- keep using the real key regardless; it costs nothing and is the account-attributable path Contributor-Free's terms describe. 'gated' means 'the credential must not be the public placeholder' (enforced by opencode_sidecar.sh's explicit check), not a dollar floor: this transport declares no balanceUrl, so sc_gate_balance no-ops regardless of gate.minBalanceUSD -- that field is a schema placeholder (model_registry.py requires a numeric value on every gated row) with no live effect here.",
+      "_rolesComment": "Promoted from self-identity-only to sonnet 2026-09-04: scored on model-effort-v1.0 against gpt-5.6-luna's own sonnet-claiming evidence on the same battery -- T3/T5 axes tied, T7/T8 execution within one point or exact, one fabrication each on the T1/T2 citation-grounded tasks (identical count, not an asymmetry). No haiku claim: no scout-shaped evidence exists either way. Same principle as terra/sol's `_comment` above: a benchmark asserts what a model is FOR, and this one now has one.",
+      "roles": [
+        "sonnet"
+      ],
+      "limits": {
+        "contextTokens": 1048576,
+        "maxOutputTokens": 131072,
+        "concurrency": null
+      },
+      "price": {
+        "cacheHitPer1M": 0.0,
+        "cacheMissPer1M": 0.0,
+        "outputPer1M": 0.0,
+        "currency": "USD",
+        "asOf": "2026-09-03",
+        "source": "https://models.dev (opencode catalog)"
+      },
+      "effort": {
+        "evidence": "measured",
+        "_note": "measured at max on 8 cells; one low-effort dispatch exists (completed cleanly) but its arm-patches export never ran, so the code delta is gone with the root and it cannot be scored -- zero comparative low-vs-max evidence exists despite the dispatch. Dispatch at max until a scorable rung comparison does."
+      },
+      "authTier": "gated",
+      "apiMode": "responses",
+      "_apiModeComment": "muse-spark's Zen backend only answers on the OpenAI Responses surface (/v1/responses) -- every Chat Completions call (/v1/chat/completions, any client: curl, litellm's openai/nvidia_nim providers, raw Node fetch) 500s instantly regardless of headers/streaming/token budget, verified 2026-09-04. opencode's own client succeeds because it calls /v1/responses; there is no known Chat-Completions-side workaround. The launcher reads this field and builds litellm_params.model as 'openai/responses/<id>' instead of 'openai/<id>' -- the litellm prefix that forces the Responses call type end-to-end verified through a live proxy on the Anthropic Messages surface, not just the SDK. A small max_tokens (native Claude Code dispatches never send one) starves the reasoning-token budget on this call type and fails distinctly (`max_output_tokens` error, not a 500) -- unrelated to the apiMode fix itself.",
+      "gate": {
+        "minBand": "Surplus",
+        "minBalanceUSD": 0
+      }
+    },
+    {
+      "_rosterComment": "The anthropic rows below are the HOST transport, added 2026-09-04. They are DISPATCHABILITY rows only: what anthropic_sidecar.sh can spawn. Role SEMANTICS -- which role to reach for and at what effort -- stay in reference/model_ladder_evidence.md (the transport's roleSource), which is why each row's effort.evidence is `see-ladder` rather than a measurement duplicated here. `roles` is each row's own name because on this transport the alias IS the role; that is not a tier claim about another transport.",
+      "id": "claude-opus-5",
+      "alias": "opus",
+      "transport": "anthropic",
+      "roles": [
+        "opus"
+      ],
+      "effort": {
+        "evidence": "see-ladder"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Hot"
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "alias": "sonnet",
+      "transport": "anthropic",
+      "roles": [
+        "sonnet"
+      ],
+      "effort": {
+        "evidence": "see-ladder"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Hot"
+      }
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "alias": "haiku",
+      "transport": "anthropic",
+      "roles": [
+        "haiku"
+      ],
+      "effort": {
+        "evidence": "see-ladder"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Hot"
+      }
+    },
+    {
+      "id": "claude-fable-5-1",
+      "alias": "fable",
+      "transport": "anthropic",
+      "roles": [
+        "fable"
+      ],
+      "effort": {
+        "evidence": "see-ladder"
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Hot"
+      }
     }
-  ]
+  ],
+  "_rosterComment": "The opencode roster was hand-audited 2026-09-03 against Zen's live catalog and the owner's own direct testing (opencode_refresh_models.py's automated probe cannot distinguish Contributor-Free auth failures from dead models, so it did not drive this pass). x-preview-f-free and hy3-free were removed (gone from Zen's catalog). big-pickle, mimo-v2.5-free, nemotron-3-ultra-free, nemotron-3.5-lightning-free and laguna-s-2.1-free stay registered but are individually status:unavailable (owner tested directly -- usage limits too low). Only muse (now muse-spark-1.3-contributor-free, gated) is selectable on this transport. Each row's `roles` is its own alias - a self-identity placeholder asserting NO Anthropic-tier equivalence; tier claims land only on scored evidence from the model-effort battery. Until scored, nothing routes to these by role - dispatch by -m alias or id. Re-run opencode_refresh_models.py to pick up anonymous-tier catalog churn; re-verify Contributor-Free rows by hand."
 }

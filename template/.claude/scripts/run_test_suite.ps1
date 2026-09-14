@@ -136,7 +136,7 @@ try {
     # A dry run must not announce itself as a live suite — a peer's gate reads this registry and
     # would queue behind a process that is doing nothing.
     if ($ReapReport) { throw 'skip' }
-    $actDir = Join-Path $env:TEMP 'pp-activity'
+    $actDir = Join-Path $env:TEMP 'harness-activity'
     New-Item -ItemType Directory -Force -Path $actDir | Out-Null
     $script:ActivityFile = Join-Path $actDir "suite-$PID.json"
     $script:ActivityRec  = [ordered] @{
@@ -207,7 +207,7 @@ function Get-PeerProtectedPids {
     # pid -> "label='x' session=y", so a spare can NAME what it declined to kill instead of
     # printing a bare number the reader has to go identify themselves.
     $script:PeerLabels = @{}
-    $actDir = Join-Path $env:TEMP 'pp-activity'
+    $actDir = Join-Path $env:TEMP 'harness-activity'
     if (-not (Test-Path $actDir)) { return , $protected }
 
     $roots = [System.Collections.Generic.List[int]]::new()

@@ -9,7 +9,7 @@ and a routing comparison between them is meaningful rather than two parallel voc
 a reader has to hold apart.
 
     elapsed  = 1 - (resets_at - now) / window_seconds     clamped to [0.02, 1.0]
-    pressure = used_percentage / (elapsed * 100)          >1 ahead of a linear pace
+    pressure = used_percentage / (max(PACE_FLOOR, elapsed) * 100)   >1 ahead of a linear pace
 
 The `/100.0` is load-bearing: the input is a PERCENTAGE, so without it `pressure > 1.0`
 would not mean "ahead of pace".
@@ -30,6 +30,11 @@ import sys
 import time
 
 ELAPSED_FLOOR = 0.02          # first minutes after a reset cannot divide toward infinity
+# A burn RATE needs a run-up: with less than PACE_FLOOR of the window elapsed, the denominator is
+# PACE_FLOOR. Measured 2026-09-08: 3% of a weekly window used, 2% elapsed, read as pressure 1.5
+# (Hot) and refused a dispatch; the same 3% at 10% elapsed is 0.3 (Surplus), which is what a
+# fresh window is. A real burst still shows: 30% used at 2% elapsed is 3.0 either way.
+PACE_FLOOR = 0.10
 
 # (upper_bound_exclusive, name, what this band AUTHORIZES paid transport to take)
 #
@@ -106,8 +111,9 @@ def pressure_for(used_percentage, resets_at, window_seconds, now=None):
     if resets_at < now:
         return None
     elapsed = 1.0 - (resets_at - now) / window_seconds
-    elapsed = max(ELAPSED_FLOOR, min(1.0, elapsed))  # clamp skew; emit rather than suppress
-    return used_percentage / (elapsed * 100.0)
+    # Upper clamp only: the lower bound is PACE_FLOOR below, which subsumes ELAPSED_FLOOR.
+    elapsed = min(1.0, elapsed)
+    return used_percentage / (max(PACE_FLOOR, elapsed) * 100.0)
 
 
 def compute_band(used_percentage, resets_at, window_seconds, now=None):

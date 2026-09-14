@@ -16,10 +16,11 @@ try {
 } catch (e) {
   return { error: 'args is not valid JSON — /doc_architecture_audit must pass a JSON-serialized {context, docRoot}. ' + ((e && e.message) || '') }
 }
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent,
-// so Anthropic sessions run unchanged. Inlined per script: the Workflow sandbox has no require.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+// Endpoint vocabulary -- hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
+// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
+const PIN = (m) => m
+const EFF = (e) => e
 
 const CONTEXT = A.context || ''
 const DOC_ROOT = A.docRoot || ''
@@ -156,7 +157,7 @@ const deduped = [...byKey.values(), ...noSystem]
 deduped.sort((a, b) => (SEV[b.severity] || 0) - (SEV[a.severity] || 0))
 
 // 3a-bis: scrub in-band agent self-correction artifacts from path-shaped scope fields (e.g. an agent
-// that typed "PhysicsAndMovement... no — Gameplay/Spawning/Quick Reference.md" mid-thought). The JSON
+// that typed "DraftPath... no — Documentation/Networking/Quick Reference.md" mid-thought). The JSON
 // schema validates these (still a string) but /doc_audit_fix would consume the corrupted path, and the
 // Machine Findings verbatim copy would carry the garble. Cleaning here keeps the verbatim copy clean.
 const cleanScope = (s) => {

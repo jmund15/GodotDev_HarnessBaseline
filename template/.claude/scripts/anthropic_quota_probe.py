@@ -60,13 +60,15 @@ def _epoch(value):
 
 
 def _cache_candidate(now):
-    paths = sorted(
-        glob.glob(os.path.join(tempfile.gettempdir(), "cc-cachestat-*.json")),
-        key=os.path.getmtime,
-        reverse=True,
-    )
-    for path in paths:
-        age = now - os.path.getmtime(path)
+    paths = []
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "cc-cachestat-*.json")):
+        try:
+            observed = os.path.getmtime(path)
+        except OSError:
+            continue
+        paths.append((observed, path))
+    for observed, path in sorted(paths, key=lambda item: item[0], reverse=True):
+        age = now - observed
         if not (-300 <= age < STALE_AFTER_SECONDS):
             continue
         try:
@@ -83,7 +85,7 @@ def _cache_candidate(now):
             continue
         normalized = dict(limits)
         normalized["seven_day"] = {"usedPercent": used, "resetsAt": resets}
-        return normalized, path, os.path.getmtime(path)
+        return normalized, path, observed
     return None
 
 
@@ -98,7 +100,8 @@ def _sidecar_limits(row):
         return None
     used = seven.get("utilization")
     resets = _epoch(seven.get("resetsAt"))
-    if not isinstance(used, (int, float)) or resets is None:
+    if (isinstance(used, bool) or not isinstance(used, (int, float))
+            or not 0.0 <= used <= 1.0 or resets is None):
         return None
     return {
         "limits": {

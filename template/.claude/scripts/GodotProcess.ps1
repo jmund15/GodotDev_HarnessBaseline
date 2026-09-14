@@ -87,7 +87,7 @@ function Get-ProcVerdict {
 # A root string that can never appear in any real path, so Get-ProcVerdict's MINE branch can
 # never fire and its return collapses to exactly its ORPHAN test. This is how the orphan question
 # is asked WITHOUT a checkout to attribute against -- reusing the one engine rather than forking it.
-$script:GodotNoSuchRoot = '\\?\pp-godotprocess-no-such-root\'
+$script:GodotNoSuchRoot = '\\?\harness-godotprocess-no-such-root\'
 
 function Resolve-RootPath {
     param([string] $Path)

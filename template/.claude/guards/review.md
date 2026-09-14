@@ -1,6 +1,6 @@
 # Guard: review — review / audit / critique lenses
 
-Read ONLY the section matching your model tier: `terse` if you are an opus-class model, `strict` otherwise. `any.md`'s section of the same tier binds you too and arrives with this file. Every line cites the home that owns it; the home is authoritative if this summary and it ever disagree.
+Read ONLY the section your dispatch names; if none is named, read `## strict`. `any.md`'s section of the same tier binds you too and arrives with this file. Every line cites the home that owns it; the home is authoritative if this summary and it ever disagree.
 
 ## strict
 
@@ -15,3 +15,7 @@ Read ONLY the section matching your model tier: `terse` if you are an opus-class
 - `file` goes in as `path:line` — it is the dedup key. Field budgets: `description` ~400 chars, `rationale` ~500, `old`/`new` the smallest unambiguous span.
 - Severity is triage, not a correctness filter; verify call sites, not just the public surface: `feedback_exhaust_review_findings_before_locking.md`.
 - An unqualified finding is rung 2 — a `file:line` you read. Traced / analogy / grep findings ship with the rung named in `rationale`: `reference/claim_confidence.md`.
+
+## fable
+
+Read this file's `## terse` section.

@@ -21,7 +21,7 @@ Every claim sits on one rung. State the rung's phrasing, not a stronger one.
 **The framing question:** *name the one fact this claim is safe because of.* Can't name it, or the fact is
 "it looked right" → the claim is rung 4 or 5 and must say so.
 
-**The rung grades evidence, not tool choice.** Which search is correct for a given file type is CLAUDE.md §9's
+**The rung grades evidence, not tool choice.** Which search is correct for a given file type is CLAUDE.md §Tool Routing's
 call and is unchanged by this ladder — rung 5 is where you land when you stop at the match, whatever produced
 it. A ladder read as "grep is the baseline" would invert the routing rules it sits beside.
 

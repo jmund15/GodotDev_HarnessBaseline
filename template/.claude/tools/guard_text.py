@@ -27,7 +27,7 @@ import os
 import sys
 
 VALID_SHAPES = ("any", "survey", "review", "author")
-VALID_TIERS = ("strict", "terse", "none")
+VALID_TIERS = ("strict", "terse", "fable", "none")
 
 _GUARDS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "guards"
@@ -56,8 +56,8 @@ def _section(path: str, tier: str) -> str:
 def guard_text(shape: str, tier: str) -> str:
     """Assemble the rails a delegate of this shape and tier receives.
 
-    Returns "" for tier `none` (the fable row in dispatch.js TIER_OF) — an empty string is a
-    valid delivery, distinct from the ValueError raised when a requested section is missing.
+    Returns "" for tier `none` — an empty string is a valid delivery, distinct from the
+    ValueError raised when a requested section is missing.
     """
     if shape not in VALID_SHAPES:
         raise ValueError("unknown shape %r (legal: %s)" % (shape, ", ".join(VALID_SHAPES)))

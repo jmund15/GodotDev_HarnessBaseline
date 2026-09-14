@@ -68,7 +68,7 @@ you are unsure about; when unsure, drop.
 - `note-only` — log against the item afterward; take no action now.
 
 `why` — one or two sentences naming the **shared surface** (file, type, .tres, design decision).
-"Both are about encounters" is not a `why`.
+"Both are about persistence" is not a `why`.
 
 ## Output contract
 
@@ -89,7 +89,7 @@ you are unsure about; when unsure, drop.
 - `checked.stoppedAt` records where you ended: `triviality-gate` (step 0), `empty-shortlist`
   (step 2), `verified-none` (opened the doc, nothing cleared the bar), `verified-overlaps`.
 - `checked.basis` is ONE sentence carrying the caller's confidence: name what you examined and why it
-  did or did not clear the bar — e.g. *"Shortlisted 7 encounter-domain items, read each in Worklog.md;
+  did or did not clear the bar — e.g. *"Shortlisted 7 persistence-domain items, read each in Worklog.md;
   none touch the wave-authoring surface this scope changes."* Not *"nothing seemed relevant."* Cite
   only items that appear in `shortlisted`; a basis naming anything else is a contradiction.
 

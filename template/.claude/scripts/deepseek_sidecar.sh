@@ -122,7 +122,7 @@
 #     "The supported API model names are deepseek-v4-pro or deepseek-v4-flash".
 #     There is no silent fallback to correct for.
 #   * BARE ROLE NAMES HARD-ERROR: opus, sonnet, haiku, fable are all rejected.
-#     This is why hooks/model_pin_translate.py STRIPS the Agent tool's model pin
+#     This is why the Agent tool's model pin is not honoured off-Anthropic
 #     rather than passing it through — an un-stripped bare role makes agent()
 #     return null, .filter(Boolean) swallows it, and the fan-out reports
 #     "0 findings" while looking clean.
@@ -149,7 +149,9 @@ BASE_URL="https://api.deepseek.com/anthropic"
 
 SC_TRANSPORT="deepseek"
 # shellcheck source=lib/sidecar_common.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib/sidecar_common.sh"
+SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+. "$SC_LAUNCHER_DIR/lib/sidecar_common.sh"
+sc_reexec_snapshot "$@"   # run from a snapshot copy; see lib
 
 SC_MODEL="flash"   # resolved through the registry; alias or full id both fine
 
@@ -193,6 +195,7 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
+  sc_check_gates
   echo "OK (model=${_check_reg%%|*} endpoint=$BASE_URL key=***${_check_key: -4})"
   exit 0
 fi
@@ -278,17 +281,14 @@ run_claude() {
       ${SC_APPEND_ARGS[@]+"${SC_APPEND_ARGS[@]}"} \
       ${SC_MAX_TURNS:+--max-turns "$SC_MAX_TURNS"} \
       ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+      ${SC_RESUME_SID:+--resume} ${SC_RESUME_SID:+"$SC_RESUME_SID"} \
       --add-dir "$SC_WORKDIR" \
       ${SC_ADD_DIRS[@]+"${SC_ADD_DIRS[@]}"}
 }
 
-if [ -n "$SC_PROGRESS" ]; then
-  # Tee event lines live so a Monitor can follow the run; capture for -R too.
-  OUTPUT="$(run_claude | tee "$SC_PROGRESS")"
-else
-  OUTPUT="$(run_claude)"
-fi
-rc=$?
+[ -n "$SC_PROGRESS" ] && : > "$SC_PROGRESS"
+sc_run_watched run_claude "$SC_PROGRESS"   # stall watchdog on the -P stream; sets OUTPUT and rc
+sc_resume_loop run_claude "$SC_PROGRESS"
 printf '%s\n' "$OUTPUT"
 [ $rc -eq 124 ] && echo "sidecar timed out after ${SC_TIMEOUT}s" >&2
 

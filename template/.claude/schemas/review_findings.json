@@ -1,0 +1,45 @@
+{
+  "description": "The canonical review-findings shape, shipped at a stable path so a sidecar review lens can be given -S without the caller inventing a schema. Kept structurally identical to review_fanout.js FINDINGS_SCHEMA: the two engines return the same object, so a consumer never branches on which one produced it. NO length caps and no maxItems on `findings` -- a capped array silently DROPS findings, and per-field caps once rejected complete deliverables outright (feedback_schema_caps_must_not_invalidate_delegate_work). The budgets in each description are soft targets the schema does not enforce. Every key here must be a standard JSON Schema keyword: the CLI validates --json-schema in ajv STRICT mode and rejects an unknown one outright, so a `_comment` key fails every dispatch before the child starts.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "agent": { "type": "string" },
+          "action": { "type": "string", "enum": ["FIX", "ASK", "PLAN"] },
+          "category": { "type": "string", "enum": ["bug", "rule", "improvement"] },
+          "critical": { "type": "boolean" },
+          "file": {
+            "type": ["string", "null"],
+            "description": "location as \"path/to/file.cs:line\" — include the line number; dedup keys on this full string, so the line disambiguates distinct findings in one file"
+          },
+          "description": {
+            "type": "string",
+            "description": "the defect in 2-3 sentences (~400 chars); no restatement of the rationale"
+          },
+          "old": {
+            "type": ["string", "null"],
+            "description": "minimal excerpt to locate/replace — the smallest span that makes the edit unambiguous, never the whole method or file"
+          },
+          "new": {
+            "type": ["string", "null"],
+            "description": "replacement for `old` at the same granularity"
+          },
+          "question": { "type": ["string", "null"] },
+          "options": { "type": ["array", "null"], "items": { "type": "string" } },
+          "scope": { "type": ["array", "null"], "items": { "type": "string" } },
+          "rationale": {
+            "type": "string",
+            "description": "why it is wrong and what breaks (~500 chars); cite the rule or invariant rather than re-deriving it"
+          }
+        },
+        "required": ["agent", "action", "category", "description", "rationale"]
+      }
+    }
+  },
+  "required": ["findings"]
+}

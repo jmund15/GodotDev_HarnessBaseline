@@ -134,7 +134,7 @@ $baselineP = Join-Path $repo 'Tests\regression_baseline.json'
 $queueDir  = Join-Path $repo '.claude\scratch\gate_queue'
 # Machine-global on purpose: worktrees are separate directories, so a
 # per-checkout path cannot see peer sessions.
-$activityDir = Join-Path $env:TEMP 'pp-activity'
+$activityDir = Join-Path $env:TEMP 'harness-activity'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $script:Detail       = [System.Collections.Generic.List[string]]::new()
@@ -679,7 +679,7 @@ function New-GateRequest {
 function Start-GateWatcherIfAbsent {
     $mutex = $null
     try {
-        $mutex = New-Object System.Threading.Mutex($false, "Global\pp-gatequeue-$(Get-WorktreeId $repo)")
+        $mutex = New-Object System.Threading.Mutex($false, "Global\harness-gatequeue-$(Get-WorktreeId $repo)")
         $got = $false
         try { $got = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
         if (-not $got) { return $false }

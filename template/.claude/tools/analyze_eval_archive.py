@@ -6,6 +6,7 @@ and skill performance with recent-vs-prior trend, and prints stats for
 manual transcription into the Obsidian dashboard.
 """
 import json
+import os
 import sys
 from collections import Counter
 
@@ -27,6 +28,29 @@ for e in data["structured_entries"]:
     if key not in seen:
         seen.add(key)
         unique.append(e)
+
+# An entry without `outcome` is a v1-shaped stray (measured 2026-09-05: id 200, the
+# un-normalized twin of id 199). Excluding it keeps every downstream Counter alive;
+# the loud print is the signal to normalize or delete it in the archive.
+malformed = [e for e in unique if "outcome" not in e]
+if malformed:
+    print(f"WARNING: {len(malformed)} structured entr(y/ies) lack `outcome` and are EXCLUDED: "
+          + ", ".join(f"id={e.get('id')} date={e.get('date')}" for e in malformed))
+    unique = [e for e in unique if "outcome" in e]
+
+# Non-enum values are counted verbatim by every Counter below, so a drifted
+# writer ("success", "mixed", a paragraph) silently vanishes from clean/correction
+# totals. Warn loudly; normalize in the archive, not here. The enum homes and the legacy
+# exemption are the write-time guard's — one source, so the two never disagree.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+from self_eval_archive_guard import OUTCOMES, LEGACY_MAX_ID  # noqa: E402
+PATTERNS = set((data.get("Self_Evaluate_Themes", {}).get("patterns") or {}).keys()) | {None}
+for e in unique:
+    if e["outcome"] not in OUTCOMES:
+        print(f"WARNING: id={e.get('id')} has non-enum outcome {str(e['outcome'])[:40]!r} — normalize it")
+    eid = e.get("id")
+    if isinstance(eid, int) and eid > LEGACY_MAX_ID and e.get("pattern") not in PATTERNS:
+        print(f"WARNING: id={eid} has non-enum pattern {str(e.get('pattern'))[:40]!r} — normalize it")
 
 print("=== DEDUP RESULTS ===")
 print(f"Raw structured entries: {len(data['structured_entries'])}")
@@ -249,8 +273,6 @@ print(f"Latest:   {dates[-1]}")
 print(f"Distinct dates: {len(dates)}")
 
 # Output to JSON for the writer step
-import os
-os.makedirs("/tmp/eval_out", exist_ok=True)
 output = {
     "unique_count": len(unique),
     "raw_count": len(data["structured_entries"]),
@@ -316,6 +338,7 @@ output = {
             "outcome": e["outcome"],
             "pattern": e.get("pattern", "?"),
             "title": e["title"],
+            **({"shape": e["shape"]} if "shape" in e else {}),
         }
         for e in sorted_unique[-10:]
     ],
@@ -328,11 +351,17 @@ output = {
             "title": e["title"],
             "n_corrections": len(e.get("corrections", [])),
             "key_takeaway": e.get("key_takeaway", "")[:200],
+            **({"shape": e["shape"]} if "shape" in e else {}),
         }
         for e in sorted_unique
         if e["outcome"] in ("correction", "failure")
     ],
 }
-with open("/tmp/eval_out/stats.json", "w", encoding="utf-8") as f:
+# HARNESS_EVAL_OUT overrides the output dir for the re-runnable proof; production runs
+# keep writing to /tmp/eval_out.
+out_dir = os.environ.get("HARNESS_EVAL_OUT", "/tmp/eval_out")
+os.makedirs(out_dir, exist_ok=True)
+stats_path = os.path.join(out_dir, "stats.json")
+with open(stats_path, "w", encoding="utf-8") as f:
     json.dump(output, f, indent=2)
-print("\nStats written to /tmp/eval_out/stats.json")
+print("\nStats written to %s" % stats_path)

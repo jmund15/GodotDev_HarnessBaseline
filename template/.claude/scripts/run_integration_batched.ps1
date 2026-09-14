@@ -230,18 +230,18 @@ foreach ($u in $weighted) {
     }
 }
 
-# Quarantine (user-ratified 2026-08-11): ApproachEncounterMigrationTests trips a
-# deterministic engine FATAL (gchandle.is_released) when its two test methods share a
-# process. Excluded from every batch until the worklog item "Diagnose
-# gchandle.is_released() runtime hang" is fixed. Gate verdicts must state this exclusion.
-$quarantine = 'FullyQualifiedName!~ApproachEncounterMigration'
+# PROJECT-CONFIG: quarantine filter appended to every batch, e.g. 'FullyQualifiedName!~SomeSuite'
+# for a suite that trips a deterministic engine FATAL when its methods share a process. Empty
+# string = no exclusion. Gate verdicts must state any exclusion set here.
+$quarantine = ''
 
 # Stable order + filters. Batch numbering follows bin creation order (largest-first).
 $plan = @()
 $i = 0
 foreach ($b in $batches) {
     $i++
-    $filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ")&$quarantine"
+    $filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ')'
+    if ($quarantine) { $filter = "$filter&$quarantine" }
     $plan += [pscustomobject]@{
         label = "Integration_B$i"; segs = @($b.segs); expectedSec = [math]::Round($b.sec, 1)
         filter = $filter; status = 'PENDING'; passed = 0; failed = 0; elapsed = 0; workWall = 0

@@ -19,33 +19,51 @@ try {
 }
 const agents = Array.isArray(A.agents) ? A.agents : []
 
-// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
-// {name, ids}. Anthropic role names stay canonical and are ALWAYS legal; on a provider session
-// that transport's own registry ids become legal too, which is what makes a sibling model
-// reachable by Workflow pin with no sidecar. Absent the key nothing changes. Inlined per script
-// because the Workflow sandbox has no require/import.
-const TRANSPORT_IDS = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic.
+// Presence means provider mode: incomplete registry data fails before dispatch rather than reopening
+// the Anthropic vocabulary.
+const HAS_TRANSPORT = Object.prototype.hasOwnProperty.call(A, '__transport')
+const TRANSPORT = A.__transport
+const validStringList = (value) => Array.isArray(value) && value.length > 0
+  && value.every(item => typeof item === 'string' && item.trim())
+const transportValid = !HAS_TRANSPORT || (
+  TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && validStringList(TRANSPORT.efforts)
+  && typeof TRANSPORT.default === 'string' && TRANSPORT.default.trim()
+  && TRANSPORT.ids.includes(TRANSPORT.default)
+)
+if (!transportValid) {
+  return { error: 'review-fanout: args.__transport needs non-empty string arrays `ids` and `efforts`, plus a non-empty `default` contained in `ids`.' }
+}
+const TRANSPORT_IDS = HAS_TRANSPORT ? TRANSPORT.ids : []
+const TRANSPORT_EFFORTS = HAS_TRANSPORT ? TRANSPORT.efforts : []
 const PIN = (m) => m
 const EFF = (e) => e
 const contextPrefix = A.contextPrefix || '' // optional shared CONTEXT prepended to every agent prompt
 if (agents.length === 0) {
-  return { error: 'No agents in args. The calling command (Claude) must assemble each agent prompt (from review_agents.md / session_audit_agents.md / etc.) and pass them via args.agents = [{key, prompt?, promptPath?, model?, effort?}] (+ optional args.contextPrefixPath, args.justification).' }
+  return { error: 'No agents in args. The calling command (Claude) must assemble each agent prompt (from review_agents.md / session_audit_agents.md / etc.) and pass them via args.agents = [{key, prompt?, promptPath?, model?, effort?, agentType}] (+ optional args.contextPrefixPath, args.justification).' }
+}
+const badAgentObjects = agents.filter(a => !a || typeof a !== 'object' || Array.isArray(a))
+if (badAgentObjects.length) {
+  return { error: 'review-fanout: every args.agents entry must be an object.' }
 }
 
 const SPILL_DIR = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
 const NORMAL_SPILL_DIR = SPILL_DIR ? SPILL_DIR.replace(/\\/g, '/') : null
 const spillEscapesRoot = NORMAL_SPILL_DIR && /(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR)
 const spillRootAllowed = !NORMAL_SPILL_DIR
-  || (!spillEscapesRoot && /(^|\/)\.claude\/scratch(?:\/|$)/i.test(NORMAL_SPILL_DIR))
-  || (!spillEscapesRoot && /(^|\/)temp\/claude(?:\/|$)/i.test(NORMAL_SPILL_DIR))
+  || (!spillEscapesRoot && /^\.claude\/scratch(?:\/|$)/.test(NORMAL_SPILL_DIR))
 if (!spillRootAllowed) {
-  return { error: 'review-fanout: spillDir must stay under .claude/scratch/ or $TEMP/claude so the read-only lens write guard permits it. Received: ' + SPILL_DIR }
+  return { error: 'review-fanout: spillDir must be repository-relative and contained by .claude/scratch/. Received: ' + SPILL_DIR }
 }
 const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
-const readOnlyContract = (a) => SPILL_DIR
+const NO_WRITE_AGENT_TYPES = ['Explore', 'Plan']
+const spills = (a) => !!SPILL_DIR && !NO_WRITE_AGENT_TYPES.includes(a.agentType)
+const readOnlyContract = (a) => spills(a)
   ? 'Read-only: do NOT modify, create, or delete any file EXCEPT your own spill file ' + spillPath(a.label) + '.'
   : 'Read-only: do NOT modify, create, or delete any file.'
-const spillContract = (a) => SPILL_DIR ? [
+const spillContract = (a) => spills(a) ? [
   'Write your FULL JSON deliverable to ' + spillPath(a.label) + ' BEFORE returning the same object through structured output. That file is yours alone.',
   'If structured output fails after the write, the caller recovers this paid-for review from that exact path.',
 ].join('\n') : ''
@@ -128,26 +146,14 @@ const FINDINGS_SCHEMA = {
 // On a provider session the transport's ids REPLACE the Anthropic vocabulary rather than
 // joining it: concat left `opus`/`sonnet` legal in the engine while the guard denied them,
 // so the two homes of one rule disagreed and the engine was the permissive one.
-const VALID_MODELS = TRANSPORT_IDS.length ? TRANSPORT_IDS : ['opus', 'sonnet', 'haiku', 'fable']
-// Floor: a caller that omits (or mis-spells) model must NOT silently inherit the session model —
-// under Fable that turns a 6-lens fan-out into 6 Fable agents. Default to sonnet; callers escalate explicitly.
-// Transport-aware: on a provider session `sonnet` is unserviceable, so an omitted pin must
-// fall to that transport's own default rather than to a name the endpoint will reject.
-const DEFAULT_MODEL = (A.__transport && A.__transport.default) || 'sonnet'
-// Effort floor (two-class rule, orchestration §5): review/judgment lenses are bounded-by-construction —
-// measured: medium lenses matched high findings at ~43% cost (plan-check, sub-architectural plans ONLY:
-// P-D pin comparison 2026-07-29 found opus-high lenses catching 2.5x the defects of sonnet-medium on an
-// architecturally-loaded plan); judge panels differ <=3/56 items between low/medium/high with misses-only
-// degradation (J-CAL 2026-07-28). Never inherit session effort. Raising a lens above medium requires
-// args.justification naming the ambiguity it resolves.
-const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
-const DEFAULT_EFFORT = 'medium'
+const VALID_MODELS = HAS_TRANSPORT ? TRANSPORT_IDS : ['opus', 'sonnet', 'haiku', 'fable']
+const DEFAULT_MODEL = HAS_TRANSPORT ? TRANSPORT.default : 'sonnet'
+const VALID_EFFORTS = HAS_TRANSPORT ? TRANSPORT_EFFORTS : ['low', 'medium', 'high', 'xhigh']
+const DEFAULT_EFFORT = VALID_EFFORTS.includes('medium') ? 'medium' : VALID_EFFORTS[0]
+const hasEffort = (a) => Object.prototype.hasOwnProperty.call(a, 'effort') && a.effort !== undefined
 
-// A MISSING model still falls to DEFAULT_MODEL -- that floor exists so an omitted pin cannot
-// inherit the session model. A PRESENT-but-unrecognized one is a different animal: silently
-// coercing it means a fan-out pinned to a typo, or to a transport id the engine was never told
-// about, runs as sonnet and reports a clean sweep. Fail loudly instead.
-const badModels = agents.filter(a => a.model && !VALID_MODELS.includes(a.model))
+// Omitted pins take bounded floors. Present invalid pins fail rather than silently changing the run.
+const badModels = agents.filter(a => a.model !== undefined && !VALID_MODELS.includes(a.model))
 if (badModels.length) {
   return { error: 'review-fanout: unrecognized model pin(s): '
     + badModels.map(a => (a.key || 'agent') + '->' + a.model).join(', ')
@@ -155,16 +161,27 @@ if (badModels.length) {
     + (A.__transport ? ' (transport ' + A.__transport.name + ')' : ' (Anthropic session)')
     + '. Omit `model` to take the ' + DEFAULT_MODEL + ' floor deliberately.' }
 }
+const badEfforts = agents.filter(a => hasEffort(a) && !VALID_EFFORTS.includes(a.effort))
+if (badEfforts.length) {
+  return { error: 'review-fanout: unrecognized effort pin(s): '
+    + badEfforts.map(a => (a.key || 'agent') + '->' + String(a.effort)).join(', ')
+    + '. Legal here: ' + VALID_EFFORTS.join(', ')
+    + '. Omit `effort` to take the ' + DEFAULT_EFFORT + ' floor deliberately.' }
+}
 const badKeys = agents.filter(a => typeof a.key !== 'string' || !a.key.trim())
 if (badKeys.length) {
   return { error: 'review-fanout: every agent needs a non-empty key.' }
+}
+const badAgentTypes = agents.filter(a => typeof a.agentType !== 'string' || !a.agentType.trim())
+if (badAgentTypes.length) {
+  return { error: 'review-fanout: every agent needs a non-empty agentType.' }
 }
 const duplicateKeys = agents.map(a => a.key).filter((key, i, keys) => keys.indexOf(key) !== i)
 if (duplicateKeys.length) {
   return { error: 'review-fanout: duplicate agent key(s): ' + [...new Set(duplicateKeys)].join(', ') }
 }
 if (SPILL_DIR) {
-  const spillPaths = agents.map(a => spillPath('review:' + a.key))
+  const spillPaths = agents.filter(spills).map(a => spillPath('review:' + a.key).toLowerCase())
   const spillCollisions = spillPaths.filter((path, i, paths) => paths.indexOf(path) !== i)
   if (spillCollisions.length) {
     return { error: 'review-fanout: agent keys collide after spill-path sanitization: ' + [...new Set(spillCollisions)].join(', ') }
@@ -173,11 +190,11 @@ if (SPILL_DIR) {
 
 const resolved = agents.map(a => ({
   ...a,
-  label: 'review:' + (a.key || 'agent'),
-  model: VALID_MODELS.includes(a.model) ? a.model : DEFAULT_MODEL,
-  effort: VALID_EFFORTS.includes(a.effort) ? a.effort : DEFAULT_EFFORT,
+  label: 'review:' + a.key,
+  model: a.model === undefined ? DEFAULT_MODEL : a.model,
+  effort: hasEffort(a) ? a.effort : DEFAULT_EFFORT,
 }))
-log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(a => [a.label, a.model + '/' + a.effort + ' guards:review@' + tierOf(a.model)]))))
+log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(a => [a.label, a.model + '/' + a.effort + '/' + a.agentType + ' guards:review@' + tierOf(a.model)]))))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 else if (resolved.some(a => a.effort !== DEFAULT_EFFORT)) log('WARNING: non-default effort pin without args.justification — name the ambiguity it resolves')
 
@@ -187,7 +204,10 @@ const contextPre = A.contextPrefixPath
 
 phase('Review')
 const raw = await parallel(resolved.map(a => () => {
-  const opts = { label: a.label, phase: 'Review', schema: FINDINGS_SCHEMA, model: PIN(a.model), effort: EFF(a.effort) }
+  const opts = {
+    label: a.label, phase: 'Review', schema: FINDINGS_SCHEMA,
+    model: PIN(a.model), effort: EFF(a.effort), agentType: a.agentType,
+  }
   const body = a.promptPath
     ? 'Your full lens mandate is at: ' + a.promptPath + ' — read it with the Read tool and execute it exactly (retry once if the read fails).'
     : (a.prompt || '')
@@ -204,8 +224,9 @@ const reports = {}  // lens key -> lens-level report (schema `report`), passed t
 for (const r of raw) {
   if (!r || !r.result || typeof r.result !== 'object') {
     const lens = r ? r.key : '(unknown)'
-    const recovery = SPILL_DIR
-      ? 'Recover the paid-for review from ' + spillPath('review:' + (r ? r.key : 'unknown')) + ' before re-dispatching.'
+    const source = resolved.find(a => a.key === lens)
+    const recovery = source && spills(source)
+      ? 'Recover the paid-for review from ' + spillPath('review:' + lens) + ' before re-dispatching.'
       : 'Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + (r ? r.key : '<key>') + '.'
     flags.push({ kind: 'lens-no-return', lens, detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. ' + recovery })
     continue
@@ -286,23 +307,56 @@ if (consolidate && deduped.length > 1) {
     'OUTPUT: only the JSON object {"findings": [...]} per the schema. No prose.',
   ].join('\n')
   const consolidationModel = (A.__transport && A.__transport.default) || 'opus'
-  log('PINS ' + JSON.stringify({ 'review:consolidate': consolidationModel + '/low/general-purpose' }))
+  const consolidationEffort = VALID_EFFORTS.includes('low') ? 'low' : DEFAULT_EFFORT
+  log('PINS ' + JSON.stringify({ 'review:consolidate': consolidationModel + '/' + consolidationEffort + '/general-purpose' }))
   const res = await agent(mergePrompt, {
     label: 'review:consolidate', phase: 'Merge', schema: MERGE_SCHEMA,
     // Engine-internal pin: not a caller's, so neither the widening nor the guard's scanner
     // covers it. Falls to the transport's default so consolidation does not null out on a
     // provider session after every lens has already run.
-    model: consolidationModel, effort: 'low', agentType: 'general-purpose',
+    model: consolidationModel, effort: consolidationEffort, agentType: 'general-purpose',
   })
   const out = (res && Array.isArray(res.findings)) ? res.findings : null
   if (!out) {
     flags.push({ kind: 'consolidate-no-return', detail: 'the consolidation agent returned no schema object — the deterministic list is returned unmerged.' })
   } else {
+    const sourceById = new Map(numbered.map(f => [f.id, f]))
     const seen = new Set()
-    for (const f of out) { for (const id of (f.merged_from || [])) { seen.add(id) } }
-    const missing = numbered.filter(f => !seen.has(f.id)).map(f => f.id)
-    if (missing.length) {
-      flags.push({ kind: 'consolidate-dropped-findings', detail: 'ids absent from every merged_from: ' + missing.join(', ') + ' — the merge was discarded and the deterministic list is returned unmerged.' })
+    let invalid = null
+    for (const f of out) {
+      const ids = Array.isArray(f.merged_from) ? f.merged_from : []
+      if (ids.length === 0) { invalid = 'an output entry has empty merged_from'; break }
+      const sources = []
+      for (const id of ids) {
+        if (typeof id !== 'string' || !id.trim()) { invalid = 'merged_from contains an empty id'; break }
+        if (!sourceById.has(id)) { invalid = 'merged_from contains unknown id ' + id; break }
+        if (seen.has(id)) { invalid = 'merged_from duplicates id ' + id; break }
+        seen.add(id)
+        sources.push(sourceById.get(id))
+      }
+      if (invalid) { break }
+      const strongestCritical = sources.some(source => !!source.critical)
+      if (!!f.critical !== strongestCritical) {
+        invalid = 'merged finding changes strongest critical for ' + ids.join(', ')
+        break
+      }
+      const strongestAction = Math.min(...sources.map(source => TIER[source.action] ?? 9))
+      if ((TIER[f.action] ?? 9) !== strongestAction) {
+        invalid = 'merged finding changes strongest action for ' + ids.join(', ')
+        break
+      }
+      const strongestCategory = Math.min(...sources.map(source => CAT[source.category] ?? 9))
+      if ((CAT[f.category] ?? 9) !== strongestCategory) {
+        invalid = 'merged finding changes strongest category for ' + ids.join(', ')
+        break
+      }
+    }
+    if (!invalid && seen.size !== numbered.length) {
+      const missing = numbered.filter(f => !seen.has(f.id)).map(f => f.id)
+      invalid = 'merged_from omits id(s) ' + missing.join(', ')
+    }
+    if (invalid) {
+      flags.push({ kind: 'consolidate-invalid', detail: invalid + ' — the merge was discarded and the deterministic list is returned unmerged.' })
     } else {
       final = out
     }
@@ -322,7 +376,9 @@ log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' deduped 
 
 const output = { findings: final, counts, flags, reports, perAgent: raw.map(r => ({ key: r.key, count: (r && r.result && Array.isArray(r.result.findings)) ? r.result.findings.length : 0 })) }
 if (SPILL_DIR) {
+  const inlineLabels = resolved.filter(a => !spills(a)).map(a => a.key)
   output.spillDir = SPILL_DIR
-  output.spills = Object.fromEntries(resolved.map(a => [a.key, spillPath(a.label)]))
+  output.spills = Object.fromEntries(resolved.filter(spills).map(a => [a.key, spillPath(a.label)]))
+  if (inlineLabels.length) output.inlineLabels = inlineLabels
 }
 return output

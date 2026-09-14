@@ -49,6 +49,26 @@ def main():
             "newer unusable cache does not mask sidecar evidence",
             fallback is not None and fallback_source == ledger,
         ))
+        raced_path = os.path.join(root, "cc-cachestat-vanished.json")
+        original_glob = aq.glob.glob
+        original_getmtime = aq.os.path.getmtime
+        aq.glob.glob = lambda _pattern: [raced_path]
+
+        def racing_getmtime(path):
+            if path == raced_path:
+                raise FileNotFoundError(path)
+            return original_getmtime(path)
+
+        aq.os.path.getmtime = racing_getmtime
+        try:
+            try:
+                raced = aq._cache_candidate(now)
+            except OSError:
+                raced = "crash"
+        finally:
+            aq.glob.glob = original_glob
+            aq.os.path.getmtime = original_getmtime
+        cases.append(("a cache removed after globbing is skipped", raced is None))
         index_path = ledger + ".anthropic-index.json"
 
         def index_offset():
@@ -107,6 +127,19 @@ def main():
             incremental is not None
             and incremental.get("usedPercent") == 75.0
             and index_offset() == os.path.getsize(ledger),
+        ))
+        invalid_utilization = []
+        for value in (False, -0.1, 1.1, float("nan"), float("inf")):
+            invalid_row = {
+                "transport": "anthropic", "timestamp": row["timestamp"],
+                "rateLimitInfo": {"unifiedWindows": {"seven_day": {
+                    "utilization": value, "resetsAt": now + 86400,
+                }}},
+            }
+            invalid_utilization.append(aq._sidecar_limits(invalid_row) is None)
+        cases.append((
+            "malformed sidecar utilization stays unknown",
+            all(invalid_utilization),
         ))
         row["timestamp"] = datetime.fromtimestamp(
             now - aq.STALE_AFTER_SECONDS - 1, timezone.utc

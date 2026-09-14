@@ -27,6 +27,8 @@ REQUIRED = {
     "manifest finalization": r"--manifest-seed[\s\S]+--manifest-out[\s\S]+--session",
     "outcomes recorded before manifest": r"orchestration_verdicts\.json[\s\S]+manifest",
     "exact label count": r"expanded seed job count",
+    "review mapping retains agentType": r"Current-transport `review`[\s\S]+agents:[\s\S]+agentType",
+    "review manifest label matches workflow": r"review:<key>",
 }
 
 FORBIDDEN = {

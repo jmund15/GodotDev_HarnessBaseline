@@ -29,11 +29,13 @@ if (generators.length < 2) {
 }
 
 // 'fable' is requestable but never a default — reserve for explicit high-fidelity dispatch.
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
+// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
 // Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
 // script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+const PIN = (m) => m
+const EFF = (e) => e
 
 const VALID_MODELS = ['opus', 'sonnet', 'haiku', 'fable']
 // Asymmetric defaults: divergence wants the strong model; criticism (rigor) does not. A caller that

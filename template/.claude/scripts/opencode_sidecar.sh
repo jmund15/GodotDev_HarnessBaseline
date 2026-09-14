@@ -258,6 +258,7 @@ oc_proxy_start() {
 
 # --check: zero-argument availability probe. Prints ONE line, exits, dispatches nothing.
 if [ "${1:-}" = "--check" ]; then
+  sc_check_model_override "$@"
   _check_bin="$(oc_litellm_bin)" || { echo "UNAVAILABLE (litellm not installed; uv tool install 'litellm[proxy]' or set OC_LITELLM_BIN)"; exit 4; }
   oc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
   _check_reg="$(python3 "$SC_REGISTRY_CLI" sidecar-fields "$SC_MODEL" 2>&1)" || {
@@ -290,6 +291,7 @@ except Exception:
   _check_model="${_check_reg%%|*}"
   _check_live="$(oc_live_probe "$_check_model" "$_check_apimode" "$_check_cred")" || {
     echo "UNAVAILABLE (live probe on $_check_model answered HTTP ${_check_live%% *}: ${_check_live#* } -- the catalog lists it, the call path refuses it; headers=${OC_CLIENT_HEADERS:-on})"; exit 3; }
+  sc_check_gates
   echo "OK (model=${_check_reg%%|*} endpoint=$ZEN_BASE_URL key=$_check_keylabel live-probe=200 proxy=per-dispatch)"
   exit 0
 fi
@@ -337,8 +339,6 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
-SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "")"
-[ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env
 
@@ -376,12 +376,8 @@ run_claude() {
       <<< "$SC_PROMPT"
 }
 
-if [ -n "$SC_PROGRESS" ]; then
-  OUTPUT="$(run_claude | tee "$SC_PROGRESS")"
-else
-  OUTPUT="$(run_claude)"
-fi
-rc=$?
+[ -n "$SC_PROGRESS" ] && : > "$SC_PROGRESS"
+sc_run_watched run_claude "$SC_PROGRESS"   # stall watchdog on the -P stream; sets OUTPUT and rc
 sc_resume_loop run_claude "$SC_PROGRESS"
 printf '%s\n' "$OUTPUT"
 [ $rc -eq 124 ] && echo "opencode sidecar timed out after ${SC_TIMEOUT}s" >&2

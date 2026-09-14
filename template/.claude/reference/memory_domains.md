@@ -32,9 +32,9 @@ discovery, search facets separately rather than concatenating them.
 | Data Files | "UID" | `architecture_philosophy` |
 | Design Philosophy | "architecture", "design", or "modifier" | `architecture_philosophy` |
 | Pooling | "pool" or "spawn" | — |
-| AI / NPCs | "critter", "NPC", or "steering" | — |
-| Spell Architecture | "spell" or "synergy" | `architecture_philosophy`, `spell_authoring` |
-| Crafting | "ingredient" or "craft" | `spell_authoring` |
+| AI / NPCs | "entity", "NPC", or "steering" | — |
+| Ability Architecture | "ability" or "combination" | `architecture_philosophy`, `spell_authoring` |
+| Assembly | "material" or "craft" | `spell_authoring` |
 | VFX | "VFX" or "Modulate" | `vfx_patterns` |
 | Jmodot / Framework | "Jmodot" | `jmodot` |
 | Obsidian / Docs | "Obsidian" | `obsidian_conventions`, `worklog_reference` |

@@ -18,10 +18,11 @@ try {
   return { error: 'test-skill-pressure: args must be JSON-serializable {skillName, skillBody, ...}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
 
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent,
-// so Anthropic sessions run unchanged. Inlined per script: the Workflow sandbox has no require.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+// Endpoint vocabulary -- hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
+// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
+const PIN = (m) => m
+const EFF = (e) => e
 const SKILL_NAME = A.skillName || 'unknown-skill'
 const SKILL_CONTENT = A.skillContent || ''
 const CLAIMS_TO_REFUSE = A.claimsToRefuse || ''

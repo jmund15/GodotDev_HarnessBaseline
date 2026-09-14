@@ -14,29 +14,42 @@ try {
 }
 const chains = Array.isArray(A.chains) ? A.chains : []
 
-// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
-// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
-// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic.
+// Presence means provider mode: incomplete registry data fails before dispatch rather than reopening
+// the Anthropic vocabulary.
 const PIN = (m) => m
 const EFF = (e) => e
-function validModels(A) {
-  const transportIds = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
-  return transportIds.length ? transportIds : ['opus', 'sonnet', 'haiku', 'fable']
+const HAS_TRANSPORT = Object.prototype.hasOwnProperty.call(A, '__transport')
+const TRANSPORT = A.__transport
+const validStringList = (value) => Array.isArray(value) && value.length > 0
+  && value.every(item => typeof item === 'string' && item.trim())
+const transportValid = !HAS_TRANSPORT || (
+  TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && validStringList(TRANSPORT.efforts)
+  && typeof TRANSPORT.default === 'string' && TRANSPORT.default.trim()
+  && TRANSPORT.ids.includes(TRANSPORT.default)
+)
+if (!transportValid) {
+  return { error: 'dispatch-chains: args.__transport needs non-empty string arrays `ids` and `efforts`, plus a non-empty `default` contained in `ids`.' }
 }
 
-// Strict by design, same contract as dispatch.js: a missing pin is the caller's bug, surfaced loudly.
-const VALID_MODELS = validModels(A)
-const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
+// Models stay strict. Effort may omit to the bounded medium floor; a present invalid pin fails.
+const VALID_MODELS = HAS_TRANSPORT ? TRANSPORT.ids : ['opus', 'sonnet', 'haiku', 'fable']
+const VALID_EFFORTS = HAS_TRANSPORT ? TRANSPORT.efforts : ['low', 'medium', 'high', 'xhigh']
+const DEFAULT_EFFORT = VALID_EFFORTS.includes('medium') ? 'medium' : VALID_EFFORTS[0]
+const hasEffort = (j) => Object.prototype.hasOwnProperty.call(j, 'effort') && j.effort !== undefined
+const effortOf = (j) => hasEffort(j) ? j.effort : DEFAULT_EFFORT
 const VALID_AGENT_TYPES = ['Explore', 'Plan', 'general-purpose']
 
 const allJobs = chains.flatMap(c => (c && Array.isArray(c.jobs)) ? c.jobs.map(j => [c, j]) : [])
 const badChain = chains.filter(c => !c || !c.name || !Array.isArray(c.jobs) || c.jobs.length === 0)
 const badJob = allJobs.filter(([, j]) => !j || !j.label || !j.promptPath || !VALID_MODELS.includes(j.model)
-  || !VALID_EFFORTS.includes(j.effort) || !VALID_AGENT_TYPES.includes(j.agentType))
+  || (hasEffort(j) && !VALID_EFFORTS.includes(j.effort)) || !VALID_AGENT_TYPES.includes(j.agentType))
 if (chains.length === 0 || badChain.length > 0 || badJob.length > 0) {
   return {
-    error: 'Every chain needs {name, jobs:[...]} and every job needs {label, promptPath, model, effort, agentType}; agentType must be in ['
-      + VALID_AGENT_TYPES.join('|') + ']. Model must be in [' + VALID_MODELS.join('|') + '] and effort in [' + VALID_EFFORTS.join('|')
+    error: 'Every chain needs {name, jobs:[...]} and every job needs {label, promptPath, model, agentType}; agentType must be in ['
+      + VALID_AGENT_TYPES.join('|') + ']. Model must be in [' + VALID_MODELS.join('|') + '] and optional effort in [' + VALID_EFFORTS.join('|')
       + ']. Write each prompt to a file and pass its path — never inline large prompts into args.',
     badChains: badChain.map(c => (c && c.name) || '(unnamed)'),
     badJobs: badJob.map(([, j]) => (j && j.label) || '(unlabeled)'),
@@ -52,7 +65,7 @@ if (dupLabel.length > 0) {
 }
 
 log('CHAINS ' + JSON.stringify(Object.fromEntries(chains.map(c => [c.name, c.jobs.length]))))
-log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label, PIN(j.model) + '/' + EFF(j.effort) + (j.agentType ? '/' + j.agentType : '')]))))
+log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label, PIN(j.model) + '/' + EFF(effortOf(j)) + (j.agentType ? '/' + j.agentType : '')]))))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // The concurrency contract this engine exists to express. Contention scope is NOT one boolean:
@@ -104,7 +117,7 @@ const spillContract = (j) => spills(j) ? ['',
 const INLINE_LABELS = SPILL_DIR ? allJobs.map(([, j]) => j).filter(j => !spills(j)).map(j => j.label) : []
 if (SPILL_DIR) {
   const seenPath = {}
-  const collided = allJobs.map(([, j]) => j).filter(spills).filter(j => { const p = spillPath(j.label); const d = !!seenPath[p]; seenPath[p] = true; return d })
+  const collided = allJobs.map(([, j]) => j).filter(spills).filter(j => { const p = spillPath(j.label).toLowerCase(); const d = !!seenPath[p]; seenPath[p] = true; return d })
   if (collided.length > 0) {
     return { error: 'args.spillDir is set, but these labels collide after filename sanitization: ' + collided.map(j => j.label).join(', ') }
   }
@@ -137,7 +150,7 @@ const results = await parallel(chains.map(c => async () => {
       + guardFor(c)
       + guardRef(j)
       + spillContract(j)
-    const opts = { label: j.label, phase: 'Chains', model: PIN(j.model), effort: EFF(j.effort), agentType: j.agentType }
+    const opts = { label: j.label, phase: 'Chains', model: PIN(j.model), effort: EFF(effortOf(j)), agentType: j.agentType }
     const r = await agent(prompt, opts)
     out.push([j.label, r])
     log('lane ' + c.name + ': ' + (i + 1) + '/' + c.jobs.length + ' done (' + j.label + ')')

@@ -16,11 +16,13 @@ try {
   A = { scope: args }
 }
 
-// Endpoint pins — hooks/model_pin_translate.py injects __pin off-Anthropic; identity when absent.
+// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
+// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
+// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
 // Anthropic names stay the canonical vocabulary, so validation below is untouched. Inlined per
 // script because the Workflow sandbox has no require/import.
-const PIN = (m) => (A.__pin && A.__pin.roles && A.__pin.roles[m]) || (A.__pin && A.__pin.model) || m
-const EFF = (e) => (A.__pin && A.__pin.effort && A.__pin.effort[e]) || e
+const PIN = (m) => m
+const EFF = (e) => e
 
 // Pins are the CALLER's decision (provider choice is budget-posture, and the ladder in
 // reference/model_ladder_evidence.md is the only role→model surface). No silent model floor, no session-effort inheritance.
@@ -40,7 +42,6 @@ if (!scope || !VALID_MODELS.includes(A.model) || !VALID_EFFORTS.includes(A.effor
 }
 
 log('PINS ' + JSON.stringify({ 'worklog:relevance': PIN(A.model) + '/' + EFF(A.effort) }))
-if (A.__pin) log('ENDPOINT-TRANSLATED: ' + A.model + '->' + PIN(A.model) + '/' + EFF(A.effort))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // Parity-checked against worklog_relevance.schema.json (the sidecar path's -S file) by

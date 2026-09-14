@@ -55,7 +55,9 @@ set -uo pipefail
 
 SC_TRANSPORT="codex"
 # shellcheck source=lib/sidecar_common.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib/sidecar_common.sh"
+SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+. "$SC_LAUNCHER_DIR/lib/sidecar_common.sh"
+sc_reexec_snapshot "$@"   # run from a snapshot copy; see lib
 
 SC_MODEL="luna"
 CCP_AUTH="$HOME/.config/claude-code-proxy/codex/auth.json"
@@ -90,15 +92,34 @@ ccp_start() {
       nohup "$ccp" serve --no-monitor --port "$CCP_PORT" >>"$CCP_LOG" 2>&1 &
   CCP_PID=$!
   sc_on_exit 'kill "$CCP_PID" 2>/dev/null || :'
-  python3 "$CCP_PROBE" wait "$CCP_PORT" 25 && return 0
-  { echo "[proxy-sidecar] proxy did not become healthy on :$CCP_PORT within 25s."
-    echo "  Last lines of $CCP_LOG:"
-    tail -n 15 "$CCP_LOG" 2>/dev/null | sed 's/^/    /'
-  } >&2
-  return 4
+  python3 "$CCP_PROBE" wait "$CCP_PORT" 25 || {
+    { echo "[proxy-sidecar] proxy did not become healthy on :$CCP_PORT within 25s."
+      echo "  Last lines of $CCP_LOG:"
+      tail -n 15 "$CCP_LOG" 2>/dev/null | sed 's/^/    /'
+    } >&2
+    return 4
+  }
+  [ "${SIDECAR_NO_SHIM:-0}" = 1 ] && return 0
+  shim_start
+}
+
+# The text-only shim sits between the child and the proxy (scripts/lib/text_only_shim.py). Claude Code's
+# auto-compaction asks for the summary with "Respond with TEXT ONLY" and still attaches every tool; a model that
+# answers with a tool call kills the run ("summarization produced empty response" — measured 2026-09-09,
+# gpt-5.6-luna at effort low, 3 of 3). The shim forwards that request with no tools and re-issues an empty
+# answer once, for any model. SIDECAR_NO_SHIM=1 bypasses it (diagnosis only).
+shim_start() {
+  SHIM_PORT="$(python3 "$CCP_PROBE" freeport)"
+  nohup python3 "$SC_ROOT/scripts/lib/text_only_shim.py" --listen "$SHIM_PORT" --upstream "$CCP_PORT" --log "$CCP_LOG.shim" >>"$CCP_LOG" 2>&1 &
+  SHIM_PID=$!
+  sc_on_exit 'kill "$SHIM_PID" 2>/dev/null || :'
+  python3 "$CCP_PROBE" wait "$SHIM_PORT" 15 || { echo "[proxy-sidecar] text-only shim did not come up on :$SHIM_PORT (see $CCP_LOG)" >&2; return 4; }
+  echo "[proxy-sidecar] text-only shim on :$SHIM_PORT -> proxy :$CCP_PORT (compaction summaries reach the model with no tools; log $CCP_LOG.shim)" >&2
+  CCP_CLIENT_PORT="$SHIM_PORT"
 }
 
 if [ "${1:-}" = "--check" ]; then
+  sc_check_model_override "$@"
   ccp_bin >/dev/null || { echo "UNAVAILABLE (claude-code-proxy not installed; set CCP_BIN)"; exit 4; }
   sc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
   # The proxy authenticates SEPARATELY from the `codex` CLI: its own browser login writes
@@ -120,6 +141,7 @@ except Exception:
   if ! _check_q="$(python3 "$SC_ROOT/scripts/codex_quota_probe.py" 2>&1)"; then
     echo "UNAVAILABLE (quota probe failed: ${_check_q%%$'\n'*})"; exit 3
   fi
+  sc_check_gates
   _band="$(READING="$_check_q" python3 -c 'import json,os;d=json.loads(os.environ["READING"]);print(d.get("band") or "unknown", d.get("planType") or "?")')"
   echo "OK (model=${_check_reg%%|*} plan-quota band=$_band proxy=per-dispatch)"
   exit 0
@@ -160,9 +182,34 @@ sc_validate_effort
 # would over-declare past this model's ceiling and convert a managed client-side compaction into
 # a hard upstream error mid-run. Parity between arms means each declares ITS OWN model's window,
 # not the same integer.
-SC_CONTEXT_TOKENS="$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" 2>/dev/null)"
-[ -n "$SC_CONTEXT_TOKENS" ] && \
-  echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry; CLI default is 200000)" >&2
+# SIDECAR_CONTEXT_TOKENS_OVERRIDE forces a smaller declared window — the lever that makes a
+# compaction happen on purpose (hooks/sidecar_recompact_reprompt.py proof). Never set it for real work.
+SC_CONTEXT_TOKENS="${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" 2>/dev/null)}"
+# Reserve the child's output budget (32000, the maxOutputTokens a proxied child reports) out of the
+# declared window. The provider enforces input + max_output <= its window, while the client's
+# auto-compaction watches input alone against the declared figure: declared at the provider's own
+# effective window, the child reaches the provider's ceiling BEFORE its compaction threshold and the
+# request dies "Prompt is too long" with no compact_boundary for the re-prompt rail to act on
+# (measured 2026-09-08, luna T1 curator: 243.5k input, 0 compactions, 258400 declared, 107 turns lost).
+# The child's max output tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS) IS the output reserve: the provider enforces
+# input + max_output <= its window, and the CLI auto-compacts at declared - max_output - ~3k (measured 2026-09-09:
+# luna T1 08-20 258,400/225,872; luna T1 09-09 226,400/190,957; 90k probes at 32k vs 8k caps). Leaving the CLI's
+# 32k default AND subtracting 32k here stacked two reserves and compacted Luna at 70% of its real window. 16k is
+# ample for one response (a 46 KB design doc is ~12k tokens); a child that must emit more sets
+# SIDECAR_MAX_OUTPUT_TOKENS, and SIDECAR_OUTPUT_RESERVE still overrides the subtraction alone.
+SC_MAX_OUTPUT="${SIDECAR_MAX_OUTPUT_TOKENS:-16000}"
+SC_OUTPUT_RESERVE="${SIDECAR_OUTPUT_RESERVE:-$SC_MAX_OUTPUT}"
+if [ -n "$SC_CONTEXT_TOKENS" ] && [ -z "${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-}" ] && [ "$SC_CONTEXT_TOKENS" -gt $((SC_OUTPUT_RESERVE * 2)) ]; then
+  SC_CONTEXT_TOKENS=$((SC_CONTEXT_TOKENS - SC_OUTPUT_RESERVE))
+fi
+[ -n "$SC_CONTEXT_TOKENS" ] &&   echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry effective window minus the ${SC_OUTPUT_RESERVE}-token output reserve; max output ${SC_MAX_OUTPUT}; auto-compaction expected near $((SC_CONTEXT_TOKENS - SC_MAX_OUTPUT - 3000)))" >&2
+# Window-relative harness cost (measured 2026-09-03 on Luna: -D bare 22k, pointer 25k, full 37k tokens at turn 1).
+# Under 400k a survey/review child at -D full spends ~14% of its window before the brief; the shape table
+# (reference/sidecar_dispatch.md) pins lenses at pointer. Advisory only — an author/verdict child may need full.
+if [ -n "$SC_CONTEXT_TOKENS" ] && [ "$SC_CONTEXT_TOKENS" -lt 400000 ] && [ "${SC_DISCLOSURE:-}" = "full" ] \
+   && { [ "${SC_SHAPE:-}" = "survey" ] || [ "${SC_SHAPE:-}" = "review" ]; }; then
+  echo "[proxy-sidecar] -D full on a ${SC_CONTEXT_TOKENS}-token window costs ~37k (~$((3700000 / SC_CONTEXT_TOKENS))%) before the brief; lenses take -D pointer (25k) — keep full only if this child must APPLY doctrine" >&2
+fi
 
 # AFTER sc_build_disclosure so the port is never claimed for a run a validation gate rejects,
 # and so the proxy's cleanup registers behind the scratch-dir cleanup rather than replacing it.
@@ -176,6 +223,17 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
+# Register the re-prompt hook from the LAUNCHER (a worktree older than the hook has no
+# registration of its own); --settings merges with the cwd's settings, and the hook no-ops
+# without the env var. The path must be absolute and native (`C:/...`, never `/c/...` or
+# relative): the hook opens it from the CHILD's cwd. Rationale: reference/sidecar_dispatch.md §Compaction.
+SC_PROMPT_FILE_ABS=""
+if [ -n "$SC_PROMPT_FILE" ]; then
+  SC_PROMPT_FILE_ABS="$(cd "$(dirname "$SC_PROMPT_FILE")" && pwd)/$(basename "$SC_PROMPT_FILE")"
+  command -v cygpath >/dev/null 2>&1 && SC_PROMPT_FILE_ABS="$(cygpath -m "$SC_PROMPT_FILE_ABS")"
+  SC_SETTINGS_JSON="$(python3 -c 'import json,sys; print(json.dumps({"hooks":{"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"python3 \"%s\"" % sys.argv[1],"timeout":15}]}]}}))' "$SC_ROOT/hooks/sidecar_recompact_reprompt.py")"
+fi
+[ -n "${SC_SETTINGS_JSON:-}" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env
 
@@ -193,7 +251,7 @@ run_claude() {
   cd "$SC_RUN_CWD" && env \
     ${SC_SCRUB[@]+"${SC_SCRUB[@]}"} \
     CLAUDE_CODE_ENTRYPOINT=cli \
-    ANTHROPIC_BASE_URL="http://127.0.0.1:$CCP_PORT" \
+    ANTHROPIC_BASE_URL="http://127.0.0.1:${CCP_CLIENT_PORT:-$CCP_PORT}" \
     ANTHROPIC_AUTH_TOKEN=unused \
     ANTHROPIC_API_KEY= \
     ANTHROPIC_MODEL="$SC_MODEL" \
@@ -201,8 +259,11 @@ run_claude() {
     CLAUDE_CODE_SUBAGENT_MODEL="$SC_MODEL" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     CLAUDE_CODE_SIDECAR="$SC_TRANSPORT" \
+    CLAUDE_CODE_TRANSPORT="$SC_TRANSPORT" \
     ${SC_CONTEXT_TOKENS:+CLAUDE_CODE_MAX_CONTEXT_TOKENS="$SC_CONTEXT_TOKENS"} \
+    ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
     ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
+    ${SC_PROMPT_FILE_ABS:+CLAUDE_CODE_SIDECAR_PROMPT_FILE="$SC_PROMPT_FILE_ABS"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
     "$SC_CLAUDE" -p \
       --model "$SC_MODEL" \
@@ -213,6 +274,7 @@ run_claude() {
       ${SC_APPEND_ARGS[@]+"${SC_APPEND_ARGS[@]}"} \
       ${SC_MAX_TURNS:+--max-turns "$SC_MAX_TURNS"} \
       ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+      ${SC_RESUME_SID:+--resume} ${SC_RESUME_SID:+"$SC_RESUME_SID"} \
       --add-dir "$SC_WORKDIR" \
       ${SC_ADD_DIRS[@]+"${SC_ADD_DIRS[@]}"} \
       <<< "$SC_PROMPT"
@@ -223,12 +285,14 @@ run_claude() {
   # stdin when the positional is absent.
 }
 
-if [ -n "$SC_PROGRESS" ]; then
-  OUTPUT="$(run_claude | tee "$SC_PROGRESS")"
-else
-  OUTPUT="$(run_claude)"
-fi
-rc=$?
+[ -n "$SC_PROGRESS" ] && : > "$SC_PROGRESS"
+sc_run_watched run_claude "$SC_PROGRESS"   # stall watchdog on the -P stream; sets OUTPUT and rc
+
+# An auto-compaction ENDS a -p run: the child answers the summarize request and the harness closes
+# the turn, so the SessionStart:compact re-prompt is never read. Resume the same session with the
+# brief as the next user turn, up to SC_COMPACT_RESUMES times (stream-json runs only — json has no
+# boundary event). Detector: tools/sidecar_compact_end.py.
+sc_resume_loop run_claude "$SC_PROGRESS"
 printf '%s\n' "$OUTPUT"
 [ $rc -eq 124 ] && echo "proxy sidecar timed out after ${SC_TIMEOUT}s" >&2
 

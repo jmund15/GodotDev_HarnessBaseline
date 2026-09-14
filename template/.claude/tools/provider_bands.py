@@ -43,7 +43,10 @@ def _repo_root():
 
 
 def _cache_path():
-    return os.path.join(_repo_root(), ".claude", ".cache", "provider_bands.json")
+    """The band cache. `PROVIDER_BAND_CACHE` redirects it so a proof can plant a reading instead of
+    spawning the live 45s quota probe and writing the real repo cache from a test."""
+    override = os.environ.get("PROVIDER_BAND_CACHE")
+    return override or os.path.join(_repo_root(), ".claude", ".cache", "provider_bands.json")
 
 
 def _cache_read(transport, ttl):
@@ -128,13 +131,20 @@ def plan_quota_transports(data=None):
     return sorted(out)
 
 
-def slacker_than(session_band, ttl=DEFAULT_TTL_S, data=None):
+def slacker_than(session_band, ttl=DEFAULT_TTL_S, data=None, session_transport=None):
     """Plan-quota transports whose own band has MORE headroom than this session's.
 
     Returns [{transport, band, pressure, planType, launchers}], most-slack first. An
     uncomputable provider band is omitted rather than treated as Surplus: Surplus is the most
     permissive answer, and defaulting an unknown to it would advise routing work toward an
     allowance nobody measured.
+
+    `session_transport` is EXCLUDED from the comparison. Since the host transport became a
+    registry row (`anthropic`, 2026-09-04) a session can otherwise be advised to route work to
+    itself: its own band is by definition equal to the session band, and an off-by-one in either
+    rank would surface as "route to anthropic" on an Anthropic session. The exclusion is by
+    identity, not by name -- a codex session compares the anthropic row normally, which is what
+    makes host-transport dispatch band-aware in the direction that matters.
     """
     data = data if data is not None else model_registry.load()
     try:
@@ -143,6 +153,8 @@ def slacker_than(session_band, ttl=DEFAULT_TTL_S, data=None):
         return []
     rows = []
     for name in plan_quota_transports(data):
+        if session_transport and name == session_transport:
+            continue
         got = reading(name, ttl, data)
         band = (got or {}).get("band")
         if not band:

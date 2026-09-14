@@ -75,6 +75,11 @@ SC_PROMPT_FILE=""
 SC_TIMEOUT=""     # empty = NO wall-clock kill. A timeout only ever WAKES the orchestrator to
                   # check for a hang via -P heartbeat staleness; it never halts a long run.
 SC_RECORD=""
+SC_INVENTORY=""
+SC_INVENTORY_STALE_SECONDS="${SIDECAR_INVENTORY_STALE_SECONDS:-604800}"
+SC_INVENTORY_SWEEP_LIMIT="${SIDECAR_INVENTORY_SWEEP_LIMIT:-32}"
+SC_PARENT_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+SC_LAUNCH_ID="${SIDECAR_LAUNCH_ID:-}"
 SC_DISALLOWED="Task,Agent,Workflow"
 SC_PROGRESS=""
 SC_SCHEMA_FILE=""
@@ -260,16 +265,16 @@ sc_gate_availability() {
   exit 7
 }
 
-# ------------------------------------------------- benchmark-arm escape guard (settings merge)
-# Every launcher passes its child settings through this. When run_grid.sh exports BENCH_ARM=1 the
-# child gets hooks/bench_arm_escape_guard.py on PreToolUse (vault/holdout reads denied outside
-# BENCH_ARM_INPUT_DIR); otherwise the settings pass through unchanged. One --settings flag per
-# child: the CLI keeps only the last one, so fragments are merged here, never appended.
+# ------------------------------------------------- optional child guard hook (settings merge)
+# Every launcher passes its child settings through this. When the caller exports BENCH_ARM=1 AND
+# SC_CHILD_GUARD_HOOK names an existing PreToolUse guard hook (project-owned; the baseline ships
+# none), the child gets it on PreToolUse; otherwise the settings pass through unchanged. One --settings flag per child: the CLI keeps only the last one,
+# so fragments are merged here, never appended.
 sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on stdout ("" if nothing to pass)
-  python3 - "$1" "$SC_ROOT/hooks/bench_arm_escape_guard.py" "${BENCH_ARM:-}" <<'PY'
-import json, sys
+  python3 - "$1" "${SC_CHILD_GUARD_HOOK:-}" "${BENCH_ARM:-}" <<'PY'
+import json, os, sys
 base = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
-if sys.argv[3] == "1":
+if sys.argv[3] == "1" and sys.argv[2] and os.path.isfile(sys.argv[2]):
     hooks = base.setdefault("hooks", {})
     hooks.setdefault("PreToolUse", []).append({
         "matcher": "Read|Glob|Grep|Bash|Edit|Write|LS|MultiEdit|NotebookEdit",
@@ -469,7 +474,64 @@ sc_kill_tree() {
 }
 
 # sc_run_watched <run_fn> [<progress-file>] -> sets OUTPUT and rc, appends to the progress file.
+sc_prepare_record() {
+  [ -n "$SC_RECORD" ] || return 0
+  [ "${SC_LAUNCH_PREPARED:-0}" = 1 ] && return 0
+  local launch record prepared
+  record="$(sc_to_native "$SC_RECORD")" || return 1
+  [ -n "$record" ] || return 1
+  prepared="$(RECORD_V="$record" PARENT_V="$SC_PARENT_SESSION_ID" \
+    LAUNCH_V="$SC_LAUNCH_ID" LABEL_V="$SC_LABEL" \
+    STALE_V="$SC_INVENTORY_STALE_SECONDS" LIMIT_V="$SC_INVENTORY_SWEEP_LIMIT" python3 - <<'PY'
+import json, os, pathlib, time, uuid
+record = pathlib.Path(os.environ["RECORD_V"]).absolute()
+launch = os.environ["LAUNCH_V"] or str(uuid.uuid4())
+if str(uuid.UUID(launch)) != launch:
+    raise ValueError("invalid launch identity")
+try:
+    stale_seconds = max(0, int(os.environ["STALE_V"]))
+    sweep_limit = max(0, int(os.environ["LIMIT_V"]))
+except (KeyError, ValueError):
+    stale_seconds, sweep_limit = 604800, 32
+cutoff = time.time() - stale_seconds
+stale = []
+for candidate in record.parent.glob("fanout-*.inventory.json"):
+    try:
+        mtime = candidate.stat().st_mtime
+        if mtime < cutoff:
+            stale.append((mtime, candidate))
+    except OSError:
+        pass
+for _, candidate in sorted(stale)[:sweep_limit]:
+    try:
+        candidate.unlink()
+    except OSError:
+        pass
+path = record.parent / ("fanout-" + launch + ".inventory.json")
+data = {"schemaVersion": 1, "fanoutId": launch,
+        "parentSessionId": os.environ["PARENT_V"] or None,
+        "jobs": [{"label": os.environ["LABEL_V"] or "(unlabeled)",
+                  "launchId": launch, "recordPath": str(record)}]}
+with open(path, "x", encoding="utf-8") as fh:
+    json.dump(data, fh, separators=(",", ":"))
+    fh.flush()
+    os.fsync(fh.fileno())
+print(launch + "\t" + str(path))
+PY
+)" || return 1
+  SC_LAUNCH_ID="${prepared%%$'\t'*}"
+  SC_INVENTORY="${prepared#*$'\t'}"
+  SC_LAUNCH_PREPARED=1
+}
+
+sc_cleanup_published_inventory() {
+  local publish_rc="$1"
+  [ "$publish_rc" = 0 ] && [ -n "$SC_INVENTORY" ] && rm -f -- "$SC_INVENTORY"
+  return "$publish_rc"
+}
+
 sc_run_watched() {
+  sc_prepare_record || { OUTPUT=""; rc=2; return 2; }
   local run_fn="$1" progress="${2:-}" tmp w now last idle line
   case "${SC_STALL_SEC:-0}" in
     ''|*[!0-9]*) echo "[sidecar] -Z/SIDECAR_STALL_SEC='${SC_STALL_SEC:-}' is not a whole number of seconds; refusing rather than running unwatched" >&2; exit 2 ;;
@@ -688,7 +750,7 @@ sc_scrub_env() {
   SC_SCRUB=()
   local name _
   while IFS='=' read -r name _; do
-    case "$name" in CLAUDE*|ANTHROPIC*) SC_SCRUB+=(-u "$name") ;; esac
+    case "$name" in CLAUDE*|ANTHROPIC*|SIDECAR_LAUNCH_ID) SC_SCRUB+=(-u "$name") ;; esac
   done < <(env)
   # PASS-THROUGH after the unsets (`env -u X X=v` re-sets): the print-mode background-wait
   # ceiling. `claude -p` kills a child whose Workflow/background task is still running at 600 s and
@@ -715,12 +777,14 @@ sc_to_native() {
 sc_write_record() {
   local output="$1" rc="$2"
   [ -n "$SC_RECORD" ] || return 0
-  local hb hs dsha raw_tmp ledger_default
+  if [ -z "$SC_LAUNCH_ID" ]; then
+    SC_LAUNCH_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')" || return 1
+  fi
+  local hb hs dsha raw_tmp ledger_default publish_rc=0
   hb="$(git -C "$SC_WORKDIR" describe --tags --exact-match HEAD 2>/dev/null || echo unknown)"
   hs="$(git -C "$SC_WORKDIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-  # bench_overlay_doctrine (benchmark_campaign/lib.sh) drops this marker when it refreshes
-  # $SC_WORKDIR/.claude from BENCH_DOCTRINE_REF; absent on a root whose .claude/ is still the
-  # task tag's own frozen copy (BENCH_DOCTRINE_REF=none, or a non-benchmark dispatch entirely).
+  # An optional doctrine-overlay tool drops this marker when it refreshes $SC_WORKDIR/.claude
+  # from a pinned doctrine ref; absent on an ordinary dispatch root.
   dsha="$(cat "$SC_WORKDIR/.claude/.bench-doctrine-sha" 2>/dev/null || echo "")"
   # Payload goes via temp file: `python3 -` reads its PROGRAM from stdin, so a heredoc and a
   # data pipe cannot share the channel.
@@ -729,13 +793,14 @@ sc_write_record() {
   ledger_default="$SC_LEDGER_DEFAULT"
 
   RAW_V="$(sc_to_native "$raw_tmp")" EFFORT_V="$SC_EFFORT" MODEL_V="$SC_MODEL" RC_V="$rc" \
+    PARENT_SESSION_V="$SC_PARENT_SESSION_ID" LAUNCH_ID_V="$SC_LAUNCH_ID" \
     HB_V="$hb" HS_V="$hs" DSHA_V="$dsha" REC_V="$(sc_to_native "$SC_RECORD")" \
     SCHEMA_V="$(sc_to_native "$SC_SCHEMA_FILE")" LEDGER_V="$SC_LEDGER" LABEL_V="$SC_LABEL" \
     DISCLOSURE_V="$SC_DISCLOSURE" LEDGER_DEFAULT_V="$ledger_default" \
     TRANSPORT_V="$SC_TRANSPORT" COSTMODEL_V="$SC_COST_MODEL" \
     ATTEST_V="${SC_ATTESTED_MODEL:-}" PARSER_V="${SC_RECORD_PARSER:-claude}" \
-    REGCLI_V="$SC_REGISTRY_CLI" CTXWIN_V="${SC_CONTEXT_TOKENS:-}" python3 - <<'PYEOF'
-import json, os, sys, time
+    REGCLI_V="$SC_REGISTRY_CLI" CTXWIN_V="${SC_CONTEXT_TOKENS:-}" python3 - <<'PYEOF' || publish_rc=$?
+import json, os, sys, tempfile, time
 raw = open(os.environ["RAW_V"], encoding="utf-8", errors="replace").read()
 parser = os.environ.get("PARSER_V") or "claude"
 
@@ -869,6 +934,9 @@ if turn1:
     pct = f' ({100.0 * turn1 / ctxwin:.0f}% of {ctxwin})' if ctxwin else ''
     print(f'[sidecar] turn-1 context {turn1} tokens{pct}', file=sys.stderr)
 record = {
+    "launchId": os.environ.get("LAUNCH_ID_V") or None,
+    "parentSessionId": os.environ.get("PARENT_SESSION_V") or None,
+    "sessionId": data.get("session_id"),
     "label": os.environ.get("LABEL_V") or None,
     "transport": os.environ.get("TRANSPORT_V") or None,
     "costModel": os.environ.get("COSTMODEL_V") or None,
@@ -959,8 +1027,21 @@ if os.environ.get("SCHEMA_V"):
         record["schemaValid"] = True
     except Exception:
         record["schemaValid"] = False
-with open(os.environ["REC_V"], "w", encoding="utf-8") as fh:
-    json.dump(record, fh, indent=2)
+record_path = os.path.abspath(os.environ["REC_V"])
+record_dir = os.path.dirname(record_path) or "."
+fd, temp_path = tempfile.mkstemp(prefix=".sidecar-record-", dir=record_dir)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temp_path, record_path)
+except Exception:
+    try:
+        os.unlink(temp_path)
+    except OSError:
+        pass
+    raise
 ledger = os.environ.get("LEDGER_V", "")
 if ledger == "__default__":
     ledger = os.environ["LEDGER_DEFAULT_V"]
@@ -972,4 +1053,5 @@ if ledger:
         pass  # spend ledger is advisory; never fail the run over it
 PYEOF
   rm -f "$raw_tmp"
+  sc_cleanup_published_inventory "$publish_rc"
 }

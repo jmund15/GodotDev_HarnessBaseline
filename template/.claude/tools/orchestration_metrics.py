@@ -54,10 +54,19 @@ Usage:
   orchestration_metrics.py --manifest-seed seed.json --manifest-out manifest.json
                                                 join exact Workflow/sidecar evidence; never archive
 """
-import argparse, json, os, re, shlex, sys
+import argparse, json, os, re, shlex, sys, time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 IN_W, OUT_W, CW_W, CR_W = 1.0, 5.0, 1.25, 0.1
+
+
+def _number(value, default=0):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
+
+def _optional_number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def agent_cost(u):
@@ -67,8 +76,11 @@ def agent_cost(u):
     caching it is small, but it is exactly the UNCACHED portion -- so omitting it
     understated the first turn of every agent and any cache miss after it.
     """
-    return (u.get('inp', 0) * IN_W + u.get('out', 0) * OUT_W
-            + u.get('cw', 0) * CW_W + u.get('cr', 0) * CR_W)
+    values = [u.get('inp'), u.get('out'), u.get('cw'), u.get('cr')]
+    if any(_optional_number(value) is None for value in values):
+        return None
+    return (values[0] * IN_W + values[1] * OUT_W
+            + values[2] * CW_W + values[3] * CR_W)
 
 # Plan-quota weight per model, relative to sonnet = 1.0.
 #
@@ -99,14 +111,18 @@ def quota_weight(model):
 
 
 def quota_cost(cost, model):
-    """Quota-equivalent cost, or None when the model carries no weight."""
+    """Quota-equivalent cost, or None when cost/model carries no weight."""
     weight = quota_weight(model)
-    return None if weight is None else cost * weight
+    return None if weight is None or _optional_number(cost) is None else cost * weight
 # Anchored to the project, not the cwd: budget_posture.py imports this per prompt from
 # whatever cwd the hook runs in, and a cwd-relative path would read every verdict as absent.
 _PROJECT_DIR = os.environ.get('CLAUDE_PROJECT_DIR') or os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARCHIVE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_metrics.jsonl')
+ARCHIVE_MAX_BYTES = 5 * 1024 * 1024
+ARCHIVE_MAX_ROTATIONS = 6
+ARCHIVE_LOCK_TIMEOUT_SECONDS = 10.0
+ARCHIVE_LOCK_STALE_SECONDS = 60.0
 # Falsification outcomes, recorded at consumption (see module docstring).
 OUTCOMES = ('clean', 'defects', 'rework', 'discarded')
 LEGACY_VERDICTS = {'right-sized': 'clean', 'overshoot': 'clean',
@@ -140,14 +156,170 @@ PENDING_VERDICTS = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_verdicts
 LEGACY_PENDING_VERDICTS = os.path.join(_PROJECT_DIR, '.claude', 'scratch', 'orchestration_verdicts.json')
 
 
-def _read_verdict_file(path):
-    if not os.path.exists(path):
-        return {}
+def _read_json_object(path):
     try:
-        with open(path, encoding='utf-8') as f:
-            return {k: v for k, v in (json.load(f) or {}).items() if v}
-    except (json.JSONDecodeError, OSError):
-        return {}
+        with open(path, encoding='utf-8') as fh:
+            value = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _iter_jsonl_objects(path):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(value, dict):
+                    yield value
+    except OSError:
+        return
+
+
+def _atomic_write_json(path, value, indent=2):
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    tmp = os.path.join(parent, '.%s.%d.tmp' % (os.path.basename(path), os.getpid()))
+    try:
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as fh:
+            json.dump(value, fh, indent=indent, ensure_ascii=False)
+            fh.write('\n')
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _archive_paths():
+    rotated = [ARCHIVE + '.%d' % index for index in range(ARCHIVE_MAX_ROTATIONS, 0, -1)]
+    return [path for path in rotated + [ARCHIVE] if os.path.isfile(path)]
+
+
+def _archive_records():
+    for path in _archive_paths():
+        yield from _iter_jsonl_objects(path)
+
+
+@contextmanager
+def _archive_lock():
+    lock_path = ARCHIVE + '.lock'
+    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+    deadline = time.monotonic() + ARCHIVE_LOCK_TIMEOUT_SECONDS
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                stale = time.time() - os.path.getmtime(lock_path) > ARCHIVE_LOCK_STALE_SECONDS
+            except OSError:
+                stale = False
+            if stale:
+                try:
+                    os.unlink(lock_path)
+                except OSError:
+                    pass
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError('timed out waiting for archive lock: ' + lock_path)
+            time.sleep(0.01)
+    try:
+        os.write(fd, str(os.getpid()).encode('ascii'))
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
+
+
+def _rotate_archive():
+    if ARCHIVE_MAX_ROTATIONS <= 0:
+        try:
+            os.unlink(ARCHIVE)
+        except OSError:
+            pass
+        return
+    oldest = ARCHIVE + '.%d' % ARCHIVE_MAX_ROTATIONS
+    try:
+        os.unlink(oldest)
+    except OSError:
+        pass
+    for index in range(ARCHIVE_MAX_ROTATIONS - 1, 0, -1):
+        source = ARCHIVE + '.%d' % index
+        if os.path.exists(source):
+            os.replace(source, ARCHIVE + '.%d' % (index + 1))
+    if os.path.exists(ARCHIVE):
+        os.replace(ARCHIVE, ARCHIVE + '.1')
+
+
+def _atomic_replace_bytes(path, content):
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    tmp = os.path.join(parent, '.%s.%d.tmp' % (os.path.basename(path), os.getpid()))
+    try:
+        with open(tmp, 'wb') as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _archive_rows_atomic(rows):
+    """Deduplicate, rotate, and atomically append rows under one cross-process lock."""
+    rows = [dict(row) for row in rows if isinstance(row, dict) and row.get('run')]
+    with _archive_lock():
+        existing = {}
+        for record in _archive_records():
+            run = record.get('run')
+            if run:
+                existing.setdefault(run, set()).add('ignored' if record.get('ignored') else 'rated')
+        desired_runs = {row['run'] for row in rows}
+        conflicts = sorted(run for run in desired_runs
+                           if 'rated' in existing.get(run, set())
+                           and any(row.get('ignored') for row in rows if row['run'] == run))
+        fresh_runs = desired_runs - set(existing) - set(conflicts)
+        fresh = [row for row in rows if row['run'] in fresh_runs]
+        skipped = len(rows) - len(fresh)
+        if fresh:
+            encoded = [(row, (json.dumps(row) + '\n').encode('utf-8')) for row in fresh]
+            oversized = [row['run'] for row, payload in encoded if len(payload) > ARCHIVE_MAX_BYTES]
+            if oversized:
+                raise ValueError('row exceeds archive byte cap: ' + ', '.join(oversized))
+            try:
+                with open(ARCHIVE, 'rb') as fh:
+                    current = fh.read()
+            except OSError:
+                current = b''
+            for _, payload in encoded:
+                separator = b'' if not current or current.endswith(b'\n') else b'\n'
+                candidate = current + separator + payload
+                if current and len(candidate) > ARCHIVE_MAX_BYTES:
+                    _rotate_archive()
+                    candidate = payload
+                _atomic_replace_bytes(ARCHIVE, candidate)
+                current = candidate
+        return fresh, skipped, conflicts
+
+
+def _read_verdict_file(path):
+    value = _read_json_object(path) if path else None
+    return {k: v for k, v in (value or {}).items() if v}
 
 
 def load_pending_verdicts(path=None):
@@ -175,7 +347,20 @@ def w(s):
     sys.stdout.write(str(s).encode('ascii', 'replace').decode('ascii') + '\n')
 
 
+def _field_stats(rows, key):
+    values = [_optional_number(row.get(key)) for row in rows]
+    known = [value for value in values if value is not None]
+    return sum(known), len(known), len(values) - len(known)
+
+
+def _total_text(rows, key):
+    total, _, unknown = _field_stats(rows, key)
+    return fmt(total) + (f' ({unknown} unknown)' if unknown else '')
+
+
 def fmt(n):
+    if _optional_number(n) is None:
+        return 'n/a'
     if n >= 1_000_000:
         return f'{n/1_000_000:.2f}M'
     if n >= 1000:
@@ -256,34 +441,29 @@ def _session_candidates(session_dir):
     if not os.path.isdir(wdir):
         return [], set(), set()
     candidates, run_ids = [], set()
-    for fn in sorted(os.listdir(wdir)):
+    try:
+        names = sorted(os.listdir(wdir))
+    except OSError:
+        return [], set(), set()
+    for fn in names:
         if not fn.endswith('.json'):
             continue
-        try:
-            with open(os.path.join(wdir, fn), encoding='utf-8') as fh:
-                run = json.load(fh)
-        except (json.JSONDecodeError, OSError):
+        run = _read_json_object(os.path.join(wdir, fn))
+        if not run:
             continue
         if run.get('workflowName') in MEASUREMENT_WORKFLOWS:
             continue
         rid = run.get('runId') or fn[:-5]
         run_ids.add(rid)
         for e in run.get('workflowProgress') or []:
-            if e.get('type') != 'workflow_agent':
+            if not isinstance(e, dict) or e.get('type') != 'workflow_agent':
                 continue
             candidates.append((rid, e.get('label') or '(unlabeled)'))
     archived_pairs = set()
-    if run_ids and os.path.exists(ARCHIVE):
-        with open(ARCHIVE, encoding='utf-8') as fh:
-                for line in fh:
-                    if not any(rid in line for rid in run_ids):
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if rec.get('run') in run_ids and rec.get('label'):
-                        archived_pairs.add((rec['run'], rec['label']))
+    if run_ids:
+        for rec in _archive_records():
+            if rec.get('run') in run_ids and rec.get('label'):
+                archived_pairs.add((rec['run'], rec['label']))
     unarchived = [p for p in candidates if p not in archived_pairs]
     return unarchived, run_ids, {lab for _, lab in candidates}
 
@@ -421,50 +601,53 @@ def agent_usage(run_dir):
     usage = {}
     if not os.path.isdir(run_dir):
         return usage
-    for fn in os.listdir(run_dir):
+    try:
+        names = os.listdir(run_dir)
+    except OSError:
+        return usage
+    for fn in names:
         if not (fn.startswith('agent-') and fn.endswith('.jsonl')):
             continue
         aid = fn[len('agent-'):-len('.jsonl')]
         calls, order, recs = {}, [], 0
         first = last = None
-        with open(os.path.join(run_dir, fn), encoding='utf-8') as fh:
-            for line in fh:
+        for o in _iter_jsonl_objects(os.path.join(run_dir, fn)):
+            ts = o.get('timestamp')
+            if ts:
                 try:
-                    o = json.loads(line)
+                    t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                    first = t if first is None else min(first, t)
+                    last = t if last is None else max(last, t)
                 except Exception:
-                    continue
-                ts = o.get('timestamp')
-                if ts:
-                    try:
-                        t = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                        first = t if first is None else min(first, t)
-                        last = t if last is None else max(last, t)
-                    except Exception:
-                        pass
-                if o.get('type') != 'assistant':
-                    continue
-                recs += 1
-                m = o.get('message') or {}
-                # No message.id -> fall back to the record's own uuid. A missing key
-                # must never collapse distinct calls into one bucket, which would
-                # under-count in exactly the direction this fix corrects.
-                mid = m.get('id') or o.get('uuid') or ('rec-%d' % recs)
-                if mid not in calls:
-                    order.append(mid)
-                calls[mid] = m                      # later record wins
+                    pass
+            if o.get('type') != 'assistant':
+                continue
+            recs += 1
+            m = o.get('message')
+            if not isinstance(m, dict):
+                continue
+            # No message.id -> fall back to the record's own uuid.
+            mid = m.get('id') or o.get('uuid') or ('rec-%d' % recs)
+            if mid not in calls:
+                order.append(mid)
+            calls[mid] = m                      # later record wins
         u = dict(inp=0, out=0, cw=0, cr=0, turns=len(calls), tools=0,
-                 recs=recs, secs=0.0)
+                 recs=recs, secs=None)
+        usage_fields = {
+            'inp': 'input_tokens', 'out': 'output_tokens',
+            'cw': 'cache_creation_input_tokens', 'cr': 'cache_read_input_tokens',
+        }
         for mid in order:
             m = calls[mid]
-            us = m.get('usage') or {}
-            u['inp'] += us.get('input_tokens', 0) or 0
-            u['out'] += us.get('output_tokens', 0) or 0
-            u['cw'] += us.get('cache_creation_input_tokens', 0) or 0
-            u['cr'] += us.get('cache_read_input_tokens', 0) or 0
+            us = m.get('usage') if isinstance(m.get('usage'), dict) else {}
+            for target, source in usage_fields.items():
+                value = _optional_number(us.get(source))
+                u[target] = None if u[target] is None or value is None else u[target] + value
             for b in (m.get('content') or []):
                 if isinstance(b, dict) and b.get('type') == 'tool_use':
                     u['tools'] += 1
-        u['secs'] = (last - first).total_seconds() if (first and last) else 0.0
+        if first and last:
+            u['secs'] = (last - first).total_seconds()
         u['first_ts'] = first.isoformat() if first else None
         usage[aid] = u
     return usage
@@ -475,20 +658,25 @@ def collect(session):
     wdir = os.path.join(session, 'workflows')
     if not os.path.isdir(wdir):
         return rows
-    for fn in sorted(os.listdir(wdir)):
+    try:
+        names = sorted(os.listdir(wdir))
+    except OSError:
+        return rows
+    for fn in names:
         if not fn.endswith('.json'):
             continue
-        with open(os.path.join(wdir, fn), encoding='utf-8') as fh:
-            run = json.load(fh)
+        run = _read_json_object(os.path.join(wdir, fn))
+        if not run:
+            continue
         rid = run.get('runId') or fn[:-5]
         eff = efforts_for(run)
         usage = agent_usage(os.path.join(session, 'subagents', 'workflows', rid))
         for e in run.get('workflowProgress') or []:
-            if e.get('type') != 'workflow_agent':
+            if not isinstance(e, dict) or e.get('type') != 'workflow_agent':
                 continue
             aid, lab = e.get('agentId'), e.get('label') or '(unlabeled)'
-            u = usage.get(aid, dict(inp=0, out=0, cw=0, cr=0, turns=0, tools=0,
-                                    recs=0, secs=0.0, first_ts=None))
+            u = usage.get(aid, dict(inp=None, out=None, cw=None, cr=None, turns=None,
+                                    tools=None, recs=None, secs=None, first_ts=None))
             cost = agent_cost(u)
             # Run date, most specific source first: this agent's own start, the
             # workflow record's instant, then the transcript's earliest turn.
@@ -507,39 +695,34 @@ def collect(session):
 
 def collect_sidecar(ledger=SIDECAR_LEDGER, include_unlabeled=False):
     """Sidecar spend-ledger rows shaped for the archive. Marked source='sidecar';
-    cost_usd is real dollars, `cost` stays 0 so sidecar rows can never leak into
-    normalized-token totals. Run id is synthetic and stable across invocations.
+    cost_usd is real dollars; normalized `cost` stays unknown so sidecar rows can
+    never leak into normalized-token totals. Run id is synthetic and stable across invocations.
 
     Unlabeled rows (no -l at dispatch: legacy history, benchmark arms, ad-hoc
     probes) are skipped by default -- they cannot be attributed or rated per
     label. --sidecar-all surfaces them for spend audits."""
     rows = []
-    if not os.path.exists(ledger):
-        return rows
-    with open(ledger, encoding='utf-8') as fh:
-        for line in fh:
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not rec.get('label') and not include_unlabeled:
-                continue
-            lab = rec.get('label') or '(unlabeled)'
-            ts = rec.get('timestamp') or '?'
-            rows.append(dict(
-                run=f'sidecar-{ts}-{lab}', run_date=run_date_of(ts),
-                workflow='sidecar', phase='', agent_id='',
-                label=lab, model=str(rec.get('servedModel') or rec.get('requestedModel') or '?'),
-                effort=rec.get('effort') or '?',
-                state=('completed' if rec.get('exitCode') == 0 else f"exit-{rec.get('exitCode')}"),
-                source='sidecar', cost=0.0, cost_usd=rec.get('costUSD'),
-                cost_basis=rec.get('costBasis') or '',
-                inp=0, out=rec.get('outputTokens') or 0, cw=0,
-                cr=rec.get('cacheReadTokens') or 0, recs=0,
-                turns=rec.get('numTurns') or 0, tools=0,
-                secs=(rec.get('durationMs') or 0) / 1000.0))
+    for rec in _iter_jsonl_objects(ledger):
+        if not rec.get('label') and not include_unlabeled:
+            continue
+        lab = str(rec.get('label') or '(unlabeled)')
+        ts = rec.get('timestamp') or '?'
+        duration = _optional_number(rec.get('durationMs'))
+        rows.append(dict(
+            run=f'sidecar-{ts}-{lab}', run_date=run_date_of(ts),
+            workflow='sidecar', phase='', agent_id='',
+            label=lab, model=str(rec.get('servedModel') or '?'),
+            effort=rec.get('effort') or '?',
+            state=('completed' if rec.get('exitCode') == 0 else f"exit-{rec.get('exitCode')}"),
+            source='sidecar', cost=None, cost_usd=rec.get('costUSD'),
+            cost_basis=rec.get('costBasis') or '',
+            inp=_optional_number(rec.get('inputTokens')),
+            out=_optional_number(rec.get('outputTokens')),
+            cw=_optional_number(rec.get('cacheWriteTokens')),
+            cr=_optional_number(rec.get('cacheReadTokens')), recs=None,
+            turns=_optional_number(rec.get('numTurns')),
+            tools=_optional_number(rec.get('toolCalls')),
+            secs=duration / 1000.0 if duration is not None else None))
     return rows
 
 
@@ -549,31 +732,37 @@ class ManifestError(ValueError):
 
 def _sidecar_record_row(path):
     """One explicit -R record shaped for manifest and archive consumers."""
-    try:
-        with open(path, encoding='utf-8') as fh:
-            rec = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    rec = _read_json_object(path)
+    if not rec:
         return None
     label = rec.get('label')
     if not label:
         return None
+    label = str(label)
     exit_code = rec.get('exitCode')
     timestamp = rec.get('timestamp') or '?'
+    launch_id = rec.get('launchId')
+    duration = _optional_number(rec.get('durationMs'))
     return dict(
         source='sidecar', label=label,
-        run='sidecar-' + str(timestamp) + '-' + label,
+        run=('sidecar-' + str(launch_id) if launch_id
+             else 'sidecar-' + str(timestamp) + '-' + label),
+        timestamp=timestamp,
         run_date=run_date_of(timestamp), workflow='sidecar', phase='', agent_id='',
-        model=str(rec.get('servedModel') or rec.get('requestedModel') or '?'),
+        model=str(rec.get('servedModel') or '?'),
         effort=rec.get('effort') or '?',
         state=(('completed' if exit_code == 0 else 'exit-' + str(exit_code))
                if isinstance(exit_code, int) and not isinstance(exit_code, bool) else 'unknown'),
         transport=rec.get('transport'), currency=rec.get('costModel'),
-        record_path=os.path.abspath(path), cost=0.0,
+        record_path=os.path.abspath(path), cost=None,
         cost_usd=rec.get('costUSD'), cost_basis=rec.get('costBasis') or '',
-        inp=rec.get('inputTokens') or 0, out=rec.get('outputTokens') or 0,
-        cw=rec.get('cacheWriteTokens') or 0, cr=rec.get('cacheReadTokens') or 0,
-        recs=0, turns=rec.get('numTurns') or 0, tools=rec.get('toolCalls') or 0,
-        secs=(rec.get('durationMs') or 0) / 1000.0)
+        inp=_optional_number(rec.get('inputTokens')),
+        out=_optional_number(rec.get('outputTokens')),
+        cw=_optional_number(rec.get('cacheWriteTokens')),
+        cr=_optional_number(rec.get('cacheReadTokens')), recs=None,
+        turns=_optional_number(rec.get('numTurns')),
+        tools=_optional_number(rec.get('toolCalls')),
+        secs=duration / 1000.0 if duration is not None else None)
 
 
 def collect_sidecar_records(record_dir):
@@ -606,37 +795,126 @@ def _iso_instant(value):
         return None
 
 
+def _shell_segments(command):
+    try:
+        lexer = shlex.shlex(command.replace('\n', ' ; '), posix=True,
+                            punctuation_chars=';&|')
+        lexer.whitespace_split = True
+        lexer.commenters = ''
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    segments, current = [], []
+    for token in tokens:
+        if token and all(char in ';&|' for char in token):
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _launcher_calls(command):
+    """Actual top-level launcher calls as (kind, launcher arguments)."""
+    calls = []
+    for segment in _shell_segments(command):
+        index = 0
+        while index < len(segment) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', segment[index]):
+            index += 1
+        if index >= len(segment):
+            continue
+        executable = os.path.basename(segment[index].replace('\\', '/')).lower()
+        script_index = index
+        if re.fullmatch(r'python(?:3(?:\.\d+)?)?|py', executable):
+            script_index += 1
+            while script_index < len(segment) and segment[script_index].startswith('-'):
+                if segment[script_index] in ('-c', '-m'):
+                    script_index = len(segment)
+                    break
+                script_index += 1
+        elif executable in ('bash', 'sh'):
+            script_index += 1
+            while script_index < len(segment) and segment[script_index].startswith('-'):
+                script_index += 1
+        script = (os.path.basename(segment[script_index].replace('\\', '/')).lower()
+                  if script_index < len(segment) else '')
+        if script == 'sidecar_fanout.py':
+            calls.append(('fanout', segment[script_index + 1:]))
+        elif script.endswith('_sidecar.sh'):
+            calls.append(('sidecar', segment[script_index + 1:]))
+    return calls
+
+
+def _parse_fanout_args(args, cwd):
+    jobs_value = out_value = None
+    index = 0
+    positional_only = False
+    while index < len(args):
+        token = args[index]
+        if not positional_only and token == '--':
+            positional_only = True
+            index += 1
+            continue
+        if not positional_only and token in ('--authorize', '--compare', '--dry-run'):
+            index += 1
+            continue
+        if not positional_only and token in ('--max-parallel', '--out-dir'):
+            if index + 1 >= len(args):
+                return None
+            if token == '--out-dir':
+                out_value = args[index + 1]
+            index += 2
+            continue
+        if not positional_only and token.startswith('--out-dir='):
+            out_value = token.split('=', 1)[1]
+            index += 1
+            continue
+        if not positional_only and token.startswith('--max-parallel='):
+            index += 1
+            continue
+        if not positional_only and token.startswith('-'):
+            return None
+        if jobs_value is not None:
+            return None
+        jobs_value = token
+        index += 1
+    if jobs_value is None:
+        return None
+    jobs_path = _resolve_session_path(jobs_value, cwd)
+    out_dir = (_resolve_session_path(out_value, cwd) if out_value is not None
+               else os.path.join(os.path.dirname(jobs_path), 'fanout'))
+    return jobs_path, out_dir
+
+
 def _fanout_jobs_paths(transcript):
     """Fan-out jobs files named by assistant shell calls in one transcript."""
     paths = set()
-    with open(transcript, encoding='utf-8', errors='replace') as fh:
-        for line in fh:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+    for entry in _iter_jsonl_objects(transcript):
+        if entry.get('type') != 'assistant':
+            continue
+        cwd = entry.get('cwd') or _PROJECT_DIR
+        message = entry.get('message')
+        if not isinstance(message, dict):
+            continue
+        for item in message.get('content') or []:
+            if not isinstance(item, dict) or item.get('type') != 'tool_use':
                 continue
-            if entry.get('type') != 'assistant':
+            tool_name = str(item.get('name') or '').split('.')[-1]
+            if tool_name not in ('Bash', 'PowerShell'):
                 continue
-            cwd = entry.get('cwd') or _PROJECT_DIR
-            for item in (entry.get('message') or {}).get('content') or []:
-                if not isinstance(item, dict) or item.get('type') != 'tool_use':
+            tool_input = item.get('input')
+            command = tool_input.get('command') if isinstance(tool_input, dict) else None
+            if not isinstance(command, str):
+                continue
+            for kind, args in _launcher_calls(command):
+                if kind != 'fanout':
                     continue
-                tool_name = str(item.get('name') or '').split('.')[-1]
-                if tool_name not in ('Bash', 'PowerShell'):
-                    continue
-                command = (item.get('input') or {}).get('command')
-                if not isinstance(command, str):
-                    continue
-                try:
-                    tokens = shlex.split(command, posix=True)
-                except ValueError:
-                    continue
-                for index, token in enumerate(tokens):
-                    normalized = token.replace('\\', '/')
-                    if ((normalized.endswith('/sidecar_fanout.py')
-                         or normalized == 'sidecar_fanout.py')
-                            and index + 1 < len(tokens)):
-                        paths.add(_resolve_session_path(tokens[index + 1], cwd))
+                parsed = _parse_fanout_args(args, cwd)
+                if parsed:
+                    paths.add(parsed[0])
     return paths
 
 
@@ -648,84 +926,76 @@ def _sidecar_record_launches(session):
         return launches
     fanout_jobs_paths = _fanout_jobs_paths(transcript)
     file_versions = {}
-    with open(transcript, encoding='utf-8', errors='replace') as fh:
-        for line in fh:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+    for entry in _iter_jsonl_objects(transcript):
+        if entry.get('type') != 'assistant':
+            continue
+        message = entry.get('message')
+        if not isinstance(message, dict):
+            continue
+        cwd = entry.get('cwd') or _PROJECT_DIR
+        launched_at = _iso_instant(entry.get('timestamp'))
+        for item in message.get('content') or []:
+            if not isinstance(item, dict) or item.get('type') != 'tool_use':
                 continue
-            if entry.get('type') != 'assistant':
+            tool_name = str(item.get('name') or '').split('.')[-1]
+            tool_input = item.get('input')
+            if not isinstance(tool_input, dict):
                 continue
-            message = entry.get('message') or {}
-            cwd = entry.get('cwd') or _PROJECT_DIR
-            launched_at = _iso_instant(entry.get('timestamp'))
-            for item in message.get('content') or []:
-                if not isinstance(item, dict) or item.get('type') != 'tool_use':
+            if tool_name == 'Write' and isinstance(tool_input.get('content'), str):
+                file_path = _resolve_session_path(tool_input.get('file_path'), cwd)
+                if file_path in fanout_jobs_paths:
+                    file_versions[file_path] = tool_input['content']
+                continue
+            if tool_name == 'Edit':
+                file_path = _resolve_session_path(tool_input.get('file_path'), cwd)
+                if file_path not in fanout_jobs_paths:
                     continue
-                tool_name = str(item.get('name') or '').split('.')[-1]
-                tool_input = item.get('input') or {}
-                if tool_name == 'Write' and isinstance(tool_input.get('content'), str):
-                    file_path = _resolve_session_path(tool_input.get('file_path'), cwd)
-                    if file_path in fanout_jobs_paths:
-                        file_versions[file_path] = tool_input['content']
-                    continue
-                if tool_name == 'Edit':
-                    file_path = _resolve_session_path(tool_input.get('file_path'), cwd)
-                    if file_path not in fanout_jobs_paths:
+                old = tool_input.get('old_string')
+                new = tool_input.get('new_string')
+                prior = file_versions.get(file_path)
+                if isinstance(prior, str) and isinstance(old, str) and isinstance(new, str):
+                    count = prior.count(old)
+                    if count == 1 or (count and tool_input.get('replace_all')):
+                        file_versions[file_path] = prior.replace(
+                            old, new, -1 if tool_input.get('replace_all') else 1)
+                continue
+            if tool_name not in ('Bash', 'PowerShell'):
+                continue
+            command = tool_input.get('command')
+            if not isinstance(command, str):
+                continue
+            for kind, args in _launcher_calls(command):
+                paths = []
+                if kind == 'fanout':
+                    parsed = _parse_fanout_args(args, cwd)
+                    if not parsed:
                         continue
-                    old = tool_input.get('old_string')
-                    new = tool_input.get('new_string')
-                    prior = file_versions.get(file_path)
-                    if isinstance(prior, str) and isinstance(old, str) and isinstance(new, str):
-                        count = prior.count(old)
-                        if count == 1 or (count and tool_input.get('replace_all')):
-                            file_versions[file_path] = prior.replace(old, new, -1 if tool_input.get('replace_all') else 1)
-                    continue
-                if tool_name not in ('Bash', 'PowerShell'):
-                    continue
-                command = tool_input.get('command')
-                if not isinstance(command, str):
-                    continue
-                try:
-                    tokens = shlex.split(command, posix=True)
-                except ValueError:
-                    continue
-                for index, token in enumerate(tokens):
-                    normalized = token.replace('\\', '/')
-                    paths = []
-                    if normalized.endswith('/sidecar_fanout.py') or normalized == 'sidecar_fanout.py':
-                        if index + 1 >= len(tokens):
-                            continue
-                        jobs_path = _resolve_session_path(tokens[index + 1], cwd)
-                        out_dir = os.path.dirname(jobs_path)
-                        try:
-                            out_index = tokens.index('--out-dir', index + 2)
-                            out_dir = _resolve_session_path(tokens[out_index + 1], cwd)
-                        except (ValueError, IndexError):
-                            pass
-                        try:
-                            if jobs_path in file_versions:
-                                jobs = json.loads(file_versions[jobs_path])
-                            else:
-                                with open(jobs_path, encoding='utf-8') as fh:
-                                    jobs = json.load(fh)
-                        except (OSError, json.JSONDecodeError):
-                            continue
-                        for job in jobs if isinstance(jobs, list) else []:
-                            label = job.get('label') if isinstance(job, dict) else None
-                            if label:
-                                paths.append(os.path.join(out_dir, str(label) + '.record.json'))
-                    elif normalized.endswith('_sidecar.sh'):
-                        try:
-                            record_index = tokens.index('-R', index + 1)
-                            paths.append(_resolve_session_path(tokens[record_index + 1], cwd))
-                        except (ValueError, IndexError):
-                            continue
-                    for path in paths:
-                        absolute = _resolve_session_path(path, cwd)
-                        prior = launches.get(absolute)
-                        if prior is None or (launched_at and (not prior or launched_at > prior)):
-                            launches[absolute] = launched_at
+                    jobs_path, out_dir = parsed
+                    content = file_versions.get(jobs_path)
+                    if not isinstance(content, str):
+                        continue
+                    try:
+                        jobs = json.loads(content)
+                    except json.JSONDecodeError:
+                        continue
+                    for job in jobs if isinstance(jobs, list) else []:
+                        label = job.get('label') if isinstance(job, dict) else None
+                        if label:
+                            paths.append(os.path.join(out_dir, str(label) + '.record.json'))
+                else:
+                    try:
+                        record_index = args.index('-R')
+                        paths.append(_resolve_session_path(args[record_index + 1], cwd))
+                    except (ValueError, IndexError):
+                        record_arg = next((arg.split('=', 1)[1] for arg in args
+                                           if arg.startswith('-R=')), None)
+                        if record_arg:
+                            paths.append(_resolve_session_path(record_arg, cwd))
+                for path in paths:
+                    absolute = _resolve_session_path(path, cwd)
+                    prior = launches.get(absolute)
+                    if prior is None or (launched_at and (not prior or launched_at > prior)):
+                        launches[absolute] = launched_at
     return launches
 
 
@@ -736,9 +1006,10 @@ def collect_session_sidecar(session):
         row = _sidecar_record_row(path)
         if not row:
             continue
-        prefix = row['run'][len('sidecar-'):]
-        recorded_at = _iso_instant(prefix[:prefix.find('-' + row['label'])])
-        if launched_at and (not recorded_at or recorded_at < launched_at):
+        recorded_at = _iso_instant(row.get('timestamp'))
+        if launched_at and (
+                not recorded_at
+                or recorded_at.replace(microsecond=0) < launched_at.replace(microsecond=0)):
             continue
         rows.append(row)
     return rows
@@ -811,13 +1082,14 @@ def build_manifest(seed, workflow_rows, sidecar_rows, verdicts=None):
             },
             'status': _manifest_status(row.get('state')),
             'usage': {
-                'inputTokens': row.get('inp') or 0,
-                'outputTokens': row.get('out') or 0,
-                'cacheReadTokens': row.get('cr') or 0,
-                'cacheWriteTokens': row.get('cw') or 0,
-                'turns': row.get('turns') or 0,
-                'toolCalls': row.get('tools') or 0,
-                'durationMs': int(round((row.get('secs') or 0) * 1000)),
+                'inputTokens': _optional_number(row.get('inp')),
+                'outputTokens': _optional_number(row.get('out')),
+                'cacheReadTokens': _optional_number(row.get('cr')),
+                'cacheWriteTokens': _optional_number(row.get('cw')),
+                'turns': _optional_number(row.get('turns')),
+                'toolCalls': _optional_number(row.get('tools')),
+                'durationMs': (int(round(row['secs'] * 1000))
+                               if _optional_number(row.get('secs')) is not None else None),
                 'costUSD': row.get('cost_usd'),
             },
             'spillPath': job.get('spillPath'),
@@ -845,17 +1117,14 @@ def build_manifest(seed, workflow_rows, sidecar_rows, verdicts=None):
 def write_manifest(seed_path, output_path, session=None, sidecar_record_dir=None,
                    verdicts_path=None):
     """Build and write a manifest; never reads or appends the metrics archive."""
-    with open(seed_path, encoding='utf-8') as fh:
-        seed = json.load(fh)
+    seed = _read_json_object(seed_path)
+    if seed is None:
+        raise ManifestError('manifest seed must be a JSON object')
     workflow_rows = collect(session) if session else []
     sidecar_rows = collect_sidecar_records(sidecar_record_dir)
     verdicts = _read_verdict_file(verdicts_path) if verdicts_path else {}
     manifest = build_manifest(seed, workflow_rows, sidecar_rows, verdicts)
-    parent = os.path.dirname(os.path.abspath(output_path))
-    os.makedirs(parent, exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8', newline='\n') as fh:
-        json.dump(manifest, fh, indent=2, ensure_ascii=False)
-        fh.write('\n')
+    _atomic_write_json(output_path, manifest)
     return manifest
 
 
@@ -872,13 +1141,20 @@ def report(rows):
     w(f"{'phase':<14} {'label':<30} {'eff':<7} {'cost':>8} {'out':>7} {'cacheR':>8} "
       f"{'turns':>6} {'tools':>6} {'sec':>6}")
     w('-' * 100)
-    for r in sorted(rows, key=lambda x: (x['run'], -x['cost'])):
-        w(f"{r['phase'][:14]:<14} {r['label'][:30]:<30} {r['effort']:<7} {fmt(r['cost']):>8} "
-          f"{fmt(r['out']):>7} {fmt(r['cr']):>8} {r['turns']:>6} {r['tools']:>6} {r['secs']:>6.0f}")
+    for r in sorted(rows, key=lambda x: (x['run'], -_number(x.get('cost')))):
+        secs = (f"{r['secs']:>6.0f}" if _optional_number(r.get('secs')) is not None
+                else f"{'n/a':>6}")
+        w(f"{r['phase'][:14]:<14} {r['label'][:30]:<30} {r['effort']:<7} {fmt(r.get('cost')):>8} "
+          f"{fmt(r.get('out')):>7} {fmt(r.get('cr')):>8} {fmt(r.get('turns')):>6} "
+          f"{fmt(r.get('tools')):>6} {secs}")
     w('-' * 100)
-    tot = sum(r['cost'] for r in rows)
-    w(f"{len(rows)} agents | total {fmt(tot)} normalized | "
-      f"out {fmt(sum(r['out'] for r in rows))} | turns {sum(r['turns'] for r in rows)}")
+    cost_total, cost_known, cost_unknown = _field_stats(rows, 'cost')
+    _, out_known, _ = _field_stats(rows, 'out')
+    _, turns_known, _ = _field_stats(rows, 'turns')
+    w(f"{len(rows)} agents | total {fmt(cost_total)} normalized over {cost_known} known"
+      + (f" ({cost_unknown} unknown)" if cost_unknown else '') + " | "
+      f"out {_total_text(rows, 'out')} over {out_known} known | "
+      f"turns {_total_text(rows, 'turns')} over {turns_known} known")
 
     by = {}
     for r in rows:
@@ -889,9 +1165,24 @@ def report(rows):
         g = by.get(k)
         if not g:
             continue
-        n, t = len(g), sum(x['turns'] for x in g)
-        w(f"{k:<8} {n:>3} {fmt(sum(x['cost'] for x in g)//n):>11} {t/n:>9.1f} "
-          f"{sum(x['out'] for x in g)//max(t,1):>9} {sum(x['cost'] for x in g)/tot:>10.0%}")
+        n = len(g)
+        group_cost, known_cost, unknown_cost = _field_stats(g, 'cost')
+        group_turns, known_turns, unknown_turns = _field_stats(g, 'turns')
+        paired = [row for row in g
+                  if _optional_number(row.get('out')) is not None
+                  and _optional_number(row.get('turns')) is not None]
+        paired_out, _, _ = _field_stats(paired, 'out')
+        paired_turns, _, _ = _field_stats(paired, 'turns')
+        unknown_ratio = n - len(paired)
+        cost_average = fmt(group_cost / known_cost) if known_cost else 'n/a'
+        turns_average = f'{group_turns / known_turns:.1f}' if known_turns else 'n/a'
+        out_per_turn = fmt(paired_out / paired_turns) if paired and paired_turns else 'n/a'
+        share = f"{group_cost / cost_total:>10.0%}" if cost_total and known_cost else f"{'n/a':>11}"
+        w(f"{k:<8} {n:>3} {cost_average:>11} {turns_average:>9} "
+          f"{out_per_turn:>9} {share}")
+        if unknown_cost or unknown_turns or unknown_ratio:
+            w(f"  {k} unknown: cost {unknown_cost}, turns {unknown_turns}, "
+              f"out/turn {unknown_ratio}")
     if '?' in by:
         w('')
         w(f"WARNING: {len(by['?'])} agent(s) have no resolved effort pin. Add a PINS log line to "
@@ -902,17 +1193,20 @@ def report(rows):
     bym, unweighted = {}, set()
     for r in rows:
         bym.setdefault(r['model'], []).append(r)
-        if r.get('qcost') is None:
+        if quota_weight(r.get('model')) is None:
             unweighted.add(r['model'])
     w('')
     w(f"{'model':<24} {'n':>3} {'vol/agent':>11} {'quota/agent':>12} {'x':>5}")
     for m, g in sorted(bym.items(), key=lambda kv: -len(kv[1])):
         n = len(g)
-        vol = sum(x['cost'] for x in g) // n
+        volume, known_volume, unknown_volume = _field_stats(g, 'cost')
+        vol = volume / known_volume if known_volume else None
         weight = quota_weight(m)
-        q = f"{fmt(int(vol * weight)):>12}" if weight else f"{'?':>12}"
+        q = f"{fmt(vol * weight):>12}" if weight and vol is not None else f"{'?':>12}"
         x = f"{weight:>5.2f}" if weight else f"{'?':>5}"
         w(f"{m[:24]:<24} {n:>3} {fmt(vol):>11} {q} {x}")
+        if unknown_volume:
+            w(f"  {m} unknown normalized cost: {unknown_volume}")
     if unweighted:
         w('')
         w("WARNING: no plan-quota weight for " + ', '.join(sorted(unweighted)) + ". Their "
@@ -954,10 +1248,7 @@ def _report_candidates(rows):
         c['date'] = stamp
     # Atomic replace: concurrent sessions share one checkout and may run the
     # summary in parallel -- a half-written file would corrupt report()'s read.
-    tmp = CANDIDATES_FILE + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(cands, f, indent=1)
-    os.replace(tmp, CANDIDATES_FILE)
+    _atomic_write_json(CANDIDATES_FILE, cands, indent=1)
     if cands:
         w('\n-- Over-pin candidates (computed, never rated) --')
         w(f"{'family':<28} {'run at':<10} {'->':<4} {'try':<8} {'cost x':>7} {'n':>4}")
@@ -1019,8 +1310,11 @@ def report_sidecar(side):
         for r in sorted(rows, key=lambda x: x['run']):
             cu = r.get('cost_usd')
             cell = f"{cu:>8.4f}" if isinstance(cu, (int, float)) else f"{'n/a':>8}"
+            secs = (f"{r['secs']:>6.0f}" if _optional_number(r.get('secs')) is not None
+                    else f"{'n/a':>6}")
             w(f"{r['label'][:30]:<30} {r['effort']:<6} {cell} "
-              f"{fmt(r['out']):>8} {fmt(r['cr']):>8} {r['turns']:>6} {r['secs']:>6.0f} {r['state']:<10}")
+              f"{fmt(r.get('out')):>8} {fmt(r.get('cr')):>8} "
+              f"{fmt(r.get('turns')):>6} {secs} {r['state']:<10}")
         w('-' * 92)
         priced = [r for r in rows if isinstance(r.get('cost_usd'), (int, float))]
         sub = sum(r['cost_usd'] for r in priced)
@@ -1029,8 +1323,8 @@ def report_sidecar(side):
         if len(priced) != len(rows):
             basis = next((r.get('cost_basis') for r in rows if r.get('cost_basis')), 'no dollar price')
             note = f" | {len(rows) - len(priced)} unpriced ({basis}) - excluded from $ figures"
-        w(f"   subtotal ${sub:.4f} | out {fmt(sum(r['out'] for r in rows))} | "
-          f"turns {sum(r['turns'] for r in rows)} | mean {mean}{note}")
+        w(f"   subtotal ${sub:.4f} | out {_total_text(rows, 'out')} | "
+          f"turns {_total_text(rows, 'turns')} | mean {mean}{note}")
 
     w('')
     priced_all = [r for r in side if isinstance(r.get('cost_usd'), (int, float))]
@@ -1038,7 +1332,7 @@ def report_sidecar(side):
     w(f"{len(side)} sidecar run(s) across {len(by_model)} model(s) | "
       f"total ${sum(r['cost_usd'] for r in priced_all):.4f} over {len(priced_all)} priced run(s)"
       + (f" ({unpriced_all} unpriced)" if unpriced_all else '') + " | "
-      f"out {fmt(sum(r['out'] for r in side))} | turns {sum(r['turns'] for r in side)}")
+      f"out {_total_text(side, 'out')} | turns {_total_text(side, 'turns')}")
     if len(by_model) > 1:
         w("   (total is a spend figure, not a comparison - per-model subtotals above are the "
           "comparable unit)")
@@ -1070,7 +1364,7 @@ def compute_candidates(rows):
     cands = []
     for fam, grp in by_family.items():
         # Rows archived without transcripts (cost 0) are unmeasurable -- exclude.
-        grp = [r for r in grp if r.get('cost', 0) > 0]
+        grp = [r for r in grp if _number(r.get('cost')) > 0]
         cells = {}
         for r in grp:
             cells.setdefault(r.get('effort', '?'), []).append(r)
@@ -1082,12 +1376,18 @@ def compute_candidates(rows):
                 continue
             if any(outcome_of(r) != 'clean' for r in g_hi + g_lo):
                 continue
-            c_hi = sum(r.get('cost', 0) for r in g_hi) / len(g_hi)
-            c_lo = sum(r.get('cost', 0) for r in g_lo) / len(g_lo)
+            c_hi, _, _ = _field_stats(g_hi, 'cost')
+            c_lo, _, _ = _field_stats(g_lo, 'cost')
+            c_hi /= len(g_hi)
+            c_lo /= len(g_lo)
             if c_lo <= 0 or c_hi / c_lo < CANDIDATE_RATIO_MIN:
                 continue
-            t_hi = sum(r.get('turns', 0) for r in g_hi) / len(g_hi)
-            t_lo = sum(r.get('turns', 0) for r in g_lo) / len(g_lo)
+            t_hi, n_t_hi, missing_t_hi = _field_stats(g_hi, 'turns')
+            t_lo, n_t_lo, missing_t_lo = _field_stats(g_lo, 'turns')
+            if missing_t_hi or missing_t_lo or not n_t_hi or not n_t_lo:
+                continue
+            t_hi /= n_t_hi
+            t_lo /= n_t_lo
             if t_lo > 0 and t_hi / t_lo > CANDIDATE_TURNS_MAX:
                 continue
             cands.append(dict(family=fam, effort=hi, suggested=lo,
@@ -1097,7 +1397,7 @@ def compute_candidates(rows):
 
 
 def load_run_ledger():
-    """(archived_runs, ignored_runs) from the archive jsonl — one file, whole ledger.
+    """(archived_runs, ignored_runs) from the bounded archive shards.
 
     Archived = any agent record's run (rated work already in the store). Ignored =
     {'run': id, 'ignored': true} sentinel lines. Both are terminal states for a run,
@@ -1106,15 +1406,10 @@ def load_run_ledger():
     observed 2026-07-27).
     """
     archived, ignored = set(), set()
-    if os.path.exists(ARCHIVE):
-        with open(ARCHIVE, encoding='utf-8') as fh:
-            for line in fh:
-                if line.strip():
-                    try:
-                        rec = json.loads(line)
-                        (ignored if rec.get('ignored') else archived).add(rec.get('run'))
-                    except json.JSONDecodeError:
-                        pass
+    for rec in _archive_records():
+        run = rec.get('run')
+        if run:
+            (ignored if rec.get('ignored') else archived).add(run)
     return archived, ignored
 
 
@@ -1153,7 +1448,7 @@ def main():
             manifest = write_manifest(
                 a.manifest_seed, a.manifest_out, session=a.session,
                 sidecar_record_dir=a.sidecar_record_dir,
-                verdicts_path=a.manifest_verdicts or PENDING_VERDICTS)
+                verdicts_path=a.manifest_verdicts)
         except (OSError, json.JSONDecodeError, ManifestError) as exc:
             w('REFUSED manifest: ' + str(exc))
             return 1
@@ -1162,27 +1457,25 @@ def main():
         return 0
 
     if a.ignore_run:
-        archived, ignored = load_run_ledger()
-        if a.ignore_run in ignored:
-            w(f'{a.ignore_run} is already ignored -- nothing appended.')
-            return 0
-        if a.ignore_run in archived:
+        stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        sentinel = {'run': a.ignore_run, 'ignored': True,
+                    'reason': a.reason, 'date': stamp}
+        fresh, _, conflicts = _archive_rows_atomic([sentinel])
+        if conflicts:
             w(f'REFUSED: {a.ignore_run} has rated agent records in the archive -- it is '
               'archived work, not noise. An ignore sentinel would misdescribe it.')
             return 1
-        stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        with open(ARCHIVE, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({'run': a.ignore_run, 'ignored': True,
-                                'reason': a.reason, 'date': stamp}) + '\n')
+        if not fresh:
+            w(f'{a.ignore_run} is already ignored -- nothing appended.')
+            return 0
         w(f'Ignored {a.ignore_run} -- it will no longer surface in collection or summary.')
         return 0
 
     if a.archive_summary:
-        if not os.path.exists(ARCHIVE):
+        if not _archive_paths():
             w(f'No archive at {ARCHIVE} yet.')
             return 0
-        with open(ARCHIVE, encoding='utf-8') as fh:
-            rows = [json.loads(l) for l in fh if l.strip()]
+        rows = list(_archive_records())
         ignored_n = sum(1 for r in rows if r.get('ignored'))
         rows = [r for r in rows if not r.get('ignored')]
         side = [r for r in rows if r.get('source') == 'sidecar']
@@ -1190,9 +1483,11 @@ def main():
         by = {}
         for r in rows:
             by.setdefault((r.get('effort', '?'), outcome_of(r)), []).append(r)
-        w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'cost/agent':>11}")
+        w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'cost/agent':>11} {'unknown':>8}")
         for (e, v), g in sorted(by.items()):
-            w(f'{e:<8} {v:<13} {len(g):>4} {fmt(sum(x.get("cost", 0) for x in g)//len(g)):>11}')
+            total, known, unknown = _field_stats(g, 'cost')
+            average = fmt(total / known) if known else 'n/a'
+            w(f'{e:<8} {v:<13} {len(g):>4} {average:>11} {unknown:>8}')
         w(f'\n{len(rows)} archived agents across {len({r.get("run", "?") for r in rows})} runs.'
           + (f' ({ignored_n} ignored-run sentinel(s) excluded.)' if ignored_n else ''))
         if side:
@@ -1201,11 +1496,11 @@ def main():
                 sby.setdefault((r.get('effort', '?'), outcome_of(r)), []).append(r)
             w('')
             w('-- DeepSeek sidecar (USD; requested-effort coordinate -- do not compare to rungs above) --')
-            w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'$/agent':>9}")
+            w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'$/agent':>9} {'unpriced':>9}")
             for (e, v), g in sorted(sby.items()):
                 gp = [x for x in g if isinstance(x.get('cost_usd'), (int, float))]
                 cell = f"{sum(x['cost_usd'] for x in gp)/len(gp):>9.4f}" if gp else f"{'n/a':>9}"
-                w(f"{e:<8} {v:<13} {len(g):>4} {cell}")
+                w(f"{e:<8} {v:<13} {len(g):>4} {cell} {len(g) - len(gp):>9}")
             sp = [x for x in side if isinstance(x.get('cost_usd'), (int, float))]
             w(f"{len(side)} archived sidecar runs | total ${sum(x['cost_usd'] for x in sp):.4f}"
               f" over {len(sp)} priced")
@@ -1298,25 +1593,7 @@ def main():
     if not (a.verdicts or pending):
         return 0
 
-    # Idempotency: archiving is the default path, so re-invocation is expected. Duplicate
-    # run records would silently inflate --archive-summary's n and skew cost/agent.
-    archived_runs = set()
-    if os.path.exists(ARCHIVE):
-        with open(ARCHIVE, encoding='utf-8') as fh:
-            for line in fh:
-                if line.strip():
-                    try:
-                        archived_runs.add(json.loads(line).get('run'))
-                    except json.JSONDecodeError:
-                        pass
-    fresh = [r for r in rows if r['run'] not in archived_runs]
-    skipped = len(rows) - len(fresh)
-    if not fresh:
-        runs = ', '.join(sorted({r['run'] for r in rows}))
-        w(f'\nAlready archived ({skipped} agents, run {runs}) -- nothing appended.')
-        return 0
-
-    unresolved = [r['label'] for r in fresh if r['effort'] == '?']
+    unresolved = [r['label'] for r in rows if r['effort'] == '?']
     if unresolved and not a.allow_unresolved_effort:
         w(f'\nREFUSED: {len(unresolved)} agent(s) have no resolved effort pin; archiving them '
           'would write records Effort Calibration cannot use:')
@@ -1327,12 +1604,18 @@ def main():
         return 1
 
     stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    with open(ARCHIVE, 'a', encoding='utf-8') as f:
-        for r in fresh:
-            r['date'] = stamp              # legacy key: archive date, kept for consumers
-            r['archived_date'] = stamp
-            r.setdefault('run_date', None)  # null is a legible gap; never the archive date
-            f.write(json.dumps(r) + '\n')
+    for r in rows:
+        r['date'] = stamp              # legacy key: archive date, kept for consumers
+        r['archived_date'] = stamp
+        r.setdefault('run_date', None)  # null is a legible gap; never the archive date
+    fresh, skipped, conflicts = _archive_rows_atomic(rows)
+    if conflicts:
+        w('\nREFUSED archive conflict for run(s): ' + ', '.join(conflicts))
+        return 1
+    if not fresh:
+        runs = ', '.join(sorted({r['run'] for r in rows}))
+        w(f'\nAlready archived ({skipped} agents, run {runs}) -- nothing appended.')
+        return 0
     w(f'\nArchived {len(fresh)} agent records to {ARCHIVE}.'
       + (f' Skipped {skipped} already-archived.' if skipped else ''))
     return 0
