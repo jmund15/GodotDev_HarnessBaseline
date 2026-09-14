@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook — machine-wide Godot/gate activity registry (advisory).
 
-Bridges the machine-global activity registry at <tempdir>/pp-activity/*.json
+Bridges the machine-global activity registry at <tempdir>/harness-activity/*.json
 (written by regression_gate.ps1, run_test_suite.ps1, and the gate queue
 watcher) to the model-visible channel, so a session can name what is blocking
 it instead of guessing. Companion doc: .claude/plans/godot-process-identity-
@@ -44,7 +44,8 @@ PID-reuse-impostor record is garbage — deleted best-effort, never reported.
 
 Modeled on budget_posture.py's conventions: UTF-8 stdout reconfigure,
 fail-open main() wrapper, per-session dedupe file in tempfile.gettempdir(),
-prune-stale sweep, turn-counted re-emit.
+prune-stale sweep, and the same state-gated re-emit (first turn, first turn after a
+compaction, or a change in the peer set).
 """
 
 import glob
@@ -55,13 +56,15 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import fire_once_since_compaction  # noqa: E402
+
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
-REGISTRY_DIR = os.path.join(tempfile.gettempdir(), "pp-activity")
+REGISTRY_DIR = os.path.join(tempfile.gettempdir(), "harness-activity")
 PROC_START_TOLERANCE_SEC = 5
 HEARTBEAT_STALE_SEC = 10 * 60
-TURNS_BETWEEN_EMITS = 10
 SUFFIX = (
     "- contention, not a defect: do not kill it, do not report it as an "
     "editor problem or a regression; gate INCOMPLETE/CONTENTION verdicts "
@@ -431,18 +434,19 @@ def main():
             dstate = json.load(fh)
     except Exception:
         dstate = {}
-    turns = dstate.get("turns_since_emit", TURNS_BETWEEN_EMITS) + 1
-
     fingerprint = sorted(f"{r.get('kind')}:{r.get('pid')}:{r.get('checkout')}" for r in peers)
-    should_emit = turns >= TURNS_BETWEEN_EMITS or dstate.get("fingerprint") != fingerprint
+    # A changed peer set is news; so is the first turn of a session or of a resumed one.
+    # A turn-count heartbeat was neither.
+    # The gate is claimed first, not short-circuited past: a changed fingerprint on turn 1
+    # would otherwise leave it unclaimed and buy a second, redundant emission later.
+    should_emit = (fire_once_since_compaction(session_id, "activity_registry")
+                   or dstate.get("fingerprint") != fingerprint)
 
     if should_emit:
         fragments = [format_fragment(r) for r in peers]
         line = "[activity] " + "; ".join(fragments) + " " + SUFFIX
         print(line)
-        dstate = {"fingerprint": fingerprint, "turns_since_emit": 0}
-    else:
-        dstate["turns_since_emit"] = turns
+        dstate = {"fingerprint": fingerprint}
 
     try:
         with open(dpath, "w", encoding="utf-8") as fh:

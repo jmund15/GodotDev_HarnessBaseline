@@ -8,14 +8,19 @@ Purpose:
 - Preserves potentially valuable context that would otherwise be lost
 - Generates concise summary (~10-20KB) optimized for post-compaction resume
 - Backups stored in logs/transcript_backups/ with timestamps
+- Re-arms the cadence hooks' per-compaction gates (`_hook_state.clear_compaction_keys`)
 
 Note: This hook cannot block compaction, only log/backup before it happens.
 """
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import clear_compaction_keys
 
 # Import summary builder (local module with underscore prefix)
 try:
@@ -201,6 +206,9 @@ def main():
 
     log_compaction_event(input_data, backup_path, summary_path)
     update_session_manifest(session_id, summary_path)
+    # Compaction drops the advisories the cadence hooks already delivered; re-arm every
+    # fire_once_since_compaction key so they land again in the resumed context.
+    clear_compaction_keys(session_id)
 
     output_lines = ["<pre-compact-hook>"]
 

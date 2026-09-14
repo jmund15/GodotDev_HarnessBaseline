@@ -69,15 +69,15 @@ except ImportError:
 
 # === State + log paths =======================================================
 
-STATE_DIR = os.environ.get("PP_HOOK_STATE_DIR") or os.path.expanduser("~/.claude/.routing_state")
+STATE_DIR = os.environ.get("HARNESS_HOOK_STATE_DIR") or os.path.expanduser("~/.claude/.routing_state")
 
 # Anchored to CLAUDE_PROJECT_DIR: hook cwd is USUALLY the project root, but
 # sessions with a different cwd scattered stray logs/ dirs under .claude/commands/,
 # .claude/auto-memory/, and arbitrary code folders (observed 2026-07-25).
 # Worktree sessions keep their own project dir — that split is intended.
-# PP_ROUTING_AUDIT_LOG_PATH overrides the log path so a proof never writes the real one.
+# HARNESS_ROUTING_AUDIT_LOG_PATH overrides the log path so a proof never writes the real one.
 _PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
-AUDIT_LOG_PATH = os.environ.get("PP_ROUTING_AUDIT_LOG_PATH") or os.path.join(
+AUDIT_LOG_PATH = os.environ.get("HARNESS_ROUTING_AUDIT_LOG_PATH") or os.path.join(
     _PROJECT_DIR, "logs", "routing_audit.jsonl"
 )
 

@@ -15,7 +15,7 @@ What it does:
 - Inspects the tool input pre-call.
 - For the highest-confidence smell — bare-PascalCase Grep on `.cs` with no
   literal-intent / verified-unique cue words in the user's prompt — and ONLY
-  when the env var `PP_ROUTING_HARD_BLOCK_CS_GREP=true` is set, exits with
+  when the env var `HARNESS_ROUTING_HARD_BLOCK_CS_GREP=true` is set, exits with
   code 2 + a deny message (Claude Code blocks the call, agent must retry).
   Default OFF so the change is opt-in.
 - For everything else, emits a one-line advisory nudge via
@@ -113,7 +113,7 @@ from routing_classifier import (
 
 # Env var toggle. Default OFF — the hard block is opt-in until the user
 # verifies it doesn't fire spuriously in their normal workflow.
-HARD_BLOCK_ENV_VAR = "PP_ROUTING_HARD_BLOCK_CS_GREP"
+HARD_BLOCK_ENV_VAR = "HARNESS_ROUTING_HARD_BLOCK_CS_GREP"
 
 # State file: `_hook_state.state_path` — the same per-session file
 # tool_routing_post_grep.py and tool_routing_cumulative_reset.py (which populates

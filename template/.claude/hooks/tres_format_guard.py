@@ -6,7 +6,7 @@ ext_resource lines without the target's uid= -- is marked dirty at EVERY editor 
 the next save (including F5 play's save-before-run) rewrites it, and a rewrite landing
 in the editor's C# rebuild window serializes scripted sub-resources stripped
 (resource_local_to_scene = "" -> bare-Resource loads -> InvalidCastException). This is
-the 4x-recurring encounter corruption; the fixed-point form is mandatory for NEW files
+a 4x-recurring config corruption; the fixed-point form is mandatory for NEW files
 (godot_files.md §UID handling). Inform-only -- the commit-time strip/nullstrip guards
 remain the hard gate.
 
@@ -103,7 +103,7 @@ def hook():
     lines = [
         f"[tres-format-guard] {rel} is not in the editor's canonical serialization "
         "(godot_files.md §UID handling) -- the editor will mark it dirty at load and rewrite "
-        "it on the next save, the corruption window that stripped encounter .tres 4x:",
+        "it on the next save, the corruption window that stripped config .tres 4x:",
         *[f"  - {i}" for i in issues],
         "Fix now: add the script_class/uid= attributes (target uids from .cs.uid companions or "
         "target headers; omit load_steps).",

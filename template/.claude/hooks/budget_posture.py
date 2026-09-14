@@ -34,8 +34,8 @@ resets_at in the past all exit 0 silently. Advisory telemetry must never block
 a prompt. The `--band` CLI mode below is the one exception to fail-open: it is a
 gate INPUT, so an unreadable band exits 3 rather than pretending to a value.
 
-Emission is deduped (band change, ±0.15 pressure crossing, or 10 turns) so an
-unchanged posture is not re-injected every turn.
+Emission is deduped: first turn of the session, first turn after a compaction, a band
+change, or a ±0.15 pressure crossing. An unchanged posture is never re-injected.
 """
 
 import glob
@@ -44,6 +44,10 @@ import os
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import fire_once_since_compaction  # noqa: E402
+import _session_transport  # noqa: E402 - HOST_TRANSPORT/UNKNOWN are read in main()
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
 # The formula and the band table, imported rather than restated. quota_bands imports nothing
@@ -57,9 +61,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 SEVEN_DAY_SECONDS = 7 * 24 * 3600
 FIVE_HOUR_SECONDS = 5 * 3600
 PRESSURE_DELTA = 0.15         # within-band re-emit threshold
-TURNS_BETWEEN_EMITS = 10      # heartbeat re-emit even when nothing moved
 
-NEVER = "never delegated: orchestration, ideal-design verdict, gate decisions, cross-system seams"
+NEVER = ("Never delegated: orchestration, ideal-design verdict, gate decisions, "
+         "cross-system seams (orchestration §5)")
 
 # Tier-within-quota, emitted beside the band because a band name alone is inert: it says how
 # much room is left, never what to spend it on. That gap is total while the sidecar is out of
@@ -147,7 +151,11 @@ def sidecar_available():
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
         import model_registry  # noqa: WPS433 - deliberate late import, see above
 
-        return bool(model_registry.available_models())
+        # OFF-QUOTA means "not this seat's own currency". The registry gained the four
+        # `anthropic` host rows on 2026-09-04, so a bare `any available row` test became
+        # unconditionally true and the no-transport branch below went dead.
+        seat = seat_transport()
+        return any(m.get("transport") != seat for m in model_registry.available_models())
     except Exception:
         return True
 
@@ -182,6 +190,14 @@ def telemetry_gap_reason():
     if ep in TELEMETRY_LESS_ENTRYPOINTS:
         return (f"entrypoint '{ep}' sends no rate_limits in the statusline payload - "
                 "unreadable by construction, not a broken writer")
+    # A provider seat launches with entrypoint 'cli', so it matched nothing above and the whole
+    # posture line went silent -- on the one seat where the Anthropic band is not the governing one
+    # anyway. Its own quota IS readable (`provider_bands.py`), so name the gap and hand over the
+    # band that actually decides, rather than reporting the absent one.
+    seat = seat_transport()
+    if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
+        return (f"this session drives {seat}, whose endpoint sends no Anthropic rate_limits - "
+                f"unreadable by construction, and not the band that governs here")
     return None
 
 
@@ -202,12 +218,27 @@ def emit_gap_notice(session_id):
                 return
     except Exception:
         pass
-    print(f"[budget-posture] band UNREADABLE - {reason}. Not a low band and not a defect: "
-          "pick tier/effort on work shape (orchestration SKILL, Tier-within-quota); "
+    # On a provider seat the seat's OWN band is the governing one, so report it instead of stopping
+    # at "unreadable". Cache-read only: this hook runs on a 5s budget and `reading()` spawns a
+    # provider CLI, which would kill the whole line (see `provider_band`).
+    seat = seat_transport()
+    own = ""
+    if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
+        band, pressure = provider_band(seat)
+        if band:
+            own = (f" {seat}'s OWN band is {band}"
+                   + (f" (pressure {pressure:.2f})" if isinstance(pressure, (int, float)) else "")
+                   + " - that is the band to route on here.")
+        else:
+            own = (f" {seat}'s own band is not cached yet; read it with "
+                   f"`python3 .claude/tools/provider_bands.py list` - it is readable, so record "
+                   f"the number rather than calling the quota unknown.")
+    print(f"[budget-posture] Anthropic band UNREADABLE - {reason}.{own} Not a low band and not a "
+          "defect: pick tier/effort on work shape (orchestration SKILL, Tier-within-quota); "
           "sidecar band gates will refuse and need -A.")
     try:
         with open(dpath, "w", encoding="utf-8") as fh:
-            json.dump({"gap_notified": True, "turns_since_emit": 0}, fh)
+            json.dump({"gap_notified": True}, fh)
     except Exception:
         pass
 
@@ -220,14 +251,45 @@ def find_state(session_id):
         if os.path.exists(own):
             return own
     candidates = glob.glob(os.path.join(tmp, "cc-cachestat-*.json"))
-    if not candidates:
-        return None
-    return max(candidates, key=os.path.getmtime)
+    # stat per candidate, not `max(key=getmtime)`: these files are written and reaped by other
+    # sessions, so one can vanish between the glob and the stat. That raised out of an advisory
+    # hook and cost the whole posture line over a file nobody needed.
+    dated = []
+    for c in candidates:
+        try:
+            dated.append((os.path.getmtime(c), c))
+        except OSError:
+            continue
+    return max(dated)[1] if dated else None
 
 
 def dedupe_path(session_id):
     safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64]
     return os.path.join(tempfile.gettempdir(), f"cc-budgetposture-{safe or 'unknown'}.json")
+
+
+def pending_debt_count(session_id=None):
+    """This session's unrated-dispatch count for the [rating-debt] clause, or -1 when unknown.
+    `session_id` is the payload's — without it the metrics module falls back to an mtime scan
+    that can pick a concurrent peer's session.
+
+    HARNESS_PENDING_COUNT short-circuits the orchestration_metrics import -- a proof can drive N
+    without a real session dir; unset in production. Import or call failure is silent: advisory
+    telemetry must never block a prompt.
+    """
+    seam = os.environ.get("HARNESS_PENDING_COUNT")
+    if seam is not None:
+        try:
+            return int(seam)
+        except ValueError:
+            return -1
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+        from orchestration_metrics import pending_count
+
+        return pending_count(session_id=session_id)
+    except Exception:
+        return -1
 
 
 def prune_stale(keep_days=7):
@@ -249,8 +311,125 @@ def prune_stale(keep_days=7):
         pass
 
 
+def seat_transport():
+    """This session's transport, or UNKNOWN when it cannot be identified.
+
+    UNKNOWN, never the host: `resolve()` itself already fails closed here, and converting a resolver
+    crash into `anthropic` tells a provider seat its dispatches spend the host allowance. Main's
+    UNKNOWN branch prints that the band shown may not be this session's currency, which is the
+    honest answer to a question the hook could not resolve.
+    """
+    try:
+        return _session_transport.resolve()[0]
+    except Exception:
+        return _session_transport.UNKNOWN
+
+
+def provider_band(transport):
+    """(band, pressure) for a transport's OWN quota from CACHE ONLY, or (None, None).
+
+    Reads `_cache_read`, not `reading()`: `reading` falls through to `probe()` on a miss, and
+    `probe` spawns a provider CLI with its own 45s timeout while this hook is registered
+    UserPromptSubmit with `"timeout": 5`. The kill would take the ENTIRE posture line with it --
+    band, floor and rating-debt clause -- and write no cache, so the miss repeated every prompt.
+
+    A cold cache therefore reports unknown rather than stalling; `tools/provider_bands.py` and the
+    sidecar's own band gate both call `reading()` and warm it out of band.
+    """
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import provider_bands
+        r = provider_bands._cache_read(transport, provider_bands.DEFAULT_TTL_S) or {}
+        return r.get("band"), r.get("pressure")
+    except Exception:
+        return None, None
+
+
+def provider_band_live(transport):
+    """(band, pressure) for a CLI caller, PROBING on a cache miss. Returns (None, None) on failure.
+
+    The hook path must stay on `provider_band` (cache-only, 5s budget). This is the CLI twin: a
+    command a session is told to run for its own band has to answer, and a cold cache is the normal
+    state on a seat where nothing else probes. It also warms the cache for the next hook turn.
+    """
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import provider_bands
+        r = provider_bands.reading(transport) or {}
+        return r.get("band"), r.get("pressure")
+    except Exception:
+        return None, None
+
+
+def registered_transports():
+    """Transport names the registry knows, or None when it cannot be read.
+
+    None is not an empty set: an unreadable registry must not turn every name into a typo.
+    """
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import model_registry
+        return set((model_registry.load().get("transports") or {}))
+    except Exception:
+        return None
+
+
+def currency_bits(seat, p7, band, delegatable, off_quota):
+    """(clauses, own_band) for a NON-host seat: its own currency first, the hop's second.
+
+    A provider session's in-harness dispatches spend the PROVIDER's allowance; the Anthropic band
+    the host path prints is the currency of a sidecar hop, not of anything this seat dispatches.
+    Printing one number under one label is what makes a provider seat read the wrong budget.
+    """
+    # Named from the registry's `costModel`, never assumed to be quota: the shipped `opencode` seat
+    # is `marginal-usd`, and telling it to "spend its allowance first, it expires" advises spending
+    # dollars on the grounds that they would otherwise go to waste.
+    spend = "its own quota"
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import model_registry            # late + guarded, as everywhere else in this hook
+        if (model_registry.transport_meta(seat) or {}).get("costModel") == "marginal-usd":
+            spend = "marginal dollars"
+    except Exception:
+        pass
+    bits = [f"seat: {seat} — {spend} is what a Workflow/Agent dispatch here spends"]
+    own_band, own_p = provider_band(seat)
+    if own_band:
+        # `pressure` is optional in a probe's reading; an unguarded format here raises into
+        # main()'s blanket `except`, which deletes the entire posture line rather than one clause.
+        shown = f"pressure {own_p:.2f} -> " if isinstance(own_p, (int, float)) else ""
+        bits.append(f"{seat} {shown}{own_band} band (governs dispatch on THIS seat)")
+    else:
+        bits.append(f"{seat} band unreadable — its quotaProbe returned nothing; "
+                    f"treat width and tier as unbudgeted and say so before a wide fan-out")
+    # The Anthropic side is a real currency here too -- it is what `anthropic_sidecar.sh` spends --
+    # but it is the HOP's, so it is labelled rather than left to read as this seat's.
+    if p7 is not None:
+        hop = f"anthropic pressure {p7:.2f} -> {band} band (the CROSS-HOP currency"
+        hop += f"; sidecar-delegatable: {delegatable})" if off_quota else ")"
+        bits.append(hop)
+    else:
+        # anthropic_quota_probe reads a MACHINE-scoped cc-cachestat file with a 5h staleness guard,
+        # not a live API call. From a provider seat it answers only if an Anthropic session wrote
+        # one recently on this machine. Stated, never guessed and never silently omitted.
+        bits.append("anthropic band unknown — the cross-hop reading comes from a machine-scoped "
+                    "cc-cachestat file (5h staleness guard) and none is fresh; price a hop before "
+                    "taking it")
+    return bits, own_band
+
+
 def band_cli():
-    """`--band`: print the current 7d band name for a caller with no session id.
+    """`--band`: print the current ANTHROPIC 7d band name for a caller with no session id.
+
+    `--band --transport <name>` prints that transport's OWN band instead, PROBING on a cache miss
+    (a CLI caller has no hook timeout, and a cold cache is normal on a seat nothing else probes).
+    An unregistered name prints `unregistered` and exits 4; an unreadable reading prints `unknown`
+    and exits 3. Bare `--band` keeps reading the Anthropic band on every seat, because that is the
+    currency `sc_gate_band` gates.
 
     deepseek_sidecar.sh is a child Bash process — it has no Claude Code session id,
     and the dedupe record this hook writes is session-keyed AND written only on an
@@ -273,6 +452,29 @@ def band_cli():
     A refusal message quoting only the name reads as though a low band meant
     plenty of room; quoting the number with it removes the ambiguity.
     """
+    # `--band --transport <name>` reads that transport's OWN band. Bare `--band` keeps its
+    # contract exactly: sc_gate_band gates ANTHROPIC-currency spend and must keep reading the
+    # Anthropic band, whatever seat the calling session runs on.
+    argv = sys.argv[1:]
+    if "--transport" in argv:
+        i = argv.index("--transport")
+        name = argv[i + 1] if i + 1 < len(argv) else ""
+        if not name:
+            print("unknown")
+            return 3
+        known = registered_transports()
+        if known is not None and name not in known:
+            # Distinct from `unknown`: a typo cannot be fixed by warming a cache, and a caller that
+            # cannot tell them apart retries the wrong one.
+            print("unregistered")
+            return 4
+        b, p = provider_band_live(name)
+        if not b:
+            print("unknown")
+            return 3
+        print(f"{b}\t{p:.2f}" if "--pressure" in argv and p is not None else b)
+        return 0
+
     state_file = find_state(None)
     if not state_file:
         print("unknown")
@@ -321,18 +523,29 @@ def main():
             dstate = json.load(fh)
     except Exception:
         dstate = {}
-    turns = dstate.get("turns_since_emit", TURNS_BETWEEN_EMITS) + 1
-
     band = None
+    delegatable = None
     if p7 is not None:
         band, delegatable = band_for(p7)
 
-    should_emit = turns >= TURNS_BETWEEN_EMITS
+    # Emit when the posture is NEW to the model: first time this session, again after a
+    # compaction dropped it, and whenever the band or the pressure actually moved. A
+    # turn-count heartbeat re-sent text the model still had.
+    should_emit = fire_once_since_compaction(session_id, "budget_posture")
     if band is not None and dstate.get("band") != band:
         should_emit = True
     last_p7 = dstate.get("p7")
     if p7 is not None and isinstance(last_p7, (int, float)) and abs(p7 - last_p7) >= PRESSURE_DELTA:
         should_emit = True
+    # On a provider seat the band that GOVERNS dispatch is the seat's own, and it was absent from
+    # the dedupe key: the seat could cross from Surplus into Hot and this hook stayed silent
+    # because the Anthropic hop band had not moved. Cache-read only, same as the emission path.
+    seat = seat_transport()
+    seat_band = None
+    if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
+        seat_band = provider_band(seat)[0]
+        if dstate.get("seatBand") != seat_band:
+            should_emit = True
 
     if should_emit:
         captured = rl.get("captured_at")
@@ -359,12 +572,43 @@ def main():
             bits.append(tier_for(band, off_quota))
         if p5 is not None:
             bits.append(f"5h pressure {p5:.2f} (governs fan-out width; >1.3 means narrow concurrent dispatches)")
+        # A NON-host seat gets both currencies, each labelled. The host path is untouched:
+        # its output must stay byte-identical, because three consumers parse it.
+        if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
+            cur, own_band = currency_bits(seat, p7, band, delegatable, off_quota)
+            # Drop the host 7d clause: `currency_bits` already printed that number, labelled as the
+            # HOP's currency. Two clauses carrying one figure under two names is how a seat reads
+            # the wrong budget -- the exact defect this slice removes.
+            tail = [b for b in bits[1:] if not b.startswith("7d pressure")]
+            # Tier follows the band that governs THIS seat's dispatches. Tiering off the Anthropic
+            # band would advise spending an allowance a Workflow pin here cannot reach.
+            if own_band:
+                tail = [f"{tier_for(own_band, off_quota)} (from the {seat} band)"
+                        if b.startswith("tier: ") else b for b in tail]
+            else:
+                # No band governs this seat, so no tier default does either. An Anthropic-derived
+                # tier left in place reads as advice for a currency this seat cannot spend.
+                tail = [b for b in tail if not b.startswith("tier: ")]
+            # The 5h window is Anthropic's too. It still governs a HOP's width, so it stays --
+            # labelled, which is the whole point of the per-currency split.
+            tail = [f"anthropic {b} [cross-hop]" if b.startswith("5h pressure") else b
+                    for b in tail]
+            bits = ["[budget-posture]"] + cur + tail
+        elif seat == _session_transport.UNKNOWN:
+            bits.append("seat UNIDENTIFIED — the band above is the Anthropic one and may not be "
+                        "this session's currency (hooks/_session_transport.py fails closed)")
         bits.append(NEVER)
         bits.append(age_txt)
         print("; ".join(bits))
-        dstate = {"band": band, "p7": p7, "turns_since_emit": 0}
-    else:
-        dstate["turns_since_emit"] = turns
+        # keep `unrated`: the debt clause dedupes on it
+        dstate.update({"band": band, "p7": p7, "seatBand": seat_band})
+
+    n = pending_debt_count(session_id)
+    if n > 0 and n != dstate.get("unrated"):
+        print(f"[rating-debt] unrated dispatches: {n} — record each verdict in "
+              ".claude/orchestration_verdicts.json when you consume its result "
+              "(/orchestration_metrics §Incremental rating)")
+        dstate["unrated"] = n
 
     try:
         with open(dpath, "w", encoding="utf-8") as fh:

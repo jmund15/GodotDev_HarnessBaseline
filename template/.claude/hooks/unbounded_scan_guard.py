@@ -10,7 +10,7 @@ Why:
 - Output size is unknowable before the call, so the rule is structural: a
   recursive scan must either cap its output (`| head -N`), reduce it to names or
   counts (`-l` / `-c`), or stop at the first match per file (`-m1`).
-- Canonical home: CLAUDE.md §9 (Tool Routing) — "bound every recursive scan".
+- Canonical home: CLAUDE.md §Tool Routing — "bound every recursive scan".
   This hook only enforces and cites it.
 
 Second axis — SCOPE, independent of volume:
@@ -22,13 +22,15 @@ Second axis — SCOPE, independent of volume:
   and still returns worktree hits, which a capped result makes read as
   authoritative. The two checks therefore fire independently.
 - `rg`, `git grep`, and the Grep tool honour .gitignore — never flagged here.
-- Canonical home: CLAUDE.md §9 (Tool Routing). This hook only enforces and cites.
+- Canonical home: CLAUDE.md §Tool Routing. This hook only enforces and cites.
 
 What it does:
 - Inspects the command string for a recursive-scan verb with no bounding token,
   and separately for a gitignore-blind scan verb with no scoping token.
 - Emits a hookSpecificOutput.additionalContext advisory. additionalContext is the
   ONLY model-visible advisory channel on PreToolUse; stderr on exit 0 is dead.
+- Full advisory on the first fire of each axis; a one-line reminder afterwards, re-armed
+  by a compaction (`_hook_state.fire_once_since_compaction`).
 - Never blocks: some scans legitimately need the full set, and the caller knows
   which. Exits 0 on every path.
 
@@ -56,6 +58,9 @@ import os
 import re
 import shlex
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import fire_once_since_compaction
 
 # A scan that walks a tree and prints matching LINES.
 RECURSIVE_SCAN = re.compile(
@@ -163,7 +168,7 @@ SCOPE_ADVICE = (
     "  • `git ls-files` — when you want the path list rather than matches\n"
     "  • keep `grep -r` only with `--exclude-dir=.claude` (or a narrower root path), "
     "and say why the git-aware tools don't fit\n"
-    "Canon: CLAUDE.md §9 Tool Routing."
+    "Canon: CLAUDE.md §Tool Routing."
 )
 
 ADVICE = (
@@ -175,8 +180,19 @@ ADVICE = (
     "  • `-l` (files only) or `-c` (counts) — reduce, then read the few that matter\n"
     "  • `-m1` — first match per file\n"
     "  • narrow the path/glob instead of filtering a wide scan through a second grep\n"
-    "Canon: CLAUDE.md §9 Tool Routing. Prefer the Grep tool (defaults to a "
+    "Canon: CLAUDE.md §Tool Routing. Prefer the Grep tool (defaults to a "
     "head_limit) over raw shell grep when you just need matches."
+)
+
+# After the first delivery the model has the reasoning; the reminder is all that is
+# still worth its bytes. Keyed per advisory, re-armed by a compaction.
+SCOPE_ADVICE_SHORT = (
+    "⚠ GITIGNORE-BLIND SCAN — this sweeps `.claude/worktrees/`. Use the Grep tool, "
+    "`git grep`, or `--exclude-dir=.claude`."
+)
+ADVICE_SHORT = (
+    "⚠ UNBOUNDED RECURSIVE SCAN — cap it (`| head -50`), reduce it (`-l` / `-c`), "
+    "or stop at `-m1`."
 )
 
 
@@ -208,11 +224,14 @@ def main() -> None:
     tool_input = input_data.get("tool_input") or {}
     command = tool_input.get("command") or ""
 
+    session_id = input_data.get("session_id") or ""
     advisories = []
     if needs_bound(command):
-        advisories.append(ADVICE)
+        first = fire_once_since_compaction(session_id, "unbounded_scan:bound")
+        advisories.append(ADVICE if first else ADVICE_SHORT)
     if needs_scope(command, input_data.get("cwd") or ""):
-        advisories.append(SCOPE_ADVICE)
+        first = fire_once_since_compaction(session_id, "unbounded_scan:scope")
+        advisories.append(SCOPE_ADVICE if first else SCOPE_ADVICE_SHORT)
     if not advisories:
         sys.exit(0)
 

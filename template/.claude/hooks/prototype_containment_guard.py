@@ -36,19 +36,12 @@ A swallowed exception writes one line to stderr so the miss is never silent.
 Coverage gaps, stated rather than implied:
   - A commit made outside the `Bash` tool (PowerShell, an IDE, the Godot editor)
     is not seen at all.
-  - RUNTIME registration is a separate hole this guard cannot close. Registration
-    in this project is by directory placement, so a registry whose scan root
-    covered the repo root would pick up `prototypes/**/*.tres` on `main` with no
-    commit involved. Verified 2026-08-12: every production `ResourceCollection`
-    scan root is a specific subtree (`res://Global/Traits`, `res://Spells`,
-    `res://Ingredients`, `res://Synergies`, `res://Global/Categories/`,
-    `res://Global/Attributes/`, `res://Global/InputActions/`) and
-    `EncounterContentIndex` defaults to `res://Dungeon` -- none is repo-root
-    recursive, so commit-time containment is sufficient TODAY. The test-side
-    `Tests/Framework/TresFileCollector` DOES default to `res://` recursively;
-    it excludes `.godot/.git/.claude/harness-baseline/obj/bin` but not
-    `prototypes/`. Adding a repo-root-recursive RUNTIME scan root would reopen
-    this hole and needs a load-time lever, not this guard.
+  - RUNTIME registration is a separate hole this guard cannot close. If a runtime
+    registry scans the repository root, it can load `prototypes/**/*.tres` without a
+    commit. Projects must keep production registry roots narrower than the repository
+    root or add a load-time exclusion for `prototypes/`. Test collectors that scan
+    `res://` should also exclude `prototypes/` unless the test explicitly targets a
+    prototype.
 
 Mode:
     prototype_containment_guard.py --hook   # PreToolUse: on a `git commit` --
@@ -65,6 +58,7 @@ cost a subprocess every session to report nothing. If one is ever added it gets
 registered at SessionStart in the same commit (an unregistered mode is an orphan).
 """
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -84,10 +78,8 @@ REGISTRY_ROW = re.compile(r"^\|\s*([a-z0-9-]+)\s*\|.*\|\s*([a-z]+)\s*\|\s*$")
 # set -- including a misspelled `absorbed` that still matches REGISTRY_ROW -- must deny.
 SHIPPING_STATUSES = ("active", "absorbing")
 
-# A `git commit` invocation at a token boundary. A PreToolUse decision applies to
-# the ENTIRE command string, so a compound `git add … && git commit …` chain must
-# match, while the literal text "git commit" inside a quoted message body must not.
-GIT_COMMIT = re.compile(r"(^\s*|[;&|]\s*)git\s+(-C\s+\S+\s+)?commit\b")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _git_commit import commit_invocations, staged_paths as _seam_staged_paths  # noqa: E402
 
 
 def _git(args, repo=None):
@@ -113,12 +105,11 @@ def current_branch(repo=None):
     return None if out is None else out.strip()
 
 
-def staged_paths(repo=None):
-    """All staged paths, posix-normalized. None when git failed; [] when none staged."""
-    out = _git(["diff", "--cached", "--name-only"], repo)
-    if out is None:
-        return None
-    return [line.strip().replace("\\", "/") for line in out.splitlines()]
+def staged_paths(repo=None, rest=()):
+    """Paths the commit will publish (index, plus `-a` / `--amend` / pathspec widening per
+    `_git_commit.staged_paths`), posix-normalized. None when git failed; [] when none."""
+    paths, _failed = _seam_staged_paths(list(rest), repo or ".")
+    return None if paths is None else sorted(paths)
 
 
 def staged_prototype_paths(repo=None):
@@ -207,14 +198,15 @@ def hook():
         if data.get("tool_name") != "Bash":
             return allow()
         command = data.get("tool_input", {}).get("command", "") or ""
-        match = GIT_COMMIT.search(command)
-        if not match:
+        commits = [c for c in commit_invocations(command, data.get("cwd") or ".") if c.sub == "commit"]
+        if not commits:
             return allow()
-        repo = (match.group(2) or "").strip()[len("-C"):].strip() or None
+        commit = commits[-1]
+        repo = commit.cwd
         branch = current_branch(repo)
         if not branch or branch == "HEAD":
             return allow()
-        paths = staged_paths(repo)
+        paths = staged_paths(repo, commit.rest)
         if paths is None:
             return allow()
         if branch.startswith(PROTOTYPE_BRANCH_PREFIX):

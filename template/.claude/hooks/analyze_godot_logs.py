@@ -142,7 +142,7 @@ RE_BACKTRACE_FRAME = re.compile(r"^\s+\[(\d+)\]\s+(.+)$")
 # Godot engine line
 RE_GODOT_AT = re.compile(r"^\s+at:\s+\S+\s+\(.+\.(cpp|h):\d+\)\s*$")
 
-# Tags within messages: [HSM], [DIAG], [SpawnEffect], etc.
+# Tags within messages: [HSM], [DIAG], [Pool], etc.
 RE_TAG = re.compile(r"\[(\w+)\]")
 
 # Boilerplate lines
@@ -624,14 +624,8 @@ def format_summary(blocks: list[LogBlock], log_path: str, total_lines: int) -> d
 
     pool_pat = re.compile(r"(ReturnToPool|no pool exists|PooledArchetype)", re.IGNORECASE)
     tree_pat = re.compile(r"!is_inside_tree\(\)", re.IGNORECASE)
-    spawn_pat = re.compile(r"\[SpawnEffect\]", re.IGNORECASE)
-    multishot_pat = re.compile(r"\[MultiShot\]", re.IGNORECASE)
-    spawner_pat = re.compile(r"\[SpellSpawner\]", re.IGNORECASE)
 
-    patterns = {
-        "spawn_effect": [], "multishot": [], "spell_spawner": [],
-        "pool_issues": [], "tree_errors": [],
-    }
+    patterns = {"pool_issues": [], "tree_errors": []}
 
     for block in blocks:
         level = block.level.upper()
@@ -651,12 +645,6 @@ def format_summary(blocks: list[LogBlock], log_path: str, total_lines: int) -> d
             patterns["pool_issues"].append(msg)
         if tree_pat.search(msg):
             patterns["tree_errors"].append(msg)
-        if spawn_pat.search(msg):
-            patterns["spawn_effect"].append(msg)
-        if multishot_pat.search(msg):
-            patterns["multishot"].append(msg)
-        if spawner_pat.search(msg):
-            patterns["spell_spawner"].append(msg)
 
     pattern_counts = {k: len(v) for k, v in patterns.items()}
     for key in patterns:
@@ -695,7 +683,7 @@ def generate_recommendations(counts: dict, pattern_counts: dict) -> list:
             "issue": "Pool management issues detected",
             "count": pool_count,
             "likely_cause": "PooledArchetype not set or ReturnToPool called on non-pooled instance",
-            "fix": "Set charScene.PooledArchetype = archetype in InstantiateForPool()",
+            "fix": "Set the instance's PooledArchetype during pool construction",
             "severity": "HIGH" if pool_count > 50 else "MEDIUM",
         })
 

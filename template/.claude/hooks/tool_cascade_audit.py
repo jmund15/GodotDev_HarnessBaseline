@@ -282,8 +282,8 @@ def split_top_level_commas(s):
 def type_name_candidates(expr):
     """Type-name candidates of a type expression: the LAST dotted segment of the outer
     type, plus (recursively) those of any generic arguments. Critically, for a nested-type
-    reference like `SpellSpawner.AnchorMode` this yields `AnchorMode` (the real type), NOT
-    the qualifier `SpellSpawner` — preventing a false cascade edge to the outer class."""
+    reference like `Spawner.AnchorMode` this yields `AnchorMode` (the real type), NOT
+    the qualifier `AbilitySpawner` — preventing a false cascade edge to the outer class."""
     expr = expr.strip()
     if not expr:
         return []
@@ -516,19 +516,19 @@ def main():
     # Bucket gaps by module + Godot kind. {{PROJECT_NAME}} gaps are the actionable set;
     # Jmodot (black-box framework contract) and Tests (throwaway fixtures) are
     # reported-but-not-gated.
-    pp_gaps = [n for n in gaps if types[n]["module"] == "{{PROJECT_NAME}}"]
+    project_gaps = [n for n in gaps if types[n]["module"] == "{{PROJECT_NAME}}"]
     framework_gaps = [n for n in gaps if types[n]["module"].startswith("Jmodot")]
     test_gaps = [n for n in gaps if types[n]["module"] in ("Tests", "addons")]
-    pp_resource_gaps = [n for n in pp_gaps if kind_memo.get(n) == "Resource"]
-    pp_node_gaps = [n for n in pp_gaps if kind_memo.get(n) == "Node"]
+    project_resource_gaps = [n for n in project_gaps if kind_memo.get(n) == "Resource"]
+    project_node_gaps = [n for n in project_gaps if kind_memo.get(n) == "Node"]
 
     # Unknown [Tool] classes ({{PROJECT_NAME}}) — the "justify-or-drop" set for policy.
-    pp_unknown = [name for name, e, cat in rows
+    project_unknown = [name for name, e, cat in rows
                   if cat == "Unknown" and e["module"] == "{{PROJECT_NAME}}"]
 
     # Blanket-Resources worklist: EVERY {{PROJECT_NAME}} [GlobalClass] Resource lacking
     # [Tool] (superset of the Resource cascade gaps). Sizes the "blanket" policy diff.
-    pp_blanket_resources = sorted(
+    project_blanket_resources = sorted(
         n for n, e in types.items()
         if e["module"] == "{{PROJECT_NAME}}" and e["has_globalclass"]
         and not e["has_tool"] and not e.get("is_attr")
@@ -536,32 +536,32 @@ def main():
 
     write_inventory(root, types, edges, reverse, required, gaps, rows,
                     cat_counts, kind_memo,
-                    pp_gaps=pp_gaps, framework_gaps=framework_gaps,
-                    test_gaps=test_gaps, pp_unknown=pp_unknown,
-                    pp_blanket_resources=pp_blanket_resources)
+                    project_gaps=project_gaps, framework_gaps=framework_gaps,
+                    test_gaps=test_gaps, project_unknown=project_unknown,
+                    project_blanket_resources=project_blanket_resources)
 
     # Emit the Resource-rooted class-name allowlist consumed by the edit-time hook
     # (pattern_enforcer.py) so it can recognize indirect Resource bases (e.g. a class
-    # declared `: SpellEffect`) without re-deriving the whole type graph per file.
+    # declared `: AbilityEffect`) without re-deriving the whole type graph per file.
     write_resource_allowlist(root, types, kind_memo)
 
     if not quiet:
         print_summary(types, rows, cat_counts, gaps, required, reverse, kind_memo,
-                      pp_gaps, pp_resource_gaps, pp_node_gaps,
-                      framework_gaps, test_gaps, pp_unknown, pp_blanket_resources)
+                      project_gaps, project_resource_gaps, project_node_gaps,
+                      framework_gaps, test_gaps, project_unknown, project_blanket_resources)
 
     if inventory_only:
         return 0
     # Gate semantics enforce the CHOSEN POLICY (blanket [Tool] on every project [GlobalClass]
-    # Resource). The broader cascade-required closure (pp_gaps) is reported as informational;
+    # Resource). The broader cascade-required closure (project_gaps) is reported as informational;
     # the headless-import gate backstops the narrower cases the blanket rule doesn't cover
     # (non-[GlobalClass] inline Resources, Node cascades, escape-hatch placements).
-    return 1 if pp_blanket_resources else 0
+    return 1 if project_blanket_resources else 0
 
 
 def write_inventory(root, types, edges, reverse, required, gaps, rows,
-                    cat_counts, kind_memo, pp_gaps=(), framework_gaps=(),
-                    test_gaps=(), pp_unknown=(), pp_blanket_resources=()):
+                    cat_counts, kind_memo, project_gaps=(), framework_gaps=(),
+                    test_gaps=(), project_unknown=(), project_blanket_resources=()):
     logs_dir = os.path.join(root, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     out_path = os.path.join(logs_dir, "tool_audit_inventory.md")
@@ -588,7 +588,7 @@ def write_inventory(root, types, edges, reverse, required, gaps, rows,
         lines.append(f"  - {cat}: {cat_counts[cat]}")
     lines.append(f"- **Cascade-required classes (theoretical closure, any module):** {len(required)}")
     lines.append(f"- **CASCADE GAPS (required-but-not-`[Tool]`):** total {len(gaps)} "
-                 f"— {{PROJECT_NAME}} {len(pp_gaps)} (actionable) / "
+                 f"— {{PROJECT_NAME}} {len(project_gaps)} (actionable) / "
                  f"Jmodot {len(framework_gaps)} (black-box) / "
                  f"Tests+addons {len(test_gaps)} (fixtures)\n")
     lines.append("> **Closure semantics:** a gap is a class reachable via a typed `[Export]` "
@@ -599,13 +599,13 @@ def write_inventory(root, types, edges, reverse, required, gaps, rows,
                  "gaps drag editor lifecycle execution and need scrutiny.\n")
 
     lines.append("## Cascade Gaps — {{PROJECT_NAME}} actionable worklist\n")
-    if pp_gaps:
+    if project_gaps:
         lines.append("Reachable via a typed `[Export]` chain from a `[Tool]` class but lacking "
                      "`[Tool]`. Each is a latent `InvalidCastException` at editor load if a "
                      "`.tres`/`.tscn` places it under that field.\n")
         lines.append("| Class | Kind | Base | Cascade source (`[Tool]` exporter of family) | File |")
         lines.append("|---|---|---|---|---|")
-        for name in pp_gaps:
+        for name in project_gaps:
             e = types[name]
             kind = kind_memo.get(name, "Unknown")
             base = ", ".join(e["bases"]) if e["bases"] else "—"
@@ -618,25 +618,25 @@ def write_inventory(root, types, edges, reverse, required, gaps, rows,
     lines.append(f"- **Tests + addons (fixtures / editor plugins):** {len(test_gaps)}\n")
 
     lines.append("## Blanket-Resources worklist ({{PROJECT_NAME}})\n")
-    lines.append(f"Every project `[GlobalClass]` Resource lacking `[Tool]` ({len(pp_blanket_resources)} "
+    lines.append(f"Every project `[GlobalClass]` Resource lacking `[Tool]` ({len(project_blanket_resources)} "
                  "total) — the diff a *blanket-on-Resources* policy would apply. Superset of the "
                  "Resource cascade gaps above. `[Tool]` on a Resource is side-effect-free.\n")
-    if pp_blanket_resources:
-        for name in pp_blanket_resources:
+    if project_blanket_resources:
+        for name in project_blanket_resources:
             e = types[name]
-            gapmark = " **(cascade gap)**" if name in pp_gaps else ""
+            gapmark = " **(cascade gap)**" if name in project_gaps else ""
             lines.append(f"- `{name}`{gapmark} — `{e['rel']}`")
     lines.append("")
 
     lines.append("## Unknown-category `[Tool]` classes ({{PROJECT_NAME}}) — justify-or-drop\n")
-    if pp_unknown:
+    if project_unknown:
         lines.append("These carry `[Tool]` but have no editor-time code, no typed-`[Export]` "
                      "cascade pressure, and don't extend a framework convention base. Under a "
                      "*precise* policy they are drop candidates; under *blanket-Resources* the "
                      "Resources keep `[Tool]`.\n")
         lines.append("| Class | Kind | Base | File |")
         lines.append("|---|---|---|---|")
-        for name in pp_unknown:
+        for name in project_unknown:
             e = types[name]
             kind = kind_memo.get(name, "Unknown")
             base = ", ".join(e["bases"]) if e["bases"] else "—"
@@ -685,8 +685,8 @@ def write_resource_allowlist(root, types, kind_memo):
 
 
 def print_summary(types, rows, cat_counts, gaps, required, reverse, kind_memo,
-                  pp_gaps, pp_resource_gaps, pp_node_gaps,
-                  framework_gaps, test_gaps, pp_unknown, pp_blanket_resources):
+                  project_gaps, project_resource_gaps, project_node_gaps,
+                  framework_gaps, test_gaps, project_unknown, project_blanket_resources):
     print("=== Tool Cascade Audit ===")
     print(f"Parsed types: {len(types)}")
     print(f"[Tool] classes: {len(rows)}  "
@@ -697,23 +697,23 @@ def print_summary(types, rows, cat_counts, gaps, required, reverse, kind_memo,
           f"Unknown={cat_counts['Unknown']})")
     print(f"Cascade-required (theoretical closure): {len(required)}")
     print(f"CASCADE GAPS total={len(gaps)}  "
-          f"project={len(pp_gaps)} (Resource={len(pp_resource_gaps)}, Node={len(pp_node_gaps)})  "
+          f"project={len(project_gaps)} (Resource={len(project_resource_gaps)}, Node={len(project_node_gaps)})  "
           f"Jmodot={len(framework_gaps)}  Tests+addons={len(test_gaps)}")
-    print(f"\n--- {{PROJECT_NAME}} cascade gaps ({len(pp_gaps)}) — actionable ---")
-    for name in pp_gaps:
+    print(f"\n--- {{PROJECT_NAME}} cascade gaps ({len(project_gaps)}) — actionable ---")
+    for name in project_gaps:
         e = types[name]
         kind = kind_memo.get(name, "Unknown")
         srcs = ", ".join(cascade_sources(name, types, reverse)) or "?"
         print(f"  [{kind:8}] {name}  base={','.join(e['bases'])}  "
               f"via={srcs}  ({e['rel']})")
-    print(f"\n--- {{PROJECT_NAME}} Unknown-category [Tool] classes ({len(pp_unknown)}) "
+    print(f"\n--- {{PROJECT_NAME}} Unknown-category [Tool] classes ({len(project_unknown)}) "
           f"— justify-or-drop ---")
-    for name in pp_unknown:
+    for name in project_unknown:
         e = types[name]
         kind = kind_memo.get(name, "Unknown")
         print(f"  [{kind:8}] {name}  base={','.join(e['bases'])}  ({e['rel']})")
     print(f"\nBlanket-Resources worklist (every project [GlobalClass] Resource lacking "
-          f"[Tool]): {len(pp_blanket_resources)}")
+          f"[Tool]): {len(project_blanket_resources)}")
     print("\nInventory written to logs/tool_audit_inventory.md")
 
 

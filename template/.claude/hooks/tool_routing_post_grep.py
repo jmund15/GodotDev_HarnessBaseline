@@ -10,7 +10,7 @@ Why:
   surface in their narrative response. The 2026-05-03 routing-compliance battery
   scored 8 failures on PascalCase Grep (C2, C3, D1, D2, E1, E2, E3, I1) — the
   Phase 0 diagnostic confirmed the hook fires for subagents AND that
-  sophisticated agents cite §9 explicitly when they override. This post-hook
+  sophisticated agents cite §Tool Routing explicitly when they override. This post-hook
   reinforces via the `additionalContext` JSON channel (proven to land in
   tool-result frames per `plan_memory_reminder.py` precedent).
 
@@ -19,7 +19,7 @@ What it does:
   indexed file family + result has ≥1 hit + user prompt does NOT contain literal-
   intent cue words.
 - If all hold, emits an `additionalContext` nudge phrased as "for next time" —
-  does NOT pressure a re-do for THIS query (per CLAUDE.md §9 first-call-recovery
+  does NOT pressure a re-do for THIS query (per CLAUDE.md §Tool Routing first-call-recovery
   rule, which is per-query-not-per-turn — see nudge text for full statement).
 
 K1 suppression:
@@ -169,7 +169,7 @@ def _build_post_grep_nudge(pattern: str, family: str, hit_count: int) -> str:
         "bare PascalCase on indexed types is the LSP/semantic-search bypass smell. "
         f"NEXT PascalCase lookup: {tool_suggestion}. "
         "(Per-query recovery: don't redo this; reroute future PascalCase lookups.) "
-        "CLAUDE.md §9."
+        "CLAUDE.md §Tool Routing."
     )
 
 

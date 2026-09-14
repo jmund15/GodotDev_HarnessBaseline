@@ -32,6 +32,7 @@ Mode:
                                            # slugs are absent from the registry
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -40,10 +41,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 REGISTRY_PATH = ".claude/prototype_registry.md"
 MARKER_RE = re.compile(r"PROVISIONAL\(([a-z0-9-]+)\)")
-# Same token-boundary commit matcher as prototype_containment_guard.py — a
-# compound `git add … && git commit …` chain must match, while the literal text
-# "git commit" inside a quoted message body must not.
-GIT_COMMIT = re.compile(r"(^\s*|[;&|]\s*)git\s+(-C\s+\S+\s+)?commit\b")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _git_commit import commit_invocations, staged_paths as _seam_staged_paths  # noqa: E402
 
 
 def _git(args, repo=None):
@@ -57,11 +56,11 @@ def _git(args, repo=None):
     return proc.stdout
 
 
-def _staged_paths(repo=None):
-    out = _git(["diff", "--cached", "--name-only"], repo)
-    if out is None:
-        return None
-    return [line.strip().replace("\\", "/") for line in out.splitlines()]
+def _staged_paths(repo=None, rest=()):
+    """Paths the commit will publish (index plus `-a` / `--amend` / pathspec widening per
+    `_git_commit.staged_paths`). None when git failed."""
+    paths, _failed = _seam_staged_paths(list(rest), repo or ".")
+    return None if paths is None else sorted(paths)
 
 
 def _index_text(path, repo=None):
@@ -141,11 +140,12 @@ def hook():
         if data.get("tool_name") != "Bash":
             return allow()
         command = data.get("tool_input", {}).get("command", "") or ""
-        match = GIT_COMMIT.search(command)
-        if not match:
+        commits = [c for c in commit_invocations(command, data.get("cwd") or ".") if c.sub == "commit"]
+        if not commits:
             return allow()
-        repo = (match.group(2) or "").strip()[len("-C"):].strip() or None
-        paths = _staged_paths(repo)
+        commit = commits[-1]
+        repo = commit.cwd
+        paths = _staged_paths(repo, commit.rest)
         if paths is None:
             return allow()
         slugs = _marker_slugs(repo)

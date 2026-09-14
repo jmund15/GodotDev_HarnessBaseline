@@ -15,6 +15,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _command_text import executable_text  # noqa: E402
+
 
 # Patterns to BLOCK (exit code 2) in code content
 CODE_BLOCKED_PATTERNS = [
@@ -43,7 +46,11 @@ DANGEROUS_BASH_PATTERNS = [
     # lookbehind (version-controlled, recoverable).
     # The intermediate (?:[^\s]+\s+)* span catches separated-flag cases like
     # `rm -f -r dir/` or `rm foo -r` that a stricter prefix match would miss.
-    (r'(?<!git\s)\brm\s+(?:[^\s]+\s+)*-[a-zA-Z]*[rR]', 'BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)'),
+    # The token scan stops at a command separator. Without that bound it runs to end-of-line and
+    # reads a LATER command's flag as this delete's own -- `rm -f a.txt; tool -R out.json` denied
+    # five times in one session, every one a safe delete followed by an unrelated -R.
+    # Regression: .claude/tests/test_pattern_enforcer_rm_scope.py
+    (r'(?<!git\s)\brm\s+(?:[^\s;|&\n]+\s+)*-[a-zA-Z]*[rR]', 'BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)'),
     (r'(?<!git\s)\brm\s+--recursive\b', 'BLOCKED: Dangerous recursive delete (rm --recursive)'),
 ]
 
@@ -99,6 +106,16 @@ def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
 _EPHEMERAL_RE = re.compile(r'\.claude[\\/](?:\.cache|logs)\b')
 
 
+# A quoted FLAG is still a flag: `rm "-r" build/` reaches the shell as `rm -r build/`, but
+# blanking quoted spans erases it and the guard reports clean. Unwrapping only quote-wrapped flag
+# tokens keeps the blanking that stops `grep "rm -rf"` from being read as a delete.
+_QUOTED_FLAG = re.compile(r"""(['"])(-{1,2}[A-Za-z][A-Za-z-]*)\1""")
+
+
+def _unwrap_quoted_flags(command: str) -> str:
+    return _QUOTED_FLAG.sub(r"\2", command)
+
+
 def _strip_quoted(command: str) -> str:
     """Blank single/double-quoted spans so a dangerous-looking pattern that is merely a
     QUOTED argument (e.g. `grep "rm -rf"`, an echo, a commit body) isn't mistaken for a
@@ -142,7 +159,10 @@ def _normalize_git_globals(scan: str) -> str:
 
 def check_bash_command(command: str) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
-    scan = _normalize_git_globals(_strip_quoted(command))
+    # A heredoc body is data handed to another program, not something this command runs --
+    # the same reason quoted spans blank above. Writing a script or a prompt that MENTIONS a
+    # recursive delete was denied repeatedly while no delete was ever going to execute.
+    scan = _normalize_git_globals(_strip_quoted(_unwrap_quoted_flags(executable_text(command))))
     for pattern, message in DANGEROUS_BASH_PATTERNS:
         if re.search(pattern, scan, re.IGNORECASE):
             # Allow recursive deletes confined to regenerable harness scratch; never
@@ -168,7 +188,7 @@ _CLASS_DECL = re.compile(
 
 def _load_resource_classes() -> set:
     """Resource-rooted class names emitted by tool_cascade_audit.py. Lets the hook flag a
-    class declared `: SpellEffect` (an indirect Resource base), not just `: Resource`.
+    class declared `: AbilityEffect` (an indirect Resource base), not just `: Resource`.
     Missing file → empty set → graceful fallback to direct `: Resource` detection only."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "tool_resource_classes.txt")

@@ -494,6 +494,12 @@ class ContextCensus:
                 row['missing_body_records'] += 1
             else:
                 row['body_utf8_bytes'] += record['body_utf8_bytes']
+        for row in by_tool.values():
+            if row['missing_text_results'] == row['count']:
+                row['text_utf8_bytes'] = None
+        for row in by_type.values():
+            if row['missing_body_records'] == row['count']:
+                row['body_utf8_bytes'] = None
         boundaries = []
         for record in self.boundaries.values():
             row = {k: v for k, v in record.items() if k != 'next_assistant_id'}
@@ -501,8 +507,9 @@ class ContextCensus:
             boundaries.append(row)
         return dict(
             schema_version=1, coverage=self.coverage, assistant_messages=len(self.messages), usage=usage,
-            first_assistant=self._message(next(iter(self.messages), None)), boundaries=boundaries,
+            first_assistant=self._message(next(iter(self.messages), None)), boundaries=boundaries, boundary_count=len(boundaries),
             tool_results=dict(count=len(self.results), by_tool=by_tool,
+                              missing_text_results=sum(r['text_utf8_bytes'] is None for r in self.results.values()),
                               text_utf8_bytes=self._sum_observed([r['text_utf8_bytes'] for r in self.results.values()]),
                               largest=heapq.nlargest(20, self.results.values(),
                                                      key=lambda r: r['payload_utf8_bytes'])),
@@ -525,12 +532,15 @@ class TranscriptSummaryBuilder:
         summary = builder.finalize()
     """
 
-    def __init__(self, session_id: str, transcript_path: str):
+    def __init__(self, session_id: str, transcript_path: str, *, full_evidence: bool = False):
         self.session_id = session_id
         self.transcript_path = transcript_path
+        self.full_evidence = full_evidence
         self.start_time = datetime.now()
 
         self.message_count = 0
+        self.source_line_count = 0
+        self.processing_error_rows = []
         self.tool_call_count = 0
 
         self.user_messages: list[dict] = []        # High-signal user messages
@@ -556,6 +566,7 @@ class TranscriptSummaryBuilder:
         Process a single JSONL line. Safe - catches all exceptions.
         Called during streaming copy for zero-overhead summarization.
         """
+        self.source_line_count += 1
         try:
             line = line.strip()
             if not line:
@@ -572,7 +583,7 @@ class TranscriptSummaryBuilder:
         except json.JSONDecodeError:
             self.context_census.coverage['malformed_rows'] += 1
         except Exception:
-            pass  # Never fail the backup
+            self.processing_error_rows.append(self.source_line_count)
 
     def _process_entry(self, entry: dict):
         """Process a parsed transcript entry."""
@@ -585,6 +596,9 @@ class TranscriptSummaryBuilder:
             self.last_timestamp = timestamp
 
         message = entry.get('message', {})
+        if not isinstance(message, dict):
+            self.processing_error_rows.append(self.source_line_count)
+            message = {'content': entry.get('content', '')}
         entry_type = entry.get('type', '')
 
         role = entry_type if entry_type in ('user', 'assistant') else message.get('role', '')
@@ -604,7 +618,10 @@ class TranscriptSummaryBuilder:
             for block in raw:
                 if isinstance(block, dict) and block.get('type') == 'tool_result':
                     self._process_tool_result(block, entry)
-            return
+            raw = [block for block in raw if isinstance(block, dict) and block.get('type') == 'text']
+            if not raw:
+                return
+            message = dict(message, content=raw)
 
         content = extract_content(message) if message else extract_content(entry)
 
@@ -612,23 +629,30 @@ class TranscriptSummaryBuilder:
             self.compaction_markers.append(entry.get('timestamp'))
             return
 
+        if entry.get('isMeta', False):
+            return
+
         if content.startswith('<command-name>'):
             # Slash-command row: the user's words are the args; the rest is harness plumbing.
             name = re.search(r'<command-name>(.*?)</command-name>', content, re.S)
             args = re.search(r'<command-args>(.*?)</command-args>', content, re.S)
             args_text = (args.group(1).strip() if args else '')
-            if not args_text:
+            if not args_text and not self.full_evidence:
                 return
             content = f"{name.group(1).strip() if name else ''} {args_text}".strip()
-        elif content.startswith('<') and '>' in content[:50] or entry.get('isMeta', False):
-            return  # Hook output / system injection
+        elif entry.get('isMeta', False) or content.startswith((
+                '<system-reminder>', '<user-prompt-submit-hook>', '<local-command-caveat>',
+                '<local-command-stdout>', '<task-notification>', '<cross-session-message ')):
+            return
+        elif not self.full_evidence and content.startswith('<') and '>' in content[:50]:
+            return  # Bounded backup summary retains its historical filter.
 
         if content.startswith('[Request interrupted'):
-            self.user_messages.append({'index': self.message_count, 'timestamp': entry.get('timestamp'),
+            self.user_messages.append({'index': self.source_line_count, 'timestamp': entry.get('timestamp'),
                                        'content': content[:120], 'signals': ['interrupt'], 'matched_patterns': []})
             return
 
-        if len(content) < 10:
+        if not content.strip() or (not self.full_evidence and len(content) < 10):
             return
 
         self.last_user_request = truncate_at_sentence(content, 500)
@@ -638,9 +662,9 @@ class TranscriptSummaryBuilder:
         friction = detect_friction_signals(content)
 
         self.user_messages.append({
-            'index': self.message_count,
+            'index': self.source_line_count,
             'timestamp': entry.get('timestamp'),
-            'content': truncate_at_sentence(content, 2000),
+            'content': content if self.full_evidence else truncate_at_sentence(content, 2000),
             'signals': ([signal_type] if signal_type != 'other' else []) + (['friction'] if friction else []),
             'matched_patterns': (signals + friction)[:6],
         })
@@ -674,7 +698,7 @@ class TranscriptSummaryBuilder:
             elif block_type == 'text':
                 text = block.get('text', '')
                 if self._open_friction is not None and text.strip():
-                    self._open_friction['response'] = truncate_at_sentence(text.strip(), 400)
+                    self._open_friction['response'] = text.strip() if self.full_evidence else truncate_at_sentence(text.strip(), 400)
                     self._open_friction = None
                 self._check_errors_and_resolutions(text)
 
@@ -694,12 +718,12 @@ class TranscriptSummaryBuilder:
         if tool_id:
             _full = _tool_input_value(tool_name, input_data if isinstance(input_data, dict) else {})
             self._tool_inputs[tool_id] = (tool_name, _full[:200], _full)
-            if len(self._tool_inputs) > 500:
+            if not self.full_evidence and len(self._tool_inputs) > 500:
                 self._tool_inputs.pop(next(iter(self._tool_inputs)))
 
         self.recent_tools.append({
             'tool': tool_name,
-            'index': self.message_count
+            'index': self.source_line_count
         })
         if len(self.recent_tools) > 20:
             self.recent_tools.pop(0)
@@ -731,14 +755,14 @@ class TranscriptSummaryBuilder:
             tool, excerpt, full = self._tool_inputs.get(
                 block.get('tool_use_id'), ('unknown', '', ''))
             row = {
-                'index': self.message_count,
+                'index': self.source_line_count,
                 'timestamp': (entry or {}).get('timestamp'),
                 'tool': tool,
                 'input': excerpt,
                 # The reproducible call. `input` stays short for rendering; a fixture or a
                 # repro built off `input` alone loses whatever sat past char 200.
                 'input_full': full,
-                'error': truncate_at_sentence(content.strip(), 300),
+                'error': content.strip() if self.full_evidence else truncate_at_sentence(content.strip(), 300),
                 'denied': bool(re.search(r'\b(BLOCKED|denied|deny|not allowed|guardrail)\b', content, re.I)),
                 'response': None,
             }
@@ -758,7 +782,7 @@ class TranscriptSummaryBuilder:
         if self.message_count % 20 == 0:
             self.error_tracker.expire_old_errors(self.message_count)
 
-    def finalize(self) -> dict:
+    def finalize(self, *, backup_limits: bool = True) -> dict:
         """
         Generate the final summary dictionary.
         Call after processing all lines.
@@ -784,7 +808,7 @@ class TranscriptSummaryBuilder:
             except Exception:
                 pass
 
-        return {
+        result = {
             'schema_version': '1.2',
             'session_id': self.session_id,
             'generated_at': datetime.now().isoformat(),
@@ -798,11 +822,21 @@ class TranscriptSummaryBuilder:
                 'last_timestamp': self.last_timestamp,
             },
 
-            'user_messages': self.user_messages[-400:],  # Every real prompt, verbatim (cap is a safety net)
+            'user_messages': self.user_messages if self.full_evidence else self.user_messages[-400:],
 
             'compactions': {'count': len(self.compaction_markers), 'timestamps': self.compaction_markers},
             'context_census': self.context_census.finalize(),
-            'friction': self.friction[-200:],
+            'friction': self.friction if self.full_evidence else self.friction[-200:],
+            'evidence_coverage': dict(full_evidence=self.full_evidence,
+                source_lines=self.source_line_count, processing_error_rows=self.processing_error_rows,
+                malformed_rows=self.context_census.coverage['malformed_rows'],
+                invalid_rows=self.context_census.coverage['invalid_rows'],
+                context_processing_errors=self.context_census.coverage['processing_errors'],
+                omitted_collections={},
+                collected_user_messages=len(self.user_messages), collected_friction_rows=len(self.friction),
+                omitted_user_messages=0 if self.full_evidence else max(0, len(self.user_messages) - 400),
+                omitted_friction_rows=0 if self.full_evidence else max(0, len(self.friction) - 200),
+                text_mode='full prompts/errors; source indices retained' if self.full_evidence else 'bounded previews'),
 
             'error_resolution_pairs': feedback_loops,
 
@@ -824,6 +858,36 @@ class TranscriptSummaryBuilder:
             'files_modified': sorted(self.files_modified.keys()),
             'files_modified_counts': dict(sorted(self.files_modified.items())),
         }
+        if backup_limits and not self.full_evidence:
+            _bound_backup_collections(result)
+        return result
+
+
+def _bound_backup_collections(summary):
+    """Bound backup collection previews; full digest evidence never uses these caps."""
+    caps = {
+        'files_modified': 400, 'files_modified_counts': 400,
+        'compactions.timestamps': 20, 'context_census.boundaries': 20,
+        'context_census.tool_results.by_tool': 100,
+        'context_census.attachments.by_type': 100,
+        'tool_summary.by_tool': 100, 'error_resolution_pairs': 50,
+        'errors.resolved': 50, 'errors.unresolved': 50,
+        'task_state.todo_final_state': 100, 'evidence_coverage.processing_error_rows': 50,
+    }
+    omitted = summary['evidence_coverage']['omitted_collections']
+    for field, cap in caps.items():
+        parts = field.split('.')
+        owner = summary
+        for key in parts[:-1]:
+            owner = owner[key]
+        value = owner[parts[-1]]
+        if len(value) > cap:
+            omitted[field] = len(value) - cap
+            owner[parts[-1]] = dict(list(value.items())[-cap:]) if isinstance(value, dict) else value[-cap:]
+    request = summary['task_state']['last_user_request']
+    if isinstance(request, str) and len(request) > 2000:
+        summary['task_state']['last_user_request'] = truncate_at_sentence(request, 2000)
+        summary['evidence_coverage']['last_request_preview'] = True
 
 
 def write_summary(summary_path: str, summary: dict) -> bool:

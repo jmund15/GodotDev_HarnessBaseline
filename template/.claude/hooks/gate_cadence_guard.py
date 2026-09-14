@@ -57,6 +57,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import read_json_salvage, write_json_atomic
+from _command_text import executable_text
 
 POSITIONS = ("final", "prepush", "checkpoint")
 # §Gate cadence: "Exceptionally long drive | One or two full-gate checkpoints".
@@ -205,7 +206,9 @@ def main():
     if data.get("tool_name") not in ("Bash", "PowerShell"):
         allow()
 
-    command = (data.get("tool_input") or {}).get("command") or ""
+    # Heredoc bodies are data, not this command's execution: writing a SCRIPT that mentions a
+    # gate is not running one. Judging the raw string denied that three times in one session.
+    command = executable_text((data.get("tool_input") or {}).get("command") or "")
     # CLAUDE_PROJECT_DIR first: the payload's `cwd` is the SHELL's working directory, which
     # drifts into subdirectories and silently forks this hook's state. Measured 2026-08-25 --
     # a session that ran the gate from `.claude/` and `.claude/scripts/` grew a

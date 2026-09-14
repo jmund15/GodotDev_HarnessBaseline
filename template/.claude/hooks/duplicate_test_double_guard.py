@@ -31,7 +31,7 @@ consolidating a family below its baseline count is locked in by regenerating the
 
 Resolution: promote one double to Tests/Framework/Mocks (public, parameterised over whatever the
 per-test variants actually needed -- a recording list, a canned return) and delete the copies.
-Blanket-disable with PP_ALLOW_DUPLICATE_TEST_DOUBLES=1.
+Blanket-disable with HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES=1.
 
 Modes:
     duplicate_test_double_guard.py                  # scan Tests/; exit 1 on growth past the baseline
@@ -48,6 +48,9 @@ import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _git_commit import commit_invocations, bypass_declared  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -236,7 +239,7 @@ def report(blocking, grandfathered, advisory):
         "edits, and a behavioural assumption fixed in one double is silently absent from the rest. "
         "Promote ONE of them to Tests/Framework/Mocks as a public double, parameterised over "
         "whatever the per-test variants actually differ on (a recording list, a canned return), and "
-        "delete the file-local copies. Blanket-disable with PP_ALLOW_DUPLICATE_TEST_DOUBLES=1.",
+        "delete the file-local copies. Blanket-disable with HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES=1.",
         file=sys.stderr,
     )
 
@@ -262,8 +265,8 @@ def emit_json():
 
 
 def standalone():
-    if os.environ.get("PP_ALLOW_DUPLICATE_TEST_DOUBLES"):
-        print("[duplicate-test-double-guard] SKIPPED - PP_ALLOW_DUPLICATE_TEST_DOUBLES is set.")
+    if os.environ.get("HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES"):
+        print("[duplicate-test-double-guard] SKIPPED - HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES is set.")
         return 0
     blocking, grandfathered, advisory = find_violations()
     if not blocking:
@@ -291,12 +294,19 @@ def hook():
     if data.get("tool_name") != "Bash":
         print("{}")
         return 0
-    if "git commit" not in data.get("tool_input", {}).get("command", ""):
+    commits = [c for c in commit_invocations(data.get("tool_input", {}).get("command", ""),
+                                             data.get("cwd") or ".") if c.sub == "commit"]
+    if not commits:
         print("{}")
         return 0
-    if os.environ.get("PP_ALLOW_DUPLICATE_TEST_DOUBLES"):
+    commit = commits[-1]
+    if bypass_declared(commit.inline_env, "HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES"):
         print("{}")
         return 0
+    try:
+        os.chdir(commit.cwd)   # the scan below reads the repo the commit targets
+    except OSError:
+        pass
 
     blocking, _grandfathered, _advisory = find_violations()
     if not blocking:
@@ -311,7 +321,7 @@ def hook():
         f"Blocked: {len(blocking)} interface(s)/base(s) hand-rolled as {FAIL_AT}+ separate "
         f"file-local test doubles, grown past the committed baseline: {families}{overflow}. Each "
         "copy drifts independently -- promote one to Tests/Framework/Mocks as a public "
-        "parameterised double and delete the copies, or set PP_ALLOW_DUPLICATE_TEST_DOUBLES=1."
+        "parameterised double and delete the copies, or set HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES=1."
     )
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",

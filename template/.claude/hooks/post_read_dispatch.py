@@ -14,6 +14,7 @@ Order:
   1. tool_routing_cumulative.process — WRITER (counts the call, owns state)
   2. tool_routing_post_grep.process  — reader + writer (per-pattern dedupe)
   3. routing_audit.process           — pure reader (classification log)
+  4. memory_hits_logger.process      — pure reader (auto-memory hit log)
 
 Output contract:
   - Nudge texts from 1+2 merge into ONE hookSpecificOutput.additionalContext
@@ -34,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tool_routing_cumulative
 import tool_routing_post_grep
 import routing_audit
+import memory_hits_logger
 
 
 def main() -> None:
@@ -63,6 +65,12 @@ def main() -> None:
     # 3. Routing-audit classification log (pure reader, no output).
     try:
         routing_audit.process(input_data)
+    except Exception:
+        pass
+
+    # 4. Memory-hits log (pure reader, no output).
+    try:
+        memory_hits_logger.process(input_data)
     except Exception:
         pass
 

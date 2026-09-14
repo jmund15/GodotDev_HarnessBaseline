@@ -12,18 +12,19 @@ Why:
   a post-Read nudge fires after the tokens are already spent.
 
 What it does:
-- On Read tool calls, stats the target file. If size exceeds
-  LARGE_FILE_BYTE_THRESHOLD AND the read is unbounded (no offset, no limit),
-  blocks via exit code 2 + stderr message.
+- On Read tool calls, stats the target file. If size exceeds the applicable
+  threshold AND the read is unbounded (no offset, no limit), blocks via exit
+  code 2 + stderr message. Thresholds: LARGE_FILE_BYTE_THRESHOLD (40 KB)
+  generally, LOG_BYTE_THRESHOLD (8 KB) for grep-shaped extensions
+  (LOG_EXTENSIONS) — a log is read by pattern, never whole.
 - Exempts:
   * Bounded reads (offset OR limit set) — agent has explicitly scoped the read
   * Non-existent files — let Read produce its own error
   * Binary/visual formats Read handles specially (.pdf, .ipynb, images)
-  * Instruction-shape `.md` under `.claude/` — skills, commands, rules,
-    CLAUDE.md. These are meta-instructions for the agent's own behavior; a
-    worker digest cannot substitute (the agent needs the actual content in
-    context to follow the rules). Deliberately NOT a blanket `.claude/**`
-    exemption — state/log files there can grow huge and stay gated.
+  * CLAUDE.md anywhere, and `.md` under the INSTRUCTION_DIRS subdirectories of
+    `.claude/`. These are meta-instructions for the agent's own behavior; a
+    worker digest cannot substitute. Every other `.claude/` path — scratch,
+    worktrees, logs, cache, generated — stays gated.
   * Audit-shape prompts — "audit", "fact-check", "line by line", etc.
 
 What it does NOT do:
@@ -47,6 +48,18 @@ import sys
 # (3 bytes/token rough estimate). Above this, a worker-bundled read is
 # unambiguously cheaper than a full-file context load.
 LARGE_FILE_BYTE_THRESHOLD = 40 * 1024  # 40 KB
+
+# `.md` under these `.claude/` dirs is doctrine the agent must hold in full; everything else
+# under `.claude/` (scratch, worktrees, logs, cache, generated) is an artifact and stays gated.
+INSTRUCTION_DIRS = frozenset({
+    "skills", "commands", "rules", "reference", "guards", "plans", "auto-memory", "workflows",
+})
+
+# Grep-shaped files: an unbounded Read is wrong at ANY size — the reader wants `error CS`,
+# `Failed`, or one record, never the file. A 34 KB build log sat under the byte threshold
+# and was read whole (2026-09-03).
+LOG_EXTENSIONS = frozenset({'.log', '.jsonl', '.trx', '.ndjson'})
+LOG_BYTE_THRESHOLD = 8 * 1024  # 8 KB — a log a screen tall may be read whole
 
 # Bytes-per-token estimate for messaging only (not for the gate decision).
 BYTES_PER_TOKEN_ESTIMATE = 3
@@ -119,6 +132,11 @@ def _is_bounded_read(tool_input: dict) -> bool:
     return offset is not None or limit is not None
 
 
+def _is_log_file(file_path: str) -> bool:
+    _, ext = os.path.splitext(file_path.lower())
+    return ext in LOG_EXTENSIONS
+
+
 def _is_exempt_extension(file_path: str) -> bool:
     """Extensions Read handles via specialized mechanisms — size doesn't proxy cost."""
     _, ext = os.path.splitext(file_path.lower())
@@ -127,23 +145,35 @@ def _is_exempt_extension(file_path: str) -> bool:
 
 def _is_exempt_instruction_file(file_path: str) -> bool:
     """
-    True for `.md` files under `.claude/` — skills, commands, rules, CLAUDE.md.
-    These are meta-instructions for the agent's own behavior; the agent needs
-    the actual content in context to follow the rules, so worker bundling is
-    semantically wrong here.
-
-    Deliberately NOT a blanket `.claude/**` exemption — state/log files can
-    grow into hundreds of KB and the size protection still applies there.
+    True for CLAUDE.md anywhere, and for `.md` under an INSTRUCTION_DIRS
+    subdirectory of `.claude/`. The agent needs those in context to follow
+    them, so a worker digest cannot substitute. Everything else under
+    `.claude/` is an artifact and stays gated.
     """
     normalized = file_path.replace('\\', '/').lower()
     if not normalized.endswith('.md'):
         return False
-    return '/.claude/' in normalized or normalized.startswith('.claude/')
+    if normalized.endswith('/claude.md') or normalized == 'claude.md':
+        return True
+    marker = '/.claude/' if '/.claude/' in normalized else ('.claude/' if normalized.startswith('.claude/') else None)
+    if marker is None:
+        return False
+    tail = normalized.split(marker, 1)[1]
+    # Instruction dirs only. scratch/, worktrees/, logs/, cache/, generated/ hold artifacts:
+    # a 48 KB review doc under scratch/ was read unbounded twice (2026-09-03).
+    return tail.split('/', 1)[0] in INSTRUCTION_DIRS
 
 
 def _build_block_message(file_path: str, size_bytes: int) -> str:
     est_tokens = size_bytes // BYTES_PER_TOKEN_ESTIMATE
     size_kb = size_bytes // 1024
+    if _is_log_file(file_path):
+        return (
+            f"[file-size-block] {file_path} is a log (~{size_kb} KB, ~{est_tokens} tokens) — "
+            f"above {LOG_BYTE_THRESHOLD // 1024} KB, logs are grep-shaped. "
+            "Recover: `Grep(pattern='error CS|Failed|FATAL', path=<file>)` for the lines you need, "
+            "or bounded `Read(file_path=..., offset=N, limit=M)` around one hit."
+        )
     threshold_kb = LARGE_FILE_BYTE_THRESHOLD // 1024
     return (
         f"[file-size-block] {file_path} is ~{size_kb} KB (~{est_tokens} tokens) "
@@ -183,7 +213,8 @@ def process(input_data: dict) -> str | None:
     except OSError:
         return None
 
-    if size_bytes <= LARGE_FILE_BYTE_THRESHOLD:
+    threshold = LOG_BYTE_THRESHOLD if _is_log_file(file_path) else LARGE_FILE_BYTE_THRESHOLD
+    if size_bytes <= threshold:
         return None
 
     # Audit-shape exemption — checked after the size gate so we don't pay the

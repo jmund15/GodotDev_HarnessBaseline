@@ -3,7 +3,7 @@
 """
 Hook: PreToolUse companion to tool_routing_cumulative.py — promotes the
 cumulative cascade nudge to a hard block at HARD_THRESHOLD when the env
-var PP_ROUTING_HARD_BLOCK_CASCADE=true.
+var HARNESS_ROUTING_HARD_BLOCK_CASCADE=true.
 
 Why:
 - The PostToolUse cumulative counter detects synthesis-cascade behavior
@@ -45,7 +45,7 @@ Carve-outs (must NOT block):
   rapid-fire same-agent burst, this hook also suppresses (same signal).
 
 Env-var toggle:
-- PP_ROUTING_HARD_BLOCK_CASCADE — default OFF (opt-in).
+- HARNESS_ROUTING_HARD_BLOCK_CASCADE — default OFF (opt-in).
 
 Wired in: settings.json hooks.PreToolUse with the same matcher as the
 PostToolUse cumulative hook.
@@ -74,7 +74,7 @@ except ImportError:
     _IMPORTS_OK = False
 
 
-HARD_BLOCK_ENV_VAR = "PP_ROUTING_HARD_BLOCK_CASCADE"
+HARD_BLOCK_ENV_VAR = "HARNESS_ROUTING_HARD_BLOCK_CASCADE"
 
 
 def _hard_block_enabled() -> bool:
@@ -103,9 +103,9 @@ def _build_block_message(count: int, calls: list) -> str:
         "Bundle next into "
         "`mcp__ai-worker__read_files(paths=[<accumulated>], question=<...>)`. "
         f"Targets: {target_list}. "
-        f"Gate: PP_ROUTING_HARD_BLOCK_CASCADE={toggle_state} (set false to disable). "
+        f"Gate: HARNESS_ROUTING_HARD_BLOCK_CASCADE={toggle_state} (set false to disable). "
         "Audit-cue prompts exempt (audit/debug/security review/line-by-line). "
-        "CLAUDE.md §9. If ai-worker is absent this session, substitute a Haiku "
+        "CLAUDE.md §Tool Routing. If ai-worker is absent this session, substitute a Haiku "
         "general-purpose subagent for the bundling (CLAUDE.md Offline Fallback)."
     )
 

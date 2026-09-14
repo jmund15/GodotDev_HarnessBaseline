@@ -72,7 +72,7 @@ HIGH_STREAK_THRESHOLD = 3             # ≥3 same-tool-name in a row = cascading
 BURST_WINDOW_SEC = 3.0
 BURST_CALL_THRESHOLD = 4
 
-# Audit-exception cue words — per CLAUDE.md §9 "Exception" clause. When the
+# Audit-exception cue words — per CLAUDE.md §Tool Routing "Exception" clause. When the
 # user explicitly frames the task as audit/debug/security-review/fact-check
 # at the source-code level, the cumulative-cascade rule does NOT apply.
 # Centralized in routing_classifier (2026-05-04 extraction); imported here
@@ -324,7 +324,7 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
             f"({signals['distinct_dirs']} dirs, "
             f"{signals['tail_streak']}× `{signals['tail_tool']}`). "
             f"If synthesizing, bundle next into {_bundle_target(signals)}. "
-            "CLAUDE.md §9."
+            "CLAUDE.md §Tool Routing."
         )
     # Hard nudge — explicit target list, stronger framing.
     targets = []
@@ -340,7 +340,7 @@ def _build_nudge(level: str, signals: dict, calls: list) -> str:
         f"**Reroute next call** to {_bundle_target(signals)}. "
         f"Targets: {target_list}. "
         "Per-query recovery only (don't redo what's done); reroute next. "
-        "CLAUDE.md §9."
+        "CLAUDE.md §Tool Routing."
     )
 
 
@@ -363,7 +363,7 @@ def _is_parallel_burst(calls: list) -> bool:
 def _prompt_implies_audit(state: dict) -> bool:
     """
     True when the user's prompt explicitly framed the task as audit / debug /
-    security-review / fact-check at the source-code level — per CLAUDE.md §9
+    security-review / fact-check at the source-code level — per CLAUDE.md §Tool Routing
     Exception clause. Audit work needs frontier-model engagement with primary
     source; cumulative-cascade nudges to "bundle into read_files" would push
     toward a cheap-model summary that can silently miss the bug.
@@ -413,7 +413,7 @@ def _decide_nudge(state: dict) -> tuple[str | None, str | None]:
         state["parallel_burst_suppressions"] = state.get("parallel_burst_suppressions", 0) + 1
         return (None, None)
 
-    # Audit-exception suppression — per CLAUDE.md §9 Exception clause. When
+    # Audit-exception suppression — per CLAUDE.md §Tool Routing Exception clause. When
     # the user explicitly framed the task as audit/debug, the agent needs to
     # READ the source, not summarize it. Suppress the "bundle into read_files"
     # nudge that would push toward a cheap-model summary.

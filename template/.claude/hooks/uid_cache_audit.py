@@ -162,12 +162,8 @@ def audit(path_to_uid):
 
 def main():
     data = CACHE.read_bytes()
-    path_to_uid, uid_to_path = parse_cache(data)
+    path_to_uid, _uid_to_path = parse_cache(data)
     print(f"cache entries={len(path_to_uid)}")
-    # validate parse against a known .cs.uid companion
-    known = path_to_uid.get("res://Dungeon/Encounters/Combat/TraditionalCombatConfig.cs")
-    print(f"validate TraditionalCombatConfig.cs -> {id_to_text(known) if known else 'NOT FOUND'}"
-          f" (expect uid://qiphv52j1dgx)")
     mismatches, unregistered, missing_uid = audit(path_to_uid)
     print(f"{len(mismatches)} uid mismatches in committed files:")
     for rel, tgt, disk, want in mismatches:

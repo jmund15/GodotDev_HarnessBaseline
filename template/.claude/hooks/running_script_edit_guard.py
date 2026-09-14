@@ -2,35 +2,51 @@
 """
 Hook: PreToolUse on Write|Edit — warn when the target script has a LIVE process.
 
-Fully domain-agnostic —
-fully domain-agnostic, and directly relevant here: this project's
-`scripts/deepseek_sidecar.sh` is exactly the kind of long-running interpreted
-script this hook protects.
-
 Why:
 - `bash` reads a script lazily, byte-offset by byte-offset, as it executes. Editing
   a running .sh shifts every offset after the edit point, so the live instance
-  resumes mid-token and executes garbage. This has corrupted two in-flight
-  sidecar dispatches from a mid-run edit to the same `deepseek_sidecar.sh` this
-  project copied.
-- The rule is memorized (`auto-memory/archive/gotcha_editing_shell_script_corrupts_running_instances.md`)
-  and still gets violated under a routine-looking edit — recall alone doesn't
-  survive that. This converts it into a call-time nudge; the memory file stays
-  canonical, this hook only enforces and cites it.
+  resumes mid-token and executes garbage. Observed 2026-08-04: two in-flight
+  sidecar lenses corrupted by an edit to `deepseek_sidecar.sh` — the canonical
+  instance of the hazard, and the highest-traffic script here, but the mechanism
+  is generic to every `.sh` under `.claude/scripts/` and the guard treats them
+  alike. Sanctioned fixes are (a) kill the whole subtree first, or (c) version the
+  filename and point only NEW dispatches at it. Moving a copy over the live path
+  is NOT a fix: it replaces the same bytes the running shell is still reading.
+- SCOPE, since 2026-09-08: launchers that call `sc_reexec_snapshot` (anthropic, codex_proxy,
+  deepseek) execute a $TEMP copy named `<script>.sh.<pid>.sh`, so their source file is no longer
+  corruptible AND no live command line names it — this guard deliberately does not fire for them.
+  It covers every other `.claude/scripts/**.sh`, including launchers that have not adopted the
+  snapshot re-exec (opencode_sidecar.sh).
+- The rule was already memorized (`gotcha_editing_shell_script_corrupts_running_instances.md`)
+  and still violated — recall alone does not survive a routine-looking edit.
+  This converts it into a call-time nudge. The rule's canonical home stays the
+  memory file; this hook only enforces and cites it.
 
 What it does:
 - Gates on file_path: only `.claude/scripts/**` with a `.sh` / `.ps1` suffix.
   Everything else exits immediately with no process scan.
-- On a match, scans live processes for a command line referencing that script,
-  EXCLUDING this hook's own parent chain (an ancestor shell often merely mentions
-  the path — grep, echo, the Edit call's own wrapper — which a substring scan
-  cannot tell from executing it), and emits a hookSpecificOutput.additionalContext
-  WARN naming the PIDs.
+- On a match, scans live processes for a command line that INVOKES that script
+  (`bash <path> …`, `timeout N bash <path> …`, or the path run directly) — never
+  one that merely names it: a `grep`/`cat`/`git` argument, a path inside a
+  `bash -c "…"` wrapper string (a Claude Bash tool shell; its real child is
+  scanned on its own), or this hook's own parent chain (a corruptible instance
+  is never an ancestor). Matching the noun warned on peers' greps and on
+  wrappers whose child had already exited (measured 2026-09-08, twice).
+  Survivors are re-probed for liveness once — a snapshot row can be a process
+  that finished between the scan and the warning — and the hook emits a
+  hookSpecificOutput.additionalContext WARN naming the PIDs. Per the verified
+  channel matrix, additionalContext is the ONLY model-visible advisory channel
+  on PreToolUse (stderr on an exit-0 PreToolUse path is a dead channel).
 - Never blocks. The correct action depends on intent — kill the run, or
   copy-then-edit and swap — so this advises rather than decides.
 
 No dedupe by design: the hazard is per-edit, not per-session. The gate keeps the
 cost at zero for every edit outside `.claude/scripts/`.
+
+Boundaries:
+- Always exits 0. Any scan failure, timeout, or malformed input exits 0 silently
+  (advisory hooks fail open; only enforcement gates may fail closed).
+- SCAN_TIMEOUT fits inside the settings.json timeout for this hook.
 
 Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 """
@@ -97,6 +113,7 @@ def _ancestor_pids(procs: dict, start_pid: str) -> set:
     launched by an earlier, unrelated shell. Our own ancestors, by contrast,
     routinely MENTION the script name (a Bash tool call that greps or echoes the
     path), which a substring scan cannot distinguish from executing it.
+    Excluding the chain removes that entire false-positive class.
     """
     chain = set()
     pid = start_pid
@@ -108,34 +125,116 @@ def _ancestor_pids(procs: dict, start_pid: str) -> set:
     return chain
 
 
-def find_live_instances(basename: str) -> list:
-    """Return ['<pid> <command line>', ...] for processes referencing basename.
+# Programs that READ a script without executing it: a command line whose program is one of
+# these names the script as a noun (harness_tooling.md §A guard matches the ACTION, never the noun).
+NOUN_TOOLS = frozenset({
+    "grep", "rg", "cat", "sed", "awk", "wc", "head", "tail", "echo", "git", "less", "more",
+    "type", "findstr", "diff", "ls", "find", "stat", "file", "cp", "mv", "python", "python3",
+    "node", "code", "select-string", "get-content",
+})
+SHELLS = frozenset({"bash", "sh", "zsh", "dash", "pwsh", "powershell"})
+# Prefix programs that hand off to whatever follows (`timeout 600 bash x.sh`).
+PASS_THROUGH = frozenset({"timeout", "env", "nohup", "time", "exec", "nice"})
 
-    Best-effort: returns [] on any failure so the hook stays silent rather than
-    warning about a scan it could not perform.
+
+def _program(token: str) -> str:
+    return token.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+
+
+def _split(cmd: str) -> list:
+    try:
+        import shlex
+        return shlex.split(cmd, posix=False)
+    except ValueError:
+        return cmd.split()
+
+
+def _is_invocation(cmd: str, basename: str) -> bool:
+    """True only when the command line RUNS the script: the script is a shell's script argument,
+    or the program itself. A `-c`/`-Command` string wrapper is not an invocation (its child is a
+    separate process and is judged on its own row); an argument to a noun tool is not either."""
+    needle = basename.lower()
+    if needle not in cmd.lower():
+        return False
+    toks = _split(cmd)
+    for i, tok in enumerate(toks):
+        prog = _program(tok)
+        if prog in NOUN_TOOLS:
+            return False
+        if prog in PASS_THROUGH:
+            continue
+        if prog in SHELLS:
+            for rest in toks[i + 1:]:
+                if rest.lower() in ("-c", "-command"):
+                    return False
+                if _program(rest).endswith(needle):
+                    return True
+            return False
+        if prog.endswith(needle):
+            return True
+        # Anything else in program position with the script only as an argument is a mention.
+        if not tok.startswith("-") and not tok.replace(".", "").isdigit():
+            return False
+    return False
+
+
+def _default_scan() -> str:
+    proc = subprocess.run(
+        _scan_command(),
+        capture_output=True,
+        text=True,
+        timeout=SCAN_TIMEOUT,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.stdout or ""
+
+
+def _default_alive(pids: list) -> set:
+    """PIDs from `pids` that still exist. A probe failure keeps every hit (advisory: warn rather
+    than hide), which is why this returns the whole input on error."""
+    try:
+        if sys.platform == "win32":
+            ids = ",".join(pids)
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"Get-Process -Id {ids} -ErrorAction SilentlyContinue | ForEach-Object {{ $_.Id }}"],
+                capture_output=True, text=True, timeout=SCAN_TIMEOUT, encoding="utf-8", errors="replace",
+            )
+            return {line.strip() for line in (proc.stdout or "").splitlines() if line.strip().isdigit()}
+        alive = set()
+        for pid in pids:
+            try:
+                os.kill(int(pid), 0)
+                alive.add(pid)
+            except (OSError, ValueError):
+                pass
+        return alive
+    except (OSError, subprocess.SubprocessError):
+        return set(pids)
+
+
+def find_live_instances(basename: str, scan=None, alive=None) -> list:
+    """Return ['<pid> <command line>', ...] for processes INVOKING basename that are still alive.
+
+    `scan` returns the process-table text; `alive` maps candidate pids to the subset still
+    running — both injectable so the proof runs against a planted table. Best-effort: returns []
+    on a scan failure so the hook stays silent rather than warning about a scan it could not perform.
     """
     try:
-        proc = subprocess.run(
-            _scan_command(),
-            capture_output=True,
-            text=True,
-            timeout=SCAN_TIMEOUT,
-            encoding="utf-8",
-            errors="replace",
-        )
+        table = (scan or _default_scan)()
     except (OSError, subprocess.SubprocessError):
         return []
 
-    procs = _parse_processes(proc.stdout)
+    procs = _parse_processes(table)
     excluded = _ancestor_pids(procs, str(os.getpid()))
-    needle = basename.lower()
 
-    hits = []
-    for pid, (_ppid, cmd) in procs.items():
-        if pid in excluded or needle not in cmd.lower():
-            continue
-        hits.append(f"{pid} {cmd}"[:200])
-    return hits[:5]
+    candidates = [(pid, cmd) for pid, (_ppid, cmd) in procs.items()
+                  if pid not in excluded and _is_invocation(cmd, basename)]
+    if not candidates:
+        return []
+    still = (alive or _default_alive)([pid for pid, _ in candidates])
+    return [f"{pid} {cmd}"[:200] for pid, cmd in candidates if pid in still][:5]
 
 
 def build_warning(basename: str, hits: list) -> str:
@@ -149,7 +248,7 @@ def build_warning(basename: str, hits: list) -> str:
         "byte offset after the edit point and the running instance resumes mid-token. "
         "Either kill the run first, or copy-then-edit (edit a copy, swap it in once "
         "the run finishes).\n"
-        "Canon: `auto-memory/archive/gotcha_editing_shell_script_corrupts_running_instances.md`."
+        "Canon: `gotcha_editing_shell_script_corrupts_running_instances.md`."
     )
 
 

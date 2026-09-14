@@ -63,7 +63,7 @@ def _git_bash():
 
 def preflight(cmd, root):
     """-> refusal text when the launcher's --check exits non-zero; None when it passes or cannot run."""
-    if os.environ.get("PP_SIDECAR_PREFLIGHT") == "0":
+    if os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0":
         return None
     m = LAUNCH_RE.search(cmd)
     bash = _git_bash()
@@ -132,7 +132,7 @@ def _parse_fanout_command(command, root):
         words = shlex.split(command, posix=True)
     except ValueError:
         return None
-    if len(words) < 3 or Path(words[0]).name not in {"python", "python3"}:
+    if len(words) < 3 or words[0] not in {"python", "python3"}:
         return None
     script = _resolve(root, words[1])
     expected = (root / ".claude" / "tools" / "sidecar_fanout.py").resolve()

@@ -43,7 +43,8 @@ MAX_READ_BYTES = 16 * 1024 * 1024
 REASON = (
     "First dispatch attempted without /orchestration loaded this session. Load Skill(orchestration) "
     "first — its §0 owns the dispatch-mechanism decision (single Agent vs Workflow vs sidecar) and "
-    "the fan-out litmus. Re-issue the dispatch after loading."
+    "the fan-out litmus. Re-issue the dispatch with the §0-selected mechanism after loading. If that "
+    "mechanism is a Workflow and user approval is absent, ask the user; do not substitute a direct Agent."
 )
 
 
@@ -88,13 +89,15 @@ VERB_LEAD = (
     r"(?:^[ \t]*(?:[-*+]\s+)?(?:next\s*,\s*)?|[.:;!?)]\s+|"
     r"\b(?:you\s+(?:need\s+to\s+|to\s+)?|(?:then|please|now|must|should|will)\s*,?\s+))"
 )
-VERB_WORD = r"(?<![\w/\-])(?:dispatch|fan[- ]?out|spawn|launch|invoke|execute|run)\b"
+VERB_WORD = r"(?<![\w/\-])(?:dispatch|fan[- ]?out|spawn|launch|invoke|execute|run|use)\b"
 DISPATCH_VERB = VERB_LEAD + VERB_WORD
 NESTED_RE = re.compile(
     r"(?im)(?:" + DISPATCH_VERB + r"[^\n]{0,160}?" + FANOUT_TARGET
     + r"|" + FANOUT_TARGET + r"[^\n]{0,200}?(?<![\w/\-])(?:execute|run|follow)\b[^\n]{0,40}\b(?:it|them|step by step|the procedure|this)\b)"
 )
 MAX_BRIEF_BYTES = 512 * 1024
+OVERSIZED_BRIEF = object()
+OVERSIZED_HIT = "brief exceeds the 512 KiB scan cap"
 
 NESTED_REASON = (
     "This brief tells its delegate to dispatch a fan-out ({hit}). A Workflow agent has neither the "
@@ -106,18 +109,27 @@ NESTED_REASON = (
 )
 
 
-def _read_capped(path: str) -> str:
+def _read_capped(path: str):
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            return fh.read(MAX_BRIEF_BYTES)
+        with open(path, "rb") as fh:
+            content = fh.read(MAX_BRIEF_BYTES + 1)
+        if len(content) > MAX_BRIEF_BYTES:
+            return OVERSIZED_BRIEF
+        return content.decode("utf-8", errors="replace")
     except OSError:
         return ""  # unreadable brief: dispatch.js itself will fail loudly on it — nothing to judge here
+
+
+def _entries(value):
+    return value if isinstance(value, list) else []
 
 
 def brief_texts(payload: dict) -> list:
     """Every text a delegate will receive as instructions, from the tool input."""
     tool = payload.get("tool_name")
-    ti = payload.get("tool_input") or {}
+    ti = payload.get("tool_input")
+    if not isinstance(ti, dict):
+        return []
     if tool == "Agent":
         return [str(ti.get("prompt") or "")]
     args = ti.get("args")
@@ -129,9 +141,10 @@ def brief_texts(payload: dict) -> list:
     if not isinstance(args, dict):
         return []
     texts = []
-    jobs = list(args.get("jobs") or [])
-    for chain in args.get("chains") or []:
-        jobs.extend((chain or {}).get("jobs") or [])
+    jobs = list(_entries(args.get("jobs")))
+    for chain in _entries(args.get("chains")):
+        if isinstance(chain, dict):
+            jobs.extend(_entries(chain.get("jobs")))
     for j in jobs:
         if not isinstance(j, dict):
             continue
@@ -139,7 +152,7 @@ def brief_texts(payload: dict) -> list:
         if p:
             texts.append(_read_capped(str(p)))
     for key in ("agents", "lenses"):
-        for entry in args.get(key) or []:
+        for entry in _entries(args.get(key)):
             if not isinstance(entry, dict):
                 continue
             if entry.get("prompt"):
@@ -180,6 +193,8 @@ def instruction_text(text: str) -> str:
 
 def nested_fanout_hit(payload: dict):
     for text in brief_texts(payload):
+        if text is OVERSIZED_BRIEF:
+            return OVERSIZED_HIT
         m = NESTED_RE.search(instruction_text(text))
         if m:
             return m.group(0)[:120].replace("\n", " ")
@@ -191,6 +206,8 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except Exception:
         return 0  # malformed payload — never block
+    if not isinstance(payload, dict):
+        return 0
     if payload.get("tool_name") not in ("Workflow", "Agent"):
         return 0
     transcript_path = payload.get("transcript_path")

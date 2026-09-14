@@ -16,7 +16,9 @@ import os
 import re
 import sys
 
-from _hook_state import read_json_salvage, write_json_atomic
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import (fire_once_since_compaction, read_json_salvage, state_path,
+                         write_json_atomic)
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -132,29 +134,30 @@ def get_drive_reminder(prompt: str) -> str:
     return "\n".join(lines)
 
 
-# Session cap for the STANDARD MemoryCheck nudge only (plan-mode and high-risk
-# nudges stay uncapped — higher signal). Same anti-fatigue rationale as
-# critical_analysis_reminder's session dedupe: after a few fires the model has
-# the discipline in-context; further repeats are pure token cost.
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
-MEMORY_CHECK_SESSION_CAP = 5
+# Cadence for the STANDARD MemoryCheck nudge only (plan-mode and high-risk nudges stay
+# uncapped — higher signal). The full text says the same thing every time, so after the
+# first delivery the only new information is a domain the session has not searched yet.
+MEMORY_CHECK_SESSION_CAP = 5    # `strict` tier only
+
+
+def _session_tier(session_id: str) -> str:
+    """The session's model tier, or `strict` when the tier module is absent.
+
+    Guarded import: `strict` is the safe default — it keeps the repeat-capped cadence
+    rather than assuming one delivery is enough."""
+    try:
+        from _model_tier import session_tier
+        return str(session_tier(session_id) or "strict")
+    except Exception:
+        return "strict"
 
 
 def _bump_memory_check_count(session_id: str) -> int:
     """Increment + return this session's standard-nudge fire count.
-    Best-effort read-modify-write on the shared routing-state file;
+    Best-effort read-modify-write on the shared session state file;
     returns 1 on any failure (fail-open toward nudging)."""
-    sid_short = (session_id[:8] if session_id else "default")
-    path = os.path.join(STATE_DIR, f"{sid_short}.json")
-    state: dict = {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                state = loaded
-    except Exception:
-        state = {}
+    path = state_path(session_id)
+    state = read_json_salvage(path)
     count = int(state.get("memory_check_fires", 0) or 0) + 1
     state["memory_check_fires"] = count
     try:
@@ -162,6 +165,41 @@ def _bump_memory_check_count(session_id: str) -> int:
     except Exception:
         pass
     return count
+
+
+def _memory_check_is_new(session_id: str) -> bool:
+    """True when the FULL MemoryCheck text is still news to this session."""
+    if _session_tier(session_id) == "strict":
+        return _bump_memory_check_count(session_id) <= MEMORY_CHECK_SESSION_CAP
+    return fire_once_since_compaction(session_id, "memory_check")
+
+
+def _prompt_domains(prompt: str) -> list:
+    """Domain tokens this prompt names, per reference/memory_domains.md (the table
+    `plan_memory_reminder.DOMAINS` mirrors). A prompt matching no domain yields
+    `unclassified` — an unrecognized token fails toward nudging, not toward silence."""
+    try:
+        from plan_memory_reminder import infer_domains
+        names = [entry[0] for entry in infer_domains(prompt)]
+    except Exception:
+        return ["unclassified"]
+    return names or ["unclassified"]
+
+
+def _record_domains(session_id: str, domains: list) -> list:
+    """Add `domains` to this session's searched set; return the ones that were new."""
+    path = state_path(session_id)
+    state = read_json_salvage(path)
+    seen = state.get("searched_domains")
+    seen = list(seen) if isinstance(seen, list) else []
+    new = [d for d in domains if d not in seen]
+    if new:
+        state["searched_domains"] = seen + new
+        try:
+            write_json_atomic(path, state)
+        except Exception:
+            pass
+    return new
 
 
 def main():
@@ -226,10 +264,18 @@ Avoid reflexive agreement. Instead, provide substantive technical analysis.
     # === EXECUTION MODE (Standard) ===
     else:
         session_id = input_data.get("session_id", "") or ""
-        if _bump_memory_check_count(session_id) <= MEMORY_CHECK_SESSION_CAP:
+        domains = _prompt_domains(prompt)
+        if _memory_check_is_new(session_id):
+            _record_domains(session_id, domains)
             print("""<user-prompt-submit-hook>
 MEMORY CHECK — search auto-memory for domain gotchas before proceeding (semantic-search if connected, else Grep, restrictToDir=.claude/auto-memory); use CLAUDE.md for query seeds, max ~3 searches. Report: Memory: [query | N/A] | Skills: [invoked|auto-rules|N/A]. Re-search NEW domains if scope grows.
 </user-prompt-submit-hook>""")
+        else:
+            new = _record_domains(session_id, domains)
+            if new:
+                print("""<user-prompt-submit-hook>
+NEW DOMAIN: %s — search auto-memory before acting.
+</user-prompt-submit-hook>""" % ", ".join(new))
 
     sys.exit(0)
 

@@ -4,7 +4,7 @@
 /regression_gate runs exactly three filters -- `FullyQualifiedName~Tests.{Logic,Integration,Sanity}`.
 A `[TestSuite]` living under any other top-level `Tests/<X>/` name compiles, passes review, and is
 never executed by any gate: green build, green gate, zero coverage. That shape already shipped 37
-never-run Encounter tests (archive/arch_rule_test_namespace_matches_gate_filter.md).
+never-run tests in an unfiltered folder (archive/arch_rule_test_namespace_matches_gate_filter.md).
 
 Two exclusions are deliberate -- Tests/Stress and Tests/ProcGenSim are measurement/simulation
 batteries, not correctness suites, and both blow past the runner's wall-clock cap by construction.
@@ -12,7 +12,7 @@ Until now that exclusion existed only as prose, indistinguishable from an oversi
 is the machine-readable version: a named directory plus the rationale that earned it the pass.
 
 Detection: a top-level `Tests/<X>/` directory containing a `.cs` file whose stripped line is exactly
-`[TestSuite]` on a NON-abstract class. Exactness matters -- Tests/Framework/JmoLoggerSpy.cs and its
+`[TestSuite]` on a NON-abstract class. Exactness matters -- a Tests/Framework logger spy and its
 suite carry the marker inside doc comments and `JmoLogger.Info("[TestSuite]", ...)` string literals.
 Abstract carriers matter too -- Tests/Framework/Fixtures/*.cs mark abstract base fixtures whose
 concrete subclasses live (and run) under the gated namespaces.
@@ -21,7 +21,7 @@ GATED is also cross-checked against the filter strings the gate actually issues,
 filter without updating this constant fails loudly instead of silently un-gating a whole suite.
 
 Escape hatch: add the directory to EXCLUDED with a written rationale (that IS the sanctioned third
-remedy, not a bypass). Blanket-disable with PP_ALLOW_UNGATED_TEST_DIR=1.
+remedy, not a bypass). Blanket-disable with HARNESS_ALLOW_UNGATED_TEST_DIR=1.
 
 Modes:
     test_suite_gate_coverage_guard.py           # scan the tree; exit 1 on any un-accounted suite dir
@@ -35,6 +35,9 @@ import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _git_commit import commit_invocations, bypass_declared  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -153,14 +156,14 @@ def report(findings):
         "Tests/regression_baseline.json AND the name to this script's GATED; (3) if it is "
         "measurement or simulation scaffolding rather than a correctness suite, add it to EXCLUDED "
         "with a written rationale. A `drift` finding means GATED no longer matches the filters the "
-        "gate issues -- reconcile the two. Blanket-disable with PP_ALLOW_UNGATED_TEST_DIR=1.",
+        "gate issues -- reconcile the two. Blanket-disable with HARNESS_ALLOW_UNGATED_TEST_DIR=1.",
         file=sys.stderr,
     )
 
 
 def standalone():
-    if os.environ.get("PP_ALLOW_UNGATED_TEST_DIR"):
-        print("[test-suite-gate-coverage-guard] SKIPPED - PP_ALLOW_UNGATED_TEST_DIR is set.")
+    if os.environ.get("HARNESS_ALLOW_UNGATED_TEST_DIR"):
+        print("[test-suite-gate-coverage-guard] SKIPPED - HARNESS_ALLOW_UNGATED_TEST_DIR is set.")
         return 0
     findings = find_violations()
     if not findings:
@@ -183,12 +186,19 @@ def hook():
     if data.get("tool_name") != "Bash":
         print("{}")
         return 0
-    if "git commit" not in data.get("tool_input", {}).get("command", ""):
+    commits = [c for c in commit_invocations(data.get("tool_input", {}).get("command", ""),
+                                             data.get("cwd") or ".") if c.sub == "commit"]
+    if not commits:
         print("{}")
         return 0
-    if os.environ.get("PP_ALLOW_UNGATED_TEST_DIR"):
+    commit = commits[-1]
+    if bypass_declared(commit.inline_env, "HARNESS_ALLOW_UNGATED_TEST_DIR"):
         print("{}")
         return 0
+    try:
+        os.chdir(commit.cwd)   # the scan below reads the repo the commit targets
+    except OSError:
+        pass
 
     findings = find_violations()
     if not findings:
@@ -205,7 +215,7 @@ def hook():
         "Move them under a gated prefix (namespace too), extend the gate (filter line + "
         "suites.<X> baseline entry + GATED), or add the directory to "
         "test_suite_gate_coverage_guard.py's EXCLUDED map with a written rationale. "
-        "Blanket-disable with PP_ALLOW_UNGATED_TEST_DIR=1."
+        "Blanket-disable with HARNESS_ALLOW_UNGATED_TEST_DIR=1."
     )
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",

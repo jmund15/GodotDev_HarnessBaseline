@@ -18,7 +18,7 @@ What it does:
 - Infers domains by case-insensitive start-of-word matching against the
   keyword sets in the CLAUDE.md "Proactive Context Loading" table. Substring
   matching across identifier camelcase boundaries is rejected (so "craft"
-  inside "SpellCrafter" does NOT fire the Crafting domain).
+  inside "AbilityCrafter" does NOT fire the Assembly domain).
 - Emits a hookSpecificOutput.additionalContext payload listing matched domains,
   auto-memory search queries, and any Skills to load.
 
@@ -41,8 +41,8 @@ from pathlib import Path
 # and extends it with project-specific domains that map to existing Skills.
 #
 # PROJECT-CONFIG: add your project's content domains at the top of this table
-# (e.g., for a spell-crafting game: ("Spells", ["spell", "trait", "synergy"],
-# ["spell"], ["architecture_philosophy", "your_authoring_skill"]); for a video
+# (e.g., for a ability-assembly game: ("Abilities", ["ability", "trait", "combination"],
+# ["ability"], ["architecture_philosophy", "your_authoring_skill"]); for a video
 # channel: ("Scripting", ["script", "segment", "voiceover"], ["script"],
 # ["video_pipeline"])). The entries below are the domain-agnostic floor.
 #
@@ -107,10 +107,10 @@ def _trigger_pattern(trigger: str) -> re.Pattern:
     use full \\b word boundaries on both sides to prevent matching inside
     ordinary words ("AI" inside "available", "BT" inside "doubt").
 
-    Longer mixed-case triggers ("spell", "trait", "spellbehavior") use \\b
-    prefix only — start-of-word match. This lets "spell" match "SpellCrafter"
-    (correctly tagging spell-domain) while preventing "craft" from also
-    matching "SpellCrafter" (the 'C' is preceded by a word char, no \\b
+    Longer mixed-case triggers ("ability", "trait", "spellbehavior") use \\b
+    prefix only — start-of-word match. This lets "ability" match "AbilityCrafter"
+    (correctly tagging ability-domain) while preventing "craft" from also
+    matching "AbilityCrafter" (the 'C' is preceded by a word char, no \\b
     there). Identifier camelcase boundaries are not regex word boundaries.
 
     Heuristic: full bilateral boundary if len <= 4 OR all letters uppercase;

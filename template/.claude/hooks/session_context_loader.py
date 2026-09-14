@@ -277,6 +277,18 @@ def sidecar_launchers(registry, seat: str):
     return launchers
 
 
+def sidecar_health(root: Path) -> dict[str, str]:
+    """Only the current registry selects launchers; discovery failure stays unknown."""
+    try:
+        sys.path.insert(0, os.path.join(root, ".claude", "tools"))
+        import model_registry as registry
+        import _session_transport as transport
+        launchers = sidecar_launchers(registry, transport.resolve()[0])
+    except Exception as error:
+        return {"sidecar_registry": f"UNKNOWN ({type(error).__name__})"}
+    return {"sidecar-" + name: verify_sidecar(root, launcher) for name, launcher in launchers}
+
+
 def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
     """Report whether a sidecar launcher can dispatch on this workstation.
 
@@ -415,32 +427,27 @@ def godot_docs_cache_issue(root: Path) -> str | None:
 
 
 def setup_import_cache(root: Path) -> str:
-    """Regenerate .godot import cache if missing."""
-    godot_dir = root / ".godot"
-    imported_dir = godot_dir / "imported"
-    # If imported/ already exists, cache is populated
-    if imported_dir.exists() and any(imported_dir.iterdir()):
-        return "OK"
-
-    godot_bin = get_godot_bin()
-    if not godot_bin:
-        return "SKIPPED (godot binary not found)"
-
+    """Report cache presence; regenerate only when absent, without hiding failed imports."""
+    imported_dir = root / ".godot" / "imported"
     try:
+        if imported_dir.exists() and any(imported_dir.iterdir()):
+            return "PRESENT (not revalidated)"
+        godot_bin = get_godot_bin()
+        if not godot_bin:
+            return "SKIPPED (godot binary not found)"
         result = subprocess.run(
             [godot_bin, "--headless", "--path", str(root), "--import", "--quit"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root)
         )
-        # Godot import may return non-zero but still succeed
-        if (imported_dir.exists() and any(imported_dir.iterdir())):
+        if result.returncode != 0:
+            return f"FAILED: import exit {result.returncode} (partial resources are not success)"
+        if imported_dir.exists() and any(imported_dir.iterdir()):
             return "FIXED (regenerated)"
-        if result.returncode == 0:
-            return "FAILED: import returned success but produced no imported resources"
-        return f"FAILED: exit {result.returncode}"
+        return "FAILED: import returned success but produced no imported resources"
     except subprocess.TimeoutExpired:
         return "FAILED: timeout (>120s)"
-    except Exception as e:
-        return f"FAILED: {e}"
+    except Exception as error:
+        return f"UNKNOWN: import cache check failed ({error})"
 
 
 # Re-entry reports prior verification without spawning another build. A recent,
@@ -714,17 +721,7 @@ def main():
     if not cloud:
         setup_results["lsp_plugin"] = verify_lsp_plugin()
 
-    # --- Sidecar availability, every reachable off-transport route ---
-    try:
-        sys.path.insert(0, os.path.join(root, ".claude", "tools"))
-        import model_registry as _mr
-        import _session_transport as _st
-        _launchers = sidecar_launchers(_mr, _st.resolve()[0])
-    except Exception:
-        _launchers = [("deepseek", "deepseek_sidecar.sh"), ("codex", "codex_proxy_sidecar.sh"),
-                      ("opencode", "opencode_sidecar.sh")]
-    for _tname, _name in _launchers:
-        setup_results["sidecar-" + _tname] = verify_sidecar(root, _name)
+    setup_results.update(sidecar_health(root))
 
     # --- Git context ---
     branch = get_git_branch()

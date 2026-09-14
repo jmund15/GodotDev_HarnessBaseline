@@ -6,7 +6,7 @@ Hook: UserPromptSubmit — synthesis-shape pattern detector.
 Why:
 - Fix 1 reconciled the brainstorming skill so its Step 1 prescribes a
   bundled read_files call. But free-form synthesis prompts ("compare X
-  and Y across the codebase", "summarize how the spell pipeline flows
+  and Y across the codebase", "summarize how the ability pipeline flows
   through these 5 modules") don't trigger any skill — they go straight
   to the agent's default which historically defaulted to chained Reads
   + Greps. This hook injects a terse routing reminder when the user's
@@ -57,7 +57,7 @@ SYNTHESIS_CUES = (
     r"\b(read|check) (these|all of these|the following)\b",
     r"\bgather (context|info|background)\b",
     # Audit-like (but NOT "audit" alone — that's the audit-shape exception
-    # from CLAUDE.md §9, which warrants direct reads)
+    # from CLAUDE.md §Tool Routing, which warrants direct reads)
     r"\binventory\b",
     r"\bcheck whether\b",
     # "X and Y" enumeration shapes (3+ items)
@@ -67,7 +67,7 @@ SYNTHESIS_CUES = (
 MIN_PROMPT_WORDS = 30
 MIN_CUE_MATCHES = 2
 
-# Audit-shape phrases per CLAUDE.md §9 — these EXEMPT the prompt from the
+# Audit-shape phrases per CLAUDE.md §Tool Routing — these EXEMPT the prompt from the
 # nudge (the user wants direct line-precision reads, not bundled summary).
 # INTENTIONALLY NOT shared with routing_classifier.AUDIT_INTENT_CUES: that
 # 16-entry list governs per-call cumulative-cascade exemption (debug/trace/
@@ -116,7 +116,7 @@ def _build_reminder() -> str:
         "`mcp__ai-worker__read_files(paths=[...], question=...)` over chained "
         "Read/Grep/obsidian/memory. Bundle FIRST — overflow-bundling after "
         "individual searches has already burned context. "
-        "Audit-cue prompts exempt (direct Read correct there). CLAUDE.md §9.\n"
+        "Audit-cue prompts exempt (direct Read correct there). CLAUDE.md §Tool Routing.\n"
         "</user-prompt-submit-hook>"
     )
 

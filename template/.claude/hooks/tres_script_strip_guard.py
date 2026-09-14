@@ -4,7 +4,7 @@
 A stale-class-registry editor resave silently drops the `[ext_resource type="Script"]`
 + `script = ExtResource(...)` binding from a custom-Resource .tres. The resource then
 loads as a bare Godot.Resource, and any cast to its C# type throws InvalidCastException
--- with a green build and no warning. This bit the encounter/floor/procgen config .tres
+-- with a green build and no warning. This bit gameplay config .tres files
 TWICE: fixed in 67873ef1, then re-stripped by 55ef215c across 22 files (only 4 tests
 cast-and-caught it; the damage was far wider). See
 gotcha_godot_editor_resave_hazards.
@@ -30,7 +30,7 @@ Modes:
                                              # than its boot (the preventable bind-failure window)
 
 Escape hatch (rare intentional removal of a genuinely-deleted scripted sub-resource):
-set PP_ALLOW_TRES_SCRIPT_REMOVAL=1 in the environment.
+set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 in the environment.
 """
 import json
 import os
@@ -114,13 +114,13 @@ def report(findings):
         "bare Godot.Resource -> casts to its C# type throw at runtime with a green build (the "
         "stale-registry editor-resave strip; gotcha_godot_editor_resave_hazards). "
         "Restore the binding (e.g. `git checkout <pre-resave>^ -- <file>`), or if you genuinely "
-        "deleted a scripted sub-resource, set PP_ALLOW_TRES_SCRIPT_REMOVAL=1.",
+        "deleted a scripted sub-resource, set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1.",
         file=sys.stderr,
     )
 
 
 def standalone(range_arg):
-    if os.environ.get("PP_ALLOW_TRES_SCRIPT_REMOVAL"):
+    if os.environ.get("HARNESS_ALLOW_TRES_SCRIPT_REMOVAL"):
         return 0
     findings = find_strips(range_arg)
     if not findings:
@@ -138,16 +138,19 @@ def hook():
     if data.get("tool_name") != "Bash":
         print("{}")
         return 0
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _git_commit import commit_invocations, bypass_declared
     cmd = data.get("tool_input", {}).get("command", "")
-    if "git commit" in cmd:
-        if os.environ.get("PP_ALLOW_TRES_SCRIPT_REMOVAL"):
+    commits = [c for c in commit_invocations(cmd, data.get("cwd") or ".") if c.sub == "commit"]
+    if commits:
+        commit = commits[-1]
+        if bypass_declared(commit.inline_env, "HARNESS_ALLOW_TRES_SCRIPT_REMOVAL"):
             print("{}")
             return 0
-        # Hook processes inherit the harness env, not the command's — honor the documented
-        # hatch when it is declared inline on the gated command (transcript-auditable).
-        if "PP_ALLOW_TRES_SCRIPT_REMOVAL=1" in cmd:
-            print("{}")
-            return 0
+        try:
+            os.chdir(commit.cwd)   # the scan below reads the repo the commit targets
+        except OSError:
+            pass
 
         findings = find_strips(None)
         if not findings:
@@ -158,7 +161,7 @@ def hook():
         reason = (
             f"Blocked: {len(findings)} staged .tres lost a `script = ExtResource(...)` binding "
             "(editor-resave script strip -> bare-Resource load / InvalidCastException). Restore the "
-            "binding, or set PP_ALLOW_TRES_SCRIPT_REMOVAL=1 if the removal is intentional."
+            "binding, or set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 if the removal is intentional."
         )
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -174,7 +177,7 @@ def hook():
             "additionalContext": (
                 "[tres-script-strip-guard] `git restore`/`checkout` of a .tres re-plants the "
                 "OLD-FORMAT dirty-flag bomb (ext_resource uid-less -> editor rewrites at the next "
-                "save -> strip recurs, the 4x encounter corruption). For a stripped file use "
+                "save -> strip recurs, the 4x config corruption). For a stripped file use "
                 "`tres_script_strip_guard.py --worktree --repair-inplace` (keeps the editor's "
                 "normalization); godot_files.md §UID handling."
             ),

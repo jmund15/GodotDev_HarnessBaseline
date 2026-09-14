@@ -14,6 +14,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import append_jsonl_rotating  # noqa: E402
+
 
 def _log_dir() -> Path:
     root = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -36,24 +39,8 @@ def main() -> None:
         "payload": payload,
     }
 
-    try:
-        log_dir = _log_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "instructions_loaded.jsonl"
-        # Size-gated rotation: keep the most recent ~500 events once the file
-        # passes 2 MB (append-only logs here grow unbounded otherwise).
-        try:
-            if log_file.exists() and log_file.stat().st_size > 2_000_000:
-                tail = log_file.read_text(encoding="utf-8").splitlines(True)[-500:]
-                log_file.write_text("".join(tail), encoding="utf-8")
-        except Exception:
-            pass
-        with log_file.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        # Never break the harness. Silent failure on log write is acceptable;
-        # the hook's job is observation, not enforcement.
-        pass
+    # Observation only: a failed write costs a log line, never the harness.
+    append_jsonl_rotating(str(_log_dir() / "instructions_loaded.jsonl"), [record])
 
     # Empty JSON object on stdout signals success per Hook_Gotchas convention.
     print("{}")
