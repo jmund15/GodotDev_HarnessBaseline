@@ -4,7 +4,6 @@ description: "Providing a default impl in a derived interface for a BASE interfa
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 805f1e16-35f6-4f79-8814-388ddf042745
 ---
 
 When interface `IDerived : IBase` provides a default implementation for a member declared on `IBase`, it **must** use the explicit form:
@@ -20,6 +19,6 @@ Writing it implicitly — `Identity GetIdentity() => …` — compiles, but crea
 
 **Trade-off it forces:** the explicit default is **interface-access only** — callable through `IDerived`/`IBase`-typed references, NOT on a concrete-typed variable (`concrete.GetIdentity()` → CS1061). Before hoisting a member up to an interface default and deleting per-class impls, verify no concrete-type call sites exist (the compile is the authoritative check; a surviving concrete call fails CS1061). If one exists, keep a one-line per-class body delegate.
 
-Surfaced hoisting `IIdentifiable.GetIdentity()` onto `ISpell` (A2) — {{PROJECT_NAME}} uses default interface methods on `ISpell`/`IEffectHost` heavily, so this recurs. Related: [[gotcha_spawn_behaviors_bypass_crafted_pipeline]].
+Surfaced hoisting `IIdentifiable.GetIdentity()` onto a content interface — a project that uses default interface methods heavily hits this repeatedly.
 
-**Second failure mode — DIM diamond (CS8705).** Adding a DIM for a base-`B` member to interface `A` causes **CS8705 "no most specific implementation"** for any concrete type that *also* implements an unrelated interface `C` providing its OWN DIM for the same `B` member (`A` and `C` are incomparable, so neither wins) — the dual-implementer must supply a concrete override to resolve it. Before adding a DIM to an interface, check whether any implementer also implements a sibling interface that DIMs the same member. **Concrete:** S2 2026-06-03 — adding `ICollisionResponseHost` DIMs (`CollisionImpactVelocity`/`EnactCollisionResponse`) to `ISpell` collided with Jmodot `ICollisionHost`'s kinematic DIMs on `CharacterScene` + `MockCharacterSpell`; both needed concrete overrides. See [[feedback_symmetric_guards_across_siblings]] for the parallel-implementer pattern.
+**Second failure mode — DIM diamond (CS8705).** Adding a DIM for a base-`B` member to interface `A` causes **CS8705 "no most specific implementation"** for any concrete type that *also* implements an unrelated interface `C` providing its OWN DIM for the same `B` member (`A` and `C` are incomparable, so neither wins) — the dual-implementer must supply a concrete override to resolve it. Before adding a DIM to an interface, check whether any implementer also implements a sibling interface that DIMs the same member. **Concrete:** 2026-06-03 — adding collision-response DIMs to a content interface collided with Jmodot `ICollisionHost`'s kinematic DIMs on two dual-implementers; both needed concrete overrides. See [[feedback_symmetric_guards_across_siblings]] for the parallel-implementer pattern.

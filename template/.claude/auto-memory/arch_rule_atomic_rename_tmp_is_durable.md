@@ -4,7 +4,6 @@ description: "In (write-tmp → delete-dest → rename) atomic recipes, failure 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: fd0b005f-63ab-4f79-a253-a2db6c715771
 ---
 
 When implementing a (write-tmp → delete-dest → rename) atomic-replace recipe (Windows `MoveFileEx` without `REPLACE_EXISTING`, POSIX `rename(2)`, or any equivalent), the failure-on-rename branch MUST NOT delete the tmp. After the destination delete succeeds, the tmp is the only durable copy of the new content; cleaning it up converts a recoverable interruption into permanent data loss.

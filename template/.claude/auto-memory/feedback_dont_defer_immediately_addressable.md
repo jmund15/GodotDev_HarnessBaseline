@@ -4,7 +4,6 @@ description: "If you can do it now with no bad consequences, DO IT NOW. The work
 metadata:
   node_type: memory
   type: feedback
-  originSessionId: 84adc6c1-1ab3-4b4c-ade9-5bed49091669
   modified: 2026-07-28T20:37:36.083Z
 ---
 

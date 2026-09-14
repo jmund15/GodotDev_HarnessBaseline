@@ -2,7 +2,6 @@
 name: Session-end command over passive nudge
 description: For registry/index/config drift detection, prefer a /session_end-conditional slash command with self-gating over a passive PostToolUse stderr nudge.
 type: feedback
-originSessionId: 232462ad-192f-44cd-b637-e19443c8e27a
 ---
 For registry/index/config-drift detection, prefer a `/session_end`-conditional slash command (with internal git-diff signal-gating that no-ops when no relevant change happened) over a passive `PostToolUse` stderr nudge.
 

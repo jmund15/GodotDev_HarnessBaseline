@@ -4,12 +4,11 @@ description: "Pairs of Godot editor plugins that each individually work fine can
 metadata: 
   node_type: memory
   type: project
-  originSessionId: ef7557fc-8db8-47e5-a37b-143f92fd4874
 ---
 
 Editor plugins in Godot can register `EditorImportPlugin`, `EditorInspectorPlugin`, `EditorTranslationParserPlugin`, etc., and modify the editor's import-format dispatcher / file-system scanner. Two plugins that both touch the same registration slot, or one of which overwrites state the other set up, can crash the engine deterministically during the next editor-rebuild scan. The build succeeds, gameplay launches cleanly — but anything that exercises the editor codepath (test runners, headless `--build-solutions`, opening the project in the editor in some cases) hits the conflict.
 
-**Concrete instance (2026-05-28):** the pair `TileMapLayer3D` + `nklbdev.importality` enabled together crashed the GdUnit4 test runner consistently for an entire diagnostic session. Each enabled alone passed all 8 `KnockedUpStateTests` cases. With the addition of `spell_stat_dashboard` (the third editor plugin), no change — only the two-plugin pair matters. Crash address `0x00007FFAC3D3A853` was deterministic across runs AND across runtime versions (.NET 8.0.27 and .NET 10.0.8 both crash at the identical address — proves the failure is in native engine code reached by editor-plugin registration, not in the managed CLR layer).
+**Concrete instance (2026-05-28):** the pair `TileMapLayer3D` + `nklbdev.importality` enabled together crashed the GdUnit4 test runner consistently for an entire diagnostic session. Each enabled alone passed all 8 cases of a runtime-required HSM suite. With the addition of a third editor plugin, no change — only the two-plugin pair matters. Crash address `0x00007FFAC3D3A853` was deterministic across runs AND across runtime versions (.NET 8.0.27 and .NET 10.0.8 both crash at the identical address — proves the failure is in native engine code reached by editor-plugin registration, not in the managed CLR layer).
 
 **Why:**
 - Editor plugins are loaded by Godot at editor startup; the order and the state each leaves behind matter.
@@ -27,7 +26,7 @@ Editor plugins in Godot can register `EditorImportPlugin`, `EditorInspectorPlugi
   5. The bisect IS pairwise — single-plugin enablement may all pass while a pair crashes. Test combinations of N choose 2.
 - **Workaround when conflict found:** disable whichever plugin is least currently-needed in `[editor_plugins].enabled`. Both plugins remain on disk; just remove from the enabled `PackedStringArray`. File a worklog item for re-enabling once upstream conflict is fixed.
 - **Fix path (long-term):** read both plugins' `plugin.cfg` + their main `.gd` init scripts. Look for `add_import_plugin()` / `add_inspector_plugin()` / `add_export_plugin()` calls. The two plugins likely register against the same slot or hook the same engine event. Report to whichever maintainer is more responsive; suggest collaboration on a shared dispatch interface.
-- **Audit check after enabling a new editor plugin:** run `dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~{{PROJECT_NAME}}.Tests.Logic.HSM.KnockedUpStateTests"` (or another known runtime-required class). If silent-skip appears (Total < expected), the new plugin conflicts with an existing one — bisect immediately rather than committing.
+- **Audit check after enabling a new editor plugin:** run `dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~{{PROJECT_NAME}}.Tests.Logic.<AKnownRuntimeSuite>"` (or another known runtime-required class). If silent-skip appears (Total < expected), the new plugin conflicts with an existing one — bisect immediately rather than committing.
 
 **Diagnostic-debt fix surfaced by this incident:** the `silent_skip_sentinels.Logic_min` in `Tests/regression_baseline.json` is currently `500`, but the non-runtime Logic test count has grown to ~658. With sentinel < actual, `/regression_gate` Tier-1 does not catch this silent-skip pattern. The sentinel needs to track non-runtime growth (suggest bumping to ~700, or computing dynamically from a per-suite filter that excludes `[RequireGodotRuntime]`).
 

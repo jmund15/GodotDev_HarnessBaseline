@@ -4,7 +4,6 @@ description: "An IComponent that caches a BB dependency at Initialize can't be d
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 88e67137-dcb2-439d-b03d-fe166e29ee2b
 ---
 
 When an `IComponent` resolves a Blackboard dependency once at `Initialize` (e.g.
@@ -15,9 +14,9 @@ production pipeline already ran `Initialize` during scene load and the component
 the *real* cached reference. Re-`Set`-ting `BBDataSig.X` on the BB afterward no-ops:
 the component never re-reads the BB.
 
-**Symptom:** the plan says "inject a `FakeIntentSource` into the wizard BB post-load, then
+**Symptom:** the plan says "inject a fake intent source into the entity BB post-load, then
 `_Process`" — the drive silently does nothing; the component still uses the real source it
-cached at init. (Bit Batch A's `WizardInteractDispatchTest` for `InteractorComponent3D`.)
+cached at init. (Bit an interaction-dispatch test for an interactor component.)
 
 **Verified:** `InteractorComponent3D.cs:152` caches `_intentSource` at `Initialize`; `:70`
 reads the cached field each `_Process` (never re-reads the BB) — confirmed by source, so a

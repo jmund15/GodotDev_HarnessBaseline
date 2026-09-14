@@ -4,7 +4,6 @@ description: "ResourceSaver.Save keys its serializer off the file extension; tem
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: fd0b005f-63ab-4f79-a253-a2db6c715771
 ---
 
 `ResourceSaver.Save(resource, path)` returns `Error.FileUnrecognized` when the path extension doesn't match a registered Resource format (`.tres`, `.res`, `.scn`, etc.). Naming a temp file `<path>.tmp` strips that dispatch signal — the last extension becomes `.tmp` and no serializer matches.

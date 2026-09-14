@@ -4,7 +4,6 @@ description: "Godot.Collections.Dictionary<Resource,V> [Export] — .tres litera
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 73d529b6-fa2f-4eaf-a38b-fbd2a5575729
 ---
 
 A `Godot.Collections.Dictionary<TResource, TValue>` `[Export]` has two non-obvious traits:
@@ -19,4 +18,4 @@ A `Godot.Collections.Dictionary<TResource, TValue>` `[Export]` has two non-obvio
 
 **How to apply:** filter null keys at the consumption boundary; author scene-node typed-dict exports via editor/MCP rather than by hand; cover any hand-authored typed-dict `.tres`/`.tscn` with a scene-load test (or an existing test that loads the scene) asserting the consumed result is non-empty. Sibling value-type `.tres` trap: [[gotcha_export_enum_out_of_range_silent_false]].
 
-**Concrete:** `default_practice_palette.tres` (`ConfiguredSet = Dictionary[IngredientData, int]({ ExtResource("..."): 3 })`) + `DefaultPracticePaletteProvider.GetSpawnSet`'s `ingredient == null` guard, 2026-05-28. Crash mode: `arena_floor.tscn` `_infusionsByFloor = Dictionary[int, Resource]({...})` hand-add crashed the GdUnit host (exit `-1073741795`); reverted + deferred to editor wiring, 2026-05-28 (crash followed the whole scene edit; typed-dict is prime suspect per trait 1, not bisected).
+**Concrete:** a palette `.tres` (`ConfiguredSet = Dictionary[ItemData, int]({ ExtResource("..."): 3 })`) + its provider's `item == null` guard, 2026-05-28. Crash mode: a scene's `_byFloor = Dictionary[int, Resource]({...})` hand-add crashed the GdUnit host (exit `-1073741795`); reverted + deferred to editor wiring, 2026-05-28 (crash followed the whole scene edit; typed-dict is prime suspect per trait 1, not bisected).

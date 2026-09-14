@@ -4,7 +4,6 @@ description: "Jmodot's NodeConfigurationException/ResourceConfigurationException
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 88d7b283-4fd6-48bd-9a96-423e2e79a81d
 ---
 
 Jmodot's config exceptions are **object-bound**: `NodeConfigurationException` /

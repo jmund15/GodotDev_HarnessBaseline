@@ -4,7 +4,6 @@ description: "Plan files must read as clean end-to-end execution docs for a cont
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 1088c47a-48d1-4302-9f46-cf19e12290b9
   modified: 2026-08-05T18:14:03.022Z
 ---
 

@@ -4,7 +4,6 @@ description: "Pick subagent tier from the SPEC's strength, not the task's surfac
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 92e56590-48d0-4bba-afac-178408f0e359
 ---
 
 When dispatching a subagent, choose the model tier by asking "what does the spec leave to the

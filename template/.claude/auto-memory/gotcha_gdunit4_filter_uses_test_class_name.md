@@ -4,7 +4,6 @@ description: "GdUnit4 --filter matches on the test CLASS FQN (e.g. SchemaMigrato
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: fd0b005f-63ab-4f79-a253-a2db6c715771
 ---
 
 `dotnet test --filter "FullyQualifiedName~<X>"` for GdUnit4 matches against the TEST class's fully qualified name, not the production class name under test. Filtering on `SchemaMigrator.MyMethod` returns `"No test matches the given testcase filter"` because the actual test FQN is `{{PROJECT_NAME}}.Tests.<Logic|Integration>.<Path>.SchemaMigratorTest.MyMethod_<...>`.

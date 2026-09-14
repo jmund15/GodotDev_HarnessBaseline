@@ -4,7 +4,6 @@ description: "Verify a type's mutability/identity/equality contract against code
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: e47019d7-3235-4772-920c-5cd1c8d0148d
 ---
 
 Before locking a design that mutates, replaces, snapshots, or compares a type, verify that type's REAL contract against the code — mutable-vs-immutable, reference-shared-vs-copied, value-vs-reference equality. Independent red-team passes reason from the design's stated premises, so N agreeing passes can converge on a false foundational assumption they all inherited: **consensus ≠ verification.**

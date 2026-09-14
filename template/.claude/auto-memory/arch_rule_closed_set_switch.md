@@ -2,7 +2,6 @@
 name: switch(type) expresses CLOSED-SET intent — identical-behavior cases mean delete the type
 description: A switch over types is a closed-set design statement; if a new case's behavior is identical to an existing one, the TYPE is the smell — delete it, don't add the case.
 type: feedback
-originSessionId: 15bc6648-e4d1-4a64-b970-d32e8c122873
 ---
 A `switch (type)` statement that maps types to behaviors expresses a **CLOSED-SET design intent**. Adding a case requires justification — and if the proposed case's behavior is identical to an existing case, the TYPE itself is the smell: **delete the redundant type, repoint consumers to the surviving case.**
 

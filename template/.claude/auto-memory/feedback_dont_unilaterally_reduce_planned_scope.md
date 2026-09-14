@@ -4,7 +4,6 @@ description: "Never cut planned scope mid-execution without extremely good justi
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: be7b1f7e-2ff8-4ef7-8d20-c1c5fbe62ecd
 ---
 
 Never cut planned scope mid-execution without **extremely good justification** AND **explicit verification with the user that the cut is OK**. The plan was authored with the scope set that way for a reason. Framing a cut as a "scoping note" inside an execution turn does NOT count as authorization. Default is execute-as-planned; deferring anything the plan called out requires re-authorization.
@@ -17,6 +16,6 @@ Never cut planned scope mid-execution without **extremely good justification** A
 - The plan IS the authorization. You are not the author of the plan — you are its executor. Disagreement requires going back to the author, not editing in flight.
 - This applies even to "small" cuts. The scope-reduction failure mode is cumulative: small unilateral cuts add up to deliveries that don't match the plan.
 
-**Concrete (2026-05-17, encounter-extraction Pos 1 Phase 5):** Plan §5.2 + §7.8 enumerated 5A, 5B, 5C, 5D, 5E as Phase 5 deliverables. I shipped 5C + partial 5E, deferring 5A/5B/most-of-5D as "follow-up infrastructure." User pushback forced a second pass that delivered everything originally planned — net negative on session efficiency vs. asking once upfront.
+**Concrete (2026-05-17, a five-deliverable phase):** Plan §5.2 + §7.8 enumerated 5A, 5B, 5C, 5D, 5E as Phase 5 deliverables. I shipped 5C + partial 5E, deferring 5A/5B/most-of-5D as "follow-up infrastructure." User pushback forced a second pass that delivered everything originally planned — net negative on session efficiency vs. asking once upfront.
 
 Related: [[feedback_resolve_questions_in_plan_not_execution]] (mirror at plan-author side — same principle: don't ship ambiguity expecting the executor to fix it). [[feedback_recommended_fix_means_implement]] (similar shape: stated work is authorized, deferring it requires explicit re-authorization).

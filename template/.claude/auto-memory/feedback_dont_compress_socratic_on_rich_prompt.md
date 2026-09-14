@@ -2,7 +2,6 @@
 name: Don't compress Socratic when prompt is rich
 description: Rich front-loaded context (brainstorm prompt, /plan_part briefing, design doc) is starter material — NOT a license to skip a workflow's validation steps (Socratic phase, /explore, the plan-validation pass). Run them in full with personal verification.
 type: feedback
-originSessionId: 8459bfff-658d-4555-8a92-a8af8156825e
 modified: 2026-08-06T22:23:17.016Z
 ---
 When a brainstorm prompt (e.g. `/architecture_brainstorm`) front-loads candidate patterns, class kinds, wiring questions, or named options, do NOT collapse the Socratic phase into a "user already pre-loaded most of this" shortcut. Run the full Socratic — every fork asked — even if questions feel partially answered by the prompt.
@@ -22,7 +21,7 @@ Pattern-matching against starter context produces shallow recommendations that r
 
 **Concrete:** During the 2026-05-17 `arch-rng-injection-patterns` brainstorm, agent proposed to "compress Socratic Step 2" because the prompt named Patterns A/B/C/D, 4 class kinds, and 4 wiring questions. User corrected: "I do NOT want you to skip/reduce step 2 UNLESS personally verified and justified. This is just a starter context to help, but you need to do your own reasoning and thorough review."
 
-**Concrete:** 2026-05-20 `arch-rng-injection-patterns` P1 plan — agent drafted the plan solo after a rich `/plan_part` briefing, skipping Plan Mode Phase 2. User: "you shouldve ran the plan agent workflow, why did you not." The dispatched Plan agent then caught a stranded production consumer (`EncounterRuntime` raw `ToString()` seed-key) + a dead test seam that solo drafting missed.
+**Concrete:** 2026-05-20, an RNG-injection plan — agent drafted the plan solo after a rich `/plan_part` briefing, skipping Plan Mode Phase 2. User: "you shouldve ran the plan agent workflow, why did you not." The dispatched Plan agent then caught a stranded production consumer (a runtime's raw `ToString()` seed-key) + a dead test seam that solo drafting missed.
 
 **Related:**
 - `feedback_session_start_hook_does_not_override_skill_procedure.md` — same shape at a different layer (hook ≠ procedural skip license; rich prompt ≠ Socratic skip license).

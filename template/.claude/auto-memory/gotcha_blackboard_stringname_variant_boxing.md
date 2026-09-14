@@ -4,7 +4,6 @@ description: "StringName payloads route through Blackboard's Variant path; subsc
 metadata: 
   node_type: memory
   type: gotcha
-  originSessionId: 84c4144b-f9b9-4779-9edf-d4aa3710e5f9
 ---
 
 `Blackboard.Set<StringName>(key, sn)` does NOT route through the POCO branch

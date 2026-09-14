@@ -4,7 +4,6 @@ description: "Passively auto-loaded MEMORY.md can be a baseline-sibling project'
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 8d59ce77-9de6-4405-9305-e5e56b10bc71
 ---
 
 The passively auto-loaded `MEMORY.md` is Claude Code's native memory feature (a harness/user-level memory-directory config), NOT the project SessionStart hook — `session_context_loader.py` uses git-toplevel and never loads MEMORY.md. That config can point at a DIFFERENT baseline-sharing project, so a recalled fact naming a repo-specific artifact (autoload, file, flag, class) may be the sibling's and FALSE here.

@@ -4,7 +4,6 @@ description: "semantic-search restrictToDir matches the index's stored REPO-RELA
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 0154c3a7-691a-4c1b-acb2-f593c6f511b1
 ---
 
 `mcp__plugin_semantic-search_semantic-search__search`'s `restrictToDir` parameter filters against the index's **stored repo-root-relative posix paths** (e.g. `.claude/auto-memory`). An **absolute OS path** (`C:\Users\...\.claude\auto-memory`) matches nothing and returns "No results found" — even when that directory is fully indexed.
@@ -19,3 +18,5 @@ metadata:
 **Concrete:** during the 2026-05-31 MCP→file memory migration, two probes with an absolute `restrictToDir` returned 0 results and nearly produced a false "auto-memory isn't indexed" conclusion that would have derailed the whole approach; an unrestricted query proved the dir was indexed at bm25=1.00.
 
 Related: [[project_memory_single_store_two_tier]], [[feedback_tool_routing_discipline]].
+
+**Verified:** 2026-09-04 memory-claim audit — per-dir `.search-index/` directories exist at `.claude/`, `.claude/auto-memory/`, `.claude/hooks/` beside the repo-root one (`git ls-files --others --ignored`), so a subdir `searchDir` does build a separate index.

@@ -4,7 +4,6 @@ description: "Before planning a sub-Part, ground in the WHOLE system's core purp
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 35f6b835-0b79-4433-b4cf-f31f0c4bdce1
 ---
 
 When scoping a plan for one Part of a larger system, first read the system's overarching purpose — the roadmap intro and the original brainstorm intent — not only the Source-linked design section.

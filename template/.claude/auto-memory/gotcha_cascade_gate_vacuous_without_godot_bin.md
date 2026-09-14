@@ -4,7 +4,6 @@ description: "Regression-gate import cascade prints PASS even when GODOT_BIN_PAT
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 8d59ce77-9de6-4405-9305-e5e56b10bc71
 ---
 
 The `/regression_gate` step-4b cascade check (`"$GODOT_BIN_PATH" --headless --import ... ; grep InvalidCastException log && FAIL || PASS`) is **vacuous when `GODOT_BIN_PATH` is not exported in the shell**: the command fails with `: command not found`, the log contains only that error line, the grep finds no cast exception, and the `||` branch prints `TOOL CASCADE GATE: PASS`.

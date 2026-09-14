@@ -2,7 +2,6 @@
 name: Invoke named slash-command skill, not manual equivalent
 description: When the user references a named slash command (/plan_check, /regression_gate, /worklog) and it exists in the available-skills list, invoke it via the Skill tool — don't substitute a manually-executed equivalent procedure
 type: feedback
-originSessionId: e9092f23-933b-4528-b9e3-ec8a6b452b62
 ---
 When a user references a named slash command (`/plan_check`, `/regression_gate`, `/worklog`, etc.) and that skill is in the available-skills list, invoke it via the Skill tool — even if an equivalent procedure was just executed manually in the same session.
 

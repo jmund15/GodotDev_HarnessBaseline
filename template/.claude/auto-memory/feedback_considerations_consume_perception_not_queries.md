@@ -4,7 +4,6 @@ description: "Steering considerations / AI consumers read the perception manager
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 66931000-c20f-4f54-b483-af3fa3e136e8
 ---
 
 AI consumers (steering considerations, conditions) get world knowledge from the entity's `AIPerceptionManager3D` (`SteeringDecisionContext3D.Memory`), NOT from their own per-frame physics queries. If the data isn't in perception, that is a **sensor configuration gap** — fix the sensor (mask/category/decay), don't duplicate detection.

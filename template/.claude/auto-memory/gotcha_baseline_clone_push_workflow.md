@@ -4,7 +4,6 @@ description: "Upstreaming via the baseline cache clone: checkout main first (syn
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 8d59ce77-9de6-4405-9305-e5e56b10bc71
 ---
 
 Two verified pitfalls when pushing to the harness baseline from `.claude/.cache/baseline-repo`:

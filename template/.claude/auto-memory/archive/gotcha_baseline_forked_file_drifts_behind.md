@@ -4,7 +4,6 @@ description: "A forked baseline file is excluded from drift checks, so it silent
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 01c8633d-c4e3-4b41-88df-21aa59609efb
 ---
 
 A `forked` entry in `.claude/baseline.lock.json` is excluded from ALL drift checks (`baseline_sync.py check` reports it only as a count). Consequence: the local copy silently stops receiving upstream `template/` improvements and can fall behind a real fix while `check` keeps reporting "clean". The danger is sharpest when the forked file is itself a tool (`baseline_sync.py`) — the copy that *runs* the sync diverges from upstream and you never get told.

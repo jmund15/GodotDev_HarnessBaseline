@@ -2,11 +2,10 @@
 name: "Recommended fix" means implement, not defer
 description: When the user says "do the recommended fix" they mean ship it now, not defer. Explicit justification required if deferring.
 type: feedback
-originSessionId: a413d188-90f6-4e6b-97e2-821a3e7e8297
 ---
 When I present options like "(a) implement / (b) defer / (c) skip" and the user says "do the recommended fix" or "do (a)", default to **implementing in-session**, not deferring to a future PR or batch.
 
-**Why:** Said explicitly during the PR #55 ASK/PLAN backlog sweep after I defaulted to "looks complex, probably defer" on items that actually had tractable fixes — e.g., the ExponentialDecayStrategy `exp(-rate*delta)` switch, the DecayProcessor runtime cycle detection, and the Jmodot HasCategory null-guard fix. The user's full phrasing: "for all the rest, do the recommended fix (NOT DEFER, if you want to defer you have to specifically ask and provide justification)."
+**Why:** Said explicitly during the PR #55 ASK/PLAN backlog sweep after I defaulted to "looks complex, probably defer" on items that actually had tractable fixes — e.g., an `exp(-rate*delta)` decay switch, a runtime cycle-detection fix, and a Jmodot `HasCategory` null-guard fix. The user's full phrasing: "for all the rest, do the recommended fix (NOT DEFER, if you want to defer you have to specifically ask and provide justification)."
 
 **How to apply:** If I think something deserves deferral (complex setup, cross-repo workflow, unclear scope), present it as an explicit question BEFORE starting work — not as a unilateral "marking as DEFERRED in the doc." Deferral is a decision the user makes, not one I take.
 

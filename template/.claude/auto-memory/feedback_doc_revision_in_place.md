@@ -2,7 +2,6 @@
 name: Doc revision discipline — rewrite in place, don't append revision footers
 description: When correcting a saved doc, rewrite affected sections in the main body. The reasoning trail goes in a Revision History footer at the END — never as a "v1.1 addendum" buried after the wrong recommendation. Top-down readers internalize the headline; buried corrections don't save them.
 type: feedback
-originSessionId: 2026-04-30
 ---
 When correcting a saved doc (design doc, plan, retrospective, README, etc.), rewrite the affected sections in the main body. Do NOT use append-mode to add a "v1.1 revision" footer that leaves the wrong recommendation at the top of the doc.
 
@@ -17,4 +16,4 @@ When correcting a saved doc (design doc, plan, retrospective, README, etc.), rew
 
 **Status flip:** when applying a substantive revision to a versioned doc, bump frontmatter `status: <state>-vN.M` so fresh sessions know "this is the corrected version, not an in-progress draft."
 
-**Concrete:** 2026-04-30 brainstorm doc `BrainstormingDesigns/2026-04-30-core-elemental-spells-overview.md` shipped with appended v1.1 section keeping wrong ElementProfile recommendation at top of §6.1 until user pushed back. The "v1.1" footer didn't fix the doc; it just documented that the doc remained broken.
+**Concrete:** 2026-04-30 brainstorm doc `BrainstormingDesigns/2026-04-30-core-elemental-abilities-overview.md` shipped with appended v1.1 section keeping wrong ElementProfile recommendation at top of §6.1 until user pushed back. The "v1.1" footer didn't fix the doc; it just documented that the doc remained broken.

@@ -4,7 +4,6 @@ description: "-consoleLoggerParameters:ErrorsOnly suppresses CS1574 + all warnin
 metadata: 
   node_type: memory
   type: project
-  originSessionId: e3900932-7a6f-4fc5-a912-bc227a3104f9
 ---
 
 The project build (`dotnet build -consoleLoggerParameters:ErrorsOnly`, per

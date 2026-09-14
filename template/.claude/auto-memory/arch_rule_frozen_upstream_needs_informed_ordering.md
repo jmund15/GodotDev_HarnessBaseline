@@ -4,7 +4,6 @@ description: "Freezing an upstream artifact before downstream commits only NET-r
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 69bb06f7-efc1-454f-83c7-447be9974fdd
 ---
 
 Committing an upstream artifact early and freezing it (so downstream decisions become binding) does NOT automatically reduce retries — it TRADES one retry class for another. Downstream items that don't fit the frozen artifact now fail against it, where before they failed later. To NET-reduce retries, the downstream commit must SELECT/ORDER candidates using the frozen artifact's real measured properties, not the proxy that was adequate before freezing.

@@ -4,7 +4,6 @@ description: "write_doc (obsidian modifier) emits markdown tables INSIDE callout
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 85a74a34-48af-461e-8ad0-89df2dec9535
 ---
 
 When `mcp__ai-worker__write_doc` (with the `obsidian` modifier) generates a markdown table nested inside a callout block (`> [!info]-`, `> [!example]`, etc.), the table rows are frequently emitted at **column 0 with no leading `> ` prefix**. In Obsidian's renderer this terminates the callout early — the table renders OUTSIDE/below the collapsible instead of within it.

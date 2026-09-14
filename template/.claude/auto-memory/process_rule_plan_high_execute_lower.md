@@ -2,7 +2,6 @@
 name: Plan/audit at xhigh effort, execute at lower effort via fresh session
 description: Architectural planning + /plan_check audit benefit from xhigh reasoning; mechanical execution from a complete plan file doesn't. Hand off via plan file to fresh session at lower effort tier rather than compacting.
 type: feedback
-originSessionId: 8892bf33-068a-4265-ad0e-ad954ac0de36
 ---
 Architectural planning (especially with `/plan_check` audit dispatching parallel verification agents) accumulates tokens AND benefits from xhigh-tier reasoning — the agent traverses the design space, consolidates contradictory findings from parallel agents, and iterates the plan based on feedback. Execution from a complete plan file is dominantly mechanical (TDD RED→GREEN cycles, file renames per refactor procedure, scene-tree authoring per MCP discipline, .tres creation per spec) and doesn't need xhigh.
 
@@ -16,4 +15,4 @@ Architectural planning (especially with `/plan_check` audit dispatching parallel
 
 **Tooling:** `/plan_handoff <plan-path>` is the canonical executor-session entry point (created 2026-05-18). Invoke it as the **first command in a fresh executor session** (not in the planning session). It validates the plan file exists, loads the plan, sets the executor discipline (follow plan exactly, surface don't auto-fix, verify empirical claims, `/regression_gate` before commits), and begins execution from step 1. No copy/paste prompt — the command itself IS the kickoff. **`/plan_check` is NOT a prerequisite** — many smaller-scope or manually-verified plans skip the audit. Run `/plan_check` (in the planning session) only when the plan hits its own litmus (3+ files, new types, deletions, 2+ subclass refactors).
 
-Witnessed 2026-05-13 — Wizard locomotion refactor planning ran on xhigh through /plan_check 2-agent audit + plan revision cycle (~$X session). User paused before execution to consider session strategy; recommendation given was fresh session at medium effort with the plan file as handoff. Pattern generalized 2026-05-18 — `/plan_handoff` command codifies the kickoff prompt so the workflow no longer relies on ad-hoc prompt authoring per handoff. Planning ≠ execution in cognitive load, and the harness lets us right-size each.
+Witnessed 2026-05-13 — Player locomotion refactor planning ran on xhigh through /plan_check 2-agent audit + plan revision cycle (~$X session). User paused before execution to consider session strategy; recommendation given was fresh session at medium effort with the plan file as handoff. Pattern generalized 2026-05-18 — `/plan_handoff` command codifies the kickoff prompt so the workflow no longer relies on ad-hoc prompt authoring per handoff. Planning ≠ execution in cognitive load, and the harness lets us right-size each.

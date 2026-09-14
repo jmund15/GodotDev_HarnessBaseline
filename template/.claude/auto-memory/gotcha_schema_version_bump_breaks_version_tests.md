@@ -4,7 +4,6 @@ description: "Bumping a persisted schema-version constant breaks tests asserting
 metadata: 
   node_type: memory
   type: gotcha
-  originSessionId: 15d022f2-dd83-460d-abb5-9563357a5979
 ---
 
 Bumping a repository's `CurrentSchemaVersion` constant (to register a new migration)
@@ -18,7 +17,7 @@ int literal near the repo type and update post-load assertions to the new curren
 version. To probe round-trip *preservation* (not migration), save data AT the current
 version so `Load()` runs no migration.
 
-**Concrete:** `CurrentSchemaVersion` 1→2 (`MetaProgressionRepository`) broke
+**Concrete:** `CurrentSchemaVersion` 1→2 (a persistence repository) broke
 `LoadWithNoFile_ReturnsDefaultData` + `SaveLoadRoundTrip_PreservesData` (both asserted
 `==1`); only the full `/regression_gate` Integration run surfaced them. 2026-06-05.
 

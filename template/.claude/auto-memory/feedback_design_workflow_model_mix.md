@@ -4,7 +4,6 @@ description: Design-exploration workflows use Opus (or main-loop) generators wit
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 8d59ce77-9de6-4405-9305-e5e56b10bc71
 ---
 
 For idea/design-exploration Workflows, the user wants **Opus-class generators** (creative

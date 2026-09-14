@@ -4,7 +4,6 @@ description: "When the user pushes back on a design, isolate WHICH claim they re
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 35f6b835-0b79-4433-b4cf-f31f0c4bdce1
 ---
 
 When user pushback arrives (especially with frustration), resist the reflex to abandon the whole approach. Restate the objection as a specific falsifiable claim and confirm it maps to a real defect in the current design — not to a mis-description of the mechanism — BEFORE any large pivot.

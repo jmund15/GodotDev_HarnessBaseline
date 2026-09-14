@@ -4,7 +4,6 @@ description: "Pathspec-committing tests must also stage their (often untracked) 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 83b89f38-76ed-4be6-84f9-095f353c42de
 ---
 
 A pathspec commit (`git commit -- <paths>`, the concurrent-safe idiom) silently excludes any unlisted path — including a test's own mock/builder/fixture dependencies. A dep you READ as if it existed but that's actually untracked WIP gets left out, so the commit doesn't build in a fresh checkout (a later commit / parallel session has to backfill it).

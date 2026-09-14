@@ -2,7 +2,6 @@
 name: Slash command naming — propose convention-aligned names first
 description: When creating new slash commands, scan existing .claude/commands/ for naming prefixes (doc_, session_, doc_*_audit, etc.) and propose a name that extends an existing family before inventing a new namespace.
 type: feedback
-originSessionId: f28dcdb1-572c-4206-ba21-c4404c11a475
 ---
 When creating or renaming slash commands, default to the **existing naming-family prefix** (e.g., `doc_` for doc-tooling commands, `session_` for session-lifecycle commands, `*_audit` for auditors) rather than inventing a new namespace.
 

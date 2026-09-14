@@ -4,7 +4,6 @@ description: "When the user says \"execute in this session\" (or similar), don't
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 87e1bba7-8413-4954-838d-6f3956e3c8d6
 ---
 
 When the user gives an execution directive ("execute here in this session", "do it now", "go"), treat the decision as final. Do NOT pause partway through to re-offer alternatives you already presented (e.g., "continue here or hand off to a fresh session?") just because the work got deeper or context filled up.

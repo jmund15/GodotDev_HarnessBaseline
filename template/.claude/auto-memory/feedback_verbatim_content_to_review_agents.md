@@ -4,7 +4,6 @@ description: Send VERBATIM file contents to review/audit subagents — abbreviat
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 31499a7a-c91c-4ab1-975f-14648380d358
 ---
 
 When dispatching review/audit subagents with a Claude-assembled CONTEXT, send **verbatim** file contents — never abbreviate or summarize code to save args size. Agents treat the CONTEXT as ground truth and report the *abbreviation itself* as defects (false positives, often flagged "critical").

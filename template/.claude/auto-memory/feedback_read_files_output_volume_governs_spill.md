@@ -4,7 +4,6 @@ description: "read_files/read_web spilling is governed by OUTPUT chars (~30-40K 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 69e5b27e-7727-4cc2-a2ef-e653ebb70bd3
   modified: 2026-08-05T02:19:57.469Z
 ---
 
@@ -19,3 +18,5 @@ This is a **Claude-Code-side limit** on the result it receives, independent of t
 **Verified:** 2026-08-04 memory-claim audit — the 2026-05-31 bisection (28.5K inline vs 43K spilled, worker output complete) isolates the cause to Claude Code's inline cap, not the worker's; re-confirmed incidentally 2026-08-04 by two ~70KB Bash results spilling under the same mechanism.
 
 **How to apply:** Before any `read_files`/`read_web` call, ask: *is the output bounded (a focused answer/digest) or unbounded (raw/verbatim extraction that grows with input)?* Bounded → many files fine, no batching. Unbounded → **batch so each call's output stays under ~28K chars (≈1 medium source file)**, OR re-scope to a structured/bounded digest (compression is the tool's whole value). Large results (>~25K chars) now auto-return as a manifest pointing to a clean raw file — but **read the manifest's framing**: `SUCCESS` = complete, read the file (Read offset/limit or grep/jq), do NOT rerun; `INCOMPLETE` = worker truncated, the file is PARTIAL, **reduce output volume** (split into fewer files/call, narrow the question, or request a bounded digest) and verify completeness (e.g. expected entry count). **Switching models does NOT help** — `max_tokens` is global per read call (kimi gets the same cap, and its hidden reasoning leaves *less* room). When output ≈ input (verbatim reproduction), skip the worker and Read the files directly (same token cost, no round-trip). See [[feedback_read_files_multifile_completeness_directive]], [[feedback_read_files_enumerate_first]], [[feedback_tool_routing_discipline]]; full data in `ai_worker_model_guide.md` → *read_files — Output Discipline*.
+
+**Verified:** 2026-09-04 memory-claim audit — `models.yaml:106` `max_tokens_reader: 131072`; `server.py:1258` emits the INCOMPLETE/CUT OFF manifest branch.

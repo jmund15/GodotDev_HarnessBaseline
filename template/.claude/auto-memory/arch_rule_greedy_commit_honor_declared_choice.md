@@ -4,7 +4,6 @@ description: "Progressive/greedy commit over a shared constrained resource must 
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 69bb06f7-efc1-454f-83c7-447be9974fdd
 ---
 
 When structures are committed ONE AT A TIME into a shared, constrained resource pool (ports, slots, budget, cells) with NO backtracking across commits, an early structure that is free to *rebind* can greedily consume a resource a later structure needs — and there is no way to undo it. Fix: once a node/structure is FROZEN (committed in a prior step), edges/claims touching it must use the **declared** resource, not a freely-rebound one; rebind freedom is allowed only among the not-yet-frozen members of the current structure.

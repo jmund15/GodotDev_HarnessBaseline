@@ -2,7 +2,6 @@
 name: Jmodot_2D_Movement_Architecture
 description: 2D parity surface for Jmodot movement + combat + actors — API shapes, BB key convention, strategy inventory, deferred debt. Authored 2026-04-19.
 type: reference
-originSessionId: 65fe3ebf-5342-45f2-b44f-e56a7c3d003f
 ---
 ## MovementProcessor2D
 
@@ -52,20 +51,20 @@ Consumers dispatch by entity dimension at cast time (e.g. `bb.TryGet<IMovementPr
 
 ## ForceControlLossDetector2D
 
-Reuses the dimension-agnostic `ControlLossEvaluator` (scalar hysteresis — no Vector2/Vector3 knowledge needed). Writes `ForceContext2D` to `BBDataSig.ForceContext` + bool to `BBDataSig.ControlLost`. Consumer HSM states (CapturedState/WallHitState/GroundFallState equivalents) remain project-local — Jmodot provides only detector + flags, not state machinery.
+Reuses the dimension-agnostic `ControlLossEvaluator` (scalar hysteresis — no Vector2/Vector3 knowledge needed). Writes `ForceContext2D` to `BBDataSig.ForceContext` + bool to `BBDataSig.ControlLost`. Consumer reaction states remain project-local — Jmodot provides only the detector and observations, not state machinery.
 
 ## ICharacterController2D additions
 
-Now extends `IVelocityProvider2D` with explicit interface implementation forwarding `LinearVelocity → Velocity` (mirrors 3D). Gained: `IsOnWall`, `GetWallNormal()`, `PreMoveVelocity`, `LastNonZeroVelocity`. `CharacterBodyController2D` tracks PreMove/LastNonZero inside `Move()`. **{{PROJECT_NAME}}-local implementer `TestSpell.cs` required 4 explicit interface impls** to match — any other downstream implementer will break until it does the same.
+Now extends `IVelocityProvider2D` with explicit interface implementation forwarding `LinearVelocity → Velocity` (mirrors 3D). Gained: `IsOnWall`, `GetWallNormal()`, `PreMoveVelocity`, `LastNonZeroVelocity`. `CharacterBodyController2D` tracks PreMove/LastNonZero inside `Move()`. Any downstream implementer must add the same forwarding members.
 
 ## Deferred tech debt
 
 - `AISteeringProcessor2D` only has `ApplyTurnRateLimit` — full steering/consideration pipeline NOT ported. Wait for 2D AI consumer.
 - `KnockbackComponentRigidBody2D` pending a TR `RigidBody2D` consumer.
-- `InstantMovementStrategy2D` previously had a `* delta` bug and a `{{PROJECT_NAME}}.Global` dependency — both fixed in commit `9bc55fc`.
+- `InstantMovementStrategy2D` previously had a `* delta` bug and a consumer-project dependency; both are fixed.
 
-## Known flake: Integration GC race
+## Known runtime failure: integration GC race
 
-2026-04-19 Phase 9 regression gate: first Integration run died with `FATAL "gchandle.is_released()"` at `mono_object_disposed_baseref` in `GodotObject.Finalize` after `GC.RunFinalizers`. Classic Godot C# GC race on a previously-disposed GodotObject — **unrelated** to 2D work. Exit code -1, no test results. Clean re-run: 239/0 green.
+An integration run may fail with `FATAL "gchandle.is_released()"` at `mono_object_disposed_baseref` in `GodotObject.Finalize` after `GC.RunFinalizers`. This signature points to a previously disposed Godot object, not to the feature under test.
 
-**If this recurs** during CI/PR runs, investigate disposal paths in integration tests near the `SpellCrafter` / `HitboxComponent3D` hit pipeline — those were the last visible logs before the crash.
+If it recurs, inspect test teardown and disposal ownership, then rerun the affected suite only after fixing or isolating the invalid lifetime.

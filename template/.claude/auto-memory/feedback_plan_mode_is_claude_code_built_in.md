@@ -2,7 +2,6 @@
 name: Plan Mode is a Claude Code built-in
 description: Local skills/commands document the handoff to Plan Mode, never Plan Mode internals. Zero references to EnterPlanMode/ExitPlanMode in `.claude/` is intentional.
 type: feedback
-originSessionId: 10c65425-68c7-4266-a24a-b35e9a15e00d
 ---
 **Plan Mode is a Claude Code built-in feature**, not a {{PROJECT_NAME}}-local skill or command. Verified by exhaustive grep: zero references to `EnterPlanMode` or `ExitPlanMode` exist anywhere in `.claude/commands/` or `.claude/skills/`. The only mentions live inside session-archive JSON files (recording user actions), not as documented harness behavior.
 
