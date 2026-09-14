@@ -1,6 +1,4 @@
-# CLAUDE.md
-
-This file provides strict guidance to Claude Code (claude.ai/code) for this repository.
+# CLAUDE.md — Development Guidelines
 
 <!-- ===== BASELINE:core BEGIN =====
 This region is synced from the harness-baseline repo (see .claude/baseline.lock.json).
@@ -8,80 +6,45 @@ Improvements that are universal belong upstream: run /sync_baseline to propagate
 Project-specific guidance goes in the PROJECT section below the END marker.
 ================================== -->
 
-# Development Guidelines
+## Communication
+Lead with the answer; close with the next action. Use plain, specific words and state each fact once — much of what you write is read later, by the user after a run or by a delegate with none of this context, so the close stands alone. For three or more findings, decisions, options, risks, questions or actions, assign stable codes (F1…, D1…, O1…, R1…, Q1…, A1…) and keep them for the whole conversation; no codes for a short answer.
 
 ## Core Principles
-1.  **Context First:** Identify domains entering, search Memory for gotchas before proceeding.
-2.  **TDD strict in Logic Domain**: No production code without a failing test. Never assume — verify. (Domain split defined in *Project Guidelines* below.)
-3.  **Logs are Truth:** You can't see runtime. Rely on E2E/Integration outputs + `JmoLogger` via `get_debug_output`.
-4.  **Assess refactoring after every green** — refactor when it adds value, skip when it doesn't.
-5.  **Update CLAUDE.md** when meaningful workflow changes or new gotchas surface. If the change lands inside the `BASELINE:core` region (or any file tracked in `.claude/baseline.lock.json`), it is shared-harness doctrine — propagate via `/sync_baseline`, don't let it fork silently.
-6.  **Retrospect** after significant changes: *"What do I wish I'd known at the start?"*
-7.  **Capture learnings** — corrections/preferences → auto-memory (hot topic file, or `archive/` for bulk reference); patterns → relevant SKILL.
-    * **Memory save filter** (litmus: *"Would forgetting this cause a bug or wasted time?"*): ✅ surprising behavior, non-obvious gotchas, user preferences, cross-system rules. ❌ API signatures, feature descriptions, how-your-own-code-works (those go in XML `<summary>` docs). ❌ Rules naming a specific file/PR/content-item in the *principle itself* (overfit — rewrite as a class-of-things rule, keep the name as evidence). See `/autolearn`'s *Anti-pattern: Overfit-to-Specific*.
-8.  **Modular when direction is known**: YAGNI for speculative needs only. When user states a system's evolution direction (modular contract, scalable to X, framework-agnostic), design for it now. Litmus: *"Am I imagining this future, or has the user stated it?"* Hypothetical → defer. Stated → design for. Reverse pitfall: NOT permission to build for imagined needs. Recurring failure: defaulting to YAGNI on the first proposal — propose the modular design first when direction is stated.
+1.  **Ideal architecture is the deliverable:** modular, scalable/extensible, clean/intuitive, loosely coupled, data-driven, no-redundancy design AND designer-intuitive authoring outrank working-code-fast at EVERY stage (design, plan, execute, review). Prototyping is the exception. Litmuses: `rules/design_litmus.md` (auto-loads on `.cs`), `rules/scene_authoring.md` §Scene anatomy (auto-loads on `.tscn`/`.tres`).
+2.  **Context First:** identify the domains you are entering and search Memory for gotchas before proceeding. Verify decisive premises, not just their citations.
+3.  **TDD strict in Logic Domain:** no production code without a failing test. Never assume — verify. (Domain split: *Hybrid TDD* below; project subsystem lists: *Project Guidelines*.)
+4.  **Logs are Truth:** you can't see runtime. Rely on E2E/Integration outputs autonomously and `JmoLogger` via `/analyze_godot_logs` after a user playtest. After a session with significant `.tres`/`.tscn` wiring, launch the game via the Godot MCP and verify clean via `get_debug_output` (check `get_godot_version` matches the project first — the MCP's engine pin is independent of `$GODOT_BIN`, and an older engine rewrites `project.godot`/csproj on open).
+5.  **Assess refactoring:** a similar surface existing is not a reason to reuse it — if that code is suboptimal, reusing it or copying its pattern adds debt. Refactor when it adds value, skip when it doesn't.
+6.  **Update CLAUDE.md** when meaningful workflow changes or new gotchas surface — queue non-load-bearing edits per §9 rather than editing mid-session. A change inside the `BASELINE:core` region (or any file tracked in `.claude/baseline.lock.json`) is shared-harness doctrine — propagate via `/sync_baseline`, don't let it fork silently.
+7.  **Retrospect** after significant changes: *"What do I wish I'd known at the start?"*
+8.  **Capture learnings** — place each learning where it will be loaded when the decision recurs (routing: `/codify` §Step 4). Save-filter litmus: *"Would forgetting this cause a bug or wasted time?"* — ✅ surprising behavior, gotchas, preferences, cross-system rules; ❌ API signatures, feature docs, how-your-own-code-works (a member's own contract → its XML `<summary>`), rules naming a specific file/PR in the principle itself (overfit — rewrite as class-of-things; see `/autolearn` *Overfit-to-Specific*).
+9.  **Modular when direction is known:** YAGNI for speculative needs. When the user states a system's evolution direction (modular contract, scalable to X, framework-agnostic), design for it now. Litmus: *"Am I imagining this future, or has the user stated it?"* Hypothetical → defer. Stated → design for. Reverse pitfall: NOT permission to build for imagined needs. Propose the modular design first when direction is stated. **When unclear: ASK.**
+10. **Keep scope and quality intact.** Missing, failed and unverified are not clean; report actual tests and artifacts. Check current git state and preserve peer work — `git status --short <file>` before calling a defect peer-owned; clean means it is yours to fix now.
 
-> **⚡ Critical Tool Routing — always-loaded summary** (full table: §9):
-> - **NEVER** bare-`Grep` a single PascalCase identifier on `.cs` — anchor-then-navigate (`Grep("class X"/"interface X")` → `LSP documentSymbol` → `findReferences`).
-> - **NEVER** bare-`Grep` a single PascalCase identifier on `.tres` / `.tscn` / `.gd` / `.md` / `.godot` / `.json` / `.yaml` / `.toml` / `.txt` — those are indexed by semantic-search. Route to `mcp__plugin_semantic-search_semantic-search__search`. (Yes, even when you "just want one file." Grep stays correct for literal values, UIDs, regex alternation, attribute markers — those don't match the single-PascalCase shape.)
-> - **NEVER** chain ≥3 reads/searches for synthesis — bundle into one `mcp__ai-worker__read_files(paths=[...], question=...)`. **ONLY EXCEPTION** - reading for a surgical edit. All normal searching/navigation routes through `read_files`.
-> - **NEVER** `Read` synthesis-shaped `.md` paths (`Design/`, `Planning/`, `BrainstormingDesigns/`, `Documentation/`, `Retrospective/`, `Audit/`, `Brainstorm/`, `Architecture/`, `Review/`, `Postmortem/`) — regardless of whether they live in the Obsidian vault or are passed as an absolute filesystem path. The rule is path-based, not Obsidian-MCP-only; using native `Read` instead of `mcp__obsidian__obsidian_read_note` does NOT exempt you. Route through `read_files`.
-> - **NEVER** chain ≥3 `WebFetch` calls — bundle into `mcp__ai-worker__read_web(urls=[...], question=...)`.
-> - **OFFLINE FALLBACK** — when `mcp__ai-worker__*` tools are unavailable (deferred-tool list omits them, or `ToolSearch` returns no match), substitute a Haiku subagent for the same bundling role: `Agent(subagent_type="general-purpose", model="haiku", description="Bundled doc digest", prompt="Read <paths/urls> and answer <question>; report under 300 words.")`. The bundling rule still applies — only the executor changes. Do NOT degrade to chained native `Read`/`WebFetch`.
-> - **NEVER** route `.claude/` markdown edits (`CLAUDE.md`, `skills/*/SKILL.md`, `commands/*.md`, `hooks/*`) through `write_doc` / `write_code`. These are agent-runtime instructions, not Obsidian-vault docs; voice-drift from a worker round-trip is unacceptable. Use `Edit` directly. The Documentation Delegation Rule (HARD) targets the Obsidian-vault doc surface, not `.claude/`.
-> - **PREFER** `write_doc` for new design/architecture/retrospective doc creation OR section-scale rewrites. Reserve direct `Write`/`Edit` for: (a) sub-paragraph touch-ups (typo, single-line fix, one-paragraph correction) where worker round-trip overhead exceeds the writing cost; (b) audit findings, debugging conclusions, and plan-mode resolutions where structure is dictated by the upstream surface (audit recipe / debugging skill phases / plan-mode markdown), not by a doc-type system prompt. Mermaid/structured-content blocks remain preservation-required — flag in spec for any `write_doc` call.
+> **⚡ Tool Routing:** §9 owns the pre-call litmus (read/search AND write routing) — consult it before any read/search/doc-write call. Runtime `tool_routing_*.py` hooks nudge violations at call time; `session_model_rails.py` injects the session rails at SessionStart.
 
 ### Self-Improvement Loop
-
-Six pieces — reach for them by name when the corresponding signal fires:
-
-1. **Observe** — `/self_evaluate` archives structured entries to `.claude/self_evaluate_archive.json` at session end.
-2. **Aggregate** — `/eval_dashboard` surfaces per-domain/skill clean rates + *Skill Drift Watchlist*. Run before tuning.
-3. **Tune** — `/autolearn` proposes signal-quality-gated edits at save time (with *Overfit-to-Specific* check). `/memory_audit` is the retroactive sweep over the existing backlog (hot `*.md` + cold `archive/`), three lenses sharing one enumeration: **claim-verification** (isolate mechanism vs symptom; stamp `**Verified:**` or quarantine — sibling of `/autolearn`'s question-5 gate), **overfit-to-specific** (retroactive application of `/autolearn`'s gate), and **gotcha-vs-feature-doc drift**. The generic `anthropic-skills:consolidate-memory` skill is the orthogonal **structural** sibling — dedup, durable-vs-dated retirement, and `MEMORY.md` index pruning; it does NOT apply the overfit gate.
-4. **Verify** — `/regression_gate` is the hard gate; the rest are soft.
-5. **Carry-forward** — `/worklog` captures deferrals that don't fit any of the above.
-
-Anti-pattern: tuning mid-session without consulting the dashboard. Run `/eval_dashboard` first or skip the tune.
+Reach for these by name when the signal fires. **Observe** — `/self_evaluate` at session end; `/orchestration_metrics` is its empirical sibling when the session dispatched Workflows. **Aggregate** — `/eval_dashboard`, run before tuning. **Tune** — `/codify` routes one correction or repeated workflow to the surface that will fire (suggest it; the user invokes); `/autolearn` at save time; `/memory_audit` is the retroactive sweep, and a clean quality report on an over-budget `MEMORY.md` IS the fragmentation signal. **Verify** — `/regression_gate` is the hard gate; the rest are soft. **Carry-forward** — `/worklog` captures deferrals fitting none of the above. Each command's own file owns its mechanics; suggest user-invoked commands rather than pretending to have run them.
 
 ### Planning Phase Checklist
-Before writing a plan, ALWAYS:
-1. **Classify the task type:** Refactor? New System? New Content? Debug?
-2. **Identify domains** the task will enter (feeds the search term table below)
-3. **Inventory existing abstractions** before proposing new types — extending a 2+ subclass family beats inventing parallel types. For NL discovery (when you don't know the type names yet), use `mcp__plugin_semantic-search_semantic-search__search` per §8 *before* falling through to LSP/Grep.
-4. **Optional pre-execution gate**: For plans touching 3+ files, introducing a new type/folder/top-level concept, refactoring a 2+ subclass family, OR deleting/replacing existing files — run `/plan_check <plan-text-or-file>` before user approval. Two-agent dispatch verifies (a) auto-memory gotchas the plan walks into (semantic-search), (b) existing-abstraction discovery via LSP findReferences. Below the litmus, the `plan_memory_reminder.py` PostToolUse hook on `ExitPlanMode` covers passive Memory + Skill reminders without spawning agents.
-**DON'T GIVE ME A PLAN UNLESS YOU'VE ALREADY SEARCHED RELEVANT SKILLS AND MEMORY**
+Before constructing a plan, ALWAYS:
+1. **Classify the task** (refactor / new system / new content / debug) and **name the domains** it enters — that choice drives the skills-and-memory search, which precedes the first plan line.
+2. **Inventory existing abstractions before introducing ANY new named configuration surface**, at every granularity (type, `[Export]`, parameter, behavior bool/enum, helper — `rules/design_litmus.md` #1 owns the kind-list). Name the family that owns the concern or record "none exists"; extending a 2+ family beats inventing a parallel surface. Dispatch `/explore` rather than hand-rolling the sweep — it reports an UNCOVERED dimension where a hand sweep returns an empty result that reads as "nothing exists".
+3. **Run `/plan_check` before asking for approval** when the plan touches 3+ files, introduces a new type/folder/top-level concept, refactors a 2+ subclass family, deletes/replaces files, or changes always-loaded guidance. **Harness plans are in scope**: no compiler and no `/regression_gate`, so plan-time is the only gate they get. Resolve user-facing forks before approval; `skills/_brainstorm_shared/plan_file_format.md` owns the plan format.
 
 ### Proactive Context Loading (Mid-Execution)
+**Entering a new domain mid-task → search `.claude/auto-memory/` before acting**, with a natural-language paraphrase of what you are about to do (semantic search, per §2 *Recall*). Gotchas accumulate by domain, so the domain you just entered is the one whose memory you have not read. Per-domain search seeds: `reference/memory_domains.md` (the documented home for the table `hooks/plan_memory_reminder.py` applies on plan writes) — **add your project's content domains there.** Background notifications and incidental words are not domain changes.
 
-Search memory with BOTH task-specific terms AND domain keywords — gotchas accumulate by domain. Stack-generic rows below; **add your game's content domains** (and keep the *Avoid* column honest — broad terms load whole buckets):
-
-| Domain | Search Term | Avoid (broad) | Also Check Skill? |
-|--------|-------------|---------------|-------------------|
-| **Testing** | "testing" or "GdUnit4" | "test" | Yes — Testing skill + CLAUDE.md TDD philosophy |
-| **Exports** | "Inspector" or "RequiredExport" | "export" | No |
-| **Refactoring** | "refactor" | | Yes — Refactor Procedure skill + LSP for callers |
-| **Debugging** | "debugging" or "diagnose" | "bug" (too generic, false-positive heavy) | Yes — Debugging skill (Phase 2 includes the verify-scene-config-first bullet) |
-| **HSM/States** | "HSM" or "transition" | "state" | No |
-| **Status Effects** | "status" | | Yes — Jmodot + Status Effect Authoring skills |
-| **MCP Tools** | "MCP" or "UID" | | No |
-| **Godot Physics** | "physics" or "collision" | "Godot" | No |
-| **Godot Lifecycle** | "disposal" or "lifecycle" | "node" | No |
-| **Data Files** | "UID" | | Yes — Architecture Philosophy skill |
-| **Design Philosophy** | "design" or "modifier" | "stat" | Yes — Architecture Philosophy skill |
-| **Pooling** | "pool" or "spawn" | | No |
-
-**Memory recall is semantic-search** over `.claude/auto-memory/` (rules/gotchas) — `mcp__plugin_semantic-search_semantic-search__search` with a natural-language paraphrase (per §8). The domain terms above are good query seeds, not exact-match keys; for broad discovery, search facets separately. Hot-tier facts also surface passively via the auto-loaded `MEMORY.md` index.
-
-**If an unexpected result contradicts expected domain behavior, search Memory before changing approach.**
+**If an unexpected result contradicts expected domain behavior, search Memory before changing approach. Never leave memory inaccurate — the same mistake should never reoccur.**
 
 ## Build & Test Commands
-See [Testing Skill](skills/testing/SKILL.md) for full reference. Three load-bearing rules: NEVER omit `--filter`/`--settings .runsettings` (pipe crash); ALWAYS Bash `timeout=600000` (orphan prevention); NEVER `--no-build` (stale DLLs mask failures). Pre-commit `/regression_gate` MANDATORY for `.cs` changes; meta commits (`.claude/`, skills, docs) are exempt.
+See [Testing Skill](skills/testing/SKILL.md) for full reference. Three load-bearing rules: NEVER omit `--filter`/`--settings .runsettings` (pipe crash); ALWAYS Bash `timeout=600000` for tests (orphan prevention) and for any vault/engine-install/transcript walk (a timed-out walk reads as an empty result); NEVER `--no-build` (stale DLLs mask failures). Pre-commit `/regression_gate` is MANDATORY for `.cs` changes — once, at drive close; mid-drive slices verify by `scripts/verify.ps1 -Scope <domains>`, never by a gate. Meta commits (`.claude/`, skills, docs) are exempt from the gate; a commit staging anything under `.claude/{hooks,tools,scripts,workflows,tests}` or `settings.json` instead needs a green `.claude/scripts/harness_tests.py` stamp (`rules/harness_tooling.md`).
 
 ## Development Philosophy: Hybrid TDD
 **Identify the domain before writing code.** This section owns the **domain split** (Logic vs Gameplay); [Testing Skill](skills/testing/SKILL.md) owns the **workflow recipes** (RED/GREEN/REFACTOR mechanics, fixture conventions, orphan management). The project-specific subsystem lists for each domain live in *Project Guidelines* below.
 
-- **Logic Domain (Strict TDD):** pure-logic subsystems — data pipelines, math/parsing, data structures, framework core. **NO implementation without a failing test.** Includes `.tres` data file changes that affect Logic behavior — write the test first. Cycle: RED (`[TestSuite]` in `Tests/Logic/`) → VERIFY (specific failure) → GREEN (minimum to pass) → REFACTOR.
-- **Gameplay Domain (Integration + Inspection):** player entity, AI behavior, content lifecycle, VFX, UI, Physics Feel. **AUTOMATE DETERMINISTIC. INSPECT SUBJECTIVE.** Use ISceneRunner for input→outcome, state transitions, physics expectations, signal wiring, scene structure. Reserve manual playtest for "feels responsive?" / timing / juice.
+- **Logic Domain (Strict TDD):** pure-logic subsystems — data pipelines, math/parsing, data structures, framework core. **NO implementation without a failing test.** Includes `.tres` data file changes that affect Logic behavior — write the test first. Suites live in `Tests/Logic/`. No testing-first exception for an obvious Logic change.
+- **Gameplay Domain (Integration + Inspection):** player entity, AI behavior, content lifecycle, VFX, UI, Physics Feel. **AUTOMATE DETERMINISTIC. INSPECT SUBJECTIVE.** Use ISceneRunner for input→outcome, state transitions, physics expectations, signal wiring, scene structure. Reserve manual playtest for "feels responsive?" / timing / juice. Discovery-time feel/model questions (design not yet locked), and closed designs deliberately shipped minimal, both route to `/prototype` — that skill owns both modes and their branch/registry mechanics.
 
 ## Developer Tooling Strategy
 
@@ -89,146 +52,109 @@ See [Testing Skill](skills/testing/SKILL.md) for full reference. Three load-bear
 Auto-loaded rule: `.claude/rules/godot_files.md` (on `.tscn`/`.tres`/`.godot` reads).
 
 ### 2. Memory (One Store, Two Tiers)
-File-based auto-memory at `.claude/auto-memory/` is the single memory store. Two tiers, distinguished by `MEMORY.md` index membership:
-*   **Hot tier** — topic files listed in `MEMORY.md`. The index (first 200 lines / 25KB) auto-loads at SessionStart, so these are always top-of-mind. **Agent-maintained**: when writing a new hot topic file, add a one-line pointer to `MEMORY.md` in the *same turn* (no separate hooks/workflows — see `feedback_memory_md_is_auto_managed.md`). Keep the index lean (≤~200 lines) so it stays under the auto-load cap.
-*   **Cold tier** — files under `.claude/auto-memory/archive/`, NOT listed in `MEMORY.md`. Zero passive context cost, fully searchable via semantic-search (the main index covers `.claude/`). Holds bulk reference: archived domain buckets and any large single-feature archive.
+File-based auto-memory at `.claude/auto-memory/` is the canonical memory store. The runtime's memory format targets `~/.claude/projects/<project>/memory/`; by project decision that store holds one-line pointers and bodies live here — this overrides the default format. Two tiers, distinguished by `MEMORY.md` index membership. **Hot** — topic files listed in `MEMORY.md`; the index auto-loads at SessionStart, so these are always top-of-mind (200 lines / 25KB is the hard truncation point, NOT the target). **Agent-maintained**: when writing a new hot topic file, add its one-line pointer to `MEMORY.md` in the *same turn* (no separate hooks/workflows — `archive/feedback_memory_md_is_auto_managed.md`), and keep the index ≤~200 lines so it stays under the cap. **Cold** — files under `archive/`, NOT listed in `MEMORY.md`: zero passive context cost, fully searchable via semantic-search (the main index covers `.claude/`), holding archived domain buckets and large single-feature archives.
 
-**Placement decision** for a new learning:
-*   Surprising/cross-cutting rule, user preference, or gotcha you want surfaced every session → **hot** topic file + `MEMORY.md` pointer.
-*   Bulk domain reference, large single-feature archive, or low-frequency detail → **cold** file under `archive/` (no pointer).
+**Placement** — route by *when the decision is made*: before any file is open → **hot** topic file + `MEMORY.md` pointer; with a file of a prefix-anchored class open → `rules/<name>.md` + `paths:`, as a split (rule moves, evidence file stays); on deliberate domain entry or bulk reference → **cold** under `archive/`, no pointer. Standard: `instruction_quality` §5 A1–A5; destinations: `/codify` §Step 4. Demotion is not deletion — cold stays fully searchable, so tier moves carry no claim-re-verification burden.
 
-**Recall** — search with `mcp__plugin_semantic-search_semantic-search__search` (NL paraphrase; for broad discovery, search facets separately). Pass `restrictToDir` as a **repo-relative posix path** when narrowing (e.g. `.claude/auto-memory`) — an absolute OS path silently returns zero results (the index stores relative posix paths). Hot-tier facts also arrive passively via the auto-loaded `MEMORY.md` index; use Grep for literal field values / UIDs.
+**Admission, not headroom:** default to cold. A hot pointer is justified only when the decision it pre-empts fires before any search would run; the index is capped by the runtime, so admitting a line costs one already there (arithmetic: `/codify` Step 5). "Surprising", "cost an hour", "will recur" justify a *memory*, never a hot one: cold is searchable and search IS the recall path. A memory-domains trigger exists → `archive/` directly, no pointer. Save surprising constraints and preferences, not API inventories, code descriptions or facts recoverable from git. **Recall** — search with `mcp__plugin_semantic-search_semantic-search__search` (NL paraphrase; for broad discovery, search facets separately); pass `restrictToDir` as a repo-relative posix path (`gotcha_semantic_search_restricttodir_posix.md`). Use Grep for literal field values / UIDs.
 
 ### 3. Obsidian (The Design Source)
 Source of truth for design, lore, formulas, Jmodot framework docs. Trigger: lore/formulas/design rules/todos/framework research. The vault is a normal filesystem path (`{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\`, and `...\Jmodot\`) — **native `Read`/`Write`/`Edit`/`Grep`/`Glob` are the default** (confirmed safe even on docs open in the Obsidian app). Full conventions: `obsidian_conventions` skill (auto-loads).
-*   **Read:** ONLY within `DevProjects/{{PROJECT_NAME}}` or `DevProjects/Jmodot`. Synthesis-shaped reads still route to `read_files` (§9).
-*   **Write:** project-specific docs → `{{PROJECT_NAME}}/Claude/`; Jmodot library-general → `Jmodot/Claude/`. **Tiebreaker:** if a doc would be useful in another game built on Jmodot, it goes under `Jmodot/Claude/`.
-*   **Search first** — don't guess file paths. **DO NOT INVENT FORMULAS** — read from vault; ask user to create if missing.
-*   **Obsidian MCP** is reserved for structured frontmatter/tag edits (`obsidian_manage_frontmatter` / `obsidian_manage_tags`); MCP-offline does not block native read/write/search.
+*   **Read** ONLY within `DevProjects/{{PROJECT_NAME}}` or `DevProjects/Jmodot`; synthesis-shaped reads still route to `read_files` (§9). **Write:** project-specific → `{{PROJECT_NAME}}/Claude/`, Jmodot library-general → `Jmodot/Claude/` — **tiebreaker:** useful in another game built on Jmodot ⇒ `Jmodot/Claude/`; templated or mechanical docs and section-scale restructures route to `write_doc`; assessments, reviews, design verdicts and retrospectives are written directly (§9). **Search first** — don't guess paths. **DO NOT INVENT FORMULAS** — read from vault; ask the user to create if missing. Obsidian MCP only for structured frontmatter/tag edits; MCP-offline doesn't block native read/write/search.
 
 ### 4. WebFetch (The Documentation)
-You don't have built-in knowledge of Godot 4.x / GdUnit4 / library syntax — **FETCH THE DOCS** when unsure, don't guess.
-*   **Rule (GitHub):** raw.githubusercontent.com URLs for direct file reads (saves tokens); browse/tree URLs have no raw form — use as-is.
-*   **Rule (multi-URL synthesis):** For 3+ URLs synthesized into one answer, route to `read_web` instead of chaining `WebFetch` calls. Each `WebFetch` loads full page text into Claude's context; `read_web` returns a ~1–2 KB digest at near-zero worker cost.
-*   **Trusted URLs:**
-    *   *GdUnit4*: `https://raw.githubusercontent.com/godot-gdunit-labs/gdUnit4Net/master/README.md`
-    *   *GdUnit4 Examples*: `https://github.com/godot-gdunit-labs/gdUnit4NetExamples/tree/master` *(browse — no raw form)*
-    *   *GdUnit4 CMD Runner*: `https://godot-gdunit-labs.github.io/gdUnit4/latest/advanced_testing/cmd/`
-    *   *Godot API*: `https://docs.godotengine.org/en/stable/classes/index.html`
-    *   *C# / .NET*: `https://learn.microsoft.com/en-us/dotnet/csharp/`
+Engine and runtime versions are pinned in §Project Guidelines — re-verify there before a version-sensitive claim. For GdUnit4 and library syntax you have no built-in knowledge — **fetch the docs when unsure, never guess.** **Never source a Godot class from docs.godotengine.org** — read the version-pinned cache at `.claude/cache/godot-docs/doc/classes/<Class>.xml` (`scripts/godot_docs_cache.sh` builds it). **Fetch order:** godot cache → `scripts/fetch_source.sh` → `WebFetch` for a single URL → context7 for a resolved library id → `read_web` for multi-page synthesis only → `WebSearch`; per-tier costs and prohibitions: §9. Cache rebuild, class index, quote-checkability, GitHub raw URLs, trust tiers: `reference/source_trust.md` §Fetch order. Inspect source coverage before asserting absence.
 
-### 5. WebSearch
-**Context:** Research fallback for obscure errors/bugs. Use ONLY if docs are silent or for specific engine bugs.
-
-### 6. Git (The History)
-*   **Commits:** After each successful feature, propose commit (don't push without instruction). Default to multiple categorical commits (feat/fix/refactor/chore) — split by logical category unless told otherwise. Use Git standard messages.
+### 5–6. WebSearch & Git
+*   **WebSearch:** research fallback for obscure errors/bugs — ONLY if docs are silent or for specific engine bugs. **Git commits:** after each successful feature, propose a commit (don't push without instruction); default to multiple categorical commits (feat/fix/refactor/chore) split by logical category unless told otherwise, Git-standard messages. Separate unrelated staged changes and respect submodule/peer ownership.
 
 ### 7. C# LSP Plugin (Code Intelligence)
 Auto-loaded rule: `.claude/rules/csharp_lsp.md` (on `.cs` reads).
 
 ### 8. Semantic Search MCP (Natural-Language Code Discovery)
-**Tool:** `mcp__plugin_semantic-search_semantic-search__search` (DreB plugin + local C# tree-sitter; companion skill `semantic-search:search`). Embedding + 6-signal POEM ranking. **Indexed:** `.cs`/`.gd`/`.md`/`.tres`/`.tscn`/`.godot`/`.json`/`.yaml`/`.toml`/`.txt`. **Not indexed:** binaries, `.uid`, `.import`, gitignored.
+**Tool:** `mcp__plugin_semantic-search_semantic-search__search` (companion skill `semantic-search:search`). Index `.search-index/search.db` goes stale after edits — refresh via `/reindex_search` (auto in `/session_end`). Engine, indexed file types, ranking: `reference/semantic_search.md`.
 
-*   **USE for:** "where is X done", prior-art-for-Y, conceptually-similar-code — when you don't know symbol names yet.
-*   **DO NOT USE for:** call-site enumeration (LSP `findReferences`); `.tres`/`.tscn` field-value queries (Grep). (Memory rules/gotchas live in the indexed `.claude/auto-memory/` store — semantic-search IS the recall path for them.)
-*   **Composition order:** semantic-search (code AND memory rules) → LSP `findReferences` → Grep (literal anchors).
-*   **Caveat:** large `partial class` files chunk as one block (cosine drops; BM25/symbol/path carry — drop to LSP). Heading-mention chunks can outrank canonical declarations — sharpen with `restrictToDir` or use LSP `findReferences`.
-
-Index at `.search-index/search.db` (gitignored). Stale-after-edits; refresh via `/reindex_search` (auto in `/session_end`).
+*   **USE for** "where is X done", prior-art-for-Y, conceptually-similar-code — when you don't know symbol names yet. **NOT for** call-site enumeration (LSP `findReferences`) or `.tres`/`.tscn` field-value queries (Grep). Memory rules/gotchas live in the indexed `.claude/auto-memory/` store — semantic-search IS their recall path. **Composition order:** semantic-search (code AND memory rules) → LSP `findReferences` → Grep (literal anchors). **Caveat:** large `partial class` files chunk as one block (cosine drops; BM25/symbol/path carry — drop to LSP); heading-mention chunks can outrank canonical declarations — sharpen with `restrictToDir` or use LSP `findReferences`. If a search is empty, confirm scope/ignore behavior with git-aware enumeration before claiming absence.
 
 ### 9. Tool Routing — Pre-Call Litmus
-Universal rule for any read/search task. Default selection is wrong by habit; ask BEFORE the call. Always-loaded summary at top of file.
+Ask which tool BEFORE the call — each prohibition below names its positive target.
 
-| Pre-call cue | Wrong default | Right tool |
-|---|---|---|
-| 3+ files OR single file >400 lines for **synthesis** | `Read` / `obsidian_read_note` | `read_files(paths=[...], question=...)` |
-| 3+ web URLs for **synthesis** (single URL → `WebFetch` directly; 3 is a floor, not a default) | 3× `WebFetch` into Claude's context | `read_web(urls=[...], question=...)` |
-| Single PascalCase identifier on `.cs` | bare `Grep("FooBar")` (no kind anchor) | **Anchor-then-navigate:** `Grep("class FooBar\b"\|"interface FooBar\b" -g "*.cs")` OR `semantic-search("FooBar")` → `LSP documentSymbol(filePath=that.cs)` → `LSP findReferences`/`hover`/`incomingCalls` from the anchored position. (LSP `workspaceSymbol` cannot search by name — no `query` param — so anchor first.) **Carve-out:** for *verified-unique* names (no overloads, no common-verb prefix like Apply/Update/Get/Set), `Grep("FooBar", -g "*.cs")` returns the same set as LSP and is acceptable WHEN explicitly justified — see `csharp_lsp.md` "Verified-unique-name carve-out". |
-| Single PascalCase on `.tscn`/`.tres`/`.gd`/`.md`/`.godot`/`.json`/`.yaml`/`.toml`/`.txt` | `Grep("FooBar")` | `semantic-search__search(query="FooBar")` |
-| Fuzzy NL phrase you can describe but can't anchor literally | `Grep("approximate phrase")` | `semantic-search__search` |
-| ≥3 chained `obsidian_global_search` / `semantic-search` for the same investigation | per-call I/O into context | bundle into one `read_files` query |
+- **NEVER** bare-`Grep` a PascalCase identifier on `.cs` — anchor-then-navigate: `Grep("class X")` → LSP `documentSymbol` → `findReferences`; a bare grep returns declarations and mentions indistinguishably. Verified-unique names carve out with stated justification (`csharp_lsp.md`).
+- **NEVER** bare-`Grep` a PascalCase identifier on `.tres`/`.tscn`/`.gd`/`.md`/`.godot`/`.json`/`.yaml`/`.toml`/`.txt`, or a fuzzy phrase you cannot anchor literally — route to `semantic-search`.
+- **NEVER** chain ≥3 reads/searches for synthesis, or `Read` a synthesis-shaped vault path (`Design/`, `Planning/`, `BrainstormingDesigns/`, `Documentation/`, `Retrospective/`, `Audit/`, `Brainstorm/`, `Meetings/`, `Architecture/`, `Review/`, `Postmortem/`) — bundle into one `read_files(paths=[...], question=...)`, single small docs included. Surgical-edit reads are exempt, and known, focused evidence for a line-level judgment is read directly — do not force a small audit/debug read through a lossy summary because of its path or a read counter.
+- **NEVER** leave a recursive `grep -r`/`rg`/`find` unbounded — bound the WALK (`-l`/`-c`/`-m1`, narrower root). `| head -N` bounds only output: SIGPIPE reaches the producer on its next WRITE, so a silent walk runs to completion. Output size is unknowable pre-call and lands in context permanently.
+- **NEVER** let `grep -r`/`find` stand in for a gitignore-aware search — they sweep `.claude/worktrees/`, whole extra checkouts whose hits are indistinguishable from real ones. Bounding does not fix scope; use `Grep`, `git grep`, or `git ls-files`.
+- **NEVER** fetch a doc page ad hoc — follow §4's order; a single URL goes to `WebFetch` direct, and `curl` at an external SOURCE routes through `scripts/fetch_source.sh`. `read_web` is the multi-page SYNTHESIS tier ONLY: it spends dollars and truncates silently, so read its per-URL `raw=/seen=` preflight before recording any negative.
+- **NEVER** route `.claude/` markdown through `write_doc`/`write_code` — direct `Edit`, and load `instruction_quality` BEFORE the first harness edit; worker prose drifts from house voice, and this file is loaded doctrine. In the Obsidian vault: `write_doc` for templated or mechanical docs and section-scale restructures of existing prose; direct `Write`/`Edit` for judgment-dense docs (assessments, reviews, design verdicts, retrospectives), sub-paragraph touch-ups, and findings whose structure is dictated upstream — and name the class in the writing turn, since `routing_audit.py` logs every vault write and an unclassified direct one reads as a silent bypass. Mermaid/structured blocks are preservation-required — say so in every `write_doc` spec.
+- **Large exact scans, counts or joins** use deterministic extraction with bounded output: scan the complete intended source and report missing/unparseable inputs separately. A failed or degenerate worker return is incomplete, not evidence — recover existing output before another dispatch.
+- Batch likely deferred tools when a discovery tool is available; otherwise use the registered tools directly. Loaded schemas consume context; disk edits do not evict loaded instructions or by themselves prove a cache reset. Queue non-load-bearing harness edits per `/apply_harness_edits`, which owns load-mode distinctions and the `MEMORY.md` same-turn exemption.
 
-**Grep stays correct for** literal field values (`radius = 5.0`), UID hashes, regex alternation (`Foo\|Bar\|Baz`), attribute markers (`[GlobalClass]`), comment scans (`TODO\|FIXME`), `using` directives, `JmoLogger.Error` call sites, **and as the anchor step before LSP** (`Grep("class FooBar\b")` to find a declaration file).
+`Grep` stays correct for literal field values, UID hashes, regex alternation, attribute markers, comment scans, `using` directives, and as the anchor step before LSP. Line-precision direct reads need **explicit user framing** ("audit X for Y", "verify against the spec", "patch verification") — never agent self-classification.
 
-**Single-URL WebFetch stays direct** — never over-route a single-URL fetch through `read_web`. The 3-URL synthesis floor in the table is a floor, not a default; one URL into Claude's context is cheaper than the worker round-trip overhead, and the digest layer adds zero value for a single source.
-
-**Audit-shape exception:** line-precision direct reads warranted ONLY on explicit user framing — "audit X for Y" / "security review" / "fact-check line-by-line" / "verify against the spec" / "patch verification". Trigger is **explicit user framing**, not agent self-classification.
-> **NOT triggered by:** *"investigate why X is broken"* (debugging — bundle into `read_files`); *"look at files A,B,C and report"* (multi-file synthesis — bundle); *"find every X"* (single-tool query — Grep/LSP/semantic-search per table); *"how does X work"* (explanation — bundle).
-> **Litmus when in doubt:** *"Could a cheap-model summary silently miss a defect a line-precision read would catch?"* Yes (genuine audit / security review / patch verification) → direct. No (debugging / pattern-hunt / "look and tell me what you see") → bundle.
-
-**Recovery + caveats:** wrong first call → accept and proceed (cumulative cascade is worse than a single suboptimal call). LSP unavailable on cloud (`CLAUDE_CODE_REMOTE=true`); hook substitutes semantic-search. Canon (worked examples, full bullets): `feedback_tool_routing_discipline.md` in auto-memory; runtime enforcement: `tool_routing_*.py` hooks.
+**Offline fallback** (no other home carries this): when `mcp__ai-worker__*`/semantic-search are absent, or the budget band forbids sidecar spend, substitute a subagent for the bundling role — the scout tier when every fact the digest needs is copyable from the supplied files, the fan-out tier when it must be derived. The bundling rule holds; only the executor changes. No `Agent` tool? Bounded `Read`(offset/limit) is the floor. Never chain naive `Read`/`WebFetch`, and never loop on a nudge toward an absent tool — a wrong first call is accepted and moved past, since a cascade costs more than one suboptimal call. LSP is unavailable on cloud; the hook substitutes semantic-search. Worked examples: `archive/feedback_tool_routing_discipline.md`; runtime enforcement: `tool_routing_*.py`.
 
 ### 10. Harness Baseline (Shared Config)
-The universal portion of this `.claude/` harness is synced with a shared baseline repo. `.claude/baseline.lock.json` records the baseline repo, the tracked files, and per-file hashes from the last sync.
-*   **Editing a tracked file** = editing shared doctrine. Improvements that apply to any project → upstream via `/sync_baseline push`. Genuinely project-specific divergence → `/sync_baseline fork <file>` (excludes it from drift checks).
-*   **New `.claude/` artifacts** surface via the `candidates` sweep (drift gate + `/sync_baseline`) and are judged once: universal-shaped → upstream + `track`; project-specific → `ignore` (status `local`, never re-fires).
-*   **Drift check** runs inside `/clean_push` and `/commit_push` — when committed changes touch tracked files or add `.claude/` files, you'll be prompted to classify and sync.
-*   **Pulling improvements** made in other projects: `/sync_baseline pull`.
+The universal portion of this `.claude/` harness syncs with the shared baseline repo; `.claude/baseline.lock.json` records the repo, tracked files and hashes. Editing a tracked file = editing shared doctrine — classify and sync via `/sync_baseline` (push / pull / fork / candidates sweep). New `.claude/` artifacts surface via the `candidates` sweep and are judged once: universal-shaped → upstream + `track`; project-specific → `ignore` (status `local`, never re-fires). `/sync_baseline` runs on its own cadence and is the sole enforcement point; `/clean_push`, `/commit_push` and `/apply_harness_edits` surface the drift check only when passed `--check-baseline`. Never publish another session's unreviewed edits.
 
 ## Rationalizations to Refuse
-
 Refuse the premise and cite the rule — silent compliance (using the right tool without correcting the user) is not enough.
 
 | Rationalization | Rule to cite |
 |---|---|
-| "grep is faster / LSP is slow / it's just one symbol" | Tool Routing §9 — PascalCase goes to LSP/semantic-search; state this explicitly |
-| "read it directly, I trust your analysis more than the worker" | Tool Routing §9 — synthesis routing (≥3 files / Obsidian docs) |
+| "grep is faster / LSP is slow / it's just one symbol" | §9, PascalCase bullets |
+| "read it directly, I trust your analysis more than the worker" | §9, synthesis bullet |
 | "the logic is obvious, let's implement first then test" | TDD Logic Domain — no carve-out for self-evident logic |
-| "it's a cosmetic change / just a rename, skip the gate" | `/regression_gate` — mandatory for all `.cs` changes, no carve-outs |
+| "that file is a peer's / under active edit, log it for later" | `git status --short <file>` FIRST — clean means it is yours to fix now; a found defect is fixed in the same turn, and a task row is what you write when a verified fact blocks it |
+| "it's a cosmetic change / just a rename, skip the gate" | `/regression_gate` — mandatory for all `.cs` **commits**; the only exemption is a meta commit touching no `.cs` (§Build & Test Commands) |
 | "it's just a tweak to a synced file, upstream it later" | Harness Baseline §10 — classify universal-vs-project at commit time, not "later" |
 
 ## The Worklog (Live Todo Doc)
-Source of truth: `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian); title-only mirror at `.claude/worklog-titles.md` is injected by SessionStart hook (patched incrementally by `/worklog` ops — full-regen only on `/worklog show`). Home for small deferrals; larger items live as siblings in `TODO/`. Distant-horizon items live in a `## Future Scope` collapsed callout in the same Obsidian doc — **excluded from the mirror by design** (parked, not loaded into every session). Completed items move out to a sibling `TODO/Worklog-Archive.md` (opaque — never loaded passively; review via `/worklog history`). User-only addressable items (art, feel, brainstorms) live in a parallel `TODO/User-Tasks.md` — Claude appends only, never reads passively.
-
-*   **ADD (auto-detect, four routes):**
-    *   **Trivial — do now (preempts logging):** before any worklog-add proposal, screen for items that are scope-1 + class in `{fix, refactor, docs, chore}` + mechanical phrasing (single grep+replace, single-line edit, dead reference cleanup, one-paragraph doc add). On hit, propose `This looks trivial — do now (y), or add to worklog (a)?`. On `y`, do the work this turn (skip logging). On `a`, fall through to *Regular deferral*. Does NOT fire on investigative class (`debug`), open-ended phrasing ("audit", "investigate", "decide", "consider", "convention for"), or scope >1. Reason: 30-second jobs shouldn't accrue in the mirror. Explicit `/worklog add` bypasses this gate (user opt-in).
-    *   **Regular deferral** (default route → `## Active`, visible in mirror): triggers are "defer / punt / park / later / follow-up / out of scope / for now / next pass". Propose `Add to Worklog: <title> (<domain>)?`; on `y`, invoke `/worklog add <inferred-text>`.
-    *   **Future Scope** (route → `## Future Scope`, hidden from mirror): stronger triggers only — "eventually / someday / long-term / down the road / if/when we ever / no urgency / passive watch". Propose `Add to Worklog Future Scope: <title> (<domain>)?` so the user knows the item will be parked. User can override to regular Active with `y, active not future`. **When in doubt → regular Active.** Hidden-and-forgotten is worse than one extra mirror line.
-    *   **User-Tasks** (route → `User-Tasks.md`, fully excluded from agent context — no mirror, no sweep/triage/plan scan): items needing user judgment Claude can't tackle — production art, feel-tuning, open-ended brainstorms (user taste, not technical), cross-doc vision audits. Propose `Route to User-Tasks: <title> — <domain>?`. Override with `y, active not user-tasks`. **When in doubt → regular Active** — false-routing here is a permanent leak (doc isn't agent-surveyed). Phrase lists: `worklog_reference` skill *Trigger Catalog*.
-    *   Ask once per item per session. See `worklog_reference` skill for full trigger catalog (trivial-do-now / regular / conditional `after` / future / user-tasks).
-*   **Do-now-before-defer applies to agent-self proposals too.** Trivial-do-now above fires on conversational deferral phrasing; the same litmus applies anytime YOU draft "propose adding X to worklog" inside plan bodies, post-exit bookkeeping, follow-up suggestions, or commit-message addenda. Small + no-bad-consequences → do it now, skip worklog. The trivial-do-now gate's `audit`/`investigate` phrasing exception does NOT excuse mechanical work whose *subject-matter* mentions those words. See `feedback_dont_defer_immediately_addressable.md` in auto-memory.
-*   **Active capacity target: ≤30 items.** `/worklog show` prints a soft alarm when the count exceeds 30. The cap is a forcing function for honest prioritization — above 30, triage (complete shipped items, promote stale items to `## Future Scope`, delete items no longer relevant) before continuing to add. Not a hard block; adds still succeed.
-*   **READ:** Skim `worklog-titles.md` at planning-session start. Load full Obsidian doc only when addressing items or on `/worklog`. Future Scope items only surface via `/worklog show all` or `/worklog sweep`'s promotion-pass.
-*   **COMPLETE:** Moment a logged item finishes — `/worklog complete <title>` moves it out of `Worklog.md` into `Worklog-Archive.md` as a `[x]` one-liner (summary + date); the active doc keeps only live work.
-*   **PROMOTE:** When a Future Scope item ripens (its implicit trigger materializes — recent commit lands, observed landscape shifts, etc.), `/worklog promote <title>` moves it back to Active. Sweep proposes promotions automatically.
-*   **TRIAGE:** When Active is overloaded (cap target: 30) or backlog pressure builds, `/worklog triage` walks items proposing per-item dispositions: complete / do-now (scope-1 mechanical, executed this turn) / quick-win flag (priority bump for next session) / promote to Future Scope / delete / skip. Confirmation-driven; the SHOW alarm at >30 items recommends running it. Triage is also the only Active → Future Scope path.
-*   **Architecture:** `/worklog` is the executor (recipes); `worklog_reference` skill is the decision-time reference (classification + scope, domains, trigger catalog).
-*   **Not a worklog route — `user-owned` roadmap Parts.** `user-owned` Parts (per `_brainstorm_shared/common.md §6.3`) live on `roadmap.md` because they carry deps. `User-Tasks.md` is for *standalone* user-judgment items (no roadmap deps). When in doubt: has roadmap deps → `user-owned`; no roadmap deps → `User-Tasks.md`.
+Source of truth: `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian); title-only mirror `.claude/worklog-titles.md`, not auto-injected — Read it when you need it. Classification, routes and operations: `worklog_reference` + `/worklog`.
+*   **On deferral phrasing, propose the add** — ask once per item per session. Scope-1 mechanical items get proposed as do-now instead of logged.
+*   **Do-now-before-defer applies to your own proposals too** (plan bodies, follow-up suggestions, commit addenda): small and already in context → do it now, skip the worklog.
+*   **Complete the moment an item finishes** — `/worklog complete <title>`, not at session end.
+*   **Relevance check, once per session:** the worklog is not in context, so ask whether it overlaps what you are about to do — dispatch `.claude/workflows/worklog_relevance.js`. Fire when scope FIRST becomes nameable: a converged plan, a system-scoped goal, or the first production-file edit, whichever comes first. SKIP for meta-only `.claude/` sessions and single mechanical fixes with a known root cause.
 
 ## Core Code Conventions (Stack-Level)
-See [Architecture Philosophy Skill](skills/architecture_philosophy/SKILL.md) for full patterns. Stack-level rules:
-*   **Pure functions** wherever possible. **Control flow:** no nested if/else, early returns, ALWAYS brackets `{}`.
-*   **Logging:** `JmoLogger.Info/Warning/Error`. Never `GD.Print`. Log STATE CHANGES, not state. `JmoLogger.Error` triggers test failure.
-*   **Comments default to none.** Add one when WHY is non-obvious to a cold reader (invariants, race hazards, tuning rationale). NEVER restate WHAT, NEVER reference task/PR/"Phase X"/dates/CLAUDE.md rules. Litmus: *"If I delete this, will a maintainer 6 months from now make a wrong decision?"* No → don't write it. `<summary>` on `[Export]` is softer (becomes Godot Inspector tooltip). `#if TOOLS` setters need no `///`. Doc-only commits to recent code = smell; cut over clarify.
-*   **Files:** `snake_case` directories, `PascalCase` files/classes. **Godot:** prefer `StringName`; never `GetNode()` in `_Process`.
-*   **`[Tool]` on Resources:** blanket `[Tool]` on every `[GlobalClass]` Resource (`[GlobalClass, Tool]`); selective on Nodes (editor-time code only). Typed-`[Export]` cascade → editor-only `InvalidCastException` if a referenced Resource/subclass lacks `[Tool]` (no runtime test catches it). Gate-enforced (`/regression_gate` 1c). Full policy: [Architecture Philosophy Skill](skills/architecture_philosophy/SKILL.md) + `rules/csharp_patterns.md`.
-*   **Harness file edits** (`.claude/CLAUDE.md`, `skills/*/SKILL.md`, `commands/*.md`, `hooks/*`): match peer-content density. Load-bearing info only — no dated user quotes, no redundant restatements, no defensive over-explanation. Companion: `instruction_quality` skill at audit time.
+See [Architecture Philosophy Skill](skills/architecture_philosophy/SKILL.md) for full patterns. C# project rules — pure functions/control flow, JmoLogger discipline, comment discipline, `StringName`, `[Tool]` policy — auto-load via `rules/csharp_patterns.md` on `.cs` reads (gate-enforced: `/regression_gate` 1c).
+*   **Naming — follow the tool that authors the file.** `PascalCase` for directories and `.cs` files/classes; `snake_case` for Godot-authored assets (`.tscn`, `.tres`, `.gdshader`, `.gd`). `.py` tooling follows PEP 8 snake_case. `.md`/`.png` are ungoverned — match the neighbours.
+*   **Harness file edits** (`.claude/CLAUDE.md`, `skills/*/SKILL.md`, `commands/*.md`, `hooks/*`): match peer-content density. Load-bearing info only — no dated user quotes, no redundant restatements, no defensive over-explanation. Companion: `instruction_quality` skill — routing is by FILE CLASS, not edit size: a one-word fix to a `.claude/` file is still a harness edit.
 
 ## Shell Discipline
-*   **Bash:** No `cd path && cmd` compound — use absolute paths or `git -C <path>` / `dotnet build <path>`. Compound `&&` breaks Claude Code permission matching → repeated prompts.
-*   **Git commit (multi-line):** Write message to temp file, `git commit -F <file>`, delete temp. Never `git commit -m "$(cat <<'EOF' ... EOF)"` — `$()` triggers manual permission prompt every time.
-*   **Bash paths with spaces:** Always double-quote, never backslash-escape — escaped whitespace triggers a Claude Code safety prompt that bypasses the allow list.
-*   **Auto mode fails closed on unverifiable Bash shapes — emit statically-verifiable commands.** In auto permission mode, expansions (`$VAR`, `$(…)`, heredocs) in compounds whose final cwd can't be statically determined are refused classifier delegation ("cannot be delegated to the auto-approval classifier") and prompt manually. Cross-branch content checks: `git -C <wt> log --all -G'<pat>' --oneline`. Ref enumeration: `git -C <wt> grep -l -E '<pat>' refs/heads/* refs/remotes/*/* -- '*.cs'` (globs must expand; nested local branches add `refs/heads/*/*`), not `for b in $(git for-each-ref …)`. Probe files: Write tool, not heredoc `cat > … <<'EOF'`. Multi-step probes: committed script wrapper invoked `bash <script> <worktree>`. Engine invocations in auto mode: a committed engine wrapper (e.g. `bash .claude/scripts/godot_bin.sh <args>` — statically allowlisted via `Bash(bash *)`) or the engine's literal install path — never the raw `"$GODOT_BIN"` form (the expansion flag blocks rule matching and prompts).
+*   **Bash cwd persists across calls** — a bare `cd` retargets every later `git`, which succeeds and reports the other repo's truth; use `git -C <path>` / `dotnet build <path>`.
+*   **Multi-line Python → a file.** A python program piped through a heredoc fails on `unexpected EOF` or an escape error whenever its body carries nested quotes or backslashes. `Write` the script and run `python3 <file>`. Any Python that writes a repo file passes `newline="\n"` (or writes bytes): Windows text mode emits CRLF, and a CRLF Workflow script is denied at dispatch (`hooks/workflow_script_lf_guard.py` self-heals `.claude/` scripts; `python3 .claude/tools/lf_normalize.py` sweeps the rest).
+*   **Git commit (multi-line):** write the message to a scratchpad file and `git commit -F <file>` — never `/tmp` (Windows `git` cannot read the unconverted path) and never `git commit -m "$(cat <<'EOF' ...)"`.
+*   **Git Bash path conversion:** prefix `export MSYS_NO_PATHCONV=1` on any `rev:path` or colon-bearing `gh` argument — Git Bash rewrites `a:b` as a PATH list and the error misnames the REVISION as ambiguous.
+*   **Engine invocations:** `bash .claude/scripts/godot_bin.sh <args>` (statically allowlisted), never the raw `"$GODOT_BIN"` form — allow rules match EXPANDED text, so runtime env expansion can never match a rule. Quote paths with spaces; never backslash-escape whitespace.
+*   **Background shells:** a shell nobody watches is a hang waiting for a human — `hooks/shell_census.py` lists every claude-spawned shell older than 45 min on each prompt; decide kill-or-keep on sight, never wait on it. Prove process ownership before any kill; never kill a peer from a path substring or idle label.
+*   **Auto mode:** the classifier judges edit CONTENT, not allow rules or chat approval — a `.claude/` edit that changes a halt valve, approval step or attempt cap needs a non-auto permission mode for that session (`acceptEdits`), and a denial is the signal to stop and say so, not to retry through another tool.
+
+## Model Delegation (spec-time routing)
+Two delegation decisions are made *while writing the spec* — strictly before any dispatch is attempted, so nothing that loads at dispatch time can deliver them in time. They are the only two that live here.
+*   **Route by COPYABLE vs DERIVED.** Is every fact the delegate needs already present in the material you are handing it, or must some be inferred, ordered, or chained? Copyable → the free local tier or a scout dispatch. Derived → an executor tier or above. You know which one you wrote; the delegate cannot tell you afterwards, and the failure is silent — a model that cannot chain still returns a confident answer.
+*   **State which currency a fan-out spends before dispatching it.** Plan-quota routes spend prepaid quota billed PER MODEL, so cheap-by-tokens is not cheap-by-quota; the sidecar spends marginal dollars; the local tier spends neither. The sidecar's band floor is guarded at dispatch (`hooks/sidecar_dispatch_context.py`); which currency it spends is not.
+
+Which model fills which role, and the evidence behind it: `reference/model_ladder_evidence.md` §Role guidance — load it whenever you pin. Framework: `rules/model_delegation.md`. How to dispatch — mechanism, effort defaults by work shape, budget bands, availability, transport, delegation grain, spec discipline: [`orchestration`](skills/orchestration/SKILL.md). Requested pins are not observed identity; keep compaction enabled for ordinary long jobs.
 
 ## Preferences
-*   **Planning**: At the end of each plan, provide a list of unresolved questions to answer, if any.
-*   **No performative agreement**: Don't open responses with "you're absolutely right!" / "great point!" / "you're right to push back." Restate the requirement, verify against the codebase, or just fix it. Actions speak. See `feedback_no_performative_agreement.md`.
+*   **Plan-file format**: plan files are context-free execution docs (executor + reviewer) — resolved design as fact, rationale inline, no process-meta sections; resolve user-facing forks via `AskUserQuestion` before approval, never leave them open in the plan. Full rule: `skills/_brainstorm_shared/plan_file_format.md`.
+*   **Unresolved questions**: at the end of each plan, list the unresolved questions to answer, if any.
+*   **No performative agreement**: don't open responses with "you're absolutely right!" / "great point!" / "you're right to push back." Restate the requirement, verify against the codebase, or just fix it. Actions speak. See `feedback_no_performative_agreement.md`.
+*   **Bullet headlines say the thing, not the category**: a bolded lead-in must state the actual point in plain language on its own — never a vague label or a jargon-stacked phrase requiring decode. Applies to any user-facing doc or output a session writes (digests, summaries, retrospectives, PR descriptions) — run bulleted prose through `instruction_quality` §6/§6b before finalizing.
 
 <!-- ===== BASELINE:core END ===== -->
 
 ## Project Guidelines
 <!-- PROJECT-OWNED — everything below is yours; it is never synced. Fill in at adoption. -->
 
-**{{PROJECT_NAME}}**: Godot 4.x (<physics engine>), C# (.NET <version>), Jmodot framework. Concept: <one-line game concept>.
+**{{PROJECT_NAME}}**: Godot 4.x (<physics engine>), C# (.NET <version>), Jmodot framework. Concept: <one-line game concept>. Pin the exact engine and runtime versions here — §4 re-verifies against this section before any version-sensitive claim.
 
 ### Domain Split (feeds Hybrid TDD above)
 *   **Logic Domain (Strict TDD):** <list your pure-logic subsystems, e.g. `Jmodot.Core`, `Inventory`, `Math/Parsing`, data pipelines>
 *   **Gameplay Domain (Integration + Inspection):** <list your gameplay subsystems, e.g. player entity, enemy AI BT, content lifecycle, VFX, UI>
 
-### Project Domains (extends Proactive Context Loading table)
-| Domain | Search Term | Avoid (broad) | Also Check Skill? |
-|--------|-------------|---------------|-------------------|
-| <your content domain> | "<term>" | "<too-broad term>" | <skill> |
+### Project Domains (extends Proactive Context Loading)
+Add your content domains to `reference/memory_domains.md` and mirror them in `hooks/plan_memory_reminder.py` `DOMAINS`.
 
 ### Project-Specific Conventions
 *   <add conventions that only make sense in this game — content taxonomies, naming, subsystem invariants>
