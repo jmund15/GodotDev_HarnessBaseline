@@ -10,3 +10,6 @@ sessions/
 worktrees/
 plans/
 scratch/
+
+# Semantic-search index a plugin may build when this checkout is indexed.
+.search-index/

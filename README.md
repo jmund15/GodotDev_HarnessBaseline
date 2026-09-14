@@ -7,15 +7,15 @@ upstream** that keeps that shared core in sync as it evolves across projects.
 
 ## What's in it
 
-`template/.claude/` mirrors a consumer project's `.claude/` directory: 368 files
+`template/.claude/` mirrors a consumer project's `.claude/` directory: 554 files
 in three archetypes (see `baseline.manifest.json` for the per-file map; 6 of these
-are `sync: seed`, counted in `pure` below):
+are `sync: seed` — 4 counted in `pure`, 2 in `godot`):
 
 | Layer | Files | Contents |
 |---|---|---|
-| `pure` | 150 | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, eval dashboard), doc system (`/doc_*`), worklog system, memory system + curated process/discipline auto-memory seed, agent templates, review fan-out workflows, instruction-quality tooling, slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself, the DeepSeek sidecar trio (`external_models.json`, `claude_profile_functions.ps1`, `model_registry.py`) |
-| `coding` | 79 | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/plan_drive` → `/plan_check` → `/part_execute`), brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
-| `godot` | 139 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate`, Godot log analysis, `.tres`/`[Tool]` safety guards, C# LSP rules + adapter, scene/physics/C# pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, HSM/BT patterns, status-effect authoring, VFX patterns, logging methodology (JmoLogger), submodule procedure, and `/workstation_setup` |
+| `pure` | 294 | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), memory system + curated process/discipline auto-memory seed (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `rules/model_delegation.md`, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
+| `coding` | 96 | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
+| `godot` | 164 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and `/workstation_setup` |
 
 A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
 
@@ -25,9 +25,10 @@ project-owned: `CLAUDE.md` (PROJECT section + `BASELINE:core` region), `settings
 `worklog-titles.md`.
 
 **Deliberately excluded** (stays per-project): game-content skills/commands
-(spell/entity authoring, content audits), project subsystem registries, game-design
-docs, project memory (beyond the curated pure/coding/godot seed), and all
-session state (`self_evaluate_archive.json`, plans, scratch, logs, caches).
+(ability/entity authoring, content audits), project subsystem registries, game-design
+docs, project memory (beyond the curated pure/coding/godot seed), benchmark corpora and
+campaign tooling, and all session state (`self_evaluate_archive.json`, plans, scratch,
+logs, caches).
 
 ## Placeholders
 
@@ -54,7 +55,8 @@ Bootstrap copies the template, substitutes placeholders, and writes
 `.claude/baseline.lock.json` (per-file hashes + your substitution map) so the sync
 loop works from the first session. Then follow the printed next-steps checklist
 (fill the CLAUDE.md PROJECT section, seed `game_vision` / `project_subsystems`,
-create the vault `Claude/TODO/` folders, `/system_check`, `/reindex_search`).
+create the vault `Claude/TODO/` folders, `/system_check`, `/reindex_search`), and
+walk the **Known adaptation points** below.
 
 ## Keeping projects and baseline in sync
 
@@ -68,17 +70,17 @@ Mechanism (per consumer project):
   flagged on change, judged manually), `forked` (intentionally diverged), `local`
   (project-owned artifact acknowledged as not-for-baseline).
 - `.claude/tools/baseline_sync.py` — mechanical three-way engine
-  (`check` / `diff` / `pull` / `materialize` / `update-lock` / `fork`).
-  Substitution-aware in both directions, so bootstrapped copies compare clean
-  against placeholder templates.
+  (`check` / `diff` / `pull` / `materialize` / `update-lock` / `fork` / `track` /
+  `ignore` / `candidates`). Substitution-aware in both directions, so bootstrapped
+  copies compare clean against placeholder templates.
 - `/sync_baseline` — the judgment wrapper: classifies local changes
   universal-vs-project-specific, upstreams universal hunks (reverse-substituted)
   to this repo, pulls baseline updates into the project, proposes forks for files
-  that keep diverging.
-- **Drift gate in `/clean_push` and `/commit_push`** — when a commit touches a
-  tracked file, the push workflow surfaces it and routes through `/sync_baseline`
-  instead of letting shared doctrine fork silently. `CLAUDE.md` §10 carries the
-  always-loaded version of this rule.
+  that keep diverging, and runs the maintainer-side `audit`.
+- **Drift gate in `/clean_push`, `/commit_push` and `/apply_harness_edits`** — when
+  invoked with `--check-baseline` and a commit touches a tracked file, the workflow
+  surfaces it and routes through `/sync_baseline` instead of letting shared doctrine
+  fork silently. `CLAUDE.md` §10 carries the always-loaded version of this rule.
 
 Typical lifecycles:
 
@@ -90,98 +92,102 @@ Typical lifecycles:
   or `/sync_baseline fork <file>` if permanent.
 - *New universal artifact born in a project* → `/sync_baseline push` "Always"
   clause: copy into `template/`, regenerate manifest, `track` it in the lock.
+- *Hot memory demoted to `archive/` in a project* → the template mirrors the move
+  (delete the hot copy, add the archive copy); the consumer's lock re-points the
+  entry at the archive path.
 
 ## Maintaining this repo
 
 - `python3 tools/gen_manifest.py` after any add/remove/move under `template/` —
   the manifest drives bootstrap layer-filtering and consumer lock generation.
   Layer/seed assignment is pattern-based at the top of that script; extend the
-  pattern lists when adding files of a new kind. **Layer assignment now has NO
+  pattern lists when adding files of a new kind. **Layer assignment has NO
   fallback**; `gen_manifest.py` fails loudly listing any unclassified file, so
   every new file must be added to exactly one layer pattern list.
 - `python3 tools/audit_baseline.py` (also `/sync_baseline audit`) — the separation
-  gate. Verifies no source-project identifiers / secrets leak into `template/`, the
-  manifest matches disk and the generator, and flags (INFO) a `pure` file naming
-  >=4 godot/coding markers, or a `coding` file naming >=4 godot markers
-  (layer-gate check). It also warns on pure-tagged files naming code/engine or
+  gate. Verifies no source-project identifiers / secrets / concrete machine paths
+  leak into `template/`, the manifest matches disk and the generator, and flags (INFO)
+  a `pure` file naming >=4 godot/coding markers, or a `coding` file naming >=4 godot
+  markers (layer-gate check). It also warns on pure-tagged files naming code/engine or
   consumer-domain nouns (core-domain-noun check). ERROR exit blocks publish; run it
-  after any template change. `publish.sh` runs it automatically as a backstop. Its
-  judgment pass (in the `/sync_baseline audit` command) covers what the script
-  can't: game-domain-noun leaks and the adaptation-points list above.
+  after any template change. Its judgment pass (in the `/sync_baseline audit`
+  command) covers what the script can't: game-domain-noun leaks and the
+  adaptation-points list below. The standing layer-gate INFO rows (`/explore`,
+  `/merge_pr`, `/plan_check`, `/test_compact`, review agents, code-quality checklist,
+  `debugging` and `parallel_agents` skills) are confirmed engine-agnostic tools whose
+  bodies use Godot examples — they stay in their layer.
 - Commit messages follow the same categorical convention as consumer projects
   (`feat`/`fix`/`refactor`/`chore`).
-- Model/tooling evolution (new Claude models, new plugin capabilities, superior
+- Model/tooling evolution (new models, new plugin capabilities, superior
   workflows) lands here exactly like any universal improvement: change it in
   whichever project discovered it, upstream via `/sync_baseline push`, and other
   projects adopt via `pull`.
 
-## Publishing (one-time)
+## Publishing
 
-This directory ships inside the source project until it has its own repo:
-
-```bash
-# create an empty GitHub repo first, then:
-./publish.sh git@github.com:<you>/harness-baseline.git
-```
-
-After publishing, point consumer locks' `baseline_repo` at the new URL
-(bootstrap does this automatically via the baseline clone's `origin`).
+This repo is published; consumer locks' `baseline_repo` point at its remote and
+`bootstrap.sh` records the clone's `origin` automatically. `publish.sh` remains for
+lifting a fresh copy into a new empty remote (it re-runs the separation audit as a
+backstop).
 
 ## Known adaptation points
 
-A few included files are generic in shape but carry the source project's conventions
-as concrete examples — review them on first use in a new project. (`tools/audit_baseline.py`
+A few included files are generic in shape but carry conventions as concrete
+defaults — review them on first use in a new project. (`tools/audit_baseline.py`
 keeps this list honest: its judgment pass flags adaptation-shaped files missing from here.)
 
-- `hooks/plan_memory_reminder.py` — `PROJECT-CONFIG` domain table at the top:
-  add your game's content domains.
+- `reference/memory_domains.md` — the domain → search-seed → companion-skill table.
+  `hooks/plan_memory_reminder.py` mirrors it as its `PROJECT-CONFIG` `DOMAINS` table;
+  replace both with your project's content domains and keep the two in sync.
 - `commands/doc_start_here_update.md` — the domain-classification table's first row
-  (`PROJECT-CONFIG`) is your game's content pipeline; replace it and add rows.
+  (`PROJECT-CONFIG`) is your project's central content pipeline; replace it and add rows.
 - `commands/agents/pr_test_checklist_conventions.md` — the merge-heuristics table's
-  `PROJECT-CONFIG` rows map your content/entity scopes to checklist sections; the
-  example checklist items use the source game's nouns illustratively.
+  `PROJECT-CONFIG` rows map your content/entity scopes to checklist sections.
+- `commands/agents/pr_classification.md` — the Logic/Gameplay domain table maps the
+  source game's folder shapes to review domains; replace the folder lists with yours.
 - `commands/agents/review_agents.md` — the `pool-lifecycle` agent's checklist names
-  example pooled types in brackets; substitute your pooling types and prune any
-  pattern (e.g. sibling collision groups) your project lacks.
-- `skills/worklog_reference/SKILL.md` — the domain-classification tables use the
-  source project's content domains as examples; replace with your project's domains.
+  example pooled types (`IPoolable` family) in brackets; substitute your pooling types
+  and prune any pattern your project lacks.
+- `skills/worklog_reference/SKILL.md` — the domain-classification tables use example
+  content domains; replace with your project's domains.
+- `skills/project_subsystems/SKILL.md` (seed) — the subsystem registry that
+  `/sync_subsystems`, `/structure_audit`, the structure rules, the testing skill's
+  test-support path and the brainstorm scope litmus route through; fill it at adoption.
 - `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
-  folder-layout rules reflect the source project's conventions; prune to taste.
-- `commands/workstation_setup.md` — the machine-provisioning command carries the
-  source machine's toolchain pins (GODOT_BIN, .NET SDK, LSP) as defaults; review
-  them against your fresh-PC environment on first run.
+  folder-layout rules read the registry above; prune the conventions to taste.
 - `skills/architecture_philosophy/SKILL.md` — the design-philosophy skill reflects
-  the source project's architectural conventions; prune to taste on first use.
+  the source projects' architectural conventions; prune to taste on first use.
 - `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
   assumes the 4-doc Obsidian documentation system; adapt vocabulary if your doc
   tree differs.
-- `cloud-install.sh` / `hooks/session_context_loader.py` — pin your Godot/.NET
-  versions (config constants at the top of each).
-- `commands/agents/pr_classification.md` — the Logic/Gameplay domain table maps the
-  source game's folders to review domains; replace the folder lists with yours.
-- `skills/sprite_authoring/SKILL.md` — the *Project Prototype Style* section is the
-  source game's style spec (palette, faction looks, reference sprites); rewrite it
-  for your game's art direction, keeping the pipeline mechanics.
-- `reference/memory_domains.md` — the domain → search-seed → companion-skill table.
-  `hooks/plan_memory_reminder.py` mirrors it as `DOMAINS`; replace both with your
-  game's content domains, and keep the two in sync.
-- `commands/agents/plan_check_agents.md`, `commands/agents/worklog_drive_triage.md`,
-  `commands/plan_check.md`, `skills/testing/SKILL.md` — each names a Logic-Domain
-  subsystem list (the strict-TDD set) as though it were canonical; substitute your
-  project's Logic-Domain subsystems.
+- `cloud-install.sh` / `hooks/session_context_loader.py` / `commands/workstation_setup.md` —
+  pin your Godot/.NET/LSP versions (config constants at the top of each; the
+  workstation command carries them as defaults).
 - `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
   artifact paths excluded from the tree digest; add your project's.
+- `scripts/run_integration_batched.ps1` — `$quarantine` (`PROJECT-CONFIG`) is the
+  filter appended to every Integration batch; ships empty.
+- `hooks/test_suite_gate_coverage_guard.py` — `GATED` names the test tiers the gate
+  filters on (`Logic`/`Integration`/`Sanity`) and `EXCLUDED` the deliberate non-gated
+  folders; match them to your `Tests/` layout.
+- `hooks/refcounted_free_guard.py` — `EXEMPT` (`PROJECT-CONFIG`) names the sanctioned
+  teardown helper (`Tests/Framework/Helpers/TestObjectTeardown.cs` by convention).
+- `hooks/duplicate_test_double_baseline.json` — ships empty (`{}`); regenerate with
+  `duplicate_test_double_guard.py --write-baseline` once your project carries a
+  test-double backlog it wants grandfathered.
+- `hooks/check_logger_tag_prefix.py` + `skills/logging_methodology/SKILL.md` — the
+  tag-constant class is named `InstrumentationTags`; rename in both if your project
+  uses another holder.
 - `tools/lens.py` — `REGISTRIES` pairs each agent-registry file with the ID prefix
   its lenses use. The shipped `review` entry assumes unprefixed IDs; set your own
   prefix if your `review_agents.md` namespaces them.
-- pure files with source-domain nouns as inline examples only (mechanism is
+- pure files with example domain nouns as inline examples only (mechanism is
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,
   `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,
-  `workflows/review_fanout.js`, plus the PROJECT-CONFIG seams in the slimmed
+  `workflows/review_fanout.js`, plus the `PROJECT-CONFIG` seams in the slimmed
   git commands (`commit_push`, `clean_push`, `clean_pull`, `create_pr`) and in
   `hooks/prompt_memory_loader.py`, `hooks/prompt_git_state_delta.py`
-  (WATCHED_SUBMODULES), `hooks/plan_memory_reminder.py` (DOMAINS), and
-  `hooks/compound_cd_approver.py` (SAFE_SEGMENT_COMMANDS). Allowlisted in
-  `tools/audit_baseline.py`'s core-domain-noun check — swap the examples for
-  your domain's when you first touch each file.
+  (WATCHED_SUBMODULES), and `hooks/compound_cd_approver.py` (SAFE_SEGMENT_COMMANDS).
+  Allowlisted in `tools/audit_baseline.py`'s core-domain-noun check — swap the
+  examples for your domain's when you first touch each file.

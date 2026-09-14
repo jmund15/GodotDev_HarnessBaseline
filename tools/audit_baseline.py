@@ -22,6 +22,7 @@ Pass --json for machine output, --strict to fail the run on WARN as well.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -39,23 +40,25 @@ ROOT = gm.ROOT
 TEMPLATE = gm.TEMPLATE
 MANIFEST = ROOT / "baseline.manifest.json"
 
-# Source-project identifiers that must not leak downstream. A hit is a finding
-# unless its whole line matches one of LEAK_ALLOWLIST (deliberate references).
-# Add BOTH the full name AND any abbreviation for every project the baseline has
-# absorbed code from — the full name alone misses shorthand (the `PP` abbreviation
-# for PushinPotions leaked into ~35 files precisely because only "PushinPotions"
-# was listed here). Abbreviations are uppercase word-boundary forms; lowercase
-# command-flag vocabularies (e.g. `pp-only`) are interface terms, not leaks.
-LEAK_TOKENS = [r"PushinPotions", r"\bPP\b", r"DraconicWars", r"\bjmund\b"]
-LEAK_ALLOWLIST = [
-    r"jmund15/",                       # maintainer GitHub org in PR templates (intentional)
-    r"PushinPotions\.\*",              # namespace-glob example in the jmodot boundary rule
-    r"jmodot_framework_boundary_rule",  # MEMORY.md index pointer to that rule
-]
-# Absolute user-home paths that aren't the generic "C:\Users\..." teaching shape.
-# A real machine path names a user; the illustrative form uses an ellipsis or a
-# placeholder right after Users.
-MACHINE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|/)Users/(?!\.\.\.|<|\{\{|you\b)[A-Za-z0-9._-]+", re.I)
+# Forbidden source identities are stored as digests so the audit can reject them without
+# republishing the names. Candidates include whole identifiers, alphabetic segments, and
+# adjacent segments joined together; this catches concatenated and spaced project names.
+FORBIDDEN_IDENTIFIER_DIGESTS = {
+    "f80a62ca784fb78bbf2b993e6e8393357cf28dcd9dfab141ff884d206796863e": "source project",
+    "a563c232fbb0b301619080406031efb8348430f4e20bad1fa51c451590039417": "source project",
+    "bd94e8955161fc6f34dc94080d4a6425286b71ee4e94dd7848bcc448d1b84772": "source contributor",
+}
+FORBIDDEN_ABBREVIATION_DIGEST = (
+    "d53315bea08cec50d2591fcaf3b32dc5d289cdc6c16b7e8bed8c8e3f7ceaa34e"
+)
+# Reject concrete home paths while allowing teaching shapes and shell variables.
+MACHINE_PATH = re.compile(
+    r"(?:[A-Za-z]:[\\/]Users[\\/]|/(?:[A-Za-z]/)?Users/)"
+    r"(?!\.{3}|\{\{[^}]+\}\}|<[^>]+>|"
+    r"(?:USER|you|x)(?:[\\/]|$)|\$[A-Za-z_][A-Za-z0-9_]*)"
+    r"[^\\/\s\"']+",
+    re.I,
+)
 
 SECRET_PATTERNS = [
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
@@ -149,8 +152,32 @@ def read_text(p: Path) -> str | None:
         return None
 
 
-def line_allowed(line: str) -> bool:
-    return any(re.search(pat, line) for pat in LEAK_ALLOWLIST)
+def identifier_leaks(line: str) -> set[str]:
+    segments = re.findall(r"[A-Za-z]+", line)
+    candidates = {segment.lower() for segment in segments}
+    candidates.update(
+        (segments[i] + segments[i + 1]).lower()
+        for i in range(len(segments) - 1)
+    )
+    digests = {
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+        for candidate in candidates
+    }
+    leaks = {
+        label for digest, label in FORBIDDEN_IDENTIFIER_DIGESTS.items()
+        if digest in digests
+    }
+    for match in re.finditer(r"(?<![A-Za-z0-9])([A-Za-z]{2})(?![A-Za-z0-9])", line):
+        raw = match.group(1)
+        if raw != raw.upper() and not (
+            match.start() > 0 and line[match.start() - 1] in "_-"
+            or match.end() < len(line) and line[match.end()] in "_-"
+        ):
+            continue
+        digest = hashlib.sha256(raw.lower().encode("utf-8")).hexdigest()
+        if digest == FORBIDDEN_ABBREVIATION_DIGEST:
+            leaks.add("source-project abbreviation")
+    return leaks
 
 
 def check_manifest_integrity(f: Findings) -> dict:
@@ -195,12 +222,9 @@ def check_leaks_and_secrets(f: Findings) -> None:
         if text is None:
             continue
         for i, line in enumerate(text.splitlines(), 1):
-            if line_allowed(line):
-                continue
-            for tok in LEAK_TOKENS:
-                if re.search(tok, line):
-                    f.add("ERROR", "leak-scan", f"{rel}:{i}",
-                          f"source-project identifier: {line.strip()[:120]}")
+            for leak in sorted(identifier_leaks(line)):
+                f.add("ERROR", "leak-scan", f"{rel}:{i}",
+                      f"{leak} identifier: {line.strip()[:120]}")
             if MACHINE_PATH.search(line):
                 f.add("WARN", "leak-scan", f"{rel}:{i}",
                       f"machine-specific path: {line.strip()[:120]}")
