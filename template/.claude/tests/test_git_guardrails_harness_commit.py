@@ -91,7 +91,8 @@ def main():
     repo = make_repo()
     write(repo, "Tests/Foo.cs", "class Foo {}\n")
     git(repo, ["add", "Tests/Foo.cs"])
-    msys = "/" + repo[0].lower() + repo[2:].replace("\\", "/")
+    # The MSYS drive form exists only on Windows; elsewhere the plain path is the shell's own form.
+    msys = "/" + repo[0].lower() + repo[2:].replace("\\", "/") if os.name == "nt" else repo
     failures.append(case(
         "a `cd /c/...` prefix resolves to the repo, so a clean commit is not blocked",
         run_hook("cd %s; git commit -F msg -- Tests/Foo.cs" % msys, repo), ALLOW))
