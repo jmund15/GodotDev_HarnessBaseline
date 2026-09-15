@@ -44,10 +44,43 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-TESTS_ROOT = REPO / "Tests"
+_CLAUDE_DIR = REPO / ".claude"
+_TOOLS_DIR = _CLAUDE_DIR / "tools"
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+import adaptation  # noqa: E402
 
-# PROJECT-CONFIG: the teardown helper itself is the sanctioned home for the guarded call.
-EXEMPT = {"Tests/Framework/Helpers/TestObjectTeardown.cs"}
+# `adaptation.json` `tests_root` (Design Doc §8), defaulted to "Tests". A root that does not
+# exist as a directory inside the repo is a CANNOT-RUN, never a silent "Tests" fallback and
+# never a claimed OK -- `main()` checks this before scanning.
+_TESTS_ROOT_REL = adaptation.get(_CLAUDE_DIR, "tests_root")
+TESTS_ROOT = REPO / _TESTS_ROOT_REL
+
+
+def _load_exempt() -> set:
+    """The sanctioned teardown-helper paths: `adaptation.json` `teardown_helpers`, each
+    validated to be an existing `.cs` file under `TESTS_ROOT`; a rejected entry is skipped
+    with one stderr line and never joins EXEMPT."""
+    accepted = set()
+    for entry in adaptation.get(_CLAUDE_DIR, "teardown_helpers"):
+        if not isinstance(entry, str) or not entry.endswith(".cs"):
+            print(f"refcounted_free_guard: teardown_helpers entry {entry!r} is not a .cs "
+                  "path -- skipped", file=sys.stderr)
+            continue
+        full = REPO / entry
+        try:
+            under_tests_root = full.resolve().is_relative_to(TESTS_ROOT.resolve())
+        except (OSError, ValueError):
+            under_tests_root = False
+        if not (under_tests_root and full.is_file()):
+            print(f"refcounted_free_guard: teardown_helpers entry {entry!r} is not an "
+                  "existing .cs file under tests_root -- skipped", file=sys.stderr)
+            continue
+        accepted.add(entry)
+    return accepted
+
+
+EXEMPT = _load_exempt()
 
 FIELD_RE = re.compile(
     r"\b(?:List|IList|IReadOnlyList|HashSet)<\s*(?:Godot\.)?(?:GodotObject|Resource)\s*>\s+(\w+)"
@@ -86,6 +119,10 @@ def scan():
 
 
 def main():
+    if not TESTS_ROOT.is_dir():
+        print(f"refcounted_free: CANNOT-RUN (tests_root {_TESTS_ROOT_REL!r} is not an "
+              "existing directory)")
+        return 2
     findings = scan()
     if "--json" in sys.argv:
         print(json.dumps({"findings": findings}, indent=2))

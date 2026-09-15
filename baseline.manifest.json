@@ -2,6 +2,11 @@
   "version": 2,
   "files": [
     {
+      "path": ".claude/CLAUDE.core.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/CLAUDE.md",
       "layer": "pure",
       "sync": "seed"
@@ -1607,6 +1612,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/reference/memory_domains.base.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/reference/memory_domains.md",
       "layer": "godot",
       "sync": "auto"
@@ -1872,7 +1882,12 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/settings.json",
+      "path": ".claude/settings.base.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/settings.project.json",
       "layer": "pure",
       "sync": "seed"
     },
@@ -2087,6 +2102,11 @@
       "sync": "seed"
     },
     {
+      "path": ".claude/skills/project_subsystems/adaptation.json",
+      "layer": "godot",
+      "sync": "seed"
+    },
+    {
       "path": ".claude/skills/prototype/SKILL.md",
       "layer": "godot",
       "sync": "auto"
@@ -2142,6 +2162,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/_adaptation_fixture.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/_commit_guard_cases.py",
       "layer": "pure",
       "sync": "auto"
@@ -2167,6 +2192,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_adaptation.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_aggregate_routing_audit.py",
       "layer": "pure",
       "sync": "auto"
@@ -2183,6 +2213,11 @@
     },
     {
       "path": ".claude/tests/test_baseline_classification_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_baseline_compose.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2227,6 +2262,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_compound_cd_approver_adaptation.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_delegate_command.py",
       "layer": "pure",
       "sync": "auto"
@@ -2263,6 +2303,11 @@
     },
     {
       "path": ".claude/tests/test_harness_edit_skill_reminder.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_harness_tests_adaptation.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2352,6 +2397,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_plan_memory_reminder_adaptation.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_post_read_dispatch.py",
       "layer": "pure",
       "sync": "auto"
@@ -2362,7 +2412,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_prompt_git_state_delta_adaptation.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_prompt_memory_loader.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_prompt_memory_loader_adaptation.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_prose_adaptation_seams.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2387,6 +2452,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_refcounted_free_guard_adaptation.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_routing_audit_subagent_exempt.py",
       "layer": "pure",
       "sync": "auto"
@@ -2394,6 +2464,11 @@
     {
       "path": ".claude/tests/test_routing_classifier.py",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_run_integration_batched_adaptation.ps1",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -2433,6 +2508,11 @@
     },
     {
       "path": ".claude/tests/test_session_transport.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_settings_composed.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2567,6 +2647,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/adaptation.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/aggregate_routing_audit.py",
       "layer": "pure",
       "sync": "auto"
@@ -2578,6 +2663,11 @@
     },
     {
       "path": ".claude/tools/analyze_eval_archive.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/baseline_compose.py",
       "layer": "pure",
       "sync": "auto"
     },

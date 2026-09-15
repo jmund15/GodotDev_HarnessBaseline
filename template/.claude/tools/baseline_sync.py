@@ -33,6 +33,8 @@ _TOOLS_DIR = Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 import baseline_identity  # noqa: E402
+import baseline_compose  # noqa: E402
+import adaptation  # noqa: E402
 
 LOCK_RELPATH = ".claude/baseline.lock.json"
 CACHE_CLONE = ".claude/.cache/baseline-repo"
@@ -260,6 +262,20 @@ def _resolve_default(cache: Path, repo: str, ref: str) -> str:
     return pinned
 
 
+def _batch_header(header: bytes) -> tuple[bytes, int] | None:
+    """(object type, size) from one `git cat-file --batch` header line; None for a missing object."""
+    fields = header.rstrip(b"\n").split(b" ")
+    if fields[-1] == b"missing":
+        return None
+    if len(fields) != 3 or fields[1] not in (b"blob", b"commit", b"tree"):
+        detail = header.decode("utf-8", errors="replace").strip()
+        raise BaselineError(f"unexpected git cat-file response: {detail}")
+    try:
+        return fields[1], int(fields[2])
+    except ValueError as exc:
+        raise BaselineError("git cat-file returned an invalid object size") from exc
+
+
 class _BatchReader:
     """One persistent `git cat-file --batch` reader for an invocation."""
 
@@ -287,16 +303,10 @@ class _BatchReader:
             raise BaselineError(f"git cat-file --batch read failed: {exc}") from exc
         if not header:
             raise BaselineError("git cat-file --batch exited before returning a result")
-        fields = header.rstrip(b"\n").split()
-        if len(fields) == 2 and fields[1] == b"missing":
+        parsed = _batch_header(header)
+        if parsed is None:
             return None
-        if len(fields) != 3 or fields[1] not in (b"blob", b"commit", b"tree"):
-            detail = header.decode("utf-8", errors="replace").strip()
-            raise BaselineError(f"unexpected git cat-file response: {detail}")
-        try:
-            size = int(fields[2])
-        except ValueError as exc:
-            raise BaselineError("git cat-file returned an invalid object size") from exc
+        _kind, size = parsed
         try:
             body = self.process.stdout.read(size)
             separator = self.process.stdout.read(1)
@@ -584,6 +594,59 @@ def local_text(root: Path, relpath: str) -> str | None:
         return _lf(path.read_bytes()).decode("utf-8", errors="replace")
     except OSError:
         return None
+
+
+ADAPTATION_JSON_RELPATH = ".claude/skills/project_subsystems/adaptation.json"
+
+
+def check_adaptation_contract(root: Path) -> None:
+    """Design §8: `classify`, `compose` and `publish` exit 1 -- naming the file, or the
+    file and key -- when the consumer lock exists and the `project_subsystems` adaptation
+    contract is missing or malformed:
+      - `adaptation.json` is absent, unparseable, or not a JSON object;
+      - a known key (`adaptation.DEFAULTS`/`_TYPES`) is wrong-typed; unknown keys are
+        ignored, matching `adaptation.load()`;
+      - `SKILL.md` is absent, or its `subsystems:` YAML block is absent or unparseable.
+
+    Advisory hooks keep `adaptation.load()`'s lenient (default-plus-warning) behavior --
+    this is the harder contract the three operations enforce directly, without calling
+    `load()`, because a hook must never block and these three must. Called before those
+    operations read or write anything else, so a refusal leaves no lock write, journal or
+    output. A consumer with no lock yet is not checked here -- `load_lock` refuses that on
+    its own path, with its own message, before any of the three operations run.
+    """
+    if not (root / LOCK_RELPATH).is_file():
+        return
+
+    adaptation_text = local_text(root, ADAPTATION_JSON_RELPATH)
+    if adaptation_text is None:
+        raise BaselineError(f"adaptation contract: {ADAPTATION_JSON_RELPATH} is missing")
+    try:
+        raw = json.loads(adaptation_text)
+    except json.JSONDecodeError as exc:
+        raise BaselineError(
+            f"adaptation contract: {ADAPTATION_JSON_RELPATH} is unparseable: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise BaselineError(f"adaptation contract: {ADAPTATION_JSON_RELPATH} is not a JSON object")
+    for key, expected in adaptation._TYPES.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if isinstance(value, bool) or not isinstance(value, expected):
+            raise BaselineError(
+                f"adaptation contract: {ADAPTATION_JSON_RELPATH} key '{key}' is wrong-typed "
+                f"(want {expected.__name__})"
+            )
+
+    skill_relpath = baseline_identity.DEFAULT_SUBSYSTEMS_PATH
+    skill_text = local_text(root, skill_relpath)
+    if skill_text is None:
+        raise BaselineError(f"adaptation contract: {skill_relpath} is missing")
+    if not baseline_identity.parse_subsystems_yaml(skill_text):
+        raise BaselineError(
+            f"adaptation contract: {skill_relpath} subsystems YAML block is absent or unparseable"
+        )
 
 
 CANDIDATE_EXCLUDE_PREFIXES = (
@@ -911,16 +974,78 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _cat_file_many(repo: Path, specs: list[str]) -> list[bytes | None] | None:
+    """Blob bytes for each object spec from one `git cat-file --batch` run: None for a spec that is
+    missing or not a blob, and None overall when git cannot read `repo` (not a repository)."""
+    if not specs:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "-C", _repo_arg(repo), "cat-file", "--batch"],
+            input="".join(spec + "\n" for spec in specs).encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise BaselineError(f"git cat-file --batch failed: {exc}") from exc
+    if result.returncode != 0:
+        return None
+    out, pos, blobs = result.stdout, 0, []
+    for _spec in specs:
+        end = out.find(b"\n", pos)
+        if end < 0:
+            raise BaselineError("git cat-file --batch returned fewer results than queries")
+        parsed = _batch_header(out[pos:end + 1])
+        pos = end + 1
+        if parsed is None:
+            blobs.append(None)
+            continue
+        kind, size = parsed
+        if out[pos + size:pos + size + 1] != b"\n":
+            raise BaselineError("git cat-file returned a truncated object")
+        blobs.append(out[pos:pos + size] if kind == b"blob" else None)
+        pos += size + 1
+    return blobs
+
+
+def _git_contents(root: Path, relpaths: list[str]) -> dict[str, bytes]:
+    """LF bytes of each path the index holds, else HEAD, from two `git cat-file --batch` runs in all.
+    One `git show` per path, two for an uncommitted one, cost 2,300 spawns and 35 s on a 575-file
+    bootstrap under Windows process creation."""
+    found: dict[str, bytes] = {}
+    pending = list(dict.fromkeys(relpaths))
+    for prefix in (":", "HEAD:"):
+        if not pending:
+            break
+        blobs = _cat_file_many(root, [prefix + relpath for relpath in pending])
+        if blobs is None:
+            break
+        found.update((relpath, _lf(data)) for relpath, data in zip(pending, blobs) if data is not None)
+        pending = [relpath for relpath in pending if relpath not in found]
+    return found
+
+
+def _content_bytes_many(root: Path, relpaths: list[str]) -> dict[str, bytes | None]:
+    """Read each index blob, then HEAD, then an uncommitted bootstrap copy."""
+    contents: dict[str, bytes | None] = dict(_git_contents(root, relpaths))
+    for relpath in relpaths:
+        if relpath not in contents:
+            try:
+                contents[relpath] = _lf((root / relpath).read_bytes())
+            except OSError:
+                contents[relpath] = None
+    return contents
+
+
 def _content_bytes(root: Path, relpath: str) -> bytes | None:
     """Read the index blob, then HEAD, then an uncommitted bootstrap copy."""
-    for spec in (":" + relpath, "HEAD:" + relpath):
-        result = _git(root, ["show", spec], check=False)
-        if result.returncode == 0:
-            return _lf(result.stdout)
-    try:
-        return _lf((root / relpath).read_bytes())
-    except OSError:
-        return None
+    return _content_bytes_many(root, [relpath])[relpath]
+
+
+def _content_shas(root: Path, relpaths: list[str]) -> dict[str, str | None]:
+    return {relpath: (sha(data) if data is not None else None)
+            for relpath, data in _content_bytes_many(root, relpaths).items()}
 
 
 def _content_sha(root: Path, relpath: str) -> str | None:
@@ -1030,14 +1155,18 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
     return "diverged"
 
 
+_UNREAD = object()
+
+
 def _triage_needed(root: Path, source: BaselineSource | Path, lock: dict,
-                   relpath: str, entry: dict) -> bool:
+                   relpath: str, entry: dict, current_sha: object = _UNREAD) -> bool:
+    """`current_sha` is the row's content sha when the caller read many rows in one batch."""
     status = _entry_status(entry)
     if status == "forked":
         return entry.get("judged") is None
     if status != "tracked":
         return False
-    current = _content_sha(root, relpath)
+    current = _content_sha(root, relpath) if current_sha is _UNREAD else current_sha
     return current is not None and current != entry.get("hash") and current != (entry.get("judged") or {}).get("sha")
 
 
@@ -1072,16 +1201,20 @@ def _check_results(root: Path, lock: dict, source: BaselineSource,
 
 def _strict_findings(root: Path, source: BaselineSource, lock: dict,
                      results: dict[str, str]) -> list[tuple[str, str]]:
+    files = lock.get("files", {})
+    current = _content_shas(root, [relpath for relpath in results
+                                   if relpath in files and _entry_status(files[relpath]) == "tracked"])
     findings = []
     for relpath, state in sorted(results.items()):
-        entry = lock.get("files", {}).get(relpath)
+        entry = files.get(relpath)
         if state in {
             "new-upstream", "forked-upstream-moved", "forked-base-unknown",
             "composed-drift", "watch", "removed-upstream", "missing-local",
             "local-modified", "diverged",
         }:
             findings.append((relpath, state))
-        elif entry is not None and _triage_needed(root, source, lock, relpath, entry):
+        elif entry is not None and _triage_needed(root, source, lock, relpath, entry,
+                                                 current.get(relpath, _UNREAD)):
             findings.append((relpath, "needs-judgment"))
     return findings
 
@@ -1090,6 +1223,7 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
               layers: list[str], strict: bool) -> int:
     results, outside = _check_results(root, lock, source, layers)
     residual = residual_placeholders(root, lock)
+    findings =_strict_findings(root, source, lock, results) if strict or not as_json else []
     if as_json:
         print(json.dumps({
             "baseline_commit": baseline_commit(source),
@@ -1114,19 +1248,10 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             print("unsubstituted-placeholder (install did not expand these tokens):")
             for relpath, keys in residual:
                 print(f"  {relpath}  [{', '.join(keys)}]")
-        print("\nclean" if not residual and not _strict_findings(root, source, lock, results)
-              else "\nfindings")
+        print("\nclean" if not residual and not findings else "\nfindings")
         if set(layers) != set(FULL_LAYERS):
             print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")
-    findings = _strict_findings(root, source, lock, results) if strict else []
-    return 1 if findings else 0
-
-def _git_has_committed_path(root: Path, relpath: str) -> bool:
-    for spec in (":" + relpath, "HEAD:" + relpath):
-        if _git(root, ["cat-file", "-e", spec], check=False).returncode == 0:
-            return True
-    return False
-
+    return 1 if strict and findings else 0
 
 def _classify_decision_verdict(status: str) -> str:
     return {"tracked": "push", "local": "keep-local", "forked": "fork", "composed": "keep-local"}[status]
@@ -1144,7 +1269,7 @@ def _whole_file_as_added_diff(relpath: str, text: str) -> str:
     return "\n".join(body) + "\n"
 
 
-def _classify_identity_hit(root: Path, relpath: str, profile: dict):
+def _classify_identity_hit(root: Path, relpath: str, profile: dict, data: bytes | None = None):
     """The first identity-scan hit in `relpath`'s current content (index, else HEAD, else the
     working copy -- `_content_bytes`), scanned as if every line were newly added.
 
@@ -1153,7 +1278,8 @@ def _classify_identity_hit(root: Path, relpath: str, profile: dict):
     a file that already existed with different content. `baseline_identity.scan_changed` is the
     one profile-aware scanner (Design §3); running it over the whole file as added lines is how
     a `classify --status tracked` proof plants a hit and gets a real refusal."""
-    data = _content_bytes(root, relpath)
+    if data is None:
+        data = _content_bytes(root, relpath)
     if data is None:
         return None
     diff_text = _whole_file_as_added_diff(relpath, data.decode("utf-8", errors="replace"))
@@ -1163,6 +1289,7 @@ def _classify_identity_hit(root: Path, relpath: str, profile: dict):
 
 def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: str | None,
                  inputs: list[str] | None, force: bool, baseline_dir: str | None = None) -> int:
+    check_adaptation_contract(root)
     if status not in V2_STATUSES:
         raise UsageError("--status must be tracked, local, forked or composed")
     _validate_relpaths(relpaths)
@@ -1181,13 +1308,14 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         if source_relpath and source_entry is None:
             raise BaselineError(f"--from is not a lock row: {source_relpath}")
         profile = None  # built on the first tracked row: it reads the pinned template tree
+        committed = _git_contents(root, relpaths)
         for relpath in relpaths:
-            if not _git_has_committed_path(root, relpath):
+            if relpath not in committed:
                 raise BaselineError(f"classify requires an index or HEAD path: {relpath}")
             if status == "tracked":
                 if profile is None:
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
-                hit = _classify_identity_hit(root, relpath, profile)
+                hit = _classify_identity_hit(root, relpath, profile, committed[relpath])
                 if hit is not None:
                     raise BaselineError(
                         f"identity scan hit in {relpath}:{hit.line} "
@@ -1199,9 +1327,7 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         changed = []
         for relpath in relpaths:
             existing = files.get(relpath)
-            current_sha = _content_sha(root, relpath)
-            if current_sha is None:
-                raise BaselineError(f"could not read content for {relpath}")
+            current_sha = sha(committed[relpath])
             layer = (source_entry or {}).get("layer") if source_entry else (existing or {}).get("layer")
             desired_inputs = list(inputs or []) if status == "composed" else None
             same = (
@@ -1257,10 +1383,11 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
     def apply(lock: dict):
         files = lock.get("files", {})
         decisions = {}
+        current = _content_shas(root, relpaths)
         for relpath in relpaths:
             if relpath not in files:
                 raise BaselineError(f"not a row: {relpath}")
-            current_sha = _content_sha(root, relpath)
+            current_sha = current[relpath]
             if current_sha is None:
                 raise BaselineError(f"could not read content for {relpath}")
             decisions[relpath] = current_sha
@@ -1295,9 +1422,11 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
 
 
 def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_json: bool) -> int:
+    files = lock.get("files", {})
+    current = _content_shas(root, [relpath for relpath, entry in files.items() if _entry_status(entry) == "tracked"])
     selected = []
-    for relpath, entry in sorted(lock.get("files", {}).items()):
-        if _triage_needed(root, source, lock, relpath, entry):
+    for relpath, entry in sorted(files.items()):
+        if _triage_needed(root, source, lock, relpath, entry, current.get(relpath, _UNREAD)):
             selected.append((relpath, entry))
         if len(selected) >= batch:
             break
@@ -1308,7 +1437,7 @@ def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_jso
             "relpath": relpath,
             "status": _entry_status(entry),
             "layer": entry.get("layer"),
-            "sha": _content_sha(root, relpath),
+            "sha": current[relpath] if relpath in current else _content_sha(root, relpath),
             "prior_verdict": judged.get("verdict"),
             "diff": _diff_text(root, source, lock, relpath),
         })
@@ -1407,11 +1536,12 @@ def v2_fork(root: Path, relpaths: list[str], source: BaselineSource) -> int:
 
     def apply(lock_value: dict):
         changed = []
+        current = _content_shas(root, relpaths)
         for relpath in relpaths:
             entry = lock_value.get("files", {}).get(relpath)
             if entry is None:
                 raise BaselineError(f"not a row: {relpath}")
-            current_sha = _content_sha(root, relpath)
+            current_sha = current[relpath]
             if current_sha is None:
                 raise BaselineError(f"could not read content for {relpath}")
             if (
@@ -1642,12 +1772,14 @@ def _migrated_layer(manifest_layers: dict[str, str], relpath: str, status: str) 
     return "project" if status == "local" else None
 
 
-def _migrated_decision(root: Path, relpath: str, verdict: str) -> dict | None:
-    return _decision(root, relpath, verdict) if _content_sha(root, relpath) is not None else None
+def _migrated_decision(root: Path, relpath: str, verdict: str,
+                       current: dict[str, str | None]) -> dict | None:
+    sha_value = current[relpath] if relpath in current else _content_sha(root, relpath)
+    return _decision(root, relpath, verdict, sha_value=sha_value) if sha_value is not None else None
 
 
 def _migrate_row(root: Path, source_row: dict, relpath: str,
-                 manifest_layers: dict[str, str]) -> dict:
+                 manifest_layers: dict[str, str], current: dict[str, str | None]) -> dict:
     old_status = source_row.get("status", "tracked")
     local_exists = (root / relpath).is_file()
     if old_status == "tracked" and relpath == ".claude/reference/memory_domains.md":
@@ -1658,7 +1790,7 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
     if old_status == "watch" and relpath == ".claude/CLAUDE.md":
         layer = _migrated_layer(manifest_layers, relpath, "local")
         row = {"layer": layer}
-        row.update({"status": "local", "judged": _migrated_decision(root, relpath, "keep-local") if local_exists else None})
+        row.update({"status": "local", "judged": _migrated_decision(root, relpath, "keep-local", current) if local_exists else None})
         return row
     if old_status == "watch" and relpath in WATCH_COMPOSED_INPUTS:
         inputs = WATCH_COMPOSED_INPUTS[relpath]
@@ -1678,7 +1810,7 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
             final_status = "local"
             layer = _migrated_layer(manifest_layers, relpath, final_status)
             row = {"layer": layer}
-            row.update({"status": "local", "judged": _migrated_decision(root, relpath, "keep-local") if local_exists else None})
+            row.update({"status": "local", "judged": _migrated_decision(root, relpath, "keep-local", current) if local_exists else None})
         else:
             final_status = "forked"
             layer = _migrated_layer(manifest_layers, relpath, final_status)
@@ -1688,7 +1820,7 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
     layer = _migrated_layer(manifest_layers, relpath, old_status)
     row = {"layer": layer}
     if old_status == "local":
-        row.update({"status": "local", "judged": _migrated_decision(root, relpath, "keep-local") if local_exists else None})
+        row.update({"status": "local", "judged": _migrated_decision(root, relpath, "keep-local", current) if local_exists else None})
         return row
     if old_status == "forked":
         row.update({"status": "forked", "base": None, "judged": None})
@@ -1711,8 +1843,9 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
         if lock.get("schema") == 2:
             return NO_CHANGE
         files = {}
+        current = _content_shas(root, list(lock.get("files", {})))
         for relpath, source_row in lock.get("files", {}).items():
-            files[relpath] = _migrate_row(root, source_row, relpath, manifest_layers)
+            files[relpath] = _migrate_row(root, source_row, relpath, manifest_layers, current)
         core = ".claude/CLAUDE.core.md"
         if core not in files and (_content_sha(root, core) is not None or _upstream_sha(source, core, lock.get("substitutions", {})) is not None):
             core_hash = _upstream_sha(source, core, lock.get("substitutions", {}))
@@ -1778,6 +1911,126 @@ def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
     return 0
 
 
+def _composed_rows(lock: dict) -> list[tuple[str, dict]]:
+    return [(relpath, entry) for relpath, entry in lock.get("files", {}).items()
+            if _entry_status(entry) == "composed"]
+
+
+def _compose_row_output(root: Path, relpath: str, inputs: list[str], layers: list[str]) -> bytes:
+    """Dispatch by relpath shape — the same two shapes `WATCH_COMPOSED_INPUTS` enumerates."""
+    if relpath.endswith("settings.json"):
+        if len(inputs) != 2:
+            raise BaselineError(f"compose: {relpath} needs exactly 2 inputs, got {inputs}")
+        base_relpath, project_relpath = inputs
+        base_text = local_text(root, base_relpath)
+        project_text = local_text(root, project_relpath)
+        if base_text is None:
+            raise BaselineError(f"compose: missing input {base_relpath} for {relpath}")
+        if project_text is None:
+            raise BaselineError(f"compose: missing input {project_relpath} for {relpath}")
+        try:
+            base = json.loads(base_text)
+            project = json.loads(project_text)
+        except json.JSONDecodeError as exc:
+            raise BaselineError(f"compose: {relpath} input is not valid JSON: {exc}") from exc
+        hooks_dir = root / ".claude" / "hooks"
+        try:
+            merged = baseline_compose.compose_settings(base, project, hooks_dir, layers)
+        except baseline_compose.ComposeError as exc:
+            raise BaselineError(f"compose: {relpath}: {exc}") from exc
+        return baseline_compose.canonical_json(merged)
+    if relpath.endswith("memory_domains.md"):
+        base_relpath = next((p for p in inputs if p.endswith(".base.md")), None)
+        adaptation_relpath = next((p for p in inputs if p.endswith("adaptation.json")), None)
+        if base_relpath is None or adaptation_relpath is None:
+            raise BaselineError(f"compose: {relpath} needs a *.base.md and an adaptation.json input, got {inputs}")
+        base_text = local_text(root, base_relpath)
+        adaptation_text = local_text(root, adaptation_relpath)
+        if base_text is None:
+            raise BaselineError(f"compose: missing input {base_relpath} for {relpath}")
+        if adaptation_text is None:
+            raise BaselineError(f"compose: missing input {adaptation_relpath} for {relpath}")
+        try:
+            adaptation = json.loads(adaptation_text)
+        except json.JSONDecodeError as exc:
+            raise BaselineError(f"compose: {relpath} input is not valid JSON: {exc}") from exc
+        if not isinstance(adaptation.get("memory_domains", []), list):
+            raise BaselineError(f"compose: {adaptation_relpath} memory_domains must be a list")
+        try:
+            rendered = baseline_compose.render_memory_domains(base_text, adaptation.get("memory_domains", []))
+        except baseline_compose.ComposeError as exc:
+            raise BaselineError(f"compose: {relpath}: {exc}") from exc
+        return rendered.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    raise BaselineError(f"compose: no composition rule for {relpath}")
+
+
+def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
+    check_adaptation_contract(root)
+    rows = _composed_rows(lock)
+    outputs: dict[str, bytes] = {}
+    inputs_by_relpath: dict[str, list[str]] = {}
+    for relpath, entry in rows:
+        inputs = list(entry.get("inputs") or [])
+        inputs_by_relpath[relpath] = inputs
+        outputs[relpath] = _compose_row_output(root, relpath, inputs, layers)
+
+    drift = []
+    for relpath, output in outputs.items():
+        local = local_text(root, relpath)
+        local_bytes = local.encode("utf-8") if local is not None else None
+        if local_bytes != _lf(output):
+            drift.append(relpath)
+    drift.sort()
+
+    if check:
+        for relpath in drift:
+            print(f"drift: {relpath}")
+        if drift:
+            return 1
+        print("no drift")
+        return 0
+
+    for relpath in drift:
+        _write_lf(root / relpath, outputs[relpath])
+
+    # A row whose file already equals its composition (e.g. `migrate` reset `hash` to null on an
+    # already-correct file) still needs its `hash`/`inputs` recorded -- `drift` alone tracks only
+    # files that needed WRITING, not rows whose lock metadata disagrees with the composed truth.
+    rows_by_relpath = dict(rows)
+    stale_rows = []
+    for relpath, output in outputs.items():
+        row = rows_by_relpath[relpath]
+        new_hash = sha(output)
+        new_inputs = inputs_by_relpath[relpath]
+        if row.get("hash") != new_hash or row.get("inputs") != new_inputs:
+            stale_rows.append(relpath)
+    stale_rows.sort()
+
+    if not drift and not stale_rows:
+        print("no change")
+        return 0
+
+    def mutator(current: dict):
+        changed = False
+        for relpath in stale_rows:
+            row = current.get("files", {}).get(relpath)
+            if row is None:
+                continue
+            new_hash = sha(outputs[relpath])
+            new_inputs = inputs_by_relpath[relpath]
+            if row.get("hash") != new_hash or row.get("inputs") != new_inputs:
+                row["hash"] = new_hash
+                row["inputs"] = new_inputs
+                changed = True
+        return None if changed else NO_CHANGE
+
+    if stale_rows:
+        mutate_lock(root, mutator)
+    for relpath in sorted(set(drift) | set(stale_rows)):
+        print(f"composed: {relpath}")
+    return 0
+
+
 def v2_init(root: Path, baseline_dir: str, repo: str, ref: str,
             substitutions: dict[str, str], layers: list[str], source: BaselineSource,
             force: bool) -> int:
@@ -1805,20 +2058,25 @@ def v2_init(root: Path, baseline_dir: str, repo: str, ref: str,
             continue
         upstream = upstream_text(source, relpath, substitutions)
         if item.get("sync") == "seed":
-            if relpath.endswith("/settings.json"):
-                files[relpath] = {
-                    "status": "composed",
-                    "layer": item.get("layer"),
-                    "hash": None,
-                    "inputs": WATCH_COMPOSED_INPUTS.get(relpath, []),
-                    "judged": _decision(root, relpath, "keep-local"),
-                }
-            else:
-                files[relpath] = {
-                    "status": "local",
-                    "layer": item.get("layer"),
-                    "judged": _decision(root, relpath, "keep-local"),
-                }
+            files[relpath] = {
+                "status": "local",
+                "layer": item.get("layer"),
+                "judged": _decision(root, relpath, "keep-local"),
+            }
+            # `.claude/settings.json` is `composed`, never a manifest entry of its own (§9): once
+            # its seed input (`settings.project.json`) is seen, synthesize its row here if the
+            # tracked input (`settings.base.json`) also landed on disk.
+            if relpath.endswith("settings.project.json"):
+                composed_relpath = str(Path(relpath).parent / "settings.json").replace("\\", "/")
+                composed_inputs = WATCH_COMPOSED_INPUTS.get(composed_relpath, [])
+                if composed_inputs and all((root / p).is_file() for p in composed_inputs):
+                    files[composed_relpath] = {
+                        "status": "composed",
+                        "layer": item.get("layer"),
+                        "hash": None,
+                        "inputs": composed_inputs,
+                        "judged": None,
+                    }
         elif upstream is not None:
             upstream_hash = sha(upstream.encode("utf-8"))
             files[relpath] = {
@@ -1931,6 +2189,8 @@ def _validate_cli_usage(args) -> list[str] | None:
         raise UsageError("--status is only valid with classify or paths")
     if args.verdict is not None and args.op not in ("judge", "paths"):
         raise UsageError("--verdict is only valid with judge or paths")
+    if args.check and args.op != "compose":
+        raise UsageError("--check is only valid with compose")
     if args.layers is not None:
         resolve_layers_v2({}, args.layers)
     if args.op == "paths":
@@ -1982,13 +2242,14 @@ def main(argv=None) -> int:
     ap.add_argument("op", choices=[
         "check", "diff", "pull", "update-lock", "migrate",
         "classify", "judge", "triage", "forget", "gc", "fork", "track",
-        "ignore", "candidates", "paths", "init",
+        "ignore", "candidates", "paths", "init", "compose",
     ])
     ap.add_argument("relpaths", nargs="*")
     ap.add_argument("--baseline-dir")
     ap.add_argument("--layers", metavar="PURE,CODING,GODOT")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--check", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--status")
     ap.add_argument("--from", dest="from_relpath")
@@ -2050,6 +2311,8 @@ def main(argv=None) -> int:
         if args.op == "candidates":
             cmd_candidates(root, lock, layers, args.baseline_dir)
             return 0
+        if args.op == "compose":
+            return v2_compose(root, lock, layers, args.check)
 
         source = None
         try:

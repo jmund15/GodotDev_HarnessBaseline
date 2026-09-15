@@ -50,6 +50,18 @@ def _write_json(path: Path, value: object) -> None:
     _write(path, json.dumps(value, indent=2) + "\n")
 
 
+def _seed_project_subsystems(root: Path) -> None:
+    """A valid `project_subsystems` adaptation contract (Design §8), so this fixture's
+    `classify` calls do not trip the new refusal incidentally. Baked into the seed commit
+    (not a later staged add), so it never counts as an unclassified new `.claude/` file for
+    this guard's own per-case checks."""
+    _write(root / ".claude" / "skills" / "project_subsystems" / "adaptation.json", "{}\n")
+    _write(
+        root / ".claude" / "skills" / "project_subsystems" / "SKILL.md",
+        "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: fixture-subsystem\n    paths: [fixture]\n```\n",
+    )
+
+
 def _make_consumer_repo(files: dict | None = None) -> Path:
     """A minimal baseline-consumer repo: `.claude/baseline.lock.json` at its root, one seed
     commit. `files` seeds `lock["files"]` rows."""
@@ -65,6 +77,7 @@ def _make_consumer_repo(files: dict | None = None) -> Path:
         "files": dict(files or {}),
     }
     _write_json(root / ".claude" / "baseline.lock.json", lock)
+    _seed_project_subsystems(root)
     _write(root / "README.md", "seed\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "seed")

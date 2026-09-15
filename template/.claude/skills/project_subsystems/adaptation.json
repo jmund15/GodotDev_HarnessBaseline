@@ -1,0 +1,18 @@
+{
+  "read_only_commands": [],
+  "git_submodules": [],
+  "high_risk_patterns": [],
+  "drive_commands": [],
+  "teardown_helpers": [],
+  "tests_root": "Tests",
+  "test_quarantine_filter": "",
+  "memory_domains": [],
+  "paired_repos": [],
+  "content_domains": [],
+  "content_scopes": [],
+  "structure_exceptions": [],
+  "pr_domains": [],
+  "content_nouns": [],
+  "proof_excluded": {},
+  "proof_timeouts": {}
+}

@@ -22,7 +22,7 @@ path or a commit message.
 
 ## Your task
 
-1. **Paired repos first** (PROJECT-CONFIG: skip if the project has none): if a submodule or paired repo is dirty or ahead of origin, commit and push it FIRST per its own procedure.
+1. **Paired repos first** (read `adaptation.json` `paired_repos` for the list; skip if it's empty): if a listed submodule or paired repo is dirty or ahead of origin, commit and push it FIRST per its own procedure.
 2. **{{PROJECT_NAME}}**: Group ALL remaining dirty files into categorical commits by logical concern (e.g., feat, fix, refactor, chore, data, docs).
    - If a paired repo was pushed in step 1, stage its pointer update in the appropriate commit.
    - Each commit should be independently revertable.

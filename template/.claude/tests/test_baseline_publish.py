@@ -57,6 +57,21 @@ def _write(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
+_SUBSYSTEMS_SKILL_SEED = (
+    "# project_subsystems\n\n```yaml\nsubsystems:\n"
+    "  - id: fixture-subsystem\n"
+    "    paths: [fixture]\n"
+    "```\n"
+).encode()
+
+
+def _seed_project_subsystems(root: Path) -> None:
+    """A valid `project_subsystems` adaptation contract (Design §8), so a consumer root
+    that already has a lock does not trip `publish`'s new refusal incidentally."""
+    _write(root / ".claude" / "skills" / "project_subsystems" / "adaptation.json", b"{}\n")
+    _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", _SUBSYSTEMS_SKILL_SEED)
+
+
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "-q")
@@ -299,6 +314,11 @@ def main(argv):
         return 0
 
     if sub == "checks":
+        if "--json" in argv:
+            # Real gh shape (read from a live PR): one object per check, `link` is the job URL.
+            print(json.dumps([{"name": "baseline", "state": "SUCCESS", "workflow": "baseline",
+                               "link": "https://example.invalid/actions/runs/77/job/1"}]))
+            return 0
         pending = int(os.environ.get("GH_FAKE_NO_CHECKS_CALLS", "0") or 0)
         state["checks_calls"] = state.get("checks_calls", 0) + 1
         _save_state(state)
@@ -416,6 +436,7 @@ def _seed_commit_fixture(path: Path, rel: str, baseline_content: bytes, local_co
 
     root = path / "consumer"
     _init_repo(root)
+    _seed_project_subsystems(root)
     _write(root / rel, local_content)
     lock = {
         "baseline_repo": remote.as_uri(),
@@ -433,7 +454,13 @@ def _seed_commit_fixture(path: Path, rel: str, baseline_content: bytes, local_co
                     "verdict": "push",
                     "at": "2026-01-01T00:00:00Z",
                 },
-            }
+            },
+            # The `_seed_project_subsystems` pair above is a committed, consumer-local file
+            # pair -- a "commit" source's step-1 classify (`_candidates`) flags any committed
+            # `.claude/` path with no lock row, so both need one to keep these fixtures a
+            # clean baseline for step-1 rather than a pre-existing candidates failure.
+            ".claude/skills/project_subsystems/adaptation.json": {"status": "local", "layer": "pure", "judged": None},
+            ".claude/skills/project_subsystems/SKILL.md": {"status": "local", "layer": "pure", "judged": None},
         },
     }
     _write(root / ".claude" / "baseline.lock.json", (json.dumps(lock, indent=2) + "\n").encode())
@@ -460,6 +487,7 @@ def _seed_worktree_root(path: Path, remote: Path, baseline_commit: str) -> Path:
     lock rows required (a worktree source is not driven by a consumer's own lock rows)."""
     root = path / "consumer"
     _init_repo(root)
+    _seed_project_subsystems(root)
     lock = {
         "baseline_repo": remote.as_uri(),
         "baseline_ref": "main",
@@ -883,6 +911,21 @@ def test_ci_checks_not_yet_registered_are_waited_for() -> None:
         assert state.get("checks_calls") == 3, state.get("checks_calls")
 
 
+def test_ci_on_publish_records_the_ci_run_url() -> None:
+    # S6's done-condition reads `ci_run_url`; the first CI-on publication left it null.
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = dict(_install_fake_gh(path))
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                                  [rel], [], False, False, None)
+        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+        assert journal["ci_run_url"] == "https://example.invalid/actions/runs/77", journal["ci_run_url"]
+
+
 def test_ci_checks_that_never_register_fail_step_six_after_the_wait() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
@@ -1223,6 +1266,7 @@ def test_worktree_source_leaves_hash_for_consumer_pull_when_out_of_sync() -> Non
 
         root = path / "consumer"
         _init_repo(root)
+        _seed_project_subsystems(root)
         _write(root / rel, old_content)
         lock = {
             "schema": 2,
@@ -1278,6 +1322,83 @@ def test_worktree_source_leaves_hash_for_consumer_pull_when_out_of_sync() -> Non
         assert results2[rel] == "in-sync", results2
 
 
+def _adaptation_json_path(root: Path) -> Path:
+    return root / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+
+
+def _skill_md_path(root: Path) -> Path:
+    return root / ".claude" / "skills" / "project_subsystems" / "SKILL.md"
+
+
+def _adaptation_contract_scenarios(root: Path):
+    """Design §8's six ways the `project_subsystems` adaptation contract can be missing or
+    malformed -- a label, a zero-arg corruption leaving the pair in that one broken state,
+    and a substring the refusal message must contain (the file, or the file and key)."""
+    adaptation_path = _adaptation_json_path(root)
+    skill_path = _skill_md_path(root)
+    return [
+        ("adaptation.json missing", lambda: adaptation_path.unlink(), "adaptation.json"),
+        ("adaptation.json unparseable", lambda: _write(adaptation_path, b"{not json"), "adaptation.json"),
+        ("adaptation.json not a JSON object", lambda: _write(adaptation_path, b"[]\n"), "adaptation.json"),
+        ("adaptation.json key wrong-typed",
+         lambda: _write(adaptation_path, json.dumps({"tests_root": 1}).encode()), "tests_root"),
+        ("SKILL.md missing", lambda: skill_path.unlink(), "SKILL.md"),
+        ("SKILL.md subsystems block unparseable",
+         lambda: _write(skill_path, b"# no yaml block here\n"), "SKILL.md"),
+    ]
+
+
+def test_publish_refuses_malformed_adaptation_contract_fresh_run() -> None:
+    """Design §8: a fresh `publish` exits 1, naming the file (or file and key), for each way
+    the adaptation contract can be broken, and creates no journal for any of them."""
+    rel = ".claude/tools/contract_publish.py"
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(
+            path, rel, b"value = 'old'\n", b"value = 'fixture'\n"
+        )
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        journal_dir = root / ".claude" / ".cache" / "baseline-publish"
+        for label, corrupt, needle in _adaptation_contract_scenarios(root):
+            _seed_project_subsystems(root)  # reset to a valid pair before each scenario
+            corrupt()
+            try:
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                            [rel], [], False, True, None)
+                raise AssertionError(f"{label}: publish did not refuse")
+            except publish.PublishError as exc:
+                assert needle in str(exc), f"{label}: {exc}"
+            assert not journal_dir.exists() or not list(journal_dir.glob("*.json")), label
+
+
+def test_publish_resume_refuses_malformed_adaptation_contract() -> None:
+    """Design §8: `--resume` refuses the same way -- naming the file or key -- without
+    advancing or rewriting the already-started journal from its dry-run state."""
+    rel = ".claude/tools/contract_publish_resume.py"
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(
+            path, rel, b"value = 'old'\n", b"value = 'fixture'\n"
+        )
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            dry = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                               [rel], [], True, True, None)
+        resume_id = _field(dry, "id")
+        journal_path = publish._journal_path(root, resume_id)
+        before = journal_path.read_bytes()
+
+        for label, corrupt, needle in _adaptation_contract_scenarios(root):
+            _seed_project_subsystems(root)  # reset to a valid pair before each scenario
+            corrupt()
+            try:
+                publish.run(root, None, None, [], False, False, resume_id)
+                raise AssertionError(f"{label}: resume did not refuse")
+            except publish.PublishError as exc:
+                assert needle in str(exc), f"{label}: {exc}"
+            assert journal_path.read_bytes() == before, label
+
 def test_journal_and_lock_writes_wait_out_a_reader_holding_the_target() -> None:
     # Windows refuses os.replace onto a file another process holds open (WinError 5): an
     # indexer or scanner reading the journal crashed a real publication mid-scrub. The write
@@ -1322,6 +1443,7 @@ def main() -> int:
         test_resume_finds_and_reuses_pr_after_crash_before_pr_url_written,
         test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes,
         test_ci_checks_not_yet_registered_are_waited_for,
+        test_ci_on_publish_records_the_ci_run_url,
         test_ci_checks_that_never_register_fail_step_six_after_the_wait,
         test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes,
         test_resume_redoes_steps_after_deleted_worktree,
@@ -1334,6 +1456,8 @@ def main() -> int:
         test_from_worktree_publishes_every_diff_record_including_root_config_files,
         test_publish_does_not_alter_cache_clone_shared_identity,
         test_worktree_source_leaves_hash_for_consumer_pull_when_out_of_sync,
+        test_publish_refuses_malformed_adaptation_contract_fresh_run,
+        test_publish_resume_refuses_malformed_adaptation_contract,
     ]
     failures = []
     for case in cases:

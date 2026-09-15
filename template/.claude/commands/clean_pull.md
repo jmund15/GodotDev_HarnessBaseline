@@ -10,9 +10,10 @@ This command is the inverse of `/clean_push`. It brings the current branch **ful
 synchronized** with its remote counterpart — fetching, pulling, and restoring any
 stashed work — without losing uncommitted changes.
 
-PROJECT-CONFIG: a layer or project with paired repos, builds, or post-pull
-integrity checks inserts those steps between steps 2 and 3 (e.g. the godot layer
-adds submodule update + build + reference-integrity here).
+A layer or project with paired repos, builds, or post-pull integrity checks inserts those
+steps between steps 2 and 3 (e.g. the godot layer adds submodule update + build +
+reference-integrity here). Read the paired repos themselves from `adaptation.json`
+`paired_repos` at that step — never hardcode a path here.
 
 ## Context
 

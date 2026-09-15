@@ -538,6 +538,23 @@ def _watch_checks(worktree: Path, pr_url: str) -> subprocess.CompletedProcess[by
         time.sleep(CHECKS_POLL_S)
 
 
+def _ci_run_url(worktree: Path, pr_url: str) -> str | None:
+    """The workflow run behind the PR's passing checks: `gh pr checks --json` gives each check's job
+    link (`.../actions/runs/<run>/job/<job>`); the run URL is that link without its job segment."""
+    listed = _gh(worktree, ["pr", "checks", pr_url, "--json", "name,state,link"])
+    if listed.returncode != 0:
+        return None
+    try:
+        checks = json.loads(_lf(listed.stdout).decode("utf-8", errors="replace") or "[]")
+    except json.JSONDecodeError:
+        return None
+    for check in checks:
+        link = str(check.get("link") or "")
+        if check.get("state") == "SUCCESS" and "/actions/runs/" in link:
+            return link.split("/job/", 1)[0]
+    return None
+
+
 def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
              no_ci: bool, branch: str, journal_id: str) -> str:
     if not journal["worktree"].get("committed"):
@@ -601,6 +618,8 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
         if checks.returncode != 0:
             detail = _lf(checks.stdout + checks.stderr).decode("utf-8", errors="replace").strip()
             raise PublishError("gh pr checks failed" + ((": " + detail) if detail else ""))
+        journal["ci_run_url"] = _ci_run_url(worktree, pr_url)
+        _write_json_atomic(journal_path, journal)
 
     _git(worktree, ["fetch", "origin", "main"])
     current_main = _git_text(worktree, ["rev-parse", "origin/main"])
@@ -953,6 +972,13 @@ def _delete_journal(journal_path: Path) -> None:
 def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str],
         dry_run, no_ci, resume_id):
     root = Path(root).resolve()
+    # Design §8: refuse a missing/malformed `project_subsystems` adaptation contract before
+    # step 1 on a fresh run, and before touching an existing journal on `--resume` -- so a
+    # refusal here creates no journal and advances no step.
+    try:
+        sync.check_adaptation_contract(root)
+    except sync.BaselineError as exc:
+        raise PublishError(str(exc)) from exc
     if resume_id:
         return _resume(root, resume_id, accept_hits)
     if source is None:

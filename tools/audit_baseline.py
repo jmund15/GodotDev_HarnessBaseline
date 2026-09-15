@@ -88,7 +88,9 @@ CORE_DOMAIN_TOKENS = [
 CORE_DOMAIN_MIN_DISTINCT = 2
 CORE_DOMAIN_ALLOWLIST = {
     ".claude/CLAUDE.md",            # seed: consumer replaces domain sections
+    ".claude/CLAUDE.core.md",       # universal doctrine: cites Godot/C# build commands as examples
     ".claude/settings.json",        # seed: wiring layered at bootstrap
+    ".claude/settings.base.json",   # tracked: wiring layered at bootstrap (was settings.json)
     ".claude/auto-memory/MEMORY.md",
     # Core memories whose *evidence* sections cite source-domain incidents.
     # The rule text is generic; evidence stays verbatim by memory convention.
@@ -111,6 +113,7 @@ CORE_DOMAIN_ALLOWLIST = {
 # Universal doctrine that legitimately discusses framework types as examples.
 LAYER_MISTAG_ALLOWLIST = {
     ".claude/CLAUDE.md",
+    ".claude/CLAUDE.core.md",
     ".claude/auto-memory/MEMORY.md",
     ".claude/skills/architecture_philosophy/SKILL.md",
 }

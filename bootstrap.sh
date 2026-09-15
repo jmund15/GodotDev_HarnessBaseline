@@ -18,8 +18,10 @@
 #   2. Substitutes {{PROJECT_NAME}} / {{PROJECT_NAMESPACE}} / {{VAULT_ROOT}} /
 #      {{PROJECT_ROOT}} everywhere ({{PROJECT_NAMESPACE}} defaults to the project name).
 #   3. Optionally strips layers not in --layers (manifest-driven).
-#   4. Writes .claude/baseline.lock.json via baseline_sync.py init so /sync_baseline
-#      works from day one.
+#   4. Writes .claude/baseline.lock.json via baseline_sync.py init (v2, with --layers
+#      recorded as the lock profile) so /sync_baseline works from day one.
+#   5. Runs baseline_sync.py compose, which writes .claude/settings.json from the copied
+#      settings.base.json + settings.project.json seed, pruning per the adopted layers.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -103,58 +105,19 @@ for p in (target / ".claude").rglob("*"):
         p.write_text(out, encoding="utf-8")
         changed += 1
 print(f"substitutions applied in {changed} files")
-
-# --- Layer-aware settings.json pruning -------------------------------------
-# The seed settings.json ships with wiring for every layer. After the layer
-# strip above, drop: (a) hook entries whose script no longer exists, (b)
-# Skill(<name>) allow entries whose command/skill file no longer exists, (c)
-# gamedev-only permission entries when the godot layer wasn't adopted.
-import re as _re
-settings_path = target / ".claude" / "settings.json"
-if settings_path.exists():
-    cfg = json.loads(settings_path.read_text(encoding="utf-8"))
-    pruned = 0
-    hooks = cfg.get("hooks", {})
-    for event, groups in list(hooks.items()):
-        for group in list(groups):
-            kept = []
-            for h in group.get("hooks", []):
-                m = _re.search(r"\.claude/hooks/([\w.]+)", h.get("command", ""))
-                if m and not (target / ".claude" / "hooks" / m.group(1)).exists():
-                    pruned += 1
-                    continue
-                kept.append(h)
-            group["hooks"] = kept
-            if not kept:
-                groups.remove(group)
-        if not groups:
-            del hooks[event]
-    allow = cfg.get("permissions", {}).get("allow", [])
-    def keep_perm(entry: str) -> bool:
-        global pruned
-        m = _re.fullmatch(r"Skill\(([\w-]+)\)", entry)
-        if m:
-            name = m.group(1)
-            if not ((target / ".claude" / "commands" / f"{name}.md").exists()
-                    or (target / ".claude" / "skills" / name).exists()):
-                pruned += 1
-                return False
-        if "godot" not in adopted:
-            if _re.search(r"dotnet|gdunit4|GODOT_BIN|mcp__godot__|godotengine|godot-gdunit", entry, _re.I):
-                pruned += 1
-                return False
-        return True
-    cfg["permissions"]["allow"] = [e for e in allow if keep_perm(e)]
-    settings_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    print(f"settings.json pruned to adopted layers: {pruned} entries removed")
 EOF
 
+# Layer-aware settings.json pruning (a missing hook script, an absent Skill(<name>)
+# command/skill, or a godot-stack permission when `godot` was not adopted) now lives in
+# `baseline_compose.compose_settings` (R3/R10), run by `compose` below, after `init` has
+# written the lock `profile` those filters read.
 ( cd "$TARGET" && python3 .claude/tools/baseline_sync.py init \
-    --baseline-dir "$HERE" --repo "$REPO" --ref "$REF" \
+    --baseline-dir "$HERE" --repo "$REPO" --ref "$REF" --layers "$LAYERS" \
     --sub "{{PROJECT_NAME}}=$PROJECT_NAME" \
     --sub "{{PROJECT_NAMESPACE}}=${PROJECT_NAMESPACE:-$PROJECT_NAME}" \
     ${VAULT_ROOT:+--sub "{{VAULT_ROOT}}=$VAULT_ROOT"} \
-    ${PROJECT_ROOT:+--sub "{{PROJECT_ROOT}}=$PROJECT_ROOT"} )
+    ${PROJECT_ROOT:+--sub "{{PROJECT_ROOT}}=$PROJECT_ROOT"} \
+  && python3 .claude/tools/baseline_sync.py compose )
 
 cat <<NEXT
 

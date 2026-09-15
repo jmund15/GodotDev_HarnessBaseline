@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -49,6 +50,24 @@ def _sha(data: bytes) -> str:
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+
+
+_SUBSYSTEMS_SKILL_SEED = (
+    "# project_subsystems\n\n```yaml\nsubsystems:\n"
+    "  - id: fixture-subsystem\n"
+    "    paths: [fixture]\n"
+    "```\n"
+).encode()
+
+
+def _seed_project_subsystems(root: Path) -> None:
+    """A valid `project_subsystems` adaptation contract (Design §8) -- `adaptation.json` at
+    its default (an empty JSON object) plus a `SKILL.md` with a parseable `subsystems:` row
+    -- so a fixture's `classify`/`ignore`/`compose` call does not trip the new refusal
+    incidentally. A caller with its own scenario for these two files writes over this
+    afterward, or supplies its own `rows` entry for the exact relpath."""
+    _write(root / ".claude" / "skills" / "project_subsystems" / "adaptation.json", b"{}\n")
+    _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", _SUBSYSTEMS_SKILL_SEED)
 
 
 def _init_repo(path: Path) -> None:
@@ -130,6 +149,7 @@ def _lock(root: Path, remote: Path, ref: str, rel: str, content: bytes) -> None:
 def _consumer(path: Path, remote: Path, ref: str, rel: str, content: bytes) -> Path:
     root = path / "consumer"
     _init_repo(root)
+    _seed_project_subsystems(root)
     _write(root / rel, content)
     _lock(root, remote, ref, rel, content)
     _commit(root, "consumer")
@@ -488,6 +508,7 @@ def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True):
 
     root = path / "consumer"
     _init_repo(root)
+    _seed_project_subsystems(root)
     files = {}
     for relpath, entry in rows.items():
         local = entry.get("local", entry.get("upstream", ("upstream " + relpath + "\n").encode()))
@@ -1029,6 +1050,89 @@ def test_v2_concurrent_classify_keeps_both_rows() -> None:
         assert lock["files"][second]["status"] == "local"
 
 
+def _adaptation_json_path(root: Path) -> Path:
+    return root / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+
+
+def _skill_md_path(root: Path) -> Path:
+    return root / ".claude" / "skills" / "project_subsystems" / "SKILL.md"
+
+
+def _adaptation_contract_scenarios(root: Path):
+    """Design §8's six ways the `project_subsystems` adaptation contract can be missing or
+    malformed, shared between the `classify` and `compose` refusal proofs below: a label, a
+    zero-arg corruption that leaves the pair in that one broken state, and a substring the
+    refusal message must contain (the file, or the file and the wrong-typed key)."""
+    adaptation_path = _adaptation_json_path(root)
+    skill_path = _skill_md_path(root)
+    return [
+        ("adaptation.json missing", lambda: adaptation_path.unlink(), "adaptation.json"),
+        ("adaptation.json unparseable", lambda: _write(adaptation_path, b"{not json"), "adaptation.json"),
+        ("adaptation.json not a JSON object", lambda: _write(adaptation_path, b"[]\n"), "adaptation.json"),
+        ("adaptation.json key wrong-typed",
+         lambda: _write_json(adaptation_path, {"tests_root": 1}), "tests_root"),
+        ("SKILL.md missing", lambda: skill_path.unlink(), "SKILL.md"),
+        ("SKILL.md subsystems block unparseable",
+         lambda: _write(skill_path, b"# no yaml block here\n"), "SKILL.md"),
+    ]
+
+
+def test_v2_classify_refuses_malformed_adaptation_contract() -> None:
+    """Design §8: `classify` exits 1, naming the file (or the file and key), for each way the
+    `project_subsystems` adaptation contract can be missing or malformed, and never writes the
+    lock for any of them."""
+    rel = ".claude/tools/contract_classify.py"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {rel: {"upstream": b"value = 1\n"}}
+        )
+        before_lock = (root / ".claude" / "baseline.lock.json").read_bytes()
+        for label, corrupt, needle in _adaptation_contract_scenarios(root):
+            _seed_project_subsystems(root)  # reset to a valid pair before each scenario
+            corrupt()
+            result = _run(root, "classify", rel, "--status", "local", "--force")
+            output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+            assert result.returncode == 1, f"{label}: {output}"
+            assert needle in output, f"{label}: {output}"
+            assert (root / ".claude" / "baseline.lock.json").read_bytes() == before_lock, label
+
+
+def test_v2_compose_refuses_malformed_adaptation_contract() -> None:
+    """Design §8: `compose` exits 1 the same way, before writing any composed output --
+    `.claude/settings.json` stays at its pre-run (uncomposed) bytes for every scenario."""
+    settings_relpath = ".claude/settings.json"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path,
+            {
+                ".claude/settings.base.json": {
+                    "status": "tracked",
+                    "upstream": b'{"permissions": {"allow": ["A"]}, "hooks": {}}\n',
+                },
+                ".claude/settings.project.json": {
+                    "status": "local",
+                    "local": b'{"permissions": {"allow": ["B"]}, "hooks": {}}\n',
+                },
+                settings_relpath: {
+                    "status": "composed",
+                    "upstream": b"not composed yet\n",
+                    "inputs": [".claude/settings.base.json", ".claude/settings.project.json"],
+                },
+            },
+        )
+        before_lock = (root / ".claude" / "baseline.lock.json").read_bytes()
+        before_settings = (root / settings_relpath).read_bytes()
+        for label, corrupt, needle in _adaptation_contract_scenarios(root):
+            _seed_project_subsystems(root)  # reset to a valid pair before each scenario
+            corrupt()
+            result = _run(root, "compose")
+            output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+            assert result.returncode == 1, f"{label}: {output}"
+            assert needle in output, f"{label}: {output}"
+            assert (root / ".claude" / "baseline.lock.json").read_bytes() == before_lock, label
+            assert (root / settings_relpath).read_bytes() == before_settings, label
+
+
 def test_v2_many_concurrent_classifies_lose_no_row() -> None:
     # The pid-file mutex let a waiter delete a mutex whose creator had not yet written its pid,
     # so two processes held it and one lock write was lost (1 run in 5 on Linux with two
@@ -1053,6 +1157,35 @@ def test_v2_many_concurrent_classifies_lose_no_row() -> None:
             lock = _load_lock(root)
             lost = [rel for rel in rels if (lock["files"].get(rel) or {}).get("status") != status]
             assert not lost, "round %d lost rows: %s" % (round_index, lost)
+
+
+def test_v2_check_strict_git_spawns_do_not_grow_with_rows() -> None:
+    """`check --strict` reads every tracked row's content. One `git show` per row, index then HEAD,
+    cost 2,300 process spawns and 35 s on a fresh 575-file bootstrap under Windows process creation,
+    past the bootstrap proof's timeout under load. The spawn count must not grow with the rows."""
+    engine = _load_engine()
+    counts = []
+    for n in (3, 12):
+        with _fixture() as path:
+            rows = {".claude/tools/spawn_%d.py" % i: {"upstream": b"value = %d\n" % i} for i in range(n)}
+            root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+            spawned = []
+            real_popen = engine.subprocess.Popen
+
+            def counting_popen(args, *a, **k):
+                if args and args[0] == "git":
+                    spawned.append(tuple(args))
+                return real_popen(args, *a, **k)
+
+            engine.subprocess.Popen = counting_popen
+            try:
+                with contextlib.chdir(root), contextlib.redirect_stdout(io.StringIO()):
+                    code = engine.main(["check", "--strict", "--baseline-dir", str(baseline)])
+            finally:
+                engine.subprocess.Popen = real_popen
+            assert code == 0, "fixture rows should check clean, got exit %s" % code
+            counts.append(len(spawned))
+    assert counts[0] == counts[1], "git spawns grew with rows: 3 rows -> %d, 12 rows -> %d" % tuple(counts)
 
 
 def test_v1_check_json_golden_is_read_only() -> None:
@@ -1137,11 +1270,14 @@ def main() -> int:
         test_v2_ignore_alias_success_refusal_and_repeat,
         test_v2_check_strict_success_refusal_and_repeat,
         test_v2_check_strict_forked_drift_states,
+        test_v2_check_strict_git_spawns_do_not_grow_with_rows,
         test_v2_paths_filters_success_refusal_and_repeat,
         test_v2_pull_explicit_states_and_new_hash,
         test_v2_migrate_covers_every_status_mapping_source_row,
         test_v2_migrate_layer_for_rows_absent_from_manifest,
         test_v2_concurrent_classify_keeps_both_rows,
+        test_v2_classify_refuses_malformed_adaptation_contract,
+        test_v2_compose_refuses_malformed_adaptation_contract,
         test_v2_many_concurrent_classifies_lose_no_row,
         test_v1_check_json_golden_is_read_only,
     ]
