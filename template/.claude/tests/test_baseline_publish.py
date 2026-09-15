@@ -1453,12 +1453,88 @@ def test_journal_and_lock_writes_wait_out_a_reader_holding_the_target() -> None:
         assert not leftovers, "temporary files left behind: %s" % leftovers
 
 
+# Records each run of the baseline's manifest generator: its argv and the exact layer entries it saw.
+RECORDING_GEN_MANIFEST = b"""#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+entries_path = root / "tools" / "layer_entries.json"
+entries = json.loads(entries_path.read_text(encoding="utf-8"))["entries"] if entries_path.exists() else {}
+log = Path(os.environ["GEN_MANIFEST_LOG"])
+calls = json.loads(log.read_text(encoding="utf-8")) if log.exists() else []
+calls.append({"argv": sys.argv[1:], "entries": entries})
+log.write_text(json.dumps(calls), encoding="utf-8")
+sys.exit(0)
+"""
+
+
+def _layer_fixture(path: Path, fresh_layer: str | None):
+    existing = ".claude/tools/fixture.py"
+    fresh = ".claude/tools/fresh_" + "row.py"
+    cache = path / "cache"
+    _init_repo(cache)
+    _write(cache / "template" / existing, b"value = 'old'\n")
+    _write(cache / "tools" / "gen_manifest.py", RECORDING_GEN_MANIFEST)
+    baseline_sha = _commit(cache, "seed")
+    root = path / "consumer"
+    _init_repo(root)
+    _write(root / existing, b"value = 'fixture'\n")
+    _write(root / fresh, b"value = 'fresh'\n")
+    commit = _commit(root, "consumer")
+    records = [{"relpath": rel, "source_path": rel, "dest_path": "template/" + rel,
+                "kind": "lock", "op": "A"} for rel in (existing, fresh)]
+    lock = {"substitutions": {}, "files": {
+        existing: {"status": "tracked", "layer": "pure"},
+        fresh: {"status": "tracked", "layer": fresh_layer},
+    }}
+    source = {"kind": "commit", "repo": str(root), "commit": commit}
+    return root, source, records, lock, cache, baseline_sha, fresh
+
+
+def test_materialize_records_new_row_layers_and_regenerates_manifest() -> None:
+    # Validate's `gen_manifest.py --check` fails on a template file no layer list names, and on a
+    # stale manifest. A commit source cannot edit baseline-root tools, so materialize must carry
+    # each new row's layer as data and regenerate the manifest before validate runs.
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, "coding")
+        log = path / "gen_manifest_calls.json"
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(log)}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "coding"}, entries
+        calls = json.loads(log.read_text(encoding="utf-8")) if log.exists() else []
+        assert [call["argv"] for call in calls] == [[]], calls
+        assert calls[0]["entries"] == {fresh: "coding"}, calls
+
+
+def test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_worktree() -> None:
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, None)
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        try:
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        except publish.PublishError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("materialize accepted a new row without a layer")
+        assert fresh in message and "--layer" in message, message
+        assert not worktree.exists(), "the refusal must come before the worktree exists"
+
+
 def main() -> int:
     cases = [
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,
         test_collect_without_rows_takes_only_push_verdicts,
         test_materialize_writes_source_bytes_unsubstituted,
+        test_materialize_records_new_row_layers_and_regenerates_manifest,
+        test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
         test_local_merge_refuses_remote_url,
         test_no_ci_refuses_when_workflow_exists,
         test_step_failures_1_through_5_leave_fixture_main_unchanged,
