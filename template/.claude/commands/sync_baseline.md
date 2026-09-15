@@ -20,6 +20,7 @@ A change to a tracked file is **universal** (→ upstream it) when it would impr
 - **Mixed change in one file:** materialize, then strip the project-specific hunks from the baseline copy before committing upstream. Never push project content upstream "for convenience".
 - **Repeated project-specific edits to the same tracked file** = the file wants to fork: propose `/sync_baseline fork <relpath>` instead of fighting the drift report every session.
 - **Placeholders:** baseline copies use `{{PROJECT_NAME}}`, `{{VAULT_ROOT}}`, `{{PROJECT_ROOT}}` (see lock `substitutions`). `materialize` reverse-substitutes automatically — verify the result didn't placeholder-ize a legitimate literal use of the project name.
+- **A file the baseline does not have yet** takes `--layer pure|coding|godot` alongside its status: the lowest layer whose consumers have every file it needs. The baseline's manifest classifies every template file, so `publish` refuses a new row that has no layer and names the `classify` call that records one.
 - **`watch` files** (CLAUDE.md, settings.json, seed skills): never hash-synced. When a watch file changed, judge whether the change is shared doctrine (CLAUDE.md `BASELINE:core` region, hook wiring in settings.json) — if so, apply the equivalent edit to the baseline's `template/` copy by hand.
 
 ## Your task
