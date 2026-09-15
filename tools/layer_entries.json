@@ -1,4 +1,6 @@
 {
   "version": 1,
-  "entries": {}
+  "entries": {
+    ".claude/tests/_commit_guard_cases.py": "godot"
+  }
 }

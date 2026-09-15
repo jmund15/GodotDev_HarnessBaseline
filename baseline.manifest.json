@@ -2168,7 +2168,7 @@
     },
     {
       "path": ".claude/tests/_commit_guard_cases.py",
-      "layer": "pure",
+      "layer": "godot",
       "sync": "auto"
     },
     {
