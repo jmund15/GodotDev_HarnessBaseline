@@ -1262,6 +1262,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/baseline_classification_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/bash_shape_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -2177,6 +2182,26 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_baseline_classification_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_baseline_identity.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_baseline_publish.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_baseline_sync.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_budget_posture_cadence.py",
       "layer": "pure",
       "sync": "auto"
@@ -2238,6 +2263,11 @@
     },
     {
       "path": ".claude/tests/test_harness_edit_skill_reminder.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_harness_tests_allow_cannot_run.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2548,6 +2578,16 @@
     },
     {
       "path": ".claude/tools/analyze_eval_archive.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/baseline_identity.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/baseline_publish.py",
       "layer": "pure",
       "sync": "auto"
     },

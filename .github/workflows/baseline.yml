@@ -1,0 +1,45 @@
+name: baseline
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  baseline:
+    name: baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
+      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      - name: verify pwsh is on PATH
+        run: pwsh -NoProfile -Command 'exit 0'
+
+      - name: gen_manifest --check
+        run: python3 tools/gen_manifest.py --check
+
+      - name: audit_baseline --strict
+        run: python3 tools/audit_baseline.py --strict
+
+      - name: baseline-repo-root proofs
+        run: |
+          set -e
+          shopt -s nullglob
+          for f in tests/test_*.py; do
+            echo "== $f =="
+            python3 "$f"
+          done
+
+      - name: template harness battery
+        run: python3 template/.claude/scripts/harness_tests.py --allow-cannot-run tests/platform_only.json

@@ -90,6 +90,17 @@ def main():
         if not cond:
             failures.append(label + (": " + detail[:300] if detail else ""))
 
+    # S4: baseline_classification_guard registers directly after git_guardrails (Design §4),
+    # and its module carries a real (non-stub) `main` -- a broken import would otherwise
+    # register a stub silently and this generic parity harness would never notice.
+    names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
+    check("baseline_classification_guard.py is registered directly after git_guardrails.py",
+          "git_guardrails.py" in names and "baseline_classification_guard.py" in names
+          and names.index("baseline_classification_guard.py") == names.index("git_guardrails.py") + 1,
+          repr(names))
+    check("its import did not fall back to the stub",
+          getattr(pre_bash_dispatch, "_BASELINE_GUARD_IMPORT_ERROR", "unset") is None)
+
     cases = [
         ("Bash", "git status --short | head -3"),
         ("Bash", "rm -rf build_out"),

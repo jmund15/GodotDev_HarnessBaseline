@@ -5,7 +5,7 @@ Three kinds of file live here; consult before assuming a file is dead:
 1. **Event hooks** — registered in `settings.json` `hooks`. Entry points:
    `pre_read_dispatch.py` / `post_read_dispatch.py` (read/search tool family) and
    `pre_bash_dispatch.py` (Bash/PowerShell/Monitor family: `pattern_enforcer.py`,
-   `git_guardrails.py`, `gate_cadence_guard.py`, `unbounded_scan_guard.py`,
+   `git_guardrails.py`, `baseline_classification_guard.py`, `gate_cadence_guard.py`, `unbounded_scan_guard.py`,
    `compound_cd_approver.py`, `cloud_test_enforcer.py`, `bash_shape_guard.py`,
    `sidecar_dispatch_context.py`, the four `--hook` commit guards) — each dispatcher
    imports its sub-hooks in-process; `pattern_enforcer.py` also registers alone on
