@@ -23,6 +23,10 @@ ENGINE = Path(__file__).resolve().parents[1] / "tools" / "baseline_sync.py"
 
 def _env(root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    # A caller committing from a temporary index (GIT_INDEX_FILE) or another repository must not
+    # redirect the scratch repositories these proofs build.
+    for key in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY"):
+        env.pop(key, None)
     env["GIT_CEILING_DIRECTORIES"] = str(root.parent)
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
@@ -572,6 +576,33 @@ def test_v2_classify_success_refusal_and_repeat() -> None:
         assert refusal.returncode == 1, refusal.stdout.decode(errors="replace")
         bad = _run(root, "classify", "tools/not-normalized.py", "--status", "local")
         assert bad.returncode == 2
+
+
+def test_v2_classify_layer_sets_overrides_from_and_refuses_unknown() -> None:
+    # A row new to the baseline has no manifest layer; publish needs one, and --layer records it.
+    rel = ".claude/tools/layered.py"
+    source = ".claude/tools/layer_source.py"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {rel: {"upstream": b"value = 1\n"}, source: {"upstream": b"value = 2\n"}}
+        )
+        first = _run(root, "classify", rel, "--status", "local", "--layer", "coding", "--force")
+        assert first.returncode == 0, first.stderr.decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["layer"] == "coding"
+        _assert_no_change(_run(root, "classify", rel, "--status", "local", "--layer", "coding"))
+        unknown = _run(root, "classify", rel, "--status", "local", "--layer", "universal", "--force")
+        assert unknown.returncode == 2, unknown.stdout.decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["layer"] == "coding"
+        wrong_op = _run(root, "judge", rel, "--verdict", "keep-local", "--layer", "pure")
+        assert wrong_op.returncode == 2, wrong_op.stdout.decode(errors="replace")
+        seeded = _run(root, "classify", source, "--status", "local", "--layer", "godot", "--force")
+        assert seeded.returncode == 0, seeded.stderr.decode(errors="replace")
+        copied = _run(root, "classify", rel, "--status", "local", "--from", source)
+        assert copied.returncode == 0, copied.stderr.decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["layer"] == "godot"
+        overridden = _run(root, "classify", rel, "--status", "local", "--from", source, "--layer", "pure")
+        assert overridden.returncode == 0, overridden.stderr.decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["layer"] == "pure"
 
 
 def _run_env(root: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -1244,6 +1275,46 @@ def test_v1_check_json_golden_is_read_only() -> None:
         assert lock_path.read_bytes() == before
 
 
+def test_v2_pull_keeps_placeholder_ok_files_verbatim() -> None:
+    # A file that names the substitution tokens (the engine itself) arrives byte-for-byte: forward
+    # substitution rewrote a pulled engine's PROJECT_ROOT lookups into the consumer's own path.
+    # A file that uses a token as a value is still substituted.
+    root_token = "{{" + "PROJECT_ROOT" + "}}"
+    name_token = "{{" + "PROJECT_NAME" + "}}"
+    engine = ".claude/tools/baseline_sync.py"
+    user = ".claude/hooks/uses_root.py"
+    literal = ('if "%s" in subs:\n    name = "%s"\n' % (root_token, name_token)).encode()
+    uses = ('REPO = r"%s"\nNAME = "%s"\n' % (root_token, name_token)).encode()
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {
+            engine: {"upstream": literal, "local": b"old engine\n", "hash": _sha(b"old engine\n")},
+            user: {"upstream": uses, "local": b"old user\n", "hash": _sha(b"old user\n")},
+        })
+        lock = _load_lock(root)
+        lock["substitutions"] = {root_token: "", name_token: "Game"}
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "consumer substitutions")
+        pulled = _run_baseline(root, baseline, "pull", engine, user)
+        assert pulled.returncode == 0, pulled.stderr.decode(errors="replace")
+        assert (root / engine).read_bytes() == literal, (root / engine).read_bytes()
+        used = (root / user).read_bytes()
+        assert root_token.encode() not in used and b'NAME = "Game"' in used, used
+        check = _run_baseline(root, baseline, "check", "--json")
+        assert check.returncode == 0, check.stderr.decode(errors="replace")
+        results = _json_output(check)["results"]
+        assert results[engine] == "in-sync" and results[user] == "in-sync", results
+
+
+def test_placeholder_ok_files_skip_both_substitution_directions() -> None:
+    engine = _load_engine()
+    name_token = "{{" + "PROJECT_NAME" + "}}"
+    subs = {name_token: "Game"}
+    assert engine.forward_for(".claude/tools/baseline_sync.py", name_token, subs) == name_token
+    assert engine.forward_for(".claude/hooks/other.py", name_token, subs) == "Game"
+    assert engine.reverse_for(".claude/tools/baseline_sync.py", 'label = "Game"\n', subs) == 'label = "Game"\n'
+    assert engine.reverse_for(".claude/hooks/other.py", 'label = "Game"\n', subs) == 'label = "%s"\n' % name_token
+
+
 def main() -> int:
     cases = [
         test_object_store_read_ignores_worktree_deletion,
@@ -1258,6 +1329,7 @@ def main() -> int:
         test_publish_cli_dispatches_to_baseline_publish,
         test_cli_root_stops_at_the_git_top_level,
         test_v2_classify_success_refusal_and_repeat,
+        test_v2_classify_layer_sets_overrides_from_and_refuses_unknown,
         test_v2_classify_tracked_refuses_planted_home_path,
         test_v2_classify_tracked_refuses_planted_topology_token,
         test_v2_judge_success_refusal_and_repeat,
@@ -1272,6 +1344,8 @@ def main() -> int:
         test_v2_check_strict_git_spawns_do_not_grow_with_rows,
         test_v2_paths_filters_success_refusal_and_repeat,
         test_v2_pull_explicit_states_and_new_hash,
+        test_v2_pull_keeps_placeholder_ok_files_verbatim,
+        test_placeholder_ok_files_skip_both_substitution_directions,
         test_v2_migrate_covers_every_status_mapping_source_row,
         test_v2_migrate_layer_for_rows_absent_from_manifest,
         test_v2_concurrent_classify_keeps_both_rows,

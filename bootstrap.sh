@@ -90,6 +90,12 @@ for d in sorted((target / ".claude").rglob("*"), reverse=True):
     if d.is_dir() and not any(d.iterdir()):
         d.rmdir()
 
+# The copied engine owns substitution, so install and `check` agree: a PLACEHOLDER_OK file names
+# the tokens rather than uses them, and stays byte-for-byte (baseline_sync.forward_for).
+import sys
+sys.path.insert(0, str(target / ".claude" / "tools"))
+import baseline_sync
+
 changed = 0
 for p in (target / ".claude").rglob("*"):
     if not p.is_file():
@@ -98,9 +104,7 @@ for p in (target / ".claude").rglob("*"):
         s = p.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         continue
-    out = s
-    for k, v in subs.items():
-        out = out.replace(k, v)
+    out = baseline_sync.forward_for(p.relative_to(target).as_posix(), s, subs)
     if out != s:
         p.write_text(out, encoding="utf-8")
         changed += 1

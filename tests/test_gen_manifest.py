@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -59,11 +60,72 @@ def test_classify_returns_none_for_an_unknown_path() -> None:
         sys.modules.pop("gen_manifest", None)
 
 
+LAYER_ENTRIES = ROOT / "tools" / "layer_entries.json"
+
+
+def _with_layer_entries(entries: dict, action) -> None:
+    """Run `action` with `tools/layer_entries.json` holding `entries`, then restore the file."""
+    before = LAYER_ENTRIES.read_bytes() if LAYER_ENTRIES.exists() else None
+    try:
+        LAYER_ENTRIES.write_text(json.dumps({"version": 1, "entries": entries}, indent=2) + "\n",
+                                 encoding="utf-8", newline="\n")
+        action()
+    finally:
+        if before is None:
+            LAYER_ENTRIES.unlink(missing_ok=True)
+        else:
+            LAYER_ENTRIES.write_bytes(before)
+
+
+def test_exact_layer_entry_classifies_a_path_no_pattern_matches() -> None:
+    # A publication adds template files no pattern list names; their layer arrives as data.
+    rel = ".claude/" + "s9_proof_" + "layer_entry" + "_marker.unclassified"
+    planted = ROOT / "template" / rel
+    assert not planted.exists(), "planted-file fixture path already exists"
+    before = MANIFEST.read_bytes()
+
+    def action() -> None:
+        planted.write_text("layer entry fixture content\n", encoding="utf-8", newline="\n")
+        result = _run_check()
+        err = result.stderr.decode("utf-8", errors="replace")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "stale" in err and "unclassified" not in err, err
+        sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            sys.modules.pop("gen_manifest", None)
+            import gen_manifest as gm
+            assert gm.classify(rel) == "coding"
+        finally:
+            sys.path.remove(str(ROOT / "tools"))
+            sys.modules.pop("gen_manifest", None)
+        assert MANIFEST.read_bytes() == before, "gen_manifest.py --check must write nothing"
+
+    try:
+        _with_layer_entries({rel: "coding"}, action)
+    finally:
+        if planted.exists():
+            planted.unlink()
+
+
+def test_invalid_layer_entry_exits_1_naming_the_path() -> None:
+    rel = ".claude/" + "s9_proof_" + "bad_layer" + ".md"
+
+    def action() -> None:
+        result = _run_check()
+        err = result.stderr.decode("utf-8", errors="replace")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert rel in err and "universal" in err, err
+
+    _with_layer_entries({rel: "universal"}, action)
+
+
 def main() -> int:
     cases = [
         test_check_passes_on_the_committed_tree,
         test_check_exits_1_on_unclassified_file_and_writes_nothing,
         test_classify_returns_none_for_an_unknown_path,
+        test_exact_layer_entry_classifies_a_path_no_pattern_matches,
+        test_invalid_layer_entry_exits_1_naming_the_path,
     ]
     failures = []
     for case in cases:

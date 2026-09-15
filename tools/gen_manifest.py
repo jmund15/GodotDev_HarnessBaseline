@@ -619,6 +619,35 @@ def is_artifact(p: Path) -> bool:
     return p.suffix == ".pyc" or bool(EXCLUDE_DIR_PARTS.intersection(parts))
 
 
+LAYER_ENTRIES_PATH = ROOT / "tools" / "layer_entries.json"
+VALID_LAYERS = ("pure", "coding", "godot")
+_layer_entries: dict[str, str] | None = None
+
+
+def load_layer_entries(path: Path = LAYER_ENTRIES_PATH) -> dict[str, str]:
+    """Exact template-relpath -> layer entries recorded as data. `baseline_publish.py` materialize
+    writes one for each row a publication adds, since a commit source cannot edit the pattern lists
+    below. An entry outranks every pattern list. A missing file means no entries."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
+        raise ValueError(f"{path.name}: 'entries' must be an object")
+    bad = sorted((rel, layer) for rel, layer in entries.items() if layer not in VALID_LAYERS)
+    if bad:
+        raise ValueError(f"{path.name}: unknown layer(s), expected one of {', '.join(VALID_LAYERS)}: "
+                         + ", ".join(f"{rel}={layer}" for rel, layer in bad))
+    return dict(entries)
+
+
+def layer_entries() -> dict[str, str]:
+    global _layer_entries
+    if _layer_entries is None:
+        _layer_entries = load_layer_entries()
+    return _layer_entries
+
+
 def match(relpath: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(relpath, p) for p in patterns)
 
@@ -628,6 +657,9 @@ def classify(relpath: str) -> str | None:
 
     Shared with audit_baseline.py so generator and audit can never disagree.
     """
+    exact = layer_entries().get(relpath)
+    if exact is not None:
+        return exact
     for layer, patterns in LAYER_ORDER:
         if match(relpath, patterns):
             return layer
@@ -639,6 +671,12 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+
+    try:
+        layer_entries()
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     files = []
     unclassified = []

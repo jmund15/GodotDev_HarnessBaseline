@@ -307,8 +307,50 @@ def _classify(source: dict, lock: dict) -> str:
 # Step 3: materialize
 # ---------------------------------------------------------------------------
 
+MANIFEST_LAYERS = ("pure", "coding", "godot")
+
+
+def _new_row_layers(records: list[dict], lock: dict, cache: Path, baseline_sha: str) -> dict[str, str]:
+    """Template relpath -> layer for each lock row the pinned baseline does not have yet. A new row
+    with no layer refuses: validate's `gen_manifest.py --check` fails on any unclassified file."""
+    layers, missing = {}, []
+    for record in records:
+        if record.get("kind") != "lock" or record["op"] == "D":
+            continue
+        exists = _git(cache, ["cat-file", "-e", f"{baseline_sha}:{record['dest_path']}"], check=False)
+        if exists.returncode == 0:
+            continue
+        layer = (lock.get("files", {}).get(record["relpath"]) or {}).get("layer")
+        if layer in MANIFEST_LAYERS:
+            layers[record["dest_path"][len("template/"):]] = layer
+        else:
+            missing.append(record["relpath"])
+    if missing:
+        raise PublishError(
+            "new row(s) have no baseline layer: " + ", ".join(missing)
+            + "; record each with `baseline_sync.py classify <relpath> --status tracked --layer pure|coding|godot`"
+        )
+    return layers
+
+
+def _record_layers_and_regenerate_manifest(worktree: Path, layers: dict[str, str]) -> None:
+    """Merge new rows' layers into `tools/layer_entries.json`, then regenerate the manifest, so
+    validate's `gen_manifest.py --check` sees every published file classified and the manifest current."""
+    if layers:
+        entries_path = worktree / "tools" / "layer_entries.json"
+        data = json.loads(entries_path.read_text(encoding="utf-8")) if entries_path.exists() else {"version": 1}
+        merged = dict(data.get("entries") or {})
+        merged.update(layers)
+        data["entries"] = dict(sorted(merged.items()))
+        _write_lf(entries_path, json.dumps(data, indent=2) + "\n")
+    if (worktree / "tools" / "gen_manifest.py").is_file():
+        _run_python_args(worktree, ["tools/gen_manifest.py"], "gen_manifest.py")
+
+
 def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
                   cache: Path, baseline_sha: str, worktree: Path, branch: str) -> str:
+    # A worktree source is an author checkout: its author owns the pattern lists and the manifest.
+    layers = _new_row_layers(records, lock, cache, baseline_sha) if source["kind"] == "commit" else None
     if worktree.exists():
         raise PublishError(f"publication worktree already exists: {worktree}")
     # A `--resume` that redoes this step (worktree lost between runs) reuses the same
@@ -334,6 +376,8 @@ def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
                 _git(worktree, ["rm", "-q", "--", record["dest_path"]])
             continue
         _write_lf(destination, content)
+    if layers is not None:
+        _record_layers_and_regenerate_manifest(worktree, layers)
     return _git_text(worktree, ["rev-parse", "HEAD"])
 
 
@@ -354,7 +398,7 @@ def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
         if not destination.exists():
             continue
         rendered = destination.read_bytes().decode("utf-8", errors="replace")
-        _write_lf(destination, sync.reverse_sub(rendered, lock.get("substitutions", {})))
+        _write_lf(destination, sync.reverse_for(record["relpath"], rendered, lock.get("substitutions", {})))
     _git(worktree, ["add", "-A"])
     diff_text = _lf(_git(worktree, ["diff", "--cached"]).stdout).decode("utf-8", errors="replace")
     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_dir))
@@ -672,7 +716,7 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
         content = _git_show(baseline_repo, baseline_sha_after, "template/" + relpath)
         if content is None:
             raise PublishError(f"merged baseline is missing: {relpath}")
-        rendered = sync.forward_sub(content.decode("utf-8", errors="replace"), substitutions)
+        rendered = sync.forward_for(relpath, content.decode("utf-8", errors="replace"), substitutions)
         merged_hash = sync.sha(rendered.encode("utf-8"))
         if from_worktree:
             local = sync.local_text(root, relpath)
@@ -710,8 +754,8 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
             source_content = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
             if source_content is None:
                 raise PublishError(f"check missing source row: {record['relpath']}")
-            expected_merged = sync.reverse_sub(
-                source_content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
+            expected_merged = sync.reverse_for(
+                record["relpath"], source_content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
             ).encode("utf-8")
             if sync.sha(content) != sync.sha(expected_merged):
                 raise PublishError(
@@ -721,8 +765,8 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
             continue
         if record["relpath"] not in lock.get("files", {}):
             continue  # new upstream row — no local counterpart until the consumer's own `pull` (§5)
-        expected = sync.forward_sub(
-            content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
+        expected = sync.forward_for(
+            record["relpath"], content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
         )
         local = sync.local_text(root, record["relpath"])
         if local is None or sync.sha(local.encode("utf-8")) != sync.sha(expected.encode("utf-8")):

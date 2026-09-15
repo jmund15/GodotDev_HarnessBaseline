@@ -585,7 +585,7 @@ def upstream_text(baseline: BaselineSource | Path, relpath: str, subs: dict) -> 
     if data is None:
         return None
     text = _lf(data).decode("utf-8", errors="replace")
-    return forward_sub(text, subs)
+    return forward_for(relpath, text, subs)
 
 
 def local_text(root: Path, relpath: str) -> str | None:
@@ -685,8 +685,19 @@ PLACEHOLDER_OK = {
     ".claude/commands/sync_baseline.md",
     ".claude/tools/baseline_sync.py",
     ".claude/tools/extract_subagent_tools.py",
+    ".claude/tests/test_baseline_identity.py",
     ".claude/worklog-titles.md",
 }
+
+
+def forward_for(relpath: str, text: str, subs: dict) -> str:
+    """`forward_sub`, except a PLACEHOLDER_OK file keeps its tokens: it names them rather than uses them."""
+    return text if relpath in PLACEHOLDER_OK else forward_sub(text, subs)
+
+
+def reverse_for(relpath: str, text: str, subs: dict) -> str:
+    """`reverse_sub`, except a PLACEHOLDER_OK file publishes byte-for-byte, as `forward_for` pulls it."""
+    return text if relpath in PLACEHOLDER_OK else reverse_sub(text, subs)
 
 
 def residual_placeholders(root: Path, lock: dict) -> list[tuple[str, list[str]]]:
@@ -1288,7 +1299,8 @@ def _classify_identity_hit(root: Path, relpath: str, profile: dict, data: bytes 
 
 
 def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: str | None,
-                 inputs: list[str] | None, force: bool, baseline_dir: str | None = None) -> int:
+                 inputs: list[str] | None, force: bool, baseline_dir: str | None = None,
+                 layer_override: str | None = None) -> int:
     check_adaptation_contract(root)
     if status not in V2_STATUSES:
         raise UsageError("--status must be tracked, local, forked or composed")
@@ -1328,7 +1340,9 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         for relpath in relpaths:
             existing = files.get(relpath)
             current_sha = sha(committed[relpath])
-            layer = (source_entry or {}).get("layer") if source_entry else (existing or {}).get("layer")
+            # --layer records a row the baseline manifest does not list yet; publish needs it.
+            layer = layer_override or (
+                (source_entry or {}).get("layer") if source_entry else (existing or {}).get("layer"))
             desired_inputs = list(inputs or []) if status == "composed" else None
             same = (
                 existing is not None
@@ -2168,6 +2182,11 @@ def _validate_cli_usage(args) -> list[str] | None:
         raise UsageError("judge requires --verdict")
     if args.verdict is not None and args.op == "judge" and args.verdict not in VERDICTS:
         raise UsageError("--verdict must be push, keep-local or fork")
+    if args.layer is not None:
+        if args.op != "classify":
+            raise UsageError("--layer is only valid with classify")
+        if args.layer not in FULL_LAYERS:
+            raise UsageError("--layer must be pure, coding or godot")
     if args.from_relpath is not None:
         if args.op != "classify":
             raise UsageError("--from is only valid with classify")
@@ -2253,6 +2272,7 @@ def main(argv=None) -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--status")
     ap.add_argument("--from", dest="from_relpath")
+    ap.add_argument("--layer")
     ap.add_argument("--inputs")
     ap.add_argument("--verdict")
     ap.add_argument("--borderline", action="store_true")
@@ -2303,7 +2323,7 @@ def main(argv=None) -> int:
             return v2_forget(root, args.relpaths, args.force)
         if args.op == "classify":
             return v2_classify(root, args.relpaths, args.status, args.from_relpath, inputs,
-                                args.force, args.baseline_dir)
+                                args.force, args.baseline_dir, args.layer)
         if args.op == "ignore":
             return v2_classify(root, args.relpaths, "local", None, None, args.force, args.baseline_dir)
         if args.op == "judge":
