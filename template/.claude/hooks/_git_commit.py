@@ -180,14 +180,21 @@ def _lines(out):
 def staged_paths(rest, cwd):
     """Paths a `git commit <rest>` will publish: the index, plus HEAD's paths under `--amend`,
     plus dirty tracked files under `-a`, plus tracked-and-changed files under a pathspec.
-    (paths, None) on success; (None, failing-git-subcommand) on any git failure."""
+    (paths, None) on success; (None, failing-git-subcommand) on any git failure.
+
+    A pathspec without `-i`/`--include` narrows the commit to files matching it -- git commits
+    only those, leaving the rest of the index untouched, so another session's unrelated staged
+    files must not appear here. `-i`/`--include` keeps the whole index (the pathspec then only
+    forces its own paths in, even if unstaged), so the unscoped read stays in that case."""
     include_dirty, amend, pathspec = parse_commit_args(rest)
+    include_all = any(a in ("-i", "--include") for a in rest)
     paths = set()
 
-    cached = run_git(["diff", "--cached", "--name-only"], cwd)
-    if cached is None:
-        return None, "diff --cached --name-only"
-    paths |= _lines(cached)
+    if not pathspec or include_all:
+        cached = run_git(["diff", "--cached", "--name-only"], cwd)
+        if cached is None:
+            return None, "diff --cached --name-only"
+        paths |= _lines(cached)
 
     if amend:
         shown = run_git(["show", "--name-only", "--pretty=format:", "HEAD"], cwd)

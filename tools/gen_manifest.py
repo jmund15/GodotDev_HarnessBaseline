@@ -17,6 +17,7 @@ default-to-universal fallthrough is what let ~100 files mistag silently.
 
 Run from the baseline repo root after adding/removing template files:
   python3 tools/gen_manifest.py
+  python3 tools/gen_manifest.py --check  # verify without writing
 """
 from __future__ import annotations
 
@@ -352,6 +353,7 @@ PURE_PATTERNS = [
     ".claude/hooks/compound_cd_approver.py",
     ".claude/hooks/bash_shape_guard.py",
     ".claude/hooks/git_guardrails.py",
+    ".claude/hooks/baseline_classification_guard.py",
     ".claude/hooks/dangerous_shell_guard.py",
     ".claude/hooks/unbounded_scan_guard.py",
     ".claude/hooks/running_script_edit_guard.py",
@@ -378,6 +380,8 @@ PURE_PATTERNS = [
     ".claude/tools/aggregate_routing_audit.py",
     ".claude/tools/analyze_eval_archive.py",
     ".claude/tools/baseline_sync.py",
+    ".claude/tools/baseline_publish.py",
+    ".claude/tools/baseline_identity.py",
     ".claude/tools/extract_subagent_tools.py",
     ".claude/workflows/*.js",
 
@@ -411,6 +415,10 @@ PURE_PATTERNS = [
     '.claude/skills/_brainstorm_shared/plan_file_format.md',
     '.claude/skills/wait_what/SKILL.md',
     '.claude/tests/test_anthropic_quota_probe.py',
+    '.claude/tests/test_baseline_classification_guard.py',
+    '.claude/tests/test_baseline_sync.py',
+    '.claude/tests/test_baseline_publish.py',
+    '.claude/tests/test_baseline_identity.py',
     '.claude/tests/test_codex_effort_probe.py',
     '.claude/tests/test_delegate_command.py',
     '.claude/tests/test_sidecar_rate_limit_record.sh',
@@ -457,6 +465,7 @@ PURE_PATTERNS = [
     ".claude/commands/session_digest.md",
     ".claude/schemas/review_findings.json",
     ".claude/scripts/harness_tests.py",
+    ".claude/tests/test_harness_tests_allow_cannot_run.py",
     ".claude/tests/test_session_digest.py",
     ".claude/tools/session_digest.py",
     ".claude/tools/sidecar_fanout.py",
@@ -607,7 +616,12 @@ def classify(relpath: str) -> str | None:
     return None
 
 
-def main() -> None:
+def main() -> int:
+    check_only = "--check" in sys.argv[1:]
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+
     files = []
     unclassified = []
     # Sort by the posix relpath STRING, not the Path object: Path comparison uses
@@ -633,17 +647,35 @@ def main() -> None:
               "layer pattern list:", file=sys.stderr)
         for rel in unclassified:
             print(f"  {rel}", file=sys.stderr)
-        sys.exit(1)
+        return 1
+
     manifest = {"version": 2, "files": files}
-    (ROOT / "baseline.manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    expected = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    manifest_path = ROOT / "baseline.manifest.json"
+    if check_only:
+        try:
+            current = manifest_path.read_bytes()
+        except OSError:
+            current = None
+        if current != expected:
+            print("ERROR: baseline.manifest.json is stale", file=sys.stderr)
+            return 1
+        counts: dict[str, int] = {}
+        for entry in files:
+            counts[entry["layer"]] = counts.get(entry["layer"], 0) + 1
+        print(f"manifest current: {len(files)} files — " +
+              ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
+        return 0
+
+    manifest_path.write_bytes(expected)
     counts: dict[str, int] = {}
-    for f in files:
-        counts[f["layer"]] = counts.get(f["layer"], 0) + 1
+    for entry in files:
+        counts[entry["layer"]] = counts.get(entry["layer"], 0) + 1
     print(f"{len(files)} files — " +
           ", ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
     print("verify separation: python3 tools/audit_baseline.py")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

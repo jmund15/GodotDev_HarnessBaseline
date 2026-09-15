@@ -10,7 +10,9 @@ review catches get caught on every future change instead.
 Checks (each emits findings with a severity):
   manifest-integrity   manifest entries <-> disk files agree (orphans / phantoms)
   manifest-staleness    on-disk manifest == what gen_manifest.py would emit now
-  leak-scan             source-project identifiers / machine paths in template/
+  identity-scan         source-project identifiers / abbreviations / concatenations /
+                        home paths / topology tokens, via baseline_identity.scan_tree
+                        against tools/identity_digests.json (see that module's docstring)
   secret-scan           token/key/credential shapes in template/
   layer-gate            pure files naming >=4 godot/coding markers; coding files
                         naming >=4 godot markers (advisory archetype-appropriateness)
@@ -22,7 +24,7 @@ Pass --json for machine output, --strict to fail the run on WARN as well.
 from __future__ import annotations
 
 import argparse
-import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -39,26 +41,15 @@ import gen_manifest as gm
 ROOT = gm.ROOT
 TEMPLATE = gm.TEMPLATE
 MANIFEST = ROOT / "baseline.manifest.json"
+IDENTITY_DIGESTS = ROOT / "tools" / "identity_digests.json"
 
-# Forbidden source identities are stored as digests so the audit can reject them without
-# republishing the names. Candidates include whole identifiers, alphabetic segments, and
-# adjacent segments joined together; this catches concatenated and spaced project names.
-FORBIDDEN_IDENTIFIER_DIGESTS = {
-    "f80a62ca784fb78bbf2b993e6e8393357cf28dcd9dfab141ff884d206796863e": "source project",
-    "a563c232fbb0b301619080406031efb8348430f4e20bad1fa51c451590039417": "source project",
-    "bd94e8955161fc6f34dc94080d4a6425286b71ee4e94dd7848bcc448d1b84772": "source contributor",
-}
-FORBIDDEN_ABBREVIATION_DIGEST = (
-    "d53315bea08cec50d2591fcaf3b32dc5d289cdc6c16b7e8bed8c8e3f7ceaa34e"
-)
-# Reject concrete home paths while allowing teaching shapes and shell variables.
-MACHINE_PATH = re.compile(
-    r"(?:[A-Za-z]:[\\/]Users[\\/]|/(?:[A-Za-z]/)?Users/)"
-    r"(?!\.{3}|\{\{[^}]+\}\}|<[^>]+>|"
-    r"(?:USER|you|x)(?:[\\/]|$)|\$[A-Za-z_][A-Za-z0-9_]*)"
-    r"[^\\/\s\"']+",
-    re.I,
-)
+# The source-project/abbreviation/concatenation/home-path/topology scan lives in the
+# template's baseline_identity.py, so a consumer pulls the same engine this audit
+# runs — see that module's docstring for the profile/digest split.
+_IDENTITY_PATH = ROOT / "template" / ".claude" / "tools" / "baseline_identity.py"
+_identity_spec = importlib.util.spec_from_file_location("baseline_identity", _IDENTITY_PATH)
+identity = importlib.util.module_from_spec(_identity_spec)
+_identity_spec.loader.exec_module(identity)
 
 SECRET_PATTERNS = [
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
@@ -152,34 +143,6 @@ def read_text(p: Path) -> str | None:
         return None
 
 
-def identifier_leaks(line: str) -> set[str]:
-    segments = re.findall(r"[A-Za-z]+", line)
-    candidates = {segment.lower() for segment in segments}
-    candidates.update(
-        (segments[i] + segments[i + 1]).lower()
-        for i in range(len(segments) - 1)
-    )
-    digests = {
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest()
-        for candidate in candidates
-    }
-    leaks = {
-        label for digest, label in FORBIDDEN_IDENTIFIER_DIGESTS.items()
-        if digest in digests
-    }
-    for match in re.finditer(r"(?<![A-Za-z0-9])([A-Za-z]{2})(?![A-Za-z0-9])", line):
-        raw = match.group(1)
-        if raw != raw.upper() and not (
-            match.start() > 0 and line[match.start() - 1] in "_-"
-            or match.end() < len(line) and line[match.end()] in "_-"
-        ):
-            continue
-        digest = hashlib.sha256(raw.lower().encode("utf-8")).hexdigest()
-        if digest == FORBIDDEN_ABBREVIATION_DIGEST:
-            leaks.add("source-project abbreviation")
-    return leaks
-
-
 def check_manifest_integrity(f: Findings) -> dict:
     if not MANIFEST.exists():
         f.add("ERROR", "manifest-integrity", str(MANIFEST.name),
@@ -216,22 +179,29 @@ def check_manifest_staleness(f: Findings, manifest: dict) -> None:
                   "-- regenerate the manifest")
 
 
-def check_leaks_and_secrets(f: Findings) -> None:
+def check_secrets(f: Findings) -> None:
     for p, rel in iter_template_files():
         text = read_text(p)
         if text is None:
             continue
         for i, line in enumerate(text.splitlines(), 1):
-            for leak in sorted(identifier_leaks(line)):
-                f.add("ERROR", "leak-scan", f"{rel}:{i}",
-                      f"{leak} identifier: {line.strip()[:120]}")
-            if MACHINE_PATH.search(line):
-                f.add("WARN", "leak-scan", f"{rel}:{i}",
-                      f"machine-specific path: {line.strip()[:120]}")
             for sp in SECRET_PATTERNS:
                 if sp.search(line):
                     f.add("ERROR", "secret-scan", f"{rel}:{i}",
                           "possible secret/credential -- do not publish")
+
+
+def check_identity(f: Findings) -> None:
+    """Source-project/abbreviation/concatenation/home-path/topology leaks,
+    via the shared consumer-side scanner (baseline_identity.scan_tree)."""
+    try:
+        hits = identity.scan_tree(ROOT, IDENTITY_DIGESTS)
+    except identity.IdentityError as exc:
+        f.add("ERROR", "identity-scan", IDENTITY_DIGESTS.name, str(exc))
+        return
+    for hit in hits:
+        f.add("ERROR", "identity-scan", f"{hit.path}:{hit.line}",
+              f"{hit.token_kind} match ({hit.id}): {hit.excerpt[:120]}")
 
 
 def check_layer_mistag(f: Findings, manifest: dict) -> None:
@@ -299,7 +269,8 @@ def main() -> int:
     f = Findings()
     manifest = check_manifest_integrity(f)
     check_manifest_staleness(f, manifest)
-    check_leaks_and_secrets(f)
+    check_secrets(f)
+    check_identity(f)
     check_layer_mistag(f, manifest)
     check_core_domain_nouns(f, manifest)
 

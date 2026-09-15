@@ -1,0 +1,6 @@
+# Every checkout gets LF. The manifest hashes file bytes, so a CRLF checkout (core.autocrlf=true
+# on Windows) reads every file as changed and makes `gen_manifest.py --check` fail.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

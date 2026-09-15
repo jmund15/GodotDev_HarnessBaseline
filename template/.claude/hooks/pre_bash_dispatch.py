@@ -48,12 +48,51 @@ import tres_nullstrip_guard  # noqa: E402
 import tres_script_strip_guard  # noqa: E402
 import unbounded_scan_guard  # noqa: E402
 
+# Guarded: baseline_classification_guard also imports baseline_sync (tools/), a heavier
+# dependency than any other sub-hook here. A broken import must deny every `git commit`
+# rather than silently skip classification -- so a failure here registers a stub `main()`
+# that does exactly that and names the import error (Design §4 fail-closed).
+try:
+    import baseline_classification_guard  # noqa: E402
+    _BASELINE_GUARD_IMPORT_ERROR = None
+except Exception as _exc:  # noqa: BLE001 - any import failure must still deny, never crash
+    _BASELINE_GUARD_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
+
+    class _BaselineGuardImportStub:
+        """Stands in for `baseline_classification_guard` when it fails to import. Denies
+        every `git commit` it sees rather than allow an unclassified `.claude/` addition
+        through unverified -- the same fail-closed posture the real guard's `main()` keeps
+        for a runtime crash, extended to cover an import-time one."""
+
+        __name__ = "baseline_classification_guard"
+        __file__ = "baseline_classification_guard.py"
+
+        def main(self):
+            try:
+                payload = json.loads(sys.stdin.read())
+            except (json.JSONDecodeError, ValueError):
+                return 0
+            if not isinstance(payload, dict) or payload.get("tool_name") not in ("Bash", "PowerShell"):
+                return 0
+            command = (payload.get("tool_input") or {}).get("command") or ""
+            if "commit" not in command:
+                return 0
+            sys.stderr.write(
+                "BLOCKED git commit -- baseline_classification_guard failed to import (%s). "
+                "Repair hooks/baseline_classification_guard.py; .claude/ classification "
+                "cannot be verified until it imports cleanly.\n" % _BASELINE_GUARD_IMPORT_ERROR
+            )
+            return 2
+
+    baseline_classification_guard = _BaselineGuardImportStub()
+
 # (module, argv tail). Deny-shaped guards first, cheapest first; the approver; then advisories.
 HOOKS = (
     (pattern_enforcer, ()),
     (cloud_test_enforcer, ()),
     (bash_shape_guard, ()),
     (git_guardrails, ()),
+    (baseline_classification_guard, ()),
     (tres_script_strip_guard, ("--hook",)),
     (tres_nullstrip_guard, ("--hook",)),
     (prototype_containment_guard, ("--hook",)),

@@ -76,6 +76,30 @@ def main():
     paths, err = gc.staged_paths([], tempfile.mkdtemp(prefix="gcseam_norepo_"))
     cases.append(("git failure reports the failing subcommand", paths is None and "diff --cached" in err))
 
+    # --- S4: staged_paths' pathspec scope -- fixes the known defect where another session's
+    # staged files block or stale a pathspec commit -------------------------------------
+    repo2 = make_repo()
+    with open(os.path.join(repo2, "other.txt"), "w") as fh:
+        fh.write("other\n")
+    git(repo2, "add", "other.txt")
+    with open(os.path.join(repo2, "mine.txt"), "w") as fh:
+        fh.write("mine\n")
+    git(repo2, "add", "mine.txt")
+
+    paths, _ = gc.staged_paths(["-m", "x", "--", "mine.txt"], repo2)
+    cases.append(("S4: a pathspec commit excludes another staged file",
+                  paths == {"mine.txt"}))
+    cases.append(("S4: an added file outside .claude/ still appears here -- this seam does not "
+                  "judge SCOPE, only the committed set; the guard judges .claude/ scope",
+                  "mine.txt" in paths))
+
+    paths, _ = gc.staged_paths(["-i", "-m", "x", "--", "mine.txt"], repo2)
+    cases.append(("S4: -i keeps the whole index despite the pathspec",
+                  paths == {"mine.txt", "other.txt"}))
+    paths, _ = gc.staged_paths(["--include", "-m", "x", "--", "mine.txt"], repo2)
+    cases.append(("S4: --include is the same flag as -i",
+                  paths == {"mine.txt", "other.txt"}))
+
     git(repo, "checkout", "-q", "-b", "feature")
     with open(os.path.join(repo, ".claude", "hooks", "h.py") if os.makedirs(os.path.join(repo, ".claude", "hooks"), exist_ok=True) is None else "", "w") as fh:
         fh.write("h = 1\n")

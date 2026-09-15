@@ -61,40 +61,75 @@ walk the **Known adaptation points** below.
 ## Keeping projects and baseline in sync
 
 The contract: **the baseline never changes for project-specific edits; every
-universal improvement flows back here.**
+universal improvement flows back here, and every arrival at `main` goes through
+one gated transaction.**
+
+A new `.claude/` file is classified — `tracked`, `local`, `forked` or `composed`
+— before its first commit, not judged later on drift. There are no `watch` rows:
+every file the baseline tracks carries a decision tied to its content hash from
+the moment it exists.
 
 Mechanism (per consumer project):
 
-- `.claude/baseline.lock.json` — records the baseline repo/ref, the substitution
-  map, and per-file state: `tracked` (hash-synced), `watch` (seed/adapted files —
-  flagged on change, judged manually), `forked` (intentionally diverged), `local`
-  (project-owned artifact acknowledged as not-for-baseline).
-- `.claude/tools/baseline_sync.py` — mechanical three-way engine
-  (`check` / `diff` / `pull` / `materialize` / `update-lock` / `fork` / `track` /
-  `ignore` / `candidates`). Substitution-aware in both directions, so bootstrapped
-  copies compare clean against placeholder templates.
-- `/sync_baseline` — the judgment wrapper: classifies local changes
-  universal-vs-project-specific, upstreams universal hunks (reverse-substituted)
-  to this repo, pulls baseline updates into the project, proposes forks for files
-  that keep diverging, and runs the maintainer-side `audit`.
-- **Drift gate in `/clean_push`, `/commit_push` and `/apply_harness_edits`** — when
-  invoked with `--check-baseline` and a commit touches a tracked file, the workflow
-  surfaces it and routes through `/sync_baseline` instead of letting shared doctrine
-  fork silently. `CLAUDE.md` §10 carries the always-loaded version of this rule.
+- `.claude/baseline.lock.json` (schema 2) — the decision ledger. Each row's
+  `status` (`tracked` / `local` / `forked` / `composed`), `judged` verdict
+  (`push` / `keep-local` / `fork`) and content sha are set at classification time
+  and re-evaluated only when the row's content actually changes.
+- `.claude/tools/baseline_sync.py` — the mechanical engine:
+  - `check` / `diff` / `pull` — read-side classification and sync against the
+    pinned upstream commit;
+  - `classify` / `judge` / `triage` — the decision ledger's write side: `triage`
+    surfaces rows that need a verdict, `judge` records it;
+  - `author start` — creates or reuses this session's baseline author worktree
+    (`.claude/.cache/baseline-worktrees/<session>`) for universal work that is
+    authored baseline-first, then pulled;
+  - `publish` — the eight-step publication transaction (below);
+  - `fork` / `track` / `ignore` / `forget` / `gc` / `migrate` / `paths` / `candidates`
+    round out row lifecycle and lock maintenance.
+- `/sync_baseline` — the judgment wrapper around the engine: runs `check`,
+  surfaces `triage` batches for the model or owner to `judge`, and drives
+  `publish` once verdicts are recorded.
+- **The classification guard** (`hooks/baseline_classification_guard.py`) denies
+  a `git commit` that adds an unclassified `.claude/` file, naming the `classify`
+  command that unblocks it — the enforcement point moved from a drift check after
+  the fact to the commit itself.
+
+### Publication: one gated transaction
+
+`baseline_sync.py publish (--from-commit <sha> | --from-worktree <path>) [--rows FILE] [--dry-run] [--no-ci]`
+runs eight steps — `collect → classify → materialize → scrub → validate → publish
+→ update-lock → check` — against one journal
+(`.claude/.cache/baseline-publish/<id>.json`) written atomically before each step
+starts, so any failure is resumable with `--resume <id>` and any failure before
+step 6's merge leaves `main` untouched. `--dry-run` stops after step 5 (validate)
+for owner review; `--resume` continues it. Step 5 runs the manifest, separation
+and battery gates from *Maintaining this repo* below, plus the whole-tree
+identity scan, before anything reaches a pull request.
+
+- Publishing a consumer's own committed universal work: `--from-commit <sha>`,
+  driven by rows whose lock verdict is `push`.
+- Publishing baseline work authored directly in an `author start` worktree:
+  `--from-worktree <path>` — this publishes that worktree's `HEAD` tree only,
+  never its commit history, so a token that only ever existed in an earlier,
+  since-amended commit never reaches the published tree.
+- A repeated publish for the same source commit and row set is a no-op
+  (`already published <id>`) once merged, or a named `--resume <id>` refusal
+  while still in flight; a fresh publish on top of a moved baseline records
+  `supersedes: <id>`.
 
 Typical lifecycles:
 
-- *Improved a hook / command / skill while working on game A* → commit in A →
-  drift gate flags it → `/sync_baseline push` → baseline updated → in game B,
-  `/sync_baseline pull` (run it occasionally, or when starting significant work).
-- *Project-specific tweak to a tracked file* → drift gate flags it → classified
-  project-specific → either keep as standing local diff (stays visible in `check`)
-  or `/sync_baseline fork <file>` if permanent.
-- *New universal artifact born in a project* → `/sync_baseline push` "Always"
-  clause: copy into `template/`, regenerate manifest, `track` it in the lock.
+- *Improved a hook / command / skill while working on game A* → classify at
+  creation → commit → `judge --verdict push` → `publish --from-commit <sha>` →
+  baseline updated → in game B, `pull` (run it occasionally, or when starting
+  significant work).
+- *Project-specific tweak to a tracked file* → `triage` surfaces it →
+  `judge --verdict keep-local`, or `fork` if the divergence is permanent.
+- *Universal work authored baseline-first* → `author start` → edit and commit in
+  that worktree → `publish --from-worktree <path>` → `pull` in the consumer.
 - *Hot memory demoted to `archive/` in a project* → the template mirrors the move
-  (delete the hot copy, add the archive copy); the consumer's lock re-points the
-  entry at the archive path.
+  (delete the hot copy, add the archive copy); `forget` the old row, `classify`
+  the new one.
 
 ## Maintaining this repo
 

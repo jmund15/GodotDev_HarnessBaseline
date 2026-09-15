@@ -5,9 +5,22 @@ run stamps the harness tree (whole-tree hash + per-file digests) to
 `tree_entries` and `STAMP_PATH` from this module so the commit guard and this runner never
 compute a digest two different ways.
 
-    python3 .claude/scripts/harness_tests.py [--repo PATH] [--all] [--hash]
+    python3 .claude/scripts/harness_tests.py [--repo PATH] [--all] [--hash] [--verbose]
+        [--allow-cannot-run FILE]
+
+Any `cannot-run` proof (exit 2) makes the run INCOMPLETE: no passing stamp is written and the
+run exits 2. `--allow-cannot-run FILE` names a JSON list of `{"proof", "platform", "reason"}`
+objects — proofs that this machine cannot bind (a runner absent from the CI image, for example).
+A listed proof's `cannot-run` no longer makes the run INCOMPLETE; an unlisted `cannot-run` still
+does. The flag exits 2 before running anything when the file is missing, unparseable, holds an
+entry missing `proof`, `platform` or `reason`, or lists a proof `discover()` never found. Without
+the flag, an unlisted (i.e. every) `cannot-run` still makes the run INCOMPLETE.
+
+If any tested input or HEAD changes while the proofs are running, the run exits 1 and writes no
+stamp — a hash over a moving target is not a fact about any single tree state.
 """
 
+import argparse
 import fnmatch
 import hashlib
 import json
@@ -27,10 +40,14 @@ STAMP_PATH = os.environ.get("HARNESS_TEST_STAMP") or os.path.join(
     _CLAUDE_DIR, "logs", "harness_tests_stamp.json"
 )
 
+# Project-specific: the template ships no excluded proofs and no per-proof timeout overrides.
+# A consumer forking this file for its own repo fills these in locally.
 EXCLUDED = {}
 
 _PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "*.sh", "*.ps1")
 _TIMEOUT_SEC = 120
+# The publish suite builds 24 git fixtures: 61 s alone, past 120 s beside a second battery.
+_PROOF_TIMEOUTS = {"test_baseline_publish.py": 300}
 
 # A bare "bash" on Windows PATH can resolve to System32's WSL shim, a different filesystem
 # namespace that cannot see a Windows-style path. Prefer Git's bash.exe when present.
@@ -72,18 +89,14 @@ def _runner_cmd(path):
 _DETAIL_LINES = 20
 
 
-def run_proof(path, timeout=_TIMEOUT_SEC):
+def run_proof(path, timeout=None):
     """(status, seconds, detail) — status is "pass", "cannot-run" or "fail".
 
-    Exit 2 is CANNOT RUN, not a failure: the proof could not bind its target, which is what a
-    peer's in-flight refactor of that target looks like from here. Counting it as red made one
-    peer's half-finished rename block every harness commit on the machine, so the runner reported
-    a defect nobody had introduced and the only way past was a bypass flag.
-
-    It is NOT silent. Indeterminates are printed, counted, and carried into the summary, because a
-    proof that stops binding its own target is exactly how a guard quietly stops guarding
-    (`instruction_quality` §14). A green stamp with indeterminates says so.
+    Exit 2 is unavailable coverage, not a passed or failed assertion. Its reason is
+    reported, and a run with unavailable coverage does not issue a passing stamp.
     """
+    if timeout is None:
+        timeout = _PROOF_TIMEOUTS.get(os.path.basename(path), _TIMEOUT_SEC)
     start = time.time()
     try:
         result = subprocess.run(_runner_cmd(path), capture_output=True, text=True, timeout=timeout)
@@ -99,6 +112,38 @@ def run_proof(path, timeout=_TIMEOUT_SEC):
     except OSError as exc:
         status, detail = "fail", "runner unavailable: %s" % exc
     return status, time.time() - start, detail
+
+
+class AllowCannotRunError(ValueError):
+    """Raised for any malformed --allow-cannot-run input; the caller turns this into exit 2."""
+
+
+def _load_allow_cannot_run(path):
+    """{proof-basename: entry} from an --allow-cannot-run FILE. Raises AllowCannotRunError on any
+    malformed input; does not check the entries against discovered proofs — the caller does that
+    once it knows which proofs exist."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        raise AllowCannotRunError("--allow-cannot-run file not found: %s (%s)" % (path, exc))
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise AllowCannotRunError("--allow-cannot-run file is not valid JSON: %s (%s)" % (path, exc))
+    if not isinstance(data, list):
+        raise AllowCannotRunError("--allow-cannot-run file must be a JSON list: %s" % path)
+    entries = {}
+    for entry in data:
+        if not isinstance(entry, dict):
+            raise AllowCannotRunError("--allow-cannot-run entry is not an object: %r" % (entry,))
+        missing = [key for key in ("proof", "platform", "reason") if not entry.get(key)]
+        if missing:
+            raise AllowCannotRunError(
+                "--allow-cannot-run entry missing %s: %r" % (", ".join(missing), entry)
+            )
+        entries[entry["proof"]] = entry
+    return entries
 
 
 def _git(repo_root, args):
@@ -155,14 +200,17 @@ def tree_hash(repo_root):
     return hashlib.sha256(blob).hexdigest()
 
 
-def _write_stamp(repo_root, run, passed, excluded_list, indeterminate=()):
-    entries = tree_entries(repo_root)
+def _write_stamp(repo_root, run, passed, excluded_list, indeterminate=(), entries=None, head=None):
+    if entries is None:
+        entries = tree_entries(repo_root)
+    if head is None:
+        head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
     blob = json.dumps(sorted(entries.items())).encode("utf-8")
     stamp = {
         "ts": time.time(),
         "tree_hash": hashlib.sha256(blob).hexdigest(),
         "files": entries,
-        "head": _git(repo_root, ["rev-parse", "HEAD"]).strip() or None,
+        "head": head,
         "run": run,
         "pass": passed,
         # Recorded so a green stamp cannot claim more coverage than it had: these proofs ran and
@@ -173,10 +221,25 @@ def _write_stamp(repo_root, run, passed, excluded_list, indeterminate=()):
     write_json_atomic(STAMP_PATH, stamp)
 
 
-def run_all(repo_root, include_excluded=False):
+def run_all(repo_root, include_excluded=False, verbose=False, allow_cannot_run=None):
     tests_dir = os.path.join(repo_root, ".claude", "tests")
     discovered = discover(tests_dir)
     present = {os.path.basename(p) for p in discovered}
+
+    allowed_entries = None
+    if allow_cannot_run is not None:
+        try:
+            allowed_entries = _load_allow_cannot_run(allow_cannot_run)
+        except AllowCannotRunError as exc:
+            print("harness_tests: %s" % exc)
+            return 2
+        unknown = sorted(name for name in allowed_entries if name not in present)
+        if unknown:
+            print(
+                "harness_tests: --allow-cannot-run lists a proof discover() never found: %s"
+                % ", ".join(unknown)
+            )
+            return 2
 
     stale = sorted(name for name in EXCLUDED if name not in present)
     if stale:
@@ -200,6 +263,8 @@ def run_all(repo_root, include_excluded=False):
               % len(excluded_list))
         return 1
 
+    tested_entries = tree_entries(repo_root)
+    tested_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
     passed = 0
     failed = 0
     indeterminate = []
@@ -208,7 +273,8 @@ def run_all(repo_root, include_excluded=False):
     for path in selected:
         status, elapsed, detail = run_proof(path)
         elapsed_total += elapsed
-        print("%s %.1fs %s" % (label[status], elapsed, path))
+        if verbose or status != "pass":
+            print("%s %.1fs %s" % (label[status], elapsed, path))
         if detail:
             for line in detail.strip().splitlines()[-_DETAIL_LINES:]:
                 print("    | " + line)
@@ -232,26 +298,61 @@ def run_all(repo_root, include_excluded=False):
         for p in indeterminate:
             print("    - %s" % p)
 
+    if allowed_entries is not None:
+        allowed_hits = [p for p in indeterminate if os.path.basename(p) in allowed_entries]
+        unlisted_hits = [p for p in indeterminate if os.path.basename(p) not in allowed_entries]
+        print("harness_tests: %d cannot-run exception(s) allowed" % len(allowed_hits))
+    else:
+        unlisted_hits = list(indeterminate)
+
     if failed:
         return 1
+    if unlisted_hits:
+        print("harness_tests: INCOMPLETE; no passing stamp written")
+        return 2
 
-    _write_stamp(repo_root, len(selected), passed, excluded_list, indeterminate)
+    current_entries = tree_entries(repo_root)
+    current_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
+    if current_entries != tested_entries or current_head != tested_head:
+        changed = sorted(path for path in tested_entries.keys() | current_entries.keys()
+                         if tested_entries.get(path) != current_entries.get(path))
+        print("harness_tests: inputs changed during verification; no passing stamp written")
+        for path in changed[:20]:
+            print("    - " + path)
+        if len(changed) > 20:
+            print("    ... %d more changed inputs" % (len(changed) - 20))
+        if current_head != tested_head:
+            print("    - HEAD changed")
+        return 1
+
+    _write_stamp(repo_root, len(selected), passed, excluded_list, indeterminate,
+                 entries=tested_entries, head=tested_head)
     return 0
 
 
 def main(argv=None):
-    argv = list(argv if argv is not None else sys.argv[1:])
-    repo_root = REPO_ROOT
-    if "--repo" in argv:
-        idx = argv.index("--repo")
-        repo_root = argv[idx + 1]
-        del argv[idx : idx + 2]
-
-    if "--hash" in argv:
-        print(tree_hash(repo_root))
+    parser = argparse.ArgumentParser(description="Run harness proofs and stamp unchanged passing inputs.")
+    parser.add_argument("--repo", default=REPO_ROOT, help="repository containing the proofs")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--all", action="store_true", help="include normally excluded proofs")
+    mode.add_argument("--hash", action="store_true", help="print the current input hash without running proofs")
+    parser.add_argument("--verbose", action="store_true", help="print every proof result, not only failures and summary")
+    parser.add_argument(
+        "--allow-cannot-run",
+        metavar="FILE",
+        default=None,
+        help="JSON list of {proof, platform, reason} objects whose cannot-run does not INCOMPLETE the run",
+    )
+    args = parser.parse_args(argv)
+    if args.hash:
+        print(tree_hash(args.repo))
         return 0
-
-    return run_all(repo_root, include_excluded="--all" in argv)
+    return run_all(
+        args.repo,
+        include_excluded=args.all,
+        verbose=args.verbose,
+        allow_cannot_run=args.allow_cannot_run,
+    )
 
 
 if __name__ == "__main__":
