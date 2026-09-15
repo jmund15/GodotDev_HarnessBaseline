@@ -20,14 +20,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import (fire_once_since_compaction, read_json_salvage, state_path,
                          write_json_atomic)
 
+_TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+import adaptation  # noqa: E402
+
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
 
-# High-risk patterns that require explicit acknowledgment (execution mode)
-# These are domains where gotchas frequently cause issues.
-# PROJECT-CONFIG: append your project's high-gotcha domain keywords (the rows
-# below are the domain-agnostic floor).
+# High-risk patterns that require explicit acknowledgment (execution mode) — domains
+# where gotchas frequently cause issues. The list below is the domain-agnostic floor;
+# a project appends its own high-gotcha domain keywords via `adaptation.json`
+# `high_risk_patterns` (Design Doc §8), never by editing this list directly.
 HIGH_RISK_PATTERNS = [
     # Debugging/Investigation
     r"\bdebug\b",
@@ -47,6 +52,27 @@ HIGH_RISK_PATTERNS = [
     r"\bupload\b",
     r"\bdelete\b",
 ]
+
+
+def _append_high_risk_patterns(patterns: list) -> None:
+    """Append `adaptation.json` `high_risk_patterns` to `HIGH_RISK_PATTERNS` in place. An
+    entry that does not compile as a regex is skipped with one stderr line — the hook must
+    never crash on a project's bad pattern."""
+    for entry in adaptation.get(_CLAUDE_DIR, "high_risk_patterns"):
+        try:
+            re.compile(entry)
+        except (re.error, TypeError):
+            print(
+                f"prompt_memory_loader: high_risk_patterns entry {entry!r} does not "
+                "compile as a regex -- skipped",
+                file=sys.stderr,
+            )
+            continue
+        patterns.append(entry)
+
+
+_CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_append_high_risk_patterns(HIGH_RISK_PATTERNS)
 
 
 def is_high_risk(prompt: str) -> bool:
@@ -109,10 +135,10 @@ def is_execution(prompt: str) -> bool:
 # the plan-mode branch below never fires for them, and any plan-file reminder
 # only fires once drafting has already begun. This branch re-keys the Memory
 # obligation onto the command itself, at invocation, which is the last moment
-# it can still shape the plan.
-# PROJECT-CONFIG: list your project's plan-then-execute commands (empty tuple
-# disables the branch; e.g. the code layer's ("/part_drive", "/plan_drive")).
-DRIVE_COMMANDS: tuple = ()
+# it can still shape the plan. A project lists its plan-then-execute commands via
+# `adaptation.json` `drive_commands` (Design Doc §8); the empty default disables the
+# branch.
+DRIVE_COMMANDS: tuple = tuple(adaptation.get(_CLAUDE_DIR, "drive_commands"))
 
 
 def get_drive_reminder(prompt: str) -> str:

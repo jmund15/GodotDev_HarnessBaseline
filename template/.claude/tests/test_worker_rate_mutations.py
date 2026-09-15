@@ -6,7 +6,8 @@ paper only. So each mutation disables exactly one property and the suite must go
 
 Every mutation runs against a copy of the tool and the suite in a temporary `.claude/` tree,
 so the tracked `tools/worker_rate.py` is never written: a mutated source mid-battery stales
-the harness stamp, and a killed run would have left the broken tool on disk.
+the harness stamp, and a killed run would have left the broken tool on disk. The unmutated
+copy must pass first, or a "caught" would only mean the copy is broken.
 """
 import hashlib, pathlib, shutil, subprocess, sys, tempfile
 
@@ -35,15 +36,25 @@ with tempfile.TemporaryDirectory(prefix="worker_rate_mutations_") as tmp:
     tmp_tests.mkdir(parents=True)
     tmp_tools.mkdir(parents=True)
     shutil.copyfile(SUITE, tmp_tests / SUITE.name)
+
+    def run_suite(text):
+        (tmp_tools / TOOL.name).write_bytes(text.encode("utf-8"))
+        return subprocess.run([sys.executable, str(tmp_tests / SUITE.name)], capture_output=True,
+                              text=True, timeout=300)
+
+    control = run_suite(src)
+    if control.returncode != 0:
+        print("FAIL: the unmutated copy fails its suite, so no mutation result means anything")
+        print((control.stdout + control.stderr)[-2000:])
+        raise SystemExit(1)
+    print("control: the unmutated copy passes")
+
     for label, old, new in MUTATIONS:
         if old not in src:
             print(f"SKIP (anchor moved): {label}")
             failures.append(label)
             continue
-        (tmp_tools / TOOL.name).write_bytes(src.replace(old, new, 1).encode("utf-8"))
-        p = subprocess.run([sys.executable, str(tmp_tests / SUITE.name)], capture_output=True,
-                           text=True, timeout=300)
-        if p.returncode == 0:
+        if run_suite(src.replace(old, new, 1)).returncode == 0:
             print(f"SURVIVED (suite did not notice): {label}")
             failures.append(label)
         else:

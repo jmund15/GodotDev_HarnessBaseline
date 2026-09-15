@@ -53,11 +53,13 @@ Use `obsidian_read_note` to read (in priority order), using the system path from
 Where `{SystemPath}` is either `{SystemName}` (flat) or `{DomainFolder}/{SystemName}` (nested).
 
 ### 2b. Classify domain
-Use the System Overview text and Related Systems callout to classify into one of these domains. **PROJECT-CONFIG:** the first row is your game's central content pipeline — replace it (and add rows) for your content taxonomy; the rest are stack-generic.
+Use the System Overview text and Related Systems callout to classify into one of these domains,
+plus the project's own rows from `adaptation.json` `content_domains` (each `{name, description}` —
+typically the project's central content pipeline, e.g. ability/projectile/item spawn → collision →
+reaction → propagation); the table below is stack-generic.
 
 | Domain | Signals |
 |--------|---------|
-| **\<Core Content Pipeline>** | *(project-specific — your game's central content lifecycle, e.g. ability/projectile/item spawn → collision → reaction → propagation)* |
 | **Environment** | world objects, destructibles, item/resource drops, contact effects, environment |
 | **Visual Effects** | rendering, particles, animation, trails, sprites, VFX, mesh, fragment, cloud |
 | **Combat & Stats** | damage, knockback, status effects, stat management, hitbox, hurtbox, combat |

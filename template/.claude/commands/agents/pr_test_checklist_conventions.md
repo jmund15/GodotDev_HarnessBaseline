@@ -45,7 +45,9 @@ Parse conventional commit format: `type(scope): description`
 
 ### Merge Heuristics
 
-**PROJECT-CONFIG:** the stack-generic rows below apply to any Jmodot game; add your game's content-scope rows (the bracketed examples show the shape — replace them).
+The rows below are stack-generic and apply to any Jmodot game. A project's own content-scope
+rows come from `adaptation.json` `content_scopes` — each `{scope, paths, checklist_section}`
+maps a commit scope (or one of its owning paths) to the section it merges into.
 
 | Related Scopes | Merged Section |
 |----------------|---------------|
@@ -54,8 +56,6 @@ Parse conventional commit format: `type(scope): description`
 | `VFX`, `visual`, `animation` | Visual Effects |
 | `HSM`, `state`, `transition` | State Machine |
 | `UI`, `dashboard`, `debug` | UI & Debug |
-| *(your entity scopes, e.g. `entity`, `enemy`)* | *\<Entity> Behavior* |
-| *(your content scopes, e.g. `ability`, `trait`, `item`)* | *\<Content> System* |
 
 ### Target Range
 

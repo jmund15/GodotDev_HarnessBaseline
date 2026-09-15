@@ -25,7 +25,8 @@ A tested source file is not Logic by default. Collision response, interaction be
 and other player-facing changes remain Gameplay when the project domain split says so.
 
 If a changed path has no subsystem owner, classify its behavior and report registry drift. Do not add a
-new hardcoded path table here.
+new hardcoded path table here — a project's own path-to-domain signals come from `adaptation.json`
+`pr_domains`, each `{domain, paths}`, read at classification time.
 
 ## Type classification
 

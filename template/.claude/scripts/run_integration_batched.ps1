@@ -91,6 +91,35 @@ $diagLoaded   = $false
 if (Test-Path $diagScript) { . $diagScript; $diagLoaded = $true }
 else { Write-Warning "batch_diagnosis.ps1 not found — hang/budget diagnosis pass disabled" }
 
+# `adaptation.json` `<key>` (Design Doc §8): absent file or key -> $Default, silently.
+# Malformed JSON, a non-object root, or a key present but not a string -> $Default plus one
+# stderr line naming the file. Never throws — this script must keep running either way.
+function Get-AdaptationValue {
+    param([Parameter(Mandatory)][string] $Key, [string] $Default = '')
+    $path = Join-Path $repo '.claude\skills\project_subsystems\adaptation.json'
+    if (-not (Test-Path $path)) { return $Default }
+    try {
+        $json = Get-Content $path -Raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        # [Console]::Error, not Write-Error: Write-Error's formatted host view spans several
+        # lines once it crosses a process boundary (position markers, a source line excerpt),
+        # which breaks the "one stderr line" contract every other adaptation.json seam holds.
+        [Console]::Error.WriteLine("adaptation: $path is unparseable -- using default for $Key")
+        return $Default
+    }
+    if ($json -isnot [System.Management.Automation.PSCustomObject]) {
+        [Console]::Error.WriteLine("adaptation: $path is not a JSON object -- using default for $Key")
+        return $Default
+    }
+    $prop = $json.PSObject.Properties[$Key]
+    if (-not $prop) { return $Default }
+    if ($prop.Value -isnot [string]) {
+        [Console]::Error.WriteLine("adaptation: $path key '$Key' is wrong-typed (want string) -- using default")
+        return $Default
+    }
+    return $prop.Value
+}
+
 # ---------------------------------------------------------------- TRX -> per-unit seconds
 function Get-TrxUnitDurations {
     param([string] $Path)
@@ -230,10 +259,11 @@ foreach ($u in $weighted) {
     }
 }
 
-# PROJECT-CONFIG: quarantine filter appended to every batch, e.g. 'FullyQualifiedName!~SomeSuite'
-# for a suite that trips a deterministic engine FATAL when its methods share a process. Empty
-# string = no exclusion. Gate verdicts must state any exclusion set here.
-$quarantine = ''
+# Quarantine filter appended to every batch, e.g. 'FullyQualifiedName!~SomeSuite' for a suite
+# that trips a deterministic engine FATAL when its methods share a process. From
+# `adaptation.json` `test_quarantine_filter` (Design Doc §8); empty string = no exclusion.
+# Gate verdicts must state any exclusion set here.
+$quarantine = Get-AdaptationValue -Key 'test_quarantine_filter' -Default ''
 
 # Stable order + filters. Batch numbering follows bin creation order (largest-first).
 $plan = @()

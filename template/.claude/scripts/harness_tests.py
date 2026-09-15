@@ -36,18 +36,42 @@ REPO_ROOT = os.path.dirname(_CLAUDE_DIR)
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "hooks"))
 from _hook_state import write_json_atomic, HARNESS_DIRS as DIRS  # noqa: E402
 
+sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
+import adaptation  # noqa: E402
+
 STAMP_PATH = os.environ.get("HARNESS_TEST_STAMP") or os.path.join(
     _CLAUDE_DIR, "logs", "harness_tests_stamp.json"
 )
 
-# Project-specific: the template ships no excluded proofs and no per-proof timeout overrides.
-# A consumer forking this file for its own repo fills these in locally.
+# The template ships no excluded proofs and one built-in timeout, for its own slowest proof. A
+# consumer adds project entries via `adaptation.json` `proof_excluded` / `proof_timeouts` (Design
+# Doc §8, owner ruling R1) -- never by editing these dicts directly.
 EXCLUDED = {}
 
 _PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "*.sh", "*.ps1")
 _TIMEOUT_SEC = 120
 # The publish suite builds 24 git fixtures: 61 s alone, past 120 s beside a second battery.
-_PROOF_TIMEOUTS = {"test_baseline_publish.py": 300}
+_BUILTIN_PROOF_TIMEOUTS = {"test_baseline_publish.py": 300}
+_PROOF_TIMEOUTS = dict(_BUILTIN_PROOF_TIMEOUTS)
+
+
+def _merge_adaptation_proof_config() -> None:
+    """Merge `adaptation.json` `proof_excluded` into `EXCLUDED` and `proof_timeouts` into
+    `_PROOF_TIMEOUTS`. A `proof_timeouts` value that is not a positive int is skipped with
+    one stderr line; `proof_excluded` values are reasons and need no further validation."""
+    EXCLUDED.update(adaptation.get(_CLAUDE_DIR, "proof_excluded"))
+    for name, seconds in adaptation.get(_CLAUDE_DIR, "proof_timeouts").items():
+        if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds <= 0:
+            print(
+                f"harness_tests: proof_timeouts entry {name!r}={seconds!r} is not a "
+                "positive integer -- skipped",
+                file=sys.stderr,
+            )
+            continue
+        _PROOF_TIMEOUTS[name] = seconds
+
+
+_merge_adaptation_proof_config()
 
 # A bare "bash" on Windows PATH can resolve to System32's WSL shim, a different filesystem
 # namespace that cannot see a Windows-style path. Prefer Git's bash.exe when present.
@@ -157,9 +181,12 @@ def _git(repo_root, args):
 _CODE_EXT = (".py", ".ps1", ".sh", ".js")
 
 
+_SETTINGS_FILES = (".claude/settings.json", ".claude/settings.base.json", ".claude/settings.project.json")
+
+
 def _is_code(rel):
     rel = rel.replace(os.sep, "/")
-    return rel == ".claude/settings.json" or rel.endswith(_CODE_EXT)
+    return rel in _SETTINGS_FILES or rel.endswith(_CODE_EXT)
 
 
 def tree_entries(repo_root):

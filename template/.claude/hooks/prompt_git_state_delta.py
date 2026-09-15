@@ -32,6 +32,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_DIR = os.path.join(os.path.dirname(_HOOKS_DIR), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+import adaptation  # noqa: E402
+
 # Windows pipes default to cp1252 through Python 3.14; git text now decodes as real
 # UTF-8, so a non-ASCII branch/path/subject would raise UnicodeEncodeError on write.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -40,12 +46,22 @@ sys.stdout.reconfigure(encoding="utf-8")
 # git ref or count we capture can contain it.
 SEP = "|"
 
-# PROJECT-CONFIG: names of git submodules whose pointer drift should be part of
-# the fingerprint (matched as substrings of `git submodule status` paths, e.g.
-# ("Jmodot",)). Empty tuple = no submodule fields; the fingerprint schema
-# derives its field count from this, so changing it invalidates old caches
-# safely (length mismatch parses as no-prior).
-WATCHED_SUBMODULES: tuple = ()
+
+def _load_watched_submodules() -> tuple:
+    """Names of git submodules whose pointer drift joins the fingerprint (matched as
+    substrings of `git submodule status` paths), from `adaptation.json` `git_submodules`
+    (Design Doc §8). Empty tuple = no submodule fields; the fingerprint schema derives its
+    field count from this, so changing it invalidates old caches safely (length mismatch
+    parses as no-prior). This hook must never block a prompt, so a load failure here falls
+    back to the empty tuple rather than raise; `adaptation.load` already prints its own
+    stderr line on a malformed file."""
+    try:
+        return tuple(adaptation.get(os.path.dirname(_HOOKS_DIR), "git_submodules"))
+    except Exception:
+        return ()
+
+
+WATCHED_SUBMODULES: tuple = _load_watched_submodules()
 
 # Canonical fingerprint field order — derived, never hand-edited. The parse/
 # format pair below both key off this list, so field count and order cannot

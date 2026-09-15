@@ -61,6 +61,8 @@ HARNESS_DIRS = (
     ".claude/workflows",
     ".claude/tests",
     ".claude/settings.json",
+    ".claude/settings.base.json",
+    ".claude/settings.project.json",
 )
 
 # One state file per session, shared by every hook. HARNESS_HOOK_STATE_DIR redirects it so a
