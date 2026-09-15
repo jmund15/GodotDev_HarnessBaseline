@@ -64,10 +64,16 @@ LAYER_ENTRIES = ROOT / "tools" / "layer_entries.json"
 
 
 def _with_layer_entries(entries: dict, action) -> None:
-    """Run `action` with `tools/layer_entries.json` holding `entries`, then restore the file."""
+    """Run `action` with `entries` MERGED into `tools/layer_entries.json`, then restore the file.
+
+    Merged rather than replaced: a publication records every new row's layer in this file before it
+    runs the battery, so replacing the file strands those rows unclassified and fails the case for a
+    reason that has nothing to do with what it tests."""
     before = LAYER_ENTRIES.read_bytes() if LAYER_ENTRIES.exists() else None
+    merged = dict(json.loads(before.decode("utf-8")).get("entries") or {}) if before else {}
+    merged.update(entries)
     try:
-        LAYER_ENTRIES.write_text(json.dumps({"version": 1, "entries": entries}, indent=2) + "\n",
+        LAYER_ENTRIES.write_text(json.dumps({"version": 1, "entries": merged}, indent=2) + "\n",
                                  encoding="utf-8", newline="\n")
         action()
     finally:
@@ -89,7 +95,7 @@ def test_exact_layer_entry_classifies_a_path_no_pattern_matches() -> None:
         result = _run_check()
         err = result.stderr.decode("utf-8", errors="replace")
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "stale" in err and "unclassified" not in err, err
+        assert "stale" in err and rel not in err, err
         sys.path.insert(0, str(ROOT / "tools"))
         try:
             sys.modules.pop("gen_manifest", None)
