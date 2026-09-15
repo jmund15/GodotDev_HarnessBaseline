@@ -11,11 +11,7 @@ jobs:
     name: baseline
     runs-on: ubuntu-latest
     steps:
-      # Full history: tests/test_audit_baseline.py reads the 616ea42 leak corpus with `git show`,
-      # which a depth-1 checkout does not have.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

@@ -32,22 +32,25 @@ Wired in: settings.json hooks.PostToolUse with matcher "ExitPlanMode".
 """
 
 import json
+import os
 import re
 import sys
 import time
 from pathlib import Path
 
+_TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+import adaptation  # noqa: E402
+
 # Domain inference table — mirrors the CLAUDE.md proactive-context table
-# and extends it with project-specific domains that map to existing Skills.
+# and extends it with project-specific domains that map to existing Skills. The entries
+# below are the domain-agnostic floor; a project's own content domains are appended from
+# `adaptation.json` `memory_domains` (Design Doc §8) rather than edited into this list.
 #
-# PROJECT-CONFIG: add your project's content domains at the top of this table
-# (e.g., for a ability-assembly game: ("Abilities", ["ability", "trait", "combination"],
-# ["ability"], ["architecture_philosophy", "your_authoring_skill"]); for a video
-# channel: ("Scripting", ["script", "segment", "voiceover"], ["script"],
-# ["video_pipeline"])). The entries below are the domain-agnostic floor.
-#
-# Each entry: (display_name, [trigger_keyword_substrings], [memory_search_keywords], [skills_to_load])
-# Trigger matches are case-insensitive substring; word-boundary not enforced
+# Each entry: (display_name, [trigger_keyword_substrings], [memory_search_keywords],
+# [skills_to_load], [rule_files_to_read]). The trailing rules list may be omitted (defaults
+# to []). Trigger matches are case-insensitive substring; word-boundary not enforced
 # (false-positives are cheap, false-negatives are expensive).
 DOMAINS = [
     ("Refactoring",
@@ -60,6 +63,40 @@ DOMAINS = [
      ["Obsidian"],
      ["worklog_reference"]),
 ]
+
+
+def _append_memory_domains(domains: list) -> None:
+    """Merge `adaptation.json` `memory_domains` rows -- each `{name, triggers,
+    memory_keywords, skills, rules}` -- into `DOMAINS` in place, as
+    `(name, triggers, memory_keywords, skills, rules)` 5-tuples. A row whose `name` matches an
+    existing floor entry REPLACES it in place, rather than adding a second entry with the same
+    name that would double-count a match; a new name appends. A row missing `name` or
+    `triggers`, or whose list fields are not lists, is skipped with one stderr line; this
+    hook must never crash on a malformed seed."""
+    claude_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for row in adaptation.get(claude_dir, "memory_domains"):
+        if not isinstance(row, dict) or "name" not in row or "triggers" not in row:
+            print(f"plan_memory_reminder: memory_domains row {row!r} is missing "
+                  "'name' or 'triggers' -- skipped", file=sys.stderr)
+            continue
+        triggers = row.get("triggers")
+        memory_keywords = row.get("memory_keywords", [])
+        skills = row.get("skills", [])
+        rules = row.get("rules", [])
+        if not all(isinstance(v, list) for v in (triggers, memory_keywords, skills, rules)):
+            print(f"plan_memory_reminder: memory_domains row {row['name']!r} has a "
+                  "non-list field -- skipped", file=sys.stderr)
+            continue
+        entry = (row["name"], triggers, memory_keywords, skills, rules)
+        for i, existing in enumerate(domains):
+            if existing[0] == row["name"]:
+                domains[i] = entry
+                break
+        else:
+            domains.append(entry)
+
+
+_append_memory_domains(DOMAINS)
 
 # Tunables
 MIN_WORDS = 50  # Skip trivially small plans
@@ -163,43 +200,49 @@ def _extract_critical_files_section(text: str) -> str | None:
     return m.group(2) if m else None
 
 
-# Compile triggers once at import time
+# Compile triggers once at import time. Entries may omit the trailing rules list (defaults
+# to []) — the built-in floor above stays 4-tuples; adaptation.json rows are 5-tuples.
 _DOMAIN_PATTERNS = [
-    (name, [_trigger_pattern(t) for t in triggers], memory_keys, skills)
-    for name, triggers, memory_keys, skills in DOMAINS
+    (entry[0], [_trigger_pattern(t) for t in entry[1]], entry[2], entry[3],
+     entry[4] if len(entry) > 4 else [])
+    for entry in DOMAINS
 ]
 
 
-def infer_domains(plan_text: str) -> list[tuple[str, list[str], list[str]]]:
+def infer_domains(plan_text: str) -> list[tuple[str, list[str], list[str], list[str]]]:
     """
-    Return list of (domain_name, memory_keywords, skills) for matched domains.
+    Return list of (domain_name, memory_keywords, skills, rules) for matched domains.
     A plan can match multiple domains. Order preserves DOMAINS table order.
     """
     matched = []
-    for domain_name, patterns, memory_keys, skills in _DOMAIN_PATTERNS:
+    for domain_name, patterns, memory_keys, skills, rules in _DOMAIN_PATTERNS:
         for pat in patterns:
             if pat.search(plan_text):
-                matched.append((domain_name, memory_keys, skills))
+                matched.append((domain_name, memory_keys, skills, rules))
                 break
     return matched
 
 
-def build_reminder(matches: list[tuple[str, list[str], list[str]]]) -> str:
+def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]]) -> str:
     """
     Compose the additionalContext message from matched domains.
-    Deduplicates memory keywords and skill names across overlapping domains.
+    Deduplicates memory keywords, skill names and rule files across overlapping domains.
     """
     domain_names = [m[0] for m in matches]
     # Deduplicate while preserving order
     memory_keys: list[str] = []
     skills: list[str] = []
-    for _, mk, sk in matches:
+    rules: list[str] = []
+    for _, mk, sk, rl in matches:
         for k in mk:
             if k not in memory_keys:
                 memory_keys.append(k)
         for s in sk:
             if s not in skills:
                 skills.append(s)
+        for r in rl:
+            if r not in rules:
+                rules.append(r)
 
     domains_str = ", ".join(domain_names)
     memory_query = " / ".join(memory_keys)
@@ -218,6 +261,9 @@ def build_reminder(matches: list[tuple[str, list[str], list[str]]]) -> str:
             "• No Skill explicitly keyed to these domain(s) in CLAUDE.md — "
             "auto-memory entries are the primary source."
         )
+
+    if rules:
+        parts.append(f"• Read rule(s): {', '.join(rules)}.")
 
     parts.append("")
     parts.append(

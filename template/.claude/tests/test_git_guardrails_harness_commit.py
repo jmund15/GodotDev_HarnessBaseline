@@ -409,6 +409,22 @@ def main():
         "git merge <branch with no harness content> -> allow",
         run_hook("git merge docs-only", repo), ALLOW))
 
+    # 21. S8: `.claude/settings.base.json` is a HARNESS_DIRS member same as `settings.json` --
+    #     a commit touching it with no fresh stamp is denied, and a fresh stamp allows it.
+    repo = make_repo()
+    write(repo, ".claude/settings.base.json", '{"permissions": {"allow": []}}\n')
+    git(repo, ["add", "-A"])
+    stamp_path = os.path.join(repo, "stamp.json")
+    failures.append(case(
+        "settings.base.json with no stamp -> deny (no stamp)",
+        run_hook('git commit -F msg -- .claude/settings.base.json', repo, {"HARNESS_TEST_STAMP": stamp_path}),
+        DENY, "no stamp"))
+    write_stamp(repo, stamp_path, tree_hash(repo))
+    failures.append(case(
+        "settings.base.json with a fresh stamp -> allow",
+        run_hook('git commit -F msg -- .claude/settings.base.json', repo, {"HARNESS_TEST_STAMP": stamp_path}),
+        ALLOW))
+
     total = len(failures)
     failures = [f for f in failures if f]
     print("\n%d/%d cases pass" % (total - len(failures), total))

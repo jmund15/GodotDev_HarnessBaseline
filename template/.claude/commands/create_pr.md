@@ -8,10 +8,10 @@ Create a {{PROJECT_NAME}} PR (or update the branch's existing one) with enforced
 
 **Prerequisite:** Branch is pushed to origin (run `/commit_push` or `/clean_push` first).
 
-PROJECT-CONFIG: a project with a paired submodule/repo (its PR must merge first)
-inserts its pairing steps per its own layer's procedure — detect the pointer
-change after Step 1, create/update the paired PR, and cross-reference both
-bodies.
+A project with a paired submodule/repo (its PR must merge first) inserts its pairing steps
+per its own layer's procedure — detect the pointer change after Step 1, create/update the
+paired PR, and cross-reference both bodies. Read the paired repos themselves from
+`adaptation.json` `paired_repos`.
 
 ## Arguments
 - `$ARGUMENTS` — Optional PR title override. If omitted, derives from commit history.

@@ -61,7 +61,8 @@ Every `.cs` referenced as an `ext_resource` in a scene/resource has a sibling `.
 
 #### Folder → namespace aliases
 
-<!-- PROJECT-CONFIG: add only justified exceptions. Prefer renaming the folder or namespace. -->
+Justified exceptions come from `adaptation.json` `structure_exceptions` — each `{path, reason}`.
+Prefer renaming the folder or namespace over adding one.
 
 | Folder root | Namespace root | Why renaming is not viable |
 |---|---|---|

@@ -171,15 +171,17 @@ A few included files are generic in shape but carry conventions as concrete
 defaults — review them on first use in a new project. (`tools/audit_baseline.py`
 keeps this list honest: its judgment pass flags adaptation-shaped files missing from here.)
 
-- `reference/memory_domains.md` — the domain → search-seed → companion-skill table.
-  `hooks/plan_memory_reminder.py` mirrors it as its `PROJECT-CONFIG` `DOMAINS` table;
-  replace both with your project's content domains and keep the two in sync.
-- `commands/doc_start_here_update.md` — the domain-classification table's first row
-  (`PROJECT-CONFIG`) is your project's central content pipeline; replace it and add rows.
+- `reference/memory_domains.md` — the domain → search-seed → companion-skill table, rendered
+  by `compose` from `reference/memory_domains.base.md` (tracked, universal prose) and
+  `adaptation.json` `memory_domains`; `hooks/plan_memory_reminder.py` reads the same key.
+  Add your project's content domains to `adaptation.json`, never to either file directly.
+- `commands/doc_start_here_update.md` — the domain-classification table's stack-generic rows
+  read `adaptation.json` `content_domains` for your project's central content pipeline row(s).
 - `commands/agents/pr_test_checklist_conventions.md` — the merge-heuristics table's
-  `PROJECT-CONFIG` rows map your content/entity scopes to checklist sections.
-- `commands/agents/pr_classification.md` — the Logic/Gameplay domain table maps the
-  source game's folder shapes to review domains; replace the folder lists with yours.
+  stack-generic rows read `adaptation.json` `content_scopes` for your content/entity
+  scope-to-section rows.
+- `commands/agents/pr_classification.md` — the domain table reads `adaptation.json`
+  `pr_domains` for your project's folder-shape-to-domain signals.
 - `commands/agents/review_agents.md` — the `pool-lifecycle` agent's checklist names
   example pooled types (`IPoolable` family) in brackets; substitute your pooling types
   and prune any pattern your project lacks.
@@ -188,8 +190,11 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 - `skills/project_subsystems/SKILL.md` (seed) — the subsystem registry that
   `/sync_subsystems`, `/structure_audit`, the structure rules, the testing skill's
   test-support path and the brainstorm scope litmus route through; fill it at adoption.
+  Its sibling `adaptation.json` (seed) holds the other adaptation tables this list names —
+  one skill folder owns both files.
 - `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
-  folder-layout rules read the registry above; prune the conventions to taste.
+  folder-layout rules read the registry above, plus `adaptation.json` `structure_exceptions`
+  for justified folder/namespace-alias exceptions.
 - `skills/architecture_philosophy/SKILL.md` — the design-philosophy skill reflects
   the source projects' architectural conventions; prune to taste on first use.
 - `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
@@ -200,13 +205,15 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   workstation command carries them as defaults).
 - `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
   artifact paths excluded from the tree digest; add your project's.
-- `scripts/run_integration_batched.ps1` — `$quarantine` (`PROJECT-CONFIG`) is the
-  filter appended to every Integration batch; ships empty.
+- `scripts/run_integration_batched.ps1` — `$quarantine` reads `adaptation.json`
+  `test_quarantine_filter`, the filter appended to every Integration batch; ships empty.
 - `hooks/test_suite_gate_coverage_guard.py` — `GATED` names the test tiers the gate
   filters on (`Logic`/`Integration`/`Sanity`) and `EXCLUDED` the deliberate non-gated
   folders; match them to your `Tests/` layout.
-- `hooks/refcounted_free_guard.py` — `EXEMPT` (`PROJECT-CONFIG`) names the sanctioned
-  teardown helper (`Tests/Framework/Helpers/TestObjectTeardown.cs` by convention).
+- `hooks/refcounted_free_guard.py` — `TESTS_ROOT` and `EXEMPT` read `adaptation.json`
+  `tests_root` and `teardown_helpers` (e.g. `Tests/Framework/Helpers/TestObjectTeardown.cs`).
+- `scripts/harness_tests.py` — `EXCLUDED` and `_PROOF_TIMEOUTS` merge in `adaptation.json`
+  `proof_excluded` and `proof_timeouts` for project-specific proof exclusions and overrides.
 - `hooks/duplicate_test_double_baseline.json` — ships empty (`{}`); regenerate with
   `duplicate_test_double_guard.py --write-baseline` once your project carries a
   test-double backlog it wants grandfathered.
@@ -220,9 +227,13 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,
   `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,
-  `workflows/review_fanout.js`, plus the `PROJECT-CONFIG` seams in the slimmed
-  git commands (`commit_push`, `clean_push`, `clean_pull`, `create_pr`) and in
-  `hooks/prompt_memory_loader.py`, `hooks/prompt_git_state_delta.py`
-  (WATCHED_SUBMODULES), and `hooks/compound_cd_approver.py` (SAFE_SEGMENT_COMMANDS).
-  Allowlisted in `tools/audit_baseline.py`'s core-domain-noun check — swap the
-  examples for your domain's when you first touch each file.
+  `workflows/review_fanout.js`. Allowlisted in `tools/audit_baseline.py`'s
+  core-domain-noun check — swap the examples for your domain's when you first touch each file.
+- `commands/clean_pull.md`, `clean_push.md`, `commit_push.md`, `create_pr.md` — the paired-repo
+  steps read `adaptation.json` `paired_repos` for the list; empty skips the step.
+- `hooks/prompt_memory_loader.py` — `HIGH_RISK_PATTERNS` and `DRIVE_COMMANDS` extend from
+  `adaptation.json` `high_risk_patterns` and `drive_commands`.
+- `hooks/prompt_git_state_delta.py` — `WATCHED_SUBMODULES` reads `adaptation.json`
+  `git_submodules`.
+- `hooks/compound_cd_approver.py` — `SAFE_SEGMENT_COMMANDS` extends from `adaptation.json`
+  `read_only_commands`, each entry validated against `NEVER_SAFE` and a shape regex.
