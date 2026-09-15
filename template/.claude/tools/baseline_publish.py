@@ -517,6 +517,27 @@ def _pinned_has_ci_workflow(baseline_cache: Path, pinned_sha: str) -> bool:
     return _git_show(baseline_cache, pinned_sha, ".github/workflows/baseline.yml") is not None
 
 
+# GitHub registers a pull request's workflow run a few seconds after `pr create`; until then
+# `gh pr checks` exits 1 with "no checks reported". Step 6 polls until checks exist, within a bound.
+CHECKS_REGISTER_WAIT_S = 180.0
+CHECKS_POLL_S = 5.0
+_NO_CHECKS_YET = "no checks reported"
+
+
+def _watch_checks(worktree: Path, pr_url: str) -> subprocess.CompletedProcess[bytes]:
+    deadline = time.monotonic() + CHECKS_REGISTER_WAIT_S
+    while True:
+        checks = _gh(worktree, ["pr", "checks", pr_url, "--watch", "--fail-fast"])
+        text = _lf(checks.stdout + checks.stderr).decode("utf-8", errors="replace")
+        if checks.returncode == 0 or _NO_CHECKS_YET not in text:
+            return checks
+        if time.monotonic() >= deadline:
+            raise PublishError(
+                f"no CI checks registered on {pr_url} within {int(CHECKS_REGISTER_WAIT_S)} s"
+            )
+        time.sleep(CHECKS_POLL_S)
+
+
 def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
              no_ci: bool, branch: str, journal_id: str) -> str:
     if not journal["worktree"].get("committed"):
@@ -574,7 +595,7 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
 
     if not no_ci:
         start = time.monotonic()
-        checks = _gh(worktree, ["pr", "checks", pr_url, "--watch", "--fail-fast"])
+        checks = _watch_checks(worktree, pr_url)
         journal["ci_wait_s"] = round(journal.get("ci_wait_s", 0) + (time.monotonic() - start), 3)
         _write_json_atomic(journal_path, journal)
         if checks.returncode != 0:

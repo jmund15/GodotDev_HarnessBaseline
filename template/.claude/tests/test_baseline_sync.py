@@ -435,6 +435,9 @@ def test_publish_cli_dispatches_to_baseline_publish() -> None:
     with _fixture() as path:
         root = path / "consumer"
         _init_repo(root)
+        # A consumer has its own `.claude/`; without it the CLI found whatever `.claude/` sat above
+        # the fixture (a Windows home directory has one), so this passed there and failed on Linux.
+        (root / ".claude").mkdir()
         result = subprocess.run(
             [sys.executable, str(ENGINE), "publish"],
             cwd=root, env=_env(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -444,6 +447,24 @@ def test_publish_cli_dispatches_to_baseline_publish() -> None:
         # parser produces, proving the CLI actually delegated rather than erroring itself.
         assert result.returncode == 2, output
         assert "--from-commit" in output and "--from-worktree" in output, output
+
+
+def test_cli_root_stops_at_the_git_top_level() -> None:
+    # `project_root` walked up past the repository into any ancestor `.claude/` -- on Windows the
+    # home directory has one -- so a command run in a repo without `.claude/` adopted the home
+    # directory as the project root. It must stop at the git top level.
+    with _fixture() as path:
+        outer = path / "outer"
+        (outer / ".claude").mkdir(parents=True)
+        root = outer / "consumer"
+        _init_repo(root)
+        result = subprocess.run(
+            [sys.executable, str(ENGINE), "check"],
+            cwd=root, env=_env(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+        assert result.returncode != 0, output
+        assert "no .claude/ directory found" in output, output
 
 
 
@@ -1008,6 +1029,32 @@ def test_v2_concurrent_classify_keeps_both_rows() -> None:
         assert lock["files"][second]["status"] == "local"
 
 
+def test_v2_many_concurrent_classifies_lose_no_row() -> None:
+    # The pid-file mutex let a waiter delete a mutex whose creator had not yet written its pid,
+    # so two processes held it and one lock write was lost (1 run in 5 on Linux with two
+    # processes). Six writers over three rounds must keep every row.
+    rels = [".claude/tools/stress_%d.py" % index for index in range(6)]
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {rel: {"upstream": ("u%d\n" % index).encode()} for index, rel in enumerate(rels)}
+        )
+        for round_index in range(3):
+            status = "local" if round_index % 2 == 0 else "forked"
+            processes = [
+                subprocess.Popen([sys.executable, str(ENGINE), "classify", rel, "--status", status, "--force"],
+                                 cwd=root, env=_env(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                for rel in rels
+            ]
+            results = []
+            for process in processes:
+                out, err = process.communicate()
+                results.append((process.returncode, out, err))
+            assert all(code == 0 for code, _out, _err in results), results
+            lock = _load_lock(root)
+            lost = [rel for rel in rels if (lock["files"].get(rel) or {}).get("status") != status]
+            assert not lost, "round %d lost rows: %s" % (round_index, lost)
+
+
 def test_v1_check_json_golden_is_read_only() -> None:
     with _fixture() as path:
         remote = _remote(path)
@@ -1077,6 +1124,7 @@ def main() -> int:
         test_materialize_is_retired,
         test_author_start_cli_creates_reuses_and_refuses,
         test_publish_cli_dispatches_to_baseline_publish,
+        test_cli_root_stops_at_the_git_top_level,
         test_v2_classify_success_refusal_and_repeat,
         test_v2_classify_tracked_refuses_planted_home_path,
         test_v2_classify_tracked_refuses_planted_topology_token,
@@ -1094,6 +1142,7 @@ def main() -> int:
         test_v2_migrate_covers_every_status_mapping_source_row,
         test_v2_migrate_layer_for_rows_absent_from_manifest,
         test_v2_concurrent_classify_keeps_both_rows,
+        test_v2_many_concurrent_classifies_lose_no_row,
         test_v1_check_json_golden_is_read_only,
     ]
     failures = []

@@ -204,6 +204,7 @@ specific failure shapes a real GitHub PR lifecycle can produce:
 
     GH_FAKE_FAIL_STEP=create|checks|merge   that gh subcommand exits 1 immediately
     GH_FAKE_MAIN_MOVE_ON_CHECKS=1           `pr checks` pushes a peer commit to main first
+    GH_FAKE_NO_CHECKS_CALLS=N               the first N `pr checks` calls report no checks yet (exit 1)
     GH_FAKE_FAIL_AFTER_MERGE=1              `pr merge` performs the real merge, then exits 1
 """
 import importlib.util
@@ -298,6 +299,13 @@ def main(argv):
         return 0
 
     if sub == "checks":
+        pending = int(os.environ.get("GH_FAKE_NO_CHECKS_CALLS", "0") or 0)
+        state["checks_calls"] = state.get("checks_calls", 0) + 1
+        _save_state(state)
+        if state["checks_calls"] <= pending:
+            # Real gh right after `pr create`: the workflow run is not registered yet.
+            print("no checks reported on the '%s' branch" % _current_branch(cwd), file=sys.stderr)
+            return 1
         if os.environ.get("GH_FAKE_FAIL_STEP") == "checks":
             print("fake gh: injected checks failure", file=sys.stderr)
             return 1
@@ -856,6 +864,45 @@ def test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes() -> None:
         assert resumed["baseline_sha_after"] == _remote_main_sha(remote)
 
 
+def test_ci_checks_not_yet_registered_are_waited_for() -> None:
+    # Real gh answers "no checks reported" (exit 1) for the first seconds after `pr create`;
+    # the first CI-on publication went red on exactly that. Step 6 must wait for checks to exist.
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        publish.CHECKS_POLL_S = 0.05
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_NO_CHECKS_CALLS"] = "2"
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                                  [rel], [], False, False, None)
+        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+        state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
+        assert state.get("checks_calls") == 3, state.get("checks_calls")
+
+
+def test_ci_checks_that_never_register_fail_step_six_after_the_wait() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        publish.CHECKS_POLL_S = 0.05
+        publish.CHECKS_REGISTER_WAIT_S = 0.3
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_NO_CHECKS_CALLS"] = "100000"
+        with _patched_env(env):
+            try:
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                            [rel], [], False, False, None)
+            except publish.PublishError as exc:
+                assert "no CI checks registered" in str(exc), exc
+            else:
+                raise AssertionError("expected step 6 to fail when checks never register")
+
+
 def test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
@@ -1274,6 +1321,8 @@ def main() -> int:
         test_repeat_incomplete_older_baseline_records_supersedes,
         test_resume_finds_and_reuses_pr_after_crash_before_pr_url_written,
         test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes,
+        test_ci_checks_not_yet_registered_are_waited_for,
+        test_ci_checks_that_never_register_fail_step_six_after_the_wait,
         test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes,
         test_resume_redoes_steps_after_deleted_worktree,
         test_corrupt_journal_resume_exits_nonzero,
