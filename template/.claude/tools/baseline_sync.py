@@ -373,10 +373,20 @@ def in_profile(entry: dict, layers: list[str], *, legacy_v1: bool = False) -> bo
 
 
 def project_root() -> Path:
-    path = Path.cwd()
-    while path != path.parent:
+    """The nearest directory holding `.claude/`, searched upward from cwd but never above the git
+    top level: an ancestor `.claude/` outside the repository (a home directory has one) is not
+    this project's."""
+    path = Path.cwd().resolve()
+    top = None
+    probe = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=path,
+                           capture_output=True, text=True)
+    if probe.returncode == 0 and probe.stdout.strip():
+        top = Path(probe.stdout.strip()).resolve()
+    while True:
         if (path / ".claude").is_dir():
             return path
+        if path == top or path == path.parent:
+            break
         path = path.parent
     sys.exit("error: no .claude/ directory found upward from cwd")
 
@@ -421,54 +431,50 @@ def save_lock(root: Path, lock: dict) -> None:
 
 
 
+def _try_os_lock(handle) -> bool:
+    """Take an exclusive, non-blocking OS lock on the open mutex file; False when another holds it."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _release_os_lock(handle) -> None:
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 @contextlib.contextmanager
 def lock_mutex(root: Path):
-    """Serialize lock mutations and re-read the lock while holding the mutex."""
+    """Serialize lock mutations with an OS file lock on a persistent mutex file.
+
+    The OS drops the lock when its holder exits, so a crashed holder never needs a staleness
+    guess. The earlier pid-file mutex had two races: a waiter deleted a mutex whose creator had
+    not yet written its pid, and `os.kill(pid, 0)` is not a liveness probe on Windows."""
     mutex = root / LOCK_MUTEX_RELPATH
     mutex.parent.mkdir(parents=True, exist_ok=True)
-    owner = False
     deadline = time.monotonic() + 30.0
-    payload = (f"pid={os.getpid()}\nsession={os.environ.get('CLAUDE_CODE_SESSION_ID', '')}\n").encode()
-    while not owner:
-        try:
-            fd = os.open(str(mutex), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                os.write(fd, _lf(payload))
-            finally:
-                os.close(fd)
-            owner = True
-        except FileExistsError:
-            stale = False
-            try:
-                text = _lf(mutex.read_bytes()).decode("utf-8", errors="replace")
-                match = re.search(r"^pid=(\d+)$", text, re.MULTILINE)
-                pid = int(match.group(1)) if match else 0
-                if pid <= 0:
-                    stale = True
-                else:
-                    try:
-                        os.kill(pid, 0)
-                    except (OSError, ProcessLookupError):
-                        stale = True
-            except OSError:
-                stale = True
-            if stale:
-                try:
-                    mutex.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
+    with open(mutex, "a+b") as handle:
+        while not _try_os_lock(handle):
             if time.monotonic() >= deadline:
                 raise BaselineError("baseline lock mutex is held for more than 30 seconds")
             time.sleep(0.05)
-    try:
-        yield
-    finally:
-        if owner:
-            try:
-                mutex.unlink()
-            except FileNotFoundError:
-                pass
+        try:
+            yield
+        finally:
+            _release_os_lock(handle)
 
 
 def mutate_lock(root: Path, mutator, *, allow_v1: bool = False):

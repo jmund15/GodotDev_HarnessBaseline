@@ -152,45 +152,13 @@ def test_identity_scan_flags_a_planted_leak() -> None:
         _remove(tmp)
 
 
-_OLD_IDENTITY_COMMIT = "616ea42"
-
-
-def _load_old_identity_functions():
-    """Load identifier_leaks()/MACHINE_PATH from the last audit_baseline.py
-    revision that scanned plaintext directly (616ea42), before S3 replaced it
-    with the consumer-side digest scanner -- the parity floor this proof checks."""
-    result = subprocess.run(
-        ["git", "show", f"{_OLD_IDENTITY_COMMIT}:tools/audit_baseline.py"], cwd=ROOT,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
-    )
-    source = result.stdout.decode("utf-8")
-    tmp_dir = Path(tempfile.mkdtemp(prefix="audit_baseline_old_"))
-    tools_dir = str(AUDIT.parent)
-    added = tools_dir not in sys.path
-    if added:
-        sys.path.insert(0, tools_dir)  # the old module also does `import gen_manifest as gm`
-    try:
-        module_path = tmp_dir / "audit_baseline_old.py"
-        module_path.write_text(source, encoding="utf-8", newline="\n")
-        spec = importlib.util.spec_from_file_location("audit_baseline_old", module_path)
-        if spec is None or spec.loader is None:
-            print("CANNOT-RUN: 616ea42:tools/audit_baseline.py could not be loaded", file=sys.stderr)
-            sys.exit(2)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.identifier_leaks, module.MACHINE_PATH
-    finally:
-        if added:
-            sys.path.remove(tools_dir)
-        _remove(tmp_dir)
-
-
-def test_new_scanner_covers_616ea42_identifier_leak_corpus() -> None:
-    """Parity floor (S3 fix 1): every corpus line the retired plaintext scanner
-    (616ea42) flagged must also produce a hit from the current scan_tree. Every
-    planted token is built from short fragments at runtime -- no committed line
-    here matches either scanner."""
-    old_identifier_leaks, old_machine_path = _load_old_identity_functions()
+def test_scanner_flags_every_identity_form_in_the_corpus() -> None:
+    """Every identity form the retired plaintext scanner flagged, plus the glued form it
+    missed, must produce a hit from the current scan_tree; near misses must not. The
+    comparison against that scanner itself ran once, at S3, from an author commit that was
+    never published -- CI clones cannot read it, so the corpus keeps the expectations
+    and drops the dependency. Every planted token is built from short fragments at runtime,
+    so no committed line here matches the scanner."""
     audit = _load_audit()
 
     base1, base2 = "Push" + "in", "Pot" + "ions"
@@ -235,11 +203,6 @@ def test_new_scanner_covers_616ea42_identifier_leak_corpus() -> None:
     miss_lines = [
         f"the {not_abbrev} token", f"a {generic_word} sentence", f"the {short_type_name} type",
     ]
-
-    old_parity_lines = [f"identifier {v} appears" for v in old_parity_form_lines] + non_name_lines
-    for line in old_parity_lines:
-        old_hit = bool(old_identifier_leaks(line)) or bool(old_machine_path.search(line))
-        assert old_hit, f"old (616ea42) scanner did not flag corpus line: {line!r}"
 
     # A fixture consumer whose identity matches the corpus above, digested fresh.
     profile = audit.identity.build_profile(
@@ -305,7 +268,7 @@ def main() -> int:
         test_strict_exits_0_from_repo_root,
         test_strict_exits_0_from_another_cwd,
         test_identity_scan_flags_a_planted_leak,
-        test_new_scanner_covers_616ea42_identifier_leak_corpus,
+        test_scanner_flags_every_identity_form_in_the_corpus,
         test_secret_scan_flags_a_planted_secret_shape,
     ]
     failures = []
