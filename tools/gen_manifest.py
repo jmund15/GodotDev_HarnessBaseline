@@ -494,6 +494,7 @@ PURE_PATTERNS = [
     ".claude/commands/worker_audit.md",
     ".claude/commands/worktree_prune.md",
     ".claude/hooks/_command_text.py",
+    ".claude/hooks/_file_lock.py",
     ".claude/hooks/_git_commit.py",
     ".claude/hooks/_model_tier.py",
     ".claude/hooks/_session_transport.py",

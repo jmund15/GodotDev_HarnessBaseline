@@ -14,15 +14,14 @@ because `skill_load_marker.py` hits the same parse error inside `except Exceptio
 and so never rewrites the marker. A corrupted byte range locked the session out of
 harness editing permanently, while telling the reader to do the one thing that cannot help.
 
-Two properties close that, and both are needed:
+Three properties close that:
 
   write_json_atomic  — same-directory tempfile + `os.replace`. A reader sees either the
-                       old file or the new one, never a half-written one. This is what
-                       `instruction_quality` §16 requires of shared hook state.
+                       old file or the new one, never a half-written one.
   read_json_salvage  — recovers the leading JSON document from a file that is already
-                       torn, instead of returning empty. Atomic writes stop NEW damage;
-                       salvage is what keeps damage that predates them (or arrives from
-                       an unconverted writer) from being permanent.
+                       torn, instead of returning empty.
+  update_json_locked — serializes read-modify-write so sibling hooks cannot replace each
+                       other's fields from stale snapshots.
 
 Also here: the two cadence gates every advisory hook shares. `fire_once` delivers an advisory
 once per session; `fire_once_since_compaction` re-arms when `transcript_backup.py` calls
@@ -35,6 +34,7 @@ Fail posture: every function is best-effort and total. A read never raises — i
 that cannot be written must degrade to a missing nudge, never to a crashed hook.
 """
 
+import importlib.util
 import io
 import json
 import os
@@ -44,6 +44,7 @@ __all__ = [
     "HARNESS_DIRS",
     "read_json_salvage",
     "write_json_atomic",
+    "update_json_locked",
     "state_path",
     "fire_once",
     "fire_once_since_compaction",
@@ -71,6 +72,24 @@ _DEFAULT_STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 
 _ONCE_KEY = "fired_once"
 _COMPACTION_KEY = "fired_since_compaction"
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen")
+_LOCK_WAIT_SECONDS = 2.0
+
+
+def _load_file_lock():
+    # By sibling path, not sys.path: tools load this module by file path from any cwd. A tree
+    # without the sibling still imports, and every locked write then returns False.
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_file_lock", os.path.join(os.path.dirname(os.path.abspath(__file__)), "_file_lock.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+_file_lock = _load_file_lock()
 
 
 def state_dir():
@@ -89,16 +108,19 @@ def _fire_once_under(session_id, key, bucket):
     broken state layer costs a repeated advisory rather than a silent one that never fires.
     """
     path = state_path(session_id)
-    state = read_json_salvage(path)
-    fired = state.get(bucket)
-    if not isinstance(fired, dict):
-        fired = {}
-    if fired.get(key):
-        return False
-    fired[key] = True
-    state[bucket] = fired
-    write_json_atomic(path, state)
-    return True
+
+    def update(state):
+        fired = state.get(bucket)
+        if not isinstance(fired, dict):
+            fired = {}
+        if fired.get(key):
+            return False
+        fired[key] = True
+        state[bucket] = fired
+        return True
+
+    written, first = update_json_locked(path, update)
+    return bool(first) if written else True
 
 
 def fire_once(session_id, key):
@@ -116,19 +138,24 @@ def fire_once_since_compaction(session_id, key):
 
 
 def clear_compaction_keys(session_id):
-    """Re-arm every `fire_once_since_compaction` key. Called from the PreCompact hook."""
+    """Re-arm every compaction-scoped advisory key. Called from the PreCompact hook."""
     path = state_path(session_id)
-    state = read_json_salvage(path)
-    if _COMPACTION_KEY not in state:
-        return False
-    state.pop(_COMPACTION_KEY, None)
-    return write_json_atomic(path, state)
+
+    def update(state):
+        changed = any(key in state for key in _COMPACTION_CLEAR_KEYS)
+        for key in _COMPACTION_CLEAR_KEYS:
+            state.pop(key, None)
+        return changed
+
+    written, changed = update_json_locked(path, update)
+    return bool(written and changed)
 
 
 def read_json_salvage(path):
     """Return the dict at `path`. Salvages a torn file; returns {} when unrecoverable."""
     try:
-        raw = io.open(path, encoding="utf-8").read()
+        with io.open(path, encoding="utf-8") as fh:
+            raw = fh.read()
     except (OSError, ValueError):
         return {}
 
@@ -184,8 +211,18 @@ def append_jsonl_rotating(path, records, max_bytes=2_000_000, keep_lines=500):
         return False
 
 
-def write_json_atomic(path, obj):
-    """Write `obj` to `path` via same-dir tempfile + rename. True on success."""
+def _acquire_json_lock(path):
+    if _file_lock is None:
+        return None
+    return _file_lock.acquire(path + ".lock", _LOCK_WAIT_SECONDS)
+
+
+def _release_json_lock(handle):
+    if _file_lock is not None:
+        _file_lock.release(handle)
+
+
+def _write_json_atomic_unlocked(path, obj):
     directory = os.path.dirname(path) or "."
     tmp_path = None
     try:
@@ -193,7 +230,7 @@ def write_json_atomic(path, obj):
         fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=directory)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(obj, fh, ensure_ascii=True)
-        os.replace(tmp_path, path)   # same filesystem by construction
+        os.replace(tmp_path, path)
         return True
     except (OSError, ValueError, TypeError):
         if tmp_path:
@@ -202,3 +239,35 @@ def write_json_atomic(path, obj):
             except OSError:
                 pass
         return False
+
+
+def update_json_locked(path, updater):
+    """Run `updater(state)` under a per-file lock and atomically save its changes.
+
+    Returns `(written, result)`. Failures return `(False, None)` and never raise.
+    """
+    lock_path = _acquire_json_lock(path)
+    if not lock_path:
+        return False, None
+    try:
+        state = read_json_salvage(path)
+        try:
+            result = updater(state)
+        except Exception:
+            return False, None
+        if not _write_json_atomic_unlocked(path, state):
+            return False, None
+        return True, result
+    finally:
+        _release_json_lock(lock_path)
+
+
+def write_json_atomic(path, obj):
+    """Write `obj` to `path` via same-dir tempfile + rename. True on success."""
+    lock_path = _acquire_json_lock(path)
+    if not lock_path:
+        return False
+    try:
+        return _write_json_atomic_unlocked(path, obj)
+    finally:
+        _release_json_lock(lock_path)

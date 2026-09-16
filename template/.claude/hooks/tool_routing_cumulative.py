@@ -43,7 +43,6 @@ Wiring:
 import json
 import os
 import sys
-import tempfile
 import time
 
 # --- Tunables ------------------------------------------------------------
@@ -79,6 +78,7 @@ BURST_CALL_THRESHOLD = 4
 # for back-compat with existing call sites that reference AUDIT_INTENT_CUES.
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from _hook_state import update_json_locked  # noqa: E402
 try:
     from routing_classifier import AUDIT_INTENT_CUES, prompt_has_edit_intent  # noqa: F401
 except ImportError:
@@ -158,21 +158,21 @@ def _write_state_atomic(session_id: str, state: dict, agent_id: str = "") -> boo
     Atomic write: tempfile in same dir, rename over target. Returns True on
     success. False on failure — caller emits the visible-failure stderr line.
     """
+    # A bare tempfile+rename is atomic per write but still drops a concurrent
+    # read-modify-write: two hooks that each read, then each rename, keep only the
+    # second one's counts. `update_json_locked` holds the lock across both halves,
+    # which is the invariant `test_hook_state.py` asserts for every hook.
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         path = _state_path(session_id, agent_id)
-        # tempfile in same dir so rename is atomic on POSIX/NTFS
-        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=STATE_DIR)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(state, f, ensure_ascii=True)
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+
+        def _replace(existing):
+            existing.clear()
+            existing.update(state)
+
+        written, _ = update_json_locked(path, _replace)
+        if not written:
+            raise OSError("update_json_locked refused the write")
         return True
     except Exception as e:
         sys.stderr.write(

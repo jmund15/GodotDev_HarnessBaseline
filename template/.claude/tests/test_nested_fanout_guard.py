@@ -88,7 +88,7 @@ def main():
         gen = checked_run(
             [sys.executable, BRIEFS, "--keys", "code-reviewer", "error-hunter",
              "--out", tmp, "--prefix", "t1", "--pr-num", "1", "--branch", "x",
-             "--context-path", ctx],
+             "--context-path", ctx, "--model", "sonnet"],
             allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
             timeout=60,
         )
