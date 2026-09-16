@@ -1227,6 +1227,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_file_lock.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_git_commit.py",
       "layer": "pure",
       "sync": "auto"
