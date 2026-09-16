@@ -9,14 +9,16 @@ run (readOnly, spillDir), and a second run consolidates. This tool does the mate
 prompt byte travels through Workflow `args` (gotcha_workflow_args_generation_fidelity).
 
 Usage:
-  python3 .claude/tools/lens_briefs.py --keys code-reviewer error-hunter ... \
+  python3 .claude/tools/lens_briefs.py --keys <key> <key> ... \
       --out .claude/scratch/pr_pipeline/briefs_pr116 --prefix pr116 \
-      --pr-num 116 --branch claude/x --context-path <abs>/context_pr116.md \
-      [--sub TRANSCRIPT_CORRECTIONS=<file>] [--effort low] [--agent-type general-purpose]
+      --pr-num 116 --branch claude/x --context-path <abs>/context_pr116.md --model sonnet \
+      [--model-for <key>=opus] [--sub TRANSCRIPT_CORRECTIONS=<file>] [--effort low] \
+      [--agent-type general-purpose]
 
 Writes <out>/<prefix>_<key>.md per lens (shared registry preamble + the template's fenced prompt with
-{{PLACEHOLDERS}} substituted) and <out>/jobs_<prefix>.json — the dispatch.js `jobs` array, model taken
-from each template's own pin. {{CHECKLIST_CDS}}/{{CHECKLIST_RP}}/{{CHECKLIST_I}} come from
+{{PLACEHOLDERS}} substituted) and <out>/jobs_<prefix>.json — the dispatch.js `jobs` array. Lens
+catalogs own no model pins: the caller resolves them through `orchestration` and passes `--model`
+for the panel plus `--model-for KEY=MODEL` per lens. {{CHECKLIST_CDS}}/{{CHECKLIST_RP}}/{{CHECKLIST_I}} come from
 commands/checklists/code_quality.md by section letter; {{TEST_QUALITY_CHECKLIST}} and
 {{CODE_QUALITY_CHECKLIST}} are those files whole. {{CONTEXT}} becomes a pointer to --context-path
 (dispatch.js `contextPath` already tells the agent to read it first). Unresolved placeholders are an
@@ -74,11 +76,15 @@ def main() -> None:
     ap.add_argument("--branch", required=True)
     ap.add_argument("--context-path", required=True, help="absolute path of the shared CONTEXT file")
     ap.add_argument("--sub", action="append", default=[], help="PLACEHOLDER=<file> extra substitutions")
+    ap.add_argument("--model", required=True, choices=["opus", "sonnet", "haiku", "fable"],
+                    help="panel model pin, resolved by the caller through orchestration §5")
+    ap.add_argument("--model-for", action="append", default=[], metavar="KEY=MODEL",
+                    help="per-lens model override, e.g. --model-for <key>=opus")
     ap.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh"],
                     help="one effort for every lens; default derives per lens from its model tier "
-                         "(orchestration §5b tier-within-quota: executor-tier lenses low, fan-out-tier medium)")
+                         "(orchestration §5 Model & Effort Selection: executor-tier lenses low, fan-out-tier medium)")
     ap.add_argument("--effort-for", action="append", default=[], metavar="KEY=EFFORT",
-                    help="per-lens override, e.g. --effort-for code-reviewer=medium (names the ambiguity in --justification at dispatch)")
+                    help="per-lens override, e.g. --effort-for <key>=medium (names the ambiguity in --justification at dispatch)")
     ap.add_argument("--agent-type", default="general-purpose", choices=["general-purpose", "Explore", "Plan"])
     a = ap.parse_args()
 
@@ -112,22 +118,37 @@ def main() -> None:
         k, _, p = s.partition("=")
         subs[k] = Path(p).read_text(encoding="utf-8")
 
-    # Effort is per lens, never one flag for the panel: the registry's model pin classifies the lens's
-    # SHAPE (open judgment → executor tier, enumerable → fan-out tier), and orchestration §5b hangs the
-    # effort cell off that shape — executor `low`, fan-out `medium`. Model stays hard-coded in the
-    # registry because it IS the shape classification; effort varies with band and ambiguity.
+    # Effort is per lens, never one flag for the panel: the caller's model pin classifies the lens's
+    # SHAPE (open judgment → executor tier, enumerable → fan-out tier), and orchestration §5 hangs the
+    # effort cell off that shape — executor `low`, fan-out `medium`. Effort varies with band and
+    # ambiguity; an explicit --effort/--effort-for wins.
     tier_effort = {"opus": "low", "fable": "low", "sonnet": "medium", "haiku": "low"}
+    selected = set(a.keys)
     overrides = {}
     for s in a.effort_for:
         k, _, e = s.partition("=")
         if e not in ("low", "medium", "high", "xhigh"):
             sys.exit(f"--effort-for {s}: effort must be low|medium|high|xhigh")
+        if k not in found:
+            sys.exit(f"--effort-for {s}: no such lens — run `lens.py index`")
+        if k not in selected:
+            sys.exit(f"--effort-for {s}: lens is not selected by --keys")
         overrides[k] = e
+    model_overrides = {}
+    for s in a.model_for:
+        k, _, m = s.partition("=")
+        if m not in ("opus", "sonnet", "haiku", "fable"):
+            sys.exit(f"--model-for {s}: model must be opus|sonnet|haiku|fable")
+        if k not in found:
+            sys.exit(f"--model-for {s}: no such lens — run `lens.py index`")
+        if k not in selected:
+            sys.exit(f"--model-for {s}: lens is not selected by --keys")
+        model_overrides[k] = m
 
     jobs = []
     for k in a.keys:
         l = found[k]
-        model = l.model if l.model != "-" else "sonnet"
+        model = model_overrides.get(k) or a.model
         effort = overrides.get(k) or a.effort or tier_effort.get(model, "medium")
         m = FENCE_RE.search("".join(l.lines))
         if not m:
