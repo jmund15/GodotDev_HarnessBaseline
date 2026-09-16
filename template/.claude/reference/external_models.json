@@ -88,11 +88,8 @@
       "alias": "flash",
       "transport": "deepseek",
       "version": "DeepSeek-V4-Flash-0731",
-      "roles": [
-        "sonnet",
-        "haiku",
-        "fable"
-      ],
+      "_comment": "roles emptied and evidence downgraded 2026-09-16. The row asserted `effort.evidence: measured` with no `effort.measuredVersion`, which the validator rejects as an unbacked routing assertion -- so every consumer of this template failed the registry load, and with it every proof that reads the registry. The sibling `pro` row was corrected the same way on 2026-09-04. A consumer that benchmarks this model restores its roles and sets `effort.measuredVersion` to the version it measured.",
+      "roles": [],
       "price": {
         "cacheHitPer1M": 0.0028,
         "cacheMissPer1M": 0.14,
@@ -112,7 +109,7 @@
         "avoid": [
           "high"
         ],
-        "evidence": "measured"
+        "evidence": "unmeasured"
       },
       "authTier": "gated",
       "gate": {
