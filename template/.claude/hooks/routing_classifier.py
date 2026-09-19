@@ -4,12 +4,8 @@
 routing_classifier.py — shared classification library for tool-routing hooks.
 
 Why this exists:
-- Three hooks (`tool_routing_nudge.py` PreToolUse, `tool_routing_post_grep.py`
-  PostToolUse, `tool_routing_cumulative.py` PostToolUse) each had inlined
-  copies of the same cue-word lists, PascalCase regex, file-family classifier,
-  and cloud-session detector. This is the classic DRY-violation shape —
-  the inline copies will silently diverge over time as one hook is updated
-  and the others aren't.
+- The PreToolUse and PostToolUse routing hooks had inlined copies of the same cue-word
+  lists, PascalCase regex, file-family classifier, and cloud-session detector.
 - The new `routing_audit.py` hook (continuous silent-miss logger) needs a
   `classify_call()` API that combines all three rule families into a single
   classification per tool call. Building it forced the extraction.
@@ -32,20 +28,15 @@ Design contract:
     - ADVISORY_APPLICABLE: soft-nudge category (memory_search, broad obsidian
                            search) — informational, not a violation.
     - NOT_ROUTABLE       : tool has no §Tool Routing routing rules (Bash, Edit, Write,
-                           Glob, etc.) OR the call shape doesn't match the
-                           rule (e.g. `Read` of a non-`.md` file — Read is
-                           classified only when path is a `.md` synthesis
-                           target). The cumulative hook handles cascade-
-                           shape detection for these; this classifier does
-                           not duplicate that logic.
+                           Glob, etc.) OR the call shape doesn't match a rule.
 
   The audit hook logs NUDGE_WARRANTED, CUE_EXEMPT and CENSUS (vault doc writes, direct
   vs worker — measured, never judged). The other three are noise from the dashboard's
   perspective.
 
 This module is the single home for these helpers and cue lists — the former
-inline copies in tool_routing_nudge.py / tool_routing_post_grep.py /
-tool_routing_cumulative.py were removed at extraction (2026-05-04).
+inline copies in tool_routing_nudge.py / tool_routing_post_grep.py were removed at extraction
+(2026-05-04).
 """
 
 from __future__ import annotations
@@ -72,7 +63,7 @@ LITERAL_INTENT_CUES = (
     "in comments",
     "comment scan",
     "string literal",
-    "audit",
+    # Bare "audit" retired (owner decision R4, 2026-09-14): "Audit X for bugs" is not a literal scan.
     "documentation audit",
     "every occurrence",
     "exact text",
@@ -95,8 +86,7 @@ VERIFIED_UNIQUE_CUES = (
 
 # Audit-shape carve-out (CLAUDE.md §Tool Routing Exception clause): line-precision direct
 # reads are warranted only when user explicitly framed the task as audit/
-# debug/security-review/fact-check at source-code level. Source: tool_routing_
-# cumulative.py:80-97.
+# debug/security-review/fact-check at source-code level.
 AUDIT_INTENT_CUES = (
     "audit",
     "code review",
@@ -116,34 +106,6 @@ AUDIT_INTENT_CUES = (
     "review for issues",
 )
 
-# Edit-intent carve-out: the read is an edit anchor, not a synthesis load.
-# You must `Read` a file before `Edit` will accept it, so a surgical read of a
-# synthesis-shaped doc is a routine precondition of editing it — routing that
-# through read_files returns a digest you cannot Edit from. Substring match on
-# the user's most recent prompt. Over-suppression costs a silent miss of a real
-# routing violation, so every cue carries enough context to exclude unrelated
-# words that contain it — bare "edit" matches editor/credit/audited, bare
-# "patch" matches dispatch, bare "tune" matches attune.
-EDIT_INTENT_CUES = (
-    "edit the",
-    "edit this",
-    "edit that",
-    "editing",
-    "revise",
-    "rewrite",
-    "update the",
-    "fix the",
-    "patch the",
-    "patch this",
-    "tweak",
-    "tune the",
-    "reword",
-    "amend",
-    "apply the",
-    "add a section",
-    "add to the",
-)
-
 # Path fragments that are agent-runtime instruction surfaces, never synthesis
 # targets. CLAUDE.md §Tool Routing write-routing forbids routing `.claude/` markdown
 # through the worker at all — so a Read here can only be an execute/edit read,
@@ -153,21 +115,30 @@ HARNESS_PATH_MARKERS = (
     "/.claude/",
 )
 
-# Path-fragment hints that an Obsidian read is a synthesis-shaped target
-# (large doc, design/architecture/retrospective shape — better to route through
-# read_files than load the full doc into context). Case-insensitive substring
-# on the file path. Source: tool_routing_nudge.py:111-122.
-SYNTHESIS_DOC_HINTS = (
-    "Design",
-    "Planning",
-    "BrainstormingDesigns",
-    "Documentation",
-    "Brainstorm",
-    "Architecture",
-    "Retrospective",
-    "Audit",
-    "Review",
-    "Postmortem",
+# High-precision prompt evidence for the worker's copyable bulk-I/O lane. A path,
+# extension, or read count is never enough. The paired cue groups accept plain
+# task wording while avoiding derived requests such as "compare and recommend".
+BULK_SCOPE_CUES = (
+    "every file",
+    "each file",
+    "all files",
+    "multiple files",
+    "these files",
+    "input path",
+    "each path",
+    "every path",
+    "each source",
+    "every source",
+)
+COPYABLE_OUTPUT_CUES = (
+    "bulk copyable",
+    "bulk-copyable",
+    "copyable",
+    "raw field",
+    "raw data",
+    "one entry per",
+    "one row per",
+    "extract",
 )
 
 # Bulk-search thresholds for obsidian_search_notes. Source: tool_routing_nudge.py:125-126.
@@ -259,14 +230,6 @@ def prompt_has_audit_intent(prompt: str) -> bool:
     return any(cue in lowered for cue in AUDIT_INTENT_CUES)
 
 
-def prompt_has_edit_intent(prompt: str) -> bool:
-    """True if prompt contains any edit-intent cue — the read is an edit anchor."""
-    if not prompt:
-        return False
-    lowered = prompt.lower()
-    return any(cue in lowered for cue in EDIT_INTENT_CUES)
-
-
 def is_harness_path(path: str) -> bool:
     """True if the path is an agent-runtime instruction surface (`.claude/`)."""
     if not path:
@@ -278,6 +241,16 @@ def is_bounded_read(tool_input: dict) -> bool:
     """True if the Read call is windowed (`offset`/`limit`) — surgical by
     construction, so the whole-doc digest advisory does not apply."""
     return tool_input.get("offset") is not None or tool_input.get("limit") is not None
+
+
+def prompt_requests_bulk_copyable(prompt: str) -> bool:
+    """True only when the request names BOTH a multi-input scope and a copyable output shape.
+    A path, extension or read count is never evidence (CLAUDE.md §Tool Routing)."""
+    if not prompt:
+        return False
+    lowered = prompt.lower()
+    return (any(cue in lowered for cue in BULK_SCOPE_CUES)
+            and any(cue in lowered for cue in COPYABLE_OUTPUT_CUES))
 
 
 def prompt_has_grep_override_cue(prompt: str) -> bool:
@@ -339,7 +312,7 @@ def classify_call(
                     May be None or empty.
       last_prompt : The user's most recent prompt text (for cue-word checks).
                     May be empty — in that case cue exemptions don't fire.
-      agent_id    : Non-empty for a dispatched subagent. A subagent handed a synthesis doc
+      agent_id    : Non-empty for a dispatched subagent. A subagent handed the bulk inputs
                     IS the bundling delegate, so the native-read rule exempts it here — the
                     one home both the nudge and the audit log read.
 
@@ -357,11 +330,11 @@ def classify_call(
     if tool_name == "Grep":
         return _classify_grep(tool_input, last_prompt)
 
-    # Native Read of synthesis-shaped `.md` path.
+    # Native Read while the request asks for bulk copyable I/O.
     if tool_name == "Read":
         return _classify_native_read(tool_input, last_prompt, agent_id)
 
-    # Obsidian read of synthesis-shaped doc.
+    # Obsidian read under the same prompt-evidence rule.
     if tool_name == "mcp__obsidian__obsidian_get_note":
         return _classify_obsidian_read(tool_input, last_prompt)
 
@@ -444,49 +417,44 @@ def _classify_grep(tool_input: dict, last_prompt: str) -> Classification:
 
 
 def _classify_native_read(tool_input: dict, last_prompt: str, agent_id: str = "") -> Classification:
-    """Native `Read` of a `.md` file under a synthesis-shaped path. Mirrors
-    `_classify_obsidian_read` but consumes the snake_case `file_path` arg
-    used by the native Read tool. Restricted to `.md` to avoid flagging
-    .cs/.tres at synthesis-named folders — those have their own §Tool Routing rules."""
+    """Native `Read` while the request asks for bulk copyable extraction across inputs.
+
+    The path or file type alone never classifies: focused evidence and derived judgment stay direct.
+    """
     path = tool_input.get("file_path") or ""
     if not path:
         return Classification("not-routable", None, None, "Read")
-    if not path.lower().endswith(".md"):
-        return Classification("not-routable", None, None, "Read")
-    # Edit-anchor carve-outs — a read that cannot be a synthesis load.
+    # Agent-runtime instructions and windowed reads are direct by contract.
     if is_harness_path(path) or is_bounded_read(tool_input):
         return Classification("not-routable", None, None, "Read")
-    is_synthesis_shape = any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS)
-    if not is_synthesis_shape:
-        # Surgical read of a non-synthesis-shaped .md (e.g. CLAUDE.md, README) — fine.
+    if not prompt_requests_bulk_copyable(last_prompt):
         return Classification("compliant", None, None, "Read")
-    # Audit-shape carve-out — mirrors `_classify_obsidian_read`.
-    if prompt_has_audit_intent(last_prompt) or prompt_has_edit_intent(last_prompt):
+    if prompt_has_audit_intent(last_prompt):
         return Classification(
             severity="cue-exempt",
-            rule="native-read-synthesis-doc",
+            rule="native-read-bulk-copyable",
             reason=(
-                "synthesis-shaped path on native Read would route to read_files, "
-                "but user prompt invokes the audit-shape or edit-anchor carve-out"
+                "bulk-copyable request on native Read would route to read_files, "
+                "but the prompt also invokes the audit-shape carve-out"
             ),
             tool="Read",
         )
     if agent_id:
         return Classification(
             severity="cue-exempt",
-            rule="native-read-synthesis-doc",
+            rule="native-read-bulk-copyable",
             reason=(
-                f"native Read of synthesis-shaped path ({path}) by a dispatched subagent "
+                f"native Read of {path} for a bulk-copyable request by a dispatched subagent "
                 "[subagent: bundling delegate]"
             ),
             tool="Read",
         )
     return Classification(
         severity="nudge-warranted",
-        rule="native-read-synthesis-doc",
+        rule="native-read-bulk-copyable",
         reason=(
-            f"native Read of synthesis-shaped path ({path}) — "
-            "should route through mcp__ai-worker__read_files for digest"
+            f"native Read of {path} for an explicit bulk-copyable request — "
+            "route the extraction through mcp__ai-worker__read_files"
         ),
         tool="Read",
     )
@@ -526,29 +494,24 @@ def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classificatio
     path = (target.get("path") if isinstance(target, dict) else "") or ""
     if not path:
         return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
-    is_synthesis_shape = any(hint.lower() in path.lower() for hint in SYNTHESIS_DOC_HINTS)
-    if not is_synthesis_shape:
-        # Surgical read of a non-synthesis-shaped doc (e.g. Worklog) — fine.
+    if not prompt_requests_bulk_copyable(last_prompt):
         return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
-
-    # Audit-shape / edit-anchor carve-out: explicit line-precision or edit
-    # framing legitimizes direct read over read_files bundling.
-    if prompt_has_audit_intent(last_prompt) or prompt_has_edit_intent(last_prompt):
+    if prompt_has_audit_intent(last_prompt):
         return Classification(
             severity="cue-exempt",
-            rule="obsidian-synthesis-doc-direct-read",
+            rule="obsidian-read-bulk-copyable",
             reason=(
-                "synthesis-shaped Obsidian doc would route to read_files, "
-                "but user prompt invokes audit-shape direct-read carve-out"
+                "bulk-copyable request on an Obsidian read would route to read_files, "
+                "but the prompt also invokes the audit-shape carve-out"
             ),
             tool="mcp__obsidian__obsidian_get_note",
         )
     return Classification(
         severity="nudge-warranted",
-        rule="obsidian-synthesis-doc-direct-read",
+        rule="obsidian-read-bulk-copyable",
         reason=(
-            f"direct read of synthesis-shaped Obsidian doc ({path}) — "
-            "should route through mcp__ai-worker__read_files for digest"
+            f"direct Obsidian read of {path} for an explicit bulk-copyable request — "
+            "route the extraction through mcp__ai-worker__read_files"
         ),
         tool="mcp__obsidian__obsidian_get_note",
     )
@@ -561,9 +524,8 @@ def _classify_webfetch(tool_input: dict, last_prompt: str) -> Classification:
     (the host is only intermittently Cloudflare-gated, so it is not blanket-
     banned): a class page is generated from XML the cache holds at the exact
     engine pin, and `/en/stable/` is a moving alias that cannot be pinned at all.
-    A version-pinned non-class URL (`/en/4.7/...`) is fine. Chained WebFetch is a
-    cumulative shape, owned by tool_routing_cumulative.py, not by this
-    per-call classifier."""
+    A version-pinned non-class URL (`/en/4.7/...`) is fine. Multi-call patterns
+    are outside this per-call classifier."""
     url = str(tool_input.get("url") or "")
     low = url.lower()
     if "docs.godotengine.org" in low:

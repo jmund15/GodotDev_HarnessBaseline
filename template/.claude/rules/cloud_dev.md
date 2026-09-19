@@ -15,7 +15,7 @@ Active when `CLAUDE_CODE_REMOTE=true` (detected by SessionStart hook). This rule
 
 **Does NOT work (inherently local):**
 - Godot MCP (run_project, get_debug_output, create_scene, get_uid) — skip these tools on cloud
-- Obsidian MCP (vault access) — defer design doc work to local sessions; `/worklog` mutations queue to `.claude/worklog-pending.md` for local replay
+- Vault access (design docs) — the vault is not mounted on cloud; defer design doc work to local sessions. `/worklog` mutations queue to `.claude/worklog-pending.md` for local replay
 - Visual playtesting — focus on automated tests
 - csharp-ls plugin (disabled via `settings.local.json` — needs .NET 10)
 - **LSP-precision C# symbol resolution** — LSP is unavailable on cloud. Semantic-search (DreB) is a *discovery* substitute (NL/intent/concept queries), **NOT** symbol-precise: the cloud marketplace build heuristic-splits C# (no symbol-tree extraction — that lives only in the local fork). For exact callers/definitions, anchor with `Grep('class FooBar\b' -g '*.cs')` then navigate.
@@ -30,3 +30,5 @@ Active when `CLAUDE_CODE_REMOTE=true` (detected by SessionStart hook). This rule
 **Proxy allowlist (required domains):** `builds.dotnet.microsoft.com`, `dotnetcli.azureedge.net`, `github.com`, `registry.npmjs.org`, `raw.githubusercontent.com`, `learn.microsoft.com` — the latter two are P1 source hosts (`reference/source_trust.md`) that `.claude/scripts/fetch_source.sh` needs.
 
 **gh authentication on cloud:** Set `GH_TOKEN` env var in Claude Code web settings (Settings → Custom Environment). `gh` CLI auto-detects `GH_TOKEN` — no `gh auth login` needed. Use `-R owner/repo` flag with `gh` commands (cloud sandbox proxy requires it).
+
+<!-- retire-when: review-by: 2026-12-26 -->

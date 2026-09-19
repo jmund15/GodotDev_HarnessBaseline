@@ -151,7 +151,25 @@ const results = await parallel(chains.map(c => async () => {
       + guardRef(j)
       + spillContract(j)
     const opts = { label: j.label, phase: 'Chains', model: PIN(j.model), effort: EFF(effortOf(j)), agentType: j.agentType }
-    const r = await agent(prompt, opts)
+    let r
+    try {
+      r = await agent(prompt, opts)
+    } catch (e) {
+      out.push([j.label, {
+        error: 'dispatch-chains: agent rejected (' + ((e && e.message) || String(e)) + '); remaining jobs in lane `' + c.name + '` were not run',
+      }])
+      log('lane ' + c.name + ': stopped at ' + (i + 1) + '/' + c.jobs.length
+        + ' (rejected result from ' + j.label + ')')
+      break
+    }
+    if (r == null) {
+      out.push([j.label, {
+        error: 'dispatch-chains: agent returned no result; remaining jobs in lane `' + c.name + '` were not run',
+      }])
+      log('lane ' + c.name + ': stopped at ' + (i + 1) + '/' + c.jobs.length
+        + ' (no result from ' + j.label + ')')
+      break
+    }
     out.push([j.label, r])
     log('lane ' + c.name + ': ' + (i + 1) + '/' + c.jobs.length + ' done (' + j.label + ')')
   }

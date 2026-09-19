@@ -332,9 +332,10 @@ $script:DigestExcl = @('Tests/regression_baseline.json',
           'Tests/integration_batch_durations.json',
           'TestResults/',
           # Engine-regenerated import artifact: the Godot test host rewrites this CSV (+ its
-          # .translation siblings) whenever authored .tres data changed, so a run adding
+          # .translation siblings) whenever spell .tres data changed, so a run adding spell
           # sheets self-invalidates mid-Logic (measured 2026-08-20, VERDICT=INVALID at
           # suite:Integration). Same class as TestResults/ — the run's own artifacts.
+          'Tools/spell_stat_comparison',
           # Blanket, not per-tree: narrow carve-outs repeatedly missed a .claude tree and
           # tripped TREE_CHANGED (auto-memory 2026-08-13, rules/ + hooks/ 2026-08-14).
           '.claude/')

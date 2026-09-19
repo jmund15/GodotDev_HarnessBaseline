@@ -56,8 +56,13 @@ Done when: one `context.md` and one `mandate.md` exist, and their SHA is recorde
 
 ## Phase 2 — Dispatch both arms
 
+Read the current band first (`orchestration` §5b). Under a pressured band, `workflow_provider_guard.py` denies this dispatch until the call states its currency — add `args.currency: "anthropic"` and `args.currencyReason: "<why the sidecar loses for these jobs>"` alongside `jobs`; omit both when the band does not require it.
+
 ```
-Workflow({scriptPath: ".claude/workflows/dispatch.js", args: {jobs: [
+Workflow({scriptPath: ".claude/workflows/dispatch.js", args: {
+  currency: "anthropic",       // only when the band requires it (orchestration §5b)
+  currencyReason: "<why>",     // required alongside currency
+  jobs: [
   {label: "<lens>@control",    promptPath: "<mandate.md>", model: "<a-model>", effort: "<a-effort>", agentType: "general-purpose"},
   {label: "<lens>@challenger", promptPath: "<mandate.md>", model: "<b-model>", effort: "<b-effort>", agentType: "general-purpose"}
 ]}})

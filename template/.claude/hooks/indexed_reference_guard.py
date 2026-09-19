@@ -5,8 +5,8 @@ Hook: block a whole-file Read of a reference that is served through an index.
 
 Some harness references are scan-all-read-few: a reader must see every entry's trigger to know
 which few bear, but needs the body of only a handful. Those files carry an ACCESSOR that emits a
-selector index and fetches entries by id (`instruction_quality` §5, *the read pattern picks the
-split axis*). Reading the file whole spends the full size to use a fraction of it.
+selector index and fetches entries by id (`instruction_quality` §5, *Size proportional to load mode*).
+Reading the file whole spends the full size to use a fraction of it.
 
 Prose in the consuming command covers the paths it knows about. It cannot cover an agent that
 found the file through semantic-search, a `Glob`, or a memory citation and reached for `Read`
@@ -30,6 +30,7 @@ matched call is the budget (`instruction_quality` §15).
 """
 
 import os
+import posixpath
 
 # suffix -> (accessor command, what the accessor returns)
 INDEXED_REFERENCES = {
@@ -42,10 +43,8 @@ INDEXED_REFERENCES = {
     ),
     "commands/agents/plan_check_agents.md": (
         "python3 .claude/tools/lens.py get --shared <KEY> [<KEY> ...]",
-        "only the lenses you dispatch. The two `meta`-only lenses are 11.4KB a "
-        "`code` plan never runs, and plc-pattern-fit + plc-architecture-quality "
-        "are 9KB a `meta` plan never runs. `lens.py index plan_check` lists key, "
-        "model, gate and size.",
+        "the selected lens bodies and their shared contract. "
+        "`lens.py index plan_check` lists key, gate and size.",
     ),
     "commands/agents/explore_agents.md": (
         "python3 .claude/tools/lens.py shared explore   # trigger table, no bodies",
@@ -68,9 +67,18 @@ INDEXED_REFERENCES = {
     ),
 }
 
+# Suffixes whose target is project-generated/authored data, not shared mechanism: the accessor
+# command travels with every checkout, but a fresh checkout has not generated this project's own
+# catalog yet (or, for a published template, never will). A block still fires if the file exists;
+# proofs that check registrations resolve to real files must not require these to be present.
+LOCAL_ONLY_TARGETS = frozenset({
+    "reference/known_failure_modes_entries.md",
+    "generated/abstraction_families.md",
+})
+
 
 def _normalize(path: str) -> str:
-    return str(path or "").replace("\\", "/")
+    return posixpath.normpath(str(path or "").replace("\\", "/")).casefold()
 
 
 def _is_bounded(tool_input) -> bool:
@@ -79,7 +87,7 @@ def _is_bounded(tool_input) -> bool:
 
 def process(input_data):
     """Return a block message for an unbounded whole-file Read of an index-served reference."""
-    if input_data.get("tool_name") != "Read":
+    if not isinstance(input_data, dict) or input_data.get("tool_name") != "Read":
         return None
 
     tool_input = input_data.get("tool_input") or {}

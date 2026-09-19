@@ -131,8 +131,11 @@ def test_input_changed_during_run_exits_1() -> None:
         result = _run(root, stamp)
         out = result.stdout + result.stderr
         assert result.returncode == 1, out
-        assert "inputs changed during verification" in out, out
-        assert not stamp.exists(), "a run whose inputs moved must not write a stamp"
+        assert "changed during verification" in out, out
+        # The changed input stays unstamped; the unchanged inputs keep the entries this run proved.
+        files = json.loads(stamp.read_text(encoding="utf-8"))["files"] if stamp.exists() else {}
+        assert ".claude/tests/test_ok.py" not in files, files
+        assert files, "the unchanged inputs keep their stamp entries"
     finally:
         _remove(root)
 

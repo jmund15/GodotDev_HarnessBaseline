@@ -2045,6 +2045,45 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
     return 0
 
 
+def v2_sub(root: Path, sub_args: list[str], unset_args: list[str] | None = None) -> int:
+    """Set substitution pairs on an existing lock.
+
+    `init --sub` only runs at init time, and `init --force` rebuilds every row from the manifest,
+    so this is the only route that adds a pair to a populated lock. A pair renames in both
+    directions: `reverse_for` maps VALUE to PLACEHOLDER when publishing, `forward_for` maps it back
+    when pulling or comparing, so a consumer keeps its own names while the baseline carries generic
+    ones.
+    """
+    unset_args = list(unset_args or [])
+    if not sub_args and not unset_args:
+        raise UsageError("sub requires at least one --sub PLACEHOLDER=VALUE or --unset PLACEHOLDER")
+    pairs = {}
+    for item in sub_args:
+        if "=" not in item:
+            raise UsageError("sub requires PLACEHOLDER=VALUE")
+        key, value = item.split("=", 1)
+        if not key:
+            raise UsageError("sub requires a non-empty PLACEHOLDER")
+        pairs[key] = value
+
+    def mutator(lock):
+        substitutions = dict(lock.get("substitutions") or {})
+        for key in unset_args:
+            if key not in substitutions:
+                raise BaselineError("no such substitution: %s" % key)
+            del substitutions[key]
+        substitutions.update(pairs)
+        lock["substitutions"] = substitutions
+        return None
+
+    mutate_lock(root, mutator)
+    for key in sorted(unset_args):
+        print("substitution removed: %s" % key)
+    for key, value in sorted(pairs.items()):
+        print("substitution: %s -> %s" % (key, value))
+    return 0
+
+
 def v2_init(root: Path, baseline_dir: str, repo: str, ref: str,
             substitutions: dict[str, str], layers: list[str], source: BaselineSource,
             force: bool) -> int:
@@ -2261,7 +2300,7 @@ def main(argv=None) -> int:
     ap.add_argument("op", choices=[
         "check", "diff", "pull", "update-lock", "migrate",
         "classify", "judge", "triage", "forget", "gc", "fork", "track",
-        "ignore", "candidates", "paths", "init", "compose",
+        "ignore", "candidates", "paths", "init", "compose", "sub",
     ])
     ap.add_argument("relpaths", nargs="*")
     ap.add_argument("--baseline-dir")
@@ -2284,6 +2323,7 @@ def main(argv=None) -> int:
     ap.add_argument("--repo")
     ap.add_argument("--ref", default="main")
     ap.add_argument("--sub", action="append", default=[], metavar="PLACEHOLDER=VALUE")
+    ap.add_argument("--unset", action="append", default=[], metavar="PLACEHOLDER")
     ap.add_argument("--abbrev", action="append", default=[])
     try:
         args = ap.parse_args(argv)
@@ -2328,6 +2368,8 @@ def main(argv=None) -> int:
             return v2_classify(root, args.relpaths, "local", None, None, args.force, args.baseline_dir)
         if args.op == "judge":
             return v2_judge(root, args.relpaths, args.verdict, args.borderline, args.confirm, args.force)
+        if args.op == "sub":
+            return v2_sub(root, args.sub, args.unset)
         if args.op == "candidates":
             cmd_candidates(root, lock, layers, args.baseline_dir)
             return 0

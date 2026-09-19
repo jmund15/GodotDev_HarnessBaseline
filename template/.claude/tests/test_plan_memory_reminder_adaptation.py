@@ -8,8 +8,8 @@ default (built-in floor only) plus one stderr line. Validation cases: a row miss
 `triggers` is skipped with one stderr line, and a row with a non-list field is skipped too --
 in both cases a valid sibling row still matches.
 
-`find_recent_plan()` reads `Path.home() / ".claude" / "plans"`, so each case points
-USERPROFILE/HOME at a scratch directory rather than touching the real one.
+The hook fires on a Write of a `.claude/plans/*.md` file, so each case writes its plan under a
+scratch home, sends that path, and points HARNESS_HOOK_STATE_DIR at scratch state.
 
     python3 .claude/tests/test_plan_memory_reminder_adaptation.py
 """
@@ -43,10 +43,15 @@ def write_plan(home, text):
 
 
 def run_hook(hook_path, home):
-    payload = {"tool_name": "ExitPlanMode"}
+    plan = os.path.join(home, ".claude", "plans", "probe.md")
+    with open(plan, encoding="utf-8") as fh:
+        text = fh.read()
+    payload = {"tool_name": "Write", "session_id": os.path.basename(home),
+               "tool_input": {"file_path": plan, "content": text}}
     env = dict(os.environ)
     env["USERPROFILE"] = home
     env["HOME"] = home
+    env["HARNESS_HOOK_STATE_DIR"] = os.path.join(home, "state")
     r = subprocess.run([sys.executable, hook_path], input=json.dumps(payload),
                        capture_output=True, text=True, timeout=30, env=env)
     return (r.stdout or "").strip(), (r.stderr or "").strip()
@@ -68,7 +73,7 @@ def main():
     homes = []
 
     def scratch(seed, plan_text):
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed)
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed, extra_hook_files=("_hook_state.py",))
         scratches.append(tmp)
         home = tempfile.mkdtemp(prefix="pmr_home_")
         homes.append(home)

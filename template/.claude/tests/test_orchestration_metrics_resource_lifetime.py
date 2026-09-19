@@ -141,6 +141,20 @@ class ResourceLifetimeTests(unittest.TestCase):
             dump(record, {"label": "job", "exitCode": code})
             self.assertEqual(state, om._sidecar_record_row(record)["state"])
 
+    def test_global_sidecar_missing_exit_code_is_unknown(self):
+        ledger = os.path.join(self.root, "missing-exit-ledger.jsonl")
+        dump(ledger, {"label": "job", "timestamp": "2026-09-09T10:00:00Z"})
+        self.assertEqual("unknown", om.collect_sidecar(ledger)[0]["state"])
+
+    def test_empty_agent_transcript_keeps_usage_unknown(self):
+        run_dir = os.path.join(self.root, "empty-run")
+        os.makedirs(run_dir)
+        Path(os.path.join(run_dir, "agent-empty.jsonl")).write_text("", encoding="utf-8")
+        usage = om.agent_usage(run_dir)["empty"]
+        self.assertEqual(0, usage["turns"])
+        self.assertTrue(all(usage[key] is None for key in ("inp", "out", "cw", "cr")))
+        self.assertIsNone(om.agent_cost(usage))
+
     def test_sidecar_run_identity_prefers_launch_id(self):
         first = os.path.join(self.root, "first.record.json")
         second = os.path.join(self.root, "second.record.json")

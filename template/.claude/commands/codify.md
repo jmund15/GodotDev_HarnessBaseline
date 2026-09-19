@@ -42,7 +42,7 @@ Judgment the agent must apply → **RULE**. A procedure you re-run by hand → *
 
 Two gates, both required:
 
-- **`/autolearn` *Anti-pattern: Overfit-to-Specific*** — strip the file / PR / ability / SHA out of the principle; it demotes to the `Signal:` evidence line.
+- **`/autolearn` *Anti-pattern: Overfit-to-Specific*** — strip the file / PR / spell / SHA out of the principle; it demotes to the `Signal:` evidence line.
 - **`feedback_dont_codify_never_from_single_fix.md`** — check whether the correction over-bans a *mechanism*. Litmus: *am I writing never/only/always about a mechanism when the incident was one instance of it?* Overfit-to-Specific does not catch this, and a false `never` blocks legitimate design space.
 
 **Done: the rule reads in class-of-things terms, and any never/only/always in it is named and justified.**
@@ -78,6 +78,8 @@ Each row's rule is owned elsewhere; this table composes them into one ordered pr
 
 Applies only when Step 4 lands on CLAUDE.md or a MEMORY.md hot topic file.
 
+Write a MEMORY.md hook line with no path and no link. The path costs more than the hook it points at.
+
 **Name the line the new bytes outrank** — the always-loaded admission standard, `instruction_quality` §5 A1–A5. Not whether the line is true or useful — a true line ranking below its neighbours still costs behavior on the lines it dilutes. **No nameable displacement → it goes behind a pointer.** "The cluster already exists" is not a displacement.
 
 Every hot add pairs with an equal-bytes trim regardless of headroom — the ceiling (CLAUDE.md's per `/claudemd_compact`, MEMORY.md's per CLAUDE.md §2) is a backstop, not a license. The arithmetic is `wc -c` before and after: the net delta is ≤ 0, or the report quotes the displaced line and the bytes it freed. For MEMORY.md also state why the decision fires before a search would run; if it does not, the row was wrong — go back to Step 4 and land cold.
@@ -88,13 +90,17 @@ Every hot add pairs with an equal-bytes trim regardless of headroom — the ceil
 
 Direct `Edit` for skills, rules, commands, hooks, cold memory.
 
-**Write the verdict, not the incident.** The landed text is the rule, its trigger, and the one clause that makes it non-obvious — no date, no "observed/measured" narrative, no session story; that evidence goes to `auto-memory/archive/` or Obsidian and is cited by name (`instruction_quality` §5 *Verdict vs evidence*). Every landing is a byte delta: state it, and if the target grew by >1.5KB or >10%, name the line it outranks or cut to match (`harness_growth_guard.py` reports it after the edit — a report you cannot answer means the edit is too big).
+**Write the verdict, not the incident.** The landed text is the rule, its trigger, and the one clause that makes it non-obvious — no date, no "observed/measured" narrative, no session story; that evidence goes to `auto-memory/archive/` or Obsidian and is cited by name (`instruction_quality` §5 *Size proportional to load mode*). Every landing is a byte delta: state it, and if the target grew by >1.5KB or >10%, name the line it outranks or cut to match (`harness_growth_guard.py` reports it after the edit — a report you cannot answer means the edit is too big).
+
+**Record the retirement trigger with the rule.** One per rule: `retire_when:` in the memory file's frontmatter, or a `<!-- retire-when: ... -->` comment on the line below a rule landing in a command, skill or `rules/` file. Four kinds — `claude >= X` (a client version), `tool:<name> absent`, `load_census budget <name> under X`, `review-by: YYYY-MM-DD`. Name the condition that would make the rule wrong or pointless; when nothing but time applies, set a review date. `tools/rule_retirement.py` evaluates them, `/autolearn` proposes the retirement once one fires, and a trigger no kind matches is reported as malformed — it retires nothing.
+
+CLAUDE.md and a `rules/` file may carry one file-level `review-by` comment covering every rule in the file; per-rule comments there would grow the always-loaded bundles.
 
 **Queue non-load-bearing CLAUDE.md edits** under `/apply_harness_edits` and its load-mode contract. Append to `.claude/pending_harness_edits.md`, quoting each `old` string verbatim and anchoring by heading, never by line number. Applying a disk edit does not evict the loaded text. A `MEMORY.md` pointer lands with its topic file (CLAUDE.md §2).
 
 Target listed in `baseline.lock.json` → it is shared doctrine (CLAUDE.md §10). Flag for `/sync_baseline` classification, and check whether a companion new file must upstream in the same operation — a cite pushed without its target dangles in every consuming project.
 
-**Done: the diff is applied or the queue entry written, and the baseline status of every touched path is stated.**
+**Done: the diff is applied or the queue entry written, its retirement trigger is recorded, and the baseline status of every touched path is stated.**
 
 ## Step 7 — Prove it fires
 
@@ -113,5 +119,6 @@ Rule:   <generalized statement>
 Surface: <row>  — rejected above it: <row: reason>, ...
 Cost gate: <displaced line> | n/a
 Landed: <path> (<±bytes>, outranks: <line> | n/a)  | queued: <entry>   [baseline: tracked | untracked]
+Retire-when: <trigger>
 Proof:  <check run> → <result>
 ```

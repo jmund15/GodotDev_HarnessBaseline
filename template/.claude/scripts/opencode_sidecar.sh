@@ -69,8 +69,15 @@ ENV_FILE="${HOME}/.env.ai-worker.cmd"
 ZEN_BASE_URL="https://opencode.ai/zen/v1"
 
 SC_TRANSPORT="opencode"
+# SC_LAUNCHER_DIR keeps lib resolution on the REAL tree across the re-exec below (matching
+# anthropic/codex_proxy/deepseek_sidecar.sh) -- sc_reexec_snapshot re-invokes this file from a
+# snapshot copy under a scratch dir with no lib/ next to it, so sourcing via a fresh
+# `dirname "${BASH_SOURCE[0]}"` on the SECOND run would look for the lib beside the snapshot and
+# fail (measured 2026-09-14, D1: "No such file or directory").
+SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # shellcheck source=lib/sidecar_common.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib/sidecar_common.sh"
+. "$SC_LAUNCHER_DIR/lib/sidecar_common.sh"
+sc_reexec_snapshot "$@"   # run from a snapshot copy; see lib
 
 # HOME is not portable across hosts: an MSYS shell (e.g. a bash spawned by a non-Claude-Code
 # harness) may set it to its own mount (/home/<user>) without exporting USERPROFILE, where
@@ -318,6 +325,7 @@ fi
 sc_gate_band
 sc_gate_provider_band   # no-op on this transport; present so the ladder is uniform
 sc_gate_balance         # no-op while the row stays authTier=open
+sc_gate_price_window    # no-op without a registry pricingSchedule; present so the ladder is uniform
 sc_build_disclosure
 sc_validate_effort
 
@@ -339,6 +347,8 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
+SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "")"
+[ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env
 

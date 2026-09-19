@@ -83,6 +83,154 @@ def main():
     cases.append(("the ambiguous pair is untouched by the unique verdict",
                   ("wf_1", "review:x") in items and ("wf_2", "review:x") in items))
 
+    # --- archive applies the same exact/unique-key contract -------------------
+    write_verdicts(om.PENDING_VERDICTS, {})
+    archive_rows = [
+        {"run": "wf_1", "label": "review:x", "effort": "low", "state": "completed"},
+        {"run": "wf_2", "label": "review:x", "effort": "low", "state": "completed"},
+    ]
+    archived_rows = []
+    real_argv = sys.argv
+    real_collect = om.collect
+    real_collect_sidecar = om.collect_session_sidecar
+    real_ledger = om.load_record_ledger
+    real_report = om.report
+    real_archive = om._archive_rows_atomic
+
+    def capture_archive(rows):
+        archived_rows.extend(dict(row) for row in rows)
+        return rows, 0, []
+
+    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar", "--verdicts",
+                json.dumps({"wf_1:review:x": ["clean", "high"], "review:x": "defects"})]
+    om.collect = lambda *_: [dict(row) for row in archive_rows]
+    om.collect_session_sidecar = lambda *_: []
+    om.load_record_ledger = lambda *_: (set(), set())
+    om.report = lambda *_: None
+    om._archive_rows_atomic = capture_archive
+    try:
+        archive_rc = om.main()
+    finally:
+        sys.argv = real_argv
+        om.collect = real_collect
+        om.collect_session_sidecar = real_collect_sidecar
+        om.load_record_ledger = real_ledger
+        om.report = real_report
+        om._archive_rows_atomic = real_archive
+    archived_outcomes = {row["run"]: row.get("outcome") for row in archived_rows}
+    cases.append(("archive prefers exact keys and ignores ambiguous bare labels",
+                  archive_rc == 0 and archived_outcomes == {
+                      "wf_1": "clean", "wf_2": "unrated",
+                  }))
+    cases.append(("archived effort keeps requested and observed evidence separate",
+                  {row["run"]: row.get("requested_effort") for row in archived_rows} == {
+                      "wf_1": "high", "wf_2": "low",
+                  } and all(row.get("observed_effort") is None for row in archived_rows)))
+
+    # --- successful publication removes only the pending verdicts it consumed --
+    write_verdicts(om.PENDING_VERDICTS, {
+        "wf_1:review:x": "clean",
+        "review:unique": "defects",
+        "review:x": "rework",
+        "foreign:label": "clean",
+    })
+    cleanup_rows = [
+        {"run": "wf_1", "label": "review:x", "effort": "low", "state": "completed"},
+        {"run": "wf_3", "label": "review:unique", "effort": "low", "state": "completed"},
+    ]
+    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    om.collect = lambda *_: [dict(row) for row in cleanup_rows]
+    om.collect_session_sidecar = lambda *_: []
+    om.load_record_ledger = lambda *_: (set(), set())
+    om.report = lambda *_: None
+    om._archive_rows_atomic = lambda rows: (rows, 0, [])
+    try:
+        cleanup_rc = om.main()
+    finally:
+        sys.argv = real_argv
+        om.collect = real_collect
+        om.collect_session_sidecar = real_collect_sidecar
+        om.load_record_ledger = real_ledger
+        om.report = real_report
+        om._archive_rows_atomic = real_archive
+    remaining = om._read_json_object(om.PENDING_VERDICTS)
+    cases.append(("successful archive removes consumed exact and unique bare verdicts",
+                  cleanup_rc == 0 and remaining == {
+                      "review:x": "rework", "foreign:label": "clean",
+                  }))
+
+    # A concurrent correction after the snapshot is not the value that was archived.
+    write_verdicts(om.PENDING_VERDICTS, {"wf_1:review:x": "clean"})
+    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    om.collect = lambda *_: [{"run": "wf_1", "label": "review:x", "effort": "low",
+                                   "state": "completed"}]
+    om.collect_session_sidecar = lambda *_: []
+    om.load_record_ledger = lambda *_: (set(), set())
+    om.report = lambda *_: None
+
+    def archive_then_correct(rows):
+        write_verdicts(om.PENDING_VERDICTS, {"wf_1:review:x": "rework"})
+        return rows, 0, []
+
+    om._archive_rows_atomic = archive_then_correct
+    try:
+        concurrent_rc = om.main()
+    finally:
+        sys.argv = real_argv
+        om.collect = real_collect
+        om.collect_session_sidecar = real_collect_sidecar
+        om.load_record_ledger = real_ledger
+        om.report = real_report
+        om._archive_rows_atomic = real_archive
+    cases.append(("archive cleanup preserves a concurrently changed verdict",
+                  concurrent_rc == 0 and om._read_json_object(om.PENDING_VERDICTS) == {
+                      "wf_1:review:x": "rework",
+                  }))
+
+    # Cleanup must hold the shared verdict lock across its read and replacement.
+    write_verdicts(om.PENDING_VERDICTS, {"wf_1:review:x": "clean"})
+    lock_observed = []
+    real_atomic_write = om._atomic_write_json
+
+    def observe_locked_write(*args, **kwargs):
+        lock_observed.append(os.path.exists(om.PENDING_VERDICTS + ".lock"))
+        return real_atomic_write(*args, **kwargs)
+
+    om._atomic_write_json = observe_locked_write
+    try:
+        om._prune_pending_verdicts({"wf_1:review:x": "clean"}, {"wf_1:review:x"})
+    finally:
+        om._atomic_write_json = real_atomic_write
+    cases.append(("pending cleanup writes while holding its shared lock", lock_observed == [True]))
+
+    # An agent row exists at invocation time before its work is complete. It must
+    # remain pending rather than becoming permanent calibration evidence.
+    write_verdicts(om.PENDING_VERDICTS, {"wf_running:review:running": "clean"})
+    archived_rows.clear()
+    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    om.collect = lambda *_: [{
+        "run": "wf_running", "label": "review:running", "effort": "low",
+        "state": "running", "cost": 10, "turns": 1,
+    }]
+    om.collect_session_sidecar = lambda *_: []
+    om.load_record_ledger = lambda *_: (set(), set())
+    om.report = lambda *_: None
+    om._archive_rows_atomic = capture_archive
+    try:
+        running_rc = om.main()
+    finally:
+        sys.argv = real_argv
+        om.collect = real_collect
+        om.collect_session_sidecar = real_collect_sidecar
+        om.load_record_ledger = real_ledger
+        om.report = real_report
+        om._archive_rows_atomic = real_archive
+    cases.append(("invocation without terminal completion is never archived",
+                  running_rc == 1 and archived_rows == []
+                  and om._read_json_object(om.PENDING_VERDICTS) == {
+                      "wf_running:review:running": "clean",
+                  }))
+
     # --- scratch merges with root winning on collision -----------------------
     write_verdicts(om.PENDING_VERDICTS, {"wf_3:review:unique": "clean"})
     write_verdicts(om.LEGACY_PENDING_VERDICTS, {"wf_1:review:x": "defects"})
@@ -96,6 +244,31 @@ def main():
     cases.append(("root wins when both sides carry the same key",
                   merged.get("wf_1:review:x") == "clean"))
 
+    # A verdict consumed from the legacy source must be removed from that source.
+    write_run(os.path.join(session, "workflows"), "wf_legacy", ["review:legacy"])
+    write_verdicts(om.PENDING_VERDICTS, {})
+    write_verdicts(om.LEGACY_PENDING_VERDICTS, {"wf_legacy:review:legacy": "clean"})
+    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    om.collect = lambda *_: [{
+        "run": "wf_legacy", "label": "review:legacy", "effort": "low", "state": "completed",
+    }]
+    om.collect_session_sidecar = lambda *_: []
+    om.load_record_ledger = lambda *_: (set(), set())
+    om.report = lambda *_: None
+    om._archive_rows_atomic = lambda rows: (rows, 0, [])
+    try:
+        legacy_cleanup_rc = om.main()
+    finally:
+        sys.argv = real_argv
+        om.collect = real_collect
+        om.collect_session_sidecar = real_collect_sidecar
+        om.load_record_ledger = real_ledger
+        om.report = real_report
+        om._archive_rows_atomic = real_archive
+    cases.append(("legacy verdict cleanup removes the consumed key",
+                  legacy_cleanup_rc == 0
+                  and om._read_json_object(om.LEGACY_PENDING_VERDICTS) == {}))
+
     # --- archived label excluded ---------------------------------------------
     write_verdicts(om.PENDING_VERDICTS, {})
     write_verdicts(om.LEGACY_PENDING_VERDICTS, {})
@@ -106,6 +279,11 @@ def main():
                   ("wf_3", "review:unique") not in items))
     cases.append(("a not-yet-archived pair stays pending",
                   ("wf_1", "review:x") in items and ("wf_2", "review:x") in items))
+    with open(om.ARCHIVE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"run": "wf_1", "ignored": True}) + "\n")
+    items = om.pending_labels(session)
+    cases.append(("an ignored run is terminal and creates no pending rows",
+                  all(run != "wf_1" for run, _ in items)))
 
     # --- a bare verdict for an already-archived label is named, history is not ---
     write_verdicts(om.PENDING_VERDICTS, {"review:unique": "clean", "other-session:lens": "clean"})
@@ -115,11 +293,36 @@ def main():
     cases.append(("a bare verdict naming no label of this session is silent history",
                   "other-session:lens" not in unmatched))
 
+    # --- a label@run_id key rates nothing, so it is named with its run_id:label spelling ---
+    write_verdicts(om.PENDING_VERDICTS, {"review:x@wf_2": "clean", "lens@wf_other": "clean"})
+    misshaped_fn = getattr(om, "misshaped_verdict_keys", None)
+    misshaped = misshaped_fn(session) if misshaped_fn else None
+    cases.append(("a label@run_id key still leaves its pair pending",
+                  ("wf_2", "review:x") in om.pending_labels(session)))
+    cases.append(("a label@run_id key for this session is named with its run_id:label spelling",
+                  misshaped == [("review:x@wf_2", "wf_2:review:x")]))
+    write_run(os.path.join(session, "workflows"), "wf_at_label", ["review@wf_2"])
+    write_verdicts(om.PENDING_VERDICTS, {"review@wf_2": "clean"})
+    cases.append(("a bare label containing @ is not misshaped",
+                  om.misshaped_verdict_keys(session) == []))
+    write_verdicts(om.PENDING_VERDICTS, {"lane@muse-opencode": "clean", "other@muse-opencode": "clean"})
+    try:
+        sidecar_misshaped = om.misshaped_verdict_keys(session, sidecar_labels={"lane"})
+    except TypeError:
+        sidecar_misshaped = None
+    cases.append(("a label@transport key on this session's sidecar label is named with its bare label",
+                  sidecar_misshaped == [("lane@muse-opencode", "lane")]))
+
     # --- pending_count wraps find_session_dir and never raises ---------------
     cases.append(("pending_count counts the same items",
                   om.pending_count(session) == len(om.pending_labels(session))))
-    cases.append(("pending_count on a dir with no workflows/ is 0, not -1",
-                  om.pending_count(os.path.join(root, "does-not-exist")) == 0))
+    missing_session_dir = os.path.join(root, "does-not-exist")
+    cases.append(("pending_count on a missing workflows source is unknown",
+                  om.pending_count(missing_session_dir) == -1))
+    empty_session_dir = os.path.join(root, "empty-session")
+    os.makedirs(os.path.join(empty_session_dir, "workflows"))
+    cases.append(("pending_count on a present empty workflows source is zero",
+                  om.pending_count(empty_session_dir) == 0))
 
     real_find = om.find_session_dir
     om.find_session_dir = lambda session_id=None: None
@@ -134,19 +337,34 @@ def main():
     peer = os.path.join(home, ".claude", "projects", "proj", "peer-session", "workflows")
     os.makedirs(peer)
     write_run(peer, "wf_p", ["review:peer"])
+    current_session = os.path.join(home, ".claude", "projects", "proj", "current-session")
+    with open(current_session + ".jsonl", "w", encoding="utf-8") as handle:
+        handle.write("{}\n")
     real_expand = os.path.expanduser
+    old_session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     os.path.expanduser = lambda p: p.replace("~", home, 1)
     try:
         cases.append(("explicit id with no workflows dir -> None, not the peer's dir",
                       om.find_session_dir("this-session") is None))
         cases.append(("explicit id that exists -> its own dir",
                       (om.find_session_dir("peer-session") or "").endswith("peer-session")))
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "current-session"
+        cases.append(("environment id resolves a transcript-only current session",
+                      os.path.normpath(om.find_session_dir() or "") == os.path.normpath(current_session)))
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "missing-session"
+        cases.append(("missing environment id never falls through to a peer",
+                      om.find_session_dir() is None))
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         cases.append(("no id at all still falls back to the scan",
                       (om.find_session_dir() or "").endswith("peer-session")))
     finally:
+        if old_session_id is None:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        else:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = old_session_id
         os.path.expanduser = real_expand
 
-    # --- an evaluation instrument's internal stages are not rating debt ---
+    # --- a benchmark instrument's internal stages are not rating debt (D29, 2026-09-09) ---
     wdir = os.path.join(session, "workflows")
     write_run(wdir, "wf_sc", ["judge:ARM-T1-X#1", "verify:ARM-T1-X", "persist:ARM-T1-X"], workflow_name="score-cell")
     write_run(wdir, "wf_kr", ["reach:F1.1"], workflow_name="key-reachability")

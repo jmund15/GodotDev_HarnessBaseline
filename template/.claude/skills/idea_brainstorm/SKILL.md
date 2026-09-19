@@ -54,7 +54,7 @@ Produce the idea-bank doc and STOP.
 
 ### Step 1: Existing-doc check
 
-**[Shared]** [`common.md §1`](../_brainstorm_shared/common.md) — required asks, dispatched as [`/explore`](../../commands/explore.md) lenses. Ideation may drop `exp-prior-art` (ideas precede architecture) but never `exp-memory`.
+**[Shared]** [`common.md §1`](../_brainstorm_shared/common.md) — required asks, dispatched as [`/explore`](../../commands/explore.md) lenses. Ideation keeps both floor lenses; prior-art records existing ownership without constraining idea generation.
 
 **Two doc-hit cases:**
 - **Same topic** (digest doc IS this topic, status-tagged): resume per common §1.1. `ideation-active` → resume mid-procedure; `ideation-complete` → hand off to `/architecture_brainstorm`.
@@ -69,7 +69,7 @@ Optional, and ONLY for **scope-framing** — constraints the pool should respect
 
 **Litmus:** *"Does answering this rule out specific candidate IDEAS, or just architectural COMBINATIONS of them?"* Ideas → scope-framing, ask now. Combinations → architecture-narrowing, defer.
 
-**Multi-topic scope.** A topic splitting into independent subsystems (roguelike meta-game = currency + per-run events + journal) defaults to **one brainstorm with multiple top-level clusters**; separate invocations duplicate the Step 1 check, re-load context, and lose cross-pollination (Step 4 hybrids surface only when clusters are visible to one pass). Split ONLY when (a) the user asks, or (b) cross-pollination would mislead.
+**Multi-topic scope.** A topic splitting into independent subsystems (roguelike meta-game = currency + per-run events + almanack) defaults to **one brainstorm with multiple top-level clusters**; separate invocations duplicate the Step 1 check, re-load context, and lose cross-pollination (Step 4 hybrids surface only when clusters are visible to one pass). Split ONLY when (a) the user asks, or (b) cross-pollination would mislead.
 
 ### Step 3: Generation & Curation (per cluster)
 
@@ -203,7 +203,7 @@ Each cluster's `Routing` subsection: exactly ONE action + zero-or-more timing mo
 ```
 - Cluster 1 (Currency): → /architecture_brainstorm  (now — dependency root)
 - Cluster 2 (Per-Run Events): → /architecture_brainstorm  (after Cluster 1 lands — needs currency primitives)
-- Cluster 3 (Journal): → /architecture_brainstorm  (now — parallel-safe with Cluster 1)
+- Cluster 3 (Almanack): → /architecture_brainstorm  (now — parallel-safe with Cluster 1)
 - Cluster 4 (Hub World): → /idea_brainstorm rerun  (only 4 survivors after filter)
 - Cluster 5 (Cosmetic unlocks): → /architecture_brainstorm  (future scope — when MVP economy data exists)
 - Workshop: End-Game Framing: → workshop  (B+C leading; user arbitrates)
@@ -233,9 +233,9 @@ It runs batch-propose — one approval applies all `roadmap.md` edits (Parts tab
 - Surface the routing summary: count by action (M arch / K idea-rerun / L workshop), name the recommended starting cluster + one-line rationale.
 - The roadmap.md `Currently ready to execute` view shows which arch sessions fire first; each hybrid gets its own arch session per `common.md §5.1`.
 
-## 5. MCP-Offline Policy
+## 5. write_doc Offline Policy
 
-**[Shared]** Obsidian MCP offline → non-event (native vault `Read`/`Write`/`Edit`). ai-worker/`write_doc` offline → substitute the executor per [`common.md §3`](../_brainstorm_shared/common.md) (CLAUDE.md OFFLINE FALLBACK).
+**[Shared]** Vault reads/saves use native `Read`/`Write`/`Edit` directly. ai-worker/`write_doc` offline → substitute the executor per [`common.md §3`](../_brainstorm_shared/common.md) (CLAUDE.md OFFLINE FALLBACK).
 
 ## 6. Anti-Patterns
 
@@ -245,7 +245,7 @@ It runs batch-propose — one approval applies all `roadmap.md` edits (Parts tab
 | "Generate all clusters first, then the user filters" | An N-cluster dump multiplies curate-load by N. Per-cluster pacing (diverge → filter → hone → present → user-react) is mandatory. |
 | "Filter risks killing creative ideas" | Filter is explicit and auditable (tone / pillar / scope / mechanic / redundancy / novelty); uncertain culls flag `[mechanic-uncertain]`. Killing for clear tone or pillar mismatch is correct. |
 | "User said *'give me everything you thought of'* — I'll surface the raw pool" | Route via converged output even then; the hidden pool lives in the doc's idea-pool section, not chat. Same litmus as §1's enumeration trigger. |
-| "Mechanic conflicts will be caught at user-review" | User-review is design judgment, not fact-checking. Ideas contradicting established systems (consumables costing mana to *craft* when the model is mana-at-*cast*) are a Step 3 filter failure. |
+| "Mechanic conflicts will be caught at user-review" | User-review is design judgment, not fact-checking. Ideas contradicting established systems (potions costing mana to *craft* when the model is mana-at-*cast*) are a Step 3 filter failure. |
 | "Let me also commit to an architecture during ideation" | That's `/architecture_brainstorm`. Premature commitment narrows the pool before it's populated. |
 | "Idea-bank output should include implementation Parts directly" | Parts are roadmap-shape (`common.md §6`), authored by `/architecture_brainstorm` from a committed design. Routing yields `arch-pending` / `idea-rework` / `workshop-pending` via `/update_roadmap`, never `plan-pending` (that needs arch's 5-criterion gate). |
 | "Skip the existing-doc check, this is just ideation" | §1 is shared with `/architecture_brainstorm` so both respect prior artifacts; don't redo prior idea-bank work. |

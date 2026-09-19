@@ -28,6 +28,44 @@ def census(*rows):
     return builder.finalize()["context_census"]
 
 
+def prompts(full_evidence, *contents):
+    builder = TranscriptSummaryBuilder("session", "test.jsonl", full_evidence=full_evidence)
+    for content in contents:
+        builder.process_line(json.dumps({"type": "user", "timestamp": "2026-09-14T00:00:00Z",
+                                         "message": {"role": "user", "content": content}}))
+    return [m["content"] for m in builder.finalize(backup_limits=False)["user_messages"]]
+
+
+class SlashCommandRowTests(unittest.TestCase):
+    """A slash-command row can open with `<command-message>` before `<command-name>` (observed in
+    desktop sessions, 2026-09-14). Either tag order is the owner's command, never raw markup."""
+    MESSAGE_FIRST = ('<command-message>plan_handoff</command-message>\n<command-name>/plan_handoff</command-name>\n'
+                     '<command-args>"C:\\\\plans\\\\scope.md"</command-args>')
+    NO_ARGS = '<command-message>clear</command-message>\n<command-name>/clear</command-name>'
+
+    def test_message_first_row_with_args_is_the_command_and_its_args(self):
+        for full in (True, False):
+            with self.subTest(full_evidence=full):
+                got = prompts(full, self.MESSAGE_FIRST)
+                self.assertEqual(['/plan_handoff "C:\\\\plans\\\\scope.md"'], got)
+
+    def test_message_first_row_never_keeps_raw_tags(self):
+        for full in (True, False):
+            with self.subTest(full_evidence=full):
+                self.assertFalse(any("<command-" in p for p in prompts(full, self.MESSAGE_FIRST, self.NO_ARGS)))
+
+    def test_message_first_row_without_args_is_dropped_outside_full_evidence(self):
+        self.assertEqual([], prompts(False, self.NO_ARGS))
+
+    def test_message_first_row_without_args_renders_name_in_full_evidence(self):
+        # Intended D6 change (_owner_text docstring): full evidence renders `name args`, never raw XML.
+        self.assertEqual(["/clear"], prompts(True, self.NO_ARGS))
+
+    def test_command_row_with_leading_whitespace_renders_name_args(self):
+        row = "\n  <command-name>/model</command-name>\n<command-args>fable</command-args>"
+        self.assertEqual(["/model fable"], prompts(True, row))
+
+
 class ContextTests(unittest.TestCase):
     def test_streaming_usage_replaces_observations_not_sums(self):
         got = census(assistant("m", {"input_tokens": 10, "output_tokens": 1}),

@@ -1,5 +1,7 @@
 ---
 paths:
+  - ".claude/CLAUDE.md"
+  - ".claude/auto-memory/MEMORY.md"
   - ".claude/commands/**"
   - ".claude/skills/**"
   - ".claude/agents/**"
@@ -19,7 +21,10 @@ Sibling of `harness_tooling.md` (which covers `.py`/`.ps1`). Full standard: `ins
 
 ## Any harness markdown
 
+- **CLAUDE.md carries the owner's introductory note (e.g. "A Note from Jacob") verbatim, whatever heading names it.** Never condense, reword or relocate it; any owner-defined reference codes it establishes stay there, not in a rule.
 - **Brief a downstream receiver with context and gates only, never its internal flow.** Litmus per bullet: could the receiver work this out itself? Then it is flow prescription — cut it (`feedback_briefing_context_gates_not_flow`).
 - **A harness rule names the tool call, dispatch or routing branch it changes.** These files are executed by the model, not read by the user; a rule phrased as a user habit has no decision point — translate it to its agent-facing form (`feedback_harness_rules_are_agent_actionable`).
 - **Mechanism-layer files name roles, never models.** Model attributes and their evidence live only in `reference/model_ladder_evidence.md` §Role guidance, and universal delegation doctrine never lives in one command (`feedback_orchestration_skill_model_agnostic`).
 - **Prescribe verification and artifacts, never cognition.** Fixed step orders, option counts and round caps compensate for weak models — free them; grounding, taste-forks, independent red-team and execution gates stay hard contract (`feedback_prescribe_verification_not_cognition`).
+
+<!-- retire-when: review-by: 2027-03-07 -->

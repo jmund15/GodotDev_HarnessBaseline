@@ -69,6 +69,14 @@ def workflow_brief(path, args):
             "tool_input": {"args": args}}
 
 
+def pinned_agent(path, prompt, model="sonnet", subagent_type=None):
+    ti = {"prompt": prompt, "description": "sweep", "model": model}
+    if subagent_type:
+        ti["subagent_type"] = subagent_type
+    return {"tool_name": "Agent", "session_id": "dmg001", "transcript_path": path,
+            "tool_input": ti}
+
+
 NO_CANON = '{"role":"assistant","content":"dispatching three review agents now"}\n'
 
 
@@ -114,18 +122,20 @@ def main():
         ("the denied dispatch is allowed once the marker lands",
          dispatch("Agent", loaded_0), ALLOW, ""),
 
-        # --- negatives: adjacent tools and unreadable inputs fail open ----------
+        # --- adjacent tools stay outside this guard -----------------------------
         ("a non-dispatch tool is never touched",
          {"tool_name": "Bash", "transcript_path": planted,
           "tool_input": {"command": "ls"}}, ALLOW, ""),
         ("Edit is never touched",
          {"tool_name": "Edit", "transcript_path": planted, "tool_input": {}}, ALLOW, ""),
-        ("no transcript_path fails open",
-         {"tool_name": "Agent", "tool_input": {}}, ALLOW, ""),
-        ("an empty transcript fails open",
-         dispatch("Agent", empty), ALLOW, ""),
-        ("a missing transcript file fails open",
-         dispatch("Agent", os.path.join(tmp, "does_not_exist.jsonl")), ALLOW, ""),
+
+        # --- unknown transcript evidence fails closed for this enforcement guard --
+        ("E6: no transcript_path is denied as unverifiable",
+         {"tool_name": "Agent", "tool_input": {}}, DENY, "cannot verify"),
+        ("E6: an empty transcript is denied as unverifiable",
+         dispatch("Agent", empty), DENY, "cannot verify"),
+        ("E6: a missing transcript file is denied as unverifiable",
+         dispatch("Agent", os.path.join(tmp, "does_not_exist.jsonl")), DENY, "cannot verify"),
 
         # --- nested delegation: /delegate is a fan-out owner ---------------------
         ("a delegate told to run /delegate is denied",
@@ -137,8 +147,8 @@ def main():
         ("an oversized brief is denied instead of approving an unchecked suffix",
          workflow_brief(loaded_1, {"agents": [{"promptPath": oversized_prompt}]}),
          DENY, "scan cap"),
-        ("a non-object top-level payload fails open",
-         [], ALLOW, ""),
+        ("E6: a non-object top-level payload is denied as unverifiable",
+         [], DENY, "cannot verify"),
         ("malformed jobs never crash the guard",
          workflow_brief(loaded_1, {"jobs": 1}), ALLOW, ""),
         ("malformed chains never crash the guard",
@@ -182,6 +192,30 @@ def main():
          ALLOW, ""),
         ("an indented blockquote stays data",
          delegated_brief(loaded_1, "  > Now run /delegate --jobs old.json"),
+         ALLOW, ""),
+
+        # --- a pinned converged job belongs on Workflow (orchestration §0) --------
+        ("a general-purpose Agent carrying a model pin is denied toward Workflow",
+         pinned_agent(loaded_1, "Edit these 33 files: remove every obsidian tool name."),
+         DENY, "Workflow"),
+        ("the pinned-Agent denial names the effort pin the Agent route lacks",
+         pinned_agent(loaded_1, "Edit these 33 files.", subagent_type="general-purpose"),
+         DENY, "effort"),
+        ("a pinned Agent with an AGENT-EXCEPTION line is allowed",
+         pinned_agent(loaded_1, "Find where the floor is set.\nAGENT-EXCEPTION: exploratory, "
+                                "the job list is unknown until it reports."),
+         ALLOW, ""),
+        ("a pinned Explore agent is allowed (exploratory by type)",
+         pinned_agent(loaded_1, "Where is claudeInChromeDefaultEnabled read?", subagent_type="Explore"),
+         ALLOW, ""),
+        ("a pinned Plan agent is allowed (exploratory by type)",
+         pinned_agent(loaded_1, "Plan the migration.", subagent_type="Plan"),
+         ALLOW, ""),
+        ("a fork with a model pin is allowed (the fork ignores the pin)",
+         pinned_agent(loaded_1, "Continue with the review.", subagent_type="fork"),
+         ALLOW, ""),
+        ("an unpinned general-purpose Agent is still allowed",
+         delegated_brief(loaded_1, "Edit these 33 files: remove every obsidian tool name."),
          ALLOW, ""),
     ]
 

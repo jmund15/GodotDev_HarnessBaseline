@@ -25,9 +25,8 @@ import os
 import re
 import sys
 
-from _hook_state import read_json_salvage, write_json_atomic
+from _hook_state import state_path, update_json_locked
 
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 FILES_FIELD = "design_surface_reminder_files"
 FILES_CAP = 100  # bounded state — oldest entries drop off
 
@@ -69,36 +68,22 @@ LITMUS_TEXT = {
 
 
 def _state_path(session_id: str) -> str:
-    sid_short = (session_id[:8] if session_id else "default")
-    return os.path.join(STATE_DIR, f"{sid_short}.json")
+    return state_path(session_id)
 
 
 def _claim_file(session_id: str, file_key: str) -> bool:
     """True the first time this session sees `file_key`. Fail-open on I/O error."""
-    path = _state_path(session_id)
-    state: dict = {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                state = loaded
-    except Exception:
-        state = {}
+    def claim(state):
+        seen = state.get(FILES_FIELD)
+        seen = list(seen) if isinstance(seen, list) else []
+        if file_key in seen:
+            return False
+        seen.append(file_key)
+        state[FILES_FIELD] = seen[-FILES_CAP:]
+        return True
 
-    seen = state.get(FILES_FIELD)
-    if not isinstance(seen, list):
-        seen = []
-    if file_key in seen:
-        return False
-
-    seen.append(file_key)
-    state[FILES_FIELD] = seen[-FILES_CAP:]
-    try:
-        write_json_atomic(path, state)
-    except Exception:
-        pass
-    return True
+    written, claimed = update_json_locked(_state_path(session_id), claim)
+    return claimed if written else True
 
 
 def detect_shape(text: str):
@@ -117,42 +102,51 @@ def build_reminder(label: str, litmus_no: int) -> str:
     )
 
 
+def process(input_data):
+    """Dispatcher entry: `{"context": reminder}` on a first-seen design shape, else None.
+
+    `post_edit_dispatch.py` calls this; `main()` keeps the standalone channel.
+    """
+    if input_data.get("tool_name") not in ("Write", "Edit"):
+        return None
+
+    tool_input = input_data.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        return None
+
+    file_path = str(tool_input.get("file_path", ""))
+    if not file_path.lower().endswith(".cs"):
+        return None
+
+    text = tool_input.get("content") or tool_input.get("new_string") or ""
+    if not text:
+        return None
+
+    hit = detect_shape(text)
+    if not hit:
+        return None
+
+    file_key = file_path.replace("\\", "/")
+    if not _claim_file(input_data.get("session_id", "") or "", file_key):
+        return None
+
+    return {"context": build_reminder(*hit)}
+
+
 def main() -> None:
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    if input_data.get("tool_name") not in ("Write", "Edit"):
-        sys.exit(0)
-
-    tool_input = input_data.get("tool_input") or {}
-    if not isinstance(tool_input, dict):
-        sys.exit(0)
-
-    file_path = str(tool_input.get("file_path", ""))
-    if not file_path.lower().endswith(".cs"):
-        sys.exit(0)
-
-    text = tool_input.get("content") or tool_input.get("new_string") or ""
-    if not text:
-        sys.exit(0)
-
-    hit = detect_shape(text)
-    if not hit:
-        sys.exit(0)
-
-    file_key = file_path.replace("\\", "/")
-    if not _claim_file(input_data.get("session_id", "") or "", file_key):
-        sys.exit(0)
-
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": build_reminder(*hit),
-        }
-    }
-    sys.stdout.write(json.dumps(payload))
+    result = process(input_data) or {}
+    if result.get("context"):
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": result["context"],
+            }
+        }))
     sys.exit(0)
 
 

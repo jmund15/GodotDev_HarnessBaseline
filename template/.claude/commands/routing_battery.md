@@ -10,7 +10,7 @@ Run the routing-compliance battery against current hooks + doctrine. The test ro
 ## When to use
 
 - Validating a routing-doctrine change (CLAUDE.md §Tool Routing, `csharp_lsp.md`, `feedback_tool_routing_discipline.md`).
-- Validating a hook change (`tool_routing_nudge.py`, `tool_routing_post_grep.py`, `tool_routing_cumulative.py`).
+- Validating a hook change (`tool_routing_nudge.py`, `tool_routing_post_grep.py`).
 - Validating a new tool addition (semantic-search reindex, MCP server change, etc.).
 - Periodic regression check — at least once per quarter, more often if hooks churn.
 
@@ -101,6 +101,5 @@ The orchestrator MAY (and should):
 
 ## Known limitations (don't be surprised by these)
 
-- **Subagent tool-surface mismatch** — subagents inherit the dispatcher's MCP server registry but not always cleanly; tests requiring `mcp__obsidian__*` or `mcp__ai-worker__*` may hit refusals where the agent identifies the correct tool but cannot call it. These rows score `NO-TOOL-CALLS` from the scorer; orchestrator audit reclassifies them as `FLAG` (environmental issue, verify subagent toolkit before treating as doctrine miss). To rescue: dispatch the failing tests as fresh top-level Claude Code sessions instead of subagents.
-- **Subagent session_id sharing** — hooks fire on the parent's session_id, so cumulative-counter state may misattribute in parallel-subagent dispatches. Mitigation in place: 3-second burst-suppression in `tool_routing_cumulative.py`. May still fire spurious cumulative nudges; don't penalize subagents that received an inflated count.
-- **C2 documentSymbol coordinate gotcha** — agents may organically walk into the silent-wrong-symbol trap (column 53 → 216 wrong refs for ApplyModifiers). This is a known LSP wrapper bug documented in `csharp_lsp.md`. If C2 fails via this path, the failure validates the documentation rather than indicating a doctrine miss — note in the report.
+- **Subagent tool-surface mismatch** — subagents inherit the dispatcher's MCP server registry but not always cleanly; tests requiring `mcp__ai-worker__*` may hit refusals where the agent identifies the correct tool but cannot call it. These rows score `NO-TOOL-CALLS` from the scorer; orchestrator audit reclassifies them as `FLAG` (environmental issue, verify subagent toolkit before treating as doctrine miss). To rescue: dispatch the failing tests as fresh top-level Claude Code sessions instead of subagents.
+- **C2 documentSymbol coordinate gotcha** — agents may organically walk into the silent-wrong-symbol trap (column 53 → 216 wrong refs for ApplySynergies). This is a known LSP wrapper bug documented in `csharp_lsp.md` §documentSymbol coordinate trap, with the probe columns in `reference/rules/csharp_lsp_examples.md` §Coordinate-trap probe results. If C2 fails via this path, the failure validates the documentation rather than indicating a doctrine miss — note in the report.

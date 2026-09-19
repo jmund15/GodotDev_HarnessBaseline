@@ -17,22 +17,24 @@ try {
   return { error: 'explore-fanout: args must be JSON-serializable {lenses: [{key, promptPath, model, effort}, ...], contextPrefixPath}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
 const lenses = Array.isArray(A.lenses) ? A.lenses : []
-
-// Return-path spill (optional, mirrors dispatch.js): with args.spillDir set, every lens writes its
-// COMPLETE deliverable to <spillDir>/<key>.spill.md BEFORE attempting structured output, so a schema
-// rejection can never destroy completed work — the file survives and the caller recovers from it
-// instead of re-dispatching. Measured 2026-08-08: three lenses rejected 5x each on length caps with
-// complete deliverables on disk, then re-bought the exploration.
-const SPILL_DIR = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
-const spillPath = (key) => SPILL_DIR + '/' + String(key).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
-if (SPILL_DIR) {
-  const seen = {}
-  const collided = lenses.filter(l => { const p = spillPath(l.key).toLowerCase(); const dup = !!seen[p]; seen[p] = true; return dup })
-  if (collided.length > 0) {
-    return { error: 'args.spillDir is set, but these lens keys collide after filename sanitization ([^A-Za-z0-9._-] -> _) and would overwrite each other: ' + collided.map(l => l.key).join(', ') + '.' }
-  }
-  log('SPILL-DIR ' + SPILL_DIR)
+const RESULT_MODE = A.resultMode === undefined ? 'bounded' : A.resultMode
+if (!['bounded', 'full'].includes(RESULT_MODE)) {
+  return { error: 'explore-fanout: resultMode must be `bounded` or `full`.' }
 }
+
+// Optional paid-output spill. A Workflow script cannot write files, so only a receiving profile
+// with Write may promise one. Runtime journals remain the native durable result source for all profiles.
+const SPILL_DIR = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
+const NORMAL_SPILL_DIR = SPILL_DIR ? SPILL_DIR.replace(/\\/g, '/') : null
+const spillEscapesRoot = NORMAL_SPILL_DIR && /(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR)
+const spillRootAllowed = !NORMAL_SPILL_DIR
+  || (!spillEscapesRoot && /^\.claude\/scratch(?:\/|$)/.test(NORMAL_SPILL_DIR))
+if (!spillRootAllowed) {
+  return { error: 'explore-fanout: spillDir must be repository-relative and contained by .claude/scratch/. Received: ' + SPILL_DIR }
+}
+const spillPath = (key) => SPILL_DIR + '/' + String(key).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
+const NO_WRITE_AGENT_TYPES = ['Explore', 'Plan']
+const spills = (l) => !!SPILL_DIR && !NO_WRITE_AGENT_TYPES.includes(l.agentType)
 
 // Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic.
 // Presence means provider mode: incomplete registry data fails before dispatch rather than reopening
@@ -61,13 +63,32 @@ const DEFAULT_EFFORT = VALID_EFFORTS.includes('medium') ? 'medium' : VALID_EFFOR
 const hasEffort = (l) => Object.prototype.hasOwnProperty.call(l, 'effort') && l.effort !== undefined
 const effortOf = (l) => hasEffort(l) ? l.effort : DEFAULT_EFFORT
 
-const bad = lenses.filter(l => !l || !l.key || !(l.promptPath || l.prompt) || !VALID_MODELS.includes(l.model)
-  || (hasEffort(l) && !VALID_EFFORTS.includes(l.effort)))
+const badAgentObjects = lenses.filter(l => !l || typeof l !== 'object' || Array.isArray(l))
+if (badAgentObjects.length) {
+  return { error: 'explore-fanout: every args.lenses entry must be an object.' }
+}
+const bad = lenses.filter(l => typeof l.key !== 'string' || !l.key.trim()
+  || !(l.promptPath || l.prompt)
+  || !VALID_MODELS.includes(l.model)
+  || (hasEffort(l) && !VALID_EFFORTS.includes(l.effort))
+  || typeof l.agentType !== 'string' || !l.agentType.trim())
 if (lenses.length === 0 || bad.length > 0) {
   return {
-    error: 'Every lens needs {key, promptPath (or prompt), model}; optional effort must be in [' + VALID_EFFORTS.join('|') + '] and model in [' + VALID_MODELS.join('|') + ']. Mandates live in .claude/commands/agents/explore_agents.md (or .claude/commands/research.md for res-* lenses) — write the resolved text to a scratchpad file and pass its path; never inline a large mandate into args (gotcha_workflow_args_generation_fidelity).',
-    badLenses: bad.map(l => (l && l.key) || '(unkeyed)'),
+    error: 'Every lens needs {key, promptPath (or prompt), model, agentType}; optional effort must be in [' + VALID_EFFORTS.join('|') + '] and model in [' + VALID_MODELS.join('|') + ']. Mandates live in .claude/commands/agents/explore_agents.md (or .claude/commands/research.md for res-* lenses) — write the resolved text to a scratchpad file and pass its path; never inline a large mandate into args (gotcha_workflow_args_generation_fidelity).',
+    badLenses: bad.map(l => l.key || '(unkeyed)'),
   }
+}
+const duplicateKeys = lenses.map(l => l.key).filter((key, i, keys) => keys.indexOf(key) !== i)
+if (duplicateKeys.length) {
+  return { error: 'explore-fanout: duplicate lens key(s): ' + [...new Set(duplicateKeys)].join(', ') }
+}
+if (SPILL_DIR) {
+  const writerPaths = lenses.filter(spills).map(l => spillPath(l.key).toLowerCase())
+  const collisions = writerPaths.filter((p, i, paths) => paths.indexOf(p) !== i)
+  if (collisions.length) {
+    return { error: 'explore-fanout: lens keys collide after spill-path sanitization: ' + [...new Set(collisions)].join(', ') }
+  }
+  log('SPILL-DIR ' + SPILL_DIR)
 }
 
 // Rails appended to EVERY lens, in two layers matching review_fanout.js. DOCTRINE (what a good
@@ -82,11 +103,11 @@ const tierOf = (m) => A.__transport ? 'strict' : (TIER_OF[m] || 'strict')
 const CONCURRENT = lenses.length > 1
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
-const BASE_CONTRACT = [
+const BASE_CONTRACT = (l) => [
   '',
   '=== ENGINE CONTRACT ===',
-  SPILL_DIR ? 'Read-only: do NOT modify, create, or delete any file EXCEPT the single spill file named in the SPILL-BEFORE-VALIDATE contract below.' : 'Read-only: do NOT modify, create, or delete any file.',
-  CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run tests, builds, or /regression_gate (the GdUnit4 named pipe is machine-wide single-flight), and do NOT use the csharp-ls LSP (single-flight wrapper) — anchor with Grep and Read instead. If your mandate needs a test run or call-site enumeration via the LSP, report it as a gap; it needs a serialized dispatch.' : null,
+  spills(l) ? 'Read-only: do NOT modify, create, or delete any file EXCEPT the single spill file named in the SPILL-BEFORE-VALIDATE contract below.' : 'Read-only: do NOT modify, create, or delete any file.',
+  CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight); Python and Node proofs under .claude/tests/ are not single-flight, so run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — anchor with Grep and Read instead. If your mandate needs a Godot or C# test run or call-site enumeration via the LSP, report it as a gap; it needs a serialized dispatch.' : null,
   'You report STATE, never advice. A claim says what IS; it never says what should be built, fixed, or preferred. Recommendations are the orchestrator\'s to make from your claims.',
   '',
   '=== CLAIMS CONTRACT (the schema validates shape; these are the rules it cannot express) ===',
@@ -100,13 +121,13 @@ const BASE_CONTRACT = [
   '`checked` — provenance that makes an empty result falsifiable: every search you issued in `toolsUsed` as `tool:target`, where you stopped, and one short sentence of basis (~250 chars target). An empty `claims` with an empty `toolsUsed` is reported as a lens that DID NOT RUN, not as a clear result.',
   '`gaps` — anything your mandate could not establish. Silence here reads as full coverage.',
   'OUTPUT: return ONLY the JSON object `{"claims": [...], "checked": {...}}` — no prose around it. The length targets above are SOFT: the schema imposes no caps, and a shorter object always beats a longer one.',
-].filter(l => l !== null).join('\n')
+].filter(line => line !== null).join('\n')
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3). Shape is fixed `survey`:
 // this engine is discovery-shaped by construction, so unlike dispatch.js there is nothing to select.
-const guardRef = (m) => {
-  const tier = tierOf(m)
-  if (tier === 'none') { return BASE_CONTRACT }
-  return BASE_CONTRACT + '\n' + [
+const guardRef = (l) => {
+  const tier = tierOf(l.model)
+  if (tier === 'none') { return BASE_CONTRACT(l) }
+  return BASE_CONTRACT(l) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
     'Read .claude/guards/survey.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md. Read ONLY those sections — the other tiers are for other models.',
@@ -117,7 +138,7 @@ const guardRef = (m) => {
 // a validation rejection can never destroy completed work (measured 2026-08-08 — three lenses
 // rejected 5x each with complete deliverables on disk). The caller recovers the file instead of
 // re-dispatching; on success the file is redundant and may be ignored.
-const spillContract = (l) => SPILL_DIR ? [
+const spillContract = (l) => spills(l) ? [
   '',
   '=== SPILL-BEFORE-VALIDATE (your deliverable must survive even if validation rejects it) ===',
   'Use the Write tool to save your COMPLETE deliverable — the full claims JSON object you will return, nothing trimmed — to ' + spillPath(l.key) + ' BEFORE you call the structured-output tool. That file is yours alone; no other lens writes it.',
@@ -194,8 +215,9 @@ const raw = await parallel(resolved.map(l => () => {
   const body = l.promptPath
     ? 'Your full lens mandate is at: ' + l.promptPath + ' — read it with the Read tool and execute it exactly (retry once if the read fails).'
     : (l.prompt || '')
-  return agent(contextPre + body + spillContract(l) + guardRef(l.model), {
+  return agent(contextPre + body + spillContract(l) + guardRef(l), {
     label: l.label, phase: 'Explore', schema: CLAIMS_SCHEMA, model: PIN(l.model), effort: EFF(l.effort),
+    agentType: l.agentType,
   }).then(r => ({ key: l.key, result: r }))
 }))
 
@@ -206,40 +228,99 @@ const flags = []
 const gaps = []
 const perLens = []
 const stamped = []
-for (const r of raw) {
-  if (!r) { flags.push({ kind: 'lens-no-return', lens: '(unknown)', detail: 'the engine received no result object for one lens — treat its dimension as UNCOVERED' }); continue }
-  const res = r.result
-  if (!res || typeof res !== 'object') {
-    flags.push({ kind: 'lens-no-return', lens: r.key, detail: 'lens returned no schema object — its dimension is UNCOVERED, not clear. Recover BEFORE re-dispatching: ' + (SPILL_DIR ? 'read ' + spillPath(r.key) + ', else ' : '') + 'run /salvage_fanout <transcriptDir> ' + r.key + ' (the agent transcript holds the paid-for work)' })
-    perLens.push({ key: r.key, claims: 0, stoppedAt: null, basis: null })
+const isRecord = (value) => !!value && typeof value === 'object' && !Array.isArray(value)
+const POLARITIES = ['exists', 'absent', 'partial', 'unclear']
+const BEARINGS = ['premise-contradiction', 'reuse-candidate', 'constraint', 'blast-radius', 'context']
+const isChecked = (value) => isRecord(value)
+  && Array.isArray(value.toolsUsed)
+  && value.toolsUsed.every(tool => typeof tool === 'string' && tool.trim())
+  && ['nothing-in-scope', 'exhausted-leads', 'trigger-not-met', 'blocked'].includes(value.stoppedAt)
+  && typeof value.basis === 'string' && value.basis.trim()
+const isClaim = (value) => isRecord(value)
+  && typeof value.subject === 'string' && value.subject.trim()
+  && POLARITIES.includes(value.polarity)
+  && typeof value.claim === 'string' && value.claim.trim()
+  && BEARINGS.includes(value.bearing)
+  && (value.evidence === undefined || value.evidence === null || typeof value.evidence === 'string')
+  && (value.verification === undefined || value.verification === null || typeof value.verification === 'string')
+  && (value.file === undefined || value.file === null || typeof value.file === 'string')
+  && (value.confidence === undefined || ['verified', 'unverified'].includes(value.confidence))
+let nextClaimId = 1
+for (let i = 0; i < resolved.length; i++) {
+  const lens = resolved[i]
+  const r = raw[i]
+  const res = r ? r.result : null
+  if (!isRecord(res)) {
+    const recovery = spills(lens)
+      ? 'read ' + spillPath(lens.key)
+      : 'run /salvage_fanout <transcriptDir> ' + lens.key
+    flags.push({ kind: 'lens-no-return', lens: lens.key, detail: 'lens returned no schema object — its dimension is UNCOVERED, not clear. Recover BEFORE re-dispatching: ' + recovery + ' (the runtime journal/transcript holds any paid-for work)' })
+    perLens.push({ key: lens.key, claims: null, stoppedAt: null, basis: null, toolsUsed: null, status: 'failed', rejected: 0 })
     continue
   }
-  const claims = Array.isArray(res.claims) ? res.claims : []
-  const checked = (res.checked && typeof res.checked === 'object') ? res.checked : null
-  if (Array.isArray(res.gaps)) { for (const g of res.gaps) { if (typeof g === 'string' && g.trim()) { gaps.push({ lens: r.key, gap: g }) } } }
-  perLens.push({
-    key: r.key, claims: claims.length,
-    stoppedAt: checked ? (checked.stoppedAt || null) : null,
-    basis: checked ? (checked.basis || null) : null,
-    toolsUsed: (checked && Array.isArray(checked.toolsUsed)) ? checked.toolsUsed.length : 0,
-  })
+  if (!Array.isArray(res.claims) || !isChecked(res.checked)) {
+    flags.push({ kind: 'lens-invalid-shape', lens: lens.key, detail: 'lens returned a malformed claims/checked object — its dimension is UNCOVERED, not a completed zero' })
+    perLens.push({ key: lens.key, claims: null, stoppedAt: null, basis: null, toolsUsed: null, status: 'uncovered', rejected: 0 })
+    continue
+  }
+  const checked = res.checked
+  let lensGapCount = 0
+  if (Array.isArray(res.gaps)) {
+    for (const gap of res.gaps) {
+      if (typeof gap === 'string' && gap.trim()) {
+        gaps.push({ lens: lens.key, gap })
+        lensGapCount++
+      }
+    }
+  }
+  let rejected = 0
+  let valid = 0
+  for (let claimIndex = 0; claimIndex < res.claims.length; claimIndex++) {
+    const c = res.claims[claimIndex]
+    if (!isClaim(c)) {
+      rejected++
+      flags.push({ kind: 'lens-invalid-entry', lens: lens.key, detail: 'claim entry at index ' + claimIndex + ' fails the required claim shape — skipped; valid neighbors preserved' })
+      continue
+    }
+    stamped.push({ ...c, id: 'C' + nextClaimId++, lens: lens.key })
+    valid++
+  }
+  const coverageStopped = checked.stoppedAt === 'blocked'
+    || (checked.toolsUsed.length === 0 && checked.stoppedAt !== 'trigger-not-met')
+  const row = {
+    key: lens.key,
+    claims: valid,
+    observed: res.claims.length,
+    rejected,
+    stoppedAt: checked.stoppedAt,
+    basis: checked.basis,
+    toolsUsed: checked.toolsUsed.length,
+    gaps: lensGapCount,
+    status: rejected || lensGapCount || coverageStopped ? 'partial' : 'completed',
+  }
+  perLens.push(row)
+  if (coverageStopped && valid === 0 && checked.stoppedAt !== 'trigger-not-met') {
+    row.status = 'uncovered'
+  }
+  if (checked.stoppedAt === 'blocked') {
+    flags.push({ kind: 'lens-blocked', lens: lens.key, detail: 'the lens stopped at a blocked read after ' + valid + ' valid claim(s); its coverage is ' + row.status.toUpperCase() })
+  }
+  if (lensGapCount > 0) {
+    flags.push({ kind: 'lens-gaps', lens: lens.key, detail: lensGapCount + ' explicit gap(s) keep this lens from completed coverage' })
+  }
   // An empty result is credible only against its provenance. `trigger-not-met` is the legitimate
   // empty (the lens was dispatched but its precondition did not hold); zero claims with zero tool
   // calls and no such declaration is a lens that did not run, which must never read as "all clear".
-  if (claims.length === 0) {
-    const st = checked ? checked.stoppedAt : null
-    const tools = (checked && Array.isArray(checked.toolsUsed)) ? checked.toolsUsed.length : 0
+  if (valid === 0 && rejected === 0) {
+    const st = checked.stoppedAt
+    const tools = checked.toolsUsed.length
     if (st === 'trigger-not-met') {
-      flags.push({ kind: 'lens-trigger-not-met', lens: r.key, detail: (checked && checked.basis) || 'precondition did not hold' })
-    } else if (st === 'blocked' || tools === 0 || !checked) {
-      flags.push({ kind: 'lens-did-not-run', lens: r.key, detail: 'zero claims with ' + tools + ' recorded tool calls (stoppedAt=' + (st || 'UNREPORTED') + '). Its dimension is UNCOVERED — re-dispatch or cover it inline before treating the topic as explored.' })
-    } else {
-      flags.push({ kind: 'lens-empty-verified', lens: r.key, detail: 'swept ' + tools + ' targets and found nothing (stoppedAt=' + st + ')' })
+      flags.push({ kind: 'lens-trigger-not-met', lens: lens.key, detail: checked.basis })
+    } else if (st === 'blocked' || tools === 0) {
+      flags.push({ kind: 'lens-did-not-run', lens: lens.key, detail: 'zero claims with ' + tools + ' recorded tool calls (stoppedAt=' + st + '). Its dimension is UNCOVERED — re-dispatch or cover it inline before treating the topic as explored.' })
+    } else if (lensGapCount === 0) {
+      flags.push({ kind: 'lens-empty-verified', lens: lens.key, detail: 'swept ' + tools + ' targets and found nothing (stoppedAt=' + st + ')' })
     }
-  }
-  for (const c of claims) {
-    if (!c || typeof c !== 'object' || typeof c.subject !== 'string') { continue }
-    stamped.push({ ...c, lens: r.key })
   }
 }
 
@@ -247,7 +328,9 @@ for (const r of raw) {
 // backs it up is the fabrication shape these two rules exist to catch
 // (feedback_delegate_output_trust): presence needs quoted output, absence needs a proving command.
 const nonEmpty = (s) => typeof s === 'string' && s.trim().length > 0
+const processedClaimIds = new Set()
 for (const c of stamped) {
+  const reportedConfidence = c.confidence
   if ((c.polarity === 'exists' || c.polarity === 'partial') && !nonEmpty(c.evidence)) {
     if (c.confidence === 'verified') { flags.push({ kind: 'downgraded-no-evidence', lens: c.lens, detail: c.subject + ' — claimed verified with no quoted evidence' }) }
     c.confidence = 'unverified'
@@ -257,6 +340,7 @@ for (const c of stamped) {
     c.confidence = 'unverified'
   }
   if (c.confidence !== 'verified' && c.confidence !== 'unverified') { c.confidence = 'unverified' }
+  if (c.confidence !== reportedConfidence) processedClaimIds.add(c.id)
 }
 
 // Group on SUBJECT ONLY — never on `file`. review_fanout.js dedups review findings by `file:line`
@@ -299,7 +383,7 @@ for (const [k, group] of groups) {
     contradictions.push({
       key: k,
       subject: group[0].subject,
-      positions: group.map(c => ({ lens: c.lens, polarity: c.polarity, claim: c.claim, confidence: c.confidence, evidence: c.evidence || null, verification: c.verification || null })),
+      positions: group.map(c => ({ lens: c.lens, polarity: c.polarity, claim: c.claim, confidence: c.confidence, evidence: c.evidence || null, verification: c.verification || null, journalSelector: c.id })),
     })
   }
   // Corroboration ANNOTATES; it never merges. An earlier version kept the "best-evidenced" claim per
@@ -312,6 +396,7 @@ for (const [k, group] of groups) {
     const extra = {}
     if (contested) { extra.contested = true }
     if (agreeing.length > 0) { extra.corroboratedBy = agreeing }
+    if (contested || agreeing.length > 0) processedClaimIds.add(c.id)
     claims.push({ ...c, ...extra })
   }
 }
@@ -338,7 +423,8 @@ const counts = {
   reuseCandidates: claims.filter(c => c.bearing === 'reuse-candidate').length,
   contradictions: contradictions.length,
   gaps: gaps.length,
-  uncoveredLenses: flags.filter(f => f.kind === 'lens-did-not-run' || f.kind === 'lens-no-return').length,
+  rejected: perLens.reduce((total, lens) => total + (lens.rejected || 0), 0),
+  uncoveredLenses: perLens.filter(lens => lens.status === 'failed' || lens.status === 'uncovered').length,
 }
 log('explore-fanout: ' + counts.lenses + ' lenses → ' + counts.claims + ' claims ('
   + counts.verified + ' verified, ' + counts.premiseContradictions + ' premise-contradiction, '
@@ -346,7 +432,236 @@ log('explore-fanout: ' + counts.lenses + ' lenses → ' + counts.claims + ' clai
   + counts.gaps + ' gaps, ' + counts.uncoveredLenses + ' UNCOVERED lenses')
 // Never silent: an uncovered dimension is the one failure that makes the whole dossier misleading.
 if (counts.uncoveredLenses > 0) {
-  log('WARNING uncovered: ' + flags.filter(f => f.kind === 'lens-did-not-run' || f.kind === 'lens-no-return').map(f => f.lens).join(', '))
+  log('WARNING uncovered: ' + perLens.filter(lens => lens.status === 'failed' || lens.status === 'uncovered').map(lens => lens.key).join(', '))
 }
 
-return { claims, contradictions, flags, gaps, counts, perLens, spillDir: SPILL_DIR }
+const coverageLenses = perLens.map(lens => ({
+  key: lens.key,
+  claims: lens.claims,
+  status: lens.status,
+  rejected: lens.rejected || 0,
+}))
+const coverage = {
+  requested: resolved.length,
+  completed: coverageLenses.filter(lens => lens.status === 'completed').length,
+  partial: coverageLenses.filter(lens => lens.status === 'partial').length,
+  failed: coverageLenses.filter(lens => lens.status === 'failed').length,
+  uncovered: coverageLenses.filter(lens => lens.status === 'uncovered').length,
+  lenses: coverageLenses,
+}
+const unavailable = coverage.failed + coverage.uncovered
+const status = unavailable === coverage.requested
+  ? 'failed'
+  : (unavailable > 0 ? 'uncovered' : (coverage.partial > 0 ? 'partial' : 'completed'))
+if (RESULT_MODE === 'bounded') {
+  const MAX_RESULT_BYTES = 8192
+  const clipped = new Set()
+  const clipText = (value, collection, max = 160) => {
+    if (typeof value !== 'string') return value
+    const chars = [...value]
+    if (chars.length <= max) return value
+    clipped.add(collection)
+    return chars.slice(0, max).join('') + ' …[+' + (chars.length - max) + ' chars]'
+  }
+  const boundValue = (value, collection, depth = 0) => {
+    if (typeof value === 'string') return clipText(value, collection)
+    if (value === null || typeof value !== 'object') return value
+    if (depth >= 4) { clipped.add(collection); return null }
+    if (Array.isArray(value)) {
+      if (value.length > 8) clipped.add(collection)
+      return value.slice(0, 8).map(item => boundValue(item, collection, depth + 1))
+    }
+    const entries = Object.entries(value)
+    if (entries.length > 24) clipped.add(collection)
+    const out = {}
+    for (const [rawKey, member] of entries.slice(0, 24)) {
+      const key = clipText(rawKey, collection, 80)
+      if (Object.prototype.hasOwnProperty.call(out, key)) { clipped.add(collection); continue }
+      out[key] = boundValue(member, collection, depth + 1)
+    }
+    return out
+  }
+  const claimPreview = (claim, detailed) => {
+    if (!detailed) {
+      clipped.add('claims')
+      const out = {
+        id: claim.id,
+        lens: claim.lens,
+        confidence: claim.confidence,
+        journalSelector: claim.id,
+      }
+      if (claim.contested) out.contested = true
+      if (Array.isArray(claim.corroboratedBy)) out.corroboratedBy = [...claim.corroboratedBy]
+      return out
+    }
+    const out = boundValue(claim, 'claims')
+    out.journalSelector = claim.id
+    return out
+  }
+  const contradictionPreview = (row, detailed) => {
+    if (detailed) return boundValue(row, 'contradictions')
+    clipped.add('contradictions')
+    return {
+      key: clipText(row.key, 'contradictions'),
+      subject: clipText(row.subject, 'contradictions'),
+      positions: row.positions.map(position => ({
+        lens: position.lens,
+        polarity: position.polarity,
+        confidence: position.confidence,
+        journalSelector: position.journalSelector,
+      })),
+    }
+  }
+  // Same rule as review_fanout.js's findings/flags: an engine flag has no journal copy (see
+  // `archive.doesNotContain` below), so it stays represented — compact (kind, lens, a short detail),
+  // never dropped outright — rather than either fully inline (the earlier bug: unbounded, never shed)
+  // or absent. Every flag object is exactly {kind, lens?, detail}, so this preview loses nothing
+  // structurally — only clipText's own truncation of a long `detail` marks the collection clipped.
+  const flagPreview = (row) => ({ kind: row.kind, lens: row.lens ?? null, detail: clipText(row.detail || '', 'flags', 120) })
+  const state = {
+    claims: claims.filter((claim, index) => index < 4 || processedClaimIds.has(claim.id))
+      .map((claim, index) => claimPreview(claim, index < 4)),
+    contradictions: contradictions.map((row, index) => contradictionPreview(row, index < 3)),
+    flags: flags.map(flagPreview),
+    gaps: gaps.slice(0, 6).map(row => boundValue(row, 'gaps')),
+    perLens: perLens.slice(0, 10).map(row => boundValue(row, 'perLens')),
+  }
+  const totals = {
+    claims: claims.length,
+    contradictions: contradictions.length,
+    flags: flags.length,
+    gaps: gaps.length,
+    perLens: perLens.length,
+  }
+  if (SPILL_DIR) {
+    state.spillMetadata = []
+    totals.spillMetadata = 1 + resolved.filter(spills).length + resolved.filter(lens => !spills(lens)).length
+  }
+  const fullCounts = Object.assign({}, counts, {
+    flags: flags.length,
+    perLens: perLens.length,
+  })
+  if (SPILL_DIR) fullCounts.spillMetadata = totals.spillMetadata
+  const commandBase = 'python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir-from-Workflow-result>" --workflow-kind explore'
+  const expectedHash = '--expect-journal-sha256 <sha256-from-manifest>'
+  const renderBounded = () => {
+    const preview = {}
+    for (const name of Object.keys(totals)) {
+      const shown = state[name].length
+      const omitted = totals[name] - shown
+      preview[name] = {
+        total: totals[name], shown, omitted, clipped: clipped.has(name),
+        complete: omitted === 0 && !clipped.has(name),
+      }
+    }
+    const output = {
+      claims: state.claims,
+      contradictions: state.contradictions,
+      flags: state.flags,
+      gaps: state.gaps,
+      counts,
+      perLens: state.perLens,
+    }
+    output.delivery = {
+      contract: 'native-fanout-bounded/v1',
+      engine: 'explore-fanout',
+      resultMode: 'bounded',
+      status,
+      maxResultBytes: MAX_RESULT_BYTES,
+      byteLimitExceeded: false,
+      payloadComplete: Object.values(preview).every(row => row.complete),
+      processedState: {
+        changedClaimsInline: true,
+        contradictionsInline: true,
+        engineFlagsInline: true,
+      },
+      counts: fullCounts,
+      coverage: {
+        status,
+        requested: coverage.requested,
+        completed: coverage.completed,
+        partial: coverage.partial,
+        failed: coverage.failed,
+        uncovered: coverage.uncovered,
+        rowsPreviewed: state.perLens.length,
+        rowsOmitted: perLens.length - state.perLens.length,
+      },
+      preview,
+      archive: {
+        source: 'workflow-journal',
+        delivered: false,
+        relativePath: 'journal.jsonl',
+        validation: 'required',
+        transcriptDirRequired: true,
+        selectors: 'C<number>',
+        sourceOrder: 'started-agent order, then item-array order',
+        contains: 'raw lens claims, checked provenance, and gaps',
+        doesNotContain: 'engine confidence changes, contested/corroborated tags, contradictions, or engine flags; those remain inline',
+        commands: {
+          manifest: commandBase + ' --workflow-manifest',
+          select: commandBase + ' --workflow-select <ID> ' + expectedHash,
+          page: commandBase + ' --workflow-page items|lenses|reports|gaps --page <N> --page-size <N> ' + expectedHash,
+          full: commandBase + ' --workflow-full ' + expectedHash,
+        },
+      },
+    }
+    if (!Object.values(preview).every(row => row.complete)) {
+      // The journal (`archive` above) only ever held raw per-lens claims — confidence changes,
+      // contested/corroborated tags, contradictions, and engine flags are computed by THIS render and
+      // have no journal copy. Their full form is recoverable without new model spend: resultMode never
+      // reaches an agent() prompt or option (only gates this render), so a Workflow resume of the same
+      // run with resultMode:'full' replays every agent() call from cache and renders the complete,
+      // unclipped state.
+      output.delivery.resume = {
+        contract: 'workflow-resume/v1',
+        how: 'Workflow({scriptPath, resumeFromRunId: <this run\'s runId>}, {...same args, resultMode: "full"})',
+        costsNewModelSpend: false,
+        why: 'resultMode is read only when this result is rendered — it never reaches an agent() prompt or option — so every already-completed agent() call replays from cache.',
+        contains: 'the complete processed state: every changed claim, contradiction, and engine flag in full, plus every gap and per-lens row, none clipped or omitted.',
+      }
+    }
+    return output
+  }
+  const utf8Bytes = (value) => {
+    let bytes = 0
+    for (const ch of JSON.stringify(value)) {
+      const point = ch.codePointAt(0)
+      bytes += point <= 0x7f ? 1 : (point <= 0x7ff ? 2 : (point <= 0xffff ? 3 : 4))
+    }
+    return bytes
+  }
+  // Least-protected first: `gaps` are raw per-lens prose, journal-recoverable (see `archive.contains`
+  // above). `flags`, `contradictions` and `claims` are compact by now (see above) but each names a
+  // distinct signal the reader needs, so once `gaps` is gone the three tails shed IN TURN (one item off
+  // whichever still has any, alternating) rather than draining one to zero while the others stay full.
+  // `perLens` (per-lens coverage status) sheds last, ahead only of `counts`, which is never shed.
+  const shedOrder = ['gaps']
+  const tailShed = ['flags', 'contradictions', 'claims']
+  let tailTurn = 0
+  const pickShed = () => {
+    for (const name of shedOrder) { if (state[name].length > 0) return name }
+    for (let i = 0; i < tailShed.length; i++) {
+      const name = tailShed[(tailTurn + i) % tailShed.length]
+      if (state[name].length > 0) { tailTurn = (tailTurn + i + 1) % tailShed.length; return name }
+    }
+    if (state.perLens.length > 0) return 'perLens'
+    return null
+  }
+  let output = renderBounded()
+  while (utf8Bytes(output) > MAX_RESULT_BYTES) {
+    const name = pickShed()
+    if (!name) break
+    state[name].pop()
+    output = renderBounded()
+  }
+  if (utf8Bytes(output) > MAX_RESULT_BYTES) output.delivery.byteLimitExceeded = true
+  return output
+}
+
+const output = { claims, contradictions, flags, gaps, counts, perLens, spillDir: SPILL_DIR }
+if (SPILL_DIR) {
+  output.spills = Object.fromEntries(resolved.filter(spills).map(lens => [lens.key, spillPath(lens.key)]))
+  const inlineLabels = resolved.filter(lens => !spills(lens)).map(lens => lens.key)
+  if (inlineLabels.length) { output.inlineLabels = inlineLabels }
+}
+return output

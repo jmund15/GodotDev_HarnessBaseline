@@ -3,50 +3,26 @@
 """
 Hook: PreToolUse dispatcher for the read/search tool family.
 
-Single settings.json entry replacing three separate hook commands
-(file_size_preblock.py, tool_routing_cumulative_block.py,
-tool_routing_nudge.py). One interpreter spawn per matched call instead of
-three, and deterministic in-process ordering instead of relying on
-matcher-block conventions (per docs, matching hooks run in parallel).
+One settings entry runs four checks in order:
+  1. indexed_reference_guard.process — indexed whole-file Read → block
+  2. semantic_search_scope_guard.process — invalid search scope → block
+  3. file_size_preblock.process — large unbounded Read → block
+  4. tool_routing_nudge.process — optional hard block or advisory
 
-Order (blocks before advisories; first block wins):
-  1. file_size_preblock.process      — large unbounded Read → block
-  2. tool_routing_cumulative_block.process — cascade backstop → block (env-gated)
-  3. tool_routing_nudge.process      — hard-block (env-gated) or advisory nudge
-
-SUBAGENTS ARE EXEMPT FROM THE TWO BLOCKS (1 and 2), NOT FROM THE ADVISORY (3).
-Both blocks exist for one reason: a read spends the ORCHESTRATOR's context, permanently, and a
-PreToolUse block is the only thing that can prevent the spend. A dispatched subagent's context is
-discarded the moment it returns its digest -- discarding it is the entire reason it was dispatched.
-So on a subagent those blocks fire against a cost that does not exist, and they stop exactly the
-work the agent was spawned to do: a reader told to bundle its reads into a worker has nowhere to
-bundle them, because it IS the bundling step.
-
-The advisory survives, because its content is a CORRECTNESS claim rather than a cost one -- "use
-LSP rather than a bare Grep for a C# symbol" is as true inside a subagent as outside, and it is
-exit-0 advice that blocks nothing.
-
-Detection is `agent_id`, measured (see readonly_lens_write_guard.py's header): a Workflow
-subagent's PreToolUse payload carries a non-empty `agent_id` and `agent_type:
-"workflow-subagent"`, while the orchestrator's payload carries no `agent_id` at all. `session_id`
-is IDENTICAL for both and cannot be used.
-
-Every exemption is COUNTED into the session state file. An exemption that is silently right and an
-exemption that is silently wrong emit identical evidence, so the count is the named trigger: if
-subagent reads are being exempted far more often than subagents are being dispatched, the
-detection is matching something it should not.
+A dispatched subagent skips only the file-size block because its context is discarded after the
+returned digest. The index and scope guards prevent per-agent input or index-build cost, and routing
+advice remains correct for every agent. `agent_id` is the measured subagent marker; `session_id` is
+shared. Each file-size exemption is counted in session state.
 
 Output contract:
-  - Any block message → stderr + exit 2 (model-visible).
-  - Advisory nudge → hookSpecificOutput.additionalContext JSON + exit 0
-    (the only model-visible advisory channel on PreToolUse — see
-    archive_hook_gotchas.md).
-  - Each sub-hook self-gates on tool_name, so the union matcher is safe.
-  - Fail-open: a sub-hook exception is swallowed (advisory lost, tool runs).
+- A block writes stderr and exits 2.
+- An advisory emits `hookSpecificOutput.additionalContext` and exits 0.
+- Each sub-hook self-gates on `tool_name`.
+- One sub-hook fault stays fail-open and does not disable later checks.
 
 Wired in: settings.json hooks.PreToolUse with matcher
 "Read|Grep|Glob|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search".
-The three sub-hooks keep their own main() for standalone use/testing.
+The sub-hooks keep their own `main()` for standalone proofs.
 """
 
 import json
@@ -57,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import file_size_preblock
 import indexed_reference_guard
-import tool_routing_cumulative_block
+import semantic_search_scope_guard
 import tool_routing_nudge
 
 
@@ -80,20 +56,15 @@ def _count_exemption(input_data) -> None:
     Best-effort and never raises: an accounting failure must not change whether a tool runs.
     """
     try:
+        from _hook_state import update_json_locked
         path = file_size_preblock._state_path(
             str(input_data.get("session_id") or ""), str(input_data.get("agent_id") or ""))
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                state = json.load(f)
-            if not isinstance(state, dict):
-                state = {}
-        except (OSError, json.JSONDecodeError, ValueError):
-            state = {}
-        state["subagent_read_exemptions"] = int(state.get("subagent_read_exemptions") or 0) + 1
-        state["subagent_agent_type"] = str(input_data.get("agent_type") or "")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f)
+
+        def count(state):
+            state["subagent_read_exemptions"] = int(state.get("subagent_read_exemptions") or 0) + 1
+            state["subagent_agent_type"] = str(input_data.get("agent_type") or "")
+
+        update_json_locked(path, count)
     except Exception:
         pass
 
@@ -104,8 +75,7 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    # A dispatched subagent skips the two CONTEXT-COST blocks; see the module docstring. It still
-    # receives the advisory below, whose content is about correctness rather than cost.
+    # A dispatched subagent skips the context-cost file-size block; it still receives advice.
     subagent = _is_subagent(input_data)
     if subagent:
         _count_exemption(input_data)
@@ -120,6 +90,16 @@ def main() -> None:
     except Exception:
         pass
 
+    # 0b. Semantic-search scope guard. NOT subagent-exempt: an out-of-root searchDir costs the same
+    # index rebuild whoever calls it, unlike the orchestrator-context cost the exemption targets.
+    try:
+        result = semantic_search_scope_guard.process(input_data)
+        if result and result.get("deny"):
+            sys.stderr.write(str(result["deny"]) + "\n")
+            sys.exit(2)
+    except Exception:
+        pass
+
     # 1. Large-file block.
     if not subagent:
         try:
@@ -130,17 +110,7 @@ def main() -> None:
         except Exception:
             pass
 
-    # 2. Cascade backstop block (env-gated).
-    if not subagent:
-        try:
-            block_msg = tool_routing_cumulative_block.process(input_data)
-            if block_msg:
-                sys.stderr.write(block_msg + "\n")
-                sys.exit(2)
-        except Exception:
-            pass
-
-    # 3. Routing nudge: hard block (env-gated) or advisory.
+    # 2. Routing nudge: hard block (env-gated) or advisory.
     nudge = None
     try:
         block_msg, nudge = tool_routing_nudge.process(input_data)

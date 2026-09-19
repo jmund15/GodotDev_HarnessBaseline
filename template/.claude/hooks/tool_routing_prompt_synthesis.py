@@ -4,23 +4,16 @@
 Hook: UserPromptSubmit — synthesis-shape pattern detector.
 
 Why:
-- Fix 1 reconciled the brainstorming skill so its Step 1 prescribes a
-  bundled read_files call. But free-form synthesis prompts ("compare X
-  and Y across the codebase", "summarize how the ability pipeline flows
-  through these 5 modules") don't trigger any skill — they go straight
-  to the agent's default which historically defaulted to chained Reads
-  + Greps. This hook injects a terse routing reminder when the user's
-  prompt looks like multi-source synthesis.
+- A synthesis-shaped request benefits from an early routing decision, but source
+  count and directory names do not make that decision. The current contract
+  distinguishes known focused evidence, large exact scans, bulk copyable I/O,
+  and derived multi-file judgment.
 
 What it does:
-- Counts cue-phrase matches in the prompt.
-- Fires only when prompt length ≥ MIN_PROMPT_WORDS AND match count ≥
-  MIN_CUE_MATCHES. The two-gate setup avoids firing on prompts that
-  use one cue word incidentally ("trace this back" alone doesn't mean
-  "synthesize across files").
-- Injects a one-paragraph reminder via the <user-prompt-submit-hook>
-  wrapper. Time-bounded ("for THIS turn") so the reminder doesn't
-  bleed into unrelated follow-up prompts.
+- Uses prompt cues only to identify that a routing choice is needed.
+- Emits the existing four-way evidence/output/judgment litmus; it does not pick
+  a route from read count, file count, or path.
+- Ignores runtime notification rows that carry no user intent.
 
 Boundaries:
 - Never blocks. Always exits 0.
@@ -28,8 +21,12 @@ Boundaries:
 """
 
 import json
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _prompt_provenance import is_user_intent_prompt
 
 
 # Cue phrases that indicate synthesis intent. Word-boundary matched, case-
@@ -64,19 +61,13 @@ SYNTHESIS_CUES = (
     r"\b\w+\s*,\s*\w+\s*,\s*(and )?\w+\b",  # "A, B, and C" or "A, B, C"
 )
 
-MIN_PROMPT_WORDS = 30
+# Two distinct cues already establish synthesis shape; the floor only drops fragments (owner R11).
+MIN_PROMPT_WORDS = 8
 MIN_CUE_MATCHES = 2
 
-# Audit-shape phrases per CLAUDE.md §Tool Routing — these EXEMPT the prompt from the
-# nudge (the user wants direct line-precision reads, not bundled summary).
-# INTENTIONALLY NOT shared with routing_classifier.AUDIT_INTENT_CUES: that
-# 16-entry list governs per-call cumulative-cascade exemption (debug/trace/
-# inspect/etc. are appropriate triggers there). This 9-entry list governs
-# prompt-level synthesis-shape exemption (a narrower set focused on user
-# explicitly framing the WHOLE TASK as audit). Centralizing would broaden
-# this nudge's exemption surface and cause it to misfire on debug/trace
-# prompts that should still get the synthesis-shape reminder. The naming
-# similarity is misleading; the scopes are distinct by design.
+# Explicit audit/review requests already establish the known focused or
+# line-level branch. Keep this exemption narrow so generic trace/synthesis
+# requests still receive the four-way litmus.
 AUDIT_EXEMPT_CUES = (
     "audit",
     "code review",
@@ -112,11 +103,12 @@ def _is_audit_exempt(text: str) -> bool:
 def _build_reminder() -> str:
     return (
         "<user-prompt-submit-hook>\n"
-        "Synthesis-shape prompt. For first call this turn: prefer "
-        "`mcp__ai-worker__read_files(paths=[...], question=...)` over chained "
-        "Read/Grep/obsidian/memory. Bundle FIRST — overflow-bundling after "
-        "individual searches has already burned context. "
-        "Audit-cue prompts exempt (direct Read correct there). CLAUDE.md §Tool Routing.\n"
+        "Synthesis-shaped request: route by evidence need and output, not read count or path. "
+        "Known focused evidence or line-level judgment: use direct Read/search. "
+        "Large exact scans/joins: use deterministic bounded extraction. "
+        "Bulk copyable I/O: use `mcp__ai-worker__read_files` with complete per-input results. "
+        "Derived multi-file judgment/execution: load `orchestration` and use one qualified "
+        "delegate. Do not redo evidence already retrieved. CLAUDE.md §Tool Routing.\n"
         "</user-prompt-submit-hook>"
     )
 
@@ -127,9 +119,12 @@ def main() -> None:
     except json.JSONDecodeError:
         print("{}")  # Claude Code #10463 workaround
         sys.exit(0)
+    if not isinstance(input_data, dict):
+        print("{}")
+        sys.exit(0)
 
     prompt = input_data.get("prompt", "") or ""
-    if not prompt:
+    if not is_user_intent_prompt(prompt):
         print("{}")
         sys.exit(0)
 

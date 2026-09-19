@@ -4,7 +4,10 @@ description: "Diagnose auto-mode denials from the actual result; the shell-shape
 metadata: 
   node_type: memory
   type: project
+  originSessionId: 1575807a-659b-4f41-9af8-9997b17e978c
   modified: 2026-09-11T14:25:58.997Z
+retire_when:
+  - review-by: 2027-02-14
 ---
 
 # Auto-mode denial diagnosis and retired shell-shape workarounds

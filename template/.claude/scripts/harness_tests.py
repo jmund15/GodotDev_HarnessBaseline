@@ -7,6 +7,12 @@ compute a digest two different ways.
 
     python3 .claude/scripts/harness_tests.py [--repo PATH] [--all] [--hash] [--verbose]
         [--allow-cannot-run FILE]
+    python3 .claude/scripts/harness_tests.py --staged | --for PATH [PATH ...]   # scoped run
+
+A scoped run (`--staged`, `--for`) runs only the proofs bound to the given harness files and
+refreshes only those files' entries on top of the last full-run stamp; the commit guard judges
+per touched file, so that is exactly the certification a commit needs. The full battery stays
+the session-close gate.
 
 Any `cannot-run` proof (exit 2) makes the run INCOMPLETE: no passing stamp is written and the
 run exits 2. `--allow-cannot-run FILE` names a JSON list of `{"proof", "platform", "reason"}`
@@ -16,8 +22,8 @@ does. The flag exits 2 before running anything when the file is missing, unparse
 entry missing `proof`, `platform` or `reason`, or lists a proof `discover()` never found. Without
 the flag, an unlisted (i.e. every) `cannot-run` still makes the run INCOMPLETE.
 
-If any tested input or HEAD changes while the proofs are running, the run exits 1 and writes no
-stamp — a hash over a moving target is not a fact about any single tree state.
+A tested input that changes while the proofs run stays unstamped and the run exits 1; the
+unchanged inputs keep their entries. A HEAD move alone is not a verdict.
 """
 
 import argparse
@@ -208,6 +214,9 @@ def tree_entries(repo_root):
     for full in discover(os.path.join(repo_root, ".claude", "tests")):
         files.add(os.path.relpath(full, repo_root).replace(os.sep, "/"))
 
+    # The stamp covers harness CODE. `.claude/scripts/benchmark_campaign/` also holds campaign
+    # data a peer session writes mid-run (.env, score .json, .bak); hashing it makes every
+    # peer write a stale stamp for a commit that changed no code.
     files = {f for f in files if _is_code(f)}
 
     entries = {}
@@ -248,10 +257,135 @@ def _write_stamp(repo_root, run, passed, excluded_list, indeterminate=(), entrie
     write_json_atomic(STAMP_PATH, stamp)
 
 
+# Proofs that scan every hook rather than one target; a scoped run always includes them.
+_DIR_SCANNING = ("test_hook_state.py",)
+
+
+def _norm(rel):
+    return rel.replace(os.sep, "/")
+
+
+def select_for(repo_root, touched, include_excluded=False):
+    """The proofs bound to `touched` harness files: the touched proofs themselves, `test_<stem>*` /
+    `<stem>_test.*` by name, any proof whose source names a touched file's basename, the
+    dir-scanning proofs, and every proof that names `settings.json` when it is touched.
+    Over-selection is harmless; under-selection is what the name and mention rules guard."""
+    tests_dir = os.path.join(repo_root, ".claude", "tests")
+    discovered = discover(tests_dir)
+    if not include_excluded:
+        discovered = [p for p in discovered if os.path.basename(p) not in EXCLUDED]
+    touched = [_norm(t) for t in touched]
+    stems = {os.path.splitext(os.path.basename(t))[0] for t in touched}
+    basenames = {os.path.basename(t) for t in touched}
+    settings = any(_norm(t) in _SETTINGS_FILES for t in touched)
+    selected = []
+    for path in discovered:
+        name = os.path.basename(path)
+        rel = _norm(os.path.relpath(path, repo_root))
+        if rel in touched or name in _DIR_SCANNING:
+            selected.append(path)
+            continue
+        if any(name.startswith("test_" + s) or name.startswith(s + "_test") for s in stems):
+            selected.append(path)
+            continue
+        try:
+            with open(path, "rb") as fh:
+                text = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if any(b in text for b in basenames) or (settings and any(os.path.basename(f) in text for f in _SETTINGS_FILES)):
+            selected.append(path)
+    return selected
+
+
+def _run_selected(selected, verbose):
+    passed, failed, indeterminate, elapsed_total = 0, 0, [], 0.0
+    label = {"pass": "OK", "cannot-run": "CANNOT-RUN", "fail": "FAIL"}
+    for path in selected:
+        status, elapsed, detail = run_proof(path)
+        elapsed_total += elapsed
+        if verbose or status != "pass":
+            print("%s %.1fs %s" % (label[status], elapsed, path))
+        if detail:
+            for line in detail.strip().splitlines()[-_DETAIL_LINES:]:
+                print("    | " + line)
+        if status == "pass":
+            passed += 1
+        elif status == "cannot-run":
+            indeterminate.append(path)
+        else:
+            failed += 1
+    return passed, failed, indeterminate, elapsed_total
+
+
+def run_scoped(repo_root, touched, verbose=False):
+    """Run only the proofs bound to `touched` and refresh only those files' stamp entries on top of
+    the last full-run stamp. The commit guard judges per touched file, so a green scoped run
+    certifies exactly what this commit changes; every other entry keeps the digest its full run
+    certified. Needs a base stamp: without one there is nothing to refresh into."""
+    from _hook_state import read_json_salvage
+    stamp = read_json_salvage(STAMP_PATH) if os.path.exists(STAMP_PATH) else None
+    if not stamp or not isinstance(stamp.get("files"), dict):
+        print("harness_tests: no full-run stamp to scope into; run the full battery once first")
+        return 1
+    tested_entries = tree_entries(repo_root)
+    tested_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
+    touched = [_norm(t) for t in touched]
+    in_scope = [t for t in touched if t in tested_entries or t in stamp["files"]]
+    if not in_scope:
+        print("harness_tests: none of the given paths is a stamped harness input: %s" % ", ".join(touched))
+        return 1
+    selected = select_for(repo_root, in_scope)
+    if not selected:
+        print("harness_tests: no proof is bound to %s; add test_<name>*.py or run the full battery" % ", ".join(in_scope))
+        return 1
+    passed, failed, indeterminate, elapsed_total = _run_selected(selected, verbose)
+    print("harness_tests: scoped to %d input(s): %d run, %d pass, %d fail, %d cannot-run, %.1fs"
+          % (len(in_scope), len(selected), passed, failed, len(indeterminate), elapsed_total))
+    if failed:
+        return 1
+    if indeterminate:
+        print("harness_tests: INCOMPLETE; scoped stamp not written")
+        return 2
+    current_entries = tree_entries(repo_root)
+    moved = [t for t in in_scope if tested_entries.get(t) != current_entries.get(t)]
+    if moved:
+        print("harness_tests: input(s) changed during the scoped run; nothing stamped: " + ", ".join(moved))
+        return 1
+    files = dict(stamp["files"])
+    for t in in_scope:
+        if t in tested_entries:
+            files[t] = tested_entries[t]
+        else:
+            files.pop(t, None)
+    blob = json.dumps(sorted(files.items())).encode("utf-8")
+    stamp["files"] = files
+    stamp["tree_hash"] = hashlib.sha256(blob).hexdigest()
+    stamp["scoped"] = {"ts": time.time(), "head": tested_head, "paths": in_scope,
+                       "proofs": [os.path.basename(p) for p in selected]}
+    write_json_atomic(STAMP_PATH, stamp)
+    print("harness_tests: scoped stamp refreshed for %d input(s) (%d proofs)" % (len(in_scope), len(selected)))
+    return 0
+
+
+def staged_harness_paths(repo_root):
+    out = _git(repo_root, ["diff", "--cached", "--name-only", "--"] + list(DIRS))
+    return [_norm(line.strip()) for line in out.splitlines() if line.strip() and _is_code(line.strip())]
+
+
 def run_all(repo_root, include_excluded=False, verbose=False, allow_cannot_run=None):
+    tested_entries = tree_entries(repo_root)
+    tested_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
     tests_dir = os.path.join(repo_root, ".claude", "tests")
     discovered = discover(tests_dir)
     present = {os.path.basename(p) for p in discovered}
+
+    # `.claude/tests/` is gitignored, so a worktree or sparse checkout lacks the excluded
+    # proofs. An absent entry is reported and skipped, never a FAIL that stops discovery:
+    # git cannot tell "untracked file not in this checkout" from "file deleted".
+    absent = sorted(name for name in EXCLUDED if name not in present)
+    for name in absent:
+        print("SKIP absent EXCLUDED entry: %s (%s)" % (name, EXCLUDED[name]))
 
     allowed_entries = None
     if allow_cannot_run is not None:
@@ -268,14 +402,6 @@ def run_all(repo_root, include_excluded=False, verbose=False, allow_cannot_run=N
             )
             return 2
 
-    stale = sorted(name for name in EXCLUDED if name not in present)
-    if stale:
-        for name in stale:
-            print("FAIL stale EXCLUDED entry: %s (%s)" % (name, EXCLUDED[name]))
-        print("harness_tests: 0 run, 0 pass, 0 fail, 0 cannot-run, %d excluded, 0.0s"
-              % len(EXCLUDED))
-        return 1
-
     if include_excluded:
         selected = discovered
         excluded_list = []
@@ -286,31 +412,13 @@ def run_all(repo_root, include_excluded=False, verbose=False, allow_cannot_run=N
         )
 
     if not selected:
+        print("FAIL no proofs to run: %d discovered under %s (patterns %s), %d excluded"
+              % (len(discovered), tests_dir, ", ".join(_PATTERNS), len(excluded_list)))
         print("harness_tests: 0 run, 0 pass, 0 fail, 0 cannot-run, %d excluded, 0.0s"
               % len(excluded_list))
         return 1
 
-    tested_entries = tree_entries(repo_root)
-    tested_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
-    passed = 0
-    failed = 0
-    indeterminate = []
-    elapsed_total = 0.0
-    label = {"pass": "OK", "cannot-run": "CANNOT-RUN", "fail": "FAIL"}
-    for path in selected:
-        status, elapsed, detail = run_proof(path)
-        elapsed_total += elapsed
-        if verbose or status != "pass":
-            print("%s %.1fs %s" % (label[status], elapsed, path))
-        if detail:
-            for line in detail.strip().splitlines()[-_DETAIL_LINES:]:
-                print("    | " + line)
-        if status == "pass":
-            passed += 1
-        elif status == "cannot-run":
-            indeterminate.append(path)
-        else:
-            failed += 1
+    passed, failed, indeterminate, elapsed_total = _run_selected(selected, verbose)
 
     print(
         "harness_tests: %d run, %d pass, %d fail, %d cannot-run, %d excluded, %.1fs"
@@ -338,22 +446,30 @@ def run_all(repo_root, include_excluded=False, verbose=False, allow_cannot_run=N
         print("harness_tests: INCOMPLETE; no passing stamp written")
         return 2
 
+    # A HEAD move is not a verdict: tree_entries hashes working-tree bytes, so a peer commit that touched a
+    # stamped input shows up below as a changed file, and one that touched only docs, ledgers or benchmark
+    # results changes nothing the stamp certifies. The stamp records the tested HEAD; the commit guard judges
+    # per touched file. (2026-09-15: three green batteries, 20 minutes, discarded by a head-equality gate.)
     current_entries = tree_entries(repo_root)
-    current_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
-    if current_entries != tested_entries or current_head != tested_head:
-        changed = sorted(path for path in tested_entries.keys() | current_entries.keys()
-                         if tested_entries.get(path) != current_entries.get(path))
-        print("harness_tests: inputs changed during verification; no passing stamp written")
+    changed = sorted(path for path in tested_entries.keys() | current_entries.keys()
+                     if tested_entries.get(path) != current_entries.get(path))
+    stamped = {path: digest for path, digest in tested_entries.items() if path not in changed}
+    if changed:
+        # A changed source is never certified and the run is not green (exit 1). The stamp is per file and the commit
+        # guard judges only the paths a commit touches, so the UNCHANGED files keep their proof: a peer's edit
+        # mid-run stales that file alone, exactly as the same edit one second after the run would.
+        print("harness_tests: %d input(s) changed during verification; they stay unstamped:" % len(changed))
         for path in changed[:20]:
             print("    - " + path)
         if len(changed) > 20:
             print("    ... %d more changed inputs" % (len(changed) - 20))
-        if current_head != tested_head:
-            print("    - HEAD changed")
+        if stamped:
+            _write_stamp(repo_root, len(selected), passed, excluded_list, indeterminate,
+                         entries=stamped, head=tested_head)
+            print("harness_tests: partial stamp written for the %d unchanged input(s)" % len(stamped))
         return 1
-
     _write_stamp(repo_root, len(selected), passed, excluded_list, indeterminate,
-                 entries=tested_entries, head=tested_head)
+                 entries=stamped, head=tested_head)
     return 0
 
 
@@ -363,6 +479,10 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--all", action="store_true", help="include normally excluded proofs")
     mode.add_argument("--hash", action="store_true", help="print the current input hash without running proofs")
+    mode.add_argument("--staged", action="store_true",
+                      help="scoped: run only the proofs bound to the staged harness files and refresh their stamp entries")
+    mode.add_argument("--for", dest="for_paths", nargs="+", metavar="PATH",
+                      help="scoped: run only the proofs bound to these harness files and refresh their stamp entries")
     parser.add_argument("--verbose", action="store_true", help="print every proof result, not only failures and summary")
     parser.add_argument(
         "--allow-cannot-run",
@@ -374,6 +494,12 @@ def main(argv=None):
     if args.hash:
         print(tree_hash(args.repo))
         return 0
+    if args.staged or args.for_paths:
+        touched = args.for_paths or staged_harness_paths(args.repo)
+        if not touched:
+            print("harness_tests: nothing staged under the harness dirs")
+            return 1
+        return run_scoped(args.repo, touched, verbose=args.verbose)
     return run_all(
         args.repo,
         include_excluded=args.all,

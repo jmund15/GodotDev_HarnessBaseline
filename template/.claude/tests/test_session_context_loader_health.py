@@ -20,6 +20,17 @@ class HealthTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
 
+    def test_roster_health_never_reports_ok_without_a_logs_tree(self):
+        # No lib.sh under the root: discovery fails and the banner says UNKNOWN, never OK.
+        self.assertTrue(scl.roster_health(self.root).startswith("UNKNOWN ("))
+
+    def test_roster_health_reads_the_live_tree(self):
+        # UNKNOWN covers every discovery failure roster_health's `except Exception` catches, not
+        # only a missing logs dir -- e.g. a checkout without the benchmark_campaign tooling
+        # (never published: peer-owned, project-local) raises ModuleNotFoundError instead.
+        result = scl.roster_health(Path(__file__).resolve().parents[2])
+        self.assertTrue(result.startswith(("OK (", "DEAD:", "UNVERIFIED", "UNKNOWN (")), result)
+
     def test_failed_submodule_probe_is_unknown(self):
         for result in (SimpleNamespace(returncode=1, stdout=""), OSError("unavailable")):
             with self.subTest(result=result):
@@ -34,6 +45,24 @@ class HealthTests(unittest.TestCase):
     def test_empty_successful_probe_means_no_submodules(self):
         with patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
             self.assertEqual([], scl.submodule_status(self.root))
+
+    def test_sidecar_refusal_keeps_its_reason(self):
+        # Live defect 2026-09-14: the banner read "sidecar-codex: Override: re-run with -A." with no reason.
+        script = self.root / ".claude" / "scripts" / "codex_proxy_sidecar.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("", encoding="utf-8")
+        refusal = ("[sidecar] codex quota probe note\n"
+                   "[sidecar] REFUSING luna-max (gpt-x): codex's OWN quota band is Hot, above the Ahead ceiling.\n"
+                   "  This is the PROVIDER's allowance, not this session's.\n"
+                   "  Override: re-run with -A.\n")
+        with patch.object(scl, "resolve_bash", return_value="bash"), \
+                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=8, stdout="", stderr=refusal)):
+            result = scl.verify_sidecar(self.root, "codex_proxy_sidecar.sh")
+        self.assertIn("OWN quota band is Hot", result)
+        self.assertIn("re-run with -A", result)
+        with patch.object(scl, "resolve_bash", return_value="bash"), \
+                patch.object(scl.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="preflight\nOK\n", stderr="")):
+            self.assertEqual("OK", scl.verify_sidecar(self.root, "codex_proxy_sidecar.sh"))
 
     def test_unknown_status_never_reports_ok_or_updates(self):
         with patch.object(scl, "submodule_status", return_value=None), patch.object(scl.subprocess, "run") as run:

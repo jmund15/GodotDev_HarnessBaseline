@@ -1315,8 +1315,71 @@ def test_placeholder_ok_files_skip_both_substitution_directions() -> None:
     assert engine.reverse_for(".claude/hooks/other.py", 'label = "Game"\n', subs) == 'label = "%s"\n' % name_token
 
 
+def test_sub_adds_a_substitution_to_an_existing_lock() -> None:
+    """`sub PLACEHOLDER=VALUE` updates only `substitutions`, leaving every judged row intact."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "consumer"
+        (root / ".claude").mkdir(parents=True)
+        lock = {
+            "schema": 2,
+            "baseline_repo": "https://example.invalid/baseline.git",
+            "baseline_ref": "main",
+            "synced_commit": "0" * 40,
+            "profile": "pure",
+            "substitutions": {"{{PROJECT_NAME}}": "Consumer"},
+            "files": {".claude/tools/kept.py": {"status": "tracked", "layer": "pure",
+                                                 "hash": "a" * 64}},
+        }
+        _write(root / ".claude" / "baseline.lock.json",
+               (json.dumps(lock, indent=2) + "\n").encode())
+
+        result = _run(root, "sub", "--sub", "GenericWidget=FixtureWidget")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        after = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert after["substitutions"]["GenericWidget"] == "FixtureWidget", after["substitutions"]
+        assert after["substitutions"]["{{PROJECT_NAME}}"] == "Consumer", "existing pair lost"
+        assert list(after["files"]) == [".claude/tools/kept.py"], "rows must be untouched"
+        assert after["files"][".claude/tools/kept.py"]["hash"] == "a" * 64, "row detail must survive"
+
+        bad = _run(root, "sub", "--sub", "NO_EQUALS_SIGN")
+        assert bad.returncode != 0, "a malformed PLACEHOLDER=VALUE must fail"
+
+
+def test_sub_unset_removes_a_substitution() -> None:
+    """`sub --unset PLACEHOLDER` drops a pair. A pair set by mistake corrupts every later pull,
+    so removing one has to be a supported operation, not a hand edit of the lock."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "consumer"
+        (root / ".claude").mkdir(parents=True)
+        lock = {
+            "schema": 2,
+            "baseline_repo": "https://example.invalid/baseline.git",
+            "baseline_ref": "main",
+            "synced_commit": "0" * 40,
+            "profile": "pure",
+            "substitutions": {"{{PROJECT_NAME}}": "Consumer", "Doomed": "RealName"},
+            "files": {".claude/tools/kept.py": {"status": "tracked", "layer": "pure",
+                                                 "hash": "a" * 64}},
+        }
+        _write(root / ".claude" / "baseline.lock.json",
+               (json.dumps(lock, indent=2) + "\n").encode())
+
+        result = _run(root, "sub", "--unset", "Doomed")
+        assert result.returncode == 0, result.stdout + result.stderr
+        after = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert "Doomed" not in after["substitutions"], after["substitutions"]
+        assert after["substitutions"]["{{PROJECT_NAME}}"] == "Consumer", "other pairs must survive"
+        assert list(after["files"]) == [".claude/tools/kept.py"], "rows must be untouched"
+
+        missing = _run(root, "sub", "--unset", "NeverPresent")
+        assert missing.returncode != 0, "unsetting an absent placeholder must fail loudly"
+
+
 def main() -> int:
     cases = [
+        test_sub_unset_removes_a_substitution,
+        test_sub_adds_a_substitution_to_an_existing_lock,
         test_object_store_read_ignores_worktree_deletion,
         test_shallow_clone_fetches_pinned_sha,
         test_missing_upstream_exits_nonzero,

@@ -20,6 +20,7 @@ Two readers:
 Writes logs/session_digest_<sid8>.json (full record) and prints the markdown digest.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,11 +31,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 from _transcript_summary import TranscriptSummaryBuilder  # noqa: E402
+from _owner_text import classify, meta_arguments  # noqa: E402
 
-BRIEF = {"prompt": 800, "prompt_rows": 35, "friction_rows": 25, "friction_text": 160, "outcome": 2500, "files": 60}
-SESSION = {"prompt": 240, "prompt_rows": 35, "friction_rows": 20, "friction_text": 160, "outcome": 1500, "files": 40}
-FULL = {"prompt": 0, "prompt_rows": 0, "friction_rows": 0, "friction_text": 200, "outcome": 4000, "files": 200}
+BRIEF = {"mode": "overview"}
+SESSION = {"mode": "overview"}
+FULL = {"mode": "full"}
 SESSION_MAX_BYTES = 32_000
+OVERVIEW_MAX_BYTES = 2048
 
 
 def projects_dir(cwd: str) -> Path:
@@ -89,6 +92,120 @@ def last_assistant_text(path: Path, min_len: int = 40) -> str:
                 if len(t) >= min_len:
                     last = t
     return last
+
+
+def recover_meta_command_prompts(path: Path) -> list[dict]:
+    """Slash-command turns `_transcript_summary.py` drops as `isMeta` that still carry real
+    user-typed text after `ARGUMENTS:`.
+
+    `TranscriptSummaryBuilder._process_user_message` returns on `isMeta` before ever checking for
+    that trailing argument text, so a command invoked WITH arguments is as invisible as the static
+    skill/command body every re-invocation re-injects. Observed 2026-09-14, session
+    `417af437-e526-4a44-bc5c-af551368213a`: three `/overnight <goal>` turns dropped this way, the
+    scan reporting 6 prompts where the owner typed 7. Recovered here rather than in
+    `_transcript_summary.py`, which `kill_guard.py`/`transcript_backup.py`/`ladder_ingest.py` also
+    read unchanged.
+    """
+    recovered = []
+    with open(path, encoding="utf-8") as fh:
+        for i, line in enumerate(fh):
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(entry, dict) or entry.get("type") != "user":
+                continue
+            row = classify(entry, i + 1, raw=line)
+            if row is None or not row.meta or row.sidechain:
+                continue
+            for text in row.blocks:
+                found = meta_arguments(text)
+                if not found:
+                    continue  # a static skill/command body with no typed argument stays excluded
+                label, goal = found
+                recovered.append({
+                    "index": i + 1, "timestamp": entry.get("timestamp"),
+                    "content": f"{label} {goal}", "signals": [], "matched_patterns": [],
+                    "recovered": "command_arguments",
+                })
+    return recovered
+
+
+def recover_question_answers(path: Path) -> list[dict]:
+    """The owner's AskUserQuestion answers, which the builder files as tool results, not prompts.
+
+    `_process_user_message` routes every tool_result row to friction capture, so a decision the
+    owner gives through a question never reached the prompt list (observed 2026-09-14, session
+    3259384b: the closeout decisions arrived only as answers). Errored and sidechain rows are not
+    answers.
+    """
+    asked, recovered = set(), []
+    with open(path, encoding="utf-8") as fh:
+        for i, line in enumerate(fh):
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(entry, dict) or entry.get("isSidechain"):
+                continue
+            message = entry.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if entry.get("type") == "assistant" and block.get("type") == "tool_use" \
+                        and block.get("name") == "AskUserQuestion" and block.get("id"):
+                    asked.add(block["id"])
+            if entry.get("type") != "user":
+                continue
+            row = classify(entry, i + 1, raw=line)
+            for tool_use_id, text, is_error in (row.tool_results if row else ()):
+                if tool_use_id and tool_use_id in asked and not is_error and text.strip():
+                    recovered.append({
+                        "index": i + 1, "timestamp": entry.get("timestamp"),
+                        "content": f"(answer) {text.strip()}", "signals": [], "matched_patterns": [],
+                        "recovered": "question_answer",
+                    })
+    return recovered
+
+
+def merge_recovered_prompts(user_messages: list[dict], recovered: list[dict]) -> list[dict]:
+    """Fold recovered prompts into the builder's list, in transcript order. Rows that share a
+    line index share one evidence ID and keep both bodies."""
+    if not recovered:
+        return user_messages
+    merged = [dict(row) for row in user_messages]
+    by_index = {row.get("index"): row for row in merged}
+    seen = {(row.get("index"), row.get("content")) for row in merged}
+    for row in recovered:
+        key = (row["index"], row.get("content"))
+        if key in seen:
+            continue
+        existing = by_index.get(row["index"])
+        if existing is None:
+            added = dict(row)
+            merged.append(added)
+            by_index[row["index"]] = added
+        else:
+            existing["content"] = "\n".join(
+                text for text in (existing.get("content"), row.get("content")) if text)
+        seen.add(key)
+    merged.sort(key=lambda m: m.get("index") or 0)
+    return merged
+
+
+def owner_prompts(path: Path) -> list[dict]:
+    """Every owner message in transcript order: typed prompts, command arguments and question
+    answers. The one definition this digest and hooks/compact_directive_anchor.py both read."""
+    b = TranscriptSummaryBuilder(path.stem, str(path), full_evidence=True)
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            b.process_line(line)
+    d = b.finalize(backup_limits=False)
+    return merge_recovered_prompts(d.get("user_messages") or [],
+                                   recover_meta_command_prompts(path) + recover_question_answers(path))
 
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{4,}")
@@ -284,8 +401,10 @@ def build_evidence_index(d: dict) -> dict:
             "has_response": bool(row.get("response")), "error_chars": len(error),
             "excerpt": clip(" ".join(error.split()), 160),
         })
+    files = sorted((d.get("files_modified_counts") or {}).items(), key=lambda kv: (-kv[1], kv[0]))
     return {"schema_version": "1.0", "session_id": d.get("session_id"),
-            "prompts": prompts, "friction": friction}
+            "prompts": prompts, "friction": friction,
+            "files": [{"name": p, "edits": c} for p, c in files]}
 
 
 def select_evidence(d: dict, ids: list[str]) -> list[dict]:
@@ -305,8 +424,8 @@ def select_evidence(d: dict, ids: list[str]) -> list[dict]:
 
 def evidence_page(index: dict, kind: str, page: int, page_size: int) -> dict:
     """Return one bounded page from the compact evidence index."""
-    if kind not in ("prompts", "friction"):
-        raise ValueError("evidence kind must be prompts or friction")
+    if kind not in ("prompts", "friction", "files"):
+        raise ValueError("evidence kind must be prompts, friction or files")
     if not isinstance(page, int) or page < 1:
         raise ValueError("page must be a positive integer")
     if not isinstance(page_size, int) or not 1 <= page_size <= 50:
@@ -318,6 +437,454 @@ def evidence_page(index: dict, kind: str, page: int, page_size: int) -> dict:
     start = (page - 1) * page_size
     return {"kind": kind, "page": page, "pages": pages, "total": len(rows),
             "rows": rows[start:start + page_size]}
+
+
+WORKFLOW_PAGE_KINDS = ("items", "lenses", "reports", "gaps", "merges")
+WORKFLOW_RESULT_CONTRACT = "native-workflow-journal/v1"
+
+
+def _workflow_record(value: object) -> bool:
+    return isinstance(value, dict)
+
+
+def _workflow_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _valid_review_finding(value: object) -> bool:
+    if not _workflow_record(value):
+        return False
+    if not (_workflow_string(value.get("agent"))
+            and value.get("action") in ("FIX", "ASK", "PLAN")
+            and value.get("category") in ("bug", "rule", "improvement")
+            and _workflow_string(value.get("description"))
+            and _workflow_string(value.get("rationale"))):
+        return False
+    if "critical" in value and not isinstance(value["critical"], bool):
+        return False
+    for key in ("file", "old", "new", "question"):
+        if key in value and value[key] is not None and not isinstance(value[key], str):
+            return False
+    for key in ("options", "scope"):
+        member = value.get(key)
+        if key in value and member is not None:
+            if not isinstance(member, list) or not all(isinstance(item, str) for item in member):
+                return False
+    return True
+
+
+def _valid_explore_claim(value: object) -> bool:
+    if not _workflow_record(value):
+        return False
+    if not (_workflow_string(value.get("subject"))
+            and value.get("polarity") in ("exists", "absent", "partial", "unclear")
+            and _workflow_string(value.get("claim"))
+            and value.get("bearing") in ("premise-contradiction", "reuse-candidate", "constraint",
+                                          "blast-radius", "context")):
+        return False
+    for key in ("evidence", "verification", "file"):
+        if key in value and value[key] is not None and not isinstance(value[key], str):
+            return False
+    return "confidence" not in value or value["confidence"] in ("verified", "unverified")
+
+
+def _valid_explore_checked(value: object) -> bool:
+    return (_workflow_record(value)
+            and isinstance(value.get("toolsUsed"), list)
+            and all(isinstance(item, str) for item in value["toolsUsed"])
+            and value.get("stoppedAt") in ("nothing-in-scope", "exhausted-leads",
+                                            "trigger-not-met", "blocked")
+            and isinstance(value.get("basis"), str))
+
+
+def _workflow_lens(label: str) -> str:
+    return label.split(":", 1)[1] if ":" in label else label
+
+
+def _workflow_status(lenses: list[dict]) -> str:
+    unavailable = sum(row["status"] in ("failed", "uncovered") for row in lenses)
+    if unavailable == len(lenses):
+        return "failed"
+    if unavailable:
+        return "uncovered"
+    if any(row["status"] == "partial" for row in lenses):
+        return "partial"
+    return "completed"
+
+
+def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dict:
+    """Validate one exact Workflow journal and index its native result bodies."""
+    if workflow_kind not in ("review", "explore"):
+        raise ValueError("workflow kind must be review or explore")
+    run_dir = Path(workflow_dir)
+    journal_path = run_dir / "journal.jsonl"
+    try:
+        raw = journal_path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"workflow journal is unavailable: {journal_path}: {exc}") from exc
+
+    rows: list[tuple[int, dict]] = []
+    for line_number, raw_line in enumerate(raw.splitlines(), 1):
+        if not raw_line.strip():
+            continue
+        try:
+            row = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"malformed journal JSON at line {line_number}: {exc}") from exc
+        if not isinstance(row, dict):
+            raise ValueError(f"malformed journal row at line {line_number}: expected an object")
+        rows.append((line_number, row))
+
+    starts: list[dict] = []
+    starts_by_pair: dict[tuple[str, str], dict] = {}
+    starts_by_agent: dict[str, tuple[str, str]] = {}
+    starts_by_key: dict[str, tuple[str, str]] = {}
+    terminals: dict[tuple[str, str], dict] = {}
+    terminals_by_agent: dict[str, tuple[str, str]] = {}
+    terminals_by_key: dict[str, tuple[str, str]] = {}
+
+    for line_number, row in rows:
+        event_type = row.get("type")
+        if event_type not in ("started", "result", "failed"):
+            continue
+        agent_id = row.get("agentId")
+        key = row.get("key")
+        if not _workflow_string(agent_id) or not _workflow_string(key):
+            raise ValueError(f"malformed {event_type} identity at journal line {line_number}")
+        pair = (agent_id, key)
+        if event_type == "started":
+            if not _workflow_string(row.get("label")) or not _workflow_string(row.get("phase")):
+                raise ValueError(f"malformed started metadata at journal line {line_number}")
+            if pair in starts_by_pair or agent_id in starts_by_agent or key in starts_by_key:
+                raise ValueError(f"duplicate started event at journal line {line_number}")
+            start = dict(row, _line=line_number)
+            starts.append(start)
+            starts_by_pair[pair] = start
+            starts_by_agent[agent_id] = pair
+            starts_by_key[key] = pair
+            continue
+        if pair in terminals or agent_id in terminals_by_agent or key in terminals_by_key:
+            raise ValueError(f"duplicate terminal event at journal line {line_number}")
+        terminal = dict(row, _line=line_number)
+        terminals[pair] = terminal
+        terminals_by_agent[agent_id] = pair
+        terminals_by_key[key] = pair
+
+    if not starts:
+        raise ValueError("workflow journal has no started agent events")
+    for pair, terminal in terminals.items():
+        if pair in starts_by_pair:
+            continue
+        agent_id, key = pair
+        if agent_id in starts_by_agent:
+            expected = starts_by_agent[agent_id][1]
+            raise ValueError(f"terminal key mismatch for agentId {agent_id!r}: {key!r} != {expected!r}")
+        if key in starts_by_key:
+            expected = starts_by_key[key][0]
+            raise ValueError(f"terminal agentId mismatch for key {key!r}: {agent_id!r} != {expected!r}")
+        raise ValueError(f"orphan terminal event at journal line {terminal['_line']}")
+
+    items: list[dict] = []
+    lenses: list[dict] = []
+    reports: list[dict] = []
+    gaps: list[dict] = []
+    merges: list[dict] = []
+    auxiliary_groups: list[tuple[dict, list[dict]]] = []
+    rejected_total = 0
+    result_events = 0
+    failed_events = 0
+    missing_events = 0
+
+    for start in starts:
+        pair = (start["agentId"], start["key"])
+        terminal = terminals.get(pair)
+        label = start["label"]
+        lens = _workflow_lens(label)
+        role = "auxiliary" if workflow_kind == "review" and label == "review:consolidate" else "source"
+        coverage = {
+            "agentId": start["agentId"], "key": start["key"], "label": label,
+            "phase": start["phase"], "lens": lens, "role": role,
+            "status": "failed", "observed": None, "valid": None, "rejected": 0,
+            "terminal": "missing", "issues": [],
+        }
+        if terminal is None:
+            missing_events += 1
+            coverage["issues"].append("missing terminal event")
+            lenses.append(coverage)
+            continue
+        coverage["terminal"] = terminal["type"]
+        if terminal["type"] == "failed":
+            failed_events += 1
+            coverage["issues"].append("workflow recorded a failed terminal event")
+            lenses.append(coverage)
+            continue
+
+        result_events += 1
+        value = terminal.get("result")
+        if not _workflow_record(value):
+            coverage["status"] = "uncovered"
+            coverage["issues"].append("terminal result is not an object")
+            coverage["rejected"] = 1
+            rejected_total += 1
+            lenses.append(coverage)
+            continue
+
+        if role == "auxiliary":
+            groups = value.get("findings")
+            if not isinstance(groups, list):
+                coverage["status"] = "uncovered"
+                coverage["issues"].append("auxiliary result findings is not an array")
+                coverage["rejected"] = 1
+                rejected_total += 1
+            else:
+                rejected = sum(not (_workflow_record(group)
+                                   and isinstance(group.get("merged_from"), list)
+                                   and bool(group["merged_from"])
+                                   and all(_workflow_string(item) for item in group["merged_from"]))
+                               for group in groups)
+                valid_groups = [group for group in groups
+                                if _workflow_record(group)
+                                and isinstance(group.get("merged_from"), list)
+                                and bool(group["merged_from"])
+                                and all(_workflow_string(item) for item in group["merged_from"])]
+                coverage.update(observed=len(groups), valid=len(groups) - rejected,
+                                rejected=rejected, status="partial" if rejected else "completed")
+                auxiliary_groups.append((coverage, valid_groups))
+                rejected_total += rejected
+                if rejected:
+                    coverage["issues"].append("malformed auxiliary grouping entries were rejected")
+            lenses.append(coverage)
+            continue
+
+        if workflow_kind == "review":
+            source_rows = value.get("findings")
+            if not isinstance(source_rows, list):
+                coverage["status"] = "uncovered"
+                coverage["issues"].append("result findings is not an array")
+                coverage["rejected"] = 1
+                rejected_total += 1
+                lenses.append(coverage)
+                continue
+            item_rejected = 0
+            for index, finding in enumerate(source_rows):
+                if not _valid_review_finding(finding):
+                    item_rejected += 1
+                    continue
+                items.append({"id": f"F{len(items) + 1}", "lens": lens, "label": label,
+                              "index": index, "finding": finding})
+            metadata_rejected = 0
+            report = value.get("report")
+            if isinstance(report, str) and report.strip():
+                reports.append({"lens": lens, "label": label, "report": report})
+            elif report is not None:
+                metadata_rejected = 1
+                coverage["issues"].append("malformed report was rejected")
+            rejected = item_rejected + metadata_rejected
+            coverage.update(observed=len(source_rows), valid=len(source_rows) - item_rejected,
+                            rejected=rejected, status="partial" if rejected else "completed")
+            if item_rejected:
+                coverage["issues"].append("malformed finding entries were rejected")
+            rejected_total += rejected
+            lenses.append(coverage)
+            continue
+
+        source_rows = value.get("claims")
+        checked = value.get("checked")
+        if not isinstance(source_rows, list) or not _valid_explore_checked(checked):
+            coverage["status"] = "uncovered"
+            coverage["issues"].append("result claims/checked shape is malformed")
+            coverage["rejected"] = 1
+            rejected_total += 1
+            lenses.append(coverage)
+            continue
+        coverage["checked"] = checked
+        claim_rejected = 0
+        for index, claim in enumerate(source_rows):
+            if not _valid_explore_claim(claim):
+                claim_rejected += 1
+                continue
+            items.append({"id": f"C{len(items) + 1}", "lens": lens, "label": label,
+                          "index": index, "claim": claim})
+        gap_rejected = 0
+        source_gaps = value.get("gaps", [])
+        if not isinstance(source_gaps, list):
+            gap_rejected = 1
+            coverage["issues"].append("result gaps is not an array")
+        else:
+            for index, gap in enumerate(source_gaps):
+                if not _workflow_string(gap):
+                    gap_rejected += 1
+                    continue
+                gaps.append({"lens": lens, "label": label, "index": index, "gap": gap})
+        rejected = claim_rejected + gap_rejected
+        status = "partial" if rejected else "completed"
+        if not source_rows and checked["stoppedAt"] != "trigger-not-met" and (
+                checked["stoppedAt"] == "blocked" or not checked["toolsUsed"]):
+            status = "uncovered"
+            coverage["issues"].append("empty result has no completed search provenance")
+        coverage.update(observed=len(source_rows), valid=len(source_rows) - claim_rejected,
+                        rejected=rejected, status=status)
+        if claim_rejected:
+            coverage["issues"].append("malformed claim entries were rejected")
+        if gap_rejected:
+            coverage["issues"].append("malformed gap entries were rejected")
+        rejected_total += rejected
+        lenses.append(coverage)
+
+    source_ids = [item["id"] for item in items]
+    source_id_set = set(source_ids)
+    for coverage, groups in auxiliary_groups:
+        flattened = []
+        invalid = None
+        for group in groups:
+            ids = group["merged_from"]
+            if len(ids) != len(set(ids)):
+                invalid = "auxiliary grouping repeats a source F-id"
+                break
+            unknown = [item for item in ids if item not in source_id_set]
+            if unknown:
+                invalid = "auxiliary grouping names unknown source F-id(s): " + ", ".join(unknown)
+                break
+            flattened.extend(ids)
+        if invalid is None and (len(flattened) != len(source_ids)
+                                or set(flattened) != source_id_set):
+            invalid = "auxiliary grouping does not partition source F-ids"
+        if invalid is not None:
+            coverage["status"] = "uncovered"
+            coverage["issues"].append(invalid)
+            coverage["rejected"] += 1
+            rejected_total += 1
+            continue
+        for group in groups:
+            merges.append({"id": f"M{len(merges) + 1}",
+                           "merged_from": list(group["merged_from"])})
+
+    status = _workflow_status(lenses)
+    coverage_counts = {name: sum(row["status"] == name for row in lenses)
+                       for name in ("completed", "partial", "failed", "uncovered")}
+    counts = {
+        "starts": len(starts), "terminals": len(terminals), "results": result_events,
+        "failedTerminals": failed_events, "missingTerminals": missing_events,
+        "items": len(items), "reports": len(reports), "gaps": len(gaps), "merges": len(merges),
+        "rejected": rejected_total,
+        "sourceLenses": sum(row["role"] == "source" for row in lenses),
+        "auxiliaries": sum(row["role"] == "auxiliary" for row in lenses),
+        **coverage_counts,
+    }
+    return {
+        "contract": WORKFLOW_RESULT_CONTRACT,
+        "workflowKind": workflow_kind,
+        "workflowDir": str(run_dir),
+        "status": status,
+        "delivered": status == "completed",
+        "journal": {
+            "relativePath": "journal.jsonl", "path": str(journal_path),
+            "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+            "lines": len(raw.splitlines()),
+        },
+        "counts": counts,
+        "items": items,
+        "lenses": lenses,
+        "reports": reports,
+        "gaps": gaps,
+        "merges": merges,
+    }
+
+
+def _workflow_commands(workflow_kind: str) -> dict:
+    base = ("python3 .claude/tools/session_digest.py --workflow-dir "
+            '"<transcriptDir-from-Workflow-result>" '
+            f"--workflow-kind {workflow_kind}")
+    expected = "--expect-journal-sha256 <sha256-from-manifest>"
+    page_kinds = "|".join(WORKFLOW_PAGE_KINDS)
+    return {
+        "manifest": base + " --workflow-manifest",
+        "select": base + " --workflow-select <ID> " + expected,
+        "page": base + f" --workflow-page {page_kinds} --page <N> --page-size <N> " + expected,
+        "full": base + " --workflow-full " + expected,
+    }
+
+
+def workflow_result_manifest(archive: dict) -> dict:
+    counts = dict(archive["counts"])
+    counts["omittedFromManifest"] = sum(len(archive[kind]) for kind in WORKFLOW_PAGE_KINDS)
+    return {
+        "contract": archive["contract"], "workflowKind": archive["workflowKind"],
+        "workflowDir": archive["workflowDir"], "status": archive["status"],
+        "delivered": archive["delivered"], "journal": dict(archive["journal"]),
+        "counts": counts,
+        "coverage": {
+            "requested": counts["starts"], "completed": counts["completed"],
+            "partial": counts["partial"], "failed": counts["failed"],
+            "uncovered": counts["uncovered"],
+        },
+        "selectors": {
+            "ids": "F<number>" if archive["workflowKind"] == "review" else "C<number>",
+            "sourceOrder": "started-agent order, then item-array order",
+            "pages": list(WORKFLOW_PAGE_KINDS), "hashRequiredForEvidence": True,
+        },
+        "commands": _workflow_commands(archive["workflowKind"]),
+    }
+
+
+def verify_workflow_journal_hash(archive: dict, expected: str) -> None:
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9A-Fa-f]{64}", expected):
+        raise ValueError("expected journal SHA256 must be exactly 64 hexadecimal characters")
+    actual = archive["journal"]["sha256"]
+    if actual.lower() != expected.lower():
+        raise ValueError(f"workflow journal hash mismatch: expected {expected.lower()}, got {actual}")
+
+
+def _workflow_envelope(archive: dict) -> dict:
+    return {
+        "contract": archive["contract"], "workflowKind": archive["workflowKind"],
+        "workflowDir": archive["workflowDir"],
+        "status": archive["status"], "delivered": archive["delivered"],
+        "journal": dict(archive["journal"]), "counts": dict(archive["counts"]),
+    }
+
+
+def workflow_result_select(archive: dict, ids: list[str]) -> dict:
+    if not ids:
+        raise ValueError("at least one workflow selector is required")
+    duplicates = [value for index, value in enumerate(ids) if value in ids[:index]]
+    if duplicates:
+        raise ValueError("duplicate workflow selector(s): " + ", ".join(dict.fromkeys(duplicates)))
+    available = {row["id"]: row for row in archive["items"]}
+    missing = [value for value in ids if value not in available]
+    if missing:
+        raise ValueError("unknown workflow selector(s): " + ", ".join(missing))
+    out = _workflow_envelope(archive)
+    out.update({"selectors": list(ids), "rows": [available[value] for value in ids]})
+    return out
+
+
+def workflow_result_page(archive: dict, kind: str, page: int, page_size: int) -> dict:
+    if kind not in WORKFLOW_PAGE_KINDS:
+        raise ValueError("workflow page kind must be items, lenses, reports or gaps")
+    if not isinstance(page, int) or page < 1:
+        raise ValueError("page must be a positive integer")
+    if not isinstance(page_size, int) or not 1 <= page_size <= 50:
+        raise ValueError("page size must be between 1 and 50")
+    rows = archive[kind]
+    pages = max(1, (len(rows) + page_size - 1) // page_size)
+    if page > pages:
+        raise ValueError(f"page {page} exceeds {pages}")
+    start = (page - 1) * page_size
+    out = _workflow_envelope(archive)
+    out.update({
+        "kind": kind, "page": page, "pageSize": page_size, "pages": pages,
+        "total": len(rows), "complete": page == pages,
+        "nextPage": page + 1 if page < pages else None,
+        "rows": rows[start:start + page_size],
+    })
+    return out
+
+
+def workflow_result_full(archive: dict) -> dict:
+    out = _workflow_envelope(archive)
+    out.update({kind: archive[kind] for kind in WORKFLOW_PAGE_KINDS})
+    return out
 
 
 def write_json_atomic(path: Path, value: dict) -> None:
@@ -339,66 +906,199 @@ def write_json_atomic(path: Path, value: dict) -> None:
 
 
 def _prompt_preview(rows: list[dict], cap: int) -> list[dict]:
+    """First row plus the most recent rows: stable row IDs, the latest row always present,
+    never more than `cap` rows. A non-positive cap means uncapped."""
     if not cap or len(rows) <= cap:
         return rows
-    selected = {row.get("index"): row for row in rows[:5] + rows[-20:]}
-    for row in reversed(rows):
-        if len(selected) >= cap:
+    if cap == 1:
+        return rows[-1:]
+    picked = rows[:1] + rows[-(cap - 1):]
+    seen: set = set()
+    out = []
+    for row in picked:
+        key = row.get("index")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return sorted(out, key=lambda row: row.get("index", -1))
+
+
+def _excerpt(text: str, n: int) -> str:
+    """One-line excerpt with an explicit omitted-character count."""
+    return clip(" ".join((text or "").split()), n)
+
+
+def _clip_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
+    """Clip to a UTF-8 byte budget on a character boundary. The omitted count is explicit;
+    no partial character is silently dropped."""
+    text = text or ""
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text, False
+    reserve = 32
+    kept: list[str] = []
+    used = 0
+    for ch in text:
+        n = len(ch.encode("utf-8"))
+        if used + n > max_bytes - reserve:
             break
-        if row.get("signals"):
-            selected.setdefault(row.get("index"), row)
-    return sorted(selected.values(), key=lambda row: row.get("index", -1))
+        kept.append(ch)
+        used += n
+    omitted = len(text) - len(kept)
+    return "".join(kept).rstrip() + f" …[+{omitted} chars]", True
 
 
-def render(d: dict, path: Path, outcome: str, caps: dict, project_dir: str = "", tools: bool = False) -> str:
-    m = d["metadata"]
+def _display_files(d: dict, project_dir: str = "") -> dict:
     root = os.path.normpath(project_dir).replace("/", "\\") + "\\" if project_dir else ""
-    files = {(p[len(root):] if root and p.replace("/", "\\").startswith(root) else p): c
-             for p, c in (d.get("files_modified_counts") or {}).items()}
+    return {(p[len(root):] if root and p.replace("/", "\\").startswith(root) else p): c
+            for p, c in (d.get("files_modified_counts") or {}).items()}
+
+
+def _prompt_count_text(d: dict) -> str:
+    """`N` or `N (+M from command arguments)`. A user-typed `/skill <args>` and a model-issued
+    `Skill` call leave the same transcript shape (tool_use → "Launching skill" → isMeta body with
+    `ARGUMENTS:`), so recovered rows cannot be attributed to the keyboard; the split keeps the
+    typed count honest instead of folding both into one number."""
+    msgs = d.get("user_messages") or []
+    recovered = sum(1 for m in msgs if isinstance(m, dict) and m.get("recovered"))
+    typed = len(msgs) - recovered
+    return f"{typed} (+{recovered} from command arguments, typed or model-invoked)" if recovered else str(typed)
+
+
+def _digest_head(d: dict, path: Path, sub_note: str) -> list:
+    m = d["metadata"]
+    return [f"# Session digest — {str(d.get('session_id') or 'unknown')[:8]}  ({path.name})",
+            f"messages {m['total_messages']} · tool calls {m['total_tool_calls']}{sub_note} · duration {(m['duration_seconds'] or 0) // 60} min · "
+            f"compactions {d['compactions']['count']} · user prompts {_prompt_count_text(d)} · "
+            f"friction rows {len(d.get('friction') or [])} · files modified {len(d.get('files_modified_counts') or {})}"]
+
+
+def _retrieval_footer(d: dict) -> list:
+    sid8 = str(d.get("session_id") or "unknown")[:8]
+    return ["", f"Full JSON: logs/session_digest_{sid8}.json",
+            f"Evidence index: logs/session_digest_{sid8}.index.json",
+            "Page: session_digest.py --digest-file <full-json> --evidence-page prompts|friction|files --page <N>",
+            "Select: session_digest.py --digest-file <full-json> --select <ID> [--select <ID> ...]"]
+
+
+def _render_overview(d: dict, path: Path, outcome: str, project_dir: str = "",
+                     tools: bool = False) -> str:
+    """The default presentation: identity, counts, the latest user request, the last
+    assistant outcome, and the retrieval route — globally within OVERVIEW_MAX_BYTES of
+    UTF-8 regardless of session size. Optional preview rows are shed whole (files,
+    then friction, then the prompt range) before any mandatory line shrinks, and the
+    outcome/retrieval footer is never dropped. Counts are source-population sizes;
+    no byte total here describes live context."""
     census = d.get("tool_census") or {}
     sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts; --tools for the table)"
                 if census.get("subagent_total") else "")
-    prompt_rows = _prompt_preview(d["user_messages"], caps["prompt_rows"])
-    out = [f"# Session digest — {d['session_id'][:8]}  ({path.name})",
-           f"messages {m['total_messages']} · tool calls {m['total_tool_calls']}{sub_note} · duration {(m['duration_seconds'] or 0) // 60} min · "
-           f"compactions {d['compactions']['count']} · user prompts {len(d['user_messages'])} · friction rows {len(d['friction'])} · "
-           f"files modified {len(files)}",
-           "", "## User prompt index" + (f" — {len(prompt_rows)} of {len(d['user_messages'])}; select full rows by ID" if len(prompt_rows) < len(d["user_messages"]) else "")]
-    for u in prompt_rows:
-        tags = ",".join(u["signals"]) or "-"
+    prompts = d.get("user_messages") or []
+    fr = d.get("friction") or []
+    files = _display_files(d, project_dir)
+    head = _digest_head(d, path, sub_note)
+    footer = _retrieval_footer(d)
+
+    def prompt_tag(u: dict) -> str:
+        tags = ",".join(u.get("signals") or []) or "-"
+        return f"{(u.get('timestamp') or '')[11:16]} {tags}"
+
+    latest = next((row for row in reversed(prompts)
+                   if row.get("recovered") != "command_arguments"), None)
+    command_rows = [row for row in prompts if row.get("recovered") == "command_arguments"]
+    latest_command = command_rows[-1] if command_rows else None
+    prompt_clip, command_clip, outcome_clip = 400, 400, 400
+    show_files, show_friction, show_range = True, True, True
+    while True:
+        out = list(head)
+        if show_range and len(prompts) > 1:
+            out += ["", f"## Prompts ({len(prompts)} total) — oldest {_evidence_id('U', prompts[0])}, "
+                        f"latest {_evidence_id('U', prompts[-1])} below; select full rows by ID"]
+        out += ["", "## Latest user request"]
+        if latest is None:
+            out.append("(none)")
+        else:
+            out.append(f"- [{_evidence_id('U', latest)} {prompt_tag(latest)}] "
+                       f"{_excerpt(latest.get('content') or '', prompt_clip)}")
+        if latest_command is not None:
+            out += ["", "## Latest command request (unattributed)",
+                    f"- [{_evidence_id('U', latest_command)} {prompt_tag(latest_command)}] "
+                    f"{_excerpt(latest_command.get('content') or '', command_clip)}"]
+        if show_friction and fr:
+            last = fr[-1]
+            kind = "DENIED" if last.get("denied") else "error"
+            out += ["", f"## Latest friction (1 of {len(fr)})",
+                    f"- [{_evidence_id('F', last)} {kind}] {last.get('tool') or 'unknown'}: "
+                    f"{_excerpt(last.get('error') or '', 120)}"]
+        elif not fr:
+            out += ["", "## Latest friction", "(none)"]
+        if show_files:
+            out += ["", f"## Files modified ({len(files)}) — page kind files for names"]
+        out += ["", "## Outcome — the session's last message",
+                _excerpt(outcome, outcome_clip) or "(no assistant text)"]
+        out += footer
+        if len("\n".join(out).encode("utf-8")) <= OVERVIEW_MAX_BYTES:
+            break
+        if show_files:
+            show_files = False
+        elif show_friction and fr:
+            show_friction = False
+        elif show_range and len(prompts) > 1:
+            show_range = False
+        elif outcome_clip > 60:
+            outcome_clip //= 2
+        elif prompt_clip > 60:
+            prompt_clip //= 2
+        elif command_clip > 60:
+            command_clip //= 2
+        else:
+            break
+    text = "\n".join(out)
+    if tools and census:
+        text += ("\n\n[Explicit --tools detail below: outside the overview byte budget.]"
+                 "\n" + "\n".join(render_tools(census)))
+    return text
+
+
+def _render_full(d: dict, path: Path, outcome: str, project_dir: str = "", tools: bool = False) -> str:
+    """Opt-in complete rendering: every prompt, every friction row, every file, the whole
+    outcome. No caps; use only when the overview plus --select/--evidence-page is not enough."""
+    census = d.get("tool_census") or {}
+    sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts)"
+                if census.get("subagent_total") else "")
+    out = _digest_head(d, path, sub_note)
+    prompts = d.get("user_messages") or []
+    out += ["", f"## User prompts ({len(prompts)}) — complete text"]
+    for u in prompts:
+        tags = ",".join(u.get("signals") or []) or "-"
         ts = (u.get("timestamp") or "")[11:16]
-        out.append(f"- [{_evidence_id('U', u)} {ts} {tags}] {clip(u['content'], caps['prompt'])}")
-    fr = d["friction"]
-    shown = fr[-caps["friction_rows"]:] if caps["friction_rows"] else fr
-    out += ["", "## Friction — tool errors / denials / interrupts, each with the assistant's next move"
-            + (f" (last {len(shown)} of {len(fr)})" if len(shown) < len(fr) else "")]
+        out.append(f"- [{_evidence_id('U', u)} {ts} {tags}] {u.get('content') or ''}")
+    fr = d.get("friction") or []
+    out += ["", f"## Friction ({len(fr)}) — complete error and response text"]
     if not fr:
         out.append("(none)")
-    n = caps["friction_text"]
-    for f in shown:
-        kind = "DENIED" if f["denied"] else "error"
-        out.append(f"- [{_evidence_id('F', f)} {kind}] {f['tool']}: `{f['input'][:120]}`\n  error: {f['error'][:n]}\n  next: {(f.get('response') or '(no text before the next prompt)')[:n]}")
-    out += ["", f"## Files modified ({len(files)}) — edit/write count each"]
+    for f in fr:
+        kind = "DENIED" if f.get("denied") else "error"
+        out.append(f"- [{_evidence_id('F', f)} {kind}] {f.get('tool') or 'unknown'}: `{f.get('input') or ''}`"
+                   f"\n  error: {f.get('error') or ''}"
+                   f"\n  next: {f.get('response') or '(no text before the next prompt)'}")
+    files = _display_files(d, project_dir)
     items = sorted(files.items(), key=lambda kv: (-kv[1], kv[0]))
-    out += [f"- {p} ×{c}" for p, c in items[:caps["files"]]] or ["(none)"]
-    if len(items) > caps["files"]:
-        out.append(f"- … +{len(items) - caps['files']} more (full list in the JSON)")
+    out += ["", f"## Files modified ({len(items)}) — complete list"]
+    out += [f"- {p} ×{c}" for p, c in items] or ["(none)"]
     if tools and census:
         out += render_tools(census)
-    out += ["", "## Outcome — the session's last message", clip(outcome, caps["outcome"]) or "(no assistant text)"]
-    out += ["", f"Full JSON: logs/session_digest_{d['session_id'][:8]}.json",
-            f"Evidence index: logs/session_digest_{d['session_id'][:8]}.index.json",
-            "Page summaries: session_digest.py --digest-file <full-json> --evidence-page friction --page <N>",
-            "Select exact rows: session_digest.py --digest-file <full-json> --select <ID> [--select <ID> ...]"]
-    text = "\n".join(out)
-    if caps == SESSION and len(text.encode("utf-8")) > SESSION_MAX_BYTES:
-        footer_at = text.rfind("\nFull JSON:")
-        footer = text[footer_at:] if footer_at >= 0 else ""
-        marker = "\n\n[OUTPUT TRUNCATED at 32,000 bytes; page summaries or select exact rows by ID.]"
-        budget = SESSION_MAX_BYTES - len((marker + footer).encode("utf-8"))
-        prefix = text.encode("utf-8")[:max(0, budget)].decode("utf-8", errors="ignore").rstrip()
-        text = prefix + marker + footer
-    return text
+    out += ["", "## Outcome — the session's last message", outcome or "(no assistant text)"]
+    out += _retrieval_footer(d)
+    return "\n".join(out)
+
+
+def render(d: dict, path: Path, outcome: str, caps: dict, project_dir: str = "", tools: bool = False) -> str:
+    """caps selects the presentation only: SESSION/BRIEF render the small overview,
+    FULL renders everything. The evidence dict `d` is never mutated, so --select and
+    pagination read the same rows the overview summarizes."""
+    if caps.get("mode") == "full":
+        return _render_full(d, path, outcome, project_dir, tools)
+    return _render_overview(d, path, outcome, project_dir, tools)
 
 
 def render_context(d: dict) -> str:
@@ -440,13 +1140,28 @@ def main() -> None:
     ap.add_argument("--prompt-tail", help="text the session's latest real prompt must contain (e.g. session_end)")
     ap.add_argument("--project-dir", default=os.getcwd(), help="repo root the session ran in (default cwd)")
     ap.add_argument("--brief", action="store_true",
-                    help="clip prompts to %d chars, keep the last %d friction rows — the continuation shape"
-                         % (BRIEF["prompt"], BRIEF["friction_rows"]))
-    ap.add_argument("--full", action="store_true", help="print every full prompt and friction row")
+                    help="same small overview as the default (kept for existing callers)")
+    ap.add_argument("--full", action="store_true",
+                    help="opt-in complete rendering: every prompt, friction row, file and the whole outcome")
     ap.add_argument("--digest-file", metavar="PATH", help="saved full JSON used by --select")
+    ap.add_argument("--workflow-dir", metavar="PATH",
+                    help="exact Workflow transcriptDir containing journal.jsonl")
+    ap.add_argument("--workflow-kind", choices=("review", "explore"),
+                    help="native Workflow result contract to validate")
+    workflow_op = ap.add_mutually_exclusive_group()
+    workflow_op.add_argument("--workflow-manifest", action="store_true",
+                             help="validate a Workflow journal and print its body-free manifest")
+    workflow_op.add_argument("--workflow-select", action="append", metavar="ID",
+                             help="print one exact F<number> or C<number> source; repeatable")
+    workflow_op.add_argument("--workflow-page", choices=WORKFLOW_PAGE_KINDS,
+                             help="print one deterministic Workflow result page")
+    workflow_op.add_argument("--workflow-full", action="store_true",
+                             help="print every valid Workflow source and coverage record")
+    ap.add_argument("--expect-journal-sha256", metavar="HASH",
+                    help="manifest SHA-256 required before any Workflow evidence output")
     ap.add_argument("--select", action="append", metavar="ID",
                     help="print one exact U<prompt-index> or F<friction-index> row; repeatable")
-    ap.add_argument("--evidence-page", choices=("prompts", "friction"),
+    ap.add_argument("--evidence-page", choices=("prompts", "friction", "files"),
                     help="print one bounded page from the compact evidence index")
     ap.add_argument("--page", type=int, default=1, help="evidence page number (default 1)")
     ap.add_argument("--page-size", type=int, default=20,
@@ -466,6 +1181,42 @@ def main() -> None:
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+
+    workflow_operation = (a.workflow_manifest or a.workflow_select
+                          or a.workflow_page or a.workflow_full)
+    workflow_option = (workflow_operation or a.workflow_dir or a.workflow_kind
+                       or a.expect_journal_sha256)
+    if workflow_option:
+        if not workflow_operation:
+            ap.error("--workflow-dir/--workflow-kind requires a --workflow-manifest/select/page/full operation")
+        if not a.workflow_dir or not a.workflow_kind:
+            ap.error("Workflow result operations require --workflow-dir and --workflow-kind")
+        session_options = (a.session or a.prompt_tail or a.brief or a.full or a.digest_file
+                           or a.select or a.evidence_page or a.json_only or a.context_only
+                           or a.previous or a.list or a.match or a.match_file or a.tools)
+        if session_options:
+            ap.error("Workflow result operations are mutually exclusive with session-digest operations")
+        if a.workflow_manifest and a.expect_journal_sha256:
+            ap.error("--workflow-manifest computes the journal hash; do not pass --expect-journal-sha256")
+        if not a.workflow_manifest and not a.expect_journal_sha256:
+            ap.error("Workflow evidence output requires --expect-journal-sha256 from --workflow-manifest")
+        try:
+            archive = build_workflow_result_archive(Path(a.workflow_dir), a.workflow_kind)
+            if a.workflow_manifest:
+                value = workflow_result_manifest(archive)
+            else:
+                verify_workflow_journal_hash(archive, a.expect_journal_sha256)
+                if a.workflow_select:
+                    value = workflow_result_select(archive, a.workflow_select)
+                elif a.workflow_page:
+                    value = workflow_result_page(archive, a.workflow_page, a.page, a.page_size)
+                else:
+                    value = workflow_result_full(archive)
+            print(json.dumps(value, indent=1, ensure_ascii=True))
+        except ValueError as exc:
+            ap.error(str(exc))
+        return
+
     if a.select or a.evidence_page:
         if not a.digest_file:
             ap.error("--select/--evidence-page requires --digest-file")
@@ -505,6 +1256,10 @@ def main() -> None:
         outcome = last_assistant_text(path)
         d["outcome_last_assistant_text"] = outcome
         d["tool_census"] = tool_census(path)
+        d["user_messages"] = merge_recovered_prompts(
+            d.get("user_messages") or [], recover_meta_command_prompts(path) + recover_question_answers(path))
+        if isinstance(d.get("evidence_coverage"), dict):
+            d["evidence_coverage"]["collected_user_messages"] = len(d["user_messages"])
     else:
         d = {"session_id": path.stem, "context_census": d["context_census"],
              "omitted_scans": ["outcome", "child_tool_census"]}
@@ -524,6 +1279,24 @@ def main() -> None:
     else:
         caps = BRIEF if a.brief else (FULL if a.full else SESSION)
         print(render(d, path, outcome, caps, a.project_dir, a.tools))
+        block = task_record_block(path.stem, a.project_dir)
+        if block:
+            print("\n" + block)
+
+
+def task_record_block(session_id: str, project_dir: str) -> str:
+    """The session's active task record (tools/task_record.py), bounded; '' when none or unreadable."""
+    try:
+        tools = str(Path(__file__).resolve().parent)
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import task_record
+        if not os.environ.get("HARNESS_TASK_RECORD_DIR"):
+            os.environ["HARNESS_TASK_RECORD_DIR"] = str(Path(project_dir) / ".claude" / "logs" / "tasks")
+        rec = task_record.active(session_id)
+        return task_record.render_block(rec["task_id"]) if rec else ""
+    except Exception:
+        return ""
 
 
 if __name__ == "__main__":

@@ -1,216 +1,130 @@
 ---
 name: Orchestration
 description: >-
-  Auto-load when orchestrating — delegating, fanning out, parallelizing, or splitting work across subagents, Workflows or sidecars — and before any long-horizon task that should be delegated: choosing the
-  dispatch mechanism (single Agent, Workflow script, sidecar), fanning out reviews/audits/fixes,
-  splitting a large task into delegated chunks, pinning model + effort per stage, or authoring a
-  Workflow. Sequential stage dependencies are an orchestration shape (pipeline), not a reason to skip.
-  SKIP only for inline work — small edits and quick lookups where round-trip overhead exceeds the work.
+  Use before delegating or coordinating multi-step work: choose scope, model/effort, transport and evidence contracts. Skip small inline edits and known lookups where handoff costs more than the work.
 ---
 
 # Orchestration
 
-The mechanism layer for delegating work: `/delegate` is the canonical route for ordinary ad hoc jobs; fixed-panel commands keep their own entry points. This file names **roles, never models**: the role → model ladder is `reference/model_ladder_evidence.md` §Role guidance; aliases, prices and gates are `reference/external_models.json` (`python3 .claude/tools/model_registry.py available`); sidecar launch recipe is `reference/sidecar_dispatch.md`; spawn rules (MANDATORY / PARALLEL / NO POLLING) are `commands/agents/review_agents.md`. CLAUDE.md §Model Delegation keeps the two spec-time decisions: copyable-vs-derived, and which currency a fan-out spends.
+`/delegate` owns ordinary jobs; fixed-panel commands own their coverage. The role ladder owns model judgment, the registry owns availability/capabilities/prices, and `reference/sidecar_dispatch.md` owns launcher mechanics. Do not copy their tables into each caller.
 
 ## 0. Dispatch Shape — decide this FIRST
 
-| mechanism | use for | never for |
-|---|---|---|
-| **Single `Agent`** | one exploratory dispatch when the item set is unknown; `subagent_type: "fork"` when it needs the session conversation | an ordinary pinned job — use `/delegate`; a fan-out — `Agent` inherits session effort and records no per-agent usage |
-| **Workflow** (`Workflow` tool, `.claude/workflows/*.js`) | every fan-out and judgment stage: enumerable items, pipeline/barrier, pins, schemas, resume. `/delegate` routes native work to `dispatch.js`, `dispatch_chains.js`, or `review_fanout.js` | reaching another transport; **a nested fan-out** — subagents cannot invoke Workflow. The orchestrator materializes every lens (`tools/lens_briefs.py`) and dispatches it (`gotcha_subagents_have_no_workflow_tool`) |
-| **Backgrounded `Agent` lane** | independent lanes, the orchestrator has work for the interval, each return consumed from a spill file | never when the next step needs the result; the pin is stated at dispatch as for any job, but the lane logs no PINS row — record the pin in the plan file, and state the trade at dispatch |
-| **Sidecar script** | ANY model on a transport this session is not running on — GPT, opencode, deepseek, local, and Anthropic itself from a provider session: a separate `claude` child on that transport's endpoint. Bash, one job per call; recipe `reference/sidecar_dispatch.md` | — |
+| Mechanism | Use |
+|---|---|
+| Inline | Small, already-understood edits/lookups; parent decisions and cross-system synthesis |
+| Workflow | Pinned jobs and independent lenses on this session's transport; existing dispatch/review/chain engines |
+| Single Agent | A genuine exploratory/context-fork exception; state inherited settings the API cannot pin. A model-pinned Agent that is not Explore/Plan/fork is denied by `dispatch_mechanism_guard.py` unless the brief carries `AGENT-EXCEPTION: <why the jobs are not enumerable yet>` |
+| Sidecar | Another transport, or a documented need for isolated process-level configuration |
 
-**Dispatch is transport-bound.** Workflow/Agent run on the session's endpoint only: an Anthropic session runs `claude-*` agents, a codex session GPT agents, a deepseek session deepseek agents. Sibling models on the session's OWN transport are reachable in-harness by Workflow pin — no sidecar. Pin that transport's ids; `hooks/workflow_provider_guard.py` denies the wrong vocabulary and names the roster. A pin the endpoint cannot serve returns null, which `.filter(Boolean)` renders as "0 findings" — a clean-looking run that ran nothing, which is why the guard denies rather than warns. Check each fan-out's journal model column against the currency you intended.
+Litmus: can you enumerate the jobs now? Yes → `/delegate`. No → one exploratory Agent, then `/delegate` over what it found.
 
-**Litmus:** *can I enumerate the jobs now?* Yes → `/delegate`. No → one exploratory `Agent`, then `/delegate` over what it found. Direct Workflow remains for fixed-panel commands and workflow authoring. A recurring shape becomes a command invoking `Workflow({scriptPath})`. A nested command that fans out is denied by `dispatch_mechanism_guard.py`; the main session owns the fan-out.
+**One suitable arm per independently needed job.** Roster availability does not create work. Keep required coverage and independent review; add a job for a distinct risk, not another provider name. A command's prescribed lens set is a floor, not a ceiling: it always runs, and a bespoke lens may be added when the risk warrants, each naming the failure mode it hunts. Same-task comparisons require an explicit comparison request, named arms, frozen inputs and finite budget. `/pin_ab` owns the common comparison case and carries §5b's currency override into its dispatch when the band requires it.
 
-A denied first attempt does not change that verdict. Load the missing canon and re-issue the selected mechanism. If Workflow approval is absent, ask the user; never downgrade enumerable jobs to a direct Agent.
+Invoking a command that prescribes a fan-out is that fan-out's Workflow authorization: do not collapse its lenses into one generic agent or run the sweep inline. Workflow/Agent stay on the current endpoint. Use its actual model IDs; do not send another provider's vocabulary or silently accept a fallback. The caller owns fan-out; delegates do not invent nested jobs. Subagents cannot invoke Workflow or Agent: a nested fan-out is materialized by the orchestrator, which dispatches every lens itself. Use `/delegate` for declared jobs and existing engines for fixed panels. A recurring shape earns reuse, not another bespoke wrapper.
 
-**Fixed panels are floors, not ceilings.** A command's prescribed lens set always runs; extend it with bespoke lenses when the risk profile warrants, each naming the concrete failure mode it hunts.
-
-**Non-destructive fan-outs run as multi-model arms.** Exploration, plan drafts, plan-check and review lenses dispatch one Anthropic arm plus each available sidecar model (`python3 .claude/tools/model_registry.py available`; sidecar lenses take `-S <schema>` + `-P` so a compaction auto-resumes), and each arm's outcome lands in the dispatch ledger so `/orchestration_metrics` can contrast them; execution under a converged spec stays single-arm.
-
-**Arms that will be COMPARED read a frozen input.** Ladder evidence, `/pin_ab`, multi-model plan-check or review: dispatch against a detached worktree (`git worktree add --detach`, passed as `-d`/cwd). `sidecar_fanout.py --compare` enforces it.
-
-**Land nothing until the last arm returns.** An arm that reads a fix you already applied reports it ABSENT — indistinguishable from a miss, and undetectable later (`gotcha_comparison_arms_need_a_frozen_input`).
-
-**Concurrency under Workflow:** auto-cap `min(16, cores−2)`, overflow queues — pass all items. **Single-flight:** `parallel()`/`pipeline()` agents never each run GdUnit4 tests or fan out csharp-ls calls (`gotcha_workflow_single_flight_concurrency.md`) — pre-compute the symbol map, run the gate once serially outside the barrier; this is why review lenses are read-only. A *single-agent* wave may build and run narrowly-filtered suites; mandate TRX-counter evidence (`total > 0 AND failed >= 1`), never an exit code (`gotcha_zero_match_filter_exit1_mimics_red.md`).
+For comparisons, keep source inputs frozen until every arm returns. For ordinary authoring, expected output edits are not a failed comparison. Read-only findings over changed inputs need targeted revalidation, not a blanket reset or rerun.
 
 ## Pre-Dispatch Checklist
 
-- [ ] **Read the budget band first** — the latest `[budget-posture]` line (`hooks/budget_posture.py`); absent, read `<TEMP>/cc-cachestat-<session_id>.json` `rate_limits.seven_day`. An unknown band silently defaults every lens to plan quota. A posture line reading **band UNREADABLE** is terminal for the session, not a transient miss: some entrypoints send no `rate_limits` at all (`--why` names which). Pin tier and effort on work shape per *Tier-within-quota* below, and expect sidecar band gates to refuse until passed `-A`.
-- [ ] **Shared file writes?** Two agents editing one `.cs`/`.tscn`/`.tres` → serialize or partition explicitly.
-- [ ] **Worktree isolation needed?** Agents share the working tree; write-parallel work over overlapping files takes `isolation: "worktree"` (§7).
-- [ ] **Manual `Agent` dispatch only:** ≤15 agents, nested = `outer × inner ≤ 15` (§6).
+- Scope, inputs, exclusions and done-condition are concrete.
+- Model, effort, profile, transport and currency are explicit; current availability is checked. Read the band from the latest `[budget-posture]` line (`hooks/budget_posture.py`); if absent, `<TEMP>/cc-cachestat-<session_id>.json` `rate_limits`.
+- Writes are disjoint or serialized. Shared runtime tests/LSP are single-flight.
+- Each required result has a recoverable artifact or transcript route; no missing arm can look clean.
 
 ## 1. When to Parallelize
 
-3+ independent investigations (each failure its own root cause); independently broken subsystems; batch PR/audit operations (`/pr_pipeline`, `/session_audit`); cross-domain audits with one domain per agent; adversarial prompt batteries (`/test_skill`). **Why another agent, not another pass:** the builder reads the intention, not the result — an independent lens is the return, and it names the rule that produced the fault, not the instance.
+Run independent work together when it reduces elapsed time without hiding integration cost. Independent review buys another perspective, not a guarantee from vote count. Prefer a few coherent jobs over many tiny cold starts. Pass the intended independent jobs together; do not serialize them without a real dependency or resource constraint.
 
 ## 2. When NOT to Parallelize
 
-Related failures (one investigation, one fix; parallelize only the fix-write); shared file state; exploratory debugging where one finding reframes the next prompt; work needing the orchestrator's full picture; one file with several concerns; aesthetic or tonal consistency (fan out research, converge authoring in one context).
+Keep coupled debugging, one shared design decision, overlapping writes and consistent prose authoring in one owner. Width costs reconciliation, context and conflicts even when agents only read. Required coverage stays; speculative width does not.
 
 ### Sizing the width
 
-**Width is bounded by integration cost.** Read-only lanes still cost reconciliation, verification and parent context. Retain required lenses and independent review; add width for distinct coverage, not because merging prose appears free. Write-parallel lanes also pay conflict resolution.
+Choose width from independent coverage, resource limits and integration work. Preserve caller-declared exclusions and budgets. A command's coverage contract cannot be silently reduced to save time.
 
 ## 3. The Dispatch Procedure (manual `Agent`, legacy fallback)
 
-1. Write each agent's exact scope; verify no dependency on another's output.
-2. Self-contained tasks — no mid-flight context requests.
-3. Pin model per agent (§5).
-4. Dispatch all lanes in ONE message. When your next action needs the result, wait for its completion notification; do not pass an unsupported blocking flag. **Background** when the lanes are independent and you have work for the interval: the runtime backgrounds by default and notifies on completion, and `SendMessage` continues a lane with its context intact. Never poll for a result you will be notified about. Consume a backgrounded lane by its artifact (`args.spillDir`), never by liveness — the `[killed]` reaping measured for **Bash** `run_in_background` is unattested here, and an artifact check is correct either way. Backgrounded `Agent` lanes carry no effort pin and no PINS row: say what you are trading before you dispatch.
-5. Integrate: dedupe by `file:line`, reconcile contradictions, verify with the suite if fixes landed.
+Prefer `/delegate` and pinned Workflow engines. The Agent exception does not expose an effort pin: record the inheritance trade rather than pretend it was pinned. Wait for completion notifications; do not poll a result the runtime will deliver.
+
+Message another session or agent only when it changes their next action: ownership transfer, dependency ready, verified conflict or a blocker needing a decision. Send the evidence path and requested action, not routine progress. A message may resume a finished agent; do not reopen a completed audit or review files still being edited.
+
+Preserve original findings and provenance when integrating. Location is not defect identity. A completed process is not a verified deliverable.
 
 ## 4. Agent Prompt Structure
 
-Focused (one deliverable) · self-contained (context INLINE — orchestrator pushes, agents never pull) · exact output format (JSON / table / one-line verdict) · no coordination implied · **verification in the FOREGROUND, report in the same turn** (a delegate's own **Bash** test run — the `[killed]` reaping is measured for Bash `run_in_background`; whether it reaches Agent lanes is unattested (assessment R3, probe in C2); artifact consumption is correct either way) · **never widen its own permissions** — a tool denial is a STOP, reported under `couldNotSatisfy`; re-attempting a refused edit through another mechanism (Bash `sed`/`python` after `Edit` denial) is an auto-mode bypass · **every user-stated exclusion travels in CONSTRAINTS** (docs not to read, sources not to use, folders not to write) — delegates and `write_doc` (`include_session_chat=false`, `reference_files=[]`) inherit nothing from chat.
+A brief names context, purpose, exact task, allowed write set, exclusions, output artifact and done-condition. Supply relevant evidence/paths, not every skill or the whole transcript. Check inherited claims against source and local inputs; preserve known values even when an inference fails. Keep provenance, uncertainty and runtime overrides explicit. Delegates and `write_doc` inherit nothing from the conversation; an exclusion not written in the brief is lost.
 
-**Check load-bearing premises at each handoff.** Mark supplied claims as unverified until checked against their source and local inputs. A source quote alone does not prove applicability. Preserve known values; reject invalid inferences even when the resulting value is unknown. Reconcile conflicting findings against evidence, not vote counts.
+Keep full results on disk and a short actionable digest in the parent. A profile without Write cannot promise a spill. A subagent is told to return findings as text rather than write report files, so it declines a named report path: brief for the full result as its final message or through the engine's `spillDir`. Long investigations preserve completed evidence before their last message. `couldNotSatisfy` names actual blockers; no outside-scope edits or alternative-tool retry after denial.
 
-**Root-cause investigation/fix lanes embed `debugging` §The Recurrence Law** (subagents never auto-load skills): the spec carries evidence-before-hypothesis and the discriminating-evidence bar, and a lane returning a fix without that evidence is rejected at review, not merged.
-
-```
-You are <role>.
-CONTEXT: <inline files, schemas, conventions>
-WHY: <the larger task this serves; what the result enables next>
-TASK: <single deliverable>
-OUTPUT: <exact format>
-CONSTRAINTS: <hard rules; done-condition>
-```
+Debugging lanes need discriminating evidence before fixes, especially after a prior fix failed. Hand verification results back with the patch, not a claim that tests probably ran. Foreground owned tests may run only where the job's resource scope permits them.
 
 ## 5. Model & Effort Selection
 
-**Every dispatched agent pins both `model` and `effort`. An omitted pin inherits the session's — the bug, not a shortcut.** Effort first, then tier: effort buys turns, turns cost; exhaust the effort pin before trading the tier down. Load `reference/model_ladder_evidence.md` §Role guidance whenever you pin.
+Resolve roles through `model_registry.py for-role <role>` and `reference/model_ladder_evidence.md`. Inspect only the fields needed for the choice; do not repeatedly dump the full roster. Explicit owner overrides remain labeled overrides, not capability promotions.
 
-**Resolve a role to a model with `model_registry.py for-role <orchestrator|executor|fanout|scout>`, never from memory.** It reports rows — in-transport, across the hop with its launcher line, and the nearest tier when neither — and resolves no pin: vendor ids stay the only legal pin on a provider session.
+- Keep orchestration, unscoped cross-system decisions and the final design verdict with the qualified parent/owner.
+- Use a qualified executor for scoped design, difficult debugging and consequential review.
+- Use the fan-out/validation tier for anchored checks and tight execution; a scout only for verifiable locate/enumerate/extract work.
+- Copyable bulk I/O can use the local worker. Derived judgment needs a model capable of the inference.
 
-**Effort is a lever only where the transport lets it be one.** Where a transport fixes effort server-side a per-agent pin is inert, leaving transport-plus-tier — codex reads `CCP_CODEX_EFFORT` once at proxy startup.
-
-**Engine floor** (`review_fanout.js`, `doc_architecture_audit.js`) catches a forgotten pin at the default fan-out row only — it cannot tell a reasoning-heavy lens from a survey, and manual dispatches bypass it.
-
-### Tier by lens shape
-
-Litmus: *would a wrong answer be caught by re-reading the input, or only by out-reasoning it?* Which work shapes each tier covers is the ladder's `§Role definitions` table; the rules below are the routing on top of it.
-
-- **Executor tier — floor for reasoning-heavy lenses:** anywhere a miss ships a defect. Architecture authoring splits by altitude: scoped → executor; cross-domain → orchestrator tier (un-scopable, so not delegable).
-- **Default fan-out tier — floor for read-heavy and mechanical lenses.** Never a design-judgment lens here to save cost.
-- **Validation tier:** verify a PASS, re-check a finding, cheap-to-reject lookups — same model as default fan-out; the lever is a lower effort pin.
-- **Orchestrator tier as a delegate is a cost default, not a capability rule** — off by default; open it per lens via `/pin_ab`, never by blanket pin.
-- **Escalation is per-lens**, raised for a specific heavier input, never a blanket panel bump.
-- **Scout = `agentType: 'Explore'` + explicit model pin.** Locate/enumerate/extract verifiable without doctrine — Explore/Plan receive no CLAUDE.md and no memory index, so never a lens that must APPLY project rules. It is a third Workflow pin (`dispatch.js` per-job `agentType`), never a reason to drop to the `Agent` tool (no effort param → inherited session effort).
-
-**The one inherit carve-out:** measurement batteries that test the session model's own behavior (`routing_battery.md`, `doc_workflow_battery.md`) omit `model` and `effort` on purpose. Do not "fix" them.
+Pin effort by residual ambiguity, not importance or file count; respect the model's measured behavior and legal transport values. Unknown effective effort stays unknown. Requested pins, runtime model identity and capability evidence are different facts. A single result cannot promote or demote a model globally.
 
 ### Per-dispatch harness cost
 
-A third pin beside model and effort: how much harness the child loads, charged PER AGENT — a 10-lens fan-out pays it ten times.
+Choose the smallest profile that carries the required tools and doctrine. Read-only built-ins omit project context and cannot write artifacts; a full profile costs more but may be necessary to apply project rules. Supply the relevant rule explicitly or choose the appropriate profile—never assume omitted context was inherited. Do not treat historical startup-token figures as constants.
 
-| mechanism | knob | where |
-|---|---|---|
-| Workflow `agent()` | `opts.agentType` (`dispatch.js` requires it per job) | table below |
-| `Agent` tool | `subagent_type` (same agent types; no effort pin — fan-outs don't go here) | table below |
-| Sidecar | `-D bare\|pointer\|full` × `-G` | `reference/sidecar_dispatch.md` agent-type table |
+### Effort
 
-First-turn input tokens, identical trivial prompt (Anthropic transports):
-
-| agentType | Sonnet | Haiku |
-|---|---|---|
-| `Explore` / `Plan` | 27.8K | 15.1K |
-| `general-purpose` / default workflow subagent | 53.4K | 33.6K |
-
-`Explore`/`Plan` receive no project CLAUDE.md and no memory index — read-only locate/enumerate/extract only, never a lens that must APPLY project rules (`bare` is the sidecar analog; `full` ≈ `general-purpose`). An unpinned agent inherits the SESSION model whatever its agentType.
-
-### Effort (Workflow `agent()` only)
-
-`low | medium | high | xhigh` — `max` is banned on Anthropic pins; sidecar effort is a vendor coordinate read from the registry row. The `PINS` line records the request, not the effect — where the transport fixes effort (*Effort is a lever only where the transport lets it be one*), confirm effective effort from the run record before citing a pin as evidence.
-
-**Work-shape defaults, never role defaults:** open design / architecting / root-cause debugging `high` (`xhigh` for the hardest design and buried-fork verification); deep review / red-team / adversarial plan review on opus `xhigh` — `high` finds a fraction of the planted defects (ladder §Pick by work shape); executing a converged spec `low`, a loose one `medium`; any *anchored* lens (explicit rubric, supplied inventory, exact schema) `low` even on architectural subject matter; fan-out never above the receiving row's ceiling — the ladder row owns the cell (sonnet: never above `high`, effort inverts); scouts `low`. A row whose ladder `effort` cell differs has moved its own boundary — honor the cell.
-
-- **Pin by residual ambiguity, not size or importance.** Effort buys more steps, not deeper ones; a raise pays only where something remains to discover. Every raise names the ambiguity it resolves.
-- **Each rung ≈1.4× the one below, within one model** (measured on opus; re-sweep per model — level names do not map across models) — pull effort before tier; trading tier crosses a price ratio and buys verification work.
-- **On a SIDECAR model, effort can gate engagement, not depth.** An investigative lens (review, red-team, exploration, root-cause) pins the vendor's top rung: below it, a lens answers from its inlined context and never opens a file — measured on Luna, 3 turns and 0 tool calls at `medium` against 79 tool calls and 5 findings at `max`, same input. Anthropic rungs still buy steps within an already-engaged process; do not port one model's calibration to another (ladder row owns each cell).
-- **A sharp mandate substitutes for effort on sub-architectural inputs** — a lens's named failure mode does the work; on architecturally-loaded plans it does not, and executor-tier `high` finds what default-tier `medium` misses.
-- **Size the read set against the arm's usable context.** `model_registry.py context-window <id>` supplies the catalog limit, not measured request headroom. Compaction can lose evidence. `sidecar_fanout.py` supplies `-P` and review schemas for structured recovery; neither proves preserved coverage. After resume, verify required inputs and decisions before accepting the result.
-- **Bounded-ambiguity stages hard-set effort in the script** (judges, verifiers, extraction); per-invocation stages (arms, executors) take a script default plus an `args` override that carries a named justification.
-- **Unsure between `low` and `medium` → `medium`.** Never characterize a tier from one observation; tier claims need the `/eval_dashboard` floor.
-- **Before pinning, check `.claude/orchestration_candidates.json`.** Candidates are advisory, not an automatic downgrade. `/orchestration_metrics` *Over-pin candidates* owns the quality and complete-task evidence needed to change a default.
+Every dispatched agent pins both model and effort. The deliberate inherit case is a measurement of the session model itself. Raise a lens above its default cell only per-lens, with `args.justification` naming the ambiguity the raise resolves; never a blanket panel bump. If an API cannot express a required setting, use a supported route and state the trade; do not invent an option. Check `.claude/orchestration_candidates.json` only as advisory evidence, not automatic routing authority. Unsure between `low` and `medium` → `medium`. When a lens under-resolves, raise its effort before raising its tier: effort buys turns. §5b owns cost-driven descent. A sharp mandate substitutes for effort only on sub-architectural inputs; on an architecturally-loaded plan, executor-tier `high` finds what `medium` misses.
 
 ## 5b. Budget, Availability & Transport
 
-Order: (1) is the model selectable — `model_registry.py available`; an excluded model is out, re-select under the ladder, never substitute by rule; (2) what the band allows; (3) how much quota the dispatch spends; (4) if it leaves Anthropic, the sidecar recipe.
+Read the current band's actual currency before dispatch. The native route spends its provider's allowance; a sidecar spends the target provider's. Quota is not an Anthropic-dollar estimate. A zero-priced route still has eligibility, privacy and service limits.
 
-**Bands are per CURRENCY, and a seat has two.** A Workflow/Agent dispatch is governed by its own transport's band; a hop spends the TARGET's — read it with `python3 .claude/hooks/budget_posture.py --band --transport <name>`. On a provider seat `[budget-posture]` prints both, labelled.
+Availability comes from the registry; budget bands from `quota_bands.py`. Preserve their guards. An unreadable band is unknown, not Surplus or Hot. Under a pressured band `hooks/workflow_provider_guard.py` denies a pinned dispatch until the call states its currency: `args.currency` plus `args.currencyReason`, or an Agent prompt line `CURRENCY: anthropic — <why>`. State it once per band, then hold it on the session record. A deliberate budget override is stated before use, never chosen silently after a failed job. Do not substitute a model/provider merely to get a green exit.
 
-**Bands.** `pressure = used% / pace%` per window; `.claude/tools/quota_bands.py` `BANDS` is the only home, and the `[budget-posture]` hook emits the current band's set.
+Keep quality floors while controlling cost: first remove redundant work, then adjust eligible effort/tier on evidence. Pressure moves the tier, ambiguity moves the effort: under pressure, enumerable checks and converged execution drop to the fan-out tier, while planning, architecting, architectural plan review, red-team and open-judgment review hold the executor tier as the reserved floor. Record the accepted result and repair work. Do not infer a cheaper counterfactual from one clean run or compare mismatched cohorts.
 
-- **Surplus** <0.85 (spend plan quota first — it expires), **On pace**, **Ahead**, **Hot** >1.5 (paid transport becomes the cheaper currency). `seven_day` governs provider choice and tier-within-quota; `five_hour` governs fan-out width.
-- **A band authorizes a CLASS of work; the roster supplies who does it** — a band never names models. Bands govern PAID currencies only: the free local tier (`ai-worker`) takes copyable digest reads, extraction and doc prose in every band.
-- **Pressure widens the delegatable set and never shrinks the reserved floor** — orchestration, gate decisions, cross-system seams, the ideal-design VERDICT.
-- **The floor reserves those DECISIONS, not the work shape.** A *scoped* judgment, review or architecting LENS is delegable in every band, to the ladder's row for that work shape, by sidecar hop when that row is off-transport. What comes home is the verdict on its findings.
-- **Two hooks enforce it.** The sidecar's band gate (exit codes in `reference/sidecar_dispatch.md`), and `hooks/workflow_provider_guard.py`: under **Ahead/Hot** it DENIES every Workflow/Agent dispatch carrying a model pin — claimed by a roster model or not — unless the call states the currency. `args.currency: "anthropic"` + `args.currencyReason`; Agent takes a `CURRENCY: anthropic — <why>` prompt line. Stated once per band, then held on the session record.
-- **A pin is not its own justification.** A pin the engine defaulted to, or one a command's own table supplied, is not a constraint, so the reason names one independent of the pin — engine lock, MCP tools the sidecar child lacks, a capability the roster genuinely lacks. "The lens is pinned opus" is circular, and a command's pin table is subordinate to its own band rule.
-
-**Tier-within-quota.** Plan quota is model-weighted: the executor tier at `low` matches the default fan-out tier on quality at ~2.6× the quota — buy it for judgment or wall-clock, never to save budget. First ask whether the work can leave quota at all (local tier, or an external model that *claims the role* in the registry's `roles`). What stays on quota:
-
-| dispatch shape | Surplus / On pace | Ahead / Hot |
-|---|---|---|
-| planning, architecting, design judgment | executor `high` (`xhigh` hardest) | unchanged — the reserved floor |
-| plan-check / review lenses | executor `low` | open lenses executor `low`; enumerable lenses default fan-out `medium` |
-| execution under a converged spec | executor `low` | default fan-out `medium` |
-
-Pressure moves the *tier*; ambiguity moves the *effort*. An architecting dispatch never drops to `low` for budget — off-quota transport or smaller scope instead. Record `clean`/`defects`/`rework` on every traded-down dispatch; an unrecorded trade-down is a saving you cannot defend.
-
-**On an external-model-led session** the floor above still binds: gate decisions and the ideal-design verdict warrant an Anthropic session or explicit user sign-off, even though large-scope architecture *authoring* is delegable there. A Workflow fan-out from that seat is not band-gated — `session_model_rails.py` states the session's tier and role map at SessionStart instead.
-
-**Sidecar:** `reference/sidecar_dispatch.md` — one launcher per transport from the registry's `launcher` field, one flag surface, the `-D`×`-G` agent-type table, exit codes. Prefer few long agents to many short ones on a paid tier — each dispatch pays a cold-start toll.
-
-**Generic engines are provider-aware, not cross-transport.** The provider guard injects `args.__transport = {name, ids, default}` off-Anthropic; `dispatch.js`, `dispatch_chains.js`, and `review_fanout.js` then accept that transport's ids. Another transport still needs its registry launcher. `/delegate` keeps executor `route` separate from delegate-rail `shape`: only `shape` (`any|survey|review|author`) reaches sidecar `-G`. `args.spillDir` defaults on for prose output and stays under `.claude/scratch/` or `$TEMP/claude`.
+Native engines accept this transport's declared IDs/efforts. Off-transport jobs use its registered launcher through the sidecar owner. Literal pins and short args avoid hidden provider translation; large briefs stay in files.
 
 ## 6. The 15-Agent Cap (manual `Agent` dispatch only)
 
-Flat: ≤15 per batch. Nested: `outer × subagents-per-outer ≤ 15` — compute before dispatching, split into sequential batches above it.
+Manual batches stay within 15 total agents, including nested work. Workflow concurrency follows the live runtime; do not encode a stale platform count as policy. Nested delegation is not a substitute for parent-owned coverage.
 
 ## 7. Worktree Caveat
 
-Parallel agents share one working tree: second write wins or fails on lock; `.tscn` edits must partition by scene. `isolation: "worktree"` per agent buys genuine isolation (~200–500ms + disk each; write-parallel work only); each fresh worktree needs the Jmodot submodule re-init (`archive_worktree_submodule_gotcha.md`).
+Shared-checkout writers partition or serialize ownership. Genuine isolation is the per-agent `isolation: "worktree"` option, for write-parallel work only; it costs setup time and disk per agent, and its submodule must be initialized before relevant builds. Read-only comparisons use frozen inputs. Neither idle state nor a repo-path substring proves a process/file belongs to this job.
+
+GdUnit4 and shared csharp-ls operations are single-flight. Main owns broad verification; isolated non-runtime proofs may run within a scoped job. A RED needs an executed assertion failure, not a zero-match exit code.
 
 ## 8. Verification After Integration
 
-Dedupe by `file:line` (keep the more specific / `critical` one); reconcile contradictions as orchestrator-only `## Notes`; run `/regression_gate` if fixes landed; never claim completion unverified — cite output or use future tense.
+Read the delivered artifact, verify decisive claims and original-source coverage, then run the applicable checks. Reconcile conflicting evidence directly. Failed/null/malformed output is uncovered; never filter it into “zero findings.” Check each fan-out's journal model column against the currency you intended.
 
-**A lens that stalls or returns null is recovered before any re-dispatch:** its spill file, else `/salvage_fanout`, which owns recovery. **Check deliverable rules against the delivered artifact, not the research spill.** `/delegate` records outcomes on consumption, then joins each expanded label to exactly one Workflow or sidecar row through `orchestration_metrics.py --manifest-seed`; missing or duplicate evidence fails.
+Recover before another paid call: artifact, then transcript/`/salvage_fanout`. Confirm a job is terminal before considering a replacement; no-result and still-running are different states. Record outcome on consumption and build the existing manifest with one exact evidence join per label. Keep process status separate from acceptance.
 
 ## 9. Authoring a Workflow on the Fly
 
-The tool description documents the API; this is the project layer on top.
+Use the `workflow-authoring` reference for the live API. Prefer the existing dispatch/review/chain engines. New scripts have literal metadata, explicit pins, PINS logging and schemas for machine-consumed results. Bounded-ambiguity stages (judges, verifiers, extraction) hard-set effort in the script; per-invocation stages (arms, executors) take a script default plus an `args` override with a named justification. Write-shaped schemas carry `couldNotSatisfy`, plus `redVerification` on TDD stages. Preserve full evidence without hard caps on archival finding arrays.
 
-- **Pass new scripts inline via `Workflow({script})`; iterate with the returned `scriptPath`** — keep prompts inside the script: prompt text through JSON `args` can die (`gotcha_workflow_args_generation_fidelity.md`, `gotcha_workflow_args_permission_control_chars.md`). `args` carries short scalars only; bulk context goes to a scratch `.md` agents `Read` by absolute path.
-- **`log('PINS ' + JSON.stringify({label: effort, …}))` for EVERY dispatched label**, verify/adjudicate stages included — `/orchestration_metrics` refuses an unresolved `?`.
-- **Record each dispatch's outcome when you consume it** (`clean`/`defects`/`rework`/`discarded`) — cost survives compaction, the verdict doesn't.
-- **Write-shaped schemas carry `couldNotSatisfy`** (+ `redVerification` on TDD stages).
-- **`pipeline()` by default; a barrier needs cross-item context from ALL of the prior stage.**
-- **`schema` on every stage whose output feeds another.** Pin `model` and `effort` per stage. `log()` every silent cap. Loops guard on `budget.total`.
-- **Cold context:** agents compare, never discover — fanned `Grep`/`Glob` false-empties (`gotcha_workflow_fanout_search_false_absence.md`). `meta` is a pure literal; `Date.now()`/`Math.random()` throw; resume with `resumeFromRunId`.
-- **Promotion:** a script worth running twice goes to `.claude/workflows/` behind a command; audit the pair against `instruction_quality` §12.
+Use `pipeline()` unless the next stage needs all prior results together. State any coverage cap and budget. Pass paths/short scalars, not giant nested args. Agents compare, never discover: push content through args, because fanned `Grep`/`Glob` return false empties (`gotcha_workflow_fanout_search_false_absence`). Keep completed results on resume; inspect a missing result before re-dispatch. Outcome and effort-fit ratings are recorded when consumed, not reconstructed from memory at session end.
 
 ## 10. Context Checkpointing (long-horizon drives)
 
-Checkpoint state to the plan file at every slice boundary. Before any deliberate compaction, dispatch the next long-running Workflow FIRST — in-flight dispatches survive compaction. The boundary is in-session `/compact`, never a fresh-session handoff (`feedback_compact_in_session_at_stopping_points.md`).
+Keep a small task state: requirements/exclusions, decisions, active jobs, accepted artifacts, verification and next action, in `tools/task_record.py` (one record per task; decisions carry evidence, jobs come from the dispatch journal). Write it at each phase boundary and on each consumed result; the compaction hook re-injects it. Load that state plus the active procedure after interruption, not every completed phase body. After resume, recheck required inputs and decisions before trusting receipts.
 
-At each slice checkpoint report the context percentage to the user as one line: `Checkpoint: slice N done, context NN% — compact when you choose.` Read `context_pct` from `<TEMP>/cc-cachestat-<session_id>.json`; never self-estimate. The number is information for the user; it is never a reason to stop, summarize, trim work, or propose a new session — continue the drive.
+Leave automatic compaction enabled for ordinary long work. Verify the recipient's usable window and inherited overrides; a client declaration does not grant backend capacity. Do not blanket-switch models to 1M or disable compaction to avoid recovery work. Use supported compaction at a useful boundary; do not stop a drive merely because context is high. Dispatch the next long-running job before a deliberate compaction; in-flight dispatches survive it. Compact in session at a boundary, never by handing off to a fresh session. Read `context_pct` from `<TEMP>/cc-cachestat-<session_id>.json`, never self-estimate, and report it only when it changes the next action.
 
 ## 11. Dispatch Doctrine (efficiency-to-quality)
 
-- **A converged spec IS the dispatch signal** — on every execution surface, and on EFFORT as well as tier: a converged spec gains nothing from a high-effort session executing it inline; dispatch at a low-effort pin even when the session model is the executor tier. The orchestrator keeps decisions, cross-system seams, final review; small surgical edits and lookups stay inline. Review depth tracks the intel gap: a lower tier lands ~80–90% and you close the rest; an equal-intel executor returns correctness-complete work you review for taste and fit.
-- **Delegation grain by shape:** one coherent unit with a bounded, enumerable file set finished in one session — a plan slice, one TDD cycle, one subsystem survey, one checklist review. Can't enumerate the files → not yet a delegatable unit. Keep unscoped judgment, silent-failure risk and cross-system seams at the session model.
-- **Cache-TTL asymmetry:** the main conversation holds a 1h prompt cache; every subagent is pinned to 5m. Keep blocking runs >5min (full suite, full build) in the main session and delegate the authoring around them; never interleave long-blocking calls with edits inside one subagent. `fork` starts warm; `isolation: "worktree"` builds its own prefix.
-- **The spec is the price.** Spec-writing at the orchestrator tier converts a cheaper model's output up a tier; a loose spec converts it into rework. A landing spec carries a hand-verified exemplar, per-item deltas, hard invariants, a done-condition and "report what you couldn't satisfy".
-- **Author the verification before dispatch, and the first instance yourself.** Data-pin tests first; one hand-made exemplar for a new `.tres`/`.tscn` pattern, then delegate the clones. Survey specs: question list + word cap + "quote key signatures". Digest/synthesis never burns agent-tier tokens — worker tier (`/research`).
-- **Rate each dispatch's effort fit when you consume its result**; `/self_evaluate` flags mismatches, `/autolearn` proposes ladder edits when they recur.
+A converged spec is ready for a scoped executor; the parent retains integration and final judgment. A delegatable unit is one coherent job whose file set you can enumerate now and whose work finishes in one session; if you cannot enumerate the files, scope it further before dispatching. Small surgical work can stay inline when handoff is larger than the work. A verified finding ledger with exact old/new text is a converged spec: dispatch the edits and keep verification in the parent. Author the verification and first exemplar before batching clones. Subagent prompt caches expire far sooner than the main session's: keep long blocking runs (full suite, full build) in the parent and delegate the authoring around them. Never interleave long-blocking calls with edits inside one subagent.
+
+**Slices are commit units, not dispatch units.** Before the first execution dispatch, map the plan's slices to jobs from their write sets and interface dependencies, and state the map. Slices with disjoint write sets and no dependency run concurrently, each in its own worktree when they share a checkout. Merge consecutive coupled slices into one job only while its measured peak context stays well under the executor's window: every later turn re-reads the earlier slice's context, so a merge saves startup, not tokens. A slice smaller than its handoff runs inline. Re-map after each measured run.
+
+Count complete-task cost: preparation, cold starts, model work, repair, verification and recovery. Bound parent prose, not evidence. A paid task is not retried from scratch merely because its transport stopped. Use the live background/monitor lifetime contract so a shell timeout does not discard a healthy long job.
 
 ## Cross-references
 
-`commands/agents/review_agents.md` (spawn rules) · `commands/agents/orchestrator_action_protocol.md` (merge, report, claims to refuse) · exemplars `/session_audit` Phase 2, `/plan_check`, `/test_skill` · cold memory `archive_agent_task_gotchas.md`, `archive_worktree_session_setup.md`.
+`commands/delegate.md` · `reference/sidecar_dispatch.md` · `reference/model_ladder_evidence.md` · `commands/agents/orchestrator_action_protocol.md` · `commands/agents/review_agents.md` (spawn rules) · `commands/salvage_fanout.md`

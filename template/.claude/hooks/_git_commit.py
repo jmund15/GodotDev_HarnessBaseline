@@ -7,10 +7,15 @@ commit message quoting the command), evaluates the wrong repo (`git -C <path>`, 
 pathspec). Nine guards each parsed privately and each carried a different subset of those
 holes; this module is the single home, so a fix lands in every guard at once.
 
-    commit_invocations(command, cwd) -> [CommitInvocation]  every executing commit-like segment
-    staged_paths(rest, cwd)          -> (paths, None) | (None, failing-git-subcommand)
-    incoming_paths(sub, rest, cwd)   -> same shape, for merge / cherry-pick / revert
-    bypass_declared(inline_env, VAR) -> True when VAR=1 in the hook's env OR inline on the command
+    commit_invocations(command, cwd)    -> [CommitInvocation]  every executing commit-like segment
+    staged_paths(rest, cwd, env)        -> (paths, None) | (None, failing-git-subcommand)
+    incoming_paths(sub, rest, cwd, env) -> same shape, for merge / cherry-pick / revert
+    git_environ(git_env)                -> os.environ with a command's GIT_* variables applied
+    bypass_declared(inline_env, VAR)    -> True when VAR=1 in the hook's env OR inline on the command
+
+A commit publishes the index its GIT_* variables name (`GIT_INDEX_FILE=<f> git commit`, or an
+earlier `export`). Each invocation carries them as `git_env`, and every git read made to judge that
+commit passes it: reading the default index judges content the commit never had.
 
 Fail posture belongs to the caller: this module reports git failure as `None`, and a guard
 decides whether that denies (enforcement) or allows (advisory).
@@ -31,6 +36,7 @@ __all__ = [
     "CommitInvocation", "COMMIT_LIKE", "GLOBAL_FLAGS_WITH_VALUE",
     "segments", "git_invocation", "cd_target", "commit_invocations",
     "parse_commit_args", "run_git", "staged_paths", "incoming_paths", "bypass_declared",
+    "export_assignments", "command_git_env", "git_environ",
 ]
 
 SEGMENT_SPLIT = re.compile(r"\|\||&&|[;|&\n]")
@@ -42,7 +48,7 @@ GLOBAL_FLAGS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"
 COMMIT_LIKE = {"commit", "merge", "cherry-pick", "revert"}
 
 _COMMIT_VALUE_FLAGS = {"-m", "--message", "-F", "--file", "-c", "-C", "--author", "--date",
-                       "--reuse-message", "--fixup", "--squash", "--trailer"}
+                       "--reuse-message", "--fixup", "--squash", "--trailer", "--pathspec-from-file"}
 _SHORT_VALUE_LETTERS = "mFcC"
 
 
@@ -52,13 +58,28 @@ class CommitInvocation:
     rest: list               # args after the subcommand
     cwd: str                 # the repo the command targets (payload cwd + cd + -C)
     inline_env: dict = field(default_factory=dict)
+    git_env: dict = field(default_factory=dict)   # GIT_* the git process runs with; None unsets
+
+
+_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 
 
 def segments(command):
-    for raw in SEGMENT_SPLIT.split(command):
-        raw = raw.strip()
+    """Segments split at `||`, `&&`, `;`, `|`, `&` and newlines outside quotes. A separator inside a
+    quoted argument (a search pattern naming a git command) does not split. An unbalanced quote splits
+    at every separator, so a malformed command can only over-block."""
+    blanked = _QUOTED.sub(lambda match: " " * len(match.group(0)), command)
+    if "'" in blanked or '"' in blanked:
+        blanked = command
+    start = 0
+    for match in SEGMENT_SPLIT.finditer(blanked):
+        raw = command[start:match.start()].strip()
         if raw:
             yield raw
+        start = match.end()
+    raw = command[start:].strip()
+    if raw:
+        yield raw
 
 
 def _tokens(segment):
@@ -102,15 +123,40 @@ def cd_target(segment):
     return None
 
 
+def export_assignments(segment):
+    """{KEY: value} an `export K=V ...` segment sets, {KEY: None} an `unset K ...` clears, else None."""
+    tokens = _tokens(segment)
+    if len(tokens) < 2:
+        return None
+    if tokens[0] == "export":
+        pairs = (t.partition("=") for t in tokens[1:] if "=" in t and not t.startswith("-"))
+        return {key: value for key, _, value in pairs}
+    if tokens[0] == "unset":
+        return {t: None for t in tokens[1:] if not t.startswith("-")}
+    return None
+
+
+def command_git_env(exported, inline_env):
+    """The GIT_* variables a git segment runs with: earlier exports, then its own inline prefix."""
+    merged = dict(exported or {})
+    merged.update(inline_env or {})
+    return {key: value for key, value in merged.items() if key.startswith("GIT_")}
+
+
 def commit_invocations(command, cwd):
     """Every executing commit-like git segment in `command`, heredoc bodies excluded, with
     the repo each one targets. An empty list means the command commits nothing."""
     cwd = cwd or "."
     found = []
+    exported = {}
     for segment in segments(executable_text(command or "")):
         moved = cd_target(segment)
         if moved is not None:
             cwd = os.path.join(cwd, os.path.expanduser(moved))
+            continue
+        assigned = export_assignments(segment)
+        if assigned is not None:
+            exported.update(assigned)
             continue
         parsed = git_invocation(segment)
         if parsed is None:
@@ -119,7 +165,8 @@ def commit_invocations(command, cwd):
         if not args or args[0] not in COMMIT_LIKE:
             continue
         target = os.path.join(cwd, chdir) if chdir else cwd
-        found.append(CommitInvocation(args[0], args[1:], target, inline_env))
+        found.append(CommitInvocation(args[0], args[1:], target, inline_env,
+                                      command_git_env(exported, inline_env)))
     return found
 
 
@@ -161,11 +208,26 @@ def parse_commit_args(rest):
     return include_dirty, amend, pathspec
 
 
-def run_git(args, cwd):
-    """git stdout, or None on any failure (non-zero exit, missing binary, timeout)."""
+def git_environ(git_env):
+    """os.environ with `git_env` applied (a None value unsets), or None when `git_env` is empty, so the
+    subprocess inherits the hook's environment unchanged."""
+    if not git_env:
+        return None
+    env = dict(os.environ)
+    for key, value in git_env.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+def run_git(args, cwd, env=None):
+    """git stdout, or None on any failure (non-zero exit, missing binary, timeout). `env` is the
+    invocation's `git_env`."""
     try:
         result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=30)
+                                encoding="utf-8", errors="replace", timeout=30, env=git_environ(env))
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
@@ -177,33 +239,68 @@ def _lines(out):
     return {line.strip().replace("\\", "/") for line in out.splitlines() if line.strip()}
 
 
-def staged_paths(rest, cwd):
-    """Paths a `git commit <rest>` will publish: the index, plus HEAD's paths under `--amend`,
-    plus dirty tracked files under `-a`, plus tracked-and-changed files under a pathspec.
-    (paths, None) on success; (None, failing-git-subcommand) on any git failure.
+def _pathspec_file(rest):
+    """The `--pathspec-from-file` value, or None when the flag is absent."""
+    for i, a in enumerate(rest):
+        if a == "--":
+            break
+        if a.startswith("--pathspec-from-file="):
+            return a.split("=", 1)[1]
+        if a == "--pathspec-from-file":
+            return rest[i + 1] if i + 1 < len(rest) else ""
+    return None
 
-    A pathspec without `-i`/`--include` narrows the commit to files matching it -- git commits
-    only those, leaving the rest of the index untouched, so another session's unrelated staged
-    files must not appear here. `-i`/`--include` keeps the whole index (the pathspec then only
-    forces its own paths in, even if unstaged), so the unscoped read stays in that case."""
+
+def _includes_index(rest):
+    """True for `-i`/`--include`: the index is published alongside the pathspec."""
+    for a in rest:
+        if a == "--":
+            break
+        if a in ("-i", "--include"):
+            return True
+        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            letters = a[1:]
+            cut = min((letters.index(ch) for ch in _SHORT_VALUE_LETTERS if ch in letters), default=len(letters))
+            if "i" in letters[:cut]:
+                return True
+    return False
+
+
+def staged_paths(rest, cwd, env=None):
+    """Paths a `git commit <rest>` will publish. A pathspec commit (after `--`, bare, or from
+    `--pathspec-from-file`) publishes only the pathspec's changed files, as git's default `--only`
+    mode does, unless `-i`/`--include` adds the index. Otherwise the index is published. HEAD's
+    paths join under `--amend`, dirty tracked files under `-a`. An unreadable pathspec file,
+    including stdin (`-`), is a failure. `env` is the invocation's `git_env`. (paths, None) on success;
+    (None, failing-step) on failure."""
     include_dirty, amend, pathspec = parse_commit_args(rest)
-    include_all = any(a in ("-i", "--include") for a in rest)
     paths = set()
 
-    if not pathspec or include_all:
-        cached = run_git(["diff", "--cached", "--name-only"], cwd)
+    spec_file = _pathspec_file(rest)
+    if spec_file is not None:
+        if spec_file in ("", "-"):
+            return None, "pathspec-from-file " + (spec_file or "(missing value)")
+        try:
+            with open(os.path.join(cwd, spec_file), encoding="utf-8") as fh:
+                pathspec = pathspec + [line.strip() for line in fh.read().replace("\0", "\n").splitlines()
+                                       if line.strip()]
+        except OSError:
+            return None, "pathspec-from-file " + spec_file
+
+    if not pathspec or include_dirty or _includes_index(rest):
+        cached = run_git(["diff", "--cached", "--name-only"], cwd, env)
         if cached is None:
             return None, "diff --cached --name-only"
         paths |= _lines(cached)
 
     if amend:
-        shown = run_git(["show", "--name-only", "--pretty=format:", "HEAD"], cwd)
+        shown = run_git(["show", "--name-only", "--pretty=format:", "HEAD"], cwd, env)
         if shown is None:
             return None, "show --name-only HEAD"
         paths |= _lines(shown)
 
     if include_dirty:
-        dirty = run_git(["diff", "--name-only"], cwd)
+        dirty = run_git(["diff", "--name-only"], cwd, env)
         if dirty is None:
             return None, "diff --name-only"
         paths |= _lines(dirty)
@@ -211,7 +308,7 @@ def staged_paths(rest, cwd):
     if pathspec:
         # `git commit -- <pathspec>` commits the tracked files under the pathspec that differ
         # from HEAD — `ls-files` would demand every untouched file under a directory pathspec.
-        changed = run_git(["diff", "--name-only", "HEAD", "--"] + pathspec, cwd)
+        changed = run_git(["diff", "--name-only", "HEAD", "--"] + pathspec, cwd, env)
         if changed is None:
             return None, "diff --name-only HEAD -- " + " ".join(pathspec)
         paths |= _lines(changed)
@@ -226,7 +323,7 @@ def _first_ref(rest):
     return None
 
 
-def incoming_paths(sub, rest, cwd):
+def incoming_paths(sub, rest, cwd, env=None):
     """Paths a merge / cherry-pick / revert would commit. (paths, None) or (None, failing cmd).
     A `--no-commit` / `-n` run stages without committing and returns an empty set — the later
     `git commit` is where the staged content gets judged."""
@@ -236,10 +333,10 @@ def incoming_paths(sub, rest, cwd):
     if ref is None:
         return set(), None
     if sub == "merge":
-        out = run_git(["diff", "--name-only", "HEAD..." + ref], cwd)
+        out = run_git(["diff", "--name-only", "HEAD..." + ref], cwd, env)
         cmd = "diff --name-only HEAD...%s" % ref
     else:
-        out = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", ref], cwd)
+        out = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", ref], cwd, env)
         cmd = "diff-tree --name-only -r %s" % ref
     if out is None:
         return None, cmd

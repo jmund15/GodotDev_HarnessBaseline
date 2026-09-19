@@ -42,8 +42,8 @@ participant can observe; what IS observable is whether the output was accepted
 Over-pin ("overshoot") is never rated at consumption -- it is derived at the
 aggregate by compute_candidates() comparing clean-only adjacent rungs within a
 shape family (cost gap beyond natural rung pricing at comparable work volume),
-and acted on as a substituted downgrade on the family's next natural dispatch
-(never a parallel probe -- see /orchestration_metrics "Over-pin candidates").
+and reported as an advisory same-model comparison worth running; no pin moves
+until it is judged (see /orchestration_metrics "Over-pin candidates").
 Legacy verdict words (right-sized/overshoot/undershoot/wasted) map through.
 
 Usage:
@@ -54,9 +54,12 @@ Usage:
   orchestration_metrics.py --manifest-seed seed.json --manifest-out manifest.json
                                                 join exact Workflow/sidecar evidence; never archive
 """
-import argparse, json, os, re, shlex, sys, time
+import argparse, json, os, re, shlex, sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hooks'))
+from _file_lock import locked  # noqa: E402
 
 IN_W, OUT_W, CW_W, CR_W = 1.0, 5.0, 1.25, 0.1
 
@@ -122,7 +125,6 @@ ARCHIVE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_metrics.jsonl')
 ARCHIVE_MAX_BYTES = 5 * 1024 * 1024
 ARCHIVE_MAX_ROTATIONS = 6
 ARCHIVE_LOCK_TIMEOUT_SECONDS = 10.0
-ARCHIVE_LOCK_STALE_SECONDS = 60.0
 # Falsification outcomes, recorded at consumption (see module docstring).
 OUTCOMES = ('clean', 'defects', 'rework', 'discarded')
 LEGACY_VERDICTS = {'right-sized': 'clean', 'overshoot': 'clean',
@@ -156,29 +158,60 @@ PENDING_VERDICTS = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_verdicts
 LEGACY_PENDING_VERDICTS = os.path.join(_PROJECT_DIR, '.claude', 'scratch', 'orchestration_verdicts.json')
 
 
-def _read_json_object(path):
+def _input_diagnostic(diagnostics, reader, path, status, detail=''):
+    if diagnostics is None:
+        return
+    row = {
+        'reader': reader,
+        'path': os.path.abspath(os.path.expanduser(str(path))),
+        'status': status,
+    }
+    if detail:
+        row['detail'] = str(detail)
+    diagnostics.append(row)
+
+
+def _read_json_object(path, diagnostics=None, reader='json-object'):
     try:
         with open(path, encoding='utf-8') as fh:
             value = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError as exc:
+        _input_diagnostic(diagnostics, reader, path, 'missing', exc)
         return None
-    return value if isinstance(value, dict) else None
+    except json.JSONDecodeError as exc:
+        _input_diagnostic(diagnostics, reader, path, 'malformed', exc)
+        return None
+    except (OSError, UnicodeError) as exc:
+        _input_diagnostic(diagnostics, reader, path, 'unreadable', exc)
+        return None
+    if not isinstance(value, dict):
+        _input_diagnostic(diagnostics, reader, path, 'non-object',
+                          'expected a JSON object')
+        return None
+    return value
 
 
-def _iter_jsonl_objects(path):
+def _iter_jsonl_objects(path, diagnostics=None, reader='jsonl'):
     try:
         with open(path, encoding='utf-8', errors='replace') as fh:
-            for line in fh:
+            for line_number, line in enumerate(fh, 1):
                 if not line.strip():
                     continue
                 try:
                     value = json.loads(line)
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError) as exc:
+                    _input_diagnostic(diagnostics, reader, path, 'malformed',
+                                      f'line {line_number}: {exc}')
                     continue
-                if isinstance(value, dict):
-                    yield value
-    except OSError:
-        return
+                if not isinstance(value, dict):
+                    _input_diagnostic(diagnostics, reader, path, 'non-object',
+                                      f'line {line_number}: expected a JSON object')
+                    continue
+                yield value
+    except FileNotFoundError as exc:
+        _input_diagnostic(diagnostics, reader, path, 'missing', exc)
+    except (OSError, UnicodeError) as exc:
+        _input_diagnostic(diagnostics, reader, path, 'unreadable', exc)
 
 
 def _atomic_write_json(path, value, indent=2):
@@ -204,43 +237,15 @@ def _archive_paths():
     return [path for path in rotated + [ARCHIVE] if os.path.isfile(path)]
 
 
-def _archive_records():
+def _archive_records(diagnostics=None):
     for path in _archive_paths():
-        yield from _iter_jsonl_objects(path)
+        yield from _iter_jsonl_objects(path, diagnostics, 'archive')
 
 
 @contextmanager
 def _archive_lock():
-    lock_path = ARCHIVE + '.lock'
-    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
-    deadline = time.monotonic() + ARCHIVE_LOCK_TIMEOUT_SECONDS
-    fd = None
-    while fd is None:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                stale = time.time() - os.path.getmtime(lock_path) > ARCHIVE_LOCK_STALE_SECONDS
-            except OSError:
-                stale = False
-            if stale:
-                try:
-                    os.unlink(lock_path)
-                except OSError:
-                    pass
-                continue
-            if time.monotonic() >= deadline:
-                raise TimeoutError('timed out waiting for archive lock: ' + lock_path)
-            time.sleep(0.01)
-    try:
-        os.write(fd, str(os.getpid()).encode('ascii'))
+    with locked(ARCHIVE + '.lock', ARCHIVE_LOCK_TIMEOUT_SECONDS):
         yield
-    finally:
-        os.close(fd)
-        try:
-            os.unlink(lock_path)
-        except OSError:
-            pass
 
 
 def _rotate_archive():
@@ -281,20 +286,37 @@ def _atomic_replace_bytes(path, content):
 
 
 def _archive_rows_atomic(rows):
-    """Deduplicate, rotate, and atomically append rows under one cross-process lock."""
+    """Idempotently append each (run, label), preserving partial-run recovery."""
     rows = [dict(row) for row in rows if isinstance(row, dict) and row.get('run')]
     with _archive_lock():
-        existing = {}
+        rated_pairs, rated_runs, ignored_runs = set(), set(), set()
         for record in _archive_records():
             run = record.get('run')
-            if run:
-                existing.setdefault(run, set()).add('ignored' if record.get('ignored') else 'rated')
-        desired_runs = {row['run'] for row in rows}
-        conflicts = sorted(run for run in desired_runs
-                           if 'rated' in existing.get(run, set())
-                           and any(row.get('ignored') for row in rows if row['run'] == run))
-        fresh_runs = desired_runs - set(existing) - set(conflicts)
-        fresh = [row for row in rows if row['run'] in fresh_runs]
+            if not run:
+                continue
+            if record.get('ignored'):
+                ignored_runs.add(run)
+            else:
+                rated_runs.add(run)
+                rated_pairs.add((run, record.get('label')))
+        incoming_rated = {row['run'] for row in rows if not row.get('ignored')}
+        incoming_ignored = {row['run'] for row in rows if row.get('ignored')}
+        conflicts = sorted(incoming_ignored & (rated_runs | incoming_rated))
+        fresh, seen = [], set()
+        for row in rows:
+            run = row['run']
+            if run in conflicts:
+                continue
+            if row.get('ignored'):
+                key = ('ignored', run)
+                if run in ignored_runs or key in seen:
+                    continue
+            else:
+                key = ('rated', run, row.get('label'))
+                if run in ignored_runs or (run, row.get('label')) in rated_pairs or key in seen:
+                    continue
+            seen.add(key)
+            fresh.append(row)
         skipped = len(rows) - len(fresh)
         if fresh:
             encoded = [(row, (json.dumps(row) + '\n').encode('utf-8')) for row in fresh]
@@ -341,6 +363,36 @@ def load_pending_verdicts(path=None):
         sys.stderr.write(f'Merged {added} verdict(s) from legacy {LEGACY_PENDING_VERDICTS} '
                          '(root wins on collision).\n')
     return merged
+
+
+@contextmanager
+def _pending_lock():
+    with locked(PENDING_VERDICTS + '.lock', ARCHIVE_LOCK_TIMEOUT_SECONDS):
+        yield
+
+
+def _prune_pending_verdicts(snapshot, consumed_keys, legacy_snapshot=None,
+                            legacy_consumed_keys=()):
+    """Remove unchanged consumed values from both verdict sources under one lock."""
+    with _pending_lock():
+        current_root = _read_verdict_file(PENDING_VERDICTS)
+        current_legacy = (_read_verdict_file(LEGACY_PENDING_VERDICTS)
+                          if LEGACY_PENDING_VERDICTS != PENDING_VERDICTS else {})
+        remaining_root = dict(current_root)
+        remaining_legacy = dict(current_legacy)
+        for key in consumed_keys:
+            if key in snapshot and current_root.get(key) == snapshot[key]:
+                remaining_root.pop(key, None)
+        legacy_snapshot = legacy_snapshot or {}
+        for key in legacy_consumed_keys:
+            if key in legacy_snapshot and current_legacy.get(key) == legacy_snapshot[key]:
+                remaining_legacy.pop(key, None)
+        if remaining_root != current_root:
+            _atomic_write_json(PENDING_VERDICTS, remaining_root)
+        if remaining_legacy != current_legacy:
+            _atomic_write_json(LEGACY_PENDING_VERDICTS, remaining_legacy)
+        return (len(current_root) - len(remaining_root)
+                + len(current_legacy) - len(remaining_legacy))
 
 
 def w(s):
@@ -397,12 +449,28 @@ def find_session_dir(session_id=None):
     # nothing, and the scan must not answer for it with a peer's.
     sid = session_id or os.environ.get('CLAUDE_CODE_SESSION_ID')
     if sid:
-        for d in (os.listdir(root) if os.path.isdir(root) else []):
-            p = os.path.join(root, d, sid)
-            if os.path.isdir(os.path.join(p, 'workflows')):
-                return p
         if session_id:
-            return None
+            explicit_path = os.path.abspath(os.path.expanduser(session_id))
+            if os.path.isdir(explicit_path):
+                return explicit_path
+        matches = []
+        for project_name in (os.listdir(root) if os.path.isdir(root) else []):
+            project = os.path.join(root, project_name)
+            if not os.path.isdir(project):
+                continue
+            session_names = set()
+            for name in os.listdir(project):
+                session_names.add(name[:-6] if name.endswith('.jsonl') else name)
+            for name in session_names:
+                path = os.path.join(project, name)
+                if not (os.path.isfile(path + '.jsonl')
+                        or os.path.isdir(os.path.join(path, 'workflows'))):
+                    continue
+                if name == sid:
+                    return path
+                if name.startswith(sid):
+                    matches.append(path)
+        return matches[0] if len(matches) == 1 else None
 
     slug = cwd.replace(':', '-').replace(os.sep, '-').replace('/', '-')
     cands = [os.path.join(root, d) for d in os.listdir(root)
@@ -459,12 +527,18 @@ def _session_candidates(session_dir):
             if not isinstance(e, dict) or e.get('type') != 'workflow_agent':
                 continue
             candidates.append((rid, e.get('label') or '(unlabeled)'))
-    archived_pairs = set()
+    archived_pairs, ignored_runs = set(), set()
     if run_ids:
         for rec in _archive_records():
-            if rec.get('run') in run_ids and rec.get('label'):
-                archived_pairs.add((rec['run'], rec['label']))
-    unarchived = [p for p in candidates if p not in archived_pairs]
+            run = rec.get('run')
+            if run not in run_ids:
+                continue
+            if rec.get('ignored'):
+                ignored_runs.add(run)
+            elif rec.get('label'):
+                archived_pairs.add((run, rec['label']))
+    unarchived = [pair for pair in candidates
+                  if pair[0] not in ignored_runs and pair not in archived_pairs]
     return unarchived, run_ids, {lab for _, lab in candidates}
 
 
@@ -506,6 +580,25 @@ def pending_report(session_dir):
     return remaining, ambiguous, unmatched
 
 
+def misshaped_verdict_keys(session_dir, sidecar_labels=()):
+    """[(key, spelling)] for verdict keys written `label@suffix` against this session's work: a
+    Workflow run id (spelled `run_id:label`) or a sidecar label (spelled as the bare label). That
+    shape matches nothing, so the dispatch stays unrated while its author believes it is rated."""
+    _, run_ids, session_labels = _session_candidates(session_dir)
+    found = []
+    for key in load_pending_verdicts():
+        if key in session_labels:
+            continue
+        label, sep, suffix = key.rpartition('@')
+        if not (sep and label):
+            continue
+        if suffix in run_ids:
+            found.append((key, f'{suffix}:{label}'))
+        elif label in sidecar_labels:
+            found.append((key, label))
+    return sorted(found)
+
+
 def pending_labels(session_dir):
     """[(run_id, label)] this session's workflow_agent dispatches not yet archived or resolved
     by a pending verdict. See pending_report() for the matching rule."""
@@ -517,7 +610,7 @@ def pending_count(session_dir=None, session_id=None):
     a per-turn hook, where an exception must cost a routing hint, never the turn."""
     try:
         session_dir = session_dir or find_session_dir(session_id)
-        if not session_dir:
+        if not session_dir or not os.path.isdir(os.path.join(session_dir, 'workflows')):
             return -1
         return len(pending_labels(session_dir))
     except Exception:
@@ -537,15 +630,19 @@ def _norm_effort(v):
 
 
 def efforts_for(run):
-    """label -> effort, via the PINS log line, else a static opts-literal scan."""
+    """label -> effort, merged over every PINS log line (an engine may log one per phase), else a
+    static opts-literal scan."""
+    pins = {}
     for line in run.get('logs') or []:
         s = str(line).strip()
         if s.startswith('PINS '):
             try:
                 raw = json.loads(s[5:])
-                return {k: _norm_effort(v) for k, v in raw.items()}
+                pins.update({k: _norm_effort(v) for k, v in raw.items()})
             except Exception:
                 pass
+    if pins:
+        return pins
     out = {}
     for blk in re.findall(r'\{[^{}]*\}', run.get('script') or ''):
         lab = re.search(r"label:\s*['\"]([^'\"]+)['\"]", blk)
@@ -553,6 +650,15 @@ def efforts_for(run):
         if lab and eff:
             out[lab.group(1)] = eff.group(1)
     return out
+
+
+def _ensure_effort_evidence(row):
+    """Keep the legacy effort alias while naming what was and was not observed."""
+    requested = row.get('requested_effort', row.get('effort', '?')) or '?'
+    row['requested_effort'] = requested
+    row['effort'] = requested
+    row.setdefault('observed_effort', None)
+    return row
 
 
 def run_date_of(value):
@@ -610,6 +716,7 @@ def agent_usage(run_dir):
             continue
         aid = fn[len('agent-'):-len('.jsonl')]
         calls, order, recs = {}, [], 0
+        served = set()
         first = last = None
         for o in _iter_jsonl_objects(os.path.join(run_dir, fn)):
             ts = o.get('timestamp')
@@ -626,13 +733,16 @@ def agent_usage(run_dir):
             m = o.get('message')
             if not isinstance(m, dict):
                 continue
+            if isinstance(m.get('model'), str) and m['model']:
+                served.add(m['model'])
             # No message.id -> fall back to the record's own uuid.
             mid = m.get('id') or o.get('uuid') or ('rec-%d' % recs)
             if mid not in calls:
                 order.append(mid)
             calls[mid] = m                      # later record wins
-        u = dict(inp=0, out=0, cw=0, cr=0, turns=len(calls), tools=0,
-                 recs=recs, secs=None)
+        initial_usage = 0 if calls else None
+        u = dict(inp=initial_usage, out=initial_usage, cw=initial_usage, cr=initial_usage,
+                 turns=len(calls), tools=0, recs=recs, secs=None)
         usage_fields = {
             'inp': 'input_tokens', 'out': 'output_tokens',
             'cw': 'cache_creation_input_tokens', 'cr': 'cache_read_input_tokens',
@@ -649,23 +759,106 @@ def agent_usage(run_dir):
         if first and last:
             u['secs'] = (last - first).total_seconds()
         u['first_ts'] = first.isoformat() if first else None
+        # The model the transcript reports as served; the requested pin lives on the workflow record.
+        # Native-transport rows only: a proxied sidecar child echoes its own pin, so its self-report
+        # is not authority (gotcha_self_reported_model_identity_is_not_authority).
+        u['served_model'] = (None if not served else sorted(served)[0] if len(served) == 1
+                             else 'mixed:' + ','.join(sorted(served)))
         usage[aid] = u
     return usage
 
 
-def collect(session):
+def _task_claims():
+    """{(source, key): task_id} from every task record's active_jobs (tools/task_record.py): a Workflow
+    row is claimed by run id, a sidecar row by label. The record is the join key's owner; a row no
+    record claims reads task_id None, so a partial join is visible rather than silently pooled."""
+    claims = {}
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import task_record
+        directory = task_record.record_dir()
+        for name in os.listdir(directory):
+            if not name.endswith('.json'):
+                continue
+            rec = task_record.load(name[:-5]) or {}
+            for job in rec.get('active_jobs') or []:
+                if job.get('source') == 'workflow' and job.get('run_id'):
+                    claims[('workflow', str(job['run_id']))] = rec.get('task_id')
+                elif job.get('source') == 'sidecar' and job.get('label'):
+                    claims[('sidecar', str(job['label']))] = rec.get('task_id')
+    except Exception:
+        return claims
+    return claims
+
+
+def task_totals(rows):
+    """Per-task cost totals with explicit denominators: rows the join reached, rows no record claims,
+    rows with no cost of either kind. Quota cost and USD stay separate columns, never summed together."""
+    out = {'tasks': {}, 'rows_without_task': 0, 'rows_without_cost': 0, 'rows': len(rows)}
+    for r in rows:
+        tid = r.get('task_id')
+        has_cost = _optional_number(r.get('cost')) is not None or _optional_number(r.get('cost_usd')) is not None
+        if not has_cost:
+            out['rows_without_cost'] += 1
+        if not tid:
+            out['rows_without_task'] += 1
+            continue
+        t = out['tasks'].setdefault(tid, {'rows': 0, 'qcost': 0.0, 'cost_usd': 0.0, 'rows_without_cost': 0})
+        t['rows'] += 1
+        if _optional_number(r.get('qcost')) is not None:
+            t['qcost'] += float(r['qcost'])
+        if _optional_number(r.get('cost_usd')) is not None:
+            t['cost_usd'] += float(r['cost_usd'])
+        if not has_cost:
+            t['rows_without_cost'] += 1
+    return out
+
+
+MODEL_FAMILIES = ('opus', 'sonnet', 'haiku', 'fable')
+
+
+def model_mismatches(rows):
+    """One line per Workflow row whose served model does not honor its requested pin.
+
+    A pin naming a family (`sonnet`) is honored by any served id carrying that token
+    (`claude-sonnet-5`); a full-id pin must match exactly, after dropping a client
+    context-window suffix (`claude-opus-5[1m]`), which the served id never carries.
+    Rows with no served model, and sidecar rows, never mismatch: there is nothing
+    attested to compare.
+    """
+    lines = []
+    for r in rows:
+        served, pin = r.get('served_model'), str(r.get('model') or '')
+        pin = re.sub(r'\[[^\]]*\]$', '', pin)
+        if r.get('source') == 'sidecar' or not served or not pin or pin == '?':
+            continue
+        ids = served[len('mixed:'):].split(',') if served.startswith('mixed:') else [served]
+        honored = all((pin in sid.split('-')) if pin in MODEL_FAMILIES else (pin == sid) for sid in ids)
+        if not honored:
+            lines.append('MODEL MISMATCH %s:%s requested %s served %s'
+                         % (r.get('run', '?'), r.get('label', '?'), pin, served))
+    return lines
+
+
+def collect(session, diagnostics=None):
     rows = []
     wdir = os.path.join(session, 'workflows')
     if not os.path.isdir(wdir):
+        _input_diagnostic(diagnostics, 'workflow-directory', wdir, 'missing')
         return rows
     try:
         names = sorted(os.listdir(wdir))
-    except OSError:
+    except OSError as exc:
+        _input_diagnostic(diagnostics, 'workflow-directory', wdir, 'unreadable', exc)
         return rows
+    claims = _task_claims()
     for fn in names:
         if not fn.endswith('.json'):
             continue
-        run = _read_json_object(os.path.join(wdir, fn))
+        path = os.path.join(wdir, fn)
+        run = _read_json_object(path, diagnostics, 'workflow')
         if not run:
             continue
         rid = run.get('runId') or fn[:-5]
@@ -676,7 +869,8 @@ def collect(session):
                 continue
             aid, lab = e.get('agentId'), e.get('label') or '(unlabeled)'
             u = usage.get(aid, dict(inp=None, out=None, cw=None, cr=None, turns=None,
-                                    tools=None, recs=None, secs=None, first_ts=None))
+                                    tools=None, recs=None, secs=None, first_ts=None,
+                                    served_model=None))
             cost = agent_cost(u)
             # Run date, most specific source first: this agent's own start, the
             # workflow record's instant, then the transcript's earliest turn.
@@ -684,16 +878,24 @@ def collect(session):
                         or run_date_of(run.get('timestamp')) or run_date_of(run.get('startTime'))
                         or run_date_of(u.pop('first_ts', None)))
             u.pop('first_ts', None)
+            requested_effort = eff.get(lab, '?')
             rows.append(dict(
                 run=rid, workflow=run.get('workflowName') or '?', phase=e.get('phaseTitle') or '',
                 agent_id=aid, label=lab, model=e.get('model') or '?',
-                effort=eff.get(lab, '?'), state=e.get('state') or '?',
-                run_date=run_date,
+                effort=requested_effort, requested_effort=requested_effort,
+                observed_effort=None, state=e.get('state') or '?',
+                run_date=run_date, task_id=claims.get(('workflow', rid)),
                 cost=cost, qcost=quota_cost(cost, e.get('model') or ''), **u))
     return rows
 
 
-def collect_sidecar(ledger=SIDECAR_LEDGER, include_unlabeled=False):
+def _state_from_exit_code(exit_code):
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        return 'unknown'
+    return 'completed' if exit_code == 0 else 'exit-' + str(exit_code)
+
+
+def collect_sidecar(ledger=SIDECAR_LEDGER, include_unlabeled=False, diagnostics=None):
     """Sidecar spend-ledger rows shaped for the archive. Marked source='sidecar';
     cost_usd is real dollars; normalized `cost` stays unknown so sidecar rows can
     never leak into normalized-token totals. Run id is synthetic and stable across invocations.
@@ -702,20 +904,23 @@ def collect_sidecar(ledger=SIDECAR_LEDGER, include_unlabeled=False):
     probes) are skipped by default -- they cannot be attributed or rated per
     label. --sidecar-all surfaces them for spend audits."""
     rows = []
-    for rec in _iter_jsonl_objects(ledger):
+    claims = _task_claims()
+    for rec in _iter_jsonl_objects(ledger, diagnostics, 'sidecar-ledger'):
         if not rec.get('label') and not include_unlabeled:
             continue
         lab = str(rec.get('label') or '(unlabeled)')
         ts = rec.get('timestamp') or '?'
         duration = _optional_number(rec.get('durationMs'))
+        requested_effort = rec.get('effort') or '?'
         rows.append(dict(
             run=f'sidecar-{ts}-{lab}', run_date=run_date_of(ts),
             workflow='sidecar', phase='', agent_id='',
             label=lab, model=str(rec.get('servedModel') or '?'),
-            effort=rec.get('effort') or '?',
-            state=('completed' if rec.get('exitCode') == 0 else f"exit-{rec.get('exitCode')}"),
+            effort=requested_effort, requested_effort=requested_effort,
+            observed_effort=None,
+            state=_state_from_exit_code(rec.get('exitCode')),
             source='sidecar', cost=None, cost_usd=rec.get('costUSD'),
-            cost_basis=rec.get('costBasis') or '',
+            cost_basis=rec.get('costBasis') or '', task_id=claims.get(('sidecar', lab)),
             inp=_optional_number(rec.get('inputTokens')),
             out=_optional_number(rec.get('outputTokens')),
             cw=_optional_number(rec.get('cacheWriteTokens')),
@@ -730,29 +935,33 @@ class ManifestError(ValueError):
     """A seed cannot be joined to exactly one evidence row per job."""
 
 
-def _sidecar_record_row(path):
+def _sidecar_record_row(path, record=None, diagnostics=None):
     """One explicit -R record shaped for manifest and archive consumers."""
-    rec = _read_json_object(path)
+    rec = (record if isinstance(record, dict) else
+           _read_json_object(path, diagnostics, 'sidecar-record'))
     if not rec:
         return None
     label = rec.get('label')
     if not label:
+        _input_diagnostic(diagnostics, 'sidecar-record', path, 'invalid',
+                          'record has no label')
         return None
     label = str(label)
     exit_code = rec.get('exitCode')
     timestamp = rec.get('timestamp') or '?'
     launch_id = rec.get('launchId')
     duration = _optional_number(rec.get('durationMs'))
+    requested_effort = rec.get('effort') or '?'
     return dict(
-        source='sidecar', label=label,
+        source='sidecar', label=label, task_id=_task_claims().get(('sidecar', label)),
         run=('sidecar-' + str(launch_id) if launch_id
              else 'sidecar-' + str(timestamp) + '-' + label),
         timestamp=timestamp,
         run_date=run_date_of(timestamp), workflow='sidecar', phase='', agent_id='',
         model=str(rec.get('servedModel') or '?'),
-        effort=rec.get('effort') or '?',
-        state=(('completed' if exit_code == 0 else 'exit-' + str(exit_code))
-               if isinstance(exit_code, int) and not isinstance(exit_code, bool) else 'unknown'),
+        effort=requested_effort, requested_effort=requested_effort,
+        observed_effort=None,
+        state=_state_from_exit_code(exit_code),
         transport=rec.get('transport'), currency=rec.get('costModel'),
         record_path=os.path.abspath(path), cost=None,
         cost_usd=rec.get('costUSD'), cost_basis=rec.get('costBasis') or '',
@@ -765,16 +974,20 @@ def _sidecar_record_row(path):
         secs=duration / 1000.0 if duration is not None else None)
 
 
-def collect_sidecar_records(record_dir):
+def collect_sidecar_records(record_dir, diagnostics=None):
     """Read per-job `*.record.json` files without touching the spend ledger."""
     rows = []
-    if not record_dir or not os.path.isdir(record_dir):
+    if not record_dir:
+        return rows
+    if not os.path.isdir(record_dir):
+        _input_diagnostic(diagnostics, 'sidecar-record-directory', record_dir, 'missing')
         return rows
     for base, _, names in os.walk(record_dir):
         for name in sorted(names):
             if not name.endswith('.record.json'):
                 continue
-            row = _sidecar_record_row(os.path.join(base, name))
+            path = os.path.join(base, name)
+            row = _sidecar_record_row(path, diagnostics=diagnostics)
             if row:
                 rows.append(row)
     return rows
@@ -795,7 +1008,11 @@ def _iso_instant(value):
         return None
 
 
+_FD_REDIRECTION = re.compile(r'(?<!\S)(?:\d*>\s*&\s*(?:\d+|-)|&>>?(?:[^\s;&|]+|\s+[^\s;&|]+))')
+
+
 def _shell_segments(command):
+    command = _FD_REDIRECTION.sub(' ', command)
     try:
         lexer = shlex.shlex(command.replace('\n', ' ; '), posix=True,
                             punctuation_chars=';&|')
@@ -817,10 +1034,30 @@ def _shell_segments(command):
     return segments
 
 
+_REDIRECTION = re.compile(r'^\d*(?:>>?|<)(.*)$')
+
+
+def _strip_redirections(tokens):
+    """Tokens without shell redirections such as `> log` and `2>/dev/null`. A quoted argument
+    beginning with `>` is indistinguishable from a redirect after shlex removes its quotes."""
+    out, skip_target = [], False
+    for token in tokens:
+        if skip_target:
+            skip_target = False
+            continue
+        match = _REDIRECTION.match(token)
+        if match:
+            skip_target = not match.group(1)
+            continue
+        out.append(token)
+    return out
+
+
 def _launcher_calls(command):
     """Actual top-level launcher calls as (kind, launcher arguments)."""
     calls = []
-    for segment in _shell_segments(command):
+    for raw_segment in _shell_segments(command):
+        segment = _strip_redirections(raw_segment)
         index = 0
         while index < len(segment) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', segment[index]):
             index += 1
@@ -918,6 +1155,30 @@ def _fanout_jobs_paths(transcript):
     return paths
 
 
+def uncaptured_fanout_jobs(session):
+    """Fanout jobs files this session launched that no Write in the transcript captured.
+    Attribution reads only captured jobs content, so their records stay unattributed; --pending
+    names them rather than let a smaller sidecar count read as all of the session's work."""
+    transcript = session if str(session).endswith('.jsonl') else str(session) + '.jsonl'
+    if not os.path.isfile(transcript):
+        return []
+    jobs_paths = _fanout_jobs_paths(transcript)
+    captured = set()
+    for entry in _iter_jsonl_objects(transcript):
+        message = entry.get('message')
+        if entry.get('type') != 'assistant' or not isinstance(message, dict):
+            continue
+        cwd = entry.get('cwd') or _PROJECT_DIR
+        for item in message.get('content') or []:
+            if (isinstance(item, dict) and item.get('type') == 'tool_use'
+                    and str(item.get('name') or '').split('.')[-1] == 'Write'
+                    and isinstance(item.get('input'), dict)):
+                path = _resolve_session_path(item['input'].get('file_path'), cwd)
+                if path in jobs_paths:
+                    captured.add(path)
+    return sorted(jobs_paths - captured)
+
+
 def _sidecar_record_launches(session):
     """Exact -R paths proven by assistant tool calls in this session transcript."""
     transcript = session if str(session).endswith('.jsonl') else str(session) + '.jsonl'
@@ -999,11 +1260,17 @@ def _sidecar_record_launches(session):
     return launches
 
 
-def collect_session_sidecar(session):
+def collect_session_sidecar(session, diagnostics=None):
     """Sidecar rows with exact record evidence launched by this session only."""
+    session_name = os.path.basename(os.path.normpath(str(session)))
+    expected_parent = (session_name[:-len('.jsonl')]
+                       if session_name.endswith('.jsonl') else session_name)
     rows = []
     for path, launched_at in sorted(_sidecar_record_launches(session).items()):
-        row = _sidecar_record_row(path)
+        record = _read_json_object(path, diagnostics, 'session-sidecar-record')
+        if not record or record.get('parentSessionId') != expected_parent:
+            continue
+        row = _sidecar_record_row(path, record, diagnostics)
         if not row:
             continue
         recorded_at = _iso_instant(row.get('timestamp'))
@@ -1063,16 +1330,20 @@ def build_manifest(seed, workflow_rows, sidecar_rows, verdicts=None):
         outcome = norm_outcome(outcome) if outcome else None
         if outcome not in OUTCOMES:
             outcome = None
-        effective_model = row.get('model')
+        # A sidecar record's `model` is its attested servedModel; a Workflow row's `model` is the
+        # requested pin, so its served model comes from the transcript (None when unrecorded).
+        effective_model = row.get('model') if source == 'sidecar' else row.get('served_model')
         if effective_model == '?':
             effective_model = None
         effective_transport = row.get('transport') if source == 'sidecar' else None
         effective_currency = row.get('currency') if source == 'sidecar' else None
         attestation = ('sidecar record attests served model, transport, and currency; '
                        'effort is a requested coordinate' if source == 'sidecar'
-                       else 'Workflow record attests the agent model and state; PINS effort is requested only')
+                       else 'Workflow transcript attests the served model when it records one; '
+                            'the record attests state; PINS effort is requested only')
         out.append({
             'label': label,
+            'task_id': row.get('task_id'),
             'requested': _manifest_requested(job),
             'effective': {
                 'model': effective_model,
@@ -1120,25 +1391,45 @@ def write_manifest(seed_path, output_path, session=None, sidecar_record_dir=None
     seed = _read_json_object(seed_path)
     if seed is None:
         raise ManifestError('manifest seed must be a JSON object')
-    workflow_rows = collect(session) if session else []
-    sidecar_rows = collect_sidecar_records(sidecar_record_dir)
+    diagnostics = []
+    workflow_rows = collect(session, diagnostics) if session else []
+    sidecar_rows = collect_sidecar_records(sidecar_record_dir, diagnostics)
     verdicts = _read_verdict_file(verdicts_path) if verdicts_path else {}
     manifest = build_manifest(seed, workflow_rows, sidecar_rows, verdicts)
+    if diagnostics:
+        manifest['status'] = 'partial'
+        manifest['diagnostics'] = diagnostics
     _atomic_write_json(output_path, manifest)
     return manifest
 
 
-def report(rows):
+def report_input_diagnostics(diagnostics):
+    if not diagnostics:
+        return
+    w(f'Input diagnostics: {len(diagnostics)}')
+    for row in diagnostics:
+        detail = f" ({row['detail']})" if row.get('detail') else ''
+        w(f"  {row.get('status', 'unknown')}: {row.get('reader', 'input')} "
+          f"{row.get('path', '?')}{detail}")
+
+
+def report(rows, diagnostics=None):
+    rows = [_ensure_effort_evidence(row) for row in rows]
     side = [r for r in rows if r.get('source') == 'sidecar']
     rows = [r for r in rows if r.get('source') != 'sidecar']
+    report_input_diagnostics(diagnostics)
     if not rows and not side:
-        w('No Workflow runs found for this session -- nothing to report.')
+        if diagnostics:
+            w('No complete Workflow rows were available; input sources need recovery.')
+        else:
+            w('No Workflow runs found for this session -- nothing to report.')
         return
     if not rows:
         w('No Anthropic Workflow runs found for this session.')
         report_sidecar(side)
         return
-    w(f"{'phase':<14} {'label':<30} {'eff':<7} {'cost':>8} {'out':>7} {'cacheR':>8} "
+    w('Effort column = requested pin; observed effort remains unknown unless a source attests it.')
+    w(f"{'phase':<14} {'label':<30} {'req-eff':<7} {'cost':>8} {'out':>7} {'cacheR':>8} "
       f"{'turns':>6} {'tools':>6} {'sec':>6}")
     w('-' * 100)
     for r in sorted(rows, key=lambda x: (x['run'], -_number(x.get('cost')))):
@@ -1229,19 +1520,17 @@ def _report_pending_candidates():
     if not cands:
         return
     w('')
-    w('Over-pin candidates from the last archive summary (check before pinning):')
+    w('Over-pin candidates from the last archive summary (advisory; no pin changes until judged):')
     for c in cands:
-        w(f"  {c['family']}: run at {c['suggested']} on its next dispatch (was "
-          f"{c['effort']}, {c['cost_ratio']}x cost, no falsifications on either rung)")
+        w(f"  {c['family']} on {c.get('model') or 'an unrecorded model'}: a {c['effort']} vs "
+          f"{c['suggested']} comparison is worth running ({c['cost_ratio']}x cost, clean on both rungs)")
 
 
 def _report_candidates(rows):
     """The aggregate surface: derive over-pin candidates from the archive and
     persist them for the next dispatch-time session. Detection lives here (the
-    only place with cross-dispatch context); action is a SUBSTITUTED downgrade
-    on the family's next natural dispatch, never a parallel probe -- no
-    orchestrator spends an extra dispatch on calibration, and none is needed:
-    the trial rides on work that was going to happen anyway."""
+    only place with cross-dispatch context). Candidates are advisory: a pin moves
+    only after a same-model comparison is judged (/orchestration_metrics)."""
     cands = compute_candidates(rows)
     stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     for c in cands:
@@ -1251,28 +1540,27 @@ def _report_candidates(rows):
     _atomic_write_json(CANDIDATES_FILE, cands, indent=1)
     if cands:
         w('\n-- Over-pin candidates (computed, never rated) --')
-        w(f"{'family':<28} {'run at':<10} {'->':<4} {'try':<8} {'cost x':>7} {'n':>4}")
+        w(f"{'family':<28} {'model':<20} {'run at':<10} {'->':<4} {'try':<8} {'cost x':>7} {'n':>4}")
         for c in cands:
-            w(f"{c['family'][:28]:<28} {c['effort']:<10} {'->':<4} {c['suggested']:<8} "
+            w(f"{c['family'][:28]:<28} {str(c.get('model') or '?')[:20]:<20} {c['effort']:<10} "
+              f"{'->':<4} {c['suggested']:<8} "
               f"{c['cost_ratio']:>6.1f}x {c['n_hi'] + c['n_lo']:>4}")
-        w("Action: the next natural dispatch of these families runs at the suggested rung "
-          "(substituted downgrade -- never an extra dispatch). Mark it in the verdicts file: "
-          "{label: ['clean', '<rung>', 'probe']}. A falsification there clears the candidate; "
-          "a clean one confirms the floor and the pin table moves.")
+        w("Advisory: each row is a same-model adjacent-rung comparison worth running (/pin_ab). "
+          "No pin changes until that comparison is judged; record its outcome per "
+          "/orchestration_metrics Incremental rating.")
     else:
         fals = sum(1 for r in rows if outcome_of(r) in ('defects', 'rework', 'discarded'))
         unrated = sum(1 for r in rows if outcome_of(r) == 'unrated')
         if fals:
-            w(f'\nNo over-pin candidates ({fals} falsification event(s) in the archive keep the '
-              'table calibrated).')
+            w(f'\nNo over-pin candidates ({fals} falsification event(s) in the archive). Zero '
+              'candidates does not prove the table is calibrated.')
         elif unrated:
             w(f'\nNo over-pin candidates and no falsification events, but {unrated} unrated '
-              'record(s) block the convergence claim -- rate them or exclude the runs.')
+              'record(s) sit outside every candidate cell -- rate them or exclude the runs.')
         else:
-            w('\nNo over-pin candidates and no falsification events -- the pin table has '
-              'converged for the archived shape distribution. K consecutive summaries like this '
-              '-> watch-mode: failures only + one substituted downgrade per session on the '
-              'largest converged family.')
+            w('\nNo over-pin candidates and no falsification events. Zero candidates does not '
+              'prove the pin table converged; a lower pin still needs a judged same-model '
+              'comparison (/orchestration_metrics).')
 
 
 def report_sidecar(side):
@@ -1295,7 +1583,7 @@ def report_sidecar(side):
         by_model.setdefault(r['model'] or '?', []).append(r)
 
     w('')
-    w('-- DeepSeek sidecar (real USD; effort = requested vendor coordinate, NOT an Anthropic rung) --')
+    w('-- Sidecar runs (real USD; effort = requested vendor coordinate, NOT an Anthropic rung) --')
     if len(by_model) > 1:
         w('   One table per servedModel. NEVER average across models: the tiers differ ~3.1x')
         w('   on fresh tokens, so a blended $/run describes no model that exists.')
@@ -1344,17 +1632,29 @@ def family_of(label):
     return label.split(':', 1)[0] if ':' in label else label
 
 
+UNKNOWN_MODELS = frozenset({'', '?', 'unknown', 'none'})
+
+
+def _known_model(model):
+    """The row's model, or None when it was not recorded. '?' and 'unknown' are placeholders, not a
+    population: pooling them compares whichever models happened to go unrecorded."""
+    m = str(model or '').strip()
+    return None if m.lower() in UNKNOWN_MODELS else m
+
+
 def compute_candidates(rows):
     """Provisional over-pin candidates derived from the archive (Anthropic rows only).
 
-    A candidate is a (family, effort) cell that is clean-only, whose next-lower
-    rung cell is also clean-only, but which cost >= CANDIDATE_RATIO_MIN x as much
-    per agent for comparable work (mean-turns ratio <= CANDIDATE_TURNS_MAX).
+    A candidate is a (family, model, effort) cell that is clean-only, whose next-lower
+    rung cell OF THE SAME MODEL is also clean-only, but which cost >= CANDIDATE_RATIO_MIN x
+    as much per agent for comparable work (mean-turns ratio <= CANDIDATE_TURNS_MAX).
+    Rows of another model, or rows with no model, are a different population and never
+    the cheaper rung: a candidate changes exactly one factor.
     Cost alone cannot flag a cell -- adjacent rungs cost ~1.5-2x by pricing
     design -- so the turns proxy separates 'naturally pricier rung' from 'same
     work, deeper reasoning, no better outcome'. Candidates are computed, never
-    narrated; the action is a substituted downgrade on the family's next natural
-    dispatch, and a falsification there removes the candidate on the next run.
+    narrated. They are advisory: each names a same-model adjacent-rung comparison
+    worth running, and no pin moves until that comparison is judged.
     """
     by_family = {}
     for r in rows:
@@ -1367,50 +1667,63 @@ def compute_candidates(rows):
         grp = [r for r in grp if _number(r.get('cost')) > 0]
         cells = {}
         for r in grp:
-            cells.setdefault(r.get('effort', '?'), []).append(r)
-        rungs = sorted((e for e in cells if e in EFFORT_ORDER),
-                       key=lambda e: EFFORT_ORDER[e])
-        for hi, lo in zip(rungs[1:], rungs):
-            g_hi, g_lo = cells[hi], cells[lo]
-            if len(g_hi) < CANDIDATE_MIN_N or len(g_lo) < CANDIDATE_MIN_N:
-                continue
-            if any(outcome_of(r) != 'clean' for r in g_hi + g_lo):
-                continue
-            c_hi, _, _ = _field_stats(g_hi, 'cost')
-            c_lo, _, _ = _field_stats(g_lo, 'cost')
-            c_hi /= len(g_hi)
-            c_lo /= len(g_lo)
-            if c_lo <= 0 or c_hi / c_lo < CANDIDATE_RATIO_MIN:
-                continue
-            t_hi, n_t_hi, missing_t_hi = _field_stats(g_hi, 'turns')
-            t_lo, n_t_lo, missing_t_lo = _field_stats(g_lo, 'turns')
-            if missing_t_hi or missing_t_lo or not n_t_hi or not n_t_lo:
-                continue
-            t_hi /= n_t_hi
-            t_lo /= n_t_lo
-            if t_lo > 0 and t_hi / t_lo > CANDIDATE_TURNS_MAX:
-                continue
-            cands.append(dict(family=fam, effort=hi, suggested=lo,
-                              cost_ratio=round(c_hi / c_lo, 2),
-                              n_hi=len(g_hi), n_lo=len(g_lo)))
+            cells.setdefault((_known_model(r.get('model')), r.get('effort', '?')), []).append(r)
+        models = sorted({m for m, _ in cells if m is not None})
+        for model in models:
+            rungs = sorted((e for (m, e) in cells if m == model and e in EFFORT_ORDER),
+                           key=lambda e: EFFORT_ORDER[e])
+            for hi, lo in zip(rungs[1:], rungs):
+                if EFFORT_ORDER[hi] != EFFORT_ORDER[lo] + 1:
+                    continue  # a missing middle rung is untested, never skipped
+                cand = _rung_candidate(fam, model, hi, lo, cells[(model, hi)], cells[(model, lo)])
+                if cand:
+                    cands.append(cand)
     return sorted(cands, key=lambda c: -c['cost_ratio'])
 
 
-def load_run_ledger():
-    """(archived_runs, ignored_runs) from the bounded archive shards.
+def _rung_candidate(fam, model, hi, lo, g_hi, g_lo):
+    """One (family, model) adjacent-rung comparison; None unless every gate passes."""
+    if len(g_hi) < CANDIDATE_MIN_N or len(g_lo) < CANDIDATE_MIN_N:
+        return None
+    if any(outcome_of(r) != 'clean' for r in g_hi + g_lo):
+        return None
+    c_hi, _, _ = _field_stats(g_hi, 'cost')
+    c_lo, _, _ = _field_stats(g_lo, 'cost')
+    c_hi /= len(g_hi)
+    c_lo /= len(g_lo)
+    if c_lo <= 0 or c_hi / c_lo < CANDIDATE_RATIO_MIN:
+        return None
+    t_hi, n_t_hi, missing_t_hi = _field_stats(g_hi, 'turns')
+    t_lo, n_t_lo, missing_t_lo = _field_stats(g_lo, 'turns')
+    if missing_t_hi or missing_t_lo or not n_t_hi or not n_t_lo:
+        return None
+    t_hi /= n_t_hi
+    t_lo /= n_t_lo
+    if t_lo > 0 and t_hi / t_lo > CANDIDATE_TURNS_MAX:
+        return None
+    return dict(family=fam, model=model, effort=hi, suggested=lo,
+                cost_ratio=round(c_hi / c_lo, 2),
+                n_hi=len(g_hi), n_lo=len(g_lo))
 
-    Archived = any agent record's run (rated work already in the store). Ignored =
-    {'run': id, 'ignored': true} sentinel lines. Both are terminal states for a run,
-    so collection skips them; re-reporting an archived run every invocation is noise
-    (another session may archive a run between two of this session's invocations —
-    observed 2026-07-27).
-    """
+
+def load_record_ledger(diagnostics=None):
+    """(archived (run, label) pairs, ignored runs) from bounded shards."""
     archived, ignored = set(), set()
-    for rec in _archive_records():
-        run = rec.get('run')
-        if run:
-            (ignored if rec.get('ignored') else archived).add(run)
+    for record in _archive_records(diagnostics):
+        run = record.get('run')
+        if not run:
+            continue
+        if record.get('ignored'):
+            ignored.add(run)
+        else:
+            archived.add((run, record.get('label')))
     return archived, ignored
+
+
+def load_run_ledger(diagnostics=None):
+    """Compatibility view of archived and ignored run identities."""
+    pairs, ignored = load_record_ledger(diagnostics)
+    return {run for run, _ in pairs}, ignored
 
 
 def main():
@@ -1444,9 +1757,13 @@ def main():
         if not a.manifest_out:
             w('REFUSED: --manifest-seed requires --manifest-out.')
             return 1
+        session = find_session_dir(a.session) if a.session else None
+        if a.session and not session:
+            w('Could not locate a session directory with workflow runs.')
+            return 1
         try:
             manifest = write_manifest(
-                a.manifest_seed, a.manifest_out, session=a.session,
+                a.manifest_seed, a.manifest_out, session=session,
                 sidecar_record_dir=a.sidecar_record_dir,
                 verdicts_path=a.manifest_verdicts)
         except (OSError, json.JSONDecodeError, ManifestError) as exc:
@@ -1475,40 +1792,56 @@ def main():
         if not _archive_paths():
             w(f'No archive at {ARCHIVE} yet.')
             return 0
-        rows = list(_archive_records())
+        diagnostics = []
+        rows = list(_archive_records(diagnostics))
+        report_input_diagnostics(diagnostics)
         ignored_n = sum(1 for r in rows if r.get('ignored'))
-        rows = [r for r in rows if not r.get('ignored')]
+        rows = [_ensure_effort_evidence(r) for r in rows if not r.get('ignored')]
         side = [r for r in rows if r.get('source') == 'sidecar']
         rows = [r for r in rows if r.get('source') != 'sidecar']
         by = {}
         for r in rows:
             by.setdefault((r.get('effort', '?'), outcome_of(r)), []).append(r)
-        w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'cost/agent':>11} {'unknown':>8}")
+        w('Effort groups use requested pins; observed effort is stored separately and may be unknown.')
+        w(f"{'req-eff':<8} {'outcome':<13} {'n':>4} {'cost/agent':>11} {'unknown':>8}")
         for (e, v), g in sorted(by.items()):
             total, known, unknown = _field_stats(g, 'cost')
             average = fmt(total / known) if known else 'n/a'
             w(f'{e:<8} {v:<13} {len(g):>4} {average:>11} {unknown:>8}')
         w(f'\n{len(rows)} archived agents across {len({r.get("run", "?") for r in rows})} runs.'
           + (f' ({ignored_n} ignored-run sentinel(s) excluded.)' if ignored_n else ''))
+        totals = task_totals(rows + side)
+        w('\n-- Task totals (tools/task_record.py joins; quota cost and USD are separate columns) --')
+        w(f"{'task':<36} {'rows':>5} {'qcost':>10} {'USD':>9} {'no-cost':>7}")
+        for tid, t in sorted(totals['tasks'].items()):
+            w(f"{tid[:36]:<36} {t['rows']:>5} {fmt(t['qcost']):>10} {t['cost_usd']:>9.2f} {t['rows_without_cost']:>7}")
+        w(f"rows without a task: {totals['rows_without_task']} of {totals['rows']}; "
+          f"rows without any cost: {totals['rows_without_cost']} of {totals['rows']}")
         if side:
-            sby = {}
+            # One table per served model: a blended $/agent describes no model that exists.
+            by_model = {}
             for r in side:
-                sby.setdefault((r.get('effort', '?'), outcome_of(r)), []).append(r)
-            w('')
-            w('-- DeepSeek sidecar (USD; requested-effort coordinate -- do not compare to rungs above) --')
-            w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'$/agent':>9} {'unpriced':>9}")
-            for (e, v), g in sorted(sby.items()):
-                gp = [x for x in g if isinstance(x.get('cost_usd'), (int, float))]
-                cell = f"{sum(x['cost_usd'] for x in gp)/len(gp):>9.4f}" if gp else f"{'n/a':>9}"
-                w(f"{e:<8} {v:<13} {len(g):>4} {cell} {len(g) - len(gp):>9}")
-            sp = [x for x in side if isinstance(x.get('cost_usd'), (int, float))]
-            w(f"{len(side)} archived sidecar runs | total ${sum(x['cost_usd'] for x in sp):.4f}"
-              f" over {len(sp)} priced")
+                by_model.setdefault(r.get('model') or '?', []).append(r)
+            for model_id in sorted(by_model):
+                model_rows = by_model[model_id]
+                sby = {}
+                for r in model_rows:
+                    sby.setdefault((r.get('effort', '?'), outcome_of(r)), []).append(r)
+                w('')
+                w(f'-- sidecar [{model_id}] (USD; requested-effort coordinate -- do not compare to rungs above) --')
+                w(f"{'effort':<8} {'outcome':<13} {'n':>4} {'$/agent':>9} {'unpriced':>9}")
+                for (e, v), g in sorted(sby.items()):
+                    gp = [x for x in g if isinstance(x.get('cost_usd'), (int, float))]
+                    cell = f"{sum(x['cost_usd'] for x in gp)/len(gp):>9.4f}" if gp else f"{'n/a':>9}"
+                    w(f"{e:<8} {v:<13} {len(g):>4} {cell} {len(g) - len(gp):>9}")
+                sp = [x for x in model_rows if isinstance(x.get('cost_usd'), (int, float))]
+                w(f"{len(model_rows)} archived sidecar runs | total ${sum(x['cost_usd'] for x in sp):.4f}"
+                  f" over {len(sp)} priced")
         _report_candidates(rows)
         return 0
 
     if a.pending:
-        session = a.session or find_session_dir()
+        session = find_session_dir(a.session)
         if not session:
             w('Could not locate a session directory with workflow runs.')
             return 1
@@ -1525,31 +1858,51 @@ def main():
         for lab in unmatched[:10]:
             w(f'  unmatched bare verdict "{lab}" -- every run of this session carrying that '
               f'label was archived before the verdict was recorded')
-        sidecar_n = len(collect_session_sidecar(session))
-        w(f'sidecar: {sidecar_n} exact session record(s) attributed from transcript launches')
+        pending_diagnostics = []
+        sidecar_rows = [] if a.no_sidecar else collect_session_sidecar(session, pending_diagnostics)
+        report_input_diagnostics(pending_diagnostics)
+        sidecar_labels = {row.get('label') for row in sidecar_rows if row.get('label')}
+        for key, spelling in misshaped_verdict_keys(session, sidecar_labels):
+            w(f'  misshaped verdict key "{key}" -- rates nothing; write it as "{spelling}"')
+        if not a.no_sidecar:
+            w(f'sidecar: {len(sidecar_rows)} exact session record(s) attributed from transcript launches')
+            uncaptured = uncaptured_fanout_jobs(session)
+            if uncaptured:
+                w(f'  {len(uncaptured)} fanout launch(es) used a jobs file no Write captured, so their records '
+                  f'are unattributed: ' + ', '.join(uncaptured[:5]))
         return 0
 
-    session = a.session or find_session_dir()
+    # An id is resolved to its directory; collect() and pending_report() take a path, and a raw
+    # id string there silently reads as a session that dispatched nothing.
+    session = find_session_dir(a.session)
     if not session:
         w('Could not locate a session directory with workflow runs.')
         return 1
+    input_diagnostics = []
     if a.no_sidecar:
         sidecar_rows = []
     elif a.sidecar_all:
-        sidecar_rows = collect_sidecar(a.sidecar_ledger, include_unlabeled=True)
+        sidecar_rows = collect_sidecar(a.sidecar_ledger, include_unlabeled=True,
+                                       diagnostics=input_diagnostics)
     else:
-        sidecar_rows = collect_session_sidecar(session)
-    rows = collect(session) + sidecar_rows
-    archived, ignored = load_run_ledger()
-    skip = {r['run'] for r in rows if r['run'] in ignored or r['run'] in archived}
-    rows = [r for r in rows if r['run'] not in skip]
-    if skip:
-        w(f"(skipping {len(skip)} run(s) already in the archive ledger: {', '.join(sorted(skip))})")
+        sidecar_rows = collect_session_sidecar(session, input_diagnostics)
+    rows = collect(session, input_diagnostics) + sidecar_rows
+    for row in rows:
+        _ensure_effort_evidence(row)
+    for line in model_mismatches(rows):
+        w(line)
+    archived_pairs, ignored = load_record_ledger(input_diagnostics)
+    skipped_pairs = {(row['run'], row.get('label')) for row in rows
+                     if row['run'] in ignored or (row['run'], row.get('label')) in archived_pairs}
+    rows = [row for row in rows
+            if row['run'] not in ignored and (row['run'], row.get('label')) not in archived_pairs]
+    if skipped_pairs:
+        w(f"(skipping {len(skipped_pairs)} agent record(s) already in the archive ledger)")
     if not rows:
-        report(rows)
+        report(rows, input_diagnostics)
         return 0
     if a.sidecar_all:
-        report(rows)
+        report(rows, input_diagnostics)
         if a.verdicts:
             w('\nREFUSED: --sidecar-all is a global spend report and never archives.')
             return 1
@@ -1558,7 +1911,11 @@ def main():
     # Merge verdicts BEFORE reporting, so the table, the per-effort roll-up, and the
     # unresolved-pin warning all describe what would actually be archived. Reporting
     # first made the warning fire on pins the verdicts file had already supplied.
+    pending_root = _read_verdict_file(PENDING_VERDICTS)
+    pending_legacy = (_read_verdict_file(LEGACY_PENDING_VERDICTS)
+                      if LEGACY_PENDING_VERDICTS != PENDING_VERDICTS else {})
     pending = load_pending_verdicts()
+    consumed_pending = {}
     if a.verdicts or pending:
         v = dict(pending)
         if a.verdicts:
@@ -1570,16 +1927,36 @@ def main():
             v.update(explicit)
         if pending:
             w(f'Merged {len(pending)} verdict(s) from {PENDING_VERDICTS}.')
+        label_counts = {}
         for r in rows:
-            ent = v.get(r['label'])
+            label_counts[r['label']] = label_counts.get(r['label'], 0) + 1
+        for r in rows:
+            exact_key = f"{r['run']}:{r['label']}"
+            selected_key = None
+            if exact_key in v:
+                selected_key = exact_key
+                ent = v[exact_key]
+            elif label_counts[r['label']] == 1:
+                selected_key = r['label']
+                ent = v.get(r['label'])
+            else:
+                ent = None
+            if selected_key in pending_root:
+                consumed_pending.setdefault(r['run'], {}).setdefault('root', set()).add(selected_key)
+            elif selected_key in pending_legacy:
+                consumed_pending.setdefault(r['run'], {}).setdefault('legacy', set()).add(selected_key)
             if isinstance(ent, (list, tuple)):
                 r['outcome'] = norm_outcome(ent[0])
                 if len(ent) > 1 and ent[1]:
+                    r['requested_effort'] = ent[1]
                     r['effort'] = ent[1]
                 if len(ent) > 2 and ent[2] == 'probe':
                     r['probe'] = True
             elif ent:
                 r['outcome'] = norm_outcome(ent)
+                if isinstance(ent, dict) and ent.get('effort'):
+                    r['requested_effort'] = ent['effort']
+                    r['effort'] = ent['effort']
             else:
                 r['outcome'] = 'unrated'
             if r['outcome'] not in OUTCOMES + ('unrated',):
@@ -1589,9 +1966,18 @@ def main():
                   f'allowed: {", ".join(OUTCOMES)} (legacy verdict words map through)')
                 r['outcome'] = 'unrated'
 
-    report(rows)
+    report(rows, input_diagnostics)
     if not (a.verdicts or pending):
         return 0
+
+    nonterminal = [row for row in rows
+                   if _manifest_status(row.get('state')) not in ('completed', 'failed')]
+    if nonterminal:
+        w(f'\nREFUSED: {len(nonterminal)} agent record(s) are not terminal; '
+          'invocation is not completion and partial usage cannot become archive evidence:')
+        for row in nonterminal:
+            w(f"  {row['run']}:{row['label']} state={row.get('state') or 'unknown'}")
+        return 1
 
     unresolved = [r['label'] for r in rows if r['effort'] == '?']
     if unresolved and not a.allow_unresolved_effort:
@@ -1616,6 +2002,21 @@ def main():
         runs = ', '.join(sorted({r['run'] for r in rows}))
         w(f'\nAlready archived ({skipped} agents, run {runs}) -- nothing appended.')
         return 0
+    consumed_root = set()
+    consumed_legacy = set()
+    for run in {row['run'] for row in fresh}:
+        source_keys = consumed_pending.get(run, {})
+        consumed_root.update(source_keys.get('root', ()))
+        consumed_legacy.update(source_keys.get('legacy', ()))
+    if consumed_root or consumed_legacy:
+        try:
+            removed = _prune_pending_verdicts(
+                pending_root, consumed_root, pending_legacy, consumed_legacy)
+        except (OSError, TimeoutError) as exc:
+            w(f'\nWARNING: archive published but pending-verdict cleanup failed: {exc}')
+        else:
+            if removed:
+                w(f'\nRemoved {removed} archived verdict(s) from {PENDING_VERDICTS}.')
     w(f'\nArchived {len(fresh)} agent records to {ARCHIVE}.'
       + (f' Skipped {skipped} already-archived.' if skipped else ''))
     return 0

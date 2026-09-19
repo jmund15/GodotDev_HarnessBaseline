@@ -4,12 +4,15 @@ Hook: PreToolUse on Bash — gate sidecar launches and inject `reference/sidecar
 
 Fires for a direct `*_sidecar.sh` launch or a structurally validated `sidecar_fanout.py` call.
 
-1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A]`
+1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-W]`
    synchronously. The same launcher gates each validated fan-out child at runtime. Availability,
    budget-band, balance, and provider-ceiling refusals remain owned by the launchers.
 2. APPROVAL. A validated fan-out gets `permissionDecision: allow` because auto mode cannot inspect
    its jobs JSON. `--authorize`, `extraArgs`, shell compounds, and non-project paths fall through.
-3. CONTEXT (advisory). Emits the reference once per session, and again after compaction.
+3. CONTEXT (advisory). Emits the reference once per session, and again after compaction. A
+   backgrounded lib-launcher call with `-R` also gets a one-line pointer at its `.exit` file (the
+   launcher itself writes it on every exit path — Design §1); a backgrounded fan-out gets its own
+   advisory instead. Neither is a deny: backgrounding is not refused.
 
 Wired in: settings.json hooks.PreToolUse matcher "Bash" (via pre_bash_dispatch.py).
 """
@@ -38,7 +41,19 @@ STATE_KEY = "sidecar_dispatch_context"
 LAUNCH_RE = re.compile(r"(?:^|[;&|(]\s*|\bbash\s+)([\w./\\:-]*_sidecar\.sh)(?=\s|$)")
 ALIAS_RE = re.compile(r"(?:^|\s)-m\s+[\"']?([\w.-]+)")
 AUTHORIZED_RE = re.compile(r"(?:^|\s)-A(?=\s|$)")
+# -W: the user authorized a peak-pricing-window dispatch; -A does not cover it (lib exit 11).
+PEAK_AUTHORIZED_RE = re.compile(r"(?:^|\s)-W(?=\s|$)")
+# -R's value, quoted or bare — mirrors ALIAS_RE's shape but a record path carries slashes, colons
+# and dots that an alias never does, so it cannot reuse ALIAS_RE's narrower char class.
+RECORD_RE = re.compile(r"""(?:^|\s)-R\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
 PREFLIGHT_TIMEOUT = 45   # under pre_bash_dispatch's 75 s; the codex probe is one network call
+EXHAUSTED_EXIT = 10      # lib/sidecar_common.sh: a live provider-exhausted marker; -A cannot lift it
+PEAK_EXIT = 11           # lib/sidecar_common.sh: peak pricing window on a peakPolicy=refuse row; only -W lifts it
+REEXEC_RE = re.compile(r'sc_reexec_snapshot\s+"\$@"')
+FANOUT_BACKGROUND_ADVISORY = (
+    "fan-out children run detached; a killed notice on the fan-out does not stop them: read each "
+    "child's record .exit."
+)
 
 SAFE_JOB_FIELDS = frozenset({
     "label", "alias", "promptFile", "effort", "disclosure", "shape",
@@ -62,7 +77,7 @@ def _git_bash():
 
 
 def preflight(cmd, root):
-    """-> refusal text when the launcher's --check exits non-zero; None when it passes or cannot run."""
+    """Return refusal text unless a trusted launcher's --check completes successfully."""
     if os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0":
         return None
     m = LAUNCH_RE.search(cmd)
@@ -70,28 +85,89 @@ def preflight(cmd, root):
     if not m or not bash:
         return None
     launcher = m.group(1)
-    # Cannot resolve the launcher from the repo root (relative path after a `cd`, typo): the
-    # launcher's own gate still runs at dispatch, so fail OPEN rather than deny on exit 127.
-    if not os.path.isabs(launcher) and not os.path.exists(os.path.join(root, launcher)):
+    root_path = Path(root).resolve()
+    candidate = Path(launcher)
+    candidate = candidate if candidate.is_absolute() else root_path / candidate
+    try:
+        launcher_path = candidate.resolve(strict=True)
+        trusted_dir = (root_path / ".claude" / "scripts").resolve(strict=True)
+    except OSError:
+        return None
+    if (candidate.is_symlink() or launcher_path.parent != trusted_dir
+            or not launcher_path.is_file() or _path_has_symlink(root_path, launcher_path)):
         return None
     tail = cmd[m.end():]   # flags belong to THIS launcher, not to another command on the line
-    args = [bash, launcher, "--check"]
+    args = [bash, str(launcher_path), "--check"]
     alias = ALIAS_RE.search(tail)
     if alias:
         args += ["-m", alias.group(1)]
     if AUTHORIZED_RE.search(tail):
         args.append("-A")
+    if PEAK_AUTHORIZED_RE.search(tail):
+        args.append("-W")
     try:
         r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT,
                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
-    except Exception:
-        return None
+    except subprocess.TimeoutExpired:
+        return ("REFUSED at preflight (%s --check timed out after %d s) — availability and budget "
+                "were not verified. Retry after checking the launcher."
+                % (os.path.basename(launcher), PREFLIGHT_TIMEOUT))
+    except Exception as exc:
+        return ("REFUSED at preflight (%s --check could not run: %s: %s) — availability and budget "
+                "were not verified. Repair the launcher check before dispatch."
+                % (os.path.basename(launcher), type(exc).__name__, exc))
     if r.returncode == 0:
         return None
     text = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
+    if r.returncode == EXHAUSTED_EXIT:
+        return ("REFUSED at preflight (%s --check exit %d) — the provider is exhausted:\n%s\n"
+                "-A does not lift an exhausted provider; route the work to another provider."
+                % (os.path.basename(launcher), r.returncode, text[-1500:]))
+    if r.returncode == PEAK_EXIT:
+        return ("REFUSED at preflight (%s --check exit %d) — a peak pricing window is open:\n%s\n"
+                "-A does not lift it. Pass -W only when the user explicitly authorized peak pricing in this "
+                "conversation; otherwise wait for off-peak or route the work to another provider."
+                % (os.path.basename(launcher), r.returncode, text[-1500:]))
     return ("REFUSED at preflight (%s --check exit %d) — the dispatch would have died the same way in the "
             "background:\n%s\nRe-select under the ladder, or pass -A and state the spend."
             % (os.path.basename(launcher), r.returncode, text[-1500:]))
+
+
+def _record_path(tail):
+    """-> the -R value in `tail` (the flags after the launcher token), or None when absent."""
+    m = RECORD_RE.search(tail)
+    if not m:
+        return None
+    return next((g for g in m.groups() if g), None)
+
+
+def _is_check(cmd, launch_end):
+    """First token after the launcher is `--check` — §2's shlex parse, not a substring test."""
+    try:
+        tokens = list(shlex.shlex(cmd[launch_end:], posix=True, punctuation_chars=True))
+    except ValueError:
+        return False
+    return bool(tokens) and tokens[0] == "--check"
+
+
+def _backgrounds_lib_launcher(launcher, root):
+    """True when `launcher` (as matched by LAUNCH_RE) is a readable file calling
+    `sc_reexec_snapshot "$@"` — the shape D1 gives every detach-capable launcher. A launcher that
+    does not, or cannot be read, is not judged (returns False, never raises)."""
+    root_path = Path(root).resolve()
+    candidate = Path(launcher)
+    candidate = candidate if candidate.is_absolute() else root_path / candidate
+    try:
+        launcher_path = candidate.resolve(strict=True)
+    except OSError:
+        return False
+    if candidate.is_symlink() or not launcher_path.is_file():
+        return False
+    try:
+        text = launcher_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return bool(REEXEC_RE.search(text))
 
 
 def _inside(path, parent):
@@ -233,15 +309,31 @@ def main():
     data = json.load(sys.stdin)
     if data.get("tool_name") != "Bash":
         return
-    cmd = (data.get("tool_input") or {}).get("command") or ""
+    tool_input = data.get("tool_input") or {}
+    cmd = tool_input.get("command") or ""
+    run_in_background = bool(tool_input.get("run_in_background"))
     direct = LAUNCH_RE.search(cmd)
     fanout_is_allowed = fanout_allowed(data)
-    # `--check` must be THIS launcher's own flag; the word elsewhere on the line is not a probe.
-    if direct and "--check" in cmd[direct.end():].split(";")[0]:
+    # `--check` must be THIS launcher's own first token; the word elsewhere on the line, or past a
+    # `;`/`&&`/`|`, is not a probe (§2's shlex parse replaces a plain substring test).
+    if direct and _is_check(cmd, direct.end()):
         direct = None
     if not direct and not fanout_is_allowed:
         return
     root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+    # A backgrounded launch of a lib launcher (Design §1) survives a killed harness task on its
+    # own: the lib writes <record>.exit/.out from an EXIT-trap handler on every exit path, so
+    # there is nothing left here to deny. When it also carries -R, point at that record instead.
+    background_exit_advisory = None
+    if direct and run_in_background and _backgrounds_lib_launcher(direct.group(1), root):
+        record_path = _record_path(cmd[direct.end():])
+        if record_path:
+            background_exit_advisory = (
+                "if a killed or stopped notice arrives for this task, the launcher usually "
+                "survives: read %s.exit, and arm a Monitor on it if it is absent." % record_path
+            )
+
     if direct:
         refusal = preflight(cmd, root)
         if refusal:
@@ -270,6 +362,19 @@ def main():
         text = ""
     if text and fire_once_since_compaction(data.get("session_id") or "", STATE_KEY):
         output["additionalContext"] = "[sidecar dispatch — reference/sidecar_dispatch.md]\n" + text
+
+    if fanout_is_allowed and run_in_background:
+        if output.get("additionalContext"):
+            output["additionalContext"] += "\n" + FANOUT_BACKGROUND_ADVISORY
+        else:
+            output["additionalContext"] = FANOUT_BACKGROUND_ADVISORY
+
+    if background_exit_advisory:
+        if output.get("additionalContext"):
+            output["additionalContext"] += "\n" + background_exit_advisory
+        else:
+            output["additionalContext"] = background_exit_advisory
+
     if len(output) > 1:
         sys.stdout.write(json.dumps({"hookSpecificOutput": output}))
 

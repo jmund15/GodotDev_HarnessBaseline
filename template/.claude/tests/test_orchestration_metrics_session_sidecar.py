@@ -20,9 +20,10 @@ def dump(path, value):
         json.dump(value, handle)
 
 
-def record(path, label, timestamp):
+def record(path, label, timestamp, parent_session="session-id"):
     dump(path, {
         "timestamp": timestamp,
+        "parentSessionId": parent_session,
         "label": label,
         "transport": "opencode",
         "costModel": "marginal-usd",
@@ -78,7 +79,11 @@ def unrelated_write_peak(root, count):
 
 
 def main():
-    root = tempfile.mkdtemp(prefix="om_session_sidecar_")
+    with tempfile.TemporaryDirectory(prefix="om_session_sidecar_") as root:
+        return _run(root)
+
+
+def _run(root):
     session = os.path.join(root, "session-id")
     os.makedirs(session)
     transcript = session + ".jsonl"
@@ -88,6 +93,9 @@ def main():
     default_jobs = os.path.join(root, "default", "jobs.json")
     live_jobs = os.path.join(root, "live", "jobs.json")
     noun_jobs = os.path.join(root, "noun", "jobs.json")
+    redirect_jobs = os.path.join(root, "redirect", "jobs.json")
+    dump(redirect_jobs, [{"label": "redirected"}])
+    record(os.path.join(records, "redirected.record.json"), "redirected", "2026-09-10T10:01:58Z")
     dump(jobs, [{"label": "mine"}])
     dump(options_jobs, [{"label": "options"}])
     dump(default_jobs, [{"label": "default"}])
@@ -109,13 +117,17 @@ def main():
     unknown_model = os.path.join(root, "unknown-model.record.json")
     noun_direct = os.path.join(root, "noun-direct.record.json")
     same_second = os.path.join(root, "same-second.record.json")
+    foreign_overwrite = os.path.join(root, "foreign-overwrite.record.json")
     record(direct, "direct", "2026-09-10T10:03:00Z")
     record(stale, "stale", "2026-09-10T09:00:00Z")
     record(timestamp_label, "09", "2026-09-10T10:03:10Z")
     record(noun_direct, "noun-direct", "2026-09-10T10:03:20Z")
     record(same_second, "same-second", "2026-09-10T10:03:40Z")
+    record(foreign_overwrite, "foreign-overwrite", "2026-09-10T10:04:10Z",
+           parent_session="another-session")
     dump(unknown_model, {
         "timestamp": "2026-09-10T10:03:30Z", "label": "unknown-model",
+        "parentSessionId": "session-id",
         "requestedModel": "requested-only", "exitCode": 0,
     })
 
@@ -175,6 +187,19 @@ def main():
             root,
             "2026-09-10T10:00:55Z",
         ),
+        {
+            "type": "assistant", "timestamp": "2026-09-10T10:00:56Z", "cwd": root,
+            "message": {"role": "assistant", "content": [{
+                "type": "tool_use", "name": "Write",
+                "input": {"file_path": redirect_jobs, "content": json.dumps([{"label": "redirected"}])},
+            }]},
+        },
+        tool_use(
+            "python3 .claude/tools/sidecar_fanout.py redirect/jobs.json --authorize --max-parallel 4 "
+            "--out-dir records > redirect/fanout.log 2>&1",
+            root,
+            "2026-09-10T10:00:57Z",
+        ),
         tool_use(
             "bash .claude/scripts/opencode_sidecar.sh -m muse -l direct -R direct.record.json",
             root,
@@ -207,9 +232,15 @@ def main():
             root,
             "2026-09-10T10:03:40.900Z",
         ),
+        tool_use(
+            "bash .claude/scripts/opencode_sidecar.sh -m muse -l foreign-overwrite "
+            "-R foreign-overwrite.record.json",
+            root,
+            "2026-09-10T10:04:00Z",
+        ),
         {
             "type": "user",
-            "timestamp": "2026-09-10T10:04:00Z",
+            "timestamp": "2026-09-10T10:04:20Z",
             "cwd": root,
             "message": {"role": "user", "content": [{
                 "type": "text",
@@ -225,12 +256,34 @@ def main():
     cases = []
     got = om.collect_session_sidecar(session)
     labels = {row["label"] for row in got}
+    transcript_labels = {row["label"] for row in om.collect_session_sidecar(transcript)}
+    cases.append(("a .jsonl session path preserves parent ownership", transcript_labels == labels))
     cases.append(("fanout record launched by this session is included", "mine" in labels))
     cases.append(("options before fanout jobs positional are parsed", "options" in labels))
     cases.append(("default fanout output is jobs-parent/fanout", "default" in labels))
     cases.append(("fanout attribution never reads uncaptured live jobs", "live-only" not in labels))
+    uncaptured_fn = getattr(om, "uncaptured_fanout_jobs", None)
+    uncaptured = uncaptured_fn(session) if uncaptured_fn else None
+    cases.append(("a launched fanout whose jobs file no Write captured is named, not silent",
+                  uncaptured is not None
+                  and os.path.normcase(live_jobs) in {os.path.normcase(p) for p in uncaptured}))
+    cases.append(("a captured jobs file is not reported uncaptured",
+                  uncaptured is not None
+                  and os.path.normcase(jobs) not in {os.path.normcase(p) for p in uncaptured}))
     cases.append(("launcher path used as another program argument is ignored",
                   "noun-only" not in labels and "noun-direct" not in labels))
+    cases.append(("a fanout launch whose output is redirected to a log is still attributed",
+                  "redirected" in labels))
+    cases.append(("shell redirections are not launcher arguments",
+                  om._launcher_calls("python3 x/sidecar_fanout.py j.json --out-dir r > log 2>/dev/null")
+                  == [("fanout", ["j.json", "--out-dir", "r"])]))
+    cases.append(("a redirection before the executable does not hide a launch",
+                  om._launcher_calls("2>/dev/null python3 .claude/tools/sidecar_fanout.py jobs.json")
+                  == [("fanout", ["jobs.json"])]))
+    cases.append(("fd duplication in the middle keeps later launcher arguments",
+                  om._launcher_calls(
+                      "python3 .claude/tools/sidecar_fanout.py j.json 2>&1 --out-dir r")
+                  == [("fanout", ["j.json", "--out-dir", "r"])]))
     cases.append(("direct launcher record is included", "direct" in labels))
     cases.append(("timestamp is parsed by the final label suffix", "09" in labels))
     unknown_row = next((row for row in got if row["label"] == "unknown-model"), None)
@@ -240,6 +293,8 @@ def main():
     cases.append(("record older than its launch call is excluded", "stale" not in labels))
     cases.append(("record and launch in the same whole second are accepted",
                   "same-second" in labels))
+    cases.append(("newer record from another parent session is excluded",
+                  "foreign-overwrite" not in labels))
     cases.append(("every row carries exact record evidence",
                   all(row.get("record_path", "").endswith(".record.json") for row in got)))
     cases.append(("missing transcript fails closed", om.collect_session_sidecar(os.path.join(root, "absent")) == []))

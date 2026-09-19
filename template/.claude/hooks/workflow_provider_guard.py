@@ -616,9 +616,14 @@ def main():
         if not reason:
             m = AGENT_OVERRIDE_RE.search(str(tool_input.get("prompt") or ""))
             reason = m.group(0).strip() if m else ""
-        prior = (record.get("roles") if record and record.get("band") == band else None) or []
-        state["currency"] = {"band": band, "roles": sorted(set(prior) | {m for _, m in hits}), "reason": reason[:400]}
-        _hook_state.write_json_atomic(state_path, state)
+        roles = {m for _, m in hits}
+
+        def record_currency(latest):
+            current = latest.get("currency")
+            prior = current.get("roles") if isinstance(current, dict) and current.get("band") == band else None
+            latest["currency"] = {"band": band, "roles": sorted(set(prior or []) | roles), "reason": reason[:400]}
+
+        _hook_state.update_json_locked(state_path, record_currency)
 
     if verdict == "deny":
         print(json.dumps({"hookSpecificOutput": {

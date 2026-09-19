@@ -10,6 +10,13 @@ numbered step, table row, bold-lead rule). Emits only when something is worth kn
 >GROW_BYTES or >GROW_PCT, density >DENSITY_AUDIT B/unit, or size >SPLIT_BYTES. Numbers only —
 the rule is `instruction_quality` §5. Never blocks.
 
+Cadence: one line per file per turn. A drive rewrites the same file many times and the
+measurement does not change between them, so a repeat is pure noise. A threshold the file
+had not crossed before re-arms it within the same turn. The turn key is the uuid of the latest
+row `_starts_turn` accepts: an owner prompt, including one after a leading injection, or a command
+with arguments. Repeated text is still two turns; sidechain, runtime-envelope, injection-only and
+empty-args command rows start none (`_owner_text` owns the table).
+
 Fail-open: any error exits 0 silently. Wired in: settings.json hooks.PostToolUse "Write|Edit".
 """
 
@@ -18,6 +25,10 @@ import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import state_path, update_json_locked
+from _owner_text import classify
 
 GROW_BYTES = 1500
 GROW_PCT = 10.0
@@ -72,18 +83,95 @@ def head_size(root, rel):
         return 0
 
 
+SEEN_FIELD = "harness_growth_seen"
+SEEN_CAP = 50  # bounded state — oldest files drop off
+MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+
+
+def _latest_turn_key(transcript_path):
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return None
+    try:
+        with open(transcript_path, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if size > MAX_TRANSCRIPT_BYTES:
+                fh.seek(size - MAX_TRANSCRIPT_BYTES)
+            content = fh.read()
+        if size > MAX_TRANSCRIPT_BYTES and b"\n" in content:
+            content = content.split(b"\n", 1)[1]
+    except OSError:
+        return None
+
+    lines = content.splitlines()
+    for number in range(len(lines), 0, -1):
+        raw_line = lines[number - 1]
+        try:
+            entry = json.loads(raw_line)
+        except (TypeError, ValueError):
+            continue
+        row = classify(entry, number, raw=raw_line)
+        if _starts_turn(row):
+            return row.uuid
+    return None
+
+
+def _starts_turn(row):
+    """An owner prompt or a command with arguments; the `_owner_text` table's harness_growth_guard column."""
+    return bool(row is not None and not row.meta and not row.sidechain and not row.tool_results
+                and row.text and row.envelope is None
+                and not (row.kind == "command" and not row.command_args))
+
+
+def _claim_flags(session_id, rel, flags, transcript_path=None):
+    """Return the flags in `flags` this turn has not already reported for `rel`.
+
+    Best-effort and fail-open toward reporting: unreadable transcript or state costs a
+    repeated advisory, never a silent one.
+    """
+    turn = _latest_turn_key(transcript_path)
+    if turn is None:
+        return flags
+    def mark(state):
+        seen = state.get(SEEN_FIELD)
+        if not isinstance(seen, dict) or seen.get("turn") != turn:
+            seen = {"turn": turn, "files": {}}
+        files = seen.get("files")
+        if not isinstance(files, dict):
+            files = {}
+        already = files.get(rel)
+        already = set(already) if isinstance(already, list) else set()
+        new = [flag for flag in flags if flag not in already]
+        if new:
+            files[rel] = sorted(already | set(flags))
+            seen["files"] = dict(list(files.items())[-SEEN_CAP:])
+            state[SEEN_FIELD] = seen
+        return new
+
+    written, new = update_json_locked(state_path(session_id), mark)
+    return new if written else flags
+
+
 def main():
     data = json.load(sys.stdin)
+    result = process(data) or {}
+    if result.get("context"):
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse", "additionalContext": result["context"]}}))
+
+
+def process(data):
+    """Dispatcher entry: `{"context": measurement}` the first time this turn a file
+    crosses a threshold, else None. `main()` keeps the standalone channel."""
     if data.get("tool_name") not in ("Write", "Edit"):
-        return
+        return None
     fp = (data.get("tool_input") or {}).get("file_path") or ""
     root = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     rel = rel_claude_path(fp, root)
     if not rel or not rel.endswith(".md"):
-        return
+        return None
     parts = rel.split("/")
     if any(seg in EXCLUDED for seg in parts[1:-1]):
-        return
+        return None
     with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     now = len(text.encode("utf-8"))
@@ -106,21 +194,35 @@ def main():
     # Narrative content is the actual doctrine violation regardless of byte count — a short
     # dated/n=/scratch-path sentence is still evidence that belongs in Obsidian, cited by name.
     if not (grew or dense or split or outlier or narrative_hit):
-        return
-    flags = []
+        return None
+    # Name each crossed threshold so the cadence gate can tell a repeat measurement from a
+    # newly crossed cap: the keys are what is claimed, the strings are what is reported.
+    crossed = {}
+    if grew:
+        crossed["grew"] = ""
     if dense:
-        flags.append(f"density {density} B/unit > {DENSITY_AUDIT} audit trigger")
+        crossed["dense"] = f"density {density} B/unit > {DENSITY_AUDIT} audit trigger"
     if split:
-        flags.append(f"> {SPLIT_BYTES // 1000}KB split trigger")
+        crossed["split"] = f"> {SPLIT_BYTES // 1000}KB split trigger"
     if outlier:
-        flags.append(f'1 unit at {worst_bytes} B > {worst_cap} per-unit cap: "{worst.strip()[:60]}…"')
+        crossed["outlier"] = (f'1 unit at {worst_bytes} B > {worst_cap} per-unit cap: '
+                              f'"{worst.strip()[:60]}…"')
     if narrative_hit:
-        flags.append(f'narrative-shaped unit (date/n=/measured/observed/scratch-path) — cite by name, '
-                      f'don\'t inline: "{narrative_hit.strip()[:60]}…"')
+        crossed["narrative"] = (f'narrative-shaped unit (date/n=/measured/observed/scratch-path) '
+                                f'— cite by name, don\'t inline: "{narrative_hit.strip()[:60]}…"')
+
+    if not _claim_flags(
+        data.get("session_id") or "",
+        rel,
+        sorted(crossed),
+        data.get("transcript_path"),
+    ):
+        return None
+
+    flags = [text for text in crossed.values() if text]
     tail = (" — " + "; ".join(flags)) if flags else ""
-    msg = (f"[harness-growth] {rel}: {now:,} B ({delta:+,} vs HEAD, {pct:+.0f}%), "
-           f"{units} rule-units, {density} B/unit{tail} (instruction_quality §5).")
-    sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg}}))
+    return {"context": (f"[harness-growth] {rel}: {now:,} B ({delta:+,} vs HEAD, {pct:+.0f}%), "
+                        f"{units} rule-units, {density} B/unit{tail} (instruction_quality §5).")}
 
 
 if __name__ == "__main__":

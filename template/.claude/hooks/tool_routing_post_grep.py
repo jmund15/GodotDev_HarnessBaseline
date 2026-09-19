@@ -1,49 +1,44 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: PostToolUse Grep retroactive nudge — for-next-time advisory after the
-fact, using the more-visible additionalContext channel.
+Hook: PostToolUse Grep fallback advisory.
+
+The registered PreToolUse route now uses the proven `additionalContext` channel.
+This hook emits only when that pre-call route did not already deliver or dedupe
+the same target-family advice, preventing a second reminder on the tool result.
 
 Why:
-- The PreToolUse `tool_routing_nudge.py` fires on the same Grep shape (bare
-  PascalCase + indexed family) but emits to stderr, which agents inconsistently
-  surface in their narrative response. The 2026-05-03 routing-compliance battery
-  scored 8 failures on PascalCase Grep (C2, C3, D1, D2, E1, E2, E3, I1) — the
-  Phase 0 diagnostic confirmed the hook fires for subagents AND that
-  sophisticated agents cite §Tool Routing explicitly when they override. This post-hook
-  reinforces via the `additionalContext` JSON channel (proven to land in
-  tool-result frames per `plan_memory_reminder.py` precedent).
+- Pre-call advice is timely and model-visible. Repeating it after a successful
+  Grep adds no decision; the post hook remains only as fail-open coverage if the
+  pre-call advisory did not run.
 
 What it does:
-- After a Grep call completes, checks: pattern is bare PascalCase + glob targets
-  indexed file family + result has ≥1 hit + user prompt does NOT contain literal-
-  intent cue words.
-- If all hold, emits an `additionalContext` nudge phrased as "for next time" —
-  does NOT pressure a re-do for THIS query (per CLAUDE.md §Tool Routing first-call-recovery
-  rule, which is per-query-not-per-turn — see nudge text for full statement).
+- After a Grep call completes, verifies a bare PascalCase indexed-family lookup,
+  at least one hit, and no literal-intent cue.
+- Suppresses output when `tool_routing_nudge.py` already recorded that family in
+  `nudge_targets_seen`; otherwise emits one fallback `additionalContext` nudge.
 
-K1 suppression:
-- The K1 trap-case test ("Show me every literal occurrence of FireballBehavior
-  including comments") is the canonical legitimate Grep override. Any user
-  prompt containing literal-intent cue words suppresses the nudge.
+Override suppression:
+- Literal/comment scans suppress advice for every indexed family. Verified-unique-name requests
+  suppress only the C# route; they do not change semantic-search routing for resources or docs.
 
 Per-turn dedupe:
 - Stashes `post_grep_nudges_fired_this_turn: [pattern, ...]` in the per-session
   state file. Same pattern twice in one turn → second nudge suppressed.
 
-Wired in: settings.json hooks.PostToolUse with matcher "Grep".
+Wired through settings.json PostToolUse → `post_read_dispatch.py` for Grep.
 """
 
 import json
 import os
 import sys
 
-# Shared classifier — extracted 2026-05-04 to centralize cue lists + helpers
-# that were previously duplicated across nudge.py / post_grep.py / cumulative.py.
+# Shared cue and target-family classification.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
+    from _hook_state import read_json_salvage, state_path, update_json_locked
     from routing_classifier import (
-        LITERAL_INTENT_CUES,
+        classify_call,
         is_pascal_identifier as _is_pascal_identifier,
         grep_target_family as _grep_target_family,
         is_cloud_session as _is_cloud_session,
@@ -54,44 +49,15 @@ except ImportError:
     sys.exit(0)
 
 
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
-
-
 # --- State helpers -------------------------------------------------------
 
-def _state_path(session_id: str) -> str:
-    sid_short = (session_id[:8] if session_id else "default")
-    return os.path.join(STATE_DIR, f"{sid_short}.json")
-
-
 def _read_state(session_id: str) -> dict:
-    try:
-        with open(_state_path(session_id), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
-        pass
-    return {}
+    return read_json_salvage(state_path(session_id))
 
 
-def _write_state(session_id: str, state: dict) -> None:
-    """Best-effort write — failure is silent (cumulative hook owns the visible-failure path)."""
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(_state_path(session_id), "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=True)
-    except Exception:
-        pass
-
-
-# --- Cue-word + result parsing -------------------------------------------
-
-def _prompt_has_literal_intent(state: dict) -> bool:
-    prompt = (state.get("last_prompt") or "").lower()
-    if not prompt:
-        return False
-    return any(cue in prompt for cue in LITERAL_INTENT_CUES)
+def _prompt_has_override(state: dict, tool_input: dict) -> bool:
+    prompt = str(state.get("last_prompt") or "")
+    return classify_call("Grep", tool_input, prompt).severity == "cue-exempt"
 
 
 def _grep_result_has_hits(tool_response) -> bool:
@@ -173,6 +139,12 @@ def _build_post_grep_nudge(pattern: str, family: str, hit_count: int) -> str:
     )
 
 
+def _pre_advisory_seen(state: dict, family: str) -> bool:
+    """Whether the registered PreToolUse hook already handled this family."""
+    seen = state.get("nudge_targets_seen")
+    return isinstance(seen, list) and f"Grep:{family}" in seen
+
+
 # --- Main ----------------------------------------------------------------
 
 def process(input_data: dict) -> str | None:
@@ -198,11 +170,14 @@ def process(input_data: dict) -> str | None:
         # No hits → nothing to retroactively suggest improving on.
         return None
 
-    # Read state for cue-word check + dedupe.
+    # Read state for pre-route receipt, cue-word check, and fallback dedupe.
     state = _read_state(session_id)
 
-    if _prompt_has_literal_intent(state):
-        # K1-style legitimate override — the user explicitly wanted literal scan.
+    if _pre_advisory_seen(state, family):
+        return None
+
+    if _prompt_has_override(state, tool_input):
+        # The shared classifier applies each override only to its valid target family.
         return None
 
     fired = state.get("post_grep_nudges_fired_this_turn") or []
@@ -212,10 +187,18 @@ def process(input_data: dict) -> str | None:
 
     nudge = _build_post_grep_nudge(pattern, family, _hit_count_estimate(tool_response))
 
-    # Update state: record this pattern as nudged this turn.
-    fired.append(pattern)
-    state["post_grep_nudges_fired_this_turn"] = fired
-    _write_state(session_id, state)
+    def record(latest):
+        latest_fired = latest.get("post_grep_nudges_fired_this_turn") or []
+        latest_fired = list(latest_fired) if isinstance(latest_fired, list) else []
+        if pattern in latest_fired:
+            return False
+        latest_fired.append(pattern)
+        latest["post_grep_nudges_fired_this_turn"] = latest_fired[-50:]
+        return True
+
+    written, first = update_json_locked(state_path(session_id), record)
+    if written and not first:
+        return None
     return nudge
 
 
