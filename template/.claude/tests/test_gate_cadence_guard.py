@@ -24,8 +24,11 @@ ALLOW, DENY, NUDGE = "allow", "deny", "nudge"
 def run(command, session, repo):
     payload = {"tool_name": "Bash", "session_id": session, "cwd": repo,
                "tool_input": {"command": command}}
+    # The hook roots its state on CLAUDE_PROJECT_DIR before the payload cwd. Inherited from a session,
+    # it points every case at one real checkout, so gate counts leak across runs. Each case owns its repo.
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
-                       capture_output=True, text=True, timeout=90)
+                       capture_output=True, text=True, timeout=90, env=env)
     out = (r.stdout or "").strip()
     if not out or out == "{}":
         return ALLOW, ""

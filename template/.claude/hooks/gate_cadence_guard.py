@@ -56,7 +56,7 @@ import json
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import read_json_salvage, write_json_atomic
+from _hook_state import read_json_salvage, update_json_locked
 from _command_text import executable_text
 
 POSITIONS = ("final", "prepush", "checkpoint")
@@ -91,16 +91,20 @@ def gates_taken(repo, session, position, bump=False):
     """Gates taken at `position` this session. Returns the count BEFORE any bump."""
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session or "unknown")
     path = os.path.join(repo, STATE_DIR, "%s.json" % safe)
-    state = read_json_salvage(path)
-    try:
-        n = int(state.get(position, 0))
-    except (TypeError, ValueError):
-        n = 0
-    if bump:
-        state[position] = n + 1
-        write_json_atomic(path, state)
-        sweep_stale_state(os.path.dirname(path), keep=path)
-    return n
+    def count(state):
+        try:
+            n = int(state.get(position, 0))
+        except (TypeError, ValueError):
+            n = 0
+        if bump:
+            state[position] = n + 1
+        return n
+
+    if not bump:
+        return count(read_json_salvage(path))
+    written, n = update_json_locked(path, count)
+    sweep_stale_state(os.path.dirname(path), keep=path)
+    return n if written else count(read_json_salvage(path))
 
 
 def sweep_stale_state(directory, keep=None, max_age_sec=7 * 24 * 3600):
@@ -259,9 +263,7 @@ def main():
         # cheaper verification actually happened rather than on anyone saying it did.
         safe = re.sub(r"[^A-Za-z0-9_-]", "_", session or "unknown")
         path = os.path.join(repo, STATE_DIR, "%s.json" % safe)
-        state = read_json_salvage(path)
-        state["narrow_verify_at"] = time.time()
-        write_json_atomic(path, state)
+        update_json_locked(path, lambda state: state.__setitem__("narrow_verify_at", time.time()))
 
         if BROAD_FILTER_RE.search(command):
             emit({"additionalContext": BROAD_FILTER})
