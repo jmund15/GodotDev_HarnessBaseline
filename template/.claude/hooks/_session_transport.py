@@ -21,8 +21,8 @@ FAIL CLOSED. `unknown` is a return value, not an error, and callers DENY on it. 
 registry also returns `unknown` — never `anthropic`. A hook that cannot read the roster must not
 conclude the session is the permissive one; that is how a wrong pin ships as an affirmed decision.
 
-Adding a provider requires no edit here: a registry row with a `baseUrl`, or a launcher that
-exports `CLAUDE_CODE_TRANSPORT`, is the whole integration.
+The registry supplies endpoint/model and request-effort vocabulary; a launcher declares
+loopback transport identity. Provider-specific branches do not belong here.
 """
 import os
 import sys
@@ -34,6 +34,13 @@ if _TOOLS not in sys.path:
 
 HOST_TRANSPORT = "anthropic"
 UNKNOWN = "unknown"
+
+# The registry's "anthropic" row carries no `baseUrl` (host transport, no proxy to record), so the
+# baseUrl-host loop below can never match it. A session whose ANTHROPIC_BASE_URL IS the literal
+# Anthropic API (not empty, not a sidecar proxy) fell through to UNKNOWN instead of matching itself
+# -- denying every Workflow/Agent pin. Exact host only, so a lookalike (`....evil.test`) still fails
+# closed.
+ANTHROPIC_API_HOST = "api.anthropic.com"
 
 
 def _registry():
@@ -79,6 +86,9 @@ def resolve(env=None, data=None):
         return HOST_TRANSPORT, "default"
 
     host = _host(base)
+    if host == ANTHROPIC_API_HOST:
+        return HOST_TRANSPORT, "baseUrl"
+
     if host:
         for name, cfg in transports.items():
             cfg_host = _host((cfg or {}).get("baseUrl"))
@@ -100,8 +110,7 @@ def _dispatchable_rows(transport, data, seat):
     try:
         import model_registry
     except Exception:
-        return rows          # advisory helper: a registry that will not IMPORT must not empty the
-                             # roster, or every pin denies with "legal pins: none registered".
+        return []           # Unknown availability cannot re-admit excluded models.
     out = []
     for m in rows:
         # Filter per row so one malformed row cannot re-admit every excluded model.
@@ -134,7 +143,12 @@ def legal_effort_values(transport, data=None):
     if not data or transport == UNKNOWN:
         return []
     cfg = (data.get("transports") or {}).get(transport) or {}
-    values = ((cfg.get("serverSidePins") or {}).get("effortValues") or [])
+    if not isinstance(cfg, dict):
+        return []
+    values = (cfg.get("effortValues") if "effortValues" in cfg
+              else (cfg.get("serverSidePins") or {}).get("effortValues", []))
+    if not isinstance(values, list):
+        return []
     out = []
     for value in values:
         if isinstance(value, str) and value and value not in out:

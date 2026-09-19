@@ -88,6 +88,64 @@ def main():
           launchers == [("opencode", "opencode_sidecar.sh"),
                         ("anthropic", "anthropic_sidecar.sh")], str(launchers))
 
+    # --- self_improvement_advisory: startup-only, silent when nothing is due -----------
+    # self_improvement_due.py's own dependency chain (self_eval_archive_store, _file_lock,
+    # self_eval_archive_guard) is stdlib-only, so it is copyable into an isolated fixture root
+    # without dragging in the rest of .claude/tools or .claude/hooks.
+    due_root = Path(tempfile.mkdtemp(prefix="scl_due_"))
+    claude_dir = due_root / ".claude"
+    (claude_dir / "tools").mkdir(parents=True)
+    (claude_dir / "hooks").mkdir(parents=True)
+    (claude_dir / "logs").mkdir(parents=True)
+    real_claude = Path(__file__).resolve().parents[1]
+    for name in ("self_improvement_due.py", "self_eval_archive_store.py", "rule_retirement.py"):
+        (claude_dir / "tools" / name).write_text(
+            (real_claude / "tools" / name).read_text(encoding="utf-8"), encoding="utf-8")
+    for name in ("_file_lock.py", "self_eval_archive_guard.py"):
+        (claude_dir / "hooks" / name).write_text(
+            (real_claude / "hooks" / name).read_text(encoding="utf-8"), encoding="utf-8")
+    (claude_dir / "self_evaluate_archive.json").write_text(
+        json.dumps({"structured_entries": [{"session_id": "s1"}, {"session_id": "s2"}]}),
+        encoding="utf-8")
+    (claude_dir / "orchestration_candidates.json").write_text("{}", encoding="utf-8")
+    (claude_dir / "logs" / "eval_dashboard_last.json").write_text(
+        json.dumps({"row_count": 2, "date": "2026-09-14"}), encoding="utf-8")
+
+    for source in scl.NO_BUILD_SOURCES:
+        out = scl.self_improvement_advisory(due_root, source)
+        check("%s: self-improvement advisory prints nothing on re-entry" % source, out == "", repr(out))
+
+    out = scl.self_improvement_advisory(due_root, "startup")
+    check("startup: nothing due prints nothing", out == "", repr(out))
+
+    (claude_dir / "self_evaluate_archive.json").write_text(
+        json.dumps({"structured_entries": [{"session_id": "s%d" % i} for i in range(12)]}),
+        encoding="utf-8")
+    out = scl.self_improvement_advisory(due_root, "startup")
+    check("startup: a due condition prints one non-empty line",
+          out.startswith("Self-improvement due:") and "\n" not in out, repr(out))
+
+    # Startup only: `clear`, a missing source and an empty source print nothing while the line is due.
+    for source in ("clear", None, ""):
+        out = scl.self_improvement_advisory(due_root, source)
+        check("%r: a due line prints nothing outside startup" % (source,), out == "", repr(out))
+
+    # The due tool waits up to its store's 10 s lock; the loader must outwait it.
+    seen = {}
+    real_run = scl.subprocess.run
+
+    def recording_run(*args, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return real_run(*args, **kwargs)
+
+    scl.subprocess.run = recording_run
+    try:
+        scl.self_improvement_advisory(due_root, "startup")
+    finally:
+        scl.subprocess.run = real_run
+    check("due-line subprocess timeout is 15 s, above the store's 10 s lock wait",
+          seen.get("timeout") == 15, repr(seen))
+
     if failures:
         print("\nFAILED:\n  " + "\n  ".join(failures))
         sys.exit(1)

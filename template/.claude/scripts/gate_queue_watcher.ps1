@@ -324,7 +324,7 @@ function Invoke-QueuedGate {
     # process-owned mutex (a watcher killed mid-hold).
     $fireMutex = $null; $fireHeld = $false
     try {
-        $fireMutex = New-Object System.Threading.Mutex($false, 'Global\{{PROJECT_NAME}}-gatequeue-fire')
+        $fireMutex = New-Object System.Threading.Mutex($false, 'Global\harness-gatequeue-fire')
         try { $fireHeld = $fireMutex.WaitOne(30000) } catch [System.Threading.AbandonedMutexException] { $fireHeld = $true }
     } catch { Write-Log "STAGGER-OPEN failed id=$id — firing unstaggered: $_" }
     if (-not $fireHeld) { Write-Log "STAGGER wait timed out id=$id — firing unstaggered" }
@@ -426,7 +426,7 @@ function Invoke-QueuedGate {
 $guard = $null
 $held  = $false
 try {
-    $guard = New-Object System.Threading.Mutex($false, "Global\{{PROJECT_NAME}}-gatequeue-$(Get-WorktreeId $repo)")
+    $guard = New-Object System.Threading.Mutex($false, "Global\harness-gatequeue-$(Get-WorktreeId $repo)")
     try { $held = $guard.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $held = $true }
 } catch {
     Write-Log "ABORT could not open guard mutex: $_"

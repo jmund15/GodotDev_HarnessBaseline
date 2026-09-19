@@ -16,24 +16,29 @@ COMMAND = ROOT / ".claude" / "commands" / "delegate.md"
 
 REQUIRED = {
     "one-line command description": r"^---\n(?:[^\n]+\n)*description: [^\n]+\n(?:[^\n]+\n)*---$",
-    "inline task form": r"/delegate <task>",
-    "job-file form": r"/delegate --jobs <path>",
-    "three preflight outcomes": r"PROCEED[\s\S]+ABORT[\s\S]+HOLD",
+    "inline task form": r"(?:/delegate )?<task>`? creates one `single` job",
+    "job-file form": r"(?:/delegate )?--jobs <path>`? reads",
+    "proceed preflight": r"`PROCEED`:.*scope.*inputs.*pins.*currency",
+    "hold preflight": r"`HOLD`:.*required.*missing",
+    "abort preflight": r"`ABORT`:.*authorization.*forbids",
     "route and guard shape stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+shape[\s\S]+any\|survey\|review\|author",
     "native executor owners": r"dispatch\.js[\s\S]+dispatch_chains\.js[\s\S]+review_fanout\.js",
     "cross-transport owner": r"alias[\s\S]+promptFile[\s\S]+sidecar_fanout\.py",
     "specialized command refusal": r"/explore[\s\S]+/plan_check",
-    "review arm expansion": r"one Anthropic arm[\s\S]+available roster",
+    "one arm per delivery job": r"One suitable arm per independently needed job, including review lenses",
+    "provider availability cannot add jobs": r"Adding an available provider does not add jobs",
+    "comparison is explicit and bounded": r"explicit comparison request[\s\S]+named arms, frozen inputs and a finite budget",
     "manifest finalization": r"--manifest-seed[\s\S]+--manifest-out[\s\S]+--session",
     "outcomes recorded before manifest": r"orchestration_verdicts\.json[\s\S]+manifest",
-    "exact label count": r"expanded seed job count",
-    "review mapping retains agentType": r"Current-transport `review`[\s\S]+agents:[\s\S]+agentType",
+    "exact label count": r"seed count is the required result count",
+    "review mapping retains agentType": r"Native review[^\n]+agents:[^\n]+agentType",
     "review manifest label matches workflow": r"review:<key>",
 }
 
 FORBIDDEN = {
     "bare Agent exact-pin shortcut": r"Agent\s*\(\s*\{",
     "Workflow cross-transport shortcut": r"Workflow\s*\(\s*\{[\s\S]{0,240}?transport\s*:",
+    "automatic provider multiplication": r"Add (?:one Anthropic arm|every other available roster model)",
 }
 
 
@@ -55,6 +60,7 @@ def main():
     planted = {
         "bare Agent exact-pin shortcut": "Agent({model: 'x', prompt: 'do it'})",
         "Workflow cross-transport shortcut": "Workflow({args: {transport: 'anthropic'}})",
+        "automatic provider multiplication": "Add every other available roster model that claims the fan-out role.",
     }
     for expected, text in planted.items():
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False,
@@ -73,6 +79,9 @@ def main():
         violations_real = violations(text)
         cases.append(("all required branches are present", not missing_real, str(missing_real)))
         cases.append(("no prohibited shortcut is present", not violations_real, str(violations_real)))
+        for name, pattern in REQUIRED.items():
+            mutant = re.sub(pattern, '', text, flags=re.MULTILINE)
+            cases.append((f"removing contract is detected: {name}", name in missing(mutant), name))
 
     passed = failed = 0
     for label, ok, detail in cases:

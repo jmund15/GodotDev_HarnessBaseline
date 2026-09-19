@@ -1,10 +1,10 @@
 export const meta = {
   name: 'review-fanout',
-  description: 'Generic read-only review fan-out engine: dispatch N caller-supplied review/audit agents in parallel over a shared CONTEXT, then Step-1 consolidation (dedup by file:line, sort by critical→tier→category) per the Orchestrator Action Protocol. Returns merged findings; Step 1.5 verification + the user-gated action walkthrough stay with the calling command.',
+  description: 'Generic read-only review fan-out engine: dispatch N caller-supplied review/audit agents in parallel over a shared CONTEXT, then Step-1 consolidation (lossless sources plus a sorted view) per the Orchestrator Action Protocol. Returns merged findings; Step 1.5 verification + the user-gated action walkthrough stay with the calling command.',
   phases: [
     { title: 'Review', detail: 'dispatch each supplied agent prompt in parallel (single-flight guard appended)' },
-    { title: 'Consolidate', detail: 'merge, dedup by file:line, sort by critical→tier→category' },
-    { title: 'Merge', detail: 'optional one-agent semantic consolidation (args.consolidate; default on at >=12 deduped findings) — merges same-defect findings anchored to different lines, never filters' },
+    { title: 'Consolidate', detail: 'ingest every valid finding as an engine-owned source (F-id), then sort the view by critical→tier→category' },
+    { title: 'Merge', detail: 'optional one-agent semantic consolidation (args.consolidate; default on at >=12 sourced findings) — merges same-defect findings by meaning over the intact sources, never filters' },
   ],
 }
 
@@ -18,6 +18,10 @@ try {
   return { error: 'review-fanout: args must be JSON-serializable {agents: [{label, prompt, model, effort}, ...], context}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
 const agents = Array.isArray(A.agents) ? A.agents : []
+const RESULT_MODE = A.resultMode === undefined ? 'bounded' : A.resultMode
+if (!['bounded', 'full'].includes(RESULT_MODE)) {
+  return { error: 'review-fanout: resultMode must be `bounded` or `full`.' }
+}
 
 // Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic.
 // Presence means provider mode: incomplete registry data fails before dispatch rather than reopening
@@ -91,8 +95,9 @@ const BASE_CONTRACT = (a) => [
   '',
   '=== ENGINE CONTRACT ===',
   readOnlyContract(a),
-  CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run tests, builds, or /regression_gate (the GdUnit4 named pipe is machine-wide single-flight), and do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read. If your mandate requires a test or build run, STOP and report that it needs a serialized dispatch.' : null,
-  'OUTPUT: return ONLY the JSON object `{"findings": [...]}` per the schema — no prose around it.',
+  CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight); Python and Node proofs under .claude/tests/ are not single-flight, so run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read. If your mandate requires a Godot or C# test or build run, STOP and report that it needs a serialized dispatch.' : null,
+  'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`; `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Put every unread or blocked part of the mandate in `gaps`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
+  'OUTPUT: return ONLY the JSON object `{"findings": [...], "checked": {...}, "gaps": [...]}` per the schema — no prose around it.',
   spillContract(a) || null,
 ].filter(l => l !== null).join('\n')
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3).
@@ -112,6 +117,16 @@ const FINDINGS_SCHEMA = {
     // table, a coverage census). A schema field survives compaction and the metrics collector
     // can read it; prose beside the JSON does neither (audit S3-11, 2026-09-09).
     report: { type: ['string', 'null'], description: 'lens-level table or census the brief asked for, markdown; null when the brief asked for none' },
+    checked: {
+      type: 'object', additionalProperties: false,
+      required: ['toolsUsed', 'stoppedAt', 'basis'],
+      properties: {
+        toolsUsed: { type: 'array', items: { type: 'string' } },
+        stoppedAt: { type: 'string', enum: ['nothing-in-scope', 'exhausted-leads', 'trigger-not-met', 'blocked'] },
+        basis: { type: 'string' },
+      },
+    },
+    gaps: { type: 'array', items: { type: 'string' } },
     findings: {
       type: 'array',
       items: {
@@ -121,7 +136,7 @@ const FINDINGS_SCHEMA = {
           action: { type: 'string', enum: ['FIX', 'ASK', 'PLAN'] },
           category: { type: 'string', enum: ['bug', 'rule', 'improvement'] },
           critical: { type: 'boolean' },
-          file: { type: ['string', 'null'], description: 'location as "path/to/file.cs:line" — include the line number; dedup keys on this full string, so the line disambiguates distinct findings in one file' },
+          file: { type: ['string', 'null'], pattern: '^.+:[1-9][0-9]*$', description: 'location as "path/to/file.cs:line" — include the line number; an anchor for humans, never finding identity (the engine assigns F-ids, and two findings may share one anchor)' },
           // NO maxLength caps, never maxItems on `findings` — a capped array silently DROPS findings
           // (feedback_exhaust_review_findings_before_locking), and per-field caps were removed 2026-08-08:
           // the same caps class rejected explore lenses 5x each with complete deliverables on disk
@@ -139,7 +154,7 @@ const FINDINGS_SCHEMA = {
       },
     },
   },
-  required: ['findings'],
+  required: ['findings', 'checked'],
 }
 
 // 'fable' is requestable but never a default — reserve for explicit high-fidelity dispatch.
@@ -218,58 +233,120 @@ const raw = await parallel(resolved.map(a => () => {
 }))
 
 phase('Consolidate')
-const merged = []
+// Lossless ingestion: every valid finding becomes an engine-owned source (F1, F2, ...) in
+// lens/result order. Location is an anchor, never identity — nothing dedups by file:line.
+const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+const ACTIONS = ['FIX', 'ASK', 'PLAN']
+const CATS = ['bug', 'rule', 'improvement']
+const STOPS = ['nothing-in-scope', 'exhausted-leads', 'trigger-not-met', 'blocked']
+const isChecked = (value) => isRecord(value)
+  && Array.isArray(value.toolsUsed)
+  && value.toolsUsed.every(tool => typeof tool === 'string' && tool.trim())
+  && STOPS.includes(value.stoppedAt)
+  && typeof value.basis === 'string' && value.basis.trim()
+const isLocation = (value) => value === undefined || value === null
+  || (typeof value === 'string' && /^.+:[1-9][0-9]*$/.test(value.trim()))
+const isFinding = (f) => isRecord(f)
+  && typeof f.agent === 'string' && f.agent.trim()
+  && ACTIONS.includes(f.action) && CATS.includes(f.category)
+  && typeof f.description === 'string' && f.description.trim()
+  && typeof f.rationale === 'string' && f.rationale.trim()
+  && (f.critical === undefined || typeof f.critical === 'boolean')
+  && isLocation(f.file)
+  && (f.old === undefined || f.old === null || typeof f.old === 'string')
+  && (f.new === undefined || f.new === null || typeof f.new === 'string')
+  && (f.question === undefined || f.question === null || typeof f.question === 'string')
+  && (f.options === undefined || f.options === null || (Array.isArray(f.options) && f.options.every(v => typeof v === 'string')))
+  && (f.scope === undefined || f.scope === null || (Array.isArray(f.scope) && f.scope.every(v => typeof v === 'string')))
+const sources = []
 const flags = []
 const reports = {}  // lens key -> lens-level report (schema `report`), passed through untouched
-for (const r of raw) {
-  if (!r || !r.result || typeof r.result !== 'object') {
-    const lens = r ? r.key : '(unknown)'
-    const source = resolved.find(a => a.key === lens)
-    const recovery = source && spills(source)
+const perAgent = []
+for (let i = 0; i < resolved.length; i++) {
+  const lens = resolved[i].key
+  const entry = raw[i]
+  // Index-addressed on purpose: a parallel wrapper that nulls a thrown job erases its key, and the
+  // lens name must survive anyway — a failed lens is UNCOVERED, never anonymous, never clean.
+  const result = entry ? entry.result : null
+  if (!isRecord(result)) {
+    const agent = resolved[i]
+    const recovery = agent && spills(agent)
       ? 'Recover the paid-for review from ' + spillPath('review:' + lens) + ' before re-dispatching.'
-      : 'Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + (r ? r.key : '<key>') + '.'
+      : 'Recover BEFORE re-dispatching: /salvage_fanout <transcriptDir> ' + lens + '.'
     flags.push({ kind: 'lens-no-return', lens, detail: 'agent returned no schema object after retries — its review axis is UNCOVERED, not clean. ' + recovery })
+    perAgent.push({ key: lens, count: null, status: 'failed' })
     continue
   }
-  if (Array.isArray(r.result.findings)) { merged.push(...r.result.findings) }
-  if (typeof r.result.report === 'string' && r.result.report.trim()) { reports[r.key] = r.result.report }
+  if (typeof result.report === 'string' && result.report.trim()) { reports[lens] = result.report }
+  if (!Array.isArray(result.findings)) {
+    flags.push({ kind: 'lens-invalid-shape', lens, detail: 'agent returned a schema object whose `findings` is not an array — its review axis is UNCOVERED, not clean. A malformed report is never a zero.' })
+    perAgent.push({ key: lens, count: null, status: 'uncovered', rejected: 0 })
+    continue
+  }
+  const coverageValid = isChecked(result.checked)
+  const checked = coverageValid ? result.checked : null
+  if (!coverageValid) {
+    flags.push({ kind: 'lens-invalid-coverage', lens, detail: '`checked` needs nonblank tool:target entries, a valid stoppedAt, and a nonblank basis. Findings are preserved, but this axis cannot claim complete coverage.' })
+  }
+  let rejected = 0
+  let valid = 0
+  result.findings.forEach((f, index) => {
+    if (!isFinding(f)) {
+      rejected++
+      flags.push({ kind: 'lens-invalid-entry', lens, detail: 'finding entry at index ' + index + ' fails required-field/enum/location shape (agent, action, category, path:line, description, rationale) — skipped; valid neighbors preserved.' })
+      return
+    }
+    sources.push({ id: 'F' + (sources.length + 1), lens, index, finding: f })
+    valid++
+  })
+  let gapRejected = 0
+  let gapCount = 0
+  if (result.gaps !== undefined && !Array.isArray(result.gaps)) {
+    gapRejected++
+  } else {
+    for (const gap of (result.gaps || [])) {
+      if (typeof gap !== 'string' || !gap.trim()) { gapRejected++; continue }
+      gapCount++
+      flags.push({ kind: 'lens-gaps', lens, detail: gap })
+    }
+  }
+  if (gapRejected) {
+    flags.push({ kind: 'lens-invalid-gaps', lens, detail: gapRejected + ' malformed gap entr' + (gapRejected === 1 ? 'y was' : 'ies were') + ' rejected.' })
+  }
+  rejected += gapRejected
+  let rowStatus = rejected || gapCount ? 'partial' : 'completed'
+  if (!coverageValid) {
+    rowStatus = valid > 0 ? 'partial' : 'uncovered'
+  } else if (checked.stoppedAt === 'blocked' || checked.toolsUsed.length === 0) {
+    rowStatus = valid > 0 ? 'partial' : 'uncovered'
+    flags.push({ kind: 'lens-incomplete-coverage', lens, detail: 'stoppedAt=' + checked.stoppedAt + ' with ' + checked.toolsUsed.length + ' checked targets; this axis is not complete.' })
+  }
+  perAgent.push({
+    key: lens, count: valid, status: rowStatus, rejected,
+    stoppedAt: checked ? checked.stoppedAt : null,
+    basis: checked ? checked.basis : null,
+    toolsUsed: checked ? checked.toolsUsed.length : null,
+    gaps: gapCount,
+  })
 }
 
-// Step 1 dedup by file:line — keep critical:true, else the one with more specific old/new
-function specificity(f) { return (f.old ? 1 : 0) + (f.new ? 1 : 0) }
-const byLoc = new Map()
-const noLoc = []
-for (const f of merged) {
-  const loc = (typeof f.file === 'string' && f.file.trim()) ? f.file.trim() : null
-  if (!loc) { noLoc.push(f); continue }
-  const existing = byLoc.get(loc)
-  if (!existing) { byLoc.set(loc, f); continue }
-  // criticality is the primary key (a critical finding must never be dropped for a more-specific
-  // non-critical one); specificity is only the tiebreak among equal criticality.
-  const critF = !!f.critical, critE = !!existing.critical
-  const better = (critF !== critE) ? critF : (specificity(f) > specificity(existing))
-  if (better) { byLoc.set(loc, f) }
-}
-const deduped = [...byLoc.values(), ...noLoc]
-
-// Step 1 sort: critical first, then tier (FIX→ASK→PLAN), then category (bug→rule→improvement)
+// Step 1 sort (views only): critical first, then tier (FIX→ASK→PLAN), then category
+// (bug→rule→improvement). Sorting reorders views; sources stay intact, complete, and in order.
 const TIER = { FIX: 0, ASK: 1, PLAN: 2 }
 const CAT = { bug: 0, rule: 1, improvement: 2 }
-deduped.sort((a, b) => {
+const viewOf = (s) => Object.assign({}, s.finding, { id: s.id })
+const compareFindings = (a, b) => {
   const ca = a.critical ? 0 : 1, cb = b.critical ? 0 : 1
   if (ca !== cb) { return ca - cb }
   const ta = TIER[a.action] ?? 9, tb = TIER[b.action] ?? 9
   if (ta !== tb) { return ta - tb }
   return (CAT[a.category] ?? 9) - (CAT[b.category] ?? 9)
-})
+}
+const sourced = sources.map(viewOf)
+sourced.sort(compareFindings)
 
-// Semantic consolidation — OPTIONAL, after the deterministic dedup, never instead of it.
-// The dedup above keys on the exact `file:line` string, so one defect anchored to three different
-// lines survives three times (observed: four such families in one /plan_check run). This stage
-// merges by MEANING. It is a merge, never a filter: nothing is dropped, re-tiered down, or
-// summarized away, and a return that loses an input id is discarded in favour of the deterministic
-// list — a consolidation that swallows findings is worse than none.
-const MERGE_ITEM = FINDINGS_SCHEMA.properties.findings.items
+// Optional merge: the model judges GROUP MEMBERSHIP ONLY over the intact sources. It returns
+// merged_from id lists; the engine builds every view from originals, never model-authored text.
 const MERGE_SCHEMA = {
   type: 'object', additionalProperties: true,
   properties: {
@@ -277,94 +354,149 @@ const MERGE_SCHEMA = {
       type: 'array',
       items: {
         type: 'object', additionalProperties: true,
-        properties: Object.assign({}, MERGE_ITEM.properties, {
-          merged_from: { type: 'array', items: { type: 'string' }, description: 'ids of every source finding this entry represents; every input id appears in exactly one entry' },
-        }),
-        required: MERGE_ITEM.required.concat(['merged_from']),
+        properties: {
+          merged_from: { type: 'array', items: { type: 'string' }, description: 'engine F-ids grouped as one defect; every input id appears in exactly one entry' },
+        },
+        required: ['merged_from'],
       },
     },
   },
   required: ['findings'],
 }
 
-const consolidate = (typeof A.consolidate === 'boolean') ? A.consolidate : (deduped.length >= 12)
-let final = deduped
-if (consolidate && deduped.length > 1) {
+const consolidate = (typeof A.consolidate === 'boolean') ? A.consolidate : (sourced.length >= 12)
+let final = sourced
+if (consolidate && sourced.length > 1) {
   phase('Merge')
-  const numbered = deduped.map((f, i) => Object.assign({ id: 'F' + (i + 1) }, f))
   const mergePrompt = [
-    'You are consolidating the findings of a multi-lens review. Several lenses read the same material, so ONE defect often appears two or three times anchored to different lines.',
+    'Group these review findings by SAME DEFECT: same file AND same claim, regardless of line. Different defects in one file stay separate. Unsure stays alone.',
+    'Return ONLY group membership: {"findings": [{"merged_from": ["F1", "F2"]}, ...]}. Every input id in exactly one group; unmerged findings get their own single-id group.',
+    'The only ids are the input F-ids. No other fields, no prose.',
     '',
-    'RULE: MERGE, NEVER FILTER.',
-    '- Merge two findings only when they are the same defect: same file AND the same claim, regardless of line number. Different defects in one file stay separate.',
-    '- A merged entry keeps EVERY source `agent` value (join them with ", "), every evidence quote from every source, the most specific `old`/`new` pair among the sources, and `critical: true` if ANY source was critical.',
-    '- Never drop a finding, never lower its `critical`/`action`/`category`, never replace its text with a summary. A finding you are unsure about stays as its own entry.',
-    '- Every input id appears in exactly one output entry\'s `merged_from`. A finding you did not merge is returned unchanged with `merged_from: ["<its own id>"]`.',
-    '',
-    'INPUT FINDINGS (JSON):',
-    JSON.stringify(numbered),
-    '',
-    'OUTPUT: only the JSON object {"findings": [...]} per the schema. No prose.',
+    'INPUT:',
+    JSON.stringify(sources.map(viewOf)),
   ].join('\n')
   const consolidationModel = (A.__transport && A.__transport.default) || 'opus'
   const consolidationEffort = VALID_EFFORTS.includes('low') ? 'low' : DEFAULT_EFFORT
   log('PINS ' + JSON.stringify({ 'review:consolidate': consolidationModel + '/' + consolidationEffort + '/general-purpose' }))
-  const res = await agent(mergePrompt, {
-    label: 'review:consolidate', phase: 'Merge', schema: MERGE_SCHEMA,
-    // Engine-internal pin: not a caller's, so neither the widening nor the guard's scanner
-    // covers it. Falls to the transport's default so consolidation does not null out on a
-    // provider session after every lens has already run.
-    model: consolidationModel, effort: consolidationEffort, agentType: 'general-purpose',
-  })
-  const out = (res && Array.isArray(res.findings)) ? res.findings : null
+  let res = null
+  try {
+    res = await agent(mergePrompt, {
+      label: 'review:consolidate', phase: 'Merge', schema: MERGE_SCHEMA,
+      model: consolidationModel, effort: consolidationEffort, agentType: 'general-purpose',
+    })
+  } catch (e) {
+    res = null
+  }
+  const out = (isRecord(res) && Array.isArray(res.findings)) ? res.findings : null
   if (!out) {
-    flags.push({ kind: 'consolidate-no-return', detail: 'the consolidation agent returned no schema object — the deterministic list is returned unmerged.' })
+    flags.push({ kind: 'consolidate-no-return', detail: 'the consolidation agent returned no schema object — every original is returned unmerged.' })
   } else {
-    const sourceById = new Map(numbered.map(f => [f.id, f]))
+    const sourceById = new Map(sources.map(s => [s.id, s.finding]))
     const seen = new Set()
     let invalid = null
     for (const f of out) {
+      if (!isRecord(f)) { invalid = 'a merge output entry is not an object'; break }
       const ids = Array.isArray(f.merged_from) ? f.merged_from : []
       if (ids.length === 0) { invalid = 'an output entry has empty merged_from'; break }
-      const sources = []
+      const members = []
       for (const id of ids) {
         if (typeof id !== 'string' || !id.trim()) { invalid = 'merged_from contains an empty id'; break }
         if (!sourceById.has(id)) { invalid = 'merged_from contains unknown id ' + id; break }
         if (seen.has(id)) { invalid = 'merged_from duplicates id ' + id; break }
         seen.add(id)
-        sources.push(sourceById.get(id))
+        members.push(sourceById.get(id))
       }
       if (invalid) { break }
-      const strongestCritical = sources.some(source => !!source.critical)
-      if (!!f.critical !== strongestCritical) {
+      const memberFiles = new Set(members.map(member => typeof member.file === 'string'
+        ? member.file.replace(/:[1-9][0-9]*$/, '')
+        : null))
+      if (memberFiles.size !== 1) {
+        invalid = 'merged finding groups different files for ' + ids.join(', ')
+        break
+      }
+      // Legacy defense: a supplied classification that contradicts the strongest source
+      // classification rejects the merge. Missing classification is valid (membership-only).
+      const strongestCritical = members.some(member => !!member.critical)
+      if (f.critical !== undefined && !!f.critical !== strongestCritical) {
         invalid = 'merged finding changes strongest critical for ' + ids.join(', ')
         break
       }
-      const strongestAction = Math.min(...sources.map(source => TIER[source.action] ?? 9))
-      if ((TIER[f.action] ?? 9) !== strongestAction) {
+      const strongestAction = Math.min(...members.map(member => TIER[member.action] ?? 9))
+      if (f.action !== undefined && (TIER[f.action] ?? 9) !== strongestAction) {
         invalid = 'merged finding changes strongest action for ' + ids.join(', ')
         break
       }
-      const strongestCategory = Math.min(...sources.map(source => CAT[source.category] ?? 9))
-      if ((CAT[f.category] ?? 9) !== strongestCategory) {
+      const strongestCategory = Math.min(...members.map(member => CAT[member.category] ?? 9))
+      if (f.category !== undefined && (CAT[f.category] ?? 9) !== strongestCategory) {
         invalid = 'merged finding changes strongest category for ' + ids.join(', ')
         break
       }
     }
-    if (!invalid && seen.size !== numbered.length) {
-      const missing = numbered.filter(f => !seen.has(f.id)).map(f => f.id)
+    if (!invalid && seen.size !== sources.length) {
+      const missing = sources.filter(s => !seen.has(s.id)).map(s => s.id)
       invalid = 'merged_from omits id(s) ' + missing.join(', ')
     }
     if (invalid) {
-      flags.push({ kind: 'consolidate-invalid', detail: invalid + ' — the merge was discarded and the deterministic list is returned unmerged.' })
+      flags.push({ kind: 'consolidate-invalid', detail: invalid + ' — the merge was discarded and every original is returned unmerged.' })
     } else {
-      final = out
+      // Views are built from originals only. Singleton: original plus engine id.
+      // Multi-member: first-member representative, strongest classification, contributor
+      // names. Edit pair only when every member shares the file/old/new tuple.
+      let merges = 0
+      const sameJSON = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+      final = out.map(f => {
+        const ids = f.merged_from
+        const members = ids.map(id => sourceById.get(id))
+        const rep = members[0]
+        if (members.length === 1) {
+          return Object.assign({}, rep, { id: ids[0], merged_from: ids })
+        }
+        merges++
+        const agents = [...new Set(members.map(m => m.agent).filter(v => typeof v === 'string' && v))]
+        const strongestAction = members.reduce((a, b) => ((TIER[a] ?? 9) <= (TIER[b.action] ?? 9) ? a : b.action), members[0].action)
+        const strongestCategory = members.reduce((a, b) => ((CAT[a] ?? 9) <= (CAT[b.category] ?? 9) ? a : b.category), members[0].category)
+        const sameEdit = members.every(m => m.file === rep.file && (m.old ?? null) === (rep.old ?? null) && (m.new ?? null) === (rep.new ?? null))
+        const sameQ = members.every(m => sameJSON(m.question, rep.question))
+        const sameO = members.every(m => sameJSON(m.options, rep.options))
+        const sameS = members.every(m => sameJSON(m.scope, rep.scope))
+        return {
+          agent: agents.join(', '),
+          action: strongestAction,
+          category: strongestCategory,
+          critical: members.some(m => !!m.critical),
+          file: rep.file ?? null,
+          description: rep.description,
+          old: sameEdit ? (rep.old ?? null) : null,
+          new: sameEdit ? (rep.new ?? null) : null,
+          question: sameQ ? rep.question : null,
+          options: sameO ? rep.options : null,
+          scope: sameS ? rep.scope : null,
+          rationale: rep.rationale,
+          id: 'M' + merges,
+          merged_from: ids,
+        }
+      })
+      final.sort(compareFindings)
     }
   }
 }
 
+// raw is the valid received count, before any grouping. exactDuplicates counts sources beyond
+// the first per exact claim tuple (agent/caller-id provenance excluded) — descriptive only,
+// nothing is discarded. rejected counts shape-invalid entries; unknown is never a clean zero.
+const CLAIM_KEY = ['action', 'category', 'critical', 'file', 'description', 'old', 'new', 'question', 'options', 'scope', 'rationale']
+const dupGroups = new Map()
+for (const s of sources) {
+  const key = JSON.stringify(CLAIM_KEY.map(k => s.finding[k] ?? null))
+  dupGroups.set(key, (dupGroups.get(key) || 0) + 1)
+}
+let exactDuplicates = 0
+for (const n of dupGroups.values()) { exactDuplicates += n - 1 }
 const counts = {
-  raw: deduped.length,
+  raw: sources.length,
+  exactDuplicates,
+  rejected: perAgent.reduce((n, r) => n + (r.rejected || 0), 0),
   merged: final.length,
   total: final.length,
   critical: final.filter(f => f.critical).length,
@@ -372,9 +504,257 @@ const counts = {
   ask: final.filter(f => f.action === 'ASK').length,
   plan: final.filter(f => f.action === 'PLAN').length,
 }
-log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' deduped / ' + counts.merged + ' after merge (' + counts.critical + ' critical, ' + counts.fix + ' FIX / ' + counts.ask + ' ASK / ' + counts.plan + ' PLAN)')
+log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' received / ' + counts.merged + ' after merge (' + counts.critical + ' critical, ' + counts.fix + ' FIX / ' + counts.ask + ' ASK / ' + counts.plan + ' PLAN)')
 
-const output = { findings: final, counts, flags, reports, perAgent: raw.map(r => ({ key: r.key, count: (r && r.result && Array.isArray(r.result.findings)) ? r.result.findings.length : 0 })) }
+const coverageLenses = perAgent.map(r => ({
+  key: r.key,
+  count: r.count,
+  status: r.status,
+  rejected: r.rejected || 0,
+}))
+const coverage = {
+  requested: resolved.length,
+  completed: coverageLenses.filter(r => r.status === 'completed').length,
+  partial: coverageLenses.filter(r => r.status === 'partial').length,
+  failed: coverageLenses.filter(r => r.status === 'failed').length,
+  uncovered: coverageLenses.filter(r => r.status === 'uncovered').length,
+  lenses: coverageLenses,
+}
+const unavailable = coverage.failed + coverage.uncovered
+const status = unavailable === coverage.requested
+  ? 'failed'
+  : (unavailable > 0 ? 'uncovered' : (coverage.partial > 0 ? 'partial' : 'completed'))
+if (RESULT_MODE === 'bounded') {
+  const MAX_RESULT_BYTES = 8192
+  const clipped = new Set()
+  const clipText = (value, collection, max = 160) => {
+    if (typeof value !== 'string') return value
+    const chars = [...value]
+    if (chars.length <= max) return value
+    clipped.add(collection)
+    return chars.slice(0, max).join('') + ' …[+' + (chars.length - max) + ' chars]'
+  }
+  const boundValue = (value, collection, depth = 0) => {
+    if (typeof value === 'string') return clipText(value, collection)
+    if (value === null || typeof value !== 'object') return value
+    if (depth >= 4) { clipped.add(collection); return null }
+    if (Array.isArray(value)) {
+      if (value.length > 8) clipped.add(collection)
+      return value.slice(0, 8).map(item => boundValue(item, collection, depth + 1))
+    }
+    const entries = Object.entries(value)
+    if (entries.length > 24) clipped.add(collection)
+    const out = {}
+    for (const [rawKey, member] of entries.slice(0, 24)) {
+      const key = clipText(rawKey, collection, 80)
+      if (Object.prototype.hasOwnProperty.call(out, key)) { clipped.add(collection); continue }
+      out[key] = boundValue(member, collection, depth + 1)
+    }
+    return out
+  }
+  // Every finding and every flag stays represented in bounded mode — never dropped outright — because
+  // engine-computed state (merged views, validation flags) has no journal fallback (see `archive`
+  // below): only the raw per-lens sources are journal-recoverable. What sheds first is DETAIL: a
+  // compact form (ids, kind/lens, a short description) survives long after the full prose (old/new,
+  // rationale, question, options, scope) is gone. `shedOrder` below only pops the compact tail once
+  // every collection is already at its compact floor.
+  const compactFinding = (finding, selectors) => {
+    clipped.add('findings')
+    const out = {
+      id: finding.id,
+      action: finding.action,
+      category: finding.category,
+      critical: !!finding.critical,
+      file: finding.file ?? null,
+      description: clipText(finding.description || '', 'findings', 120),
+      journalSelectors: [...selectors],
+    }
+    if (Array.isArray(finding.merged_from)) out.merged_from = [...finding.merged_from]
+    return out
+  }
+  const selectorsOf = (finding) => Array.isArray(finding.merged_from)
+    ? finding.merged_from
+    : (/^F\d+$/.test(finding.id || '') ? [finding.id] : [])
+  const findingPreview = (finding, detailed) => {
+    const selectors = selectorsOf(finding)
+    if (!detailed) return compactFinding(finding, selectors)
+    const out = boundValue(finding, 'findings')
+    if (Array.isArray(finding.merged_from)) out.merged_from = [...finding.merged_from]
+    out.journalSelectors = [...selectors]
+    return out
+  }
+  const sourcePreview = (source) => {
+    const out = boundValue(source, 'sources')
+    out.journalSelector = source.id
+    return out
+  }
+  // Every flag object is exactly {kind, lens?, detail} (see the flags.push call sites above), so this
+  // preview loses nothing structurally — only clipText's own truncation of a long `detail` marks the
+  // collection clipped, same rule as everywhere else in this render.
+  const compactFlag = (row) => ({ kind: row.kind, lens: row.lens ?? null, detail: clipText(row.detail || '', 'flags', 120) })
+  // A merged (multi-source) finding's `old`/`new` edit pair is engine-composed and lives nowhere else,
+  // so it earns the detailed tier alongside the first few (already-sorted, most-decision-relevant)
+  // findings; everything past that stays compact rather than disappearing.
+  const mustStayInline = (finding) => Array.isArray(finding.merged_from) && finding.merged_from.length > 1
+  // Critical and ASK findings are the ones a consumer must account for before any verdict, so their
+  // ids ride beside `counts` as plain strings and shed last: with only the first three findings
+  // detailed, a run of four criticals otherwise reads as one (observed 2026-09-15, wf_d34579eb-e37).
+  // A merged id's members go in `mergedSelectors`, which stays small because it lists only merged
+  // critical/ASK findings.
+  const mergedSelectors = {}
+  for (const f of final) {
+    if ((f.critical || f.action === 'ASK') && Array.isArray(f.merged_from) && f.merged_from.length > 1) {
+      mergedSelectors[f.id] = [...f.merged_from]
+    }
+  }
+  const state = {
+    findings: final.map((finding, index) => findingPreview(finding, index < 3 || mustStayInline(finding))),
+    sources: sources.slice(0, 3).map(sourcePreview),
+    flags: flags.map(compactFlag),
+    reports: [],
+    perAgent: perAgent.slice(0, 10).map(row => boundValue(row, 'perAgent')),
+    askIds: final.filter(f => f.action === 'ASK').map(f => f.id),
+    criticalIds: final.filter(f => !!f.critical).map(f => f.id),
+  }
+  const totals = {
+    findings: final.length,
+    sources: sources.length,
+    flags: flags.length,
+    reports: Object.keys(reports).length,
+    perAgent: perAgent.length,
+    askIds: state.askIds.length,
+    criticalIds: state.criticalIds.length,
+  }
+  if (SPILL_DIR) {
+    state.spillMetadata = []
+    totals.spillMetadata = 1 + resolved.filter(spills).length + resolved.filter(a => !spills(a)).length
+  }
+  const fullCounts = Object.assign({}, counts, totals)
+  const commandBase = 'python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir-from-Workflow-result>" --workflow-kind review'
+  const expectedHash = '--expect-journal-sha256 <sha256-from-manifest>'
+  const renderBounded = () => {
+    const preview = {}
+    for (const name of Object.keys(totals)) {
+      const shown = state[name].length
+      const omitted = totals[name] - shown
+      preview[name] = {
+        total: totals[name], shown, omitted, clipped: clipped.has(name),
+        complete: omitted === 0 && !clipped.has(name),
+      }
+    }
+    const output = {
+      findings: state.findings,
+      sources: state.sources,
+      counts,
+      flags: state.flags,
+      reports: {},
+      perAgent: state.perAgent,
+    }
+    output.delivery = {
+      contract: 'native-fanout-bounded/v1',
+      engine: 'review-fanout',
+      resultMode: 'bounded',
+      status,
+      maxResultBytes: MAX_RESULT_BYTES,
+      byteLimitExceeded: false,
+      payloadComplete: Object.values(preview).every(row => row.complete),
+      processedState: {
+        mergedFindingsInline: true,
+        engineFlagsInline: true,
+        criticalIdsInline: state.criticalIds.length === totals.criticalIds,
+        askIdsInline: state.askIds.length === totals.askIds,
+      },
+      counts: fullCounts,
+      criticalFindingIds: [...state.criticalIds],
+      askFindingIds: [...state.askIds],
+      mergedSelectors,
+      coverage: {
+        status,
+        requested: coverage.requested,
+        completed: coverage.completed,
+        partial: coverage.partial,
+        failed: coverage.failed,
+        uncovered: coverage.uncovered,
+        rowsPreviewed: state.perAgent.length,
+        rowsOmitted: perAgent.length - state.perAgent.length,
+      },
+      preview,
+      archive: {
+        source: 'workflow-journal',
+        delivered: false,
+        relativePath: 'journal.jsonl',
+        validation: 'required',
+        transcriptDirRequired: true,
+        selectors: 'F<number>',
+        sourceOrder: 'started-agent order, then item-array order',
+        contains: 'raw source findings, lens coverage, reports, and gaps',
+        doesNotContain: 'semantic merged views or engine validation flags; those remain inline',
+        commands: {
+          manifest: commandBase + ' --workflow-manifest',
+          select: commandBase + ' --workflow-select <ID> ' + expectedHash,
+          page: commandBase + ' --workflow-page items|lenses|reports|gaps --page <N> --page-size <N> ' + expectedHash,
+          full: commandBase + ' --workflow-full ' + expectedHash,
+        },
+      },
+    }
+    if (!Object.values(preview).every(row => row.complete)) {
+      // The journal (`archive` above) only ever held raw per-lens sources — merged findings and engine
+      // flags are computed by THIS render and have no journal copy. Their full form is recoverable
+      // without new model spend: resultMode never reaches an agent() prompt or option (only gates this
+      // render), so a Workflow resume of the same run with resultMode:'full' replays every agent() call
+      // from cache and renders the complete, unclipped state.
+      output.delivery.resume = {
+        contract: 'workflow-resume/v1',
+        how: 'Workflow({scriptPath, resumeFromRunId: <this run\'s runId>}, {...same args, resultMode: "full"})',
+        costsNewModelSpend: false,
+        why: 'resultMode is read only when this result is rendered — it never reaches an agent() prompt or option — so every already-completed agent() call replays from cache.',
+        contains: 'the complete processed state: every merged finding and engine flag in full, plus every source and per-lens row, none clipped or omitted.',
+      }
+    }
+    return output
+  }
+  const utf8Bytes = (value) => {
+    let bytes = 0
+    for (const ch of JSON.stringify(value)) {
+      const point = ch.codePointAt(0)
+      bytes += point <= 0x7f ? 1 : (point <= 0x7ff ? 2 : (point <= 0xffff ? 3 : 4))
+    }
+    return bytes
+  }
+  // Least-protected first: `reports` is already empty (journal-only). `sources` are raw prose excerpts
+  // duplicated by `findings`. `findings` and `flags` are compact by now (see above), each a named kind
+  // the reader needs — draining one to zero before touching the other would silently erase a whole
+  // signal class, so once `reports`/`sources` are gone the two tails shed IN TURN (one item off
+  // whichever still has any, alternating) so a run with many of both keeps a share of each rather than
+  // all of one and none of the other. `perAgent` (per-lens coverage status) sheds next, then the ASK
+  // and critical id lists (a few bytes each, so only a pathological run reaches them, and
+  // `processedState.criticalIdsInline` / `askIdsInline` turns false for the list that shed), ahead only of `counts`, which is
+  // never shed.
+  const shedOrder = ['reports', 'sources']
+  const tailShed = ['flags', 'findings']
+  const lastShed = ['perAgent', 'askIds', 'criticalIds']
+  let tailTurn = 0
+  const pickShed = () => {
+    for (const name of shedOrder) { if (state[name].length > 0) return name }
+    for (let i = 0; i < tailShed.length; i++) {
+      const name = tailShed[(tailTurn + i) % tailShed.length]
+      if (state[name].length > 0) { tailTurn = (tailTurn + i + 1) % tailShed.length; return name }
+    }
+    for (const name of lastShed) { if (state[name].length > 0) return name }
+    return null
+  }
+  let output = renderBounded()
+  while (utf8Bytes(output) > MAX_RESULT_BYTES) {
+    const name = pickShed()
+    if (!name) break
+    state[name].pop()
+    output = renderBounded()
+  }
+  if (utf8Bytes(output) > MAX_RESULT_BYTES) output.delivery.byteLimitExceeded = true
+  return output
+}
+
+const output = { findings: final, sources, counts, flags, reports, perAgent }
 if (SPILL_DIR) {
   const inlineLabels = resolved.filter(a => !spills(a)).map(a => a.key)
   output.spillDir = SPILL_DIR

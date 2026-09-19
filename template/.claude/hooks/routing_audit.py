@@ -6,8 +6,8 @@ tool call against CLAUDE.md §Tool Routing routing rules. Persists silent-misses
 exempt overrides to logs/routing_audit.jsonl for /eval_dashboard aggregation.
 
 Why this exists:
-- The existing PostToolUse nudge hooks (`tool_routing_post_grep.py`,
-  `tool_routing_cumulative.py`) fire real-time advisories but do NOT persist
+- The existing PostToolUse/PreToolUse nudge hooks (`tool_routing_post_grep.py`,
+  `tool_routing_nudge.py`) fire real-time advisories but do NOT persist
   per-call classifications. Drift across sessions is invisible until a periodic
   /routing_battery surfaces it. Reddit thread (2026-05-04) load-bearing claim:
   "without the log i would have assumed the rule was working — caught 4-5
@@ -26,9 +26,9 @@ What gets logged (and what doesn't):
 - NOT_ROUTABLE     : skip. Tool has no §Tool Routing routing rules.
 
 Each entry also records `nudge_fired: bool` — whether the existing nudge
-channel (tool_routing_post_grep.py / tool_routing_nudge.py stderr) actually
-reached the agent. Cross-references with the per-session state file's
-`post_grep_nudges_fired_this_turn` list. The dashboard can then split:
+channel (`tool_routing_post_grep.py` / `tool_routing_nudge.py`) actually
+reached the agent. Cross-references the per-session state file's pre/post receipts.
+The dashboard splits:
    silent-miss = NUDGE_WARRANTED + nudge_fired=false   ← the gap to close
    nudged      = NUDGE_WARRANTED + nudge_fired=true    ← channel works
 
@@ -41,11 +41,10 @@ Audit log location:
 Boundaries:
 - Never blocks. Exit 0 in all paths.
 - Never raises (worst case: silent log-write failure, hook still exits clean).
-- Reads `last_prompt` from the same per-session state file the other hooks
-  populate (~/.claude/.routing_state/<sid>_<aid>.json).
+- Reads `last_prompt` from the agent-keyed `<sid>_<aid>.json` when present, else the
+  session-level `<sid>.json` that `tool_routing_cumulative_reset.py` writes.
 
-Wired in: settings.json hooks.PostToolUse with the same matcher as
-`tool_routing_cumulative.py`.
+Wired through: settings.json hooks.PostToolUse → `post_read_dispatch.py`.
 """
 
 from __future__ import annotations
@@ -53,13 +52,12 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
-import time
 from datetime import datetime, timezone
 
 # Shared classifier (extracted 2026-05-04).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
+    from _hook_state import read_json_salvage
     from routing_classifier import classify_call, Classification
 except ImportError:
     # Defensive: if import fails, this hook becomes a no-op rather than break
@@ -99,14 +97,7 @@ def _state_path(session_id: str, agent_id: str = "") -> str:
 
 
 def _read_state(session_id: str, agent_id: str = "") -> dict:
-    try:
-        with open(_state_path(session_id, agent_id), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
-        pass
-    return {}
+    return read_json_salvage(_state_path(session_id, agent_id))
 
 
 # === Nudge-fired detection ==================================================
@@ -123,49 +114,27 @@ def _detect_nudge_fired(
     Determine whether the existing nudge channel fired for this call.
 
     Sources of truth:
-    - `post_grep_nudges_fired_this_turn` list — written by
-      tool_routing_post_grep.py when it emits an additionalContext nudge,
-      keyed by Grep pattern. NOTE: post_grep.py writes to the SESSION-LEVEL
-      state file (no agent_id suffix), but this hook's `state` arg is loaded
-      from the per-(session, agent) file. For subagent Grep calls we must
-      also consult the session-level file or every subagent nudge looks
-      silent-missed (the +60% pascal-grep-on-cs regression debugged
-      2026-05-11 was this measurement bug, not a doctrine drift).
-    - For non-Grep nudge-warranted calls (synthesis-shaped Obsidian read), the
-      PreToolUse nudge.py emits stderr but does NOT track in state. We can't
-      observe it from the post-call vantage point, so we conservatively assume
-      the nudge fired — same fire-condition is encoded in classify_call(),
-      which already returned NUDGE_WARRANTED.
-
-    Returns False only when we have positive evidence the nudge did NOT fire.
+    - `pre_nudges_fired_this_turn` — written by `tool_routing_nudge.py` for every
+      delivered PreToolUse advisory, keyed by classification rule.
+    - `post_grep_nudges_fired_this_turn` — written by
+      `tool_routing_post_grep.py` when its fallback emits, keyed by Grep pattern.
+    Both hooks write session-level state, so subagent calls also consult that file.
     """
     if classification.severity != "nudge-warranted":
         return False
 
-    if tool_name == "Grep":
-        pattern = tool_input.get("pattern") or ""
-        fired_a = state.get("post_grep_nudges_fired_this_turn") or []
-        if pattern in fired_a:
-            return True
-        if agent_id:
-            sess_state = _read_state(session_id, agent_id="")
-            fired_s = sess_state.get("post_grep_nudges_fired_this_turn") or []
-            if pattern in fired_s:
-                return True
-        return False
-
-    # Non-Grep nudge-warranted (synthesis-shaped Read / Obsidian read): the
-    # PreToolUse nudge hook records fired rules in the session-level state
-    # file (`pre_nudges_fired_this_turn`, keyed by classification rule).
-    # Positive evidence only — absence means the nudge did NOT reach the agent.
-    rule = classification.rule or ""
-    fired_pre = state.get("pre_nudges_fired_this_turn") or []
-    if rule in fired_pre:
-        return True
+    states = [state]
     if agent_id:
-        sess_state = _read_state(session_id, agent_id="")
-        if rule in (sess_state.get("pre_nudges_fired_this_turn") or []):
+        states.append(_read_state(session_id, agent_id=""))
+
+    rule = classification.rule or ""
+    for candidate in states:
+        if rule in (candidate.get("pre_nudges_fired_this_turn") or []):
             return True
+        if tool_name == "Grep":
+            pattern = tool_input.get("pattern") or ""
+            if pattern in (candidate.get("post_grep_nudges_fired_this_turn") or []):
+                return True
     return False
 
 
@@ -226,9 +195,12 @@ def process(input_data: dict) -> None:
     session_id = input_data.get("session_id") or ""
     agent_id = input_data.get("agent_id") or ""
 
-    # Read prompt + nudge-fired state from the per-session file.
+    # Read prompt + nudge-fired state from the per-(session, agent) file. A native subagent
+    # has no prompt of its own: it inherits the parent request from the session-level file.
     state = _read_state(session_id, agent_id)
     last_prompt = state.get("last_prompt") or ""
+    if agent_id and not last_prompt:
+        last_prompt = _read_state(session_id).get("last_prompt") or ""
 
     # Classify the call against §Tool Routing routing rules.
     try:

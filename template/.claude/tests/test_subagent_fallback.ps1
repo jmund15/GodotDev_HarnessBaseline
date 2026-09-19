@@ -12,10 +12,19 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $registry = Join-Path $here "..\reference\external_models.json"
 $data = Get-Content $registry -Raw | ConvertFrom-Json
+# PLANTED transport exclusion. The live roster once excluded deepseek at its transport and this proof
+# leaned on that; when the owner re-enabled it (2026-09-15) the planted case silently lost its subject.
+# A fixture copy of the live registry, pointed at through HARNESS_MODEL_REGISTRY, keeps the case planted.
+$data.transports.deepseek | Add-Member -Force -NotePropertyName status -NotePropertyValue (
+    [pscustomobject]@{ state = 'unavailable'; reason = 'fixture: transport-level exclusion' })
+$fixture = Join-Path ([System.IO.Path]::GetTempPath()) ("subagent_fallback_{0}.json" -f [guid]::NewGuid())
+[System.IO.File]::WriteAllText($fixture, ($data | ConvertTo-Json -Depth 32), [System.Text.UTF8Encoding]::new($false))
+$oldRegistryEnv = $env:HARNESS_MODEL_REGISTRY
+$env:HARNESS_MODEL_REGISTRY = $fixture
 function Row([string]$alias) { $data.models | Where-Object { $_.alias -eq $alias } | Select-Object -First 1 }
 
-# Live-roster preconditions. If these stop holding the roster changed, and the assertions below are
-# asserting nothing — a proof that silently stops covering its subject is the failure mode here.
+# Fixture preconditions. If these stop holding, the assertions below are asserting nothing — a proof
+# that silently stops covering its subject is the failure mode here.
 $astra = Row 'astra'; $luna = Row 'luna'; $flash = Row 'flash'
 $pre = @(
     @{ n = "astra is row-level excluded (the case that needs a fallback)"
@@ -90,6 +99,8 @@ foreach ($c in ($pre + $cases)) {
     if (-not $ok) { $failed++ }
     Write-Host ("{0} {1}{2}" -f $(if ($ok) { "ok  " } else { "FAIL" }), $c.n, $detail)
 }
+$env:HARNESS_MODEL_REGISTRY = $oldRegistryEnv
+Remove-Item -LiteralPath $fixture -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host ("{0}/{1} passed" -f (($pre.Count + $cases.Count) - $failed), ($pre.Count + $cases.Count))
 exit $(if ($failed) { 1 } else { 0 })

@@ -60,7 +60,7 @@ def credential():
 
 
 def http_json(url, key=None, method="GET", payload=None, timeout=HTTP_TIMEOUT):
-    headers = {"User-Agent": "harness-harness-opencode-refresh/1.0",
+    headers = {"User-Agent": "harness-opencode-refresh/1.0",
                "Accept": "application/json"}
     if key:
         headers["Authorization"] = "Bearer %s" % key

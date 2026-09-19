@@ -43,10 +43,9 @@ Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 import json
 import sys
 
-from _hook_state import (fire_once_since_compaction, read_json_salvage, state_path,
-                         write_json_atomic)
+from _hook_state import fire_once_since_compaction, read_json_salvage, state_path
 
-# One session state file, shared with tool_routing_cumulative.py / critical_analysis_reminder.py.
+# Key in the per-session routing state file that the other routing hooks share.
 STATE_KEY = "harness_edit_reminder"
 
 INCLUDED_MD_ANY_DEPTH = ".md"
@@ -107,17 +106,35 @@ def build_reminder(file_path: str) -> str:
     )
 
 
-def _note_edit_for_routing(session_id: str) -> None:
-    """Set `edit_seen_this_turn` in the tool-routing session state, consumed by
-    tool_routing_cumulative.py. Cleared per turn by
-    tool_routing_cumulative_reset.py. Best-effort; never raises."""
-    path = state_path(session_id)
-    try:
-        state = read_json_salvage(path)
-        state["edit_seen_this_turn"] = True
-        write_json_atomic(path, state)
-    except Exception:
-        pass
+def process(input_data):
+    """Dispatcher entry: `{"deny": reason}`, `{"context": reminder}`, or None.
+
+    `pre_edit_dispatch.py` calls this; `main()` keeps the standalone channel.
+    """
+    if input_data.get("tool_name") not in ("Write", "Edit"):
+        return None
+
+    session_id = input_data.get("session_id") or ""
+    file_path = (input_data.get("tool_input") or {}).get("file_path") or ""
+    if not is_harness_file(file_path):
+        return None
+
+    state = read_json_salvage(state_path(session_id))
+
+    skills_loaded = state.get("skills_loaded")
+    if not (isinstance(skills_loaded, list) and "instruction_quality" in skills_loaded):
+        name = file_path.replace("\\", "/").split("/.claude/")[-1]
+        return {"deny": (
+            f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in this "
+            "session's loaded-skill state. Invoke Skill(skill=\"instruction_quality\"), then "
+            "retry this exact edit — only a real Skill invocation clears the gate; prior "
+            "familiarity or a compaction summary does not."
+        )}
+    # Once per session, and again after a compaction dropped it from context.
+    if not fire_once_since_compaction(session_id, STATE_KEY):
+        return None
+
+    return {"context": build_reminder(file_path)}
 
 
 def main() -> None:
@@ -126,50 +143,22 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    if input_data.get("tool_name") not in ("Write", "Edit"):
-        sys.exit(0)
-
-    session_id = input_data.get("session_id") or ""
-    # Side effect, all Write|Edit calls: mark the turn as edit-shaped for the
-    # tool-routing cascade nudge. Reads that satisfy Edit's read-first
-    # precondition are not a bundleable synthesis cascade, and prompt cue words
-    # miss the case where the user says "address this" and means "edit it".
-    # Piggybacks this hook's existing spawn rather than adding another.
-    _note_edit_for_routing(session_id)
-
-    file_path = (input_data.get("tool_input") or {}).get("file_path") or ""
-    if not is_harness_file(file_path):
-        sys.exit(0)
-
-    state = read_json_salvage(state_path(session_id))
-
-    skills_loaded = state.get("skills_loaded")
-    if not (isinstance(skills_loaded, list) and "instruction_quality" in skills_loaded):
-        name = file_path.replace("\\", "/").split("/.claude/")[-1]
+    result = process(input_data) or {}
+    if result.get("deny"):
         sys.stdout.write(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in this "
-                    "session's loaded-skill state. Invoke Skill(skill=\"instruction_quality\"), then "
-                    "retry this exact edit — only a real Skill invocation clears the gate; prior "
-                    "familiarity or a compaction summary does not."
-                ),
+                "permissionDecisionReason": result["deny"],
             }
         }))
-        sys.exit(0)
-    # Once per session, and again after a compaction dropped it from context.
-    if not fire_once_since_compaction(session_id, STATE_KEY):
-        sys.exit(0)
-
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": build_reminder(file_path),
-        }
-    }
-    sys.stdout.write(json.dumps(payload))
+    elif result.get("context"):
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": result["context"],
+            }
+        }))
     sys.exit(0)
 
 

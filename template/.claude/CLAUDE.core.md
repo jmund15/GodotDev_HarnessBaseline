@@ -4,7 +4,8 @@
 - **Modular when direction is known:** design for an evolution the user names, and propose the modular design first; do not invent future needs. When unclear whether direction was stated, ask.
 - **Logs are Truth:** you can't see runtime. Rely on E2E/Integration outputs, and on `JmoLogger` output via `/analyze_godot_logs` after a user playtest, not on visual guesses.
 - Keep scope and quality intact. Missing, failed and unverified are not clean; report actual tests and artifacts.
-- Check current git state and preserve peer work. Run `git status --short <file>` before calling a defect peer-owned; clean means it is yours to fix now. Fix an addressable defect now; name the blocking fact otherwise.
+- A result outside its expected value is a defect, never a finding to report: trace it to its cause in the primary evidence first, then fix it, or name the blocking fact, in the same message. This covers a measurement the user ordered as much as a failing test.
+- Check current git state and preserve peer work. Run `git status --short <file>` before calling a defect peer-owned; clean means it is yours to fix now.
 - This file holds only decisions needed before a more specific trigger. Domain detail, examples and incident history belong in their triggered owner, not another standing rule.
 
 ### Self-Improvement Loop
@@ -18,12 +19,12 @@ Use normal conversation: `/explore` → plan file → `/plan_check` → user app
 3. Run `/plan_check` for 3+ files, new concepts/surfaces, family refactors, replacements/deletions or always-loaded guidance. Harness plans are included. Resolve forks before execution; `skills/_brainstorm_shared/plan_file_format.md` owns the plan format.
 
 ### Proactive Context Loading (Mid-Execution)
-On a real domain change or a result contradicting expected behavior, search `.claude/auto-memory/` with a natural-language description before changing approach. `reference/memory_domains.md` supplies seeds. Background notifications and incidental words are not domain changes. Never leave memory inaccurate or unintuitive; the same mistake should not recur.
+On a real domain change or a result contradicting expected behavior, search `.claude/auto-memory/` with a natural-language description before changing approach. `reference/memory_domains.md` supplies seeds. Background notifications and incidental words are not domain changes.
 
 ## Build & Test Commands
 - **Godot/C# tests:** load `testing`; use `--filter` and `--settings .runsettings`, never `--no-build`. Bash timeout is `600000` for tests and vault/Godot-install/transcript walks.
 - **C# commits:** `/regression_gate` is mandatory, once at drive close. Mid-drive verification uses `scripts/verify.ps1 -Scope <domains>`; `change_control` owns cadence.
-- **Harness code/settings commits:** `.claude/scripts/harness_tests.py` supplies the tested-input stamp. Pure documentation is exempt from the C# gate. `rules/harness_tooling.md` owns proof mechanics.
+- **Harness code/settings commits:** `python3 .claude/scripts/harness_tests.py --staged` stamps the staged harness files from their bound proofs (seconds); the full battery runs at session close. Run it once before the commit, never as a per-edit check; a task with no commit needs no stamp. Pure documentation is exempt from the C# gate. `rules/harness_tooling.md` owns proof mechanics.
 - After substantial scene/resource wiring, check the MCP Godot version against `reference/project_stack.md`, run the game and inspect debug output. Engine invocations can rewrite assets; inspect their diffs.
 
 ## Development Philosophy: Hybrid TDD
@@ -93,4 +94,4 @@ Watch background jobs through their completion/monitor contract. Prove process o
 Before dispatch, distinguish copyable I/O from derived judgment, choose a suitable model/effort, and state the currency. Model claims and availability live in `reference/model_ladder_evidence.md` and `reference/external_models.json`; `orchestration` owns mechanisms. Requested pins are not observed identity. Keep compaction enabled for ordinary long jobs and respect verified per-model capacity; a larger client declaration does not enlarge the backend.
 
 ## Preferences
-Plan files are context-free execution contracts, not session diaries. Preserve stated requirements and exclusions through delegation and resume. Keep full evidence retrievable while returning only the current decision, result and next action. No performative agreement: restate the requirement, verify, or fix. A bullet headline states the actual point, never a category label.
+Plan files are context-free execution contracts, not session diaries. Preserve stated requirements and exclusions through delegation and resume. Keep full evidence retrievable while returning only the current decision, result and next action. No performative agreement: restate the requirement, verify, or fix; diagnose the objection before pivoting, and distress language means stop and rescope. A bullet headline states the actual point, never a category label.

@@ -270,8 +270,7 @@ $plan = @()
 $i = 0
 foreach ($b in $batches) {
     $i++
-    $filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ')'
-    if ($quarantine) { $filter = "$filter&$quarantine" }
+    $filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ")&$quarantine"
     $plan += [pscustomobject]@{
         label = "Integration_B$i"; segs = @($b.segs); expectedSec = [math]::Round($b.sec, 1)
         filter = $filter; status = 'PENDING'; passed = 0; failed = 0; elapsed = 0; workWall = 0

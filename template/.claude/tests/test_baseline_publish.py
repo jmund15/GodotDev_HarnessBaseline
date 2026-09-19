@@ -734,6 +734,46 @@ def test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed()
         assert _git(remote, "show", "main:template/" + rel)
 
 
+def test_abbreviated_commit_source_resumes_instead_of_deadlocking() -> None:
+    """A source given a short SHA -- the form the CLI is actually typed with -- must resume.
+
+    The journal recorded the caller's commit string verbatim while `_current_source_commit`
+    resolved it, so the guard compared `rev-parse(X)` against `X` and refused every abbreviated
+    source. The same recorded string then matched `_find_matching_journal`, so the identical fresh
+    run refused too, naming a resume that could not run: the publication had no open door. Every
+    other case here passes `rev-parse HEAD`, which is why this never surfaced.
+    """
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(
+            path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        short = _git(root, "rev-parse", "--short", "HEAD").decode().strip()
+        full = _git(root, "rev-parse", "HEAD").decode().strip()
+        assert short != full, "fixture did not produce an abbreviated sha"
+
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": short},
+                                   [rel], [], True, True, None)
+        assert journal["dry_run"] is True
+        assert journal["source"]["commit"] == full, journal["source"]
+
+        # A journal written before this fix holds the abbreviation verbatim. The resume guard
+        # resolves the recorded side too, so an already-stranded publication opens rather than
+        # needing a hand-edited journal.
+        journal_path = root / ".claude" / ".cache" / "baseline-publish" / (journal["id"] + ".json")
+        stored = json.loads(journal_path.read_text(encoding="utf-8"))
+        stored["source"]["commit"] = short
+        journal_path.write_text(json.dumps(stored, indent=2), encoding="utf-8", newline="\n")
+
+        publish2 = _load_publish()
+        with _patched_env(env):
+            resumed = publish2.run(root, None, None, [], False, False, journal["id"])
+        assert all(s["status"] == "green" for s in resumed["steps"]), resumed["steps"]
+        assert _git(remote, "show", "main:template/" + rel)
+
+
 def test_repeat_publish_prints_already_published() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
@@ -1529,6 +1569,7 @@ def test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_workt
 
 def main() -> int:
     cases = [
+        test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,
         test_collect_without_rows_takes_only_push_verdicts,
@@ -1539,6 +1580,7 @@ def main() -> int:
         test_no_ci_refuses_when_workflow_exists,
         test_step_failures_1_through_5_leave_fixture_main_unchanged,
         test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed,
+        test_abbreviated_commit_source_resumes_instead_of_deadlocking,
         test_repeat_publish_prints_already_published,
         test_repeat_incomplete_same_baseline_refuses_naming_resume,
         test_repeat_incomplete_older_baseline_records_supersedes,
@@ -1572,6 +1614,46 @@ def main() -> int:
             print("FAIL %s: %s" % (case.__name__, exc))
     print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+
+def test_publish_renames_project_identifiers_without_touching_the_local_file() -> None:
+    """A lock substitution renames an identifier in the PUBLISHED copy while the source keeps it.
+
+    This is the mechanism that makes genericising the source unnecessary: `reverse_for` maps the
+    real name to the published one on the way up, `forward_for` maps it back on the way down, so
+    the consumer's own rules keep citing classes that exist.
+    """
+    rel = ".claude/tools/fixture_rename.py"
+    baseline_content = b"value = 'old'\n"
+    local_content = b"# FixtureWidget is the family root\nvalue = 'fixture'\n"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, baseline_content, local_content)
+        lock_path = root / ".claude" / "baseline.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["substitutions"]["GenericWidget"] = "FixtureWidget"
+        _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
+        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(
+                root,
+                {"kind": "commit", "repo": str(root), "commit": source_commit},
+                [rel],
+                [],
+                False,
+                True,
+                None,
+            )
+        steps = _field(journal, "steps")
+        assert all(step["status"] == "green" for step in steps), steps
+
+        published = _git(remote, "show", "main:" + "template/" + rel)
+        assert b"GenericWidget" in published, published
+        assert b"FixtureWidget" not in published, published
+        assert (root / rel).read_bytes() == local_content, "the local file must keep the real name"
 
 
 if __name__ == "__main__":

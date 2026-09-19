@@ -6,41 +6,36 @@ Generate a Self-Evaluation Performance Dashboard from the session archive.
 
 ## Fast Path (preferred — use the analysis script)
 
-A canonical analysis script lives at `.claude/tools/analyze_eval_archive.py`. It performs the deterministic stats computation: dedupe by `(title, date)` (or `session_id` once that field is populated per `/self_evaluate` v2), classify legacy entries heuristically, compute domain & skill clean rates, run the recent-vs-prior 10-session trend window, count memory-hit citations, and emit both a console report AND a structured JSON at `/tmp/eval_out/stats.json`.
+A canonical analysis script lives at `.claude/tools/analyze_eval_archive.py`. It merges the frozen legacy snapshot with the bounded JSONL ledger, keeps the newest row per `session_id`, computes deterministic statistics, and writes `/tmp/eval_out/stats.json`.
 
 **Run order on every `/eval_dashboard` invocation:**
 
-1. `python .claude/tools/analyze_eval_archive.py 2>&1 | tail -150` — read the console output for inline review.
+1. `python3 .claude/tools/analyze_eval_archive.py` — read its bounded console output for inline review.
 2. Treat `/tmp/eval_out/stats.json` as the **single source of truth** for §1 / §3 / §4 / §4b / §6 / §8.6 numbers.
 3. Use Claude reasoning ONLY for §7 (Strength/Weakness narrative) and §8 (Conclusions) — these need session-context judgment that the script can't produce.
+4. Stamp the run: `python3 .claude/tools/self_improvement_due.py --stamp`. It records the current row count and today's date to `.claude/logs/eval_dashboard_last.json`, the row half of `session_context_loader`'s startup due-check.
 
-**Why this matters:** the 2026-05-03 dashboard generation took ~10 minutes of direct archive reading + manual counting. The script reduces that to ~5 seconds with arithmetic that can't drift between runs. Direct archive reading remains the audit-shape exception (per CLAUDE.md §10) for spot-checking suspect numbers — but should not be the default path for stats generation.
+The script is the only full-archive reader. If it fails, fix and rerun it; do not model-read or rewrite the archive as a fallback.
 
-**If the script is missing or broken** (deleted, syntax error, archive schema change): fall back to the manual procedure below. After the fallback run, verify the script is restored and runnable before calling the dashboard complete.
-
-**Pre-step: archive dedup audit.** The script prints `Duplicate-rate: X%` near the top of its output. If duplicate rate is non-zero AND `/self_evaluate` v2 (one-entry-per-session) has been in effect for ≥5 new entries, run a dedup cleanup pass on `self_evaluate_archive.json` BEFORE generating the dashboard — the duplication is now a data-integrity bug, not a historical artifact.
+`Superseded-row rate` measures normal ledger revisions. The newest row per session wins; no cleanup pass is required.
 
 ## Data Source
-Read `/.claude/self_evaluate_archive.json` — contains two data formats:
+The script reads both storage layers:
 
-### Structured entries (preferred — new format)
-- `structured_entries[]` — JSON objects with explicit fields: `id`, `date`, `outcome`, `pattern`, `domains[]`, `corrections[]`, `skills_used[]`, `memory_searches`, `memory_hits[]`, `tests{}`, `key_takeaway`, `notes`
-- Parse these deterministically — no heuristics needed
+### Structured entries
+- `.claude/self_evaluate_archive.json` is the read-only legacy snapshot.
+- `.claude/self_evaluate_archive.jsonl` and its rotations hold bounded new and revised rows.
+- The newest row per `session_id` is effective; pre-session-ID rows fall back to `(title, date)`.
 
 ### Legacy entries (historical — pre-2026-02-03)
-- `legacy_entries[]` — compressed prose strings from sessions #1-#38
-- Parse heuristically: look for "Clean", "USER CORRECTION", "CRITICAL", dates in parentheses, pattern references
-- `Self_Evaluate_Themes.patterns` — pattern A/B/C/D definitions
-- `Self_Evaluate_Themes.meta_insights[]` — high-level system observations
+- `legacy_entries[]` are compressed prose strings classified heuristically.
+- `Self_Evaluate_Themes` supplies pattern definitions and meta-insights.
 
 ### Merging both formats
-When generating stats, combine both sources. Structured entries take priority for accuracy. For legacy entries, use best-effort classification and note any ambiguity in footnotes.
+Use the script output. Structured entries take priority; note ambiguous legacy classification in footnotes.
 
 ## Output
-Write to Obsidian at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using `mcp__obsidian__obsidian_update_note`:
-- `targetType: "filePath"`, `targetIdentifier: "DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md"`
-- `modificationType: "wholeFile"`, `wholeFileMode: "overwrite"`, `overwriteIfExists: true` (whole-file replace; creates the note if absent)
-- Native `Write` to the vault path is an equally valid fallback per CLAUDE.md §3.
+Write to the vault at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using `Write` (whole-file overwrite; creates the file if absent) per CLAUDE.md §3.
 
 ## Document Structure
 
@@ -95,8 +90,8 @@ Analyze which domains generated the most corrections vs. clean execution:
 > | Pooling | N | N | X% |
 > | Testing | N | N | X% |
 > | Refactoring | N | N | X% |
-> | Rendering | N | N | X% |
-> | Interface | N | N | X% |
+> | Combat/Effects | N | N | X% |
+> | UI/Animation | N | N | X% |
 > | Meta/Tooling | N | N | X% |
 
 ### Section 4b: Skill Performance
@@ -107,9 +102,9 @@ The per-skill mirror of Section 4. For each skill that appeared in `skills_used[
 > | Skill | Sessions Loaded | Clean | Correction | Failure | Clean Rate | Trend |
 > |-------|-----------------|-------|-----------|---------|-----------|-------|
 > | architecture_philosophy | N | N | N | N | X% | ↑/↓/→ |
-> | debugging | N | N | N | N | X% | ↑/↓/→ |
+> | spell_authoring | N | N | N | N | X% | ↑/↓/→ |
 > | testing | N | N | N | N | X% | ↑/↓/→ |
-> | refactor_procedure | N | N | N | N | X% | ↑/↓/→ |
+> | jmodot | N | N | N | N | X% | ↑/↓/→ |
 > | autolearn | N | N | N | N | X% | ↑/↓/→ |
 > | (skills with <3 loads omitted as low-signal) | | | | | | |
 
@@ -145,7 +140,7 @@ This section answers the question Sections 4 and 4b can't: *are the routing hook
 
 **Cross-link:** trend deltas here should triangulate with the most recent `/routing_battery` results. If continuous-audit silent-miss spikes but the last battery still passes, the doctrine is intact and the spike is task-specific (a sprint of unfamiliar code-discovery). If both the audit AND battery show the same rule degrading, doctrine drift is real and the rule needs a CLAUDE.md negative-framing addition or skill update.
 
-**No-data state:** if `silent_misses == 0` and `cue_exempt_overrides == 0`, either (a) all routing is compliant (excellent), (b) no routing-classifiable calls happened in window (fresh project, recent rotation), or (c) audit hook isn't firing. Disambiguate via `total_entries` field — if zero entries, suspect (c) and check `settings.json` for `routing_audit.py` wire-up.
+Label these counts as classifier observations, not measurements of routing quality. **No-data state:** if `silent_misses == 0` and `cue_exempt_overrides == 0`, either (a) all routing is compliant (excellent), (b) no routing-classifiable calls happened in window (fresh project, recent rotation), or (c) audit hook isn't firing. Disambiguate via `total_entries` field — if zero entries, suspect (c) and check `settings.json` for `routing_audit.py` wire-up.
 
 ### Section 4d: Effort Calibration
 
@@ -170,6 +165,17 @@ Sections 4/4b measure whether *skills* carry their declared compliance. This mea
 - **`?` efforts in the archive** → scripts are missing the `PINS` log line (`orchestration` §9); the data is unattributable until that lands.
 
 **Minimum N before proposing a ladder edit:** ≥8 archived agents at the tier in question, spanning ≥3 sessions. Below that, per-session variance dominates — say so rather than tuning on it.
+
+### Section 4e: Rules Past Their Trigger
+
+**Data source:** First generate the runtime census with `python3 .claude/tools/load_census.py --budgets --json .claude/logs/load_census.json`, then run `python3 .claude/tools/rule_retirement.py --client-version <client> --tools <live tool names> --census .claude/logs/load_census.json --json /tmp/eval_out/rule_retirement.json`. Sections 4–4d measure how the harness performs; this one measures what it is still carrying. `--census` is the load-census JSON generated by `tools/load_census.py`; when the file is absent the scanner marks `load_census budget …` triggers undecidable, and this section says so rather than dropping them.
+
+> [!tip]- Rules past their retirement trigger
+> | Rule | Trigger | Why it fired |
+> |------|---------|--------------|
+> | (populate from `fired[]`) | | |
+
+Render `malformed[]` beneath as a defect list — a trigger no kind matches retires nothing — and state the `undecidable[]` count with the evidence that was missing. An empty `fired[]` renders as "no rule is past its trigger", never an omitted section. `/autolearn` owns proposing these retirements; this section only reports them.
 
 ### Section 5: Key Corrections Log
 Chronological table of sessions with corrections:

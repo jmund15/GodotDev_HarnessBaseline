@@ -6,7 +6,7 @@ ext_resource lines without the target's uid= -- is marked dirty at EVERY editor 
 the next save (including F5 play's save-before-run) rewrites it, and a rewrite landing
 in the editor's C# rebuild window serializes scripted sub-resources stripped
 (resource_local_to_scene = "" -> bare-Resource loads -> InvalidCastException). This is
-a 4x-recurring config corruption; the fixed-point form is mandatory for NEW files
+the 4x-recurring encounter corruption; the fixed-point form is mandatory for NEW files
 (godot_files.md §UID handling). Inform-only -- the commit-time strip/nullstrip guards
 remain the hard gate.
 
@@ -85,32 +85,42 @@ def check_file(path_str: str) -> list[str]:
     return issues
 
 
+def process(data):
+    """Dispatcher entry: `{"context": advisory}` on non-canonical serialization, else None.
+
+    `post_edit_dispatch.py` calls this; `hook()` keeps the `--hook` standalone channel.
+    """
+    path = (data.get("tool_input", {}) or {}).get("file_path", "") or ""
+    if not path.endswith((".tres", ".tscn")):
+        return None
+    issues = check_file(path)
+    if not issues:
+        return None
+    rel = path.replace("\\", "/")
+    lines = [
+        f"[tres-format-guard] {rel} is not in the editor's canonical serialization "
+        "(godot_files.md §UID handling) -- the editor will mark it dirty at load and rewrite "
+        "it on the next save, the corruption window that stripped encounter .tres 4x:",
+        *[f"  - {i}" for i in issues],
+        "Fix now: add the script_class/uid= attributes (target uids from .cs.uid companions or "
+        "target headers; omit load_steps).",
+    ]
+    return {"context": "\n".join(lines)}
+
+
 def hook():
     try:
         data = json.load(sys.stdin)
     except json.JSONDecodeError:
         print("{}")
         return 0
-    path = (data.get("tool_input", {}) or {}).get("file_path", "") or ""
-    if not path.endswith((".tres", ".tscn")):
+    result = process(data) or {}
+    if not result.get("context"):
         print("{}")
         return 0
-    issues = check_file(path)
-    if not issues:
-        print("{}")
-        return 0
-    rel = path.replace("\\", "/")
-    lines = [
-        f"[tres-format-guard] {rel} is not in the editor's canonical serialization "
-        "(godot_files.md §UID handling) -- the editor will mark it dirty at load and rewrite "
-        "it on the next save, the corruption window that stripped config .tres 4x:",
-        *[f"  - {i}" for i in issues],
-        "Fix now: add the script_class/uid= attributes (target uids from .cs.uid companions or "
-        "target headers; omit load_steps).",
-    ]
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
-        "additionalContext": "\n".join(lines),
+        "additionalContext": result["context"],
     }}))
     return 0
 

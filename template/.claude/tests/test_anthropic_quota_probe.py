@@ -49,6 +49,40 @@ def main():
             "newer unusable cache does not mask sidecar evidence",
             fallback is not None and fallback_source == ledger,
         ))
+        invalid_cache_values = []
+        invalid_cache_paths = []
+        for index, value in enumerate((False, -0.1, 100.1, float("nan"), float("inf"))):
+            invalid_cache = os.path.join(root, "cc-cachestat-invalid-%d.json" % index)
+            invalid_cache_paths.append(invalid_cache)
+            with open(invalid_cache, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({"rate_limits": {"seven_day": {
+                    "used_percentage": value, "resets_at": now + 86400,
+                }}}, handle)
+            os.utime(invalid_cache, (now + index, now + index))
+            invalid_cache_values.append(aq._cache_candidate(now) is None)
+        cases.append((
+            "malformed cache utilization stays unknown",
+            all(invalid_cache_values),
+        ))
+        for invalid_cache in invalid_cache_paths:
+            os.remove(invalid_cache)
+        invalid_reset_values = []
+        invalid_reset_paths = []
+        for index, value in enumerate((False, float("nan"), float("inf"), float("-inf"))):
+            invalid_cache = os.path.join(root, "cc-cachestat-reset-%d.json" % index)
+            invalid_reset_paths.append(invalid_cache)
+            with open(invalid_cache, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({"rate_limits": {"seven_day": {
+                    "used_percentage": 98.0, "resets_at": value,
+                }}}, handle)
+            os.utime(invalid_cache, (now + index, now + index))
+            invalid_reset_values.append(aq._cache_candidate(now) is None)
+        cases.append((
+            "malformed cache reset timestamps stay unknown",
+            all(invalid_reset_values),
+        ))
+        for invalid_cache in invalid_reset_paths:
+            os.remove(invalid_cache)
         raced_path = os.path.join(root, "cc-cachestat-vanished.json")
         original_glob = aq.glob.glob
         original_getmtime = aq.os.path.getmtime
@@ -95,6 +129,33 @@ def main():
             "a malformed index falls back to the ledger",
             recovered is not None and recovered.get("usedPercent") == 98.0,
         ))
+        malformed_candidates = []
+        for field, values in (
+            ("usedPercent", (False, -0.1, 100.1, float("nan"), float("inf"))),
+            ("resetsAt", (False, float("nan"), float("inf"), float("-inf"))),
+        ):
+            for value in values:
+                with open(index_path, encoding="utf-8") as handle:
+                    malformed_index = json.load(handle)
+                malformed_index["candidate"] = {
+                    "observed": now - 60,
+                    "limits": {"seven_day": {
+                        "usedPercent": 98.0,
+                        "resetsAt": now + 86400,
+                    }},
+                }
+                malformed_index["candidate"]["limits"]["seven_day"][field] = value
+                with open(index_path, "w", encoding="utf-8", newline="\n") as handle:
+                    json.dump(malformed_index, handle)
+                candidate, _ = aq.reading(now)
+                malformed_candidates.append(
+                    candidate is not None and candidate.get("usedPercent") == 98.0
+                    and candidate.get("resetsAt") == now + 86400
+                )
+        cases.append((
+            "malformed persisted quota evidence rescans the ledger",
+            all(malformed_candidates),
+        ))
         parsed = []
         original_parser = aq._sidecar_limits
 
@@ -140,6 +201,19 @@ def main():
         cases.append((
             "malformed sidecar utilization stays unknown",
             all(invalid_utilization),
+        ))
+        invalid_sidecar_resets = []
+        for value in (False, float("nan"), float("inf"), float("-inf")):
+            invalid_row = {
+                "transport": "anthropic", "timestamp": row["timestamp"],
+                "rateLimitInfo": {"unifiedWindows": {"seven_day": {
+                    "utilization": 0.98, "resetsAt": value,
+                }}},
+            }
+            invalid_sidecar_resets.append(aq._sidecar_limits(invalid_row) is None)
+        cases.append((
+            "malformed sidecar reset timestamps stay unknown",
+            all(invalid_sidecar_resets),
         ))
         row["timestamp"] = datetime.fromtimestamp(
             now - aq.STALE_AFTER_SECONDS - 1, timezone.utc

@@ -28,7 +28,7 @@ Determine the system name from `$ARGUMENTS` or the session's development history
 Read `agents/documentation_structure.md` (folder structure) and the `obsidian_conventions` skill (vault tooling), and apply:
 - **Normalize name** — PascalCase, no spaces, strip redundant domain prefixes
 - **Determine domain folder** — read Start Here "By Domain", route to `{Domain}/{SystemName}/`
-- **Check MCP** — verify online, check if doc folder exists (pass to agents as context)
+- **Check doc folder** — check if doc folder exists (pass to agents as context)
 
 ---
 
@@ -91,7 +91,7 @@ Proceed to Phase 3 regardless of retrospective outcome.
 After all subagents complete, create or update `Quick Reference.md` in the system folder.
 
 ### 3a. Read the completed docs
-Use `obsidian_read_note` to read the Usage, Architecture, and Retrospective docs that were just written. Extract:
+Use `Read` to read the Usage, Architecture, and Retrospective docs that were just written. Extract:
 - Key types and their roles (from Architecture)
 - Key configurable properties (from Usage)
 - File paths (from Architecture)
@@ -161,9 +161,9 @@ Source files belonging to this system:
 After writing the Quick Reference, ensure every system referenced in the Related Systems callout links back to this system.
 
 For each system `B` listed in this system's (`A`) Related Systems:
-1. Read `B`'s Quick Reference via `obsidian_read_note`
+1. Read `B`'s Quick Reference (native `Read` on the vault path)
 2. Check if `B`'s Related Systems callout already mentions `A`
-3. If not, use `obsidian_search_replace` to append a return link entry to `B`'s Related Systems callout
+3. If not, use `Edit` to append a return link entry to `B`'s Related Systems callout
 
 This prevents the most common audit finding (X1: unidirectional links). All cross-references must be bidirectional.
 

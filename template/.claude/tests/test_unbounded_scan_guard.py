@@ -21,7 +21,7 @@ PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
 
 SID = "usg00001"
 UNBOUNDED = 'rg -n "SpawnImpact" Jmodot/'          # volume axis only (rg is gitignore-aware)
-BLIND = 'grep -rn "pattern"'                        # both axes
+BLIND = 'find . -name "*.md"'                       # both axes (recursive grep is now a deny)
 BOUNDED = 'rg -n "SpawnImpact" Jmodot/ | head -20'  # neither
 
 
@@ -71,6 +71,42 @@ def main():
 
     # Negatives — a cadence change must not widen or narrow what fires.
     cases.append(("a bounded scan is silent", scan(BOUNDED, env) == ""))
+    # Live misfire 2026-09-14: `rg -n <pat> <one file>` walks no tree, yet drew the full volume advisory.
+    cases.append(("a scan of one named file is silent",
+                  scan("rg -n foo .claude/scripts/codex_proxy_sidecar.sh", env, session=SID + "-file") == ""))
+    cases.append(("a scan of a one-level file glob is silent",
+                  scan("rg -n foo .claude/hooks/*.py", env, session=SID + "-glob") == ""))
+    # Live misfire 2026-09-14: `python3 proof.py | rg 'FAIL'` reads stdin and walks no tree.
+    cases.append(("rg reading a pipe is silent",
+                  scan("python3 t.py 2>&1 | rg 'FAIL|cases pass'", env, session=SID + "-pipe") == ""))
+    # Live misfire 2026-09-14: `ls .claude/tests | rg 'git'` — the first scan-shaped word was `ls`.
+    cases.append(("rg fed by a plain ls is silent",
+                  scan("ls .claude/tests | rg 'git_guardrails|git_commit'", env, session=SID + "-ls") == ""))
+    # Live misfire 2026-09-14: a `;` glued to the first rg's quoted pattern hid the list boundary.
+    cases.append(("two pipe-fed rg calls joined by a glued ; are silent",
+                  scan("python3 a.py | rg 'FAIL|cases pass'; python3 b.py | rg 'FAIL|passed'", env,
+                       session=SID + "-semi") == ""))
+    # Live misfire 2026-09-14: a pipe-fed rg, then an rg naming one file; neither walks a tree.
+    cases.append(("a pipe-fed rg then a one-file rg is silent",
+                  scan("python3 a.py 2>&1 | rg -n 'listing'; rg -n 'x' .claude/tools/load_census.py", env,
+                       session=SID + "-mixed") == ""))
+    cases.append(("a pipe-fed rg then an rg walking a directory still advises",
+                  "UNBOUNDED RECURSIVE SCAN" in scan("python3 a.py | rg -n 'listing'; rg -n 'x' Jmodot/", env,
+                                                     session=SID + "-mixdir")))
+    cases.append(("an unbounded find feeding rg still advises",
+                  "UNBOUNDED RECURSIVE SCAN" in scan("find . -name x | rg y", env, session=SID + "-find")))
+    cases.append(("rg heading its own pipeline still advises",
+                  "UNBOUNDED RECURSIVE SCAN" in scan("rg -n foo | sort", env, session=SID + "-head")))
+    cases.append(("a globstar operand still advises",
+                  "UNBOUNDED RECURSIVE SCAN" in scan("rg -n foo src/**/*.md", env, session=SID + "-star")))
+    cases.append(("a scan of a dot-named directory still advises",
+                  "UNBOUNDED RECURSIVE SCAN" in scan("rg -n foo .claude", env, session=SID + "-dir")))
+    # Review F3: a directory whose name looks like `name.ext` is walked, not read as one file.
+    dotted_root = tempfile.mkdtemp(prefix="usgdotted_")
+    os.makedirs(os.path.join(dotted_root, "config.d"))
+    cases.append(("a scan of an existing dotted directory still advises",
+                  "UNBOUNDED RECURSIVE SCAN" in scan("rg -n foo config.d", env, session=SID + "-dotdir",
+                                                     cwd=dotted_root)))
     cases.append(("a non-scan command is silent", scan("git status", env) == ""))
     cases.append(("an adjacent tool is untouched",
                   run(HOOK, {"tool_name": "Read", "session_id": SID,

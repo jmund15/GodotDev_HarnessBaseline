@@ -867,8 +867,11 @@ def _validate_worktree_source(root: Path, cache: Path, worktree: Path, pinned_sh
 # ---------------------------------------------------------------------------
 
 def _resolve_source(root: Path, source: dict) -> dict:
-    return {"kind": source["kind"], "repo": str(Path(source["repo"]).resolve()),
-            "commit": source["commit"]}
+    """Resolve both fields. An abbreviated commit becomes its full sha, so the journal records an
+    unambiguous source that `_resume` and `_find_matching_journal` can each match."""
+    repo = Path(source["repo"]).resolve()
+    return {"kind": source["kind"], "repo": str(repo),
+            "commit": _git_text(repo, ["rev-parse", source["commit"]])}
 
 
 def _current_source_commit(source: dict) -> str:
@@ -921,11 +924,17 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str]) -> dict:
         return journal
 
     source = journal["source"]
+    # Resolve BOTH sides. A commit source is immutable, so this only ever refuses a worktree
+    # source whose HEAD moved, or a commit that no longer resolves. Comparing a resolved sha
+    # against the caller's own unresolved string refused every abbreviated source, and the same
+    # recorded string then matched `_find_matching_journal`, so the identical fresh run refused
+    # too -- a publication with no open door.
     try:
+        recorded = _git_text(Path(source["repo"]), ["rev-parse", source["commit"]])
         current = _current_source_commit(source)
     except PublishError:
-        current = None
-    if current != source["commit"]:
+        recorded = current = None
+    if recorded is None or current != recorded:
         raise PublishError("source commit changed since publish started; run a fresh publish")
 
     lock = sync.load_lock(root)

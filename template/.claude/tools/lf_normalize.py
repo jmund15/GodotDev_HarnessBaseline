@@ -5,6 +5,7 @@
   python3 .claude/tools/lf_normalize.py --check         # report only; exit 1 if any CRLF working copy
   python3 .claude/tools/lf_normalize.py --include-dirty # also rewrite files with uncommitted changes
   python3 .claude/tools/lf_normalize.py <dir>           # another tracked directory
+  python3 .claude/tools/lf_normalize.py --help          # this text; any other unknown option exits 2
 
 The repo is LF by attribute (`.gitattributes`: `* text=auto eol=lf`) and the index holds LF; only
 working copies drift, and only because a Windows text-mode writer (Python `write_text()` without
@@ -32,11 +33,23 @@ def crlf_working_copies(root):
     return out
 
 
+KNOWN_FLAGS = ("--check", "--include-dirty")
+
+
 def main() -> int:
-    argv = [a for a in sys.argv[1:] if not a.startswith("--")]
-    check = "--check" in sys.argv
-    include_dirty = "--include-dirty" in sys.argv
-    root = argv[0] if argv else ".claude"
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(__doc__.strip())
+        return 0
+    unknown = [a for a in args if a.startswith("-") and a not in KNOWN_FLAGS]
+    operands = [a for a in args if not a.startswith("-")]
+    if unknown or len(operands) > 1:
+        bad = ", ".join(unknown) if unknown else "extra directory operand " + " ".join(operands[1:])
+        print("lf_normalize: unrecognized %s; nothing was rewritten.\n\n%s" % (bad, __doc__.strip()), file=sys.stderr)
+        return 2
+    check = "--check" in args
+    include_dirty = "--include-dirty" in args
+    root = operands[0] if operands else ".claude"
     crlf = crlf_working_copies(root)
     if not crlf:
         print("lf_normalize: 0 CRLF working copies under %s" % root)

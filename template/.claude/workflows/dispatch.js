@@ -15,23 +15,19 @@ try {
 }
 const jobs = Array.isArray(A.jobs) ? A.jobs : []
 
-// Endpoint vocabulary — hooks/workflow_provider_guard.py injects __transport off-Anthropic:
-// {name, ids}. Anthropic role names stay canonical and are ALWAYS legal; on a provider session
-// that transport's own registry ids become legal too, which is what makes a sibling model
-// reachable by Workflow pin with no sidecar. Absent the key nothing changes. Inlined per script
-// because the Workflow sandbox has no require/import.
-const TRANSPORT_IDS = (A.__transport && Array.isArray(A.__transport.ids)) ? A.__transport.ids : []
+// Provider metadata replaces the host vocabulary; malformed metadata cannot reopen host defaults.
+const HAS_TRANSPORT = Object.prototype.hasOwnProperty.call(A, '__transport')
+const transport = A.__transport
+const validStrings = values => Array.isArray(values) && values.length > 0
+  && values.every(value => typeof value === 'string' && value.trim())
+if (HAS_TRANSPORT && (!transport || !validStrings(transport.ids) || !validStrings(transport.efforts))) {
+  return { error: 'dispatch: __transport needs non-empty string arrays ids and efforts.' }
+}
+const TRANSPORT_IDS = HAS_TRANSPORT ? transport.ids : []
 const PIN = (m) => m
 const EFF = (e) => e
-
-// Strict by design — this engine IS the enforcement point for explicit pins (CLAUDE.md §Model
-// Delegation, Workflow-first). No silent model floor, no silent effort default: a missing pin is
-// the caller's bug, surfaced loudly. review_fanout.js is the lenient sibling for review lenses.
-// On a provider session the transport's ids REPLACE the Anthropic vocabulary rather than
-// joining it: concat left `opus`/`sonnet` legal in the engine while the guard denied them,
-// so the two homes of one rule disagreed and the engine was the permissive one.
-const VALID_MODELS = TRANSPORT_IDS.length ? TRANSPORT_IDS : ['opus', 'sonnet', 'haiku', 'fable']
-const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh']
+const VALID_MODELS = HAS_TRANSPORT ? TRANSPORT_IDS : ['opus', 'sonnet', 'haiku', 'fable']
+const VALID_EFFORTS = HAS_TRANSPORT ? transport.efforts : ['low', 'medium', 'high', 'xhigh']
 
 // OPTIONAL third pin. `Explore` and `Plan` are read-only built-ins that receive NO project
 // CLAUDE.md and no memory index at any model pin (measured 2026-08-18, twice: asked to name the
@@ -73,7 +69,7 @@ if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 const CONCURRENCY_GUARD = jobs.length > 1 ? [
   '',
   '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-  'Do NOT run tests, builds, or /regression_gate (GdUnit4 named-pipe is machine-wide single-flight). Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read instead. If your task file mandates a test/build run, STOP and report that it needs a serialized dispatch.',
+  'Do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight). Python and Node proofs under .claude/tests/ are not single-flight; run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read instead. If your task file mandates a Godot or C# test or build run, STOP and report that it needs a serialized dispatch.',
 ].join('\n') : ''
 
 // Delegate rails — ONE home (.claude/guards/), four consumers. Two REFERENCE the files because

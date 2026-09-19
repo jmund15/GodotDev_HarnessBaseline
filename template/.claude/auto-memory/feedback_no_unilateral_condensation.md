@@ -2,6 +2,9 @@
 name: No unilateral condensation when porting thorough output to a file
 description: When the user asks for a thorough/comprehensive analysis and I produce one in chat, the chat content is the file spec — port it 1:1 (or fuller with native formatting), never summarize down without explicit instruction.
 type: feedback
+originSessionId: 874f45e2-e05b-4be4-be6d-14c69de9fc3c
+retire_when:
+  - review-by: 2026-10-22
 ---
 When the user requests a "thorough," "comprehensive," "full," or otherwise depth-emphasizing output in chat and then asks me to save it to a file (Obsidian, Markdown, etc.), the chat content **is** the deliverable spec. The file copy should be **at least as detailed** — typically more detailed, since file format allows native callouts, longer code blocks, and reference appendices.
 

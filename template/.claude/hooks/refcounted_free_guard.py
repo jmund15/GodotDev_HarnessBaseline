@@ -23,8 +23,8 @@ matched): a `.Free()` whose receiver is a collection field/local declared `List<
 A call already narrowed by `is Node` / `as Node` on the same line is safe by construction and is not
 flagged.
 
-Resolution: route the call through the project's teardown helper (`TestObjectTeardown.FreeIfNode(x)`;
-path in EXEMPT below), or -- when the tracker is Resource-only -- delete
+Resolution: route the call through `TestObjectTeardown.FreeIfNode(x)`
+(Tests/Framework/Helpers/TestObjectTeardown.cs), or -- when the tracker is Resource-only -- delete
 the loop entirely, because `Clear()` beneath it is the whole teardown.
 
 Modes:

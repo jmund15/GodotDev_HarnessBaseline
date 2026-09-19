@@ -37,7 +37,10 @@ CLI:
     model_registry.py role-map deepseek             print {role: id} as JSON
     model_registry.py for-role executor             rows serving a tier, in-transport and across
     model_registry.py for-role fanout --from codex  ...as seen from another seat
-    model_registry.py price <id> <fresh> <cache_read> <output>
+    model_registry.py context-window <model> [--max]  print the effective default or max window
+    model_registry.py price <id> <fresh> <cache_read> <output>   (priced at the current window)
+    model_registry.py price-window <model>          billing window now (SC_PRICE_AT overrides), rates
+    model_registry.py effort-values <model>         effort rungs the transport serves; [] = undeclared
     model_registry.py band-satisfies <current> <required>   exit 0 yes, 1 no, 2 bad name
 """
 
@@ -82,6 +85,15 @@ _LEGAL_COST_MODELS = {"marginal-usd", "plan-quota"}
 # instantly on every Chat Completions call regardless of client, headers, or payload shape, and
 # answers cleanly the moment the call shape changes (verified 2026-09-04).
 _LEGAL_API_MODES = {"responses"}
+
+# Time-of-day pricing. A provider that bills a window at a discount declares ONE schedule on its
+# transport (the windows apply to every model it bills); row prices stay the list rates. Any
+# future time-priced provider is a registry edit, never a launcher change.
+_DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_HHMM = __import__("re").compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+# What a launcher does when a dispatch starts inside a peak window. Absent = allow.
+_LEGAL_PEAK_POLICIES = {"allow", "refuse"}
 
 
 class RegistryError(Exception):
@@ -210,6 +222,7 @@ def _validate(data, target):
             raise RegistryError(
                 f"{target}: transport {tname} is {cost} and must not declare a 'quotaProbe' - "
                 f"a dollar-billed transport is gated on balance, not on a band")
+        _validate_schedule(tname, tcfg, cost, target)
         status = tcfg.get("status")
         if status is None:
             continue
@@ -288,6 +301,26 @@ def _validate(data, target):
         # from one catalog documents itself at the transport level; repeating it per row would
         # be the duplication this file exists to avoid).
         limits = entry.get("limits")
+        if limits is not None and not isinstance(limits, dict):
+            raise RegistryError(f"{target}: model {mid} 'limits' must be an object")
+        if isinstance(limits, dict):
+            for field in ("contextTokens", "maxContextTokens"):
+                value = limits.get(field)
+                if value is not None and (type(value) is not int or value <= 0):
+                    raise RegistryError(
+                        f"{target}: model {mid} limits.{field} must be a positive integer or null")
+            percent = limits.get("effectiveContextPercent")
+            if percent is not None and (type(percent) is not int or not 0 < percent <= 100):
+                raise RegistryError(
+                    f"{target}: model {mid} limits.effectiveContextPercent must be an integer "
+                    "from 1 through 100")
+            default_window = limits.get("contextTokens")
+            max_window = limits.get("maxContextTokens")
+            if (type(default_window) is int and type(max_window) is int
+                    and max_window < default_window):
+                raise RegistryError(
+                    f"{target}: model {mid} limits.maxContextTokens must be at least "
+                    "limits.contextTokens")
         if isinstance(limits, dict) and any(
             limits.get(k) is not None for k in ("contextTokens", "maxContextTokens", "maxOutputTokens")
         ) and not (entry.get("_limitsSource") or entry.get("_limitsComment")
@@ -356,6 +389,17 @@ def _validate(data, target):
                 f"{target}: model {mid} is on a {cost_model} transport and must not declare "
                 f"gate.maxProviderBand - there is no provider band to read")
 
+        policy = gate.get("peakPolicy")
+        if policy is not None:
+            if policy not in _LEGAL_PEAK_POLICIES:
+                raise RegistryError(
+                    f"{target}: model {mid} gate.peakPolicy {policy!r} must be one of "
+                    f"{', '.join(sorted(_LEGAL_PEAK_POLICIES))}")
+            if policy == "refuse" and not transports[transport].get("pricingSchedule"):
+                raise RegistryError(
+                    f"{target}: model {mid} gate.peakPolicy 'refuse' needs transport {transport} "
+                    f"to declare a pricingSchedule - with no windows there is no peak to refuse")
+
         effort = entry.get("effort")
         # `see-ladder` is the third state, for a transport whose `roleSource` names an external
         # owner of role semantics (the host transport's rows). Recording measured/unmeasured here
@@ -368,11 +412,120 @@ def _validate(data, target):
                 f"{target}: model {mid} claims effort.evidence 'see-ladder' but transport "
                 f"{transport} declares no 'roleSource' naming who owns those semantics")
 
+        # Evidence is bound to the version it measured. A vendor upgrade is an edit of `version`
+        # (and price); this check then forces the routing claim to be re-earned instead of letting
+        # the old model's scores silently route work to the new one.
+        version = entry.get("version")
+        if version and effort.get("evidence") == "measured" and effort.get("measuredVersion") != version:
+            raise RegistryError(
+                f"{target}: model {mid} effort.measuredVersion {effort.get('measuredVersion')!r} does "
+                f"not match version {version!r} - the version changed since measurement. "
+                f"Re-benchmark, or set effort.evidence 'unmeasured' and roles []")
+
         api_mode = entry.get("apiMode")
         if api_mode is not None and api_mode not in _LEGAL_API_MODES:
             raise RegistryError(
                 f"{target}: model {mid} apiMode {api_mode!r} must be one of "
                 f"{', '.join(sorted(_LEGAL_API_MODES))}")
+
+
+def _validate_schedule(tname, tcfg, cost, target):
+    sched = tcfg.get("pricingSchedule")
+    if sched is None:
+        return
+    if cost != "marginal-usd":
+        raise RegistryError(
+            f"{target}: transport {tname} declares a pricingSchedule but is {cost} - a time-of-day "
+            f"price applies only to a marginal-usd transport")
+    if not isinstance(sched, dict):
+        raise RegistryError(f"{target}: transport {tname} pricingSchedule must be an object")
+    mult = sched.get("offPeakMultiplier")
+    if isinstance(mult, bool) or not isinstance(mult, (int, float)) or not 0 < mult <= 1:
+        raise RegistryError(
+            f"{target}: transport {tname} pricingSchedule.offPeakMultiplier must be a number in (0, 1]")
+    for field in ("source", "asOf"):
+        if not sched.get(field):
+            raise RegistryError(f"{target}: transport {tname} pricingSchedule missing {field!r}")
+    windows = sched.get("peakWindowsUTC")
+    if not isinstance(windows, list) or not windows:
+        raise RegistryError(
+            f"{target}: transport {tname} pricingSchedule.peakWindowsUTC must be a non-empty array")
+    for i, win in enumerate(windows):
+        where = f"{target}: transport {tname} pricingSchedule.peakWindowsUTC[{i}]"
+        if not isinstance(win, dict):
+            raise RegistryError(f"{where} must be an object")
+        days = win.get("days")
+        if not isinstance(days, list) or not days or any(d not in _DAY_NAMES for d in days):
+            raise RegistryError(f"{where}.days must be a non-empty subset of {', '.join(_DAY_NAMES)}")
+        start, end = win.get("start"), win.get("end")
+        if not all(isinstance(v, str) and _HHMM.match(v) for v in (start, end)):
+            raise RegistryError(f"{where} start/end must be HH:MM (24h, UTC)")
+        if start == end:
+            raise RegistryError(f"{where} window start must differ from end (an end before the start crosses midnight)")
+
+
+def _parse_at(at):
+    """A timezone-aware UTC datetime from a datetime, an ISO string, or SC_PRICE_AT / now."""
+    from datetime import datetime, timezone
+
+    if at is None:
+        at = os.environ.get("SC_PRICE_AT") or datetime.now(timezone.utc)
+    if isinstance(at, str):
+        at = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    if at.tzinfo is None:
+        raise RegistryError(f"price time {at!r} has no timezone; pass UTC")
+    return at.astimezone(timezone.utc)
+
+
+def _in_peak(sched, t):
+    """A window with end < start crosses midnight and belongs to the day it STARTS: it covers
+    start-24:00 on a listed day and 00:00-end on the day after."""
+    day = _DAY_NAMES[t.weekday()]
+    prev = _DAY_NAMES[(t.weekday() - 1) % 7]
+    hhmm = t.strftime("%H:%M")
+    for w in sched["peakWindowsUTC"]:
+        if w["start"] < w["end"]:
+            if day in w["days"] and w["start"] <= hhmm < w["end"]:
+                return True
+        elif (day in w["days"] and hhmm >= w["start"]) or (prev in w["days"] and hhmm < w["end"]):
+            return True
+    return False
+
+
+def price_window(transport, at=None, data=None):
+    """Which billing window `at` falls in on a transport, its multiplier, and when it next changes.
+
+    `flat` = the transport declares no schedule. `at` defaults to SC_PRICE_AT (ISO UTC; the test
+    and dry-run seam), else now. `changesAt` is the next instant the window flips, found by
+    walking the window boundaries of the next eight days -- enough to cross any weekly schedule.
+    """
+    from datetime import datetime, time, timedelta
+
+    data = data or load()
+    cfg = data["transports"].get(transport)
+    if cfg is None:
+        raise RegistryError(f"unknown transport {transport!r}")
+    sched = cfg.get("pricingSchedule")
+    if not sched:
+        return {"window": "flat", "multiplier": 1.0, "changesAt": None}
+    t = _parse_at(at)
+    peak = _in_peak(sched, t)
+    boundaries = set()
+    for offset in range(-1, 8):   # -1: yesterday's cross-midnight window can end today
+        day = (t + timedelta(days=offset)).date()
+        for w in sched["peakWindowsUTC"]:
+            if _DAY_NAMES[day.weekday()] not in w["days"]:
+                continue
+            end_day = day if w["start"] < w["end"] else day + timedelta(days=1)
+            for hhmm, on in ((w["start"], day), (w["end"], end_day)):
+                h, m = (int(x) for x in hhmm.split(":"))
+                boundaries.add(datetime.combine(on, time(h, m), tzinfo=t.tzinfo))
+    changes = next((b for b in sorted(boundaries) if b > t and _in_peak(sched, b) != peak), None)
+    return {
+        "window": "peak" if peak else "off-peak",
+        "multiplier": 1.0 if peak else float(sched["offPeakMultiplier"]),
+        "changesAt": changes.strftime("%Y-%m-%dT%H:%M:%SZ") if changes else None,
+    }
 
 
 def stale_prices(data=None, max_age_days=_STALE_PRICE_DAYS):
@@ -800,21 +953,26 @@ def attestation_for(transport, data=None):
     return cfg.get("modelAttestation")
 
 
-def price_run(model_id, fresh, cache_read, output, data=None):
+def price_run(model_id, fresh, cache_read, output, data=None, at=None):
     """The ONE cost formula. Every consumer calls this; nobody re-authors a rate.
 
     Raises on a priceless plan-quota model rather than returning 0.0: a zero would be
     indistinguishable from a real free call and would land in a run record's costUSD as a
     measured figure. The absence of a marginal cost is reported as `costUSD: null` by the
     record writer, which is a different claim from "this run cost nothing to make".
+
+    `at` is the moment the run started; its billing window (price_window) scales every rate.
+    A run that crosses a window boundary is priced at its start window.
     """
+    data = data or load()
     entry = resolve(model_id, data)
     price = entry.get("price")
     if not isinstance(price, dict):
         raise RegistryError(
             f"{model_id} carries no price - it is on a "
             f"{cost_model_for(entry['transport'], data)} transport; report costUSD as null")
-    return (
+    mult = price_window(entry["transport"], at=at, data=data)["multiplier"]
+    return mult * (
         float(fresh) * price["cacheMissPer1M"] / 1e6
         + float(cache_read) * price["cacheHitPer1M"] / 1e6
         + float(output) * price["outputPer1M"] / 1e6
@@ -1053,25 +1211,26 @@ def _cmd_transport_status(argv):
 
 
 def _cmd_context_window(argv):
-    """Print a model's declared context window, or nothing when the registry states none.
+    """Print a model's effective default or max context window, if declared.
 
-    Its own command rather than a 12th `sidecar-fields` column: that contract is a
+    Its own command rather than another `sidecar-fields` column: that contract is a
     pipe-delimited positional read, and appending to it silently pollutes the LAST variable of
     any reader still expecting the old count -- measured, with no error raised. A separate
     command cannot corrupt an existing caller.
     """
-    if len(argv) != 1:
-        print("usage: model_registry.py context-window <model>", file=sys.stderr)
+    if len(argv) not in (1, 2) or (len(argv) == 2 and argv[1] != "--max"):
+        print("usage: model_registry.py context-window <model> [--max]", file=sys.stderr)
         return 2
     entry = resolve(argv[0])
     limits = entry.get("limits") or {}
-    window = limits.get("contextTokens")
+    field = "maxContextTokens" if len(argv) == 2 else "contextTokens"
+    window = limits.get(field)
     if not window:
         return 0
     # The EFFECTIVE window is what the provider actually enforces, and it is derived here rather
-    # than authored as a third number: contextTokens and effectiveContextPercent are the authored
-    # pair. Confirmed 2026-08-20 against the Codex CLI's own statusline, which reports a "258K
-    # window" for a model whose catalog contextTokens is 272000 -- 272000 x 0.95 exactly.
+    # than authored as a third number: the selected window and effectiveContextPercent are the
+    # authored pair. Confirmed 2026-08-20 against the Codex CLI's own statusline, which reports a
+    # "258K window" for a model whose catalog contextTokens is 272000 -- 272000 x 0.95 exactly.
     # Declaring the raw window would tell the client it has ~13.6K more room than the provider
     # will accept.
     percent = limits.get("effectiveContextPercent")
@@ -1081,8 +1240,40 @@ def _cmd_context_window(argv):
     return 0
 
 
+def _cmd_price_window(argv):
+    """The billing window a dispatch of <model> starts in now, and the rates it would pay."""
+    if len(argv) != 1:
+        print("usage: model_registry.py price-window <model>", file=sys.stderr)
+        return 2
+    data = load()
+    entry = resolve(argv[0], data)
+    win = price_window(entry["transport"], data=data)
+    price = entry.get("price") or {}
+    rates = {k: price[k] * win["multiplier"]
+             for k in ("cacheHitPer1M", "cacheMissPer1M", "outputPer1M") if k in price}
+    policy = (entry.get("gate") or {}).get("peakPolicy", "allow")
+    print(json.dumps(dict(win, model=entry["id"], peakPolicy=policy, rates=rates)))
+    return 0
+
+
+def _cmd_effort_values(argv):
+    """The effort rungs <model>'s transport actually serves, as a JSON array; [] = undeclared.
+
+    Its own command, not a sidecar-fields column, for the reason _cmd_context_window states.
+    """
+    if len(argv) != 1:
+        print("usage: model_registry.py effort-values <model>", file=sys.stderr)
+        return 2
+    data = load()
+    entry = resolve(argv[0], data)
+    print(json.dumps(data["transports"][entry["transport"]].get("effortValues") or []))
+    return 0
+
+
 _COMMANDS = {
     "--check": _cmd_check,
+    "price-window": _cmd_price_window,
+    "effort-values": _cmd_effort_values,
     "context-window": _cmd_context_window,
     "resolve": _cmd_resolve,
     "role-map": _cmd_role_map,

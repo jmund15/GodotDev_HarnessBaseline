@@ -16,7 +16,7 @@ classification, the 4-doc system template, domain routing) is a separate
 concern — see [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md).
 
 ## Tooling — native-first
-The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\` (and `...\Jmodot\`). Native tools are the default:
+The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\` (and `...\Jmodot\`). Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired (owner decision 2026-09-15).
 
 | Operation | Tool |
 |---|---|
@@ -25,26 +25,24 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 | List vault files | `Glob` |
 | Write / overwrite / append | `Write` / `Edit` — confirmed safe on a doc open in the Obsidian app (writes propagate, no conflict prompt) |
 | Delete a tracked file | `git rm` |
-| Edit frontmatter / tags | `obsidian_manage_frontmatter` / `obsidian_manage_tags` — the one place the MCP earns its cost (structured YAML; native `Edit` is fiddlier) |
-| Date-filtered search | `obsidian_global_search` (`query` required; `searchInPath`, `modified_since`/`modified_until`, `caseSensitive`, `useRegex` — verified against the live schema 2026-08-07), or native `Glob` + file mtimes |
+| Edit frontmatter / tags | `Edit` on the YAML block |
+| Date-filtered search | `Grep` with `path` set to the vault directory, or `Glob` + file mtimes |
 
-MCP tool names verified against the live server 2026-08-06: `obsidian_read_note` / `obsidian_update_note` / `obsidian_search_replace` / `obsidian_global_search` / `obsidian_list_notes` / `obsidian_delete_note` / `obsidian_manage_frontmatter` / `obsidian_manage_tags`. The 2026-07-era names (`obsidian_get_note` / `obsidian_write_note` / `obsidian_patch_note` / `obsidian_replace_in_note` / `obsidian_search_notes`) are dead — the mapping has now inverted across TWO server swaps, so treat tool-name liveness as swap-prone: check the session's actual tool listing before scripting MCP calls, and prefer native tools (which never swap) for anything they cover. Obsidian MCP being offline does **not** block native read/write/search/list — there is no "abort if MCP offline" gate for native vault work. Only the frontmatter/tag tools depend on the MCP.
+> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — both land on disk, so the unsaved buffer conflicts regardless of writer. In practice the agent is directed, not hand-editing the same file simultaneously.
 
-> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — but `obsidian_update_note` has no real advantage there (both land on disk; the unsaved buffer conflicts either way). In practice the agent is directed, not hand-editing the same file simultaneously.
+## Vault taxonomy — live vs legacy (as of 2026-07-04)
 
-## Vault taxonomy — live vs legacy
-
-- **Live project surface:** `<vault>/DevProjects/{{PROJECT_NAME}}/Claude/` (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/DevProjects/Jmodot/Claude/`. Agent reads and writes land here.
-- **Legacy folders:** content outside those `Claude/` roots is not current by location alone. Treat it as read-only history unless the project registry or a live doc links to it. If the named source for a formula or design rule is missing or empty, ask the user; never infer the value from legacy files.
-- The current project design bible is the repo seed skill `game_vision`, unless the consumer project explicitly names another owner.
-- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries `decisions.md` beside `ideas.md`, `arch*.md`, and `roadmap.md`. `_brainstorm_shared/common.md` §8 owns its schema and append rules. Keep it through doc-save; never mirror it into `.claude/scratch/`.
+- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
+- **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.
+- The current design bible is the repo skill `game_vision`, not a vault doc — vault searches for "vision" find only the deprecated PvP-era doc under `Claude/Archived/`.
+- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (schema + append rules: `_brainstorm_shared/common.md` §8). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.
 - **`Claude/Research/`** — `/research` artifacts, transient by design. Frontmatter carries `expires-with:` (engine/library version); stale the moment that version moves — re-run or delete, never edit in place. Durable findings promote to cold auto-memory or the design doc first.
 
-## `obsidian_search_replace` — literal line-ending matching
-`obsidian_search_replace` (default literal mode) matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `search` that works on one file may silently report 0 replacements on another — no error, reads like a text mismatch when it's actually a separator mismatch. *(Gotcha observed under the tool's 2026-07-era name `obsidian_replace_in_note`; literal-byte behavior carries across the rename.)*
+## `Edit` — literal line-ending matching
+`Edit` matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `old_string` that works on one file may fail to match on another — no partial match, reads like a text mismatch when it's actually a separator mismatch.
 
 - **Prefer single-line, newline-free anchors** — they're line-ending-agnostic.
-- A whole-line delete must include the line terminator, so it IS line-ending-sensitive. If such a delete (or any multi-line match) returns `0` replacements, suspect the separator first: retry with the other convention (`\n` ↔ `\r\n`), or pass `flexibleWhitespace: true` (any whitespace run in `search` matches any whitespace in the body — sidesteps the separator question; literal mode only). Don't assume the file's convention — a wrong guess 0-hits cleanly, so verify against the actual file.
+- A whole-line delete must include the line terminator, so it IS line-ending-sensitive. If such an edit (or any multi-line match) fails to match, suspect the separator first: retry with the other convention (`\n` ↔ `\r\n`). Don't assume the file's convention — a wrong guess fails cleanly, so verify against the actual file.
 
 ## Wikilinks & Heading Anchors
 All cross-doc references **MUST** be wikilinks — never plain text, bold, or inline code.
@@ -60,12 +58,12 @@ All cross-doc references **MUST** be wikilinks — never plain text, bold, or in
 
 **Common verbatim pitfalls** — all three fail SILENTLY (anchor falls through to file-top, no error):
 - `## Section N — Title` headings: keep BOTH the `Section ` prefix AND the ` — ` em-dash. `[[doc#Section 6 — Migration Plan]]` resolves; `[[doc#6 Migration Plan]]` does not.
-- `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — Persistence × Scope Mapping]]` resolves; `[[doc#1.4 Persistence × Scope Mapping]]` does not.
+- `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — LevelPersistence × StateScope Mapping]]` resolves; `[[doc#1.4 LevelPersistence × StateScope Mapping]]` does not.
 - **Parts in roadmap.md tables are NOT headings.** `[[other-roadmap#Part Name]]` will never resolve regardless of capitalization. Cross-roadmap Part references use file wikilink + prose: `[[../folder/roadmap\|folder]] § "Part Name"` (see `_brainstorm_shared/common.md` §6.8). Intra-roadmap Part references use `[[#Parts\|Part Name]]` (links to the `## Parts` heading, displays the Part name).
 - A single Part / claim that spans 2+ design-doc sections needs 2+ wikilinks joined by ` + ` — fabricating `#A and B` joined anchors never resolves.
 
 ## File Moves and Renames
-Obsidian auto-link-update ONLY triggers through Obsidian's UI (drag-drop, right-click → Move/Rename). Programmatic moves (Bash `mv`, native `Write`, or MCP ops) do NOT update wikilinks. For reorganization, create folders via Bash but have the user move/rename via Obsidian UI.
+Obsidian auto-link-update ONLY triggers through Obsidian's UI (drag-drop, right-click → Move/Rename). Programmatic moves (Bash `mv`, native `Write`) do NOT update wikilinks. For reorganization, create folders via Bash but have the user move/rename via Obsidian UI.
 
 ## One document, one mode
 Two questions pick it: does the content inform **action** (doing) or **understanding** (thinking), and does it serve **learning** or **work**?

@@ -1,76 +1,138 @@
 """One-shot analysis script for /eval_dashboard.
 
-Loads .claude/self_evaluate_archive.json, dedupes structured entries by
-(title, date), classifies legacy entries heuristically, computes domain
-and skill performance with recent-vs-prior trend, and prints stats for
-manual transcription into the Obsidian dashboard.
+Streams the legacy self-evaluation snapshot plus its bounded JSONL ledger,
+keeps the newest structured row per session, classifies legacy entries
+heuristically, and writes dashboard statistics.
 """
 import json
 import os
+import re
 import sys
 from collections import Counter
+
+PRINT_LIMIT = 20
 
 # Windows consoles default stdout to cp1252; session titles carry non-Latin-1
 # glyphs (em-dash, arrow) that crash the final print loop BEFORE stats.json is
 # written. Force UTF-8 so the fast path never depends on PYTHONIOENCODING.
 sys.stdout.reconfigure(encoding="utf-8")
 
-with open(".claude/self_evaluate_archive.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
-
-# DEDUPE STRUCTURED
-seen = set()
-unique = []
-for e in data["structured_entries"]:
-    # session_id is the v2 dedupe key; (title, date) covers pre-v2 entries.
-    # .get() fallbacks keep one malformed entry from killing the whole fast path.
-    key = (e.get("session_id") or e.get("title") or e.get("id"), e.get("date"))
-    if key not in seen:
-        seen.add(key)
-        unique.append(e)
-
-# An entry without `outcome` is a v1-shaped stray (measured 2026-09-05: id 200, the
-# un-normalized twin of id 199). Excluding it keeps every downstream Counter alive;
-# the loud print is the signal to normalize or delete it in the archive.
-malformed = [e for e in unique if "outcome" not in e]
-if malformed:
-    print(f"WARNING: {len(malformed)} structured entr(y/ies) lack `outcome` and are EXCLUDED: "
-          + ", ".join(f"id={e.get('id')} date={e.get('date')}" for e in malformed))
-    unique = [e for e in unique if "outcome" in e]
-
-# Non-enum values are counted verbatim by every Counter below, so a drifted
-# writer ("success", "mixed", a paragraph) silently vanishes from clean/correction
-# totals. Warn loudly; normalize in the archive, not here. The enum homes and the legacy
-# exemption are the write-time guard's — one source, so the two never disagree.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, TOOLS)
+from self_eval_archive_store import load_archive  # noqa: E402
+sys.path.insert(0, os.path.join(TOOLS, "..", "hooks"))
 from self_eval_archive_guard import OUTCOMES, LEGACY_MAX_ID  # noqa: E402
-PATTERNS = set((data.get("Self_Evaluate_Themes", {}).get("patterns") or {}).keys()) | {None}
-for e in unique:
-    if e["outcome"] not in OUTCOMES:
-        print(f"WARNING: id={e.get('id')} has non-enum outcome {str(e['outcome'])[:40]!r} — normalize it")
-    eid = e.get("id")
-    if isinstance(eid, int) and eid > LEGACY_MAX_ID and e.get("pattern") not in PATTERNS:
-        print(f"WARNING: id={eid} has non-enum pattern {str(e.get('pattern'))[:40]!r} — normalize it")
+
+archive_path = ".claude/self_evaluate_archive.json"
+try:
+    data, raw_entries = load_archive(archive_path)
+except ValueError as exc:
+    print("UNKNOWN: " + str(exc))
+    sys.exit(2)
+legacy = data.get("legacy_entries")
+themes = data.get("Self_Evaluate_Themes")
+pattern_defs = themes.get("patterns") if isinstance(themes, dict) else None
+if not isinstance(legacy, list) or not isinstance(pattern_defs, dict):
+    print("UNKNOWN: legacy_entries must be a list and Self_Evaluate_Themes.patterns an object")
+    sys.exit(2)
+data["structured_entries"] = raw_entries
+
+# Ledger order is oldest to newest, so later upserts win.
+effective = {}
+for entry in raw_entries:
+    session_id = entry.get("session_id")
+    key = (("session", session_id) if session_id
+           else ("legacy", entry.get("title"), entry.get("date")))
+    effective[key] = entry
+unique = list(effective.values())
+
+
+def _outcome(entry):
+    value = entry.get("outcome")
+    return value if value in OUTCOMES else "unknown"
+
+
+def _brief(value, limit=60):
+    return str(value)[:limit]
+
+
+METADATA_FIELDS = ("domains", "skills_used", "memory_hits")
+
+
+def _metadata_errors(entries):
+    errors = []
+    for entry in entries:
+        for field in METADATA_FIELDS:
+            if field not in entry:
+                continue
+            value = entry[field]
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                errors.append(
+                    f"id={_brief(entry.get('id'), 20)} field={field}: expected a list of strings"
+                )
+    return errors
+
+
+metadata_errors = _metadata_errors(unique)
+if metadata_errors:
+    suffix = (f", ... {len(metadata_errors) - PRINT_LIMIT} row(s) omitted"
+              if len(metadata_errors) > PRINT_LIMIT else "")
+    print("UNKNOWN: malformed structured metadata: "
+          + "; ".join(metadata_errors[:PRINT_LIMIT]) + suffix)
+    sys.exit(2)
+
+
+malformed = [entry for entry in unique if _outcome(entry) == "unknown"]
+if malformed:
+    preview = malformed[:PRINT_LIMIT]
+    suffix = (f", ... {len(malformed) - PRINT_LIMIT} row(s) omitted"
+              if len(malformed) > PRINT_LIMIT else "")
+    print(f"WARNING: {len(malformed)} structured entr(y/ies) have unknown outcome evidence: "
+          + ", ".join(f"id={_brief(entry.get('id'), 20)} date={_brief(entry.get('date'), 40)}"
+                      for entry in preview) + suffix)
+invalid_outcomes = [entry for entry in unique
+                    if "outcome" in entry and entry["outcome"] not in OUTCOMES]
+for entry in invalid_outcomes[:PRINT_LIMIT]:
+    print(f"WARNING: id={_brief(entry.get('id'), 20)} has non-enum outcome "
+          f"{_brief(entry['outcome'], 40)!r} — counted as unknown")
+if len(invalid_outcomes) > PRINT_LIMIT:
+    print(f"WARNING: {len(invalid_outcomes) - PRINT_LIMIT} non-enum outcome warning row(s) omitted")
+
+PATTERNS = set(pattern_defs) | {None}
+invalid_patterns = [entry for entry in unique
+                    if isinstance(entry.get("id"), int)
+                    and entry["id"] > LEGACY_MAX_ID
+                    and entry.get("pattern") not in PATTERNS]
+for entry in invalid_patterns[:PRINT_LIMIT]:
+    print(f"WARNING: id={_brief(entry.get('id'), 20)} has non-enum pattern "
+          f"{_brief(entry.get('pattern'), 40)!r} — normalize it")
+if len(invalid_patterns) > PRINT_LIMIT:
+    print(f"WARNING: {len(invalid_patterns) - PRINT_LIMIT} non-enum pattern warning row(s) omitted")
 
 print("=== DEDUP RESULTS ===")
-print(f"Raw structured entries: {len(data['structured_entries'])}")
+print(f"Raw structured entries: {len(raw_entries)}")
 print(f"Unique structured entries: {len(unique)}")
-dup_pct = (1 - len(unique) / len(data["structured_entries"])) * 100
-print(f"Duplicate-rate: {dup_pct:.1f}%")
+superseded_pct = ((1 - len(unique) / len(raw_entries)) * 100
+                  if raw_entries else None)
+print("Superseded-row rate: "
+      + (f"{superseded_pct:.1f}%" if superseded_pct is not None else "n/a (no rows)"))
 
 # LEGACY HEURISTIC
-legacy = data["legacy_entries"]
 legacy_clean = 0
 legacy_correction = 0
 legacy_failure = 0
+legacy_unknown = 0
 legacy_total = 0
 for entry in legacy:
+    legacy_total += 1
+    if not isinstance(entry, str):
+        legacy_unknown += 1
+        continue
     s = entry.upper()
     if "#8-#19" in entry:
         legacy_clean += 12
-        legacy_total += 12
+        legacy_total += 11
         continue
-    legacy_total += 1
     if "CRITICAL" in s or "FAILURE CASCADE" in s:
         legacy_failure += 1
     elif (
@@ -86,17 +148,18 @@ for entry in legacy:
     elif "CLEAN" in s or "ZERO CORRECTIONS" in s:
         legacy_clean += 1
     else:
-        legacy_correction += 1
+        legacy_unknown += 1
 
 print("\n=== LEGACY (heuristic) ===")
 print(f"Total legacy sessions: {legacy_total}")
 print(f"  Clean:       {legacy_clean}")
 print(f"  Correction:  {legacy_correction}")
 print(f"  Failure:     {legacy_failure}")
+print(f"  Unknown:     {legacy_unknown}")
 
 # STRUCTURED OUTCOME COUNTS
-outcomes = Counter(e["outcome"] for e in unique)
-patterns = Counter(e.get("pattern", "unknown") for e in unique)
+outcomes = Counter(_outcome(entry) for entry in unique)
+patterns = Counter(entry.get("pattern", "unknown") for entry in unique)
 
 
 def _norm_pattern(e):
@@ -117,244 +180,404 @@ print("\n=== STRUCTURED OUTCOMES ===")
 for o, c in outcomes.most_common():
     print(f"  {o}: {c}")
 print("\n=== STRUCTURED PATTERNS (raw) ===")
-for p, c in patterns.most_common():
-    print(f"  {p}: {c}")
+pattern_rows = patterns.most_common()
+for p, c in pattern_rows[:PRINT_LIMIT]:
+    print(f"  {_brief(p)}: {c}")
+if len(pattern_rows) > PRINT_LIMIT:
+    print(f"  ... {len(pattern_rows) - PRINT_LIMIT} pattern row(s) omitted")
 print("=== STRUCTURED PATTERNS (normalized: null+clean -> C) ===")
-for p, c in patterns_normalized.most_common():
-    print(f"  {p}: {c}")
+normalized_rows = patterns_normalized.most_common()
+for p, c in normalized_rows[:PRINT_LIMIT]:
+    print(f"  {_brief(p)}: {c}")
+if len(normalized_rows) > PRINT_LIMIT:
+    print(f"  ... {len(normalized_rows) - PRINT_LIMIT} normalized pattern row(s) omitted")
 
 # COMBINED OVERVIEW
 total_clean = outcomes.get("clean", 0) + legacy_clean
 total_correction = outcomes.get("correction", 0) + legacy_correction
 total_failure = outcomes.get("failure", 0) + legacy_failure
-total_sessions = total_clean + total_correction + total_failure
+total_unknown = outcomes.get("unknown", 0) + legacy_unknown
+total_sessions = total_clean + total_correction + total_failure + total_unknown
+total_known = total_sessions - total_unknown
+analysis_status = ("no-data" if total_sessions == 0
+                   else "partial" if total_unknown else "complete")
 
+
+def _pct(numerator, denominator):
+    return numerator * 100 / denominator if denominator else None
+
+
+def _pct_text(value):
+    return f"{value:.1f}%" if value is not None else "unknown"
+
+
+clean_pct = _pct(total_clean, total_sessions)
+correction_pct = _pct(total_correction, total_sessions)
+failure_pct = _pct(total_failure, total_sessions)
 print("\n=== COMBINED OVERVIEW ===")
+print(f"Status: {analysis_status}")
 print(f"Total sessions: {total_sessions}")
-print(f"Clean:       {total_clean} ({total_clean*100/total_sessions:.1f}%)")
-print(f"Correction:  {total_correction} ({total_correction*100/total_sessions:.1f}%)")
-print(f"Failure:     {total_failure} ({total_failure*100/total_sessions:.1f}%)")
+print(f"Clean:       {total_clean} ({_pct_text(clean_pct)})")
+print(f"Correction:  {total_correction} ({_pct_text(correction_pct)})")
+print(f"Failure:     {total_failure} ({_pct_text(failure_pct)})")
+print(f"Unknown:     {total_unknown}")
 
 # DOMAIN PERFORMANCE
 domain_total = Counter()
 domain_clean = Counter()
 domain_corr = Counter()
 domain_fail = Counter()
-for e in unique:
-    for d in e.get("domains", []):
-        domain_total[d] += 1
-        if e["outcome"] == "clean":
-            domain_clean[d] += 1
-        elif e["outcome"] == "correction":
-            domain_corr[d] += 1
-        elif e["outcome"] == "failure":
-            domain_fail[d] += 1
+domain_unknown = Counter()
+for entry in unique:
+    domains = entry.get("domains")
+    for domain in domains if isinstance(domains, list) else []:
+        domain_total[domain] += 1
+        bucket = _outcome(entry)
+        if bucket == "clean":
+            domain_clean[domain] += 1
+        elif bucket == "correction":
+            domain_corr[domain] += 1
+        elif bucket == "failure":
+            domain_fail[domain] += 1
+        else:
+            domain_unknown[domain] += 1
 
 print("\n=== DOMAIN PERFORMANCE (structured) ===")
-header = f"{'Domain':<20} {'Tot':>4} {'Cln':>4} {'Cor':>4} {'Fal':>4} {'Cln%':>6}"
+header = f"{'Domain':<20} {'Tot':>4} {'Cln':>4} {'Cor':>4} {'Fal':>4} {'Unk':>4} {'Cln%':>7}"
 print(header)
-for d, t in domain_total.most_common():
-    if t < 2:
-        continue
-    cr = domain_clean[d] * 100 / t
-    print(f"{d:<20} {t:>4} {domain_clean[d]:>4} {domain_corr[d]:>4} {domain_fail[d]:>4} {cr:>5.1f}%")
+domain_rows = [(domain, population) for domain, population in domain_total.most_common()
+               if population >= 2]
+if len(domain_rows) > PRINT_LIMIT:
+    print(f"  ... {len(domain_rows) - PRINT_LIMIT} lower-frequency domain row(s) omitted")
+for domain, population in domain_rows[:PRINT_LIMIT]:
+    known = population - domain_unknown[domain]
+    clean_rate = _pct(domain_clean[domain], known)
+    print(f"{_brief(domain, 20):<20} {population:>4} {domain_clean[domain]:>4} {domain_corr[domain]:>4} "
+          f"{domain_fail[domain]:>4} {domain_unknown[domain]:>4} {_pct_text(clean_rate):>7}")
 
 # SKILL PERFORMANCE
 skill_total = Counter()
 skill_clean = Counter()
 skill_corr = Counter()
 skill_fail = Counter()
-for e in unique:
-    for s in e.get("skills_used", []):
-        skill_total[s] += 1
-        if e["outcome"] == "clean":
-            skill_clean[s] += 1
-        elif e["outcome"] == "correction":
-            skill_corr[s] += 1
-        elif e["outcome"] == "failure":
-            skill_fail[s] += 1
+skill_unknown = Counter()
+for entry in unique:
+    skills = entry.get("skills_used")
+    for skill in skills if isinstance(skills, list) else []:
+        skill_total[skill] += 1
+        bucket = _outcome(entry)
+        if bucket == "clean":
+            skill_clean[skill] += 1
+        elif bucket == "correction":
+            skill_corr[skill] += 1
+        elif bucket == "failure":
+            skill_fail[skill] += 1
+        else:
+            skill_unknown[skill] += 1
 
 print("\n=== SKILL PERFORMANCE (>=3 loads) ===")
-print(f"{'Skill':<28} {'Tot':>4} {'Cln':>4} {'Cor':>4} {'Fal':>4} {'Cln%':>6}")
-for s, t in skill_total.most_common():
-    if t < 3:
-        continue
-    cr = skill_clean[s] * 100 / t
-    print(f"{s:<28} {t:>4} {skill_clean[s]:>4} {skill_corr[s]:>4} {skill_fail[s]:>4} {cr:>5.1f}%")
+print(f"{'Skill':<28} {'Tot':>4} {'Cln':>4} {'Cor':>4} {'Fal':>4} {'Unk':>4} {'Cln%':>7}")
+skill_rows = [(skill, population) for skill, population in skill_total.most_common()
+              if population >= 3]
+if len(skill_rows) > PRINT_LIMIT:
+    print(f"  ... {len(skill_rows) - PRINT_LIMIT} lower-frequency skill row(s) omitted")
+for skill, population in skill_rows[:PRINT_LIMIT]:
+    known = population - skill_unknown[skill]
+    clean_rate = _pct(skill_clean[skill], known)
+    print(f"{_brief(skill, 28):<28} {population:>4} {skill_clean[skill]:>4} {skill_corr[skill]:>4} "
+          f"{skill_fail[skill]:>4} {skill_unknown[skill]:>4} {_pct_text(clean_rate):>7}")
 
 # TREND ANALYSIS
-sorted_unique = sorted(unique, key=lambda e: (e["date"], e["id"]))
-print("\n=== TREND (recent 10 vs prior 10, structured) ===")
-print(f"Date range: {sorted_unique[0]['date']} - {sorted_unique[-1]['date']}")
+def _sort_key(entry):
+    date = entry.get("date") if isinstance(entry.get("date"), str) else ""
+    entry_id = entry.get("id") if isinstance(entry.get("id"), int) else -1
+    return date, entry_id
+
+
+def _skills(entry):
+    value = entry.get("skills_used")
+    return value if isinstance(value, list) else []
+
+
+sorted_unique = sorted(unique, key=_sort_key)
 recent = sorted_unique[-10:]
 prior = sorted_unique[-20:-10]
-rec_clean_n = sum(1 for e in recent if e["outcome"] == "clean")
-prior_clean_n = sum(1 for e in prior if e["outcome"] == "clean")
-print(f"Recent 10:  clean={rec_clean_n}/10")
-print(f"Prior 10:   clean={prior_clean_n}/10")
+recent_clean_n = sum(1 for entry in recent if _outcome(entry) == "clean")
+prior_clean_n = sum(1 for entry in prior if _outcome(entry) == "clean")
+recent_known_n = sum(1 for entry in recent if _outcome(entry) != "unknown")
+prior_known_n = sum(1 for entry in prior if _outcome(entry) != "unknown")
+recent_clean_pct = _pct(recent_clean_n, recent_known_n)
+prior_clean_pct = _pct(prior_clean_n, prior_known_n)
+print("\n=== TREND (recent 10 vs prior 10, structured) ===")
+if sorted_unique:
+    print(f"Date range: {_brief(_sort_key(sorted_unique[0])[0] or 'unknown', 40)} - "
+          f"{_brief(_sort_key(sorted_unique[-1])[0] or 'unknown', 40)}")
+else:
+    print("Date range: unknown (no structured sessions)")
+print(f"Recent window: clean={recent_clean_n}/{recent_known_n} known, "
+      f"population={len(recent)}, unknown={len(recent) - recent_known_n}")
+print(f"Prior window:  clean={prior_clean_n}/{prior_known_n} known, "
+      f"population={len(prior)}, unknown={len(prior) - prior_known_n}")
 
 print("\nPer-skill trend:")
 trend_rows = []
+trend_prints = []
 for skill in skill_total:
     if skill_total[skill] < 3:
         continue
-    rec_count = sum(1 for e in recent if skill in e.get("skills_used", []))
-    rec_clean = sum(1 for e in recent if skill in e.get("skills_used", []) and e["outcome"] == "clean")
-    prior_count = sum(1 for e in prior if skill in e.get("skills_used", []))
-    prior_clean = sum(1 for e in prior if skill in e.get("skills_used", []) and e["outcome"] == "clean")
-    if rec_count == 0 and prior_count == 0:
+    rec_rows = [entry for entry in recent if skill in _skills(entry)]
+    prior_rows = [entry for entry in prior if skill in _skills(entry)]
+    if not rec_rows and not prior_rows:
         continue
-    rec_pct = rec_clean * 100 / rec_count if rec_count else 0
-    prior_pct = prior_clean * 100 / prior_count if prior_count else 0
-    diff = rec_pct - prior_pct
-    direction = "UP" if diff > 10 else ("DOWN" if diff < -10 else "FLAT")
-    flag = " (low N)" if rec_count < 3 else ""
-    trend_rows.append((skill, rec_clean, rec_count, rec_pct, prior_clean, prior_count, prior_pct, direction, flag))
-    print(f"  {skill:<28} rec={rec_clean}/{rec_count}({rec_pct:.0f}%) prior={prior_clean}/{prior_count}({prior_pct:.0f}%) {direction}{flag}")
+    rec_known = [entry for entry in rec_rows if _outcome(entry) != "unknown"]
+    prior_known = [entry for entry in prior_rows if _outcome(entry) != "unknown"]
+    rec_clean = sum(1 for entry in rec_known if _outcome(entry) == "clean")
+    prior_clean = sum(1 for entry in prior_known if _outcome(entry) == "clean")
+    rec_pct = _pct(rec_clean, len(rec_known))
+    prior_pct = _pct(prior_clean, len(prior_known))
+    if rec_pct is None or prior_pct is None:
+        direction = "UNKNOWN"
+    else:
+        difference = rec_pct - prior_pct
+        direction = "UP" if difference > 10 else ("DOWN" if difference < -10 else "FLAT")
+    low_n = len(rec_rows) < 6
+    trend_rows.append((skill, rec_clean, len(rec_known), rec_pct,
+                       prior_clean, len(prior_known), prior_pct, direction, low_n,
+                       len(rec_rows), len(prior_rows)))
+    trend_prints.append(
+        f"  {_brief(skill, 28):<28} rec={rec_clean}/{len(rec_known)}({_pct_text(rec_pct)}) "
+        f"prior={prior_clean}/{len(prior_known)}({_pct_text(prior_pct)}) {direction}"
+        + (" (low N)" if low_n else ""))
+if len(trend_prints) > PRINT_LIMIT:
+    print(f"  ... {len(trend_prints) - PRINT_LIMIT} skill trend row(s) omitted")
+for line in trend_prints[:PRINT_LIMIT]:
+    print(line)
 
 # MEMORY HITS
+# Rows name a hit as a bare stem, a path, a `.md` name or any of those plus a reason.
+MEMORY_HIT_HEAD = re.compile(
+    r"^\s*([A-Za-z0-9_./\\-]+?)(?:\.md)?(?=\s*$|\s*:|\s+(?:—|–|-|\(|'|\"))")
+
+
+def _memory_key(text):
+    """The memory's file stem when the hit starts with a name or path; a legacy entity name with
+    spaces stays whole."""
+    match = MEMORY_HIT_HEAD.match(text)
+    if not match:
+        return text.strip()
+    return match.group(1).replace("\\", "/").rsplit("/", 1)[-1]
+
+
 mem_hits = Counter()
-for e in unique:
-    for m in e.get("memory_hits", []):
-        mem_hits[m] += 1
+for entry in unique:
+    hits = entry.get("memory_hits")
+    for memory in {_memory_key(hit) for hit in (hits if isinstance(hits, list) else [])}:
+        mem_hits[memory] += 1
 
 print("\n=== TOP MEMORY ENTITIES (>=3 hits, structured) ===")
-for m, c in mem_hits.most_common():
-    if c >= 3:
-        print(f"  {m}: {c}")
+memory_rows = [(memory, count) for memory, count in mem_hits.most_common() if count >= 3]
+if len(memory_rows) > PRINT_LIMIT:
+    print(f"  ... {len(memory_rows) - PRINT_LIMIT} lower-frequency memory row(s) omitted")
+for memory, count in memory_rows[:PRINT_LIMIT]:
+    print(f"  {_brief(memory, 80)}: {count}")
 
 # STREAKS
 streak_now = 0
-longest_streak = 0
-for e in sorted_unique:
-    if e["outcome"] == "clean":
+longest_streak = 0 if sorted_unique else None
+for entry in sorted_unique:
+    if _outcome(entry) == "clean":
         streak_now += 1
         longest_streak = max(longest_streak, streak_now)
     else:
         streak_now = 0
-current_streak = 0
-for e in reversed(sorted_unique):
-    if e["outcome"] == "clean":
-        current_streak += 1
-    else:
-        break
+if not sorted_unique or _outcome(sorted_unique[-1]) == "unknown":
+    current_streak = None
+else:
+    current_streak = 0
+    for entry in reversed(sorted_unique):
+        if _outcome(entry) == "clean":
+            current_streak += 1
+        else:
+            break
 
 print("\n=== STREAKS (structured only) ===")
-print(f"Current clean streak: {current_streak}")
-print(f"Longest clean streak: {longest_streak}")
+print("Current clean streak: " + (str(current_streak) if current_streak is not None else "unknown"))
+print("Longest clean streak: " + (str(longest_streak) if longest_streak is not None else "unknown"))
 
 # RECENT 10
 print("\n=== RECENT 10 STRUCTURED SESSIONS ===")
-for e in sorted_unique[-10:]:
-    pat = e.get('pattern') or '?'
-    print(f"  #{e['id']:>3} {e['date']} {e['outcome']:<10} P{pat:<2} {e['title'][:60]}")
+for entry in sorted_unique[-10:]:
+    pattern = _brief(entry.get("pattern") or "?", 12)
+    entry_id = entry.get("id") if isinstance(entry.get("id"), int) else -1
+    date = _brief(entry.get("date"), 40) if isinstance(entry.get("date"), str) else "unknown"
+    title = entry.get("title") if isinstance(entry.get("title"), str) else "<untitled>"
+    print(f"  #{entry_id:>3} {date} {_outcome(entry):<10} P{str(pattern):<2} {title[:60]}")
 
 # ALL CORRECTIONS
 print("\n=== ALL CORRECTION/FAILURE (structured, deduped) ===")
-for e in sorted_unique:
-    if e["outcome"] in ("correction", "failure"):
-        n_corr = len(e.get("corrections", []))
-        pat = e.get('pattern') or '?'
-        print(f"  #{e['id']:>3} {e['date']} {e['outcome']:<10} P{pat:<2} corrs={n_corr} | {e['title'][:60]}")
+correction_rows = [entry for entry in sorted_unique
+                   if _outcome(entry) in ("correction", "failure")]
+if len(correction_rows) > PRINT_LIMIT:
+    print(f"  ... {len(correction_rows) - PRINT_LIMIT} older correction row(s) omitted; "
+          "stats.json retains all rows")
+for entry in correction_rows[-PRINT_LIMIT:]:
+    corrections = entry.get("corrections")
+    n_corrections = len(corrections) if isinstance(corrections, list) else 0
+    pattern = _brief(entry.get("pattern") or "?", 12)
+    entry_id = entry.get("id") if isinstance(entry.get("id"), int) else -1
+    date = _brief(entry.get("date"), 40) if isinstance(entry.get("date"), str) else "unknown"
+    title = entry.get("title") if isinstance(entry.get("title"), str) else "<untitled>"
+    print(f"  #{entry_id:>3} {date} {_outcome(entry):<10} P{str(pattern):<2} "
+          f"corrs={n_corrections} | {title[:60]}")
 
 # CHRONOLOGICAL TIMELINE for mermaid (date -> outcome)
 print("\n=== TIMELINE (chronological, structured) ===")
 date_outcome_count = Counter()
-for e in sorted_unique:
-    date_outcome_count[(e["date"], e["outcome"])] += 1
-for (d, o), c in sorted(date_outcome_count.items()):
-    print(f"  {d} {o:<10} count={c}")
+for entry in sorted_unique:
+    date = entry.get("date") if isinstance(entry.get("date"), str) else "unknown"
+    date_outcome_count[(date, _outcome(entry))] += 1
+timeline_rows = sorted(date_outcome_count.items())
+if len(timeline_rows) > PRINT_LIMIT:
+    print(f"  ... {len(timeline_rows) - PRINT_LIMIT} older timeline row(s) omitted; "
+          "stats.json retains aggregate counts")
+for (date, outcome), count in timeline_rows[-PRINT_LIMIT:]:
+    print(f"  {_brief(date, 40)} {outcome:<10} count={count}")
 
 # DATE SPAN
-dates = sorted(set(e["date"] for e in unique))
+dates = sorted({entry["date"] for entry in unique
+                if isinstance(entry.get("date"), str) and entry["date"]})
 print("\n=== DATE COVERAGE ===")
-print(f"Earliest: {dates[0]}")
-print(f"Latest:   {dates[-1]}")
+print(f"Earliest: {_brief(dates[0], 40) if dates else 'unknown'}")
+print(f"Latest:   {_brief(dates[-1], 40) if dates else 'unknown'}")
 print(f"Distinct dates: {len(dates)}")
 
 # Output to JSON for the writer step
 output = {
+    "status": analysis_status,
     "unique_count": len(unique),
-    "raw_count": len(data["structured_entries"]),
+    "raw_count": len(raw_entries),
+    "structured_population": len(unique),
+    "structured_known": len(unique) - outcomes.get("unknown", 0),
+    "structured_unknown": outcomes.get("unknown", 0),
     "legacy_count": legacy_total,
     "legacy_clean": legacy_clean,
     "legacy_correction": legacy_correction,
     "legacy_failure": legacy_failure,
+    "legacy_unknown": legacy_unknown,
+    "total_sessions": total_sessions,
+    "total_known_outcomes": total_known,
+    "total_unknown_outcomes": total_unknown,
     "total_clean": total_clean,
     "total_correction": total_correction,
     "total_failure": total_failure,
+    "clean_pct": clean_pct,
+    "correction_pct": correction_pct,
+    "failure_pct": failure_pct,
     "current_streak": current_streak,
     "longest_streak": longest_streak,
-    "date_first": dates[0],
-    "date_last": dates[-1],
+    "date_first": dates[0] if dates else None,
+    "date_last": dates[-1] if dates else None,
     "structured_outcomes": dict(outcomes),
     "structured_patterns": dict(patterns),
     "structured_patterns_normalized": dict(patterns_normalized),
+    "timeline": [
+        {"date": date, "outcome": outcome, "count": count}
+        for (date, outcome), count in timeline_rows
+    ],
     "domain_perf": [
         {
-            "domain": d,
-            "total": t,
-            "clean": domain_clean[d],
-            "correction": domain_corr[d],
-            "failure": domain_fail[d],
-            "clean_pct": round(domain_clean[d] * 100 / t, 1),
+            "domain": domain,
+            "total": population,
+            "known": population - domain_unknown[domain],
+            "unknown": domain_unknown[domain],
+            "clean": domain_clean[domain],
+            "correction": domain_corr[domain],
+            "failure": domain_fail[domain],
+            "clean_pct": (round(_pct(domain_clean[domain], population - domain_unknown[domain]), 1)
+                          if population - domain_unknown[domain] else None),
         }
-        for d, t in domain_total.most_common()
-        if t >= 2
+        for domain, population in domain_total.most_common()
+        if population >= 2
     ],
     "skill_perf": [
         {
-            "skill": s,
-            "total": t,
-            "clean": skill_clean[s],
-            "correction": skill_corr[s],
-            "failure": skill_fail[s],
-            "clean_pct": round(skill_clean[s] * 100 / t, 1),
+            "skill": skill,
+            "total": population,
+            "known": population - skill_unknown[skill],
+            "unknown": skill_unknown[skill],
+            "clean": skill_clean[skill],
+            "correction": skill_corr[skill],
+            "failure": skill_fail[skill],
+            "clean_pct": (round(_pct(skill_clean[skill], population - skill_unknown[skill]), 1)
+                          if population - skill_unknown[skill] else None),
         }
-        for s, t in skill_total.most_common()
-        if t >= 3
+        for skill, population in skill_total.most_common()
+        if population >= 3
     ],
+    "recent_window": {
+        "population": len(recent),
+        "known": recent_known_n,
+        "unknown": len(recent) - recent_known_n,
+        "clean": recent_clean_n,
+        "clean_pct": round(recent_clean_pct, 1) if recent_clean_pct is not None else None,
+    },
+    "prior_window": {
+        "population": len(prior),
+        "known": prior_known_n,
+        "unknown": len(prior) - prior_known_n,
+        "clean": prior_clean_n,
+        "clean_pct": round(prior_clean_pct, 1) if prior_clean_pct is not None else None,
+    },
     "skill_trends": [
         {
             "skill": skill,
-            "recent_clean": rc,
-            "recent_total": rt,
-            "recent_pct": round(rp, 1),
-            "prior_clean": pc,
-            "prior_total": pt,
-            "prior_pct": round(pp, 1),
-            "direction": dir_,
-            "low_n": flag.strip() != "",
+            "recent_clean": recent_clean,
+            "recent_total": recent_known,
+            "recent_population": recent_population,
+            "recent_pct": round(recent_pct, 1) if recent_pct is not None else None,
+            "prior_clean": prior_clean,
+            "prior_total": prior_known,
+            "prior_population": prior_population,
+            "prior_pct": round(prior_pct, 1) if prior_pct is not None else None,
+            "direction": direction,
+            "low_n": low_n,
         }
-        for skill, rc, rt, rp, pc, pt, pp, dir_, flag in trend_rows
+        for (skill, recent_clean, recent_known, recent_pct,
+             prior_clean, prior_known, prior_pct, direction, low_n,
+             recent_population, prior_population) in trend_rows
     ],
     "top_memory_hits": [
         {"entity": m, "count": c} for m, c in mem_hits.most_common() if c >= 3
     ],
+    # Every stem and its citing-session count: the evidence /autolearn cites for a review-by review.
+    "memory_hit_counts": dict(mem_hits.most_common()),
     "recent_10": [
         {
-            "id": e["id"],
-            "date": e["date"],
-            "outcome": e["outcome"],
-            "pattern": e.get("pattern", "?"),
-            "title": e["title"],
-            **({"shape": e["shape"]} if "shape" in e else {}),
+            "id": entry.get("id"),
+            "date": entry.get("date"),
+            "outcome": _outcome(entry),
+            **({"raw_outcome": entry.get("outcome")} if _outcome(entry) == "unknown" else {}),
+            "pattern": entry.get("pattern", "?"),
+            "title": entry.get("title") if isinstance(entry.get("title"), str) else "<untitled>",
+            **({"shape": entry["shape"]} if "shape" in entry else {}),
         }
-        for e in sorted_unique[-10:]
+        for entry in sorted_unique[-10:]
     ],
     "all_corrections": [
         {
-            "id": e["id"],
-            "date": e["date"],
-            "outcome": e["outcome"],
-            "pattern": e.get("pattern", "?"),
-            "title": e["title"],
-            "n_corrections": len(e.get("corrections", [])),
-            "key_takeaway": e.get("key_takeaway", "")[:200],
-            **({"shape": e["shape"]} if "shape" in e else {}),
+            "id": entry.get("id"),
+            "date": entry.get("date"),
+            "outcome": _outcome(entry),
+            "pattern": entry.get("pattern", "?"),
+            "title": entry.get("title") if isinstance(entry.get("title"), str) else "<untitled>",
+            "n_corrections": (len(entry.get("corrections"))
+                              if isinstance(entry.get("corrections"), list) else 0),
+            "key_takeaway": (entry.get("key_takeaway", "")[:200]
+                             if isinstance(entry.get("key_takeaway", ""), str) else ""),
+            **({"shape": entry["shape"]} if "shape" in entry else {}),
         }
-        for e in sorted_unique
-        if e["outcome"] in ("correction", "failure")
+        for entry in sorted_unique
+        if _outcome(entry) in ("correction", "failure")
     ],
 }
 # HARNESS_EVAL_OUT overrides the output dir for the re-runnable proof; production runs

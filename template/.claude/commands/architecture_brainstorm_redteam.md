@@ -21,7 +21,7 @@ Both modes **augment** the Socratic dialogue — they never replace it (`feedbac
 ## When to use
 
 - **Mode B — interleaved (Steps 2/4/5 of `/architecture_brainstorm --red_team`):** the per-step adversarial pass. Its taste-forks become Socratic seeds for the user; its rigor-holes feed back into the live design before the next question/section.
-- **Mode A — standalone (at `/architecture_brainstorm` Step 7 spec self-review, or against any drafted design doc):** the full-doc hardening pass before the design hardens into roadmap Parts. This is also what the brainstorm's Step-7 "Mode A adversarial pass" invokes.
+- **Mode A — standalone (at `/architecture_brainstorm` Step 7 spec self-review, or against any drafted design doc):** the full-doc hardening pass before the design hardens into roadmap Parts. This is also what `skills/architecture_brainstorm/reference/socratic_and_approaches.md` §*Step 7 — Mode A adversarial pass* invokes.
 
 Skip for designs already approved (it's a pre-approval hardening tool) and for trivial/mechanical changes.
 
@@ -79,9 +79,9 @@ Workflow({
   args: {
     contextPrefix: "<the pushed input + abstraction inventory + gotchas, as ONE flat string>",
     agents: [
-      { key: "rt-boundary",    prompt: "<mandate only>", model: "opus", effort: "xhigh" },
-      { key: "rt-failuremode", prompt: "<mandate only>", model: "opus", effort: "xhigh" },
-      { key: "rt-yagni-scope", prompt: "<mandate only>", model: "opus", effort: "xhigh" }
+      { key: "rt-boundary",    prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
+      { key: "rt-failuremode", prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
+      { key: "rt-yagni-scope", prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" }
       // + rt-abstraction / rt-testability per the phase subset above (model: "opus", effort: "xhigh")
       // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (model: "opus", effort: "xhigh")
       // a purely mechanical bespoke lens may drop to "sonnet"; "fable" only via an explicit per-lens pin
@@ -90,7 +90,7 @@ Workflow({
 })
 ```
 
-**Large design, or a JSON-parse failure on dispatch:** move the payload out of `args` — write the design and each mandate to brief files and run the lenses through `dispatch.js` (`promptPath` per lens, `model: "opus"`, `effort` per the panel, `contextPath` for the shared design). That keeps the pins and the PINS row while sidestepping `gotcha_workflow_args_generation_fidelity`. Parallel `Task` subagents with an explicit `model: "opus"` are the Workflow-unavailable fallback only (`orchestration` §0).
+**Large design, or a JSON-parse failure on dispatch:** move the payload out of `args` — write the design and each mandate to brief files and run the lenses through `dispatch.js` (`label` and `promptPath` per lens, `model: "opus"`, `effort` per the panel, `agentType: "general-purpose"`, `contextPath` for the shared design). That keeps the pins and the PINS row while sidestepping `gotcha_workflow_args_generation_fidelity`. Parallel `Task` subagents with an explicit `model: "opus"` are the Workflow-unavailable fallback only (`orchestration` §0).
 
 **Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` returns an **empty findings array for any lens that errors, times out, or returns malformed JSON** (its guard: `Array.isArray(r.findings) ? r.findings : []`). So "0 findings" can mean "ran and found nothing" OR "never ran." Before reporting or converging, read the workflow's `perAgent: [{key, count}]` and confirm **every dispatched lens key is present**. If any lens is missing → do NOT report CLEAN; surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses (or halt). This closes the false-absence path inside the red-team itself.
 
@@ -150,7 +150,7 @@ Routing back into `/architecture_brainstorm`: **rigor-holes** adjust the current
 **Machine-checked valves (each closes a fabrication path the audit identified — do NOT rely on prose alone):**
 - **Liveness valve.** Before treating "0 new rigor-holes" as convergence, assert the round's `perAgent` shows every lens in the round-1 composed panel (Step 0.5) returned. Any missing lens → HALT `panel incomplete — N/<composed> returned; cannot certify convergence`. A round where the critics silently failed is NOT a converged round.
 - **Dead-end valve.** After each round, scan returned findings for `critical === true && action === 'PLAN'`. Any hit → HALT unconditionally (this IS the dead-end shape per Step 1; do not depend on noticing the word "DEAD-END" in a description string). Reframe, don't iterate.
-- **ASK-override valve.** The [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) default-applies an `ASK` finding's first/recommended option when the user replies tersely. **That default is OVERRIDDEN in `--auto`:** with no user present, `ASK` findings are NEVER auto-resolved — they only accumulate into the taste-batch. Following the linked protocol's default-apply here would silently resolve taste.
+- **No-owner ASK valve.** **In `--auto` there is no owner present:** `ASK` findings are NEVER auto-resolved — they only accumulate into the taste-batch. Applying a recommended option here would silently resolve taste.
 
 **Hard rules for `--auto`:**
 - **The `--auto` output is always a DRAFT-FOR-REVIEW, never an approved design.** Convergence is advisory, not approval.

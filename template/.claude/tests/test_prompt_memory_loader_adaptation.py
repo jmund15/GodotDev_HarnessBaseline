@@ -21,7 +21,7 @@ import _adaptation_fixture as fx  # noqa: E402
 
 HOOK_NAME = "prompt_memory_loader.py"
 REAL_HOOK = os.path.join(fx.REAL_HOOKS, HOOK_NAME)
-EXTRA = ("_hook_state.py",)
+EXTRA = ("_hook_state.py", "_prompt_provenance.py")
 
 CUSTOM_DOMAIN_PROMPT = "The spellcraft catalog needs consistent ordering please"
 

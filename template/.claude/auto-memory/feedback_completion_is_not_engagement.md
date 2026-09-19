@@ -4,7 +4,10 @@ description: "A run's exit code and model attestation prove the machinery ran an
 metadata: 
   node_type: memory
   type: feedback
+  originSessionId: 57e6ed14-e265-4415-94ec-b1cdebc1bfe4
   modified: 2026-08-21T13:53:58.988Z
+retire_when:
+  - review-by: 2027-02-07
 ---
 
 A delegated run has **three** independent things to prove, and the first two are the ones every

@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for the subagent exemption in hooks/routing_audit.py.
-
-Drives `routing_audit.process` in-process with HARNESS_HOOK_STATE_DIR and
-HARNESS_ROUTING_AUDIT_LOG_PATH redirected to a temp dir, then reads the appended
-JSONL row to assert on the emitted `classification`/`rule`/`reason`.
-
-    python3 .claude/tests/test_routing_audit_subagent_exempt.py
-"""
+"""Re-runnable proof for prompt-aware Read verdicts in hooks/routing_audit.py."""
 import importlib
 import json
 import os
@@ -16,13 +9,28 @@ import tempfile
 HOOKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks")
 sys.path.insert(0, HOOKS_DIR)
 
-# Synthesis-shaped Obsidian path that classify_call flags nudge-warranted
-# under the "native-read-synthesis-doc" rule with a prompt carrying no
-# audit/edit-intent cue.
-SYNTHESIS_PATH = (
+READ_PATH = (
     "C:/Users/{{USER}}/Documents/ObsidianVault/DevProjects/{{PROJECT_NAME}}/"
     "Design/some_design_doc.md"
 )
+FOCUSED = "Read this one file for the exact paragraph that defines the current contract."
+DERIVED = "Compare these modules, judge the architecture, and recommend which design should remain."
+BULK_COPYABLE = (
+    "Extract the same raw fields from every file and return one copyable entry per input path."
+)
+
+
+def _state_path(state_dir, session_id, agent_id=""):
+    stem = session_id[:8] if session_id else "default"
+    if agent_id:
+        stem += "_" + agent_id[:8]
+    return os.path.join(state_dir, stem + ".json")
+
+
+def _write_state(state_dir, session_id, prompt, agent_id=""):
+    os.makedirs(state_dir, exist_ok=True)
+    with open(_state_path(state_dir, session_id, agent_id), "w", encoding="utf-8") as fh:
+        json.dump({"last_prompt": prompt}, fh)
 
 
 def _fresh_routing_audit(state_dir, log_path):
@@ -33,141 +41,137 @@ def _fresh_routing_audit(state_dir, log_path):
     return importlib.import_module("routing_audit")
 
 
-def _read_last_row(log_path):
-    with open(log_path, "r", encoding="utf-8") as f:
-        lines = [ln for ln in f.read().splitlines() if ln.strip()]
-    return json.loads(lines[-1])
+def _read_rows(log_path):
+    if not os.path.exists(log_path):
+        return []
+    with open(log_path, "r", encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
 
 
-def run(label, agent_id, expected_classification, expected_rule_present):
-    tmp = tempfile.mkdtemp(prefix="routing_audit_proof_")
+def run_read(label, prompt, agent_id="", expected=None):
+    tmp = tempfile.mkdtemp(prefix="routing_audit_read_")
     state_dir = os.path.join(tmp, "state")
     log_path = os.path.join(tmp, "routing_audit.jsonl")
+    session_id = "sess0001"
+    _write_state(state_dir, session_id, prompt)
     module = _fresh_routing_audit(state_dir, log_path)
-
-    payload = {
+    module.process({
         "tool_name": "Read",
-        "tool_input": {"file_path": SYNTHESIS_PATH},
-        "session_id": "sess0001",
+        "tool_input": {"file_path": READ_PATH},
+        "session_id": session_id,
         "agent_id": agent_id,
-    }
-    module.process(payload)
+    })
+    rows = _read_rows(log_path)
 
     ok = True
     reason = ""
-    if not os.path.exists(log_path):
-        ok, reason = False, "no audit log written"
+    if expected is None:
+        if rows:
+            ok, reason = False, "unexpected audit row: %r" % rows[-1]
+    elif not rows:
+        ok, reason = False, "no audit row written"
     else:
-        row = _read_last_row(log_path)
-        if row.get("classification") != expected_classification:
-            ok = False
-            reason = "classification=%r want=%r" % (row.get("classification"), expected_classification)
-        elif expected_rule_present and row.get("rule") != "native-read-synthesis-doc":
-            ok = False
-            reason = "rule=%r" % row.get("rule")
-        elif expected_classification == "cue-exempt" and "[subagent: bundling delegate]" not in (row.get("reason") or ""):
-            ok = False
-            reason = "reason missing subagent tag: %r" % row.get("reason")
-        elif expected_classification == "nudge-warranted" and "[subagent: bundling delegate]" in (row.get("reason") or ""):
-            ok = False
-            reason = "nudge-warranted row unexpectedly tagged subagent"
+        row = rows[-1]
+        if row.get("classification") != expected:
+            ok, reason = False, "classification=%r want=%r" % (row.get("classification"), expected)
+        elif row.get("rule") != "native-read-bulk-copyable":
+            ok, reason = False, "rule=%r" % row.get("rule")
+        elif expected == "cue-exempt" and "[subagent: bundling delegate]" not in (row.get("reason") or ""):
+            ok, reason = False, "reason missing subagent tag: %r" % row.get("reason")
+        elif agent_id and row.get("prompt_excerpt") != prompt:
+            ok, reason = False, "subagent row did not inherit parent prompt: %r" % row.get("prompt_excerpt")
 
     print("%-4s %s" % ("ok" if ok else "FAIL", label))
     return ok, reason
 
 
 def run_other_rule_unchanged():
-    """A different rule with agent_id set must NOT be exempted."""
-    tmp = tempfile.mkdtemp(prefix="routing_audit_proof_other_")
+    tmp = tempfile.mkdtemp(prefix="routing_audit_other_")
     state_dir = os.path.join(tmp, "state")
     log_path = os.path.join(tmp, "routing_audit.jsonl")
+    session_id = "sess0002"
+    _write_state(state_dir, session_id, "Find the DomainCore symbol definition and references.")
     module = _fresh_routing_audit(state_dir, log_path)
-
-    # Bare-Grep of a PascalCase identifier on a .cs file -> a different
-    # nudge-warranted rule ("pascal-grep-on-cs" family), not the synthesis-doc rule.
-    payload = {
+    module.process({
         "tool_name": "Grep",
         "tool_input": {"pattern": "DomainCore", "glob": "*.cs"},
-        "session_id": "sess0002",
+        "session_id": session_id,
         "agent_id": "agent0001",
-    }
-    module.process(payload)
+    })
+    rows = _read_rows(log_path)
+    label = "agent_id does not exempt the PascalCase C# Grep rule"
+    ok = bool(rows and rows[-1].get("classification") == "nudge-warranted"
+              and rows[-1].get("rule") == "pascal-grep-on-cs"
+              and "[subagent: bundling delegate]" not in (rows[-1].get("reason") or ""))
+    reason = "" if ok else "control row missing or changed: %r" % (rows[-1] if rows else None)
+    print("%-4s %s" % ("ok" if ok else "FAIL", label))
+    return ok, reason
 
-    label = "a different rule with agent_id set is unchanged (not cue-exempt via this exemption)"
-    ok = True
-    reason = ""
-    # The control arm must have exposure: a payload that logs nothing proves nothing.
-    if not os.path.exists(log_path):
-        ok, reason = False, "control payload logged no audit row — the arm had no exposure"
-    else:
-        row = _read_last_row(log_path)
-        if row.get("rule") == "native-read-synthesis-doc":
-            ok, reason = False, "unexpectedly matched the synthesis-doc rule"
-        elif row.get("classification") != "nudge-warranted":
-            ok, reason = False, "control row classification=%r, want nudge-warranted" % row.get("classification")
-        elif "[subagent: bundling delegate]" in (row.get("reason") or ""):
-            ok, reason = False, "wrongly tagged subagent exemption on an unrelated rule"
+
+def run_torn_parent_state():
+    tmp = tempfile.mkdtemp(prefix="routing_audit_torn_parent_")
+    state_dir = os.path.join(tmp, "state")
+    log_path = os.path.join(tmp, "routing_audit.jsonl")
+    session_id = "sess0003"
+    _write_state(state_dir, session_id, BULK_COPYABLE)
+    with open(_state_path(state_dir, session_id), "a", encoding="utf-8") as fh:
+        fh.write(" trailing debris")
+    module = _fresh_routing_audit(state_dir, log_path)
+    module.process({
+        "tool_name": "Read",
+        "tool_input": {"file_path": READ_PATH},
+        "session_id": session_id,
+        "agent_id": "agent0002",
+    })
+    rows = _read_rows(log_path)
+    label = "subagent salvages a torn parent state before classifying its inherited prompt"
+    ok = bool(rows and rows[-1].get("classification") == "cue-exempt"
+              and rows[-1].get("prompt_excerpt") == BULK_COPYABLE)
+    reason = "" if ok else "row missing or wrong: %r" % (rows[-1] if rows else None)
     print("%-4s %s" % ("ok" if ok else "FAIL", label))
     return ok, reason
 
 
 def run_nudge_agrees():
-    """The exemption lives in the classifier, so the PreToolUse nudge and the audit log agree:
-    the same subagent payload that logs cue-exempt must receive NO advisory, and the main-loop
-    payload must still receive one."""
-    tmp = tempfile.mkdtemp(prefix="routing_nudge_proof_")
-    os.environ["HARNESS_HOOK_STATE_DIR"] = os.path.join(tmp, "state")
+    tmp = tempfile.mkdtemp(prefix="routing_nudge_read_")
+    state_dir = os.path.join(tmp, "state")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = state_dir
     if "tool_routing_nudge" in sys.modules:
         del sys.modules["tool_routing_nudge"]
     nudge = importlib.import_module("tool_routing_nudge")
 
-    base = {"tool_name": "Read", "tool_input": {"file_path": SYNTHESIS_PATH}}
+    _write_state(state_dir, "sessnud1", BULK_COPYABLE)
+    _write_state(state_dir, "sessnud2", BULK_COPYABLE)
+    base = {"tool_name": "Read", "tool_input": {"file_path": READ_PATH}}
     _, main_msg = nudge.process(dict(base, session_id="sessnud1", agent_id=""))
     _, sub_msg = nudge.process(dict(base, session_id="sessnud2", agent_id="agent0001"))
+    state = json.load(open(_state_path(state_dir, "sessnud1"), encoding="utf-8"))
 
-    label = "same payload: main loop is nudged, subagent is not (classifier is the one home)"
-    ok, reason = True, ""
-    if not main_msg:
-        ok, reason = False, "main-loop payload received no advisory — the control arm had no exposure"
-    elif sub_msg:
-        ok, reason = False, "subagent payload still received the advisory: %r" % sub_msg[:120]
+    label = "PreToolUse advice and audit use the same bulk-copyable rule and subagent exemption"
+    ok = bool(main_msg and "read_files" in main_msg and not sub_msg
+              and "native-read-bulk-copyable" in state.get("pre_nudges_fired_this_turn", []))
+    reason = "" if ok else "main=%r sub=%r state=%r" % (main_msg, sub_msg, state)
     print("%-4s %s" % ("ok" if ok else "FAIL", label))
     return ok, reason
 
 
 def main():
-    failures = []
-
-    ok, reason = run(
-        "same payload WITHOUT agent_id -> classifier's verdict (nudge-warranted)",
-        agent_id="",
-        expected_classification="nudge-warranted",
-        expected_rule_present=True,
-    )
-    if not ok:
-        failures.append(("without agent_id", reason))
-
-    ok, reason = run(
-        "same payload WITH agent_id -> cue-exempt, subagent-tagged",
-        agent_id="agent0001",
-        expected_classification="cue-exempt",
-        expected_rule_present=True,
-    )
-    if not ok:
-        failures.append(("with agent_id", reason))
-
-    ok, reason = run_other_rule_unchanged()
-    if not ok:
-        failures.append(("other rule unchanged", reason))
-
-    ok, reason = run_nudge_agrees()
-    if not ok:
-        failures.append(("nudge agrees with the log", reason))
-
-    total = 4
-    print("\n%d/%d cases pass" % (total - len(failures), total))
-    for label, reason in failures:
-        print("  FAIL %s: %s" % (label, reason))
+    checks = [
+        run_read("path alone emits no routing-audit verdict", "", expected=None),
+        run_read("focused Read emits no worker-routing verdict", FOCUSED, expected=None),
+        run_read("derived judgment emits no copyable-worker verdict", DERIVED, expected=None),
+        run_read("explicit bulk-copyable Read is nudge-warranted", BULK_COPYABLE,
+                 expected="nudge-warranted"),
+        run_read("subagent inherits parent bulk prompt and is cue-exempt", BULK_COPYABLE,
+                 agent_id="agent0001", expected="cue-exempt"),
+        run_other_rule_unchanged(),
+        run_torn_parent_state(),
+        run_nudge_agrees(),
+    ]
+    failures = [(index + 1, reason) for index, (ok, reason) in enumerate(checks) if not ok]
+    print("\n%d/%d cases pass" % (len(checks) - len(failures), len(checks)))
+    for index, reason in failures:
+        print("  FAIL case %d: %s" % (index, reason))
     return 1 if failures else 0
 
 

@@ -1,26 +1,39 @@
 #!/usr/bin/env python3
 """
-Hook: PostToolUse on ExitPlanMode — Inject memory + skill reminders for inferred domains.
+Hook: PostToolUse on Write/Edit of a plan file —
+Inject memory + skill + rule reminders for inferred domains.
 
 Why:
 - CLAUDE.md mandates "search auto-memory and load relevant Skills before planning"
   but enforcement is self-discipline. The /plan_check command covers high-stakes
   plans; this hook covers the routine plans below /plan_check's litmus.
+- The plan FILE is the one artifact every planning path produces, so it is the
+  only reliable trigger. (Plan Mode is retired — see
+  feedback_plan_mode_retired_from_planning_flow — so the former ExitPlanMode
+  matcher is gone and this is the sole registration.)
 
 What it does:
-- Triggers only on ExitPlanMode tool calls.
-- Locates the most-recently-modified plan file under ~/.claude/plans/.
+- Triggers on a Write/Edit whose file_path is under .claude/plans/ with a .md
+  suffix (once per plan file per session), using the written text and falling
+  back to the plan file on disk when the edit fragment is too small to infer from.
 - Pre-processes plan text: strips "Out of scope" sections and fenced code
   blocks (their content is examples/exclusions, not scope statements).
-- If the plan has a "Critical files" / "Files to modify" / "Files changed"
-  section, restricts domain inference to that section (highest-precision
-  scope signal). Otherwise falls back to stripped whole-text.
+- Resolves the "Critical files" / "Files to modify" / "Files changed" section from
+  the WHOLE plan file first and the edit fragment only as a fallback, then restricts
+  domain inference to that section (highest-precision scope signal). A section-by-
+  section edit of a harness plan otherwise sees prose alone and infers game domains
+  from incidental words.
+- If the authoritative files section contains only `.claude/` paths, treats the
+  plan as explicit harness/meta scope and emits no game-domain reminder. A mixed
+  files section still receives normal domain inference. With no files section at
+  all, an all-`.claude/` path set is the same proof.
 - Infers domains by case-insensitive start-of-word matching against the
-  keyword sets in the CLAUDE.md "Proactive Context Loading" table. Substring
+  keyword sets in .claude/reference/memory_domains.md, the documented home for
+  this table (a hook enforces, it never legislates). Substring
   matching across identifier camelcase boundaries is rejected (so "craft"
-  inside "AbilityCrafter" does NOT fire the Assembly domain).
+  inside "AbilityBuilder" does NOT fire the Crafting domain).
 - Emits a hookSpecificOutput.additionalContext payload listing matched domains,
-  auto-memory search queries, and any Skills to load.
+  auto-memory search queries, any Skills to load, and any rules/ files to read.
 
 Boundaries:
 - Never blocks. Always exits 0.
@@ -28,30 +41,32 @@ Boundaries:
 - Skill suggestions are deduplicated across multiple matched domains.
 - 5s file-find timeout via mtime check, not subprocess timeout.
 
-Wired in: settings.json hooks.PostToolUse with matcher "ExitPlanMode".
+Wired in: settings.json hooks.PostToolUse with matcher "Write|Edit".
 """
 
 import json
 import os
 import re
 import sys
-import time
 from pathlib import Path
+
+from _hook_state import state_path, update_json_locked
 
 _TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 import adaptation  # noqa: E402
 
-# Domain inference table — mirrors the CLAUDE.md proactive-context table
-# and extends it with project-specific domains that map to existing Skills. The entries
-# below are the domain-agnostic floor; a project's own content domains are appended from
-# `adaptation.json` `memory_domains` (Design Doc §8) rather than edited into this list.
+# Domain inference table. The entries below are the domain-agnostic floor; a project's own content
+# domains are appended from `adaptation.json` `memory_domains` (Design Doc §8) rather than edited into
+# this list. `.claude/reference/memory_domains.md` renders the same rows for readers.
 #
-# Each entry: (display_name, [trigger_keyword_substrings], [memory_search_keywords],
-# [skills_to_load], [rule_files_to_read]). The trailing rules list may be omitted (defaults
-# to []). Trigger matches are case-insensitive substring; word-boundary not enforced
-# (false-positives are cheap, false-negatives are expensive).
+# Each entry: (display_name, [trigger_keywords], [memory_search_keywords],
+#              [skills_to_load], [rule_paths])   — [rule_paths] is optional and
+# may be omitted entirely (treated as []), so 4-tuple entries stay valid for any
+# external reader of this table (e.g. /plan_check Phase 1c mirrors it).
+# Trigger matching is case-insensitive and starts at a word boundary; short or
+# uppercase acronyms also require an ending boundary.
 DOMAINS = [
     ("Refactoring",
      ["refactor", "deprecate", "migrate", "rename", "extract", "consolidate"],
@@ -102,38 +117,54 @@ _append_memory_domains(DOMAINS)
 MIN_WORDS = 50  # Skip trivially small plans
 MAX_PLAN_AGE_SECONDS = 60  # Plan file must have been modified within this window
 
+# Session dedupe for the Write/Edit plan-file branch. A drive command rewrites
+# its plan file many times; the reminder is worth exactly one fire per plan.
+# Shares the per-session routing-state file used by the other hooks
+# (critical_analysis_reminder, prompt_memory_loader); other fields are
+# preserved across the read-modify-write.
+PLAN_FILES_FIELD = "plan_memory_reminder_files"
+PLAN_FILES_CAP = 50  # bounded state — oldest entries drop off
 
-def find_recent_plan() -> str | None:
+
+def _state_path(session_id: str) -> str:
+    return state_path(session_id)
+
+
+def _claim_plan_file(session_id: str, plan_key: str) -> bool:
     """
-    Locate the most-recently-modified plan file under ~/.claude/plans/.
-    Returns the file content as a string, or None if no fresh plan exists.
-
-    ExitPlanMode just wrote the plan, so the freshest file with mtime within
-    MAX_PLAN_AGE_SECONDS is almost certainly the active one.
+    True the first time this session emits for `plan_key`, False afterwards.
+    Best-effort: returns True on any state I/O failure (fail-open toward
+    reminding — a duplicate nudge is cheaper than a silent miss).
     """
-    plans_dir = Path.home() / ".claude" / "plans"
-    if not plans_dir.is_dir():
-        return None
+    def claim(state):
+        seen = state.get(PLAN_FILES_FIELD)
+        if not isinstance(seen, list):
+            seen = []
+        if plan_key in seen:
+            return False
+        seen.append(plan_key)
+        state[PLAN_FILES_FIELD] = seen[-PLAN_FILES_CAP:]
+        return True
 
-    now = time.time()
-    candidates = []
-    for path in plans_dir.glob("*.md"):
-        try:
-            mtime = path.stat().st_mtime
-            if now - mtime <= MAX_PLAN_AGE_SECONDS:
-                candidates.append((mtime, path))
-        except OSError:
-            continue
+    written, claimed = update_json_locked(_state_path(session_id), claim)
+    return claimed if written else True
 
-    if not candidates:
-        return None
 
-    # Most recently modified wins
-    candidates.sort(reverse=True)
-    try:
-        return candidates[0][1].read_text(encoding="utf-8", errors="replace")
-    except OSError:
+def _plan_file_key(file_path: str) -> str | None:
+    """
+    Posix-normalized path if `file_path` names a plan file under
+    `.claude/plans/` with a .md suffix, else None.
+    """
+    if not file_path:
         return None
+    normalized = str(file_path).replace("\\", "/")
+    if ".claude/plans/" in normalized and normalized.lower().endswith(".md"):
+        return normalized
+    return None
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\b\w+\b", text))
 
 
 def _trigger_pattern(trigger: str) -> re.Pattern:
@@ -144,10 +175,10 @@ def _trigger_pattern(trigger: str) -> re.Pattern:
     use full \\b word boundaries on both sides to prevent matching inside
     ordinary words ("AI" inside "available", "BT" inside "doubt").
 
-    Longer mixed-case triggers ("ability", "trait", "spellbehavior") use \\b
-    prefix only — start-of-word match. This lets "ability" match "AbilityCrafter"
-    (correctly tagging ability-domain) while preventing "craft" from also
-    matching "AbilityCrafter" (the 'C' is preceded by a word char, no \\b
+    Longer mixed-case triggers ("spell", "trait", "spellbehavior") use \\b
+    prefix only — start-of-word match. This lets "spell" match "AbilityBuilder"
+    (correctly tagging spell-domain) while preventing "craft" from also
+    matching "AbilityBuilder" (the 'C' is preceded by a word char, no \\b
     there). Identifier camelcase boundaries are not regex word boundaries.
 
     Heuristic: full bilateral boundary if len <= 4 OR all letters uppercase;
@@ -169,6 +200,43 @@ _CRITICAL_FILES_RE = re.compile(
     r"^#{2,}\s*(critical files|files to modify|files changed|files affected|bounded file list)[^\n]*\n(.+?)(?=^#{2,}\s|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
+# A path is a slashed token ending in a file extension or a slash, or a bare file with a lettered
+# extension. Prose such as `e.g.`, `read/write`, `0.1.36` and `3.5` is not a path.
+_PATH_LIKE_RE = re.compile(
+    r"(?<![\w.*{}~+@:/\\-])(?:[A-Za-z]:)?(?:"
+    r"(?:[\w.*{}~+@:-]+[/\\])+[\w*{}~+@:-]*\.[A-Za-z][\w-]{0,15}"
+    r"|(?:[\w.*{}~+@:-]+[/\\])+(?![\w.*{}~+@:-])"
+    r"|[A-Za-z_][\w*{}~+@-]*\.[A-Za-z][A-Za-z0-9]{1,9}\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_harness_path(path: str) -> bool:
+    lowered = path.lower()
+    return lowered.startswith(".claude/") or "/.claude/" in lowered
+
+
+def _is_explicit_meta_scope(files_section: str) -> bool:
+    """True when an authoritative files section scopes work only to `.claude/`.
+
+    A file name may contain game words (`status`, `return`, `AI`) without entering
+    a game domain. Mixed sections remain eligible for normal inference.
+    """
+    normalized = files_section.replace("\\", "/")
+    if ".claude/" not in normalized.lower():
+        return False
+    return all(_is_harness_path(path) for path in _PATH_LIKE_RE.findall(normalized))
+
+
+def _paths_are_all_harness(text: str) -> bool:
+    """True when the plan names at least one path and every one is under `.claude/`.
+
+    Backstop for a plan with no files section: a harness plan's prose says "critter",
+    "status" and "refactor" while nothing it will touch is game code, and the paths are
+    the only scope statement such a plan carries.
+    """
+    paths = _PATH_LIKE_RE.findall(text.replace("\\", "/"))
+    return bool(paths) and all(_is_harness_path(path) for path in paths)
 
 
 
@@ -200,19 +268,24 @@ def _extract_critical_files_section(text: str) -> str | None:
     return m.group(2) if m else None
 
 
-# Compile triggers once at import time. Entries may omit the trailing rules list (defaults
-# to []) — the built-in floor above stays 4-tuples; adaptation.json rows are 5-tuples.
+# Compile triggers once at import time. Entries may omit the trailing rules
+# list — normalize to a uniform 5-slot shape here.
 _DOMAIN_PATTERNS = [
-    (entry[0], [_trigger_pattern(t) for t in entry[1]], entry[2], entry[3],
-     entry[4] if len(entry) > 4 else [])
+    (
+        entry[0],
+        [_trigger_pattern(t) for t in entry[1]],
+        entry[2],
+        entry[3],
+        entry[4] if len(entry) > 4 else [],
+    )
     for entry in DOMAINS
 ]
 
 
 def infer_domains(plan_text: str) -> list[tuple[str, list[str], list[str], list[str]]]:
     """
-    Return list of (domain_name, memory_keywords, skills, rules) for matched domains.
-    A plan can match multiple domains. Order preserves DOMAINS table order.
+    Return list of (domain_name, memory_keywords, skills, rules) for matched
+    domains. A plan can match multiple domains. Order preserves DOMAINS order.
     """
     matched = []
     for domain_name, patterns, memory_keys, skills, rules in _DOMAIN_PATTERNS:
@@ -226,7 +299,8 @@ def infer_domains(plan_text: str) -> list[tuple[str, list[str], list[str], list[
 def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]]) -> str:
     """
     Compose the additionalContext message from matched domains.
-    Deduplicates memory keywords, skill names and rule files across overlapping domains.
+    Deduplicates memory keywords, skill names, and rule paths across
+    overlapping domains.
     """
     domain_names = [m[0] for m in matches]
     # Deduplicate while preserving order
@@ -274,6 +348,56 @@ def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]]) -
     return "\n".join(parts)
 
 
+def process(input_data):
+    """Dispatcher entry: `{"context": reminder}` for a plan's inferred domains, else None.
+
+    `post_edit_dispatch.py` calls this; `main()` keeps the standalone channel.
+    """
+    if input_data.get("tool_name") not in ("Write", "Edit"):
+        return None
+
+    tool_input = input_data.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+
+    # The plan file IS the trigger: every planning path writes .claude/plans/*.md.
+    plan_key = _plan_file_key(tool_input.get("file_path", ""))
+    if not plan_key:
+        return None
+
+    fragment = _strip_noise(tool_input.get("content") or tool_input.get("new_string") or "")
+    try:
+        whole = _strip_noise(Path(tool_input["file_path"]).read_text(
+            encoding="utf-8", errors="replace"))
+    except (OSError, KeyError):
+        whole = ""
+
+    # The plan's declared scope belongs to the WHOLE file, never to whichever section
+    # this edit happened to rewrite: a harness plan edited section by section shows the
+    # dispatcher only prose, and its authoritative files list sits outside the fragment.
+    files_section = (_extract_critical_files_section(whole)
+                     or _extract_critical_files_section(fragment))
+    if files_section is not None and _is_explicit_meta_scope(files_section):
+        return None
+    if files_section is None and _paths_are_all_harness(whole or fragment):
+        return None
+
+    # A surgical Edit fragment is too thin to infer scope from — fall back to the file.
+    body = fragment if _word_count(fragment) >= MIN_WORDS else whole
+    if _word_count(body) < MIN_WORDS:
+        return None
+
+    matches = infer_domains(files_section or body)
+    if not matches:
+        return None
+
+    # Claim only an emitted reminder. A silent meta draft may later become mixed.
+    if not _claim_plan_file(input_data.get("session_id", "") or "", plan_key):
+        return None
+
+    return {"context": build_reminder(matches)}
+
+
 def main() -> None:
     # Read hook stdin
     try:
@@ -281,41 +405,21 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    # Only fire on ExitPlanMode
-    if input_data.get("tool_name") != "ExitPlanMode":
-        sys.exit(0)
-
-    # Locate the freshest plan file
-    plan_text = find_recent_plan()
-    if not plan_text:
-        sys.exit(0)
-
-    # Skip trivially small plans (likely a quick intent statement, not a real plan)
-    word_count = len(re.findall(r"\b\w+\b", plan_text))
-    if word_count < MIN_WORDS:
-        sys.exit(0)
-
-    # Strip out-of-scope sections + fenced code blocks before matching
-    cleaned_text = _strip_noise(plan_text)
-
-    # When a "Critical files" section exists, it IS the authoritative scope —
-    # restrict matching to it. Otherwise fall back to the cleaned whole-text.
-    target_text = _extract_critical_files_section(cleaned_text) or cleaned_text
-
-    matches = infer_domains(target_text)
-    if not matches:
-        sys.exit(0)
-
-    # Emit additionalContext payload
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": build_reminder(matches),
-        }
-    }
-    sys.stdout.write(json.dumps(payload))
+    result = process(input_data) or {}
+    if result.get("context"):
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": result["context"],
+            }
+        }))
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        sys.exit(0)  # Advisory hook — never block on an internal error

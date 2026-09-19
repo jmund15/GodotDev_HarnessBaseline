@@ -8,11 +8,12 @@
 # endpoint. Every dispatch shape routes here; how much context the child loads is the -D dial,
 # not a different launcher. Pick -D and -G together as a SIDECAR AGENT TYPE — the recipe table
 # is reference/sidecar_dispatch.md (scout=bare·survey, lens=pointer·survey, reviewer=full·review,
-# author=full·author, judge=full·any). The former `codex exec` launcher (codex_sidecar.sh) is
-# a retired refusing stub; its header records why.
+# author=full·author, judge=full·any). The former `codex exec` launcher stub was retired, then
+# deleted (2026-09-14); git history at the pre-retirement tag point (fix(sidecar) 26393ee81)
+# still has its header and implementation.
 #
-# Proxy: raine/claude-code-proxy v0.1.35 (caixiaoshun/claudex was tested and rejected — its
-# tool-schema conversion emits schemas the upstream refuses).
+# Proxy: selected by `CCP_BIN` when set, otherwise the installed default. `ccp_probe.py continuation`
+# enables WebSocket continuation only for v0.1.36+; older builds stay on full-history turns.
 #
 # EVERY DISPATCH STARTS ITS OWN PROXY on a fresh port and kills it on exit. That is not
 # defensive hygiene, it is forced by where the knobs live: `CCP_CODEX_MODEL`,
@@ -33,13 +34,10 @@
 #                     translation table. Passed instead of the child's `--effort` because it
 #                     lands in the upstream request body, where it is verifiable per-run.
 #
-# ATTESTATION. A proxied child CANNOT report which model served it: Claude Code's system
-# prompt asserts a Claude identity, and a run with the upstream forced to gpt-5.6-luna still
-# reported the child's own pin (`gpt-5.4-mini`) in `modelUsage`. The proxy's own
-# `004-*-upstream-request.json` capture is the only valid evidence, so CCP_TRAFFIC_LOG=1 is
-# always on here and the record carries `attestedModel`/`attestationAgrees`. The captures
-# accumulate under ~/.local/state/claude-code-proxy/traffic and are never pruned — delete that
-# tree periodically; it holds full request bodies, prompts included.
+# Attestation is scoped to the CLI result's session ID and this launch time. Proxy captures
+# record serialized upstream requests, not model self-reports or proof of generation acceptance.
+# CCP_TRAFFIC_LOG stays on; captures contain prompts under
+# ~/.local/state/claude-code-proxy/traffic and must be deleted periodically.
 #
 # DELEGATE RAILS. `-G <shape>` (any|survey|review|author) is honored here through the normal
 # hook path, because the child IS Claude Code: the shape is exported as
@@ -83,11 +81,27 @@ ccp_start() {
   ccp="$(ccp_bin)" || { echo "claude-code-proxy not found (set CCP_BIN)" >&2; return 4; }
   CCP_PORT="$(python3 "$CCP_PROBE" freeport)"
   mkdir -p "$(dirname "$CCP_LOG")"
-  echo "[proxy-sidecar] starting claude-code-proxy on :$CCP_PORT (model=$SC_MODEL effort=${SC_EFFORT:-unset}, log: $CCP_LOG)" >&2
+  # WebSocket continuation and native compaction are enabled only on tested builds.
+  local continuation server_compaction probe_rc
+  continuation="$(python3 "$CCP_PROBE" continuation "$ccp")" || {
+    probe_rc=$?
+    echo "[proxy-sidecar] continuation capability probe failed for $ccp (exit $probe_rc)." >&2
+    return 4
+  }
+  [ "$continuation" = 1 ] || { continuation=0; echo "[proxy-sidecar] $ccp predates 0.1.36: continuation OFF, one WebSocket per turn (set CCP_BIN to a 0.1.36+ build)" >&2; }
+  server_compaction="$(python3 "$CCP_PROBE" server-compaction "$ccp")" || {
+    probe_rc=$?
+    echo "[proxy-sidecar] server-compaction capability probe failed for $ccp (exit $probe_rc)." >&2
+    return 4
+  }
+  [ "$server_compaction" = 1 ] || server_compaction=0
+  echo "[proxy-sidecar] starting claude-code-proxy on :$CCP_PORT (model=$SC_MODEL effort=${SC_EFFORT:-unset} continuation=$continuation server_compaction=$server_compaction, log: $CCP_LOG)" >&2
   # The pins go in the SERVER's env; see the header. CCP_TRAFFIC_LOG is unconditional because
-  # the capture it writes is the only evidence of which model actually served the run.
+  # the capture proves the model and effort encoded in the upstream request, not acceptance.
   env CCP_CODEX_MODEL="$SC_MODEL" \
       ${SC_EFFORT:+CCP_CODEX_EFFORT="$SC_EFFORT"} \
+      CCP_CODEX_PREVIOUS_RESPONSE_ID="$continuation" \
+      CCP_CODEX_SERVER_COMPACTION="$server_compaction" \
       CCP_TRAFFIC_LOG=1 \
       nohup "$ccp" serve --no-monitor --port "$CCP_PORT" >>"$CCP_LOG" 2>&1 &
   CCP_PID=$!
@@ -138,6 +152,7 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
+  sc_gate_exhausted   # a live exhausted marker refuses before the network quota probe
   if ! _check_q="$(python3 "$SC_ROOT/scripts/codex_quota_probe.py" 2>&1)"; then
     echo "UNAVAILABLE (quota probe failed: ${_check_q%%$'\n'*})"; exit 3
   fi
@@ -170,6 +185,7 @@ sc_validate_common
 sc_gate_band
 sc_gate_provider_band
 sc_gate_balance      # no-op: a plan-quota transport declares no balance endpoint
+sc_gate_price_window # no-op without a registry pricingSchedule; present so the ladder is uniform
 sc_build_disclosure
 sc_validate_effort
 
@@ -233,7 +249,8 @@ if [ -n "$SC_PROMPT_FILE" ]; then
   command -v cygpath >/dev/null 2>&1 && SC_PROMPT_FILE_ABS="$(cygpath -m "$SC_PROMPT_FILE_ABS")"
   SC_SETTINGS_JSON="$(python3 -c 'import json,sys; print(json.dumps({"hooks":{"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"python3 \"%s\"" % sys.argv[1],"timeout":15}]}]}}))' "$SC_ROOT/hooks/sidecar_recompact_reprompt.py")"
 fi
-[ -n "${SC_SETTINGS_JSON:-}" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
+SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "${SC_SETTINGS_JSON:-}")"
+[ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env
 
@@ -246,7 +263,7 @@ sc_scrub_env
 # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 stops the child's background calls (conversation
 # titles, telemetry) from crossing the proxy as extra upstream requests, which would both
 # spend plan allowance and pollute the attestation capture with non-task traffic.
-_attest_since="$(date +%s)"
+_attest_since="$(python3 -c 'import time; print(time.time())')"
 run_claude() {
   cd "$SC_RUN_CWD" && env \
     ${SC_SCRUB[@]+"${SC_SCRUB[@]}"} \
@@ -297,15 +314,39 @@ printf '%s\n' "$OUTPUT"
 [ $rc -eq 124 ] && echo "proxy sidecar timed out after ${SC_TIMEOUT}s" >&2
 
 # Read the proxy's server-side truth before writing the record, so the record carries it.
-if _att="$(python3 "$CCP_PROBE" attest "$_attest_since" 2>/dev/null)"; then
+SC_ATTESTED_MODEL=''
+SC_ATTESTED_EFFORT=''
+if _att="$(printf '%s\n' "$OUTPUT" | python3 "$CCP_PROBE" attest "$_attest_since" 2>/dev/null)"; then
   SC_ATTESTED_MODEL="${_att%%$'\t'*}"
-  _att_effort="${_att#*$'\t'}"
-  echo "[proxy-sidecar] upstream attestation: model=$SC_ATTESTED_MODEL effort=${_att_effort:-unset}" >&2
+  SC_ATTESTED_EFFORT="${_att#*$'\t'}"
+  echo "[proxy-sidecar] upstream attestation: model=$SC_ATTESTED_MODEL effort=${SC_ATTESTED_EFFORT:-unset}" >&2
 else
-  echo "[proxy-sidecar] no upstream capture found; record carries no attestation." >&2
+  if [ "$SC_FORMAT" = text ]; then
+    echo "[proxy-sidecar] upstream attestation needs -o json or -o stream-json; text output has no session ID." >&2
+  else
+    echo "[proxy-sidecar] no parseable session ID or valid in-window upstream capture; record carries no attestation." >&2
+  fi
 fi
 
+# Write the record before adding attested effort, but do not publish its stale pre-attestation
+# form to the ledger. record-effort rewrites the record atomically and publishes that final form.
+_record_ledger="$SC_LEDGER"
+[ "$_record_ledger" = "__default__" ] && _record_ledger="$SC_LEDGER_DEFAULT"
+SC_LEDGER=''
 sc_write_record "$OUTPUT" "$rc"
+_record_rc=$?
+SC_LEDGER="$_record_ledger"
+if [ "$_record_rc" -eq 0 ] && [ -n "$SC_RECORD" ] && [ -f "$SC_RECORD" ]; then
+  if [ -n "$_record_ledger" ]; then
+    python3 "$CCP_PROBE" record-effort "$SC_RECORD" "$SC_ATTESTED_EFFORT" "$_record_ledger" ||
+      echo "[proxy-sidecar] could not add attested effort to the run record; child was not re-run." >&2
+  else
+    python3 "$CCP_PROBE" record-effort "$SC_RECORD" "$SC_ATTESTED_EFFORT" ||
+      echo "[proxy-sidecar] could not add attested effort to the run record; child was not re-run." >&2
+  fi
+elif [ "$_record_rc" -ne 0 ]; then
+  echo "[proxy-sidecar] could not write the run record; child was not re-run." >&2
+fi
 
 # `[claude-code:unrecognized_model]` on stderr is EXPECTED and non-fatal: the CLI validates
 # model names against its own Anthropic vocabulary client-side, and a GPT id is not in it.

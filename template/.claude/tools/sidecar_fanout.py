@@ -20,6 +20,7 @@ exactly the failures (rate limit, quota, context) that a second immediate attemp
 USAGE
     python3 .claude/tools/sidecar_fanout.py <jobs.json> [--max-parallel N] [--dry-run]
                                             [--out-dir DIR] [--authorize]
+    python3 .claude/tools/sidecar_fanout.py --status <out-dir>
 
 JOBS FILE -- a JSON list. Per job:
     label       required  attribution key; becomes `-l` and names the output files
@@ -40,9 +41,12 @@ import argparse
 import hashlib
 import json
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -53,6 +57,7 @@ REPO = ROOT.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import model_registry  # noqa: E402
 import sidecar_launch  # noqa: E402  -- owns the shell choice; see plan_job's argv[0]
+import sidecar_resume_check as stream_check  # noqa: E402  -- owns stream-event classification
 
 # A PROCESS cap, chosen here rather than read from the registry's `limits.concurrency`: that field
 # carries 2500 (flash), 500 (pro) and null (luna/terra/sol) -- an API/token ceiling, not a count of
@@ -77,7 +82,17 @@ LAUNCHER_EXITS = {
     6: "balance floor unmet (NOT overridable)",
     7: "model unavailable in the registry",
     8: "provider quota-band ceiling exceeded (pass --authorize to override)",
+    9: "stall watchdog killed a child with no work event (resume deliberately with -r)",
+    10: "provider usage limit: the run stopped, or the provider's exhausted marker refused the "
+        "launch (NOT overridable; route to another provider)",
 }
+USAGE_LIMIT_EXIT = 10
+
+# How often `_wait_detached` re-checks a detached job's `<record>.exit`. No timeout gates this
+# loop (Design §3, sidecar-detach.md: "The fan-out has no timeout today, so it gets none") -- only
+# the job's own exit file, or its detached pid dying with none written, ends the wait. Overridable
+# so a proof can poll fast without the real interval flaking a multi-second fake job's timing.
+POLL_INTERVAL_SEC = float(os.environ.get("SIDECAR_FANOUT_POLL_SEC", "0.5"))
 
 
 class JobError(Exception):
@@ -85,7 +100,7 @@ class JobError(Exception):
 
 
 # Which paths a comparison's freeze must actually cover. Engine-generated churn outside these
-# (engine import sidecars, asset caches) is expected in any fresh worktree and is not a thaw.
+# (engine `.import` sidecars, asset caches) is expected in any fresh worktree and is not a thaw.
 FROZEN_PATHS = (".claude",)
 
 
@@ -119,7 +134,7 @@ def frozen_input_error(workdir):
     if git("symbolic-ref", "-q", "HEAD")[0] == 0:
         return ("worktree HEAD is on a BRANCH -- a commit or checkout moves it under the arms. "
                 "Re-create it with `git worktree add --detach`.")
-    # Dirt in the COMPARED INPUT only. A fresh worktree is never globally clean: an engine rewrites
+    # Dirt in the COMPARED INPUT only. A fresh worktree is never globally clean: the engine rewrites
     # every `.import` sidecar on first open (`gotcha_fresh_worktree_import_cache_mass_false_red`),
     # and refusing on that would make the guard fire on every correct setup -- a guard that matches
     # the noun instead of the action, which gets disabled rather than obeyed.
@@ -152,7 +167,7 @@ def _posix(p):
     """argv for a BASH child, so every path is POSIX -- always, not only when it looks wrong.
 
     `str(Path)` on Windows yields backslashes, and bash reads a backslash as an escape: the launcher
-    path collapsed to `C:Users<user>Project...` and every job died exit 127 before the launcher ran.
+    path collapsed to `C:UsersjmundGame_Dev...` and every job died exit 127 before the launcher ran.
     The registry stores `launcher` repo-relative already, and cwd is the repo, so nothing here needs
     an absolute path.
     """
@@ -218,14 +233,15 @@ def plan_job(job, data, out_dir, authorize):
 
     out_dir = Path(out_dir)
     # argv[0] comes from sidecar_launch.git_bash(), never the literal "bash": Windows Python
-    # resolves a bare `bash` to the System32 WSL shim, a different filesystem root whose $HOME
+    # resolves a bare `bash` to the System32 WSL shim, a different filesystem view whose $HOME
     # holds none of this user's credentials. Measured here 2026-09-08 -- the codex jobs exited 3
     # ("run claude-code-proxy codex auth login") on a machine that is logged in, and the opencode
     # jobs died on a litellm proxy started under /mnt/c. Both symptoms name the launcher, not the
     # shell. sidecar_launch owns this choice for every Python caller.
     argv = [sidecar_launch.git_bash(), _posix(launcher), "-m", alias, "-f", _posix(prompt),
             "-l", label,                                   # attribution: the metrics reader keys on
-            "-R", _posix(out_dir / f"{label}.record.json")]  # this pair; unlabelled rows are skipped
+            "-X",                                          # every fan-out child runs detached
+            "-R", _posix(attempt_record_path(out_dir, label))]  # unlabelled rows are skipped by it
     for flag, key in (("-e", "effort"), ("-D", "disclosure"), ("-G", "shape"),
                       ("-S", "schemaFile"), ("-d", "workdir")):
         if job.get(key):
@@ -256,6 +272,49 @@ def plan_job(job, data, out_dir, authorize):
         argv.append("-A")
     argv += [str(a) for a in (job.get("extraArgs") or [])]
     return label, argv, _posix(out_dir / f"{label}.out.json")
+
+
+def attempt_record_path(out_dir, label):
+    """The next unused attempt's record path for `label` under `out_dir`.
+
+    Attempt 1 keeps the label's plain `<label>.record.json` name, so a job's first run writes the
+    same path this tool always has (an existing consumer sees no change). `-X` refuses a used
+    record path, checked against its `.out`/`.err`/`.exit`/`.pid` siblings -- so relaunching the
+    same jobs file into the same --out-dir, the only way this tool re-plans a label it already
+    ran, steps the attempt number until it finds one none of those four siblings claim. A prior
+    attempt's files are never touched: this only ever picks a path, never deletes or renames one.
+    """
+    out_dir = Path(out_dir)
+    n = 1
+    while True:
+        name = f"{label}.record.json" if n == 1 else f"{label}.attempt{n}.record.json"
+        record = out_dir / name
+        if not any(Path(str(record) + suffix).exists()
+                   for suffix in (".out", ".err", ".exit", ".pid")):
+            return record
+        n += 1
+
+
+def latest_attempt_record_path(out_dir, label):
+    """The highest-numbered attempt's record path for `label` that some run has actually touched.
+
+    Mirrors attempt_record_path's own numbering so the two can never disagree on what "attempt N"
+    means. "Touched" means at least one `.out`/`.err`/`.exit`/`.pid` sibling exists; an untouched
+    candidate is only where the NEXT attempt would land, not one anyone dispatched. None if the
+    label has never been planned into this out_dir at all.
+    """
+    out_dir = Path(out_dir)
+    best = None
+    n = 1
+    while True:
+        name = f"{label}.record.json" if n == 1 else f"{label}.attempt{n}.record.json"
+        record = out_dir / name
+        touched = any(Path(str(record) + suffix).exists()
+                      for suffix in (".out", ".err", ".exit", ".pid"))
+        if not touched:
+            return best
+        best = record
+        n += 1
 
 
 def resume_id(record_path):
@@ -349,6 +408,127 @@ def workdir_of(argv):
         return None
 
 
+def progress_of(argv):
+    """The `-P` operand: the live progress stream this job's launcher tees to, if any."""
+    try:
+        return argv[argv.index("-P") + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def record_path_of(argv):
+    """The `-R` operand this child actually received, or None with no `-R` at all.
+
+    Read off argv, matching workdir_of/progress_of/inputs_of -- a relaunch's record path is an
+    ATTEMPT-numbered path chosen once at plan time (attempt_record_path), so reconstructing
+    `<out_dir>/<label>.record.json` here instead would silently read attempt 1 forever.
+    """
+    try:
+        return argv[argv.index("-R") + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def _pid_alive(pid):
+    """Best-effort PID-existence check: OpenProcess (query-only) on Windows, `os.kill(pid, 0)` on
+    POSIX -- the same idiom as `hooks/activity_registry.py`'s `_pid_exists`, duplicated locally
+    rather than imported so this tool carries no runtime dependency on a hook module.
+
+    Existence-only: it cannot tell a live detached job from an unrelated process that later reused
+    the same PID. That matches `_wait_detached`'s own tolerance -- a stale "alive" reading costs
+    one more poll, never a hang, and a stale "dead" reading is exactly what its one-more-poll rule
+    is for.
+    """
+    if pid is None:
+        return False
+    if platform.system() == "Windows":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _detached_pid(record_path):
+    """The most recently recorded pid in `<record>.pid`, or None.
+
+    `sc_detach_launch` appends one line per claim/spawn step -- the claiming process first, then
+    the actual detached job's own pid -- so the LAST `pid=<N>` line is the one that runs the job.
+    """
+    try:
+        with open(str(record_path) + ".pid", encoding="utf-8", errors="replace") as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if "pid=" in line:
+            try:
+                return int(line.rsplit("pid=", 1)[1].strip())
+            except ValueError:
+                continue
+    return None
+
+
+def _wait_detached(record_path, poll_interval=None):
+    """Block until `<record>.exit` appears, or the detached pid dies with none written.
+
+    Returns (exit_code, died_without_exit). No timeout: Design §3 gives this loop none, so a
+    genuinely long job only ever ends via its own exit file. The single exception is the
+    detached job's own process dying without writing one -- a crash, not a long run -- caught by
+    giving the pid's death exactly one more poll before believing it: a transient race between
+    "the pid just exited" and "the file just landed" costs one extra sleep, never a false "died".
+    """
+    poll_interval = POLL_INTERVAL_SEC if poll_interval is None else poll_interval
+    exitf = str(record_path) + ".exit"
+    grace_used = False
+    while True:
+        if os.path.isfile(exitf):
+            try:
+                with open(exitf, encoding="utf-8", errors="replace") as fh:
+                    return int(fh.read().strip()), False
+            except (OSError, ValueError):
+                return None, False
+        pid = _detached_pid(record_path)
+        if pid is not None and not _pid_alive(pid):
+            if grace_used:
+                return None, True
+            grace_used = True
+        else:
+            grace_used = False
+        time.sleep(poll_interval)
+
+
+def bound_finished_stream(stream_path, out_path):
+    """Replace a finished byte-identical progress stream with a pointer to stdout.
+
+    A resumed launcher appends every segment to `-P` but replaces captured stdout on each resume.
+    When those files differ, the progress stream is the only full record and must stay intact.
+    """
+    if not stream_path or not os.path.isfile(stream_path):
+        return
+    try:
+        with open(stream_path, "rb") as stream, open(out_path, "rb") as output:
+            if stream.read() != output.read():
+                return
+    except OSError:
+        return
+    pointer = {"seeAlso": os.path.basename(str(out_path)),
+               "note": "progress stream bounded after the run completed; its bytes match "
+                       "the sibling .out.json"}
+    try:
+        with open(stream_path, "w", encoding="utf-8") as fh:
+            json.dump(pointer, fh)
+    except OSError:
+        pass  # bounding is a disk-space cleanup, never worth failing a completed run over
+
+
 def run_jobs(planned, max_parallel, out_dir):
     # A bounded pool: `max_parallel` workers draining a queue. The previous shape started one OS
     # thread per job and used the semaphore only to cap concurrent SUBPROCESSES, so a 200-job file
@@ -362,7 +542,11 @@ def run_jobs(planned, max_parallel, out_dir):
     allocated = []
     for label, argv, out_path in planned:
         launch_id = str(uuid.uuid4())
-        record_path = str(Path(out_dir) / f"{label}.record.json")
+        # Read off argv, never reconstructed from (out_dir, label): an attempt-numbered relaunch's
+        # `-R` is not `<label>.record.json`, and reconstructing it here would silently poll attempt
+        # 1's files forever. A job with no `-R` at all (a caller invoking run_jobs directly, never
+        # through plan_job) falls back to the legacy guess so it keeps whatever behavior it had.
+        record_path = record_path_of(argv) or str(Path(out_dir) / f"{label}.record.json")
         allocated.append((label, argv, out_path, launch_id, record_path))
     inventory = {"schemaVersion": 1, "fanoutId": fanout_id,
                  "parentSessionId": parent_session,
@@ -391,6 +575,7 @@ def run_jobs(planned, max_parallel, out_dir):
             err_path = str(Path(out_dir) / f"{label}.err")
             wd, reads = workdir_of(argv), inputs_of(argv)
             before = freeze_fingerprint(wd, reads)
+            detached = "-X" in argv
             try:
                 with open(out_path, "w", encoding="utf-8") as so, \
                         open(err_path, "w", encoding="utf-8") as se:
@@ -399,6 +584,40 @@ def run_jobs(planned, max_parallel, out_dir):
                 results[label] = {**identity, "exit": None, "error": str(err),
                                   "frozenInput": {"before": before, "after": before, "held": True}}
                 return
+
+            if detached and code == 0:
+                # `-X` handed off within seconds and already exited -- `code` here is the HANDOFF's
+                # own exit, never the job's. The job runs on, detached, under the pid its record's
+                # `.pid` file names; wait on ITS exit file, never on a live child of this process,
+                # because there no longer is one (Design §3: this is what makes a kill of the
+                # fan-out's own process powerless to touch the job).
+                job_code, died = _wait_detached(record_path)
+                detached_out, detached_err = record_path + ".out", record_path + ".err"
+                if os.path.isfile(detached_out):
+                    try:
+                        shutil.copyfile(detached_out, out_path)
+                    except OSError:
+                        pass
+                if os.path.isfile(detached_err):
+                    try:
+                        shutil.copyfile(detached_err, err_path)
+                    except OSError:
+                        pass
+                if died:
+                    after = freeze_fingerprint(wd, reads)
+                    results[label] = {
+                        **identity, "exit": None,
+                        "error": f"detached pid died without writing {record_path}.exit",
+                        "stdout": out_path, "stderr": err_path, "record": None, "resumeWith": None,
+                        "frozenInput": {"before": before, "after": after, "held": before == after},
+                    }
+                    return
+                code = job_code
+            # Collapse `-P` only when it duplicates stdout. Resumed runs append to `-P` while
+            # stdout holds the last segment, so a differing progress file is the full archive.
+            # A usage-limit stream is the salvage source the summary names; keep it whole.
+            if code != USAGE_LIMIT_EXIT:
+                bound_finished_stream(progress_of(argv), out_path)
             after = freeze_fingerprint(wd, reads)
             rec = record_path
             try:
@@ -414,6 +633,7 @@ def run_jobs(planned, max_parallel, out_dir):
                 "meaning": LAUNCHER_EXITS.get(code, "unrecognised launcher exit"),
                 "stdout": out_path,
                 "stderr": err_path,
+                "stream": progress_of(argv),
                 "record": rec if record is not None else None,
                 # Reported, never acted on. A retry here would re-bill a call the caller has not
                 # seen the failure of.
@@ -438,9 +658,118 @@ def run_jobs(planned, max_parallel, out_dir):
     return results
 
 
+def summarize(planned, results, compare):
+    """-> (results text, exit code). A usage-limit stop is its own outcome, not a failure."""
+    lines, failed, limited = ["", "--- results ---"], [], []
+    for label, _, _ in planned:
+        r = results.get(label) or {"exit": None, "error": "never ran"}
+        if r.get("exit") == 0:
+            lines.append(f"ok    {label}  -> {r['stdout']}")
+            continue
+        if r.get("exit") == USAGE_LIMIT_EXIT:
+            limited.append(label)
+            lines.append(f"usage-limit  {label}  exit={USAGE_LIMIT_EXIT} ({r.get('meaning')})")
+            lines.append(f"        salvage from: {r.get('stream') or '(no -P stream)'}")
+            if r.get("resumeWith"):
+                lines.append(f"        resumable after the reset: re-run that job's launcher with -r {r['resumeWith']}")
+            continue
+        failed.append(label)
+        lines.append(f"FAIL  {label}  exit={r.get('exit')} ({r.get('meaning') or r.get('error')})")
+        lines.append(f"        stderr: {r.get('stderr')}")
+        if r.get("resumeWith"):
+            # The launcher persisted a session. Resuming is the caller's call, deliberately: this
+            # tool never re-bills a run on its own.
+            lines.append(f"        resumable: re-run that job's launcher with -r {r['resumeWith']}")
+    # An arm whose input moved under it read different bytes from its peers, so a defect it
+    # reports absent is indistinguishable from one the edit removed. Exit non-zero under --compare:
+    # the numbers are the deliverable there, and wrong numbers beat no numbers only in appearance.
+    moved = [l for l, _, _ in planned
+             if (results.get(l) or {}).get("frozenInput", {}).get("held") is False]
+    if moved and compare:
+        lines.append("\nCOMPARISON INVALID: inputs changed under %d arm(s): %s" % (len(moved), ", ".join(moved)))
+        lines.append("  Preserve the artifacts and identify the changed inputs before deciding whether to repeat the comparison.")
+    elif moved:
+        lines.append("\nInputs changed during %d job(s): %s" % (len(moved), ", ".join(moved)))
+        lines.append("  Expected for authoring; verify relevant source hashes before accepting read-only claims. No automatic rerun.")
+
+    done = len(planned) - len(failed) - len(limited)
+    lines.append(f"\n{done}/{len(planned)} exited 0"
+                 + (f"; usage-limit: {', '.join(limited)}" if limited else "")
+                 + (f"; failed: {', '.join(failed)}" if failed else ""))
+    return "\n".join(lines), 1 if (moved and compare) or failed or limited else 0
+
+
+def _status_labels(out_dir):
+    """Every label with an attempt record sibling or a `-P` stream under `out_dir`."""
+    labels = set()
+    for path in out_dir.iterdir():
+        name = path.name
+        if name.endswith(".stream"):
+            labels.add(name[:-len(".stream")])
+            continue
+        head, sep, _ = name.partition(".record.json.")
+        if not sep:
+            continue
+        base, dot, number = head.rpartition(".attempt")
+        labels.add(base if dot and number.isdigit() else head)
+    return sorted(labels)
+
+
+def _attempt_state(record):
+    """(state, detail) for one attempt from `<record>.exit` and `<record>.pid`, the same two files
+    `_wait_detached` polls: finished, running, died (pid gone, no exit file), pending (no pid yet),
+    or no-attempt when `record` is None."""
+    if record is None:
+        return "no-attempt", "no attempt record"
+    where = _posix(record)
+    try:
+        with open(str(record) + ".exit", encoding="utf-8") as fh:
+            return "finished", f"exit={fh.read().strip()}  {where}"
+    except OSError:
+        pass
+    pid = _detached_pid(record)
+    if pid is None:
+        return "pending", f"no pid recorded yet  {where}"
+    if _pid_alive(pid):
+        return "running", f"pid {pid}  {where}"
+    return "died", f"pid {pid} gone, no exit file  {where}"
+
+
+def print_status(out_dir):
+    """One `<label> <state> <detail>` line per job under `out_dir`. The LATEST attempt's `.exit`
+    and `.pid` say whether it finished or died, never attempt 1 once a relaunch exists; its `-P`
+    stream's latest events say what a live or unattempted job is doing; its record's stopReason
+    says how a finished one stopped. Returns 2 when `out_dir` holds no job, else 0."""
+    out_dir = Path(out_dir)
+    labels = _status_labels(out_dir) if out_dir.is_dir() else []
+    if not labels:
+        print(f"no job records or streams in {out_dir}", file=sys.stderr)
+        return 2
+    now = __import__("time").time()
+    stall_sec = int(os.environ.get("SIDECAR_STALL_SEC") or 900)
+    limit = int(os.environ.get("SIDECAR_USAGE_LIMIT_RETRIES") or 10)
+    for label in labels:
+        record = latest_attempt_record_path(out_dir, label)
+        state, detail = _attempt_state(record)
+        stream = out_dir / f"{label}.stream"
+        if state in ("no-attempt", "pending", "running") and stream.is_file():
+            live, live_detail = stream_check.stream_status(str(stream), now, stall_sec, limit)
+            state, detail = live, f"{live_detail}  {detail}"
+        if record is not None:
+            try:
+                with open(record, encoding="utf-8") as fh:
+                    stop = (json.load(fh) or {}).get("stopReason")
+                state = {"provider-usage-limit": "usage-limit", "stall": "stalled"}.get(stop, "finished")
+                detail = f"record stopReason {stop}  {detail}"
+            except (OSError, ValueError, AttributeError):
+                pass
+        print(f"{label:<28} {state:<11} {detail}")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Fan a job list across sidecar launchers.")
-    ap.add_argument("jobs", help="path to the jobs JSON file")
+    ap.add_argument("jobs", nargs="?", help="path to the jobs JSON file")
     ap.add_argument("--max-parallel", type=int, default=DEFAULT_MAX_PARALLEL,
                     help=f"concurrent child launchers (default {DEFAULT_MAX_PARALLEL})")
     ap.add_argument("--out-dir", default=None,
@@ -452,8 +781,16 @@ def main(argv=None):
     ap.add_argument("--compare", action="store_true",
                     help="these arms will be COMPARED (ladder evidence, pin A/B): refuse to "
                          "dispatch unless every job reads a frozen detached worktree")
+    ap.add_argument("--status", metavar="OUT_DIR", default=None,
+                    help="print one line per job in OUT_DIR from its latest attempt; "
+                         "dispatches nothing")
     args = ap.parse_args(argv)
 
+    if args.status:
+        return print_status(args.status)
+    if not args.jobs:
+        print("a jobs file is required unless --status is given", file=sys.stderr)
+        return 2
     if args.max_parallel < 1:
         print("--max-parallel must be at least 1", file=sys.stderr)
         return 2
@@ -463,6 +800,11 @@ def main(argv=None):
 
     try:
         jobs = load_jobs(args.jobs)
+    except JobError as err:
+        print(str(err), file=sys.stderr)
+        return 2
+
+    try:
         data = model_registry.load()
         planned = [plan_job(j, data, out_dir, args.authorize) for j in jobs]
     except JobError as err:
@@ -519,36 +861,9 @@ def main(argv=None):
         return 0
 
     results = run_jobs(planned, args.max_parallel, out_dir)
-
-    failed = []
-    print("\n--- results ---")
-    for label, _, _ in planned:
-        r = results.get(label) or {"exit": None, "error": "never ran"}
-        if r.get("exit") == 0:
-            print(f"ok    {label}  -> {r['stdout']}")
-            continue
-        failed.append(label)
-        print(f"FAIL  {label}  exit={r.get('exit')} ({r.get('meaning') or r.get('error')})")
-        print(f"        stderr: {r.get('stderr')}")
-        if r.get("resumeWith"):
-            # The launcher persisted a session. Resuming is the caller's call, deliberately: this
-            # tool never re-bills a run on its own.
-            print(f"        resumable: re-run that job's launcher with -r {r['resumeWith']}")
-    # An arm whose input moved under it read different bytes from its peers, so a defect it
-    # reports absent is indistinguishable from one the edit removed. Exit non-zero under --compare:
-    # the numbers are the deliverable there, and wrong numbers beat no numbers only in appearance.
-    moved = [l for l, _, _ in planned
-             if (results.get(l) or {}).get("frozenInput", {}).get("held") is False]
-    if moved:
-        print("\nFROZEN INPUT MOVED under %d arm(s): %s" % (len(moved), ", ".join(moved)))
-        print("  Their findings are not comparable with the arms that finished before the write.")
-        print("  Restore the worktree and re-run those labels; `git -C <workdir> status` names it.")
-
-    print(f"\n{len(planned) - len(failed)}/{len(planned)} exited 0"
-          + (f"; failed: {', '.join(failed)}" if failed else ""))
-    if moved and args.compare:
-        return 1
-    return 1 if failed else 0
+    text, code = summarize(planned, results, args.compare)
+    print(text)
+    return code
 
 
 if __name__ == "__main__":

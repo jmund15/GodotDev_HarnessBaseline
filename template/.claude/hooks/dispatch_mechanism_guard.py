@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""PreToolUse(Workflow|Agent): deny a dispatch when /orchestration has not been loaded this session.
+"""PreToolUse(Workflow|Agent): deny a dispatch when /orchestration has not been loaded this session;
+deny a brief that tells its delegate to fan out; deny a pinned non-exploratory Agent (Workflow's job).
 
 WHY THIS EXISTS: the SessionStart rail told the model to invoke Skill(orchestration) before the
 first dispatch, but a rail is passive text — it fired no enforcement at the dispatch moment, and a
@@ -11,8 +12,8 @@ applies §0 (single Agent vs Workflow vs sidecar), and re-issues.
 CHANNEL: hookSpecificOutput.permissionDecision=deny on stdout (PreToolUse convention shared with
 tres_nullstrip_guard.py / prototype_containment_guard.py).
 
-FAIL POSTURE: fail-open and silent. A hook that cannot read its inputs must never block a dispatch:
-absent/empty/unreadable/oversized transcript all exit 0 with no output.
+FAIL POSTURE: fail closed for a matched dispatch. Missing, empty, unreadable, or malformed
+transcript evidence cannot prove that the mandatory skill was loaded.
 
 STATE: none. "Loaded" is derived from the session transcript — the Skill(orchestration) result lands
 in the JSONL (verified: its §0 header line and its fan-out litmus sentence appear immediately after a
@@ -47,18 +48,28 @@ REASON = (
     "mechanism is a Workflow and user approval is absent, ask the user; do not substitute a direct Agent."
 )
 
+UNVERIFIABLE_REASON = (
+    "Dispatch denied because the guard cannot verify the session transcript. The mandatory "
+    "Skill(orchestration) load needs readable transcript evidence; restore that evidence, load the "
+    "skill, then re-issue the dispatch."
+)
 
-def orchestration_loaded(transcript_path: str) -> bool:
+
+
+def orchestration_loaded(transcript_path: str):
+    """True/False for readable evidence; None when evidence cannot be verified."""
+    if not transcript_path:
+        return None
     try:
         size = os.path.getsize(transcript_path)
         if size <= 0:
-            return True  # no transcript content yet — fail open, don't block a fresh session's first action
+            return None
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as fh:
             if size > MAX_READ_BYTES:
                 fh.seek(size - MAX_READ_BYTES)
             content = fh.read(MAX_READ_BYTES)
     except OSError:
-        return True  # cannot read the transcript — fail open, never block on our own I/O failure
+        return None
     return any(marker in content for marker in ORCHESTRATION_MARKERS)
 
 
@@ -201,30 +212,69 @@ def nested_fanout_hit(payload: dict):
     return None
 
 
+# Third check — a PINNED Agent. orchestration §0: a job whose model you can pin is a job you can
+# enumerate, and an enumerable job goes through Workflow, which pins model AND effort and logs the
+# PINS row the metrics archive reads. The Agent route pins the model only, inherits session effort
+# and leaves no attributable record (2026-09-15, session 3259384b: a 33-file converged edit sweep
+# went out as Agent+model). Exploratory types (Explore, Plan) and a fork (which ignores the pin) are
+# the §0 exception by construction; any other pinned Agent states its exception in the brief.
+EXPLORATORY_TYPES = ("Explore", "Plan", "fork")
+AGENT_EXCEPTION_RE = re.compile(r"(?im)^\s*AGENT-EXCEPTION:\s*\S")
+
+PINNED_AGENT_REASON = (
+    "This Agent carries a model pin ({model}) for a non-exploratory job. A pinned job belongs on "
+    "Workflow (orchestration §0): the Agent route cannot pin effort, so this call would inherit the "
+    "session's effort and log no PINS row for the metrics archive. Re-issue through Workflow with "
+    "model and effort pins, or, for a genuine exploratory fork, add a line `AGENT-EXCEPTION: <why "
+    "the job list is not enumerable yet>` to the prompt."
+)
+
+
+def pinned_agent_hit(payload: dict):
+    if payload.get("tool_name") != "Agent":
+        return None
+    ti = payload.get("tool_input")
+    if not isinstance(ti, dict):
+        return None
+    model = ti.get("model")
+    if not model:
+        return None
+    if str(ti.get("subagent_type") or "") in EXPLORATORY_TYPES:
+        return None
+    if AGENT_EXCEPTION_RE.search(str(ti.get("prompt") or "")):
+        return None
+    return str(model)
+
+
+def _deny(reason):
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }}))
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        return 0  # malformed payload — never block
+        payload = None
     if not isinstance(payload, dict):
+        _deny(UNVERIFIABLE_REASON)
         return 0
     if payload.get("tool_name") not in ("Workflow", "Agent"):
         return 0
-    transcript_path = payload.get("transcript_path")
-    if transcript_path and not orchestration_loaded(transcript_path):
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": REASON,
-        }}))
+    loaded = orchestration_loaded(payload.get("transcript_path"))
+    if loaded is not True:
+        _deny(REASON if loaded is False else UNVERIFIABLE_REASON)
         return 0
     hit = nested_fanout_hit(payload)
     if hit:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": NESTED_REASON.format(hit=hit),
-        }}))
+        _deny(NESTED_REASON.format(hit=hit))
+        return 0
+    model = pinned_agent_hit(payload)
+    if model:
+        _deny(PINNED_AGENT_REASON.format(model=model))
     return 0
 
 

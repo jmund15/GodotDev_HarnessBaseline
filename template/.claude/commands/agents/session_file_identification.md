@@ -8,17 +8,17 @@ disable-model-invocation: true
 
 Use this procedure to determine which files belong to this session vs pre-existing dirty state.
 
-## Step 1: Session Manifest (Primary Source)
+## Step 1: Live Transcript Digest (Primary Source)
 
-Check for a session manifest file — the fastest and most reliable source:
+List every file the session edited from the live transcript, which is append-only across compactions:
 
 ```
-logs/session_files/<session_id>.json
+python3 .claude/tools/session_digest.py --digest-file logs/session_digest_<sid8>.json --evidence-page files --page <N>
 ```
 
-If the manifest exists, it contains the authoritative `files` list (cumulative across all compactions). Use it directly and proceed to Step 3 for cross-verification.
+Page until the response's `page` equals `pages`. Run `session_digest.py --prompt-tail <command>` first if the digest file is absent. Proceed to Step 3 for cross-verification.
 
-**If the manifest does NOT exist**, fall through to Step 2.
+`logs/session_files/<session_id>.json` is written by the PreCompact hook only, so it stops at the last compaction and omits every later edit (measured 2026-09-15: 28 of 40 files). Use it, with Step 2, only when the live transcript is unavailable.
 
 ## Step 2: Compaction Recovery (MANDATORY)
 

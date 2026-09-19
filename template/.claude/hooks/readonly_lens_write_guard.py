@@ -53,7 +53,8 @@ STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 def _marker_path(session_id: str) -> str:
     """Mirror of readonly_marker.js markerPath() — same root, same <sid8> key shape."""
     short = session_id[:8] if session_id else "default"
-    return os.path.join(STATE_DIR, f"readonly-{short}.json")
+    # HARNESS_HOOK_STATE_DIR is the proof redirect every hook honours (`_hook_state.state_dir`).
+    return os.path.join(os.environ.get("HARNESS_HOOK_STATE_DIR") or STATE_DIR, f"readonly-{short}.json")
 
 
 def _norm(p: str) -> str:
@@ -61,18 +62,21 @@ def _norm(p: str) -> str:
     return os.path.normcase(os.path.abspath(str(p))).replace("\\", "/").rstrip("/")
 
 
-def main() -> None:
-    raw = sys.stdin.read()
-    payload = json.loads(raw) if raw.strip() else {}
+def process(payload):
+    """Dispatcher entry: `{"stderr": note}` when the write is off-lens, else None.
+
+    Reports without blocking — `pre_edit_dispatch.py` writes the note and keeps going.
+    `main()` keeps the standalone channel.
+    """
     if not isinstance(payload, dict):
-        return
+        return None
 
     session_id = str(payload.get("session_id") or "")
 
     # 1. Marker stat FIRST — before any other work.
     marker = _marker_path(session_id)
     if not os.path.exists(marker):
-        return
+        return None
 
     # 2. Expired or unparseable == absent. Allow, and clean up the strand.
     try:
@@ -86,22 +90,22 @@ def main() -> None:
             os.unlink(marker)
         except OSError:
             pass
-        return
+        return None
     if expires_at <= time.time():
         try:
             os.unlink(marker)
         except OSError:
             pass
-        return
+        return None
 
     # 3. Only a subagent's write is interesting. The orchestrator's own payload has no `agent_id`.
     agent_id = str(payload.get("agent_id") or "")
     if not agent_id:
-        return
+        return None
 
     target = (payload.get("tool_input") or {}).get("file_path") or ""
     if not target:
-        return
+        return None
 
     allowed = state.get("allow_prefixes")
     allowed = allowed if isinstance(allowed, list) else []
@@ -111,14 +115,22 @@ def main() -> None:
             continue
         np = _norm(prefix)
         if norm_target == np or norm_target.startswith(np + "/"):
-            return
+            return None
 
-    sys.stderr.write(
+    return {"stderr": (
         f"[readonly-lens-write] advisory: agent {agent_id} wrote {target} while a read-only "
         f"fan-out marker was live ({marker}). Allowed prefixes: "
         f"{', '.join(allowed) if allowed else '(none)'}. Not blocked -- this hook cannot tell "
         f"which run the write belongs to, so it only reports.\n"
-    )
+    )}
+
+
+def main() -> None:
+    raw = sys.stdin.read()
+    payload = json.loads(raw) if raw.strip() else {}
+    result = process(payload) or {}
+    if result.get("stderr"):
+        sys.stderr.write(result["stderr"])
 
 
 if __name__ == "__main__":

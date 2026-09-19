@@ -4,7 +4,10 @@ description: "ai-worker read_files multi-file extraction silently omits files (r
 metadata: 
   node_type: memory
   type: feedback
+  originSessionId: df2b3626-2692-4176-8ae7-e5953e99385a
   modified: 2026-07-27T22:36:20.828Z
+retire_when:
+  - review-by: 2026-11-22
 ---
 
 When using `mcp__ai-worker__read_files` to extract structured data across multiple files (N≥4), the question MUST include an explicit completeness directive: *"You MUST return one entry per input path (N total). Do NOT silently omit any file. If a file can't be parsed, include an entry with a 'reason' field rather than omitting."* Then verify output shape post-call: count returned entries against `len(paths)`; retry missed entries individually.

@@ -15,8 +15,8 @@
 #   deepseek_sidecar.sh [-m MODEL] [-t TOOLS] [-n MAX_TURNS] [-o FORMAT] [-d DIR] -- "PROMPT"
 #   deepseek_sidecar.sh -f prompt.txt
 #
-#   -m  model ALIAS or id   (pro | flash | deepseek-v4-pro | deepseek-v4-flash;
-#       default: flash). Resolved through .claude/reference/external_models.json,
+#   -m  model ALIAS or id   (e.g. flash | pro; default: flash). The ids and the version each
+#       serves live only in .claude/reference/external_models.json. Resolved through it,
 #       the SSOT for ids, prices, limits and gates. An unresolvable name exits 2
 #       listing the legal set. A missing/unreadable/invalid registry ALSO exits 2:
 #       this is the spending consumer, so it fails closed rather than dispatching
@@ -36,7 +36,13 @@
 #   -U  dispatch a model the registry marks UNAVAILABLE. Separate from -A on purpose:
 #       -A trades one currency for another at an agent's discretion, while availability
 #       is the user's standing decision about what is in the roster at all.
-#   -e  effort level        low|medium|high|xhigh|max (default: unset — provider default)
+#   -W  authorize a dispatch that starts inside DeepSeek's PEAK pricing window (list rates; off-peak
+#       is 50%). Both models carry gate.peakPolicy=refuse, so without -W a peak dispatch exits 11
+#       before spending. Pass -W ONLY when the user explicitly authorized peak pricing in the
+#       current conversation. -A does not cover it. Windows: the registry's pricingSchedule.
+#   -e  effort level        low|high|max — the rungs the registry's effortValues says DeepSeek serves
+#       (medium/xhigh would run as high under a false label, so they exit 2). Default: unset —
+#       provider default (thinking on, high)
 #   -t  --allowedTools CSV  (default: Read,Glob,Grep — read-only)
 #   -n  max turns           (default: UNCAPPED — never cap benchmark/delegate turns,
 #       a cap discards completed work; -T wall-clock is the runaway guard)
@@ -116,20 +122,13 @@
 # EMPIRICAL question, not a guarantee. Claude Code will send it regardless. Verify
 # a pin actually changed behavior before trusting an effort-pinned benchmark arm.
 #
-# NOTE ON -m (measured 2026-08-12, supersedes the old "unrecognized names route
-# to V4 Flash" claim — that was never true and is now demonstrably false):
-#   * Unknown VENDOR-SHAPED ids HARD-ERROR. `deepseek-v4-pro-0813` is rejected with
-#     "The supported API model names are deepseek-v4-pro or deepseek-v4-flash".
-#     There is no silent fallback to correct for.
-#   * BARE ROLE NAMES HARD-ERROR: opus, sonnet, haiku, fable are all rejected.
-#     This is why the Agent tool's model pin is not honoured off-Anthropic
-#     rather than passing it through — an un-stripped bare role makes agent()
-#     return null, .filter(Boolean) swallows it, and the fan-out reports
-#     "0 findings" while looking clean.
-#   * FULL `claude-*` ids alias BY TIER: claude-opus-* -> V4 Pro;
-#     claude-sonnet-* / claude-haiku-* / claude-fable-* -> V4 Flash.
-# Still check `modelUsage`/`canonicalModel` in the JSON — it is now how you confirm
-# a tier alias landed where you intended, rather than how you catch a fallback.
+# NOTE ON -m: DeepSeek's endpoint HARD-ERRORS on bare role names (opus/sonnet/haiku/fable) and
+# on unknown vendor-shaped ids — no silent fallback — which is why an Agent-tool role pin is never
+# passed through off-Anthropic (an un-stripped bare role makes agent() return null and a fan-out
+# reads "0 findings"). Full `claude-*` ids alias to a DeepSeek model BY TIER. Which names map to
+# which model changes with each vendor release; the dated probe table and its re-probe command
+# live in .claude/auto-memory/archive/gotcha_deepseek_compat_alias_and_bare_roles.md.
+# Check `modelUsage`/`canonicalModel` in the JSON to confirm a tier alias landed where intended.
 # A PROXIED transport inverts this: there, every bare role name RESOLVES to some
 # model, so a mis-pin cannot announce itself and identity must come from the
 # proxy's own capture. See codex_proxy_sidecar.sh.
@@ -140,7 +139,8 @@
 # investigate mid-session.
 #
 # Exit codes: see lib/sidecar_common.sh (the shared contract). 8 (provider quota
-# band) cannot fire here — DeepSeek is dollar-billed, so it has no plan quota.
+# band) cannot fire here — DeepSeek is dollar-billed, so it has no plan quota. 11 = peak
+# pricing window refused (see -W).
 
 set -uo pipefail
 
@@ -171,6 +171,9 @@ ds_read_key() {
 # sidecar dispatch must never have to investigate credentials or transport.
 # Intercepted before getopts, which would reject `--check` as bad usage.
 if [ "${1:-}" = "--check" ]; then
+  # The dispatch hook runs `--check <dispatch args>`: apply its -m/-A/-U/-W, or a user-authorized -W
+  # peak dispatch is refused here before the launcher runs.
+  sc_check_model_override "$@"
   sc_claude_bin >/dev/null || { echo "UNAVAILABLE (claude CLI not found; set CLAUDE_BIN)"; exit 4; }
   [ -f "$ENV_FILE" ] || { echo "UNAVAILABLE (credential file missing: $ENV_FILE)"; exit 3; }
   _check_key="$(ds_read_key)"
@@ -195,8 +198,9 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
+  SC_CREDENTIAL="$_check_key"   # sc_gate_balance authenticates the balance probe with it
   sc_check_gates
-  echo "OK (model=${_check_reg%%|*} endpoint=$BASE_URL key=***${_check_key: -4})"
+  echo "OK (model=${_check_reg%%|*} endpoint=$BASE_URL key=***${_check_key: -4})${SC_PRICE_SUMMARY:+ $SC_PRICE_SUMMARY}"
   exit 0
 fi
 
@@ -223,6 +227,7 @@ esac
 sc_gate_band
 sc_gate_provider_band   # no-op on a marginal-usd transport; present so the ladder is uniform
 sc_gate_balance
+sc_gate_price_window    # refuses a peak dispatch on a peakPolicy:refuse row unless -W
 sc_build_disclosure
 sc_validate_effort
 
@@ -244,6 +249,8 @@ EXTRA_ARGS=()
 [ -n "$SC_RESUME" ] && EXTRA_ARGS+=(--resume "$SC_RESUME")
 [ -n "$SC_PERM_MODE" ] && EXTRA_ARGS+=(--permission-mode "$SC_PERM_MODE")
 [ -n "$SC_SCHEMA_FILE" ] && EXTRA_ARGS+=(--json-schema "$(cat "$SC_SCHEMA_FILE")")
+SC_SETTINGS_JSON="$(sc_settings_with_bench_guard "")"
+[ -n "$SC_SETTINGS_JSON" ] && EXTRA_ARGS+=(--settings "$SC_SETTINGS_JSON")
 
 sc_scrub_env
 

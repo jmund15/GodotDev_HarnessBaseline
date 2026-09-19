@@ -52,23 +52,18 @@ def scan_added_lines(text: str) -> list[tuple[int, str]]:
     return findings
 
 
-def main() -> int:
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        print("{}")
-        return 0
+def process(payload):
+    """Dispatcher entry: `{"context": warning}` when a call site is untagged, else None.
 
-    tool_name = payload.get("tool_name", "")
-    if tool_name not in ("Write", "Edit"):
-        print("{}")
-        return 0
+    `post_edit_dispatch.py` calls this; `main()` keeps the standalone channel.
+    """
+    if payload.get("tool_name", "") not in ("Write", "Edit"):
+        return None
 
     tool_input = payload.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path", "") or ""
     if not file_path.endswith(".cs"):
-        print("{}")
-        return 0
+        return None
 
     # Edit gives us new_string; Write gives us content. MultiEdit isn't in the matcher
     # but if it were, edits[].new_string would be the field — bail safely.
@@ -78,33 +73,45 @@ def main() -> int:
         or ""
     )
     if not candidate_text:
+        return None
+
+    findings = scan_added_lines(candidate_text)
+    if not findings:
+        return None
+
+    rel = file_path.replace("\\", "/").rsplit("/{{PROJECT_NAME}}/", 1)[-1]
+    lines = [
+        f"[logger_tag_prefix] {rel}: {len(findings)} JmoLogger.Info/Debug call(s) "
+        f"appear untagged. Per logging_methodology skill, prefix with [Subsystem]:"
+    ]
+    for offset, snippet in findings[:5]:
+        # offset is within new_string, not the file — useful for short edits, advisory only.
+        display = snippet if len(snippet) <= 140 else snippet[:137] + "..."
+        lines.append(f"  · {display}")
+    if len(findings) > 5:
+        lines.append(f"  · (+{len(findings) - 5} more)")
+    lines.append(
+        "  (Soft warning. Use [Subsystem] tag or $\"{InstrumentationTags.X}\" "
+        "for hypothesis tags.)"
+    )
+    return {"context": "\n".join(lines)}
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
         print("{}")
         return 0
 
-    findings = scan_added_lines(candidate_text)
-    if findings:
-        rel = file_path.replace("\\", "/").rsplit("/{{PROJECT_NAME}}/", 1)[-1]
-        lines = [
-            f"[logger_tag_prefix] {rel}: {len(findings)} JmoLogger.Info/Debug call(s) "
-            f"appear untagged. Per logging_methodology skill, prefix with [Subsystem]:"
-        ]
-        for offset, snippet in findings[:5]:
-            # offset is within new_string, not the file — useful for short edits, advisory only.
-            display = snippet if len(snippet) <= 140 else snippet[:137] + "..."
-            lines.append(f"  · {display}")
-        if len(findings) > 5:
-            lines.append(f"  · (+{len(findings) - 5} more)")
-        lines.append(
-            "  (Soft warning. Use [Subsystem] tag or $\"{InstrumentationTags.X}\" "
-            "for hypothesis tags.)"
-        )
-        payload = {
+    result = process(payload) or {}
+    if result.get("context"):
+        print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
-                "additionalContext": "\n".join(lines),
+                "additionalContext": result["context"],
             }
-        }
-        print(json.dumps(payload))
+        }))
         return 0
 
     print("{}")

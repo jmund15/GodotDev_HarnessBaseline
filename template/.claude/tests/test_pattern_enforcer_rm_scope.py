@@ -66,10 +66,13 @@ MUST_BLOCK = [
     # A quoted flag is still a flag — the shell sees `rm -r build/`.
     'rm "-r" build/',
     "rm '-rf' build/",
-    # Recovered denial #8: a genuine recursive delete of a mktemp dir, correctly blocked. The
-    # workaround is a named scratch dir, never a looser matcher.
-    'TMP=$(mktemp -d); awk "/x/" f > "$TMP/o"; rm -r' 'f "$TMP"',
 ]
+
+# Recovered denial #8 used to sit in MUST_BLOCK above as "correctly blocked". A4 (2026-09-14)
+# authorizes exactly this shape — a recursive delete whose only target is a variable the same
+# command assigns, once, from `$(mktemp -d)` — as ownership evidence a literal path never carries.
+# `test_pattern_enforcer_owned_temp_cleanup.py` owns this case now, plus the block shapes that
+# still deny a look-alike with no real ownership evidence.
 
 # Fixtures that are genuine recursive deletes are dropped from the false-positive arm by
 # `load_false_positives`; leaving one there would demand the matcher stop blocking a real delete.

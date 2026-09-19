@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _hook_state import read_json_salvage, state_path, write_json_atomic  # noqa: E402
+from _hook_state import read_json_salvage, state_path, update_json_locked  # noqa: E402
 
 TIER_KEY = "session_tier"
 VALID_TIERS = ("fable", "opus", "strict")
@@ -35,10 +35,7 @@ def tier_of(model):
 def write_session_tier(session_id, model):
     """Resolve and cache this session's tier. Returns the tier."""
     tier = tier_of(model)
-    path = state_path(session_id)
-    state = read_json_salvage(path)
-    state[TIER_KEY] = tier
-    write_json_atomic(path, state)
+    update_json_locked(state_path(session_id), lambda state: state.__setitem__(TIER_KEY, tier))
     return tier
 
 

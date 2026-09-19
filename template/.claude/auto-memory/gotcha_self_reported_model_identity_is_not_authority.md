@@ -4,7 +4,10 @@ description: "A client-reported served-model field is authority ONLY against a v
 metadata: 
   node_type: memory
   type: project
+  originSessionId: 57e6ed14-e265-4415-94ec-b1cdebc1bfe4
   modified: 2026-08-20T05:45:14.256Z
+retire_when:
+  - review-by: 2027-01-23
 ---
 
 **Never accept a delegate's own report of which model served it.** Two independent layers lie,

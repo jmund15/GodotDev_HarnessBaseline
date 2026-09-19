@@ -3,6 +3,21 @@
   "type": "object",
   "additionalProperties": true,
   "properties": {
+    "report": {
+      "type": ["string", "null"],
+      "description": "lens-level table or census the brief asked for, markdown; null when the brief asked for none"
+    },
+    "checked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolsUsed", "stoppedAt", "basis"],
+      "properties": {
+        "toolsUsed": { "type": "array", "items": { "type": "string" } },
+        "stoppedAt": { "type": "string", "enum": ["nothing-in-scope", "exhausted-leads", "trigger-not-met", "blocked"] },
+        "basis": { "type": "string" }
+      }
+    },
+    "gaps": { "type": "array", "items": { "type": "string" } },
     "findings": {
       "type": "array",
       "items": {
@@ -15,7 +30,8 @@
           "critical": { "type": "boolean" },
           "file": {
             "type": ["string", "null"],
-            "description": "location as \"path/to/file.cs:line\" — include the line number; dedup keys on this full string, so the line disambiguates distinct findings in one file"
+            "pattern": "^.+:[1-9][0-9]*$",
+            "description": "location as \"path/to/file.cs:line\" — include the line number; an anchor for humans, never finding identity (the engine assigns F-ids, and two findings may share one anchor)"
           },
           "description": {
             "type": "string",
@@ -41,5 +57,5 @@
       }
     }
   },
-  "required": ["findings"]
+  "required": ["findings", "checked"]
 }

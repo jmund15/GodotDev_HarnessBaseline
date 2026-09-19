@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import executable_text  # noqa: E402
+from _regenerable_clone import is_regenerable_clone  # noqa: E402
 
 
 # Patterns to BLOCK (exit code 2) in code content
@@ -101,9 +102,65 @@ def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
     return False, ""
 
 
-# Recoverable, harness-managed scratch the tooling itself creates and destroys
-# (baseline clone cache, log spool). A recursive delete confined to these is safe.
-_EPHEMERAL_RE = re.compile(r'\.claude[\\/](?:\.cache|logs)\b')
+# Regenerable caches a recursive delete may target without asking: harness scratch the tooling
+# itself creates and destroys (baseline clone cache, log spool), the semantic-search index (rebuilt
+# by /reindex_search) and Python bytecode/test caches. Matched by PATH SEGMENT, never substring:
+# the old `\.claude[\\/](?:\.cache|logs)\b` regex passed `.claude/logs-old` and
+# `.claude/.cache/../..` (the repo root). Evidence folders (`.claude/scratch`) and checkouts
+# (`.claude/worktrees`) are gitignored but are NOT caches, so they stay blocked.
+_CACHE_SEGMENTS = frozenset({".search-index", "__pycache__", ".pytest_cache"})
+_CACHE_PAIRS = frozenset({(".claude", ".cache"), (".claude", "logs")})
+_UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
+_CACHE_HINT = (" Allowed without asking: literal targets inside this repo at or under .claude/.cache,"
+               " .claude/logs, .search-index, __pycache__ or .pytest_cache, or a clean, fully pushed git"
+               " clone under .claude/scratch/ (no .., globs, variables or chaining). A justified cleanup"
+               " this still blocks is a guard defect: .claude/rules/harness_tooling.md, section"
+               " 'A guard that blocks justified work is a guard defect'.")
+
+
+def _project_root() -> str:
+    """The checkout this guard protects: CLAUDE_PROJECT_DIR, else the repository holding this hook."""
+    here = os.path.abspath(__file__)
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(os.path.dirname(here)))
+
+
+def _inside_root(token: str, cwd: str | None) -> bool:
+    """True when `token`, resolved against `cwd` (else the project root) with links followed, lies
+    inside the project root. A cache segment in another checkout or the user profile is not ours."""
+    root = os.path.normcase(os.path.realpath(_project_root()))
+    base = cwd or _project_root()
+    joined = token if (os.path.isabs(token) or re.match(r"^[A-Za-z]:", token)) else os.path.join(base, token)
+    target = os.path.normcase(os.path.realpath(joined))
+    try:
+        return os.path.commonpath([root, target]) == root
+    except ValueError:  # different drives
+        return False
+
+
+def _cleanup_tokens(raw: str) -> list[str] | None:
+    """Shell tokens of the unblanked command: quotes removed, backslashes kept (Windows paths).
+    None when the quoting does not parse, which never allows anything."""
+    import shlex
+    lexer = shlex.shlex(raw, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _is_cache_path(token: str, cwd: str | None = None) -> bool:
+    """True when `token` is a literal path at or under an allowlisted cache segment and resolves
+    inside the project root."""
+    if _UNSAFE_PATH_CHARS.search(token):
+        return False
+    parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return False
+    segment = (any(p in _CACHE_SEGMENTS for p in parts)
+               or any(pair in _CACHE_PAIRS for pair in zip(parts, parts[1:])))
+    return segment and _inside_root(token, cwd)
 
 
 # A quoted FLAG is still a flag: `rm "-r" build/` reaches the shell as `rm -r build/`, but
@@ -124,17 +181,110 @@ def _strip_quoted(command: str) -> str:
     return re.sub(r"'[^']*'|\"[^\"]*\"", " ", command)
 
 
-def _is_safe_ephemeral_cleanup(scan: str) -> bool:
-    """True only for a single (non-chained) recursive delete whose every path argument
-    sits under an ephemeral prefix. Any control operator (so a chained second delete
-    can't ride along) or any non-ephemeral path token disqualifies it — the check can
-    never green-light a broad or dangerous delete, only over-block."""
+def _is_regenerable_target(token: str, cwd: str | None) -> bool:
+    """A clean, fully pushed standalone clone under `.claude/scratch/` (`_regenerable_clone`).
+    A relative token resolves against the caller's cwd, else the project root."""
+    root = _project_root()
+    return is_regenerable_clone(token, cwd or root, root)
+
+
+def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None) -> bool:
+    """True only for a single (non-chained) recursive delete whose every path argument is a
+    literal path at or under an allowlisted cache segment inside the repo (`_is_cache_path`) or a
+    regenerable scratch clone (`_is_regenerable_target`).
+
+    Control operators are judged on the quote-blanked `scan`, so a chained second delete cannot
+    ride along. Path arguments come from shell-tokenizing the unblanked `raw`, so a quoted literal
+    target is judged as the path it names. Any other path token disqualifies the command; the check
+    can only over-block, never green-light a broad delete."""
     if re.search(r'&&|\|\||;|\||`|\$\(', scan):
         return False
-    paths = [t for t in scan.split()
+    tokens = _cleanup_tokens(raw)
+    if tokens is None:
+        return False
+    paths = [t for t in tokens
              if not t.startswith('-')
              and t.lower() not in ('rm', 'del', 'erase', 'ri', 'remove-item')]
-    return bool(paths) and all(_EPHEMERAL_RE.search(p) for p in paths)
+    return bool(paths) and all(_is_cache_path(p, cwd) or _is_regenerable_target(p, cwd) for p in paths)
+
+
+# A4: `NAME=$(mktemp -d)` (or `-t <template>` with no `/` in the template) is ownership evidence a
+# literal path never carries. Everything else surrounding it — cd, a subshell pipeline that reads
+# the transcript, a printf | hook | grep | cut probe — is unrelated chaining and stays unrestricted;
+# only each delete-shaped segment's own targets and the assigning variable are judged.
+_DELETE_CMD_NAMES = frozenset({'rm', 'del', 'erase', 'ri', 'remove-item'})
+_CHAIN_SEP_RE = re.compile(r'&&|\|\||;|\|')
+_VAR_TOKEN_RE = re.compile(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$')
+# The value must END at the substitution: a suffix (`$(mktemp -d)/..`, `/*`) points outside the directory.
+_MKTEMP_ASSIGN_VALUE_RE = re.compile(r'\$\(\s*mktemp\s+-d(?:\s+-t\s+[^\s)/]+)?\s*\)(?=[\s;&|]|$)')
+_RECURSIVE_DELETE_PATTERNS = [p for p, m in DANGEROUS_BASH_PATTERNS if 'recursive' in m.lower()]
+
+
+def _blank_quotes_samelen(command: str) -> str:
+    """Like `_strip_quoted`, but each quoted span is replaced by spaces of the SAME length, so
+    positions found in the blanked text still index correctly into the original string."""
+    return re.sub(r"'[^']*'|\"[^\"]*\"", lambda m: ' ' * len(m.group(0)), command)
+
+
+def _split_top_level(raw: str) -> list[str]:
+    """`raw` cut at `&&`, `||`, `;` and `|` that sit outside any quoted span — a `|` inside a
+    `$(...)` subshell argument (e.g. `T=$(ls ... | head -1)`) is quoted-blanked away first only
+    for locating the cut points, then sliced from the real `raw`, so quotes stay intact."""
+    blanked = _blank_quotes_samelen(raw)
+    segments = []
+    pos = 0
+    for m in _CHAIN_SEP_RE.finditer(blanked):
+        segments.append(raw[pos:m.start()])
+        pos = m.end()
+    segments.append(raw[pos:])
+    return segments
+
+
+def _is_mktemp_owned(name: str, raw: str) -> bool:
+    """True when `name` is assigned exactly once anywhere in `raw`, and that one assignment's
+    value starts `$(mktemp -d)` or `$(mktemp -d -t <template>)` with no `/` in the template. A
+    literal directory name, however mktemp-shaped, is never ownership evidence."""
+    # Every bare occurrence of the name (not a `$NAME` / `${NAME}` expansion) must be that one
+    # assignment: `read NAME`, `for NAME in`, `export NAME` and `printf -v NAME` reassign it too.
+    bare_re = re.compile(r'(?<![A-Za-z0-9_$])(?<!\$\{)' + re.escape(name) + r'(?![A-Za-z0-9_])')
+    matches = list(bare_re.finditer(raw))
+    if len(matches) != 1 or raw[matches[0].end():matches[0].end() + 1] != '=':
+        return False
+    tail = raw[matches[0].end() + 1:]
+    return _MKTEMP_ASSIGN_VALUE_RE.match(tail) is not None
+
+
+def _is_owned_temp_cleanup(raw: str) -> bool:
+    """True when EVERY delete-shaped top-level segment in `raw` targets exactly one variable,
+    all of whose targets in that segment are `"$NAME"`, `$NAME` or `${NAME}`, where `_is_mktemp_owned`
+    holds for NAME. One unowned or mixed-target delete segment anywhere disqualifies the whole
+    command — chaining a second, unrelated delete alongside a legitimate one must not ride along."""
+    # A segment is judged when any recursive-delete pattern matches it, wherever the delete sits:
+    # a delete inside `$(...)`, backticks, or behind `sudo` does not head its segment and so
+    # disqualifies the whole command.
+    delete_segments = []
+    for segment in _split_top_level(raw):
+        if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
+            continue
+        tokens = _cleanup_tokens(segment)
+        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES:
+            return False
+        delete_segments.append(tokens)
+    if not delete_segments:
+        return False
+    for tokens in delete_segments:
+        paths = [t for t in tokens[1:] if not t.startswith('-')]
+        if not paths:
+            return False
+        names = set()
+        for p in paths:
+            m = _VAR_TOKEN_RE.match(p)
+            if not m:
+                return False
+            names.add(m.group(1))
+        if len(names) != 1 or not _is_mktemp_owned(names.pop(), raw):
+            return False
+    return True
 
 
 # `git`'s global options sit BETWEEN `git` and the subcommand (`git -C <path> rm ...`),
@@ -157,18 +307,23 @@ def _normalize_git_globals(scan: str) -> str:
     return scan
 
 
-def check_bash_command(command: str) -> tuple[bool, str]:
+def check_bash_command(command: str, cwd: str | None = None) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
     # A heredoc body is data handed to another program, not something this command runs --
     # the same reason quoted spans blank above. Writing a script or a prompt that MENTIONS a
     # recursive delete was denied repeatedly while no delete was ever going to execute.
-    scan = _normalize_git_globals(_strip_quoted(_unwrap_quoted_flags(executable_text(command))))
+    raw = _unwrap_quoted_flags(executable_text(command))
+    scan = _normalize_git_globals(_strip_quoted(raw))
     for pattern, message in DANGEROUS_BASH_PATTERNS:
         if re.search(pattern, scan, re.IGNORECASE):
-            # Allow recursive deletes confined to regenerable harness scratch; never
-            # relax a drive-format block regardless of target.
-            if 'format' not in message.lower() and _is_safe_ephemeral_cleanup(scan):
+            # Allow recursive deletes confined to regenerable harness scratch, or every target a
+            # `NAME=$(mktemp -d)` variable this same command owns; never relax a drive-format
+            # block regardless of target.
+            if ('format' not in message.lower()
+                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd) or _is_owned_temp_cleanup(raw))):
                 continue
+            if 'recursive' in message.lower():
+                return True, message + _CACHE_HINT
             return True, message
     return False, ""
 
@@ -261,34 +416,29 @@ def check_tool_cascade(content: str, file_path: str) -> tuple[bool, str]:
     return False, ""
 
 
-def main():
-    # Read hook input from stdin
-    try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        # Invalid JSON, allow through
-        print("{}")  # Workaround for Claude Code #10463
-        sys.exit(0)
+def process(input_data):
+    """Dispatcher entry: `{"block": <message>}` when the call must be denied, else None.
 
+    Self-gates on tool_name, so a union matcher is safe. `pre_edit_dispatch.py` and
+    `pre_bash_dispatch.py` both call this; `main()` keeps the standalone channel.
+    """
     tool_name = input_data.get("tool_name", "")
-    tool_input = input_data.get("tool_input", {})
+    tool_input = input_data.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        return None
 
-    # Handle Write tool
     if tool_name == "Write":
         content = tool_input.get("content", "")
         file_path = tool_input.get("file_path", "")
 
         blocked, message = check_code_patterns(content, file_path)
         if blocked:
-            print(message, file=sys.stderr)
-            sys.exit(2)
+            return {"block": message}
 
         blocked, message = check_tool_cascade(content, file_path)
         if blocked:
-            print(message, file=sys.stderr)
-            sys.exit(2)
+            return {"block": message}
 
-    # Handle Edit tool
     elif tool_name == "Edit":
         new_string = tool_input.get("new_string", "")
         file_path = tool_input.get("file_path", "")
@@ -306,22 +456,34 @@ def main():
 
         blocked, message = check_code_patterns(edit_context, file_path)
         if blocked:
-            print(message, file=sys.stderr)
-            sys.exit(2)
+            return {"block": message}
 
         blocked, message = check_tool_cascade(new_string, file_path)
         if blocked:
-            print(message, file=sys.stderr)
-            sys.exit(2)
+            return {"block": message}
 
-    # Handle Bash + PowerShell tools (same dangerous-command surface)
+    # Bash + PowerShell tools (same dangerous-command surface)
     elif tool_name in ("Bash", "PowerShell"):
-        command = tool_input.get("command", "")
-
-        blocked, message = check_bash_command(command)
+        blocked, message = check_bash_command(tool_input.get("command", ""), input_data.get("cwd"))
         if blocked:
-            print(message, file=sys.stderr)
-            sys.exit(2)
+            return {"block": message}
+
+    return None
+
+
+def main():
+    # Read hook input from stdin
+    try:
+        input_data = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        # Invalid JSON, allow through
+        print("{}")  # Workaround for Claude Code #10463
+        sys.exit(0)
+
+    result = process(input_data)
+    if result and result.get("block"):
+        print(result["block"], file=sys.stderr)
+        sys.exit(2)
 
     # All checks passed
     print("{}")

@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
@@ -277,6 +278,24 @@ def sidecar_launchers(registry, seat: str):
     return launchers
 
 
+def roster_health(root: Path) -> str:
+    """Benchmark rosters that stopped writing before a terminal marker (bench_lib.roster_summary).
+
+    A roster in a wait loop and one killed by a reboot leave the same silent log; the pid file separates
+    them (2026-09-11: two rosters died at a reboot and nothing said so for five days). Discovery failure
+    stays UNKNOWN -- an absent BenchmarkArms tree is not a clean one."""
+    try:
+        sys.path.insert(0, os.path.join(root, ".claude", "scripts", "benchmark_campaign", "scoring"))
+        import bench_lib
+        _arms, logs, _vault, _scripts, _ = bench_lib.resolve_tree(
+            os.path.join(root, ".claude", "scripts", "benchmark_campaign", "lib.sh"))
+        if not os.path.isdir(logs):
+            return "UNKNOWN (no logs dir at %s)" % logs
+        return bench_lib.roster_summary(logs)
+    except Exception as error:
+        return f"UNKNOWN ({type(error).__name__})"
+
+
 def sidecar_health(root: Path) -> dict[str, str]:
     """Only the current registry selects launchers; discovery failure stays unknown."""
     try:
@@ -312,7 +331,9 @@ def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
         # that silently routes all delegation back to Anthropic quota.
         proc = subprocess.run(
             [bash, script.resolve().as_posix(), "--check"],
-            capture_output=True, text=True, timeout=20, cwd=str(root),
+            # 45 s matches the dispatch preflight (sidecar_dispatch_context.PREFLIGHT_TIMEOUT): a balance
+            # probe that retries (sc_gate_balance, up to 34 s) must not read as "timed out" here only.
+            capture_output=True, text=True, timeout=45, cwd=str(root),
         )
     except FileNotFoundError:
         return "UNAVAILABLE (bash not on PATH)"
@@ -323,7 +344,12 @@ def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
     emitted = (proc.stdout or "").strip() or (proc.stderr or "").strip()
     if not emitted:
         return f"UNKNOWN (--check exit {proc.returncode}, no output)"
-    return emitted.splitlines()[-1].strip()
+    lines = [line.strip() for line in emitted.splitlines() if line.strip()]
+    if proc.returncode == 0:
+        return lines[-1]
+    # A refusal's last line is its override hint; the reason is the REFUSING line above it.
+    reason = next((line for line in lines if "REFUSING" in line), None)
+    return lines[-1] if reason is None or reason == lines[-1] else f"{reason} {lines[-1]}"
 
 
 def verify_lsp_plugin() -> str:
@@ -507,6 +533,25 @@ def store_build_result(root: Path, result: str) -> None:
 NO_BUILD_SOURCES = ("resume", "compact")
 
 
+def self_improvement_advisory(root: Path, source: str | None) -> str:
+    """`tools/self_improvement_due.py --line`'s output on `source == "startup"` only — empty on
+    resume, compact, clear or a missing source, or when nothing is due. The 15 s subprocess
+    timeout outwaits the archive store's 10 s ledger-lock wait, so a held lock reports its reason."""
+    if source != "startup":
+        return ""
+    script = root / ".claude" / "tools" / "self_improvement_due.py"
+    if not script.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "--root", str(root / ".claude"), "--line"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=str(root)
+        )
+        return (result.stdout or "").strip()
+    except Exception:
+        return ""
+
+
 def stored_build_result(root: Path, source: str) -> str:
     """The last stored verify, tagged with its age and whether HEAD moved since; never builds."""
     try:
@@ -569,6 +614,109 @@ def verify_build(root: Path) -> str:
         return "FAILED: timeout (>120s)"
     except Exception as e:
         return f"FAILED: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Stray semantic-search index sweep
+# ---------------------------------------------------------------------------
+
+STRAY_SEARCH_INDEX_NAME = ".search-index"
+_SWEEP_GIT_STATUS_TIMEOUT = 5.0
+_SWEEP_LIVE_SIDECAR_SEC = 24 * 3600
+_SWEEP_PATHSPEC = ":(glob)**/" + STRAY_SEARCH_INDEX_NAME + "/**"
+
+
+def _is_git_toplevel(path: Path) -> bool:
+    """A directory carrying its own `.git` (file or dir) is a repo/submodule/worktree root."""
+    try:
+        return (path / ".git").exists()
+    except OSError:
+        return False
+
+
+def find_stray_search_indexes(root: Path) -> list[Path]:
+    """Git-aware discovery: ignored `.search-index/` entries whose parent is NOT a git
+    toplevel. The repo root, a submodule root and a worktree root are kept; only an index
+    built inside an ordinary subdirectory (a subdirectory `searchDir` from before
+    `semantic_search_scope_guard.py`) counts as a stray. Never walks the tree itself.
+
+    `--untracked-files=all` is required: without it git collapses a fully-ignored directory
+    to its nearest untracked ancestor ("!! sub/" instead of "!! sub/.search-index/search.db"),
+    which would hide the `.search-index` segment entirely. The glob pathspec limits the listing to
+    `.search-index` paths, so its size follows the strays rather than every ignored file."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--ignored", "--untracked-files=all", "--porcelain", "--", _SWEEP_PATHSPEC],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_SWEEP_GIT_STATUS_TIMEOUT, cwd=str(root)
+        )
+        if result.returncode != 0:
+            return []
+    except Exception:
+        return []
+
+    found = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("!! "):
+            continue
+        rel = line[3:].strip().strip('"')
+        parts = Path(rel).parts
+        if STRAY_SEARCH_INDEX_NAME not in parts:
+            continue
+        idx = parts.index(STRAY_SEARCH_INDEX_NAME)
+        found.add(Path(*parts[: idx + 1]))
+
+    strays = []
+    for rel_dir in found:
+        candidate = root / rel_dir
+        parent = candidate.parent
+        if parent.resolve() == root.resolve():
+            continue  # the repo root's own index is never a stray
+        if _is_git_toplevel(parent):
+            continue
+        strays.append(candidate)
+    return strays
+
+
+def _index_recently_open(index_dir: Path, now: float | None = None) -> bool:
+    """SQLite keeps `-wal`/`-shm` beside a database while a connection is open. One modified
+    within a day means a semantic-search server may still use this index; on POSIX an rmtree
+    would unlink it from under that server, so the sweep leaves it for a later session."""
+    now = time.time() if now is None else now
+    for name in ("search.db-wal", "search.db-shm"):
+        try:
+            if now - (index_dir / name).stat().st_mtime < _SWEEP_LIVE_SIDECAR_SEC:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def sweep_stray_search_indexes(root: Path) -> None:
+    """Best-effort removal of stray `.search-index/` directories left by out-of-scope
+    semantic-search `searchDir` calls (`semantic_search_scope_guard.py` denies new ones;
+    this clears the residue from before that guard shipped). Silent, fail-open: any
+    exception here must never change SessionStart's own output. A locked SQLite file
+    (the semantic-search MCP server holds it open) is an expected outcome, not an error —
+    it is swept on a later session once the server has released it."""
+    try:
+        strays = find_stray_search_indexes(root)
+    except Exception:
+        return
+
+    for candidate in strays:
+        try:
+            if candidate.is_symlink():
+                continue
+            if hasattr(os.path, "isjunction") and os.path.isjunction(str(candidate)):
+                continue
+            if not candidate.is_dir():
+                continue
+            if _index_recently_open(candidate):
+                continue
+            shutil.rmtree(candidate, onerror=lambda _func, _path, _exc_info: None)
+        except Exception:
+            continue
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +850,12 @@ def main():
     worktree = is_worktree()
     cloud = is_cloud()
 
+    # Best-effort, silent — never touches output_lines; see function docstring.
+    try:
+        sweep_stray_search_indexes(root)
+    except Exception:
+        pass
+
     # --- Cloud auto-install (before any other setup) ---
     setup_results = {}
     if cloud:
@@ -722,6 +876,7 @@ def main():
         setup_results["lsp_plugin"] = verify_lsp_plugin()
 
     setup_results.update(sidecar_health(root))
+    setup_results["rosters"] = roster_health(root)
 
     # --- Git context ---
     branch = get_git_branch()
@@ -880,6 +1035,12 @@ def main():
         output_lines.append("")
         output_lines.append(docs_cache_issue)
 
+    # Self-improvement loop due-check — startup only, silent when nothing is due.
+    due_line = self_improvement_advisory(root, input_data.get("source"))
+    if due_line:
+        output_lines.append("")
+        output_lines.append(due_line)
+
     # Queued-gate result surfacing — a gate queued behind an open editor can finish
     # between sessions. Seen-state and formatting live in gate_queue_surface.py, shared
     # with activity_registry.py (the mid-session reader), so a result is announced once
@@ -902,7 +1063,8 @@ def main():
     output_lines.append("Picking up another session's work (after /clear, a handoff, or a parallel session): "
                         "`python3 .claude/tools/session_digest.py --session <id-prefix> --brief` prints its prompts, "
                         "friction, files touched and last message; holding a pasted message from it, "
-                        "`--match-file <paste.txt>` finds the transcript.")
+                        "`--match-file <paste.txt>` finds the transcript. Read the documents its prompts "
+                        "supplied as inputs, not only its digest.")
     output_lines.append("</context-reload-reminder>")
 
     print("\n".join(output_lines))

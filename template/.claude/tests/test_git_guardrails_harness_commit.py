@@ -123,6 +123,32 @@ def main():
         run_hook('git commit -F msg -- .claude', repo, {"HARNESS_TEST_STAMP": stamp_path}),
         ALLOW))
 
+    # 2b. `instruction_quality` before a harness edit is enforced at the Write|Edit call
+    #     (harness_edit_skill_reminder.py), which any other write route dodges: a Bash heredoc,
+    #     `sed -i`, a python script run through Bash. The staged set is the one signal no route can
+    #     dodge, so the commit is the backstop. Boundary: with NO session state file there is no
+    #     session to judge -- CI runs this battery that way -- so the rule stays silent there.
+    skill_state = tempfile.mkdtemp(prefix="ggskill_")
+    skill_env = {"HARNESS_TEST_STAMP": stamp_path, "HARNESS_HOOK_STATE_DIR": skill_state}
+
+    def mark_loaded(skills):
+        with open(os.path.join(skill_state, "s1.json"), "w", encoding="utf-8") as fh:
+            json.dump({"skills_loaded": skills}, fh)
+
+    mark_loaded(["something_else"])
+    failures.append(case(
+        "staged harness commit, skill not loaded -> deny naming instruction_quality",
+        run_hook('git commit -F msg -- .claude', repo, skill_env), DENY, "instruction_quality"))
+    mark_loaded(["instruction_quality"])
+    failures.append(case(
+        "staged harness commit, skill loaded -> allow",
+        run_hook('git commit -F msg -- .claude', repo, skill_env), ALLOW))
+    failures.append(case(
+        "no session state at all (CI shape) -> the skill rule stays silent",
+        run_hook('git commit -F msg -- .claude', repo,
+                 {"HARNESS_TEST_STAMP": stamp_path,
+                  "HARNESS_HOOK_STATE_DIR": tempfile.mkdtemp(prefix="ggnosess_")}), ALLOW))
+
     # 3. stale stamp: edit a covered hook after stamping -> deny.
     write(repo, ".claude/hooks/x.py", "x = 2\n")
     failures.append(case(
@@ -409,6 +435,75 @@ def main():
         "git merge <branch with no harness content> -> allow",
         run_hook("git merge docs-only", repo), ALLOW))
 
+    # Live block 2026-09-14: a pathspec commit publishes only its pathspec (git's default --only
+    # mode) and other staged paths stay staged, yet the guard judged the whole index.
+    repo = make_repo()
+    write(repo, ".claude/hooks/unproven.py", "x = 1\n")
+    write(repo, "docs/note.md", "note\n")
+    write(repo, "docs_list.txt", "docs/note.md\n")
+    write(repo, "hook_list.txt", ".claude/hooks/unproven.py\n")
+    git(repo, ["add", ".claude/hooks/unproven.py", "docs/note.md"])
+    failures.append(case(
+        "commit -- <docs> with an unproven hook staged elsewhere -> allow",
+        run_hook("git commit -F msg -- docs/note.md", repo), ALLOW))
+    failures.append(case(
+        "commit --pathspec-from-file=<docs list> -> allow",
+        run_hook("git commit -F msg --pathspec-from-file=docs_list.txt", repo), ALLOW))
+    failures.append(case(
+        "commit --pathspec-from-file <list naming the hook> -> deny",
+        run_hook("git commit -F msg --pathspec-from-file hook_list.txt", repo), DENY))
+    failures.append(case(
+        "commit -i -- <docs> also publishes the staged hook -> deny",
+        run_hook("git commit -i -F msg -- docs/note.md", repo), DENY))
+    failures.append(case(
+        "commit --pathspec-from-file=- (stdin cannot be read here) -> deny",
+        run_hook("git commit -F msg --pathspec-from-file=-", repo), DENY))
+    failures.append(case(
+        "plain commit with the unproven hook staged -> deny",
+        run_hook("git commit -F msg", repo), DENY))
+
+    # Live block 2026-09-14: a removed hook was asked for a proof, which leaves in the same commit.
+    repo = make_repo()
+    write(repo, ".claude/hooks/gone.py", "x = 1\n")
+    write(repo, ".claude/tests/test_gone.py", "# proof\n")
+    git(repo, ["add", "-A"])
+    git(repo, ["commit", "-q", "-m", "add gone"])
+    git(repo, ["rm", "-q", ".claude/hooks/gone.py", ".claude/tests/test_gone.py"])
+    stamp_path = os.path.join(repo, "stamp.json")
+    write_stamp(repo, stamp_path, tree_hash(repo))
+    failures.append(case(
+        "staged deletion of a hook and its proof + fresh stamp -> allow",
+        run_hook("git commit -F msg -- .claude", repo, {"HARNESS_TEST_STAMP": stamp_path}), ALLOW))
+    repo = make_repo()
+    write(repo, ".claude/hooks/index_only.py", "x = 1\n")
+    git(repo, ["add", "-A"])
+    os.remove(os.path.join(repo, ".claude", "hooks", "index_only.py"))
+    stamp_path = os.path.join(repo, "stamp.json")
+    write_stamp(repo, stamp_path, tree_hash(repo))
+    failures.append(case(
+        "a hook still in the index but gone from the worktree needs its proof -> deny",
+        run_hook("git commit -F msg", repo, {"HARNESS_TEST_STAMP": stamp_path}), DENY,
+        "no re-runnable proof"))
+
+    # A commit through another index is judged against THAT index. The guard read the default
+    # index, found no harness path staged there and allowed an unstamped, unproven hook commit.
+    repo = make_repo()
+    write(repo, ".claude/hooks/alt_index_hook.py", "x = 1\n")
+    alt_index = os.path.join(repo, "alt.index").replace("\\", "/")
+    alt_env = dict(os.environ, GIT_INDEX_FILE=alt_index)
+    subprocess.run(["git", "read-tree", "HEAD"], cwd=repo, env=alt_env, check=True, capture_output=True)
+    subprocess.run(["git", "add", ".claude/hooks/alt_index_hook.py"], cwd=repo, env=alt_env,
+                   check=True, capture_output=True)
+    no_stamp = {"HARNESS_TEST_STAMP": os.path.join(repo, "no_such_stamp.json")}
+    failures.append(case(
+        "inline GIT_INDEX_FILE staging an unproven hook -> deny",
+        run_hook("GIT_INDEX_FILE=%s git commit -F msg" % alt_index, repo, no_stamp), DENY))
+    failures.append(case(
+        "exported GIT_INDEX_FILE staging an unproven hook -> deny",
+        run_hook("export GIT_INDEX_FILE=%s && git commit -F msg" % alt_index, repo, no_stamp), DENY))
+    failures.append(case(
+        "the default index, with nothing staged, still allows",
+        run_hook("git commit -F msg", repo, no_stamp), ALLOW))
     # 21. S8: `.claude/settings.base.json` is a HARNESS_DIRS member same as `settings.json` --
     #     a commit touching it with no fresh stamp is denied, and a fresh stamp allows it.
     repo = make_repo()
