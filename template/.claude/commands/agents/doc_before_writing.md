@@ -5,7 +5,7 @@ disable-model-invocation: true
 # Doc Command: Before Writing
 
 <!-- Single source of truth for pre-writing setup steps shared by all doc commands. -->
-<!-- Referenced by: /doc_usage, /doc_architecture, /doc_retrospective, /doc_npc, /create_obsidian_design_doc -->
+<!-- Referenced by: /doc_usage, /doc_architecture, /doc_retrospective, /doc_npc -->
 
 ## 1. Identify the System
 Determine the system name from the user's request. This becomes `{SystemName}` for folder/file paths.

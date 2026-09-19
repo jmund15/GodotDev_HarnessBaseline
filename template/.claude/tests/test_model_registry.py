@@ -13,8 +13,10 @@ no longer matches the SSOT.
 
 Run: python3 .claude/tests/test_model_registry.py
 """
+import contextlib
 import copy
 import importlib.util
+import io
 import os
 import sys
 
@@ -133,6 +135,19 @@ def _astra_sidecar_scoped():
         if m.get("alias") == "astra":
             m["status"]["scope"] = "sidecar"
     return d
+
+
+def _capture_context(argv, limits):
+    """Run the context-window CLI branch against a supplied limits block."""
+    original = mr.resolve
+    mr.resolve = lambda _name: {"limits": limits}
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            code = mr._cmd_context_window(argv)
+    finally:
+        mr.resolve = original
+    return code, output.getvalue().strip()
 
 
 CASES = [
@@ -274,6 +289,26 @@ CASES = [
     ("`validation` is absent from the closed tier set",
      lambda: "validation" not in mr.TIER_ORDER),
 
+    # ---- context-window modes ----------------------------------------------
+    ("the default context query uses contextTokens and the provider percentage",
+     lambda: _capture_context(["luna"], {
+         "contextTokens": 272000, "maxContextTokens": 872000,
+         "effectiveContextPercent": 95}) == (0, "258400")),
+
+    ("the max context query uses maxContextTokens and the same percentage",
+     lambda: _capture_context(["luna", "--max"], {
+         "contextTokens": 272000, "maxContextTokens": 872000,
+         "effectiveContextPercent": 95}) == (0, "828400")),
+
+    ("max context prints nothing when the registry declares no max",
+     lambda: _capture_context(["luna", "--max"], {
+         "contextTokens": 272000, "effectiveContextPercent": 95}) == (0, "")),
+
+    ("context-window rejects an unknown mode instead of treating it as max",
+     lambda: _capture_context(["luna", "--huge"], {
+         "contextTokens": 272000, "maxContextTokens": 872000,
+         "effectiveContextPercent": 95})[0] == 2),
+
     # ---- refusals ---------------------------------------------------------
     ("an unknown role raises and names the legal set",
      lambda: raises(lambda: mr.canonical_tier("reviewer"))),
@@ -286,6 +321,200 @@ CASES = [
     ("a transport with no launcher says so rather than printing a broken command",
      lambda: "cannot hop" in mr._sidecar_line(DATA["models"][0], DATA)),
 ]
+
+
+SCHEDULE = {
+    "offPeakMultiplier": 0.5,
+    "peakWindowsUTC": [
+        {"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "01:00", "end": "04:00"},
+        {"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "06:00", "end": "10:00"},
+    ],
+    "source": "https://api-docs.deepseek.com/quick_start/pricing",
+    "asOf": "2026-09-15",
+}
+
+
+def _schedule_cases(live):
+    """Pricing schedule, peak policy, measuredVersion and effort-values. Returns (failed, total).
+
+    2026-09-15 is a Tuesday; 2026-09-19 a Saturday; 2026-09-21 the following Monday.
+    """
+    # Local so this block stands alone against a file whose module imports differ (separability).
+    import contextlib
+    import io
+    import json
+    import tempfile
+
+    def planted():
+        d = copy.deepcopy(live)
+        d["transports"]["deepseek"]["pricingSchedule"] = copy.deepcopy(SCHEDULE)
+        return d
+
+    def _overnight():
+        d = planted()
+        d["transports"]["deepseek"]["pricingSchedule"]["peakWindowsUTC"] = [
+            {"days": ["Fri"], "start": "22:00", "end": "02:00"}]
+        return d
+
+    def deepseek_row(d, alias="flash"):
+        return next(m for m in d["models"] if m["alias"] == alias)
+
+    def rejects(mutate, needle):
+        d = planted()
+        mutate(d)
+        try:
+            mr._validate(d, "fixture")
+        except mr.RegistryError as exc:
+            return needle in str(exc)
+        return False
+
+    def accepts(mutate):
+        d = planted()
+        mutate(d)
+        mr._validate(d, "fixture")
+        return True
+
+    def window(at, transport="deepseek"):
+        return mr.price_window(transport, at=at, data=planted())
+
+    def cli(argv, data):
+        tmp = os.path.join(tempfile.mkdtemp(prefix="mreg_"), "external_models.json")
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh)
+        old = os.environ.get(mr.ENV_OVERRIDE)
+        os.environ[mr.ENV_OVERRIDE] = tmp
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = mr.main(argv)
+        finally:
+            if old is None:
+                os.environ.pop(mr.ENV_OVERRIDE, None)
+            else:
+                os.environ[mr.ENV_OVERRIDE] = old
+        return code, out.getvalue().strip()
+
+    def with_env_at(value, fn):
+        old = os.environ.get("SC_PRICE_AT")
+        os.environ["SC_PRICE_AT"] = value
+        try:
+            return fn()
+        finally:
+            if old is None:
+                os.environ.pop("SC_PRICE_AT", None)
+            else:
+                os.environ["SC_PRICE_AT"] = old
+
+    def set_measured(d, version):
+        row = deepseek_row(d)
+        row["version"] = "DeepSeek-V4.1-Flash"
+        row["effort"] = {"evidence": "measured", "measuredVersion": version}
+
+    def run_price(at):
+        return mr.price_run("flash", 1_000_000, 0, 1_000_000, data=planted(), at=at)
+
+    cases = [
+        ("Tue 02:00Z is peak at full price, ending 04:00Z",
+         lambda: window("2026-09-15T02:00:00Z") == {
+             "window": "peak", "multiplier": 1.0, "changesAt": "2026-09-15T04:00:00Z"}),
+        ("Tue 05:00Z is off-peak at the multiplier, ending 06:00Z",
+         lambda: window("2026-09-15T05:00:00Z") == {
+             "window": "off-peak", "multiplier": 0.5, "changesAt": "2026-09-15T06:00:00Z"}),
+        ("a window END is exclusive: Tue 04:00Z is off-peak",
+         lambda: window("2026-09-15T04:00:00Z")["window"] == "off-peak"),
+        ("a window START is inclusive: Tue 06:00Z is peak",
+         lambda: window("2026-09-15T06:00:00Z")["window"] == "peak"),
+        ("Saturday inside the hours is off-peak, changing at Monday 01:00Z",
+         lambda: window("2026-09-19T02:00:00Z") == {
+             "window": "off-peak", "multiplier": 0.5, "changesAt": "2026-09-21T01:00:00Z"}),
+        ("a transport with no schedule is flat, full price, no change",
+         lambda: window("2026-09-15T02:00:00Z", transport="codex") == {
+             "window": "flat", "multiplier": 1.0, "changesAt": None}),
+        ("price_run halves every rate off-peak",
+         lambda: abs(run_price("2026-09-15T05:00:00Z") * 2 - run_price("2026-09-15T02:00:00Z")) < 1e-9
+                 and run_price("2026-09-15T02:00:00Z") > 0),
+        ("price_run with no `at` reads SC_PRICE_AT",
+         lambda: with_env_at("2026-09-15T05:00:00Z", lambda: abs(
+             mr.price_run("flash", 1_000_000, 0, 0, data=planted())
+             - run_price_fresh_off_peak(planted())) < 1e-9)),
+        ("the shipped schedule shape validates",
+         lambda: accepts(lambda d: None)),
+        ("offPeakMultiplier 0 is rejected",
+         lambda: rejects(lambda d: d["transports"]["deepseek"]["pricingSchedule"].update(
+             offPeakMultiplier=0), "offPeakMultiplier")),
+        ("offPeakMultiplier above 1 is rejected",
+         lambda: rejects(lambda d: d["transports"]["deepseek"]["pricingSchedule"].update(
+             offPeakMultiplier=1.5), "offPeakMultiplier")),
+        ("an unknown day name is rejected",
+         lambda: rejects(lambda d: d["transports"]["deepseek"]["pricingSchedule"][
+             "peakWindowsUTC"][0].update(days=["Funday"]), "days")),
+        ("a zero-length window (start equal to end) is rejected",
+         lambda: rejects(lambda d: d["transports"]["deepseek"]["pricingSchedule"][
+             "peakWindowsUTC"][0].update(start="04:00", end="04:00"), "start")),
+        # A window crossing midnight belongs to the day it STARTS: Fri 22:00-02:00 covers Fri 22:00-24:00
+        # and Sat 00:00-02:00. 2026-09-18 is a Friday.
+        ("a cross-midnight window validates",
+         lambda: accepts(lambda d: d["transports"]["deepseek"]["pricingSchedule"].update(
+             peakWindowsUTC=[{"days": ["Fri"], "start": "22:00", "end": "02:00"}]))),
+        ("cross-midnight: Fri 23:00Z is peak, ending Sat 02:00Z",
+         lambda: mr.price_window("deepseek", at="2026-09-18T23:00:00Z", data=_overnight())
+                 == {"window": "peak", "multiplier": 1.0, "changesAt": "2026-09-19T02:00:00Z"}),
+        ("cross-midnight: Sat 01:00Z (the tail on the next day) is peak",
+         lambda: mr.price_window("deepseek", at="2026-09-19T01:00:00Z", data=_overnight())["window"] == "peak"),
+        ("cross-midnight: Sat 02:00Z is off-peak, and Fri 21:59Z is off-peak until 22:00Z",
+         lambda: mr.price_window("deepseek", at="2026-09-19T02:00:00Z", data=_overnight())["window"] == "off-peak"
+                 and mr.price_window("deepseek", at="2026-09-18T21:59:00Z", data=_overnight())
+                 == {"window": "off-peak", "multiplier": 0.5, "changesAt": "2026-09-18T22:00:00Z"}),
+        ("cross-midnight: Thu 01:00Z is off-peak (the tail belongs to the listed day's NEXT day only)",
+         lambda: mr.price_window("deepseek", at="2026-09-17T01:00:00Z", data=_overnight())["window"] == "off-peak"),
+        ("a malformed HH:MM is rejected",
+         lambda: rejects(lambda d: d["transports"]["deepseek"]["pricingSchedule"][
+             "peakWindowsUTC"][0].update(start="25:00"), "HH:MM")),
+        ("a schedule on a plan-quota transport is rejected",
+         lambda: rejects(lambda d: d["transports"]["codex"].update(
+             pricingSchedule=copy.deepcopy(SCHEDULE)), "pricingSchedule")),
+        ("peakPolicy refuse on a transport with no schedule is rejected",
+         lambda: rejects(lambda d: next(m for m in d["models"] if m["alias"] == "muse")[
+             "gate"].update(peakPolicy="refuse"), "peakPolicy")),
+        ("peakPolicy outside the closed set is rejected",
+         lambda: rejects(lambda d: deepseek_row(d)["gate"].update(peakPolicy="sometimes"),
+                         "peakPolicy")),
+        ("peakPolicy refuse on a scheduled transport validates",
+         lambda: accepts(lambda d: deepseek_row(d)["gate"].update(peakPolicy="refuse"))),
+        ("measured evidence without measuredVersion on a versioned row is rejected",
+         lambda: rejects(lambda d: set_measured(d, None), "measuredVersion")),
+        ("measured evidence from another version is rejected",
+         lambda: rejects(lambda d: set_measured(d, "DeepSeek-V4-Flash-0731"), "measuredVersion")),
+        ("measured evidence matching the version validates",
+         lambda: accepts(lambda d: set_measured(d, "DeepSeek-V4.1-Flash"))),
+        ("`price-window` CLI prints the window and effective rates",
+         lambda: (lambda r: r[0] == 0 and json.loads(r[1])["window"] == "off-peak"
+                  and abs(json.loads(r[1])["rates"]["outputPer1M"]
+                          - deepseek_row(planted())["price"]["outputPer1M"] * 0.5) < 1e-9)(
+             with_env_at("2026-09-15T05:00:00Z", lambda: cli(["price-window", "flash"], planted())))),
+        ("`effort-values` prints a transport's declared vocabulary",
+         lambda: (lambda d: (d["transports"]["deepseek"].update(effortValues=["low", "high", "max"]),
+                             cli(["effort-values", "flash"], d))[1])(planted())
+                 == (0, '["low", "high", "max"]')),
+        ("`effort-values` prints [] for a transport that declares none",
+         lambda: cli(["effort-values", "luna"], planted()) == (0, "[]")),
+    ]
+
+    failed = 0
+    for name, fn in cases:
+        try:
+            ok = bool(fn())
+            detail = ""
+        except Exception as exc:
+            ok, detail = False, "  raised %s: %s" % (type(exc).__name__, exc)
+        failed += not ok
+        print("%s %s%s" % ("ok  " if ok else "FAIL", name, detail))
+    return failed, len(cases)
+
+
+def run_price_fresh_off_peak(data):
+    """1M fresh tokens at half the list cache-miss rate -- the expected SC_PRICE_AT answer."""
+    return next(m for m in data["models"] if m["alias"] == "flash")["price"]["cacheMissPer1M"] * 0.5
 
 
 def main():
@@ -305,7 +534,19 @@ def main():
     failed += not ok
     print("%s the live ladder claims every tier: %r" % ("ok  " if ok else "FAIL", sorted(live_tiers)))
 
-    live = mr.load()
+    # A publication context (or any consumer whose external_models.json is not this project's own)
+    # can carry a registry `load()` rejects for reasons unrelated to this suite's own cases -- a
+    # bare crash here would abort every case below with a raw traceback and no tally instead of
+    # one clean FAIL, the same "proof ran to completion" shape guarded elsewhere in this battery.
+    try:
+        live = mr.load()
+    except Exception as exc:
+        failed += 1
+        total = len(CASES) + 2
+        print("FAIL the live registry loads for the SSOT-coupling cases below  raised %s: %s"
+              % (type(exc).__name__, exc))
+        print("\n%d/%d passed" % (total - failed, total))
+        return 1 if failed else 0
     ok = all(mr.rows_for_tier(t, live, live_tiers) for t in mr.TIER_ORDER)
     failed += not ok
     print("%s every tier has at least one available row in the live registry"
@@ -344,6 +585,32 @@ def main():
     failed += not ok
     print("%s ...and accepts both legal scopes" % ("ok  " if ok else "FAIL"))
 
+    def why_limits(patch):
+        d = copy.deepcopy(live)
+        row = next(m for m in d["models"] if m.get("alias") == "luna")
+        row["limits"].update(patch)
+        try:
+            mr._validate(d, "fixture")
+        except mr.RegistryError as exc:
+            return str(exc)
+        return ""
+
+    invalid_limit_cases = [
+        ({"contextTokens": "272k"}, "limits.contextTokens"),
+        ({"contextTokens": 0}, "limits.contextTokens"),
+        ({"maxContextTokens": -1}, "limits.maxContextTokens"),
+        ({"effectiveContextPercent": "95"}, "limits.effectiveContextPercent"),
+        ({"effectiveContextPercent": 0}, "limits.effectiveContextPercent"),
+        ({"effectiveContextPercent": 101}, "limits.effectiveContextPercent"),
+        ({"contextTokens": 872000, "maxContextTokens": 272000}, "maxContextTokens"),
+    ]
+    for patch, field in invalid_limit_cases:
+        reason = why_limits(patch)
+        ok = field in reason
+        failed += not ok
+        print("%s `--check` rejects malformed limits %r: %r"
+              % ("ok  " if ok else "FAIL", patch, reason[:90]))
+
     ok = mr.status_scope({"status": {"state": "unavailable", "reason": "r"}}) == "all"
     failed += not ok
     print("%s an exclusion with no scope defaults to `all`" % ("ok  " if ok else "FAIL"))
@@ -367,7 +634,14 @@ def main():
     failed += not ok
     print("%s a well-formed for-role still exits 0" % ("ok  " if ok else "FAIL"))
 
-    total = len(CASES) + 3 + 3 + 4
+    # ---- time-of-day pricing, peak gate policy, version-bound evidence, effort vocabulary ----
+    # Fixture = the SHIPPED registry with a schedule planted on the deepseek transport, for the same
+    # reason as the scope cases: transport-level rules fire first on a hand-built dict.
+    sched_failed, sched_total = _schedule_cases(live)
+    failed += sched_failed
+
+    total = len(CASES) + 3 + 3 + len(invalid_limit_cases) + 4
+    total += sched_total
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

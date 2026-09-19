@@ -4,7 +4,10 @@ description: "If you can do it now with no bad consequences, DO IT NOW. The work
 metadata:
   node_type: memory
   type: feedback
+  originSessionId: 84adc6c1-1ab3-4b4c-ade9-5bed49091669
   modified: 2026-07-28T20:37:36.083Z
+retire_when:
+  - review-by: 2027-01-11
 ---
 
 When you notice a small change you could make right now without derailing the main session, **do it now**. Don't propose a worklog add as a substitute. This applies doubly to scope-1 items — they are trivial *by definition*, so the propose→confirm→write-Obsidian→write-mirror→read-next-session→eventually-do cost dwarfs just doing the fix now.

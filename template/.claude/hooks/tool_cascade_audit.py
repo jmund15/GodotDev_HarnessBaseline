@@ -282,7 +282,7 @@ def split_top_level_commas(s):
 def type_name_candidates(expr):
     """Type-name candidates of a type expression: the LAST dotted segment of the outer
     type, plus (recursively) those of any generic arguments. Critically, for a nested-type
-    reference like `Spawner.AnchorMode` this yields `AnchorMode` (the real type), NOT
+    reference like `AbilitySpawner.AnchorMode` this yields `AnchorMode` (the real type), NOT
     the qualifier `AbilitySpawner` — preventing a false cascade edge to the outer class."""
     expr = expr.strip()
     if not expr:

@@ -39,6 +39,7 @@ Fail posture: advisory context hook — fail open (exit 0, silent) on any error.
 import json
 import os
 import sys
+import tempfile
 
 # Windows consoles default stdout to cp1252; rails text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -73,7 +74,7 @@ except Exception:
 DELEGATE_TOOL_GRANT = """\
 [delegate tool grant — overrides tool routing wherever CLAUDE.md §Tool Routing or a rails block names an absent tool; canon: gotcha_sidecar_child_mcp_tool_grant]
 - semantic-search IS available here (mcp__plugin_semantic-search_semantic-search__search, same name as a normal session). Route to it exactly as CLAUDE.md §Tool Routing directs — do NOT substitute Grep.
-- ai-worker IS available too (mcp__ai-worker__read_files / write_doc), though it can connect a turn or two after init — a short dispatch may not see it yet. Route to it exactly as CLAUDE.md §Worker Model Delegation directs. Only if a call fails with tool-not-found: substitute bounded Read (offset/limit) of the named files and say so in your deliverable.
+- ai-worker IS available too (mcp__ai-worker__read_files / write_doc), though it can connect a turn or two after init — a short dispatch may not see it yet. Route to it exactly as the global ~/.claude/CLAUDE.md §Worker Model Delegation directs. Only if a call fails with tool-not-found: substitute bounded Read (offset/limit) of the named files and say so in your deliverable.
 - Verify a tool exists before routing to it. Never report "not found" on the strength of a call that never ran.
 """
 
@@ -278,6 +279,22 @@ def provider_rails(transport: str, source: str, payload: dict) -> str:
     )
 
 
+def _effort_from_status_line(session_id) -> str:
+    """The effort level the status line last saw for this session, or "".
+
+    Only the status line's payload carries `effort.level`; no hook payload does. statusline.py
+    writes the level to this file so a session can be told its real effort instead of an
+    assumption (owner question 2026-09-15)."""
+    if not session_id:
+        return ""
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64]
+    try:
+        with open(os.path.join(tempfile.gettempdir(), f"cc-effort-{safe}.txt"), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
 def effort_line(payload: dict, delegate: bool = False) -> str:
     """Session-effort visibility (user directive 2026-07-28): models cannot reliably
     see their own effort, and Agent-tool dispatches inherit it invisibly — so state
@@ -300,6 +317,8 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
         if isinstance(value, str) and value:
             effort = value
             break
+    if not effort:
+        effort = _effort_from_status_line(payload.get("session_id"))
     if effort:
         return (
             f"[session] Your session effort is '{effort}'. Delegates never inherit it: "

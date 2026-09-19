@@ -13,32 +13,84 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
 from routing_classifier import classify_call  # noqa: E402
 
-SYNTHESIS_PATH = (
+READ_PATH = (
     "C:/Users/{{USER}}/Documents/ObsidianVault/DevProjects/{{PROJECT_NAME}}/"
     "Design/some_design_doc.md"
 )
-READ = {"file_path": SYNTHESIS_PATH}
+READ = {"file_path": READ_PATH}
+FOCUSED = "Read this one file for the exact paragraph that defines the existing contract."
+DERIVED = (
+    "Compare these modules, judge the architecture, and recommend which design should remain."
+)
+BULK_COPYABLE = (
+    "Extract the same raw fields from every file and return one copyable entry per input path."
+)
 
 
 def main():
     cases = []
 
     c = classify_call("Read", READ, "")
-    cases.append(("main loop, no cue: native read of a synthesis doc is nudge-warranted",
-                  c.severity == "nudge-warranted" and c.rule == "native-read-synthesis-doc"))
+    cases.append(("path shape alone does not infer worker routing",
+                  c.severity == "compliant" and c.rule is None))
 
-    c = classify_call("Read", READ, "", agent_id="agent0001")
-    cases.append(("subagent: the same read is cue-exempt, tagged as the bundling delegate",
-                  c.severity == "cue-exempt" and c.rule == "native-read-synthesis-doc"
+    c = classify_call("Read", READ, FOCUSED)
+    cases.append(("focused source Read is compliant even on a design-shaped path",
+                  c.severity == "compliant" and c.rule is None))
+
+    c = classify_call("Read", READ, DERIVED)
+    cases.append(("derived judgment is not automatically routed to a copyable-I/O worker",
+                  c.severity == "compliant" and c.rule is None))
+
+    c = classify_call("Read", READ, BULK_COPYABLE)
+    cases.append(("explicit bulk-copyable extraction makes direct Read nudge-warranted",
+                  c.severity == "nudge-warranted" and c.rule == "native-read-bulk-copyable"))
+
+    for extension in (".json", ".yaml", ".py", ".cs", ".tres"):
+        c = classify_call("Read", {"file_path": "C:/repo/input" + extension}, BULK_COPYABLE)
+        cases.append(("bulk-copyable Read routes regardless of %s file type" % extension,
+                      c.severity == "nudge-warranted"
+                      and c.rule == "native-read-bulk-copyable"))
+
+    # Owner decision R4 (2026-09-14): a bare "audit" is not a literal-scan request.
+    grep_cs = {"pattern": "SpellFactory", "glob": "*.cs"}
+    c = classify_call("Grep", grep_cs, "Audit SpellFactory for bugs")
+    cases.append(("a bare audit request keeps the C# navigation advice",
+                  c.severity == "nudge-warranted"))
+    c = classify_call("Grep", grep_cs, "Run a documentation audit of SpellFactory mentions")
+    cases.append(("documentation audit stays a literal-intent cue", c.severity == "cue-exempt"))
+
+    bulk_then_edit = (
+        "Extract the same raw fields from every file into one copyable entry per input path, "
+        "then update the report with those rows."
+    )
+    c = classify_call("Read", READ, bulk_then_edit)
+    cases.append(("an unrelated edit cue does not erase positive bulk-copyable evidence",
+                  c.severity == "nudge-warranted" and c.rule == "native-read-bulk-copyable"))
+
+    c = classify_call("Read", READ, BULK_COPYABLE, agent_id="agent0001")
+    cases.append(("native subagent is exempt from the same bulk-copyable direct-Read nudge",
+                  c.severity == "cue-exempt" and c.rule == "native-read-bulk-copyable"
                   and "[subagent: bundling delegate]" in (c.reason or "")))
 
-    c = classify_call("Read", READ, "audit this design doc against the spec")
-    cases.append(("main loop with an audit cue: cue-exempt by the prompt, not by agent_id",
-                  c.severity == "cue-exempt" and "[subagent" not in (c.reason or "")))
+    c = classify_call("Read", {"file_path": "C:/repo/.claude/Design/rule.md"}, BULK_COPYABLE)
+    cases.append(("agent-runtime instructions remain direct-read only",
+                  c.severity == "not-routable"))
 
-    c = classify_call("Read", {"file_path": "C:/repo/README.md"}, "", agent_id="agent0001")
-    cases.append(("subagent reading a non-synthesis .md: compliant, exemption never fires",
-                  c.severity == "compliant"))
+    c = classify_call("Read", dict(READ, limit=40), BULK_COPYABLE)
+    cases.append(("a bounded verification Read remains direct",
+                  c.severity == "not-routable"))
+
+    obsidian = {"target": {"path": "Claude/Design/some_design_doc.md"}}
+    c = classify_call("mcp__obsidian__obsidian_get_note", obsidian, FOCUSED)
+    cases.append(("focused Obsidian read is not classified from its path",
+                  c.severity == "compliant" and c.rule is None))
+    c = classify_call("mcp__obsidian__obsidian_get_note", obsidian, BULK_COPYABLE)
+    cases.append(("explicit bulk-copyable Obsidian read remains a positive control",
+                  c.severity == "nudge-warranted" and c.rule == "obsidian-read-bulk-copyable"))
+    c = classify_call("mcp__obsidian__obsidian_get_note", obsidian, bulk_then_edit)
+    cases.append(("an edit cue does not erase positive bulk-copyable Obsidian evidence",
+                  c.severity == "nudge-warranted" and c.rule == "obsidian-read-bulk-copyable"))
 
     c = classify_call("Grep", {"pattern": "DomainCore", "glob": "*.cs"}, "", agent_id="agent0001")
     cases.append(("subagent bare-PascalCase Grep on .cs: still nudge-warranted (agent_id is read-only scope)",

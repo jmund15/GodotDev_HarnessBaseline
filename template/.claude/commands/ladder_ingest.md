@@ -17,8 +17,10 @@ Operands mix freely. `--out` is always required. With no arm the tool prints its
 
 **Precondition — the arms read a frozen input** (`orchestration` §0). Repo moved mid-run ⇒ ingest nothing, and say so in `doesNotShow`: this is not recoverable here.
 
+**A changed board row invalidates the clauses that rank its task.** A re-judge, a new instrument generation or a new ranked cell counts. Re-run `ladder_ingest.py --apply` and `/codify` for each such clause; compare the row's `when` column with the clause's last edit to find them.
+
 1. `python3 .claude/tools/ladder_ingest.py <arms...> --out <vault>/Claude/Meta/Benchmark/ladder-ingest --slug <slug>` → per-arm files + `COMPARISON.md`. Read its `same_prompt` and `prompt_not_recorded` lines first: arms that ran different prompts are a weaker comparison, and the file says so rather than hiding it.
-2. Dispatch its `judge_brief.md` + `judge_schema.json` via `dispatch.js`, `opus·high`, `shape: review`, currency stated.
+2. Dispatch its `judge_brief.md` + `judge_schema.json` via `dispatch.js`, `opus·high`, `shape: review`, currency stated. Pass `agentType: "general-purpose"` with the resolved `model` and `effort`.
 3. `ladder_ingest.py --apply <judge-result.json> ...` → Adjudication section, prints `ladderClause` + `orchestrationNote`.
 4. `/codify` the clause onto the ladder row, then run `python3 .claude/tools/ladder_prose_check.py` — it must exit 0.
 

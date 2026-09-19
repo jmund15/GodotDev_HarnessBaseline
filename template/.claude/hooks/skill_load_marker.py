@@ -20,18 +20,9 @@ Wired in: settings.json hooks.PostToolUse with matcher "Skill".
 """
 
 import json
-import os
 import sys
-import tempfile
 
-from _hook_state import read_json_salvage, write_json_atomic
-
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
-
-
-def _state_path(session_id: str) -> str:
-    sid_short = (session_id[:8] if session_id else "default")
-    return os.path.join(STATE_DIR, f"{sid_short}.json")
+from _hook_state import state_path, update_json_locked
 
 
 def main() -> None:
@@ -48,24 +39,17 @@ def main() -> None:
         sys.exit(0)
 
     session_id = input_data.get("session_id") or ""
-    path = _state_path(session_id)
-    try:
-        state = read_json_salvage(path)
+    # Bare name and plugin-prefixed form both record under the bare name.
+    bare = skill.split(":")[-1]
+
+    def record(state):
         skills = state.get("skills_loaded")
-        if not isinstance(skills, list):
-            skills = []
-        # Bare name and plugin-prefixed form both record under the bare name.
-        bare = skill.split(":")[-1]
+        skills = list(skills) if isinstance(skills, list) else []
         if bare not in skills:
             skills.append(bare)
         state["skills_loaded"] = skills
-        os.makedirs(STATE_DIR, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=STATE_DIR)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, ensure_ascii=True)
-        os.replace(tmp_path, path)
-    except Exception:
-        pass
+
+    update_json_locked(state_path(session_id), record)
     if skill.split(":")[-1] == "orchestration":
         try:
             from workflow_provider_guard import ladder_role_lines

@@ -4,8 +4,6 @@ paths:
   - ".claude/scripts/**/*.ps1"
   - ".claude/scripts/**/*.py"
   - ".claude/tools/**/*.py"
-  - ".claude/scratch/**/*.ps1"
-  - ".claude/scratch/**/*.py"
 ---
 
 # Harness Tooling (fires when authoring a hook or a harness script)
@@ -29,17 +27,34 @@ any of them, it matches the noun.
 
 ## Every guard has a re-runnable proof, or it is a hope
 
-`instruction_quality` §14: registration proves wiring, not matching. A hook asserted to be "tested by
-hand" reads in every later audit as enforcement that exists. Land a case list beside it under
-`.claude/tests/` that feeds real PreToolUse payloads and asserts on the emitted channel
-(`permissionDecision` vs `additionalContext` vs `{}`), and include the **negative** cases — the
-read-only mention, the adjacent tool, the retired flag. The ad-hoc harness that missed the defect
-above had 22 cases and not one of them read the file. A proof classifies an exit code outside
-{0, 2}, or a traceback, as CRASH — never as allow: a hook that cannot import passes a proof that
-only asks "was it denied?".
+`.claude/tests/` is gitignored, so `Glob` and semantic search find nothing there — enumerate existing
+proofs with `git ls-files --others --ignored --exclude-standard .claude/tests` (or `ls .claude/tests`)
+before assuming one does not exist.
 
-`python3 .claude/scripts/harness_tests.py` runs every proof and stamps the tree per file, so a peer's
-edit to an untouched hook does not stale your commit. `git_guardrails.py` denies: a commit touching
+`instruction_quality` §14: registration proves wiring, not matching. A hook asserted to be "tested by
+hand" reads in every later audit as enforcement that exists. Order: write the case, run it, watch it
+fail, then edit the hook. A proof that has only ever passed is untested; a self-report of "RED observed"
+is not the transcript; and a RED rebuilt after the fix from a `git show` copy of the old hook proves
+nothing the proof's negative cases do not and costs 8–15 turns (2026-09-15, session 3259384b: 4 of 4
+new-guidance arms edited first, then rebuilt a RED). If the order was missed, say so in the result and
+stop. Land a case list
+beside it under `.claude/tests/` that feeds real PreToolUse payloads on stdin against a planted
+environment (a planted process table, a planted file, a planted liveness answer) and asserts on the
+emitted channel (`permissionDecision` vs `additionalContext` vs `{}`), and include the **negative**
+cases — the read-only mention, the adjacent tool, the retired flag. Spawn a live process only when
+the mechanism cannot be planted; a proof that fights the OS to stage its fixture is measuring the OS
+(2026-09-15, session 3259384b: 40 turns on one live-process proof, 19 for the planted one, same fix). The ad-hoc
+harness that missed the defect above had 22 cases and not one of them read the file. A proof
+classifies an exit code outside {0, 2}, or a traceback, as CRASH — never as allow: a hook that cannot
+import passes a proof that only asks "was it denied?". A fixture must reach the guarded condition: a
+case that passes on a path the guard never inspects is untested (2026-09-15: the escape sweep's own-input
+cases passed vacuously because the fixture path never carried the vault marker; three real cells parked).
+
+The commit guard wants a per-file stamp: `python3 .claude/scripts/harness_tests.py --staged` runs the
+proofs bound to the staged files (by name, by mention, plus the dir-scanning proofs) and refreshes
+only their entries; the full battery certifies everything at session close. Run it once at commit
+time and never for a task that does not commit (CLAUDE.md §Build & Test Commands).
+`git_guardrails.py` denies: a commit touching
 `.claude/{hooks,tools,scripts,workflows,tests}` or `.claude/settings.json` without a fresh stamp; a
 staged `hooks/`/`tools/` `.py` without a git-TRACKED `tests/test_<name>*.py` proof (`.claude/tests/`
 is gitignored — `git add -f` it); a `merge`/`cherry-pick`/`revert` bringing harness content in
@@ -62,10 +77,11 @@ a map lookup that raises or denies over one that shrugs.
 Hooks fire concurrently on one tool call and share
 `~/.claude/.routing_state/<sid8>.json`. `open(path,"w")` truncates first and fills after, so two
 writers interleave into one complete document plus a fragment. Use `hooks/_hook_state.py`:
-`write_json_atomic` (tempfile + `os.replace`) and `read_json_salvage` (recovers the leading document
-from an already-torn file). Both are needed — atomicity stops new damage, salvage stops existing
-damage from being permanent, which is what turned one torn write into a session that could not edit
-harness files at all.
+`update_json_locked(path, updater)` for every read-modify-write (per-file lock, salvage read, atomic
+replace), and `write_json_atomic` only for a whole-file write that reads nothing back. A read, change
+and plain write, even an atomic one, drops fields a sibling hook saved in between. Salvage stops
+existing damage from being permanent, which is what turned one torn write into a session that could
+not edit harness files at all. `tests/test_hook_state.py` scans every hook for an unlocked writer.
 
 Append-only state also needs rotation, a stale-sweep, or a size cap (`instruction_quality` §15).
 
@@ -77,21 +93,20 @@ becomes an array of banner strings plus the exit code and every `-ne 0` comparis
 
 Two more that bite in the same files: `(if ...) + 1` parses clean and throws at runtime
 (`powershell_statement_paren_gotcha.md`), and `-File` binding does **not** comma-split array
-parameters — `-Scope A,B` arrives as one element, so split it yourself. Variables are
-case-insensitive: `$WT` and `$wt` are ONE variable, so a loop that derives `$wt` from `$WT`
-rewrites its own base on the second pass and every later path nests under the first.
+parameters — `-Scope A,B` arrives as one element, so split it yourself.
 
-## A detached job is verified by its own echo, and a wait by its terminal line
+## A guard that blocks justified work is a guard defect
 
-A returned launch proves nothing about what the job took. The script logs its resolved item set
-(`prs=`, `trees=`) first; read that line against the request BEFORE arming a wait, then test the
-filter against the literal terminal marker (`grep -E '<pattern>' <<< 'CHAIN_DONE'`) — a miss makes a
-finished job look like a running one. Case: `gotcha_detached_job_wrong_args_silent_wait.md`.
-A waiter keyed on a marker in an APPEND-ONLY log fires on the previous run's marker — key it on a
-line count or timestamp captured at launch, or truncate the log first.
+When a guard denies work the owner clearly wants done (regenerable, created by this work,
+untracked, not a peer's checkout or evidence), make its match precise in the owner file with
+RED-first allow and block arms, then run the work through it. Never route around the denial with
+another tool, and never hand the chore to the owner. Evidence:
+`feedback-guard-denial-of-justified-work-fix-the-guard`.
 
 ## Deleting a flag is not done until its stale invocations name their replacement
 
 Docs, plans and memory files carry the old command text. A removed parameter yields a PowerShell
 binding error that names the parameter, not the migration. Have the guard recognize retired flags and
 print the replacement; keep archived plan files as they are — they are history, not instructions.
+
+<!-- retire-when: review-by: 2027-03-14 -->

@@ -35,6 +35,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import with the REAL sys.stdout bound: four sub-hooks call sys.stdout.reconfigure() at import.
+import bash_backslash_fidelity  # noqa: E402
 import bash_shape_guard  # noqa: E402
 import cloud_test_enforcer  # noqa: E402
 import compound_cd_approver  # noqa: E402
@@ -101,6 +102,8 @@ HOOKS = (
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
     (sidecar_dispatch_context, ()),
+    # Last: it rewrites the command through updatedInput, so every deny above must win first.
+    (bash_backslash_fidelity, ()),
 )
 
 _DECISION_RANK = {"deny": 3, "ask": 2, "allow": 1}
@@ -173,6 +176,18 @@ def dispatch(raw_payload, hooks=HOOKS):
                 extra[key] = value
         if decision == "deny":
             break
+
+    # Throttled orphaned-search reaper. After the chain so a hard block (exit 2, above) never
+    # spends a snapshot whose advisory it could not deliver, and skipped on a deny so nothing
+    # runs between the deny decision and its output.
+    if decision != "deny":
+        try:
+            import runaway_scan_reaper
+            lines = runaway_scan_reaper.check(raw_payload)
+            if lines:
+                contexts.append("\n".join(lines))
+        except Exception:
+            pass
 
     hso = {"hookEventName": "PreToolUse"}
     if decision:

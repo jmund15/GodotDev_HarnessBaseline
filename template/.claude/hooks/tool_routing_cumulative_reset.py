@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: UserPromptSubmit companion to tool_routing_cumulative.py.
+Hook: UserPromptSubmit turn-state companion for routing advisories.
 
-Why:
-- The cumulative counter needs a clear turn boundary. UserPromptSubmit fires
-  before any tool call of the new turn — perfect place to bump
-  `turn_started_mtime` in the per-session state file.
+The count-based cumulative nudge is retired. This hook remains the single owner
+of the last real user prompt and per-turn advisory receipts consumed by the C#
+Grep and vault-write routing checks.
 
 What it does:
-- For the current session, sets turn_started_mtime = now() and clears
-  nudges_fired_this_turn. Leaves calls list intact (the cumulative hook will
-  filter stale entries on next call via the mtime gate).
+- Starts a new turn and clears per-turn advisory receipts.
+- Stores `last_prompt` only for a real user request. Runtime notifications still
+  start turns but never replace the user intent used by later tool hooks.
 - Stale-sweep: deletes any state files older than 24h (no per-call cost).
 
 Boundaries:
 - Never blocks. Exit 0 in all paths.
-- Silent on failure (companion of cumulative hook, which has its own
-  visible-failure path).
+- Shared updates use salvage, a per-file lock, and atomic replacement; failures stay silent.
 
 Wired in: settings.json hooks.UserPromptSubmit.
 """
@@ -27,61 +25,44 @@ import os
 import sys
 import time
 
-from _hook_state import read_json_salvage, write_json_atomic
+from _hook_state import state_path, update_json_locked
+from _prompt_provenance import is_user_intent_prompt
 
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 STALE_AGE_SECONDS = 24 * 3600  # 24 hours
 
 
 def _state_path(session_id: str) -> str:
-    sid_short = (session_id[:8] if session_id else "default")
-    return os.path.join(STATE_DIR, f"{sid_short}.json")
+    return state_path(session_id)
 
 
 def _bump_turn(session_id: str, prompt: str) -> None:
-    """
-    Reset turn_started_mtime + clear nudges_fired_this_turn for this session.
-    Also stash the prompt text so PostToolUse hooks can read it for cue-word
-    suppression (e.g., tool_routing_post_grep.py needs to know if the user
-    explicitly requested a literal/verbatim scan).
-    """
+    """Clear per-turn receipts and retain only the latest real user prompt."""
     path = _state_path(session_id)
-    now = time.time()
-    state: dict = {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                state = loaded
-    except Exception:
-        state = {}
-    state["turn_started_mtime"] = now
-    state["nudges_fired_this_turn"] = []
-    state["post_grep_nudges_fired_this_turn"] = []
-    state["pre_nudges_fired_this_turn"] = []
-    state["edit_seen_this_turn"] = False
-    state["last_prompt"] = (prompt or "")[:4000]  # cap; cue-word check needs only first lines
-    state.setdefault("calls", [])
-    try:
-        write_json_atomic(path, state)
-    except Exception:
-        pass
+    user_intent = is_user_intent_prompt(prompt)
+
+    def update(state):
+        state["post_grep_nudges_fired_this_turn"] = []
+        state["pre_nudges_fired_this_turn"] = []
+        if user_intent:
+            state["last_prompt"] = prompt
+
+    update_json_locked(path, update)
 
 
 def _stale_sweep() -> None:
     """Delete state files older than STALE_AGE_SECONDS. Non-fatal on errors."""
+    state_dir = os.path.dirname(_state_path(""))
     try:
-        if not os.path.isdir(STATE_DIR):
+        if not os.path.isdir(state_dir):
             return
         cutoff = time.time() - STALE_AGE_SECONDS
-        for name in os.listdir(STATE_DIR):
+        for name in os.listdir(state_dir):
             # Only sweep our state files; leave hook_fire_log.jsonl + tempfiles alone
             if not name.endswith(".json") or name == "hook_fire_log.jsonl":
                 continue
             if name.startswith(".tmp_"):
                 continue
-            full = os.path.join(STATE_DIR, name)
+            full = os.path.join(state_dir, name)
             try:
                 if os.path.getmtime(full) < cutoff:
                     os.unlink(full)
@@ -95,6 +76,8 @@ def main() -> None:
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
+        sys.exit(0)
+    if not isinstance(input_data, dict):
         sys.exit(0)
     session_id = input_data.get("session_id") or ""
     prompt = input_data.get("prompt") or ""

@@ -1,13 +1,11 @@
 ---
 name: parameterized_asset_pipeline
 description: >-
-  Use when bootstrapping a style-appropriate procedural asset pipeline for a NEW
-  project (or a new track in an existing one), following the proven source-project
-  methodology — entity sprites (Track A), UI chrome/icons/motion (Track C), or
-  conforming external assets to the house style. SKIP for authoring individual assets
-  inside an existing pipeline (project-local skills like sprite_authoring own that) and
-  for 3D (Track B — not designed; see the GeneralGameDev Parameterized-Asset-Pipeline
-  index).
+  Use when bootstrapping a style-appropriate procedural asset pipeline for a NEW project or a new
+  track, following the proven source-project methodology: entity sprites (Track A), UI
+  chrome/icons/motion (Track C), or conforming external assets to the house style. SKIP for
+  authoring individual assets inside an existing pipeline (`sprite_authoring`) and for 3D (Track
+  B, not designed).
 disable-model-invocation: true
 ---
 

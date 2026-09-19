@@ -42,14 +42,20 @@ sys.stdout.reconfigure(encoding="utf-8")
 REGISTRY_PATH = ".claude/prototype_registry.md"
 MARKER_RE = re.compile(r"PROVISIONAL\(([a-z0-9-]+)\)")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _git_commit import commit_invocations, staged_paths as _seam_staged_paths  # noqa: E402
+from _git_commit import commit_invocations, git_environ, staged_paths as _seam_staged_paths  # noqa: E402
+
+
+# The commit's GIT_* variables, set by hook() from the invocation it judges: every git read below uses
+# the index that commit publishes (`GIT_INDEX_FILE=<f> git commit`).
+_COMMIT_GIT_ENV = {}
 
 
 def _git(args, repo=None):
     """git stdout on success; None on ANY failure (fail-open signal)."""
     cmd = ["git"] + (["-C", repo] if repo else []) + args
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=git_environ(_COMMIT_GIT_ENV),
     )
     if proc.returncode != 0:
         return None
@@ -59,7 +65,7 @@ def _git(args, repo=None):
 def _staged_paths(repo=None, rest=()):
     """Paths the commit will publish (index plus `-a` / `--amend` / pathspec widening per
     `_git_commit.staged_paths`). None when git failed."""
-    paths, _failed = _seam_staged_paths(list(rest), repo or ".")
+    paths, _failed = _seam_staged_paths(list(rest), repo or ".", env=_COMMIT_GIT_ENV)
     return None if paths is None else sorted(paths)
 
 
@@ -144,6 +150,8 @@ def hook():
         if not commits:
             return allow()
         commit = commits[-1]
+        global _COMMIT_GIT_ENV
+        _COMMIT_GIT_ENV = commit.git_env
         repo = commit.cwd
         paths = _staged_paths(repo, commit.rest)
         if paths is None:

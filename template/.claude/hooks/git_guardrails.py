@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Hook: PreToolUse on Bash|PowerShell — block git operations that destroy local state, and
-deny a harness commit that lacks a fresh proof stamp.
+deny a harness commit that lacks a fresh proof stamp or was authored without
+`instruction_quality` loaded (`_skill_verdict`; retire-when review-by 2027-03-15).
 
 Why:
 - Uncommitted and unpushed work has no remote copy and no undo. A single
@@ -40,10 +41,10 @@ sys.path.insert(0, _HOOKS_DIR)
 # sail through unguarded. `DIRS` has one home (`_hook_state.HARNESS_DIRS`); without it the guard
 # cannot tell a harness commit from any other, so every commit is denied until it is repaired.
 try:
-    from _hook_state import read_json_salvage, HARNESS_DIRS as DIRS  # noqa: E402
+    from _hook_state import read_json_salvage, state_path, HARNESS_DIRS as DIRS  # noqa: E402
     _STATE_IMPORT_ERROR = None
 except Exception as _exc:
-    read_json_salvage, DIRS = None, None
+    read_json_salvage, state_path, DIRS = None, None, None
     _STATE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 try:
     from harness_tests import tree_entries, STAMP_PATH  # noqa: E402
@@ -52,6 +53,7 @@ except Exception as _exc:
     tree_entries, STAMP_PATH = None, None
     _HARNESS_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 from _git_commit import (  # noqa: E402
+    command_git_env, export_assignments, git_environ,
     segments, git_invocation, cd_target, executable_text, run_git,
     staged_paths, incoming_paths, bypass_declared,
 )
@@ -75,8 +77,8 @@ def verdict(args):
     sub, rest = args[0], args[1:]
 
     if sub == "reset" and "--hard" in rest:
-        return ("BLOCKED `git reset --hard` — discards every uncommitted change with no undo. "
-                "Use `git stash` to keep them, or `git reset --keep` to move HEAD safely.")
+        return ("BLOCKED `git reset --hard` — discards every uncommitted change in the shared worktree "
+                "with no undo. Use `git reset --keep` to move HEAD and keep local edits.")
 
     if sub == "clean":
         flags = short_flag_chars(rest)
@@ -86,12 +88,15 @@ def verdict(args):
                     "Run the same command with `-n` first, then ask the user to confirm.")
 
     if sub == "checkout" and ("--" in rest or "." in rest):
-        return ("BLOCKED `git checkout` worktree discard — overwrites uncommitted edits to those paths. "
-                "Use `git stash push <path>` instead.")
+        return ("BLOCKED `git checkout` worktree discard — overwrites uncommitted edits to those paths, "
+                "which may be another session's. Copy the file aside (`cp <path> .claude/scratch/`), then "
+                "edit your own change back out in place; ask the user before removing an edit that is not "
+                "yours. Never `git stash`: every session in this checkout shares its list.")
 
     if sub == "restore" and not ({"--staged", "-S"} & set(rest)):
-        return ("BLOCKED `git restore` without `--staged` — discards uncommitted worktree edits. "
-                "Use `git stash push <path>`; `git restore --staged` alone is allowed.")
+        return ("BLOCKED `git restore` without `--staged` — discards uncommitted worktree edits, which may "
+                "be another session's. Copy the file aside (`cp <path> .claude/scratch/`), then edit your "
+                "own change back out in place; `git restore --staged` alone is allowed.")
 
     if sub == "push":
         forcing = {"--force", "--force-with-lease", "--force-if-includes"} & set(rest)
@@ -131,13 +136,13 @@ def _under_dirs(path):
     return any(norm == d or norm.startswith(d + "/") for d in DIRS)
 
 
-def _has_proof(tests_dir, name):
+def _has_proof(tests_dir, name, git_env=None):
     """A proof counts only when git tracks it: `.claude/tests/` is gitignored, so a file that
     exists on disk but was never `git add -f`ed reaches no other checkout."""
     import glob
     hits = (glob.glob(os.path.join(tests_dir, "test_%s*.py" % name))
             or glob.glob(os.path.join(tests_dir, "%s_test.*" % name)))
-    return any(run_git(["ls-files", "--error-unmatch", "--", h], tests_dir) is not None
+    return any(run_git(["ls-files", "--error-unmatch", "--", h], tests_dir, git_env) is not None
                for h in hits)
 
 
@@ -163,7 +168,7 @@ def _stale(stamp, repo_root, touched):
     return None
 
 
-def _md_density_verdict(repo_root, touched):
+def _md_density_verdict(repo_root, touched, git_env=None):
     """Block a commit whose staged `.claude/**.md` ADDS units denser than the §5 audit trigger.
 
     Judges the DELTA, never the whole file: a surface that was already dense is not this commit's
@@ -184,7 +189,7 @@ def _md_density_verdict(repo_root, touched):
         if any(seg in hg.EXCLUDED for seg in norm.split("/")[1:-1]):
             continue                     # auto-memory/, plans/, scratch/ are evidence homes (§5)
         try:
-            head = subprocess.run(["git", "show", "HEAD:" + norm], cwd=repo_root,
+            head = subprocess.run(["git", "show", "HEAD:" + norm], cwd=repo_root, env=git_environ(git_env),
                                   capture_output=True, text=True, encoding="utf-8",
                                   errors="replace")
             before = head.stdout if head.returncode == 0 else ""
@@ -230,10 +235,44 @@ def _md_density_verdict(repo_root, touched):
     return "\n".join(lines)
 
 
-def harness_verdict(sub, rest, cwd, inline_env=None):
+def _removed(repo_root, norm, git_env=None):
+    """True when the commit deletes `norm`: absent from both worktree and index. Its proof may
+    leave in the same commit. A git failure reads as present, so the proof is still required."""
+    if os.path.exists(os.path.join(repo_root, norm)):
+        return False
+    listed = run_git(["ls-files", "--", norm], repo_root, git_env)
+    return listed is not None and not listed.strip()
+
+
+def _skill_verdict(session_id, touched):
+    """Deny a harness commit from a session that never loaded `instruction_quality`.
+
+    `harness_edit_skill_reminder.py` gates the Write|Edit call, which every other write route
+    dodges: a Bash heredoc, `sed -i`, a python script run through Bash. The staged set is the one
+    signal no write route can dodge, so the commit is the backstop.
+
+    Silent when no session state file exists: there is no session to judge, and CI runs this
+    battery that way. Damaged or skill-less state denies — the enforcement side fails closed.
+    """
+    if read_json_salvage is None or state_path is None:
+        return None
+    path = state_path(session_id)
+    if not os.path.exists(path):
+        return None
+    loaded = (read_json_salvage(path) or {}).get("skills_loaded")
+    if isinstance(loaded, list) and "instruction_quality" in loaded:
+        return None
+    return ("BLOCKED harness commit — `instruction_quality` was never loaded this session and "
+            "these staged paths are harness surfaces:\n  %s%s\n"
+            "Load the skill, check the edits against the sections for their file class, then commit."
+            % (", ".join(touched[:4]), " …" if len(touched) > 4 else ""))
+
+
+def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=None):
     """Deny a commit that touches `.claude/{hooks,tools,scripts,workflows,tests}` or
     `.claude/settings.json` without a fresh `harness_tests.py` stamp and per-hook proof
-    coverage. Every failure mode here denies — an unrecognized git state is not a pass."""
+    coverage. Every failure mode here denies — an unrecognized git state is not a pass. `git_env` is
+    the command's GIT_* variables: a commit through another index is judged against that index."""
     if bypass_declared(inline_env, BYPASS_VAR):
         return None
 
@@ -242,16 +281,16 @@ def harness_verdict(sub, rest, cwd, inline_env=None):
                 "hooks/_hook_state.py; for that repair commit prefix `%s=1`."
                 % (_STATE_IMPORT_ERROR, BYPASS_VAR))
 
-    root = run_git(["rev-parse", "--show-toplevel"], cwd)
+    root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
     if root is None:
         return ("BLOCKED harness commit — `git rev-parse --show-toplevel` failed; cannot "
                 "verify the harness stamp.")
     repo_root = root.strip()
 
     if sub == "commit":
-        paths, failed_cmd = staged_paths(rest, cwd)
+        paths, failed_cmd = staged_paths(rest, cwd, git_env)
     else:
-        paths, failed_cmd = incoming_paths(sub, rest, cwd)
+        paths, failed_cmd = incoming_paths(sub, rest, cwd, git_env)
     if paths is None:
         return "BLOCKED harness commit — `git %s` failed; cannot verify the harness stamp." % failed_cmd
 
@@ -270,7 +309,11 @@ def harness_verdict(sub, rest, cwd, inline_env=None):
                 "scripts/harness_tests.py; for that repair commit prefix `%s=1`."
                 % (_HARNESS_IMPORT_ERROR, BYPASS_VAR))
 
-    dense = _md_density_verdict(repo_root, touched)
+    skill = _skill_verdict(session_id, touched)
+    if skill:
+        return skill
+
+    dense = _md_density_verdict(repo_root, touched, git_env)
     if dense:
         return dense
 
@@ -280,7 +323,8 @@ def harness_verdict(sub, rest, cwd, inline_env=None):
         for prefix in (".claude/hooks/", ".claude/tools/"):
             if norm.startswith(prefix) and norm.endswith(".py"):
                 name = os.path.basename(norm)[:-3]
-                if not name.startswith("_") and not _has_proof(tests_dir, name):
+                if (not name.startswith("_") and not _has_proof(tests_dir, name, git_env)
+                        and not _removed(repo_root, norm, git_env)):
                     missing.append((norm, name))
                 break
 
@@ -292,7 +336,8 @@ def harness_verdict(sub, rest, cwd, inline_env=None):
 
     # The runner must be its OWN tool call: this guard judges the command before it runs, so a
     # `harness_tests.py && git commit` chain is denied against the stamp that exists now.
-    rerun = ("run `python3 .claude/scripts/harness_tests.py` as its own call, then commit")
+    rerun = ("run `python3 .claude/scripts/harness_tests.py --staged` (proofs bound to the staged files, "
+             "seconds) or the full runner as its own call, then commit")
     stamp = read_json_salvage(STAMP_PATH)
     if not stamp or not stamp.get("tree_hash"):
         return "BLOCKED harness commit — no stamp; %s." % rerun
@@ -336,11 +381,16 @@ def main() -> None:
         sys.exit(0)
 
     cwd = input_data.get("cwd") or "."
+    exported = {}
 
     for segment in segments(command):
         moved = cd_target(segment)
         if moved is not None:
             cwd = _resolve_cd(cwd, moved)
+            continue
+        assigned = export_assignments(segment)
+        if assigned is not None:
+            exported.update(assigned)
             continue
         parsed = git_invocation(segment)
         if parsed is None:
@@ -349,7 +399,9 @@ def main() -> None:
         message = verdict(args)
         if not message and args and args[0] in ("commit", "merge", "cherry-pick", "revert"):
             target = os.path.join(cwd, chdir) if chdir else cwd
-            message = harness_verdict(args[0], args[1:], target, inline_env)
+            message = harness_verdict(args[0], args[1:], target, inline_env,
+                                      command_git_env(exported, inline_env),
+                                      input_data.get("session_id"))
         if message:
             print(message, file=sys.stderr)
             sys.exit(2)

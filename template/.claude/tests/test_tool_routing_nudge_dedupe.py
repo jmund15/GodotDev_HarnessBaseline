@@ -1,8 +1,8 @@
 """Re-runnable proof for hooks/tool_routing_nudge.py's repeat-suppression (B5).
 
 The PascalCase-Grep advisory reads identically for every pattern in one target FAMILY, so it
-is delivered once per session per family — a per-pattern key re-delivered known text on each
-new symbol. Read/Obsidian nudges stay keyed by path, where each target is genuinely new.
+is delivered once per session per family. Read/Obsidian path-shape advisories are retired:
+path is not evidence that the caller needs bulk copyable I/O.
 
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
 
@@ -15,7 +15,10 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOOK = os.path.join(HERE, "..", "hooks", "tool_routing_nudge.py")
+HOOKS = os.path.join(HERE, "..", "hooks")
+HOOK = os.path.join(HOOKS, "tool_routing_nudge.py")
+sys.path.insert(0, HOOKS)
+from _hook_state import clear_compaction_keys  # noqa: E402
 
 SID = "trn00001"
 
@@ -35,41 +38,96 @@ def grep(pattern, env, glob="*.cs", session=SID):
     return call("Grep", {"pattern": pattern, "glob": glob}, env, session)
 
 
+def plant_prompt(state_dir, session, prompt):
+    with open(os.path.join(state_dir, session[:8] + ".json"), "w", encoding="utf-8") as fh:
+        json.dump({"last_prompt": prompt}, fh)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="trnstate_")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=tmp, PYTHONIOENCODING="utf-8")
     cases = []
 
-    first = grep("OrderInstance", env)
+    first = grep("SpellInstance", env)
     cases.append(("the first bare-PascalCase Grep on .cs nudges", "tool-routing" in first))
 
-    second = grep("WidgetTier", env)
+    second = grep("TagTier", env)
     cases.append(("a different symbol in the same family does not re-nudge", second == ""))
 
-    other = grep("WidgetTier", env, glob="*.tres")
+    other = grep("TagTier", env, glob="*.tres")
     cases.append(("a different target family still nudges once",
                   "semantic-search" in other))
 
     cases.append(("that family is then suppressed too",
-                  grep("LayoutTemplate", env, glob="*.tres") == ""))
+                  grep("AreaTemplate", env, glob="*.tres") == ""))
+
+    clear_compaction_keys(SID)
+    cases.append(("compaction re-arms advice that left the model context",
+                  "tool-routing" in grep("AbilityBuilder", env)))
 
     cases.append(("a fresh session starts clean",
-                  "tool-routing" in grep("OrderInstance", env, session="trn00002")))
+                  "tool-routing" in grep("SpellInstance", env, session="trn00002")))
 
     # Negatives — dedupe must not swallow a rule that never fired, or widen the trigger.
     cases.append(("an anchored Grep never nudges",
-                  grep("class OrderInstance", env, session="trn00003") == ""))
+                  grep("class SpellInstance", env, session="trn00003") == ""))
     cases.append(("a regex pattern never nudges",
-                  grep("Order(Instance|Effect)", env, session="trn00004") == ""))
-    cases.append(("a Read of a synthesis doc is keyed by path, not family",
-                  "tool-routing" in call("Read", {"file_path": "C:/vault/Design/x.md"},
-                                         env, session="trn00005")))
-    cases.append(("the same Read path is suppressed",
+                  grep("Spell(Instance|Effect)", env, session="trn00004") == ""))
+    cases.append(("a synthesis-shaped Read path alone never nudges",
                   call("Read", {"file_path": "C:/vault/Design/x.md"},
                        env, session="trn00005") == ""))
-    cases.append(("a different Read path still nudges",
-                  "tool-routing" in call("Read", {"file_path": "C:/vault/Design/y.md"},
-                                         env, session="trn00005")))
+    cases.append(("a second synthesis-shaped Read also stays silent",
+                  call("Read", {"file_path": "C:/vault/Architecture/y.md"},
+                       env, session="trn00005") == ""))
+    cases.append(("an Obsidian path alone never nudges",
+                  call("mcp__obsidian__obsidian_get_note",
+                       {"target": {"path": "Claude/Design/x.md"}},
+                       env, session="trn00006") == ""))
+
+    focused = "Read this one design file for the exact paragraph that defines the contract."
+    plant_prompt(tmp, "trn00007", focused)
+    cases.append(("a focused Read stays silent despite a design-shaped path",
+                  call("Read", {"file_path": "C:/vault/Design/x.md"},
+                       env, session="trn00007") == ""))
+
+    derived = "Compare these modules, judge the architecture, and recommend which design should remain."
+    plant_prompt(tmp, "trn00008", derived)
+    cases.append(("derived judgment is not nudged toward a copyable-I/O worker",
+                  call("Read", {"file_path": "C:/vault/Architecture/x.md"},
+                       env, session="trn00008") == ""))
+
+    bulk = "Extract the same raw fields from every file and return one copyable entry per input path."
+    plant_prompt(tmp, "trn00009", bulk)
+    bulk_msg = call("Read", {"file_path": "C:/vault/Design/x.md"},
+                    env, session="trn00009")
+    cases.append(("explicit bulk-copyable extraction gets a Read advisory",
+                  "bulk copyable" in bulk_msg.lower() and "read_files" in bulk_msg))
+
+    plant_prompt(tmp, "trn00010", bulk)
+    # Standalone hook payload with agent_id exercises the same native-subagent seam
+    # used by the registered pre-read dispatcher. No main-loop call pre-consumes dedupe state.
+    payload = {"tool_name": "Read", "session_id": "trn00010", "agent_id": "agent0001",
+               "tool_input": {"file_path": "C:/vault/Design/x.md"}}
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
+                       text=True, timeout=60, env=env)
+    cases.append(("native subagent receives no bulk-copyable Read advisory",
+                  not r.stdout.strip() and r.returncode == 0))
+
+    plant_prompt(tmp, "trn00011", bulk)
+    obsidian_msg = call("mcp__obsidian__obsidian_get_note",
+                        {"target": {"path": "Claude/Design/x.md"}},
+                        env, session="trn00011")
+    cases.append(("explicit bulk-copyable Obsidian read gets read_files advice",
+                  "bulk copyable" in obsidian_msg.lower() and "read_files" in obsidian_msg))
+
+    verified_unique = "The SpellFactory name is verified unique; locate its authored resource use."
+    plant_prompt(tmp, "trn00012", verified_unique)
+    cases.append(("verified-unique cue still exempts a C# symbol Grep",
+                  grep("SpellFactory", env, glob="*.cs", session="trn00012") == ""))
+    cases.append(("verified-unique cue does not exempt an indexed resource Grep",
+                  "semantic-search" in grep("SpellFactory", env, glob="*.tres",
+                                            session="trn00012")))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

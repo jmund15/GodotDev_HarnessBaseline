@@ -1,67 +1,64 @@
 ---
-description: Delegate one task or a job file through the correct pinned executor and emit one manifest
+description: Delegate a scoped job with explicit pins and one attributable result
 argument-hint: <task> | --jobs <path>
 ---
 
 # Delegate
 
-Canonical route for ordinary ad hoc delegation across the current transport and registered sidecars.
-Use `/explore`, plan-draft commands, and `/plan_check` for their fixed panels; do not reproduce them here.
+Use this for ordinary ad hoc jobs. `/explore` and `/plan_check` keep their coverage contracts and use the same engines.
 
 ## Arguments
 
-- `/delegate <task>` — turn the non-empty task into one `single` job. Put the full brief in a scratch `.md`; keep request fields small.
-- `/delegate --jobs <path>` — read one JSON request with `route: single|parallel|chain|review`, optional `contextPath` and `spillDir`, plus `jobs` or `chains`.
-- No argument, a missing/unreadable file, mixed inline and `--jobs`, unknown keys that affect dispatch, or malformed JSON → `HOLD` with the exact missing or invalid value. Do not infer it.
+- `<task>` creates one `single` job; put the brief in a scratch file.
+- `--jobs <path>` reads `{route, jobs|chains, contextPath?, spillDir?}`. Routes: `single|parallel|chain|review`.
+- Missing/ambiguous arguments, unreadable files or malformed input return `HOLD` with the exact problem before dispatch.
 
-Each job needs `label`, `promptPath`, `role`, `model`, `effort`, `transport`, `currency`, and `agentType`. Optional fields are `shape`, `disclosure`, `contextFiles`, and `schemaFile`. `shape` is the delegate guard and must be `any|survey|review|author`; it never selects an executor. `route` selects only `single|parallel|chain|review`; never pass `route` as sidecar `-G` or derive it from `shape`.
+A job requires `label`, `promptPath`, `role`, `model`, `effort`, `transport`, `currency`, `agentType`. Optional: `shape`, `disclosure`, `contextFiles`, `schemaFile`. `shape` is `any|survey|review|author`; it selects delegate rails, never an executor. `route` selects the engine.
 
 ## 1. Normalize and preflight
 
-1. Run `python3 .claude/tools/model_registry.py available`. Resolve availability, transport ids, roles, launcher, effort rungs, prices, and context windows from that output only.
-2. Namespace every bare job label as `<runKey>-<label>`. Reject duplicate effective labels. A chain also needs a non-empty name and jobs.
-3. State the currency before dispatch: `plan-quota`, `marginal-usd`, or `local`. If the request needs paid work and the currency or current band cannot be established, return `HOLD`.
-4. Return exactly one preflight state before work starts:
-   - `PROCEED` — every field, pin, role, route, launcher, prompt path, schema path, and legal transport is confirmed.
-   - `ABORT` — the band denies the spend; a role is unavailable; the request reserves an orchestrator decision; a route is invalid; the task belongs to `/explore`, a plan-draft command, or `/plan_check`; or a native chain crosses transports.
-   - `HOLD` — a required value, file, band, or paid currency is unknown and only the caller can supply it.
-5. Stop on `ABORT` or `HOLD`. Never downgrade a role, translate a provider id, swap currency, or silently drop an arm.
+Check needed model fields through `model_registry.py resolve <model>` / `for-role <role>` and the role ladder. Use `available` when selecting a model, not as a repeated full-catalog ritual. Preserve explicit owner overrides as overrides, not capability promotions; availability and permission boundaries still bind.
 
-## 2. Expand the exact run
+Namespace labels `<runKey>-<label>` and reject duplicates. State model, effort, profile and currency before dispatch. Keep unknown effective settings null.
 
-For `single`, `parallel`, and `chain`, keep one seed row per requested job.
+Return one state:
+- `PROCEED`: scope, inputs, route, eligibility, pins and currency are established.
+- `HOLD`: a required fact or owner decision is missing.
+- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to `/explore`, a plan-draft command or `/plan_check`.
 
-For `review`, expand each logical lens before dispatch:
+Do not silently change a pin, role, provider or currency to get past a failure.
 
-- Add one Anthropic arm from the available fan-out role.
-- Add every other available roster model that claims the fan-out role.
-- Keep each arm's native model id, transport, effort rung, currency, and launcher.
-- Give every arm a unique namespaced key. For a current-transport review, its manifest evidence label is `review:<key>`; this must match the workflow agent label exactly. The expanded seed job count is the required evidence count; zero or duplicate matches fail manifest generation.
+## 2. Keep the declared run
 
-Write the expanded manifest seed under `.claude/scratch/` before dispatch. Keep requested values separate from later effective evidence. Set unknown effective effort to `null`; never copy the requested effort into it.
+**One suitable arm per independently needed job, including review lenses.** Adding an available provider does not add jobs. Keep independent required coverage; related checks may share a scoped lens when coverage stays explicit.
+
+Same-task model comparisons belong to an explicit comparison request (`/pin_ab` or a declared comparison workflow), with named arms, frozen inputs and a finite budget. Do not turn ordinary delivery into calibration or infer comparison eligibility from a mixed-model run.
+
+Write the declared manifest seed before dispatch. For native review, the evidence label is `review:<key>`; other routes retain their namespaced label. The seed count is the required result count.
 
 ## 3. Dispatch through existing owners
 
-Split a mixed run by transport, but preserve one run key and one expanded seed.
+Use paths and short scalars in Workflow args. Every job has explicit `model`, `effort` and `agentType`.
 
-- Current-transport `single` or `parallel` → `Workflow({scriptPath: ".claude/workflows/dispatch.js", args: {jobs: [{label, promptPath, model, effort, agentType, shape}], contextPath, spillDir}})`.
-- Current-transport `chain` → `Workflow({scriptPath: ".claude/workflows/dispatch_chains.js", args: {chains: [{name, jobs: [{label, promptPath, model, effort, agentType, shape}]}], contextPath, spillDir}})`. Every chain stays on one transport.
-- Current-transport `review` → `Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {agents: [{key, promptPath, model, effort, agentType}], contextPrefixPath, spillDir}})`. Map the effective label to `key`, retain its required `agentType`, and use `review:<key>` as the expanded seed's evidence label.
-- Every off-transport group → convert each job to `{label, alias: model, promptFile: promptPath, effort, disclosure, shape, contextFiles, schemaFile, transport}` and run `python3 .claude/tools/sidecar_fanout.py <jobs.json> --out-dir <record-dir>`. The tool resolves the launcher from `alias` and `transport`. `shape` alone maps to sidecar `-G`.
+| Route | Engine and payload |
+|---|---|
+| Native single/parallel | `dispatch.js`: `{jobs:[{label,promptPath,model,effort,agentType,shape}],contextPath,spillDir}` |
+| Native chain | `dispatch_chains.js`: `{chains:[{name,jobs:[...]}],contextPath,spillDir}`; one transport per chain |
+| Native review | `review_fanout.js`: `{agents:[{key,promptPath,model,effort,agentType}],contextPrefixPath,spillDir}` |
+| Off-transport | `sidecar_fanout.py`: jobs `{label,alias:model,promptFile:promptPath,effort,disclosure,shape,contextFiles,schemaFile,transport}` |
 
-Do not use a bare Agent call for exact pins. Workflow and Agent stay on the current endpoint; neither can reach another transport. Use `dispatch.js`, `dispatch_chains.js`, and `review_fanout.js` as the native executor family, and `sidecar_fanout.py` as the cross-transport owner.
+Native engines are under `.claude/workflows/`; sidecar CLI is `python3 .claude/tools/sidecar_fanout.py <jobs.json> --out-dir <record-dir>`. On the off-transport route `shape` supplies sidecar `-G`; never pass `route` as `-G` or derive one from the other. Split transports without changing job identity. Workflow/Agent do not cross endpoints; a bare Agent call cannot supply an exact effort pin.
 
-Large prompts and context live in files. Workflow `args` carries paths and short scalar values. Use a repository-relative spill directory under `.claude/scratch/`. Paid sidecars never auto-retry; recover a null return from the declared spill file or transcript before considering another dispatch.
+Keep full evidence in a run-specific `.claude/scratch/` artifact and return a bounded digest. Select a profile that can produce the promised artifact; read-only profiles use their supported recovery path. Wait for completion events, not repeated status polling. Recover existing output before any new model call; a whole-task retry is not transport recovery.
 
 ## 4. Consume and finalize
 
-1. Read every returned digest, spill, or structured review result. Treat a missing required arm as uncovered, not clean.
-2. Record each consumed label immediately in `.claude/orchestration_verdicts.json` as `clean`, `defects`, `rework`, or `discarded` before building the manifest.
-3. Build the run record without appending the metrics archive:
+1. Verify each artifact and required source/finding coverage. Missing or malformed output is uncovered, not a clean zero. Recheck relevant inputs that changed during a read-only job.
+2. Record each consumed label in `.claude/orchestration_verdicts.json`: `clean|defects|rework|discarded`. Keep task completion separate from process exit.
+3. Build the existing manifest without appending the metrics archive:
 
 ```bash
 python3 .claude/tools/orchestration_metrics.py --manifest-seed <seed.json> --manifest-out <manifest.json> --session <session-dir> --sidecar-record-dir <record-dir> --manifest-verdicts .claude/orchestration_verdicts.json
 ```
 
-4. Confirm the manifest contains the expanded seed job count, one exact evidence join per label, distinct `workflow|sidecar` sources, requested and effective fields kept separate, and status `completed`. Missing or duplicate evidence is a failed run, not a partial success.
-5. Report preflight state, route, exact pins, currency, manifest path, status, and any uncovered arm. Do not report actual Codex spend from Claude Code's `anthropic-rate` estimate.
+Verify one evidence join per declared label, requested/effective fields kept separate, distinct `workflow`/`sidecar` sources, status `completed` and all required outputs accounted for. Report result, verification, artifact and unmet scope briefly. Codex quota is not Claude Code's estimated Anthropic-dollar cost.

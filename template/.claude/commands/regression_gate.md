@@ -65,7 +65,7 @@ PEERS site=preflight runners=0 gates=0 action=proceed
 PEERS site=preflight crossCheckoutGates=1 action=proceed   (another checkout's gate — this run proceeds; its runtime suites may wait)
 QUEUE_WAIT id=q20260819-112809-3948 pending=1 attempt=1 remaining=1740s   (heartbeat, every 60s while parked)
 ENGINE=OK ver=4.7.1
-GUARDS nullstrip=OK tool_cascade=OK script_strip=OK trail_seam=OK gate_coverage=OK dup_double=OK refcount_free=OK   (plus any project-specific guards)
+GUARDS nullstrip=OK tool_cascade=OK script_strip=OK trail_seam=OK floorcell_seam=OK gate_coverage=OK dup_double=OK refcount_free=OK
 BUILD=OK
 DOCS=OK
 SUITE Logic       passed=8814 failed=0 tier=PASS delta=+0 status=DONE dur=161s
@@ -94,11 +94,11 @@ VERDICT=PASS
 
 Exits 0, 1, 3 and `STATIC_PASS` may be returned **via REUSE**; a reused exit 1 still runs the adjudication below. Exit **5 is the Integration runner's internal code** (`BUDGET_EXCEEDED` or a LOCKED-only completion) — the gate converts it to the automatic `-RetryOnly` pass, the queue handoff, or exit 6; never a final gate exit.
 
-**On `HANG` or `INVALID`, load the [Testing Skill](/.claude/skills/testing/SKILL.md)** — it owns GdUnit4 runtime troubleshooting (wedged-wrapper `taskkill` by parent chain, named-pipe exhaustion, when reboot is the terminal fix). Not on the happy path; the script encodes the mechanics the gate needs.
+**On `HANG` or `INVALID`, load [testing `reference/running.md`](/.claude/skills/testing/reference/running.md)** — it owns GdUnit4 runtime troubleshooting (wedged-wrapper `taskkill` by parent chain, named-pipe exhaustion, when reboot is the terminal fix). Not on the happy path; the script encodes the mechanics the gate needs.
 
 **A second `HANG`, or counts that DROP across retries, means machine state is exhausted — stop retrying.**
 
-**Direct `run_test_suite.ps1` invocations refuse, they don't queue.** Called outside the gate (a documented pattern in the Testing skill and any project skill that runs suites directly), it builds into the same shared `.godot/mono/temp/bin/Debug/` and is as destructive against an open editor — so at entry it emits `STATUS=EDITOR_OPEN label=<label>` and exits **126**. `-IgnoreEditor` overrides; the gate's `-FromQueue` path forwards it so a watcher-fired run never self-blocks on the check it already passed.
+**Direct `run_test_suite.ps1` invocations refuse, they don't queue.** Called outside the gate (a documented pattern in the Testing and procgen skills), it builds into the same shared `.godot/mono/temp/bin/Debug/` and is as destructive against an open editor — so at entry it emits `STATUS=EDITOR_OPEN label=<label>` and exits **126**. `-IgnoreEditor` overrides; the gate's `-FromQueue` path forwards it so a watcher-fired run never self-blocks on the check it already passed.
 
 **A queued run cannot be lost — three channels, in order of immediacy.** (1) The gate **waits by default** (`-WaitForQueue`, 1800s) and exits with the queued run's real verdict; backgrounded, that process exit wakes the session. (2) Otherwise the result is announced **on the next prompt** as a `[gate-queue]` line (`hooks/activity_registry.py`) and at the next SessionStart (`hooks/session_context_loader.py`); both read `hooks/gate_queue_surface.py`, which tracks seen-state **per session**, so two sessions on one checkout are each told independently. (3) `-QueueStatus` on demand. Only a result the watcher never produced is invisible — check `.claude/scratch/gate_queue/watcher.log` if a request stays `pending` past its expected run time.
 

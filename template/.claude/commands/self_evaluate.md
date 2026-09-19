@@ -31,26 +31,32 @@ route through `/autolearn`, which (in `/session_end`) runs first and has already
     * A: most signficiantly increase odds of compliance and proper information acquisition
     * B: adds the least amount of context to existing Skills and Hooks as possible
 5. **Delegation calibration** (orchestrator-tier sessions only). Did dispatched chunks land near expected grain/quality? Was review effort ~10–20%? Was anything kept inline a lower tier could've taken — or dispatched that shouldn't have been? For each **missed delegation** (inline work that met the `orchestration` §11 delegation litmus), also record: (a) the rationalization that kept it inline ("already in context", "faster to just do it", "spec felt like overhead", "scope looked smaller than it was"), and (b) whether a harness edit would have prevented the miss (a sharper litmus line, a new trigger cue, a ladder-row example) — name the file + edit shape, don't just say "improve guidance". Record a material finding: user-flagged → `corrections[]`; self-observed → prefix `key_takeaway`/`notes` with `DELEGATION:` (include the rationalization + proposed-edit fields). Recurring `DELEGATION:` findings are the `/autolearn` signal to revise the ladder (`reference/model_ladder_evidence.md`) or the grain rules (`orchestration` §11).
-6. UPSERT a **structured entry** in the self-evaluate archive at `/.claude/self_evaluate_archive.json` — see Step 5 for the strict one-entry-per-session contract.
+6. UPSERT one structured entry through `.claude/tools/self_eval_archive_store.py`; the tracked JSON file is a read-only legacy snapshot.
 
 ### Step 5: Archive Entry Format
 
-> **Primary-key contract (load-bearing):** the archive holds **exactly ONE entry per Claude Code session**. The composite primary key is `session_id` (preferred, when available) or `(title, date)` (fallback for legacy entries that pre-date the `session_id` field). If `/self_evaluate` runs more than once on the same session, you MUST edit the existing entry in-place — never append a duplicate.
+> **Primary-key contract:** one effective entry per `session_id`. The frozen legacy snapshot plus bounded JSONL ledger are read through the store; never model-read or rewrite the whole archive.
 
-#### 5a. Resolve session identity FIRST
+#### 5a. Resolve and look up the session
 
-Before drafting the entry:
+1. Determine the exact `session_id` from the Phase 0 digest. If it is unavailable, stop and record Phase 3 as blocked; new rows require exact session identity.
+2. Run `python3 .claude/tools/self_eval_archive_store.py --lookup "<session_id>"`. Exit 0 returns the current row. Exit 1 means no row exists. Exit 2 or `REFUSED` means invalid or unreadable evidence; record Phase 3 as blocked.
 
-1. Determine the current **session_id** — read it from the active `logs/pre_compact.json` entries (same source as Step 0a). If unavailable, fall back to the JSONL transcript filename prefix (`<session_id>_*.jsonl`). If neither is recoverable, set `session_id: null` and use `(title, date)` as the key.
-2. Read `self_evaluate_archive.json`. Search `structured_entries[]` for an existing record where `session_id` matches (or where `(title, date)` matches if `session_id` is null). At most one match is expected.
-
-#### 5b. Branch on existence
+#### 5b. Draft and publish
 
 | Lookup result | Action |
 |---|---|
-| **No match** (first eval for this session) | APPEND a new entry per the schema below. Assign `id` = max existing id + 1. |
-| **One match** (re-run on same session) | EDIT the existing entry in-place per the merge semantics below. Do NOT append a new record, do NOT change its `id`. |
-| **Two+ matches** | This is a pre-existing duplication artifact. Edit the **earliest** (lowest `id`) and mark the others for cleanup in `notes` (`"DUPE_PENDING_CLEANUP: see id=N"`). Do not auto-delete; flag it for the next dedup sweep. |
+| **No row** | Draft a new row from the schema below. Omit `id`; the store assigns it. |
+| **Existing row** | Apply the merge rules below. Preserve its `id` and frozen fields. |
+
+Write the complete candidate to `.claude/scratch/self_evaluate-entry-<session_id>.json`, then run:
+
+```bash
+python3 .claude/tools/self_eval_archive_store.py --upsert .claude/scratch/self_evaluate-entry-<session_id>.json
+python3 .claude/tools/self_eval_archive_store.py --lookup "<session_id>" > ".claude/scratch/self_evaluate-selected-<session_id>.json"
+```
+
+The lookup must exit 0. Read the saved selected-row file back and confirm its `session_id` and `id` match the published entry. Use the selected-row file as Phase 3 receipt evidence. A refusal or mismatch leaves Phase 3 incomplete.
 
 #### 5c. Merge semantics (re-run case)
 
@@ -60,7 +66,7 @@ When editing an existing entry, fields update with these rules — do not blindl
 |---|---|---|
 | `session_id`, `id`, `date` | **Frozen** (never change) | Primary key + chronological anchor |
 | `shape` | **Last-wins** (replace with current values) | Reflects the session's shape at the time of this eval, not the first |
-| `title` | **Frozen** unless wildly inaccurate; if updated, preserve the original in `notes` | Stable for `(title, date)` fallback lookup |
+| `title` | **Frozen** unless inaccurate; if updated, preserve the original in `notes` | Stable dashboard label |
 | `outcome` | **Escalate-only**: `clean` → `correction` → `failure`. Never downgrade. | A correction discovered on re-run means the session was not clean; demoting hides drift. |
 | `pattern` | If new pattern is more severe (A > B > C; E > A), update; else keep | Pattern A trumps Pattern C; failure-cascade E is sticky |
 | `domains` | **Set-merge** (union, deduplicated) | New investigation may surface domains the first run missed |
@@ -77,7 +83,7 @@ When editing an existing entry, fields update with these rules — do not blindl
 ```json
 {
   "session_id": "<Claude Code session UUID, e.g. 6d9da1fc-...>",
-  "id": <sequential, assigned at creation, NEVER changed on re-run>,
+  "id": <omit for a new row; preserve the existing integer on re-run>,
   "title": "Brief phrase-length session title",
   "date": "YYYY-MM-DD",
   "shape": {"compactions": <int>, "duration_min": <int>, "slices": <int|null>, "drive_command": "<command|null>"},
@@ -104,18 +110,18 @@ When editing an existing entry, fields update with these rules — do not blindl
 ```
 
 **Field guidance:**
-- `session_id`: REQUIRED for new entries. NULL is acceptable only when the Claude Code session UUID is genuinely unrecoverable (rare).
+- `session_id`: REQUIRED. If the exact Claude Code session UUID is unrecoverable, do not publish.
 - `shape`: `compactions` and `duration_min` copied from the Phase 0 digest header; `slices` = executed plan slices or `null`; `drive_command` = the drive command that owned the session or `null`.
 - `outcome`: "clean" = zero user corrections. "correction" = user caught 1+ issues. "failure" = critical failure (data loss, repeated user frustration, etc.)
 - `pattern`: Classify using established patterns from `Self_Evaluate_Themes.patterns` (A/B/C/D/E). **A `correction` or `failure` outcome MUST carry a non-null pattern (A/B/D/E)** — `null` is reserved for `clean` sessions. If a correction fits no existing pattern, add a new letter to `Self_Evaluate_Themes.patterns` rather than leaving it null; a null-on-correction is invisible to `/eval_dashboard`'s pattern distribution. (Clean sessions: `null` and the legacy `C` both read as "clean" — `/eval_dashboard` normalizes them.)
 - `domains`: Tag ALL domains the session touched. Common values: `pooling`, `testing`, `combat`, `refactoring`, `UI`, `animation`, `meta`, `brainstorm`, `debugging`, `data-files`, `environment`, `collision`, `HSM`, `spell-effects`, `orchestration`
 - `corrections`: Be specific. "Skipped TDD for .tres edit" not "made a mistake"
 - `friction`: one row per digest friction class (dedupe identical errors); `accepted` carries its reason. Empty array only when the digest's friction section is empty
-- `memory_hits`: Seed from `python3 .claude/tools/memory_hits.py --session <id>` (every auto-memory path this session read or searched), then keep only entries that **actually informed a decision** — not every logged read
+- `memory_hits`: Seed from `python3 .claude/tools/memory_hits.py --session <id>` (every auto-memory path this session read or searched), then keep only entries that **actually informed a decision** — not every logged read. Write each as the memory's file stem (`gotcha_x`), without path, `.md` or reason; `/eval_dashboard` counts hits by that name
 - `tests.tdd_followed`: `false` if you wrote implementation before a failing test in Logic Domain
 - `key_takeaway`: Compare with past entries. If the same takeaway repeats, note it as a recurring theme
 
-**Anti-pattern: append-without-lookup.** If you reach Step 5 and immediately draft a new entry without first reading the archive and searching for the current session_id, STOP. Read the archive, search for the key, then branch on 5b.
+**Anti-pattern: direct archive editing.** Draft one small candidate row, then use the store for lookup, validation, ID assignment, locking, rotation and publication.
 
 **DO NOT save self-evaluate data to auto-memory — it pollutes recall.**
 

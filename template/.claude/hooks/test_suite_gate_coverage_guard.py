@@ -4,7 +4,7 @@
 /regression_gate runs exactly three filters -- `FullyQualifiedName~Tests.{Logic,Integration,Sanity}`.
 A `[TestSuite]` living under any other top-level `Tests/<X>/` name compiles, passes review, and is
 never executed by any gate: green build, green gate, zero coverage. That shape already shipped 37
-never-run tests in an unfiltered folder (archive/arch_rule_test_namespace_matches_gate_filter.md).
+never-run Encounter tests (archive/arch_rule_test_namespace_matches_gate_filter.md).
 
 Two exclusions are deliberate -- Tests/Stress and Tests/ProcGenSim are measurement/simulation
 batteries, not correctness suites, and both blow past the runner's wall-clock cap by construction.
@@ -12,7 +12,7 @@ Until now that exclusion existed only as prose, indistinguishable from an oversi
 is the machine-readable version: a named directory plus the rationale that earned it the pass.
 
 Detection: a top-level `Tests/<X>/` directory containing a `.cs` file whose stripped line is exactly
-`[TestSuite]` on a NON-abstract class. Exactness matters -- a Tests/Framework logger spy and its
+`[TestSuite]` on a NON-abstract class. Exactness matters -- Tests/Framework/SpyLogger.cs and its
 suite carry the marker inside doc comments and `JmoLogger.Info("[TestSuite]", ...)` string literals.
 Abstract carriers matter too -- Tests/Framework/Fixtures/*.cs mark abstract base fixtures whose
 concrete subclasses live (and run) under the gated namespaces.

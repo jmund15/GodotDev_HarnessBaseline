@@ -17,7 +17,7 @@ files it modified, its last message. Tool: `.claude/tools/session_digest.py`.
 - `<id-prefix>` → that session (`--session`). No match → run `--list 8` and pick by first prompt and time.
 - `list [N]` → newest N transcripts (id, time, size, first prompt) and stop.
 
-Pass `--brief` unless the user asks for full prompt text.
+Default output is the small overview (≤2048 UTF-8 bytes): identity, counts, latest request, last outcome, retrieval route. `--brief` is the same overview. `--full` renders every prompt, friction row, file and the whole outcome. `--tools` appends the explicit tool census outside the overview budget.
 
 ```bash
 python3 .claude/tools/session_digest.py --match-file .claude/scratch/digest_paste.txt --brief

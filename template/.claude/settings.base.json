@@ -1,13 +1,229 @@
 {
+  "enabledPlugins": {
+    "claude-code-setup@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "csharp-lsp@claude-plugins-official": true,
+    "explanatory-output-style@claude-plugins-official": true
+  },
   "env": {
     "CLAUDE_CODE_GLOB_NO_IGNORE": "false"
   },
-  "permissions": {
-    "deny": [
-      "Glob(.claude/worktrees/**)",
-      "Read(.claude/worktrees/**)",
-      "Grep(.claude/worktrees/**)"
+  "hooks": {
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/log_instruction_loads.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_edit_dispatch.py\"",
+            "timeout": 45,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/runaway_scan_reaper.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "^(?:Agent|Workflow|TaskStop|TaskOutput|Skill|ToolSearch|LSP|NotebookEdit|mcp__.*)$"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_read_dispatch.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search|mcp__ai-worker__write_doc"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/skill_load_marker.py\"",
+            "type": "command"
+          }
+        ],
+        "matcher": "Skill"
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/transcript_backup.py\"",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_ledger.py\"",
+            "timeout": 30,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_edit_dispatch.py\"",
+            "timeout": 60,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/kill_guard.py\"",
+            "timeout": 20,
+            "type": "command"
+          }
+        ],
+        "matcher": "TaskStop"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash_dispatch.py\"",
+            "timeout": 75,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/kill_guard.py\"",
+            "timeout": 20,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|PowerShell|Monitor"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/workflow_provider_guard.py\"",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_mechanism_guard.py\"",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": "Workflow|Agent"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_read_dispatch.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\" --worktree --editor-check --repair-inplace",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__godot__run_project"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_context_loader.py\"",
+            "timeout": 600,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_model_rails.py\"",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\" --worktree --editor-check --repair-inplace",
+            "timeout": 30,
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_anchor.py\"",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "compact"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_memory_loader.py\"",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/critical_analysis_reminder.py\"",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_git_state_delta.py\"",
+            "timeout": 15,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_cumulative_reset.py\"",
+            "timeout": 5,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_prompt_synthesis.py\"",
+            "timeout": 5,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/shell_census.py\"",
+            "timeout": 25,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/runaway_scan_reaper.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
     "allow": [
       "Bash(dotnet build:*)",
       "Bash(dotnet test:*)",
@@ -146,203 +362,11 @@
       "Skill(routing_battery)",
       "Skill(worklog)",
       "Skill(game_vision)"
+    ],
+    "deny": [
+      "Glob(.claude/worktrees/**)",
+      "Read(.claude/worktrees/**)",
+      "Grep(.claude/worktrees/**)"
     ]
-  },
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_memory_loader.py\"",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/critical_analysis_reminder.py\"",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_git_state_delta.py\"",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_cumulative_reset.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_prompt_synthesis.py\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Monitor",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/bash_shape_guard.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Bash|PowerShell",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/unbounded_scan_guard.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/git_guardrails.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dangerous_shell_guard.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit|Bash|PowerShell",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pattern_enforcer.py\"",
-            "timeout": 30
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compound_cd_approver.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/cloud_test_enforcer.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Grep|Glob|mcp__obsidian__obsidian_read_note|mcp__obsidian__obsidian_global_search|mcp__plugin_semantic-search_semantic-search__search",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_read_dispatch.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/harness_edit_skill_reminder.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/running_script_edit_guard.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/file_size_preblock.py\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_context_loader.py\"",
-            "timeout": 600
-          }
-        ]
-      }
-    ],
-    "InstructionsLoaded": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/log_instruction_loads.py\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/transcript_backup.py\"",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "ExitPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/plan_memory_reminder.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Grep|Glob|mcp__obsidian__obsidian_read_note|mcp__obsidian__obsidian_global_search|mcp__plugin_semantic-search_semantic-search__search",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_read_dispatch.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_logger_tag_prefix.py\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  },
-  "enabledPlugins": {
-    "context7@claude-plugins-official": true,
-    "claude-code-setup@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
-    "explanatory-output-style@claude-plugins-official": true,
-    "csharp-lsp@claude-plugins-official": true
   }
 }

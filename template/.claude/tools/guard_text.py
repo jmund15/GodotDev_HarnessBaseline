@@ -9,7 +9,8 @@ Four transports deliver them and none may re-implement the parse:
   * hooks/session_model_rails  — INLINES, via guard_text(), for a sidecar `claude` child
   * scripts/lib/sidecar_common.sh — INLINES, via this module's CLI, on the -D bare/pointer
                                  tiers where no project hook fires
-    (scripts/codex_sidecar.sh, a former CLI caller, is retired — refusing stub since 2026-08-20)
+    (the former `codex exec` CLI launcher stub was retired, then deleted (2026-09-14);
+     codex_proxy_sidecar.sh is the codex transport's sole launcher)
 
 The two inlining callers share this parse. A second implementation in awk or JS is the drift
 that dispatch.js:73 already warns against, and it would fail silently: a guard that extracts

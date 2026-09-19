@@ -14,17 +14,16 @@ Detection: distinctive suggestion-shape phrases ("i think we should",
 prior fire this session.
 
 State file:
-- ~/.claude/.routing_state/<sid>.json (shared with cumulative hooks).
-- Reads/writes the `critical_analysis_session_fired: bool` field.
-- Other fields preserved unchanged across read-modify-write.
+- The shared routing state file, `_hook_state.state_path(session_id)`.
+- Reads/writes the `critical_analysis_session_fired: bool` field under the shared lock, so fields
+  other hooks write survive.
 """
 
 import json
-import os
 import re
 import sys
 
-from _hook_state import read_json_salvage, write_json_atomic
+from _hook_state import read_json_salvage, state_path, update_json_locked
 
 
 PROPOSAL_PATTERNS = [
@@ -55,7 +54,6 @@ SKIP_PATTERNS = [
     r"^\s*/",  # Slash commands
 ]
 
-STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 SESSION_FIRED_FLAG = "critical_analysis_session_fired"
 
 
@@ -68,37 +66,19 @@ def _is_proposal(prompt: str) -> bool:
 
 
 def _state_path(session_id: str) -> str:
-    sid_short = (session_id[:8] if session_id else "default")
-    return os.path.join(STATE_DIR, f"{sid_short}.json")
+    return state_path(session_id)
 
 
 def _already_fired(session_id: str) -> bool:
     """True if this session already saw the rubric. Defensive on errors."""
-    try:
-        with open(_state_path(session_id), "r", encoding="utf-8") as f:
-            state = json.load(f)
-        return bool(state.get(SESSION_FIRED_FLAG, False))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return False
+    return bool(read_json_salvage(_state_path(session_id)).get(SESSION_FIRED_FLAG, False))
 
 
 def _mark_fired(session_id: str) -> None:
-    """Write the session-fired flag back. Read-modify-write preserves other fields."""
-    path = _state_path(session_id)
-    state: dict = {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                state = loaded
-    except (OSError, json.JSONDecodeError, ValueError):
-        state = {}
-    state[SESSION_FIRED_FLAG] = True
-    try:
-        write_json_atomic(path, state)
-    except OSError:
-        pass  # Non-fatal: dedupe degrades to per-call (current behavior)
+    """Set the session-fired flag under the shared lock so concurrent hooks keep their fields.
+
+    Non-fatal: a failed update degrades dedupe to per-call."""
+    update_json_locked(_state_path(session_id), lambda state: state.__setitem__(SESSION_FIRED_FLAG, True))
 
 
 def main() -> None:

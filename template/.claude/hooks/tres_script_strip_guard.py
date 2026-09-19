@@ -4,7 +4,7 @@
 A stale-class-registry editor resave silently drops the `[ext_resource type="Script"]`
 + `script = ExtResource(...)` binding from a custom-Resource .tres. The resource then
 loads as a bare Godot.Resource, and any cast to its C# type throws InvalidCastException
--- with a green build and no warning. This bit gameplay config .tres files
+-- with a green build and no warning. This bit the encounter/floor/procgen config .tres
 TWICE: fixed in 67873ef1, then re-stripped by 55ef215c across 22 files (only 4 tests
 cast-and-caught it; the damage was far wider). See
 gotcha_godot_editor_resave_hazards.
@@ -64,6 +64,10 @@ REMOVED = re.compile(r"^-\s*script = ExtResource\(")
 ADDED = re.compile(r"^\+\s*script = ExtResource\(")
 FILE_HDR = re.compile(r"^\+\+\+ (?:b/(.*)|/dev/null)$")
 
+# The commit's git environment, set by hook() from the invocation it judges: the staged diff is read
+# from the index that commit publishes (`GIT_INDEX_FILE=<f> git commit`). None inherits.
+_GIT_ENV = None
+
 
 def diff_lines(range_arg, worktree=False):
     cmd = ["git", "diff", "-U0", "--no-color"]
@@ -74,7 +78,8 @@ def diff_lines(range_arg, worktree=False):
     else:
         cmd += ["--cached"]
     cmd += ["--", "*.tres"]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.splitlines()
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=_GIT_ENV).stdout.splitlines()
 
 
 def find_strips(range_arg, worktree=False):
@@ -139,11 +144,13 @@ def hook():
         print("{}")
         return 0
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from _git_commit import commit_invocations, bypass_declared
+    from _git_commit import commit_invocations, bypass_declared, git_environ
     cmd = data.get("tool_input", {}).get("command", "")
     commits = [c for c in commit_invocations(cmd, data.get("cwd") or ".") if c.sub == "commit"]
     if commits:
         commit = commits[-1]
+        global _GIT_ENV
+        _GIT_ENV = git_environ(commit.git_env)
         if bypass_declared(commit.inline_env, "HARNESS_ALLOW_TRES_SCRIPT_REMOVAL"):
             print("{}")
             return 0
@@ -177,7 +184,7 @@ def hook():
             "additionalContext": (
                 "[tres-script-strip-guard] `git restore`/`checkout` of a .tres re-plants the "
                 "OLD-FORMAT dirty-flag bomb (ext_resource uid-less -> editor rewrites at the next "
-                "save -> strip recurs, the 4x config corruption). For a stripped file use "
+                "save -> strip recurs, the 4x encounter corruption). For a stripped file use "
                 "`tres_script_strip_guard.py --worktree --repair-inplace` (keeps the editor's "
                 "normalization); godot_files.md §UID handling."
             ),

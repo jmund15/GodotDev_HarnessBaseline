@@ -33,6 +33,13 @@ def tool_use(kind, value):
     return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": value, "name": "Read" if kind == "read" else "Bash", "input": {key: value}}]}}
 
 
+def tool_result(tool_id, is_error=False):
+    return {"type": "user", "message": {"content": [{
+        "type": "tool_result", "tool_use_id": tool_id, "is_error": is_error,
+        "content": "finished",
+    }]}}
+
+
 def write_transcript(tmpdir, lines, sid=SID):
     path = os.path.join(tmpdir, sid + ".jsonl")
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
@@ -41,11 +48,25 @@ def write_transcript(tmpdir, lines, sid=SID):
     return path
 
 
+def archive_entry(session_id, entry_id):
+    return {
+        "session_id": session_id,
+        "id": entry_id,
+        "title": "fixture",
+        "date": "2026-09-12",
+        "outcome": "clean",
+        "pattern": None,
+        "domains": ["meta"],
+        "corrections": [],
+    }
+
+
 def write_archive(tmpdir, session_ids, name="archive.json"):
     path = os.path.join(tmpdir, name)
-    entries = [{"session_id": sid, "id": i} for i, sid in enumerate(session_ids)]
+    entries = [archive_entry(sid, i) for i, sid in enumerate(session_ids)]
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"structured_entries": entries, "legacy_entries": []}, fh)
+        json.dump({"Self_Evaluate_Themes": {"patterns": {"A": "fixture"}},
+                   "structured_entries": entries, "legacy_entries": []}, fh)
     return path
 
 
@@ -112,6 +133,9 @@ def main():
         all_path = write_transcript(tmp, ALL_MANDATORY_LINES, sid=OTHER_SID)
         archive_hit = write_archive(tmp, [OTHER_SID], name="archive_hit.json")
         archive_miss = write_archive(tmp, ["some-other-session"], name="archive_miss.json")
+        archive_ledger = write_archive(tmp, ["some-other-session"], name="archive_ledger.json")
+        with open(archive_ledger[:-5] + ".jsonl", "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(archive_entry(OTHER_SID, 3)) + "\n")
 
         # --- default mode: missing mandatory phases -> exit 1, phases printed -----------
         rc, out = run(["--transcript", partial_path])
@@ -125,6 +149,17 @@ def main():
         check("command reads alone do not finish closeout", rc == 1, detail=out[-400:])
         check("command reads produce no all-clear", "All checked phases have current receipts" not in out)
         write_receipts(tmp, OTHER_SID)
+
+        # --- successful invocation is still only an observation -------------------------
+        digest_call = "python3 .claude/tools/session_digest.py --prompt-tail session_end"
+        succeeded_path = write_transcript(
+            tmp, ALL_MANDATORY_LINES + [tool_result(digest_call)], sid=SID + "-success")
+        observed = checker.phase_observations(succeeded_path)["session_digest"]
+        check("a successful tool result is observed but never marks completion",
+              observed["tool_succeeded"] and not observed["completed"])
+        rc, out = run(["--transcript", succeeded_path])
+        check("successful invocation without a receipt does not complete the phase",
+              rc == 1 and "[unknown]" in line_with(out, "session_digest"), detail=out[-400:])
 
         # --- --resume: some phases missing -> names the first, always exit 0 -------------
         rc, out = run(["--transcript", partial_path, "--resume"])
@@ -147,6 +182,11 @@ def main():
         rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
         check("--artifacts exits 0 when the archive holds this session's row", rc == 0, detail=out[-400:])
         check("--artifacts reports completed self-evaluate", "[completed]" in line_with(out, "self_evaluate"))
+
+        # --- --artifacts: Phase 3 accepts a target row held only in the bounded ledger -------
+        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_ledger])
+        check("--artifacts accepts a ledger-only Phase 3 row", rc == 0,
+              detail=out[-400:])
 
         # --- --resume --artifacts: a receipted phase whose artifact is missing moves RESUME AT ----
         rc, out = run(["--transcript", all_path, "--resume", "--artifacts", "--archive", archive_miss])
@@ -186,6 +226,85 @@ def main():
             check(label, (f"transcript: {expected_sid}.jsonl" in text) if expected_sid else
                   ("UNKNOWN" in text and "transcript:" not in text), detail=text)
             check(label + ": selected transcript determines exit code", rc == expected_rc, detail=str(rc))
+
+    # --- receipt freshness propagates only through declared inputs/dependencies --------
+    with tempfile.TemporaryDirectory() as tmp:
+        checked_input = Path(tmp) / "checked-input.txt"
+        upstream_evidence = Path(tmp) / "upstream-result.json"
+        downstream_evidence = Path(tmp) / "downstream-result.json"
+        selected_archive_row = Path(tmp) / "selected-self-eval.json"
+        unrelated_archive = Path(tmp) / "append-only-archive.jsonl"
+        checked_input.write_text("v1", encoding="utf-8")
+        upstream_evidence.write_text("{}", encoding="utf-8")
+        downstream_evidence.write_text("{}", encoding="utf-8")
+        selected_archive_row.write_text("{}", encoding="utf-8")
+        unrelated_archive.write_text("{}\n", encoding="utf-8")
+
+        upstream = checker.make_receipt(
+            SID, "session_digest", "completed", [str(checked_input)],
+            [str(upstream_evidence)], "digest complete")
+        downstream = checker.make_receipt(
+            SID, "session_audit", "completed", [str(checked_input)],
+            [str(downstream_evidence)], "audit complete",
+            dependencies={"session_digest": upstream},
+            available={"session_digest": upstream})
+        receipts = {"session_digest": upstream, "session_audit": downstream}
+        check("fresh declared inputs and dependencies keep both receipts current",
+              checker.receipt_status(upstream, SID, receipts) == "completed"
+              and checker.receipt_status(downstream, SID, receipts) == "completed")
+        checked_input.write_text("v2", encoding="utf-8")
+        check("a changed checked input invalidates its receipt",
+              checker.receipt_status(upstream, SID, receipts) == "stale")
+        check("a changed upstream input invalidates dependent phase receipts",
+              checker.receipt_status(downstream, SID, receipts) == "stale")
+
+        stable = checker.make_receipt(
+            SID, "self_evaluate", "completed", [str(selected_archive_row)],
+            [str(selected_archive_row)], "selected row verified")
+        unrelated_archive.write_text("{}\n{\"session_id\":\"peer\"}\n", encoding="utf-8")
+        check("an unrelated archive append does not stale selected-row evidence",
+              checker.receipt_status(stable, SID, {"self_evaluate": stable}) == "completed")
+
+    # --- cold replay records and resumes only inside an isolated fixture ----------------
+    with tempfile.TemporaryDirectory() as tmp:
+        cold_sid = "cold0000-0000-0000-0000-000000000003"
+        cold_path = write_transcript(tmp, ALL_MANDATORY_LINES, sid=cold_sid)
+        cold_archive = write_archive(tmp, ["peer-session"], name="cold-archive.json")
+        with open(cold_archive[:-5] + ".jsonl", "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(archive_entry(cold_sid, 9)) + "\n")
+        recorded = {}
+        dependency_map = {
+            "session_audit": ["session_digest"],
+            "autolearn": ["session_digest", "session_audit"],
+            "self_evaluate": ["session_digest", "session_audit", "autolearn"],
+            "update_roadmap": ["roadmap_atlas"],
+        }
+        for _, stem, mandatory in checker.PHASES:
+            if stem not in checker.required_phases("precommit"):
+                continue
+            input_path = Path(tmp) / (stem + "-input.txt")
+            evidence_path = Path(tmp) / (stem + "-result.json")
+            input_path.write_text(stem, encoding="utf-8")
+            evidence_path.write_text("{}", encoding="utf-8")
+            status = "completed" if mandatory else "skipped"
+            args = ["--transcript", cold_path, "--record", stem, "--status", status,
+                    "--input", str(input_path), "--reason", "isolated cold replay"]
+            if status == "completed":
+                args += ["--evidence", str(evidence_path)]
+            for dependency in dependency_map.get(stem, []):
+                args += ["--depends", dependency]
+            rc, out = run(args)
+            recorded[stem] = (rc, out)
+        check("cold replay records every precommit phase without shared state",
+              all(rc == 0 for rc, _ in recorded.values()), detail=repr(recorded))
+        rc, out = run(["--transcript", cold_path, "--artifacts", "--archive", cold_archive])
+        check("cold replay reaches a complete precommit closeout", rc == 0, detail=out[-500:])
+        with open(cold_archive[:-5] + ".jsonl", "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(archive_entry("unrelated-session", 10)) + "\n")
+        rc, out = run(["--transcript", cold_path, "--resume", "--artifacts",
+                       "--archive", cold_archive])
+        check("cold replay ignores an unrelated archive append",
+              rc == 0 and "RESUME AT: none" in out, detail=out[-500:])
 
     print()
     n_checks = check.calls

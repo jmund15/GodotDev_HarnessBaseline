@@ -3,22 +3,36 @@
 Three kinds of file live here; consult before assuming a file is dead:
 
 1. **Event hooks** — registered in `settings.json` `hooks`. Entry points:
-   `pre_read_dispatch.py` / `post_read_dispatch.py` (read/search tool family) and
+   `pre_read_dispatch.py` / `post_read_dispatch.py` (read/search tool family),
+   `pre_edit_dispatch.py` / `post_edit_dispatch.py` (Write|Edit family: before the edit
+   `harness_edit_skill_reminder.py`, `readonly_lens_write_guard.py`, `running_script_edit_guard.py`;
+   after it `check_logger_tag_prefix.py`, `design_surface_reminder.py`, `plan_memory_reminder.py`,
+   `load_steps_validator.py`, `tres_format_guard.py`, `harness_growth_guard.py`,
+   `self_eval_archive_guard.py`, `retire_trigger_advisory.py`, the reaper's `check()`) and
    `pre_bash_dispatch.py` (Bash/PowerShell/Monitor family: `pattern_enforcer.py`,
    `git_guardrails.py`, `baseline_classification_guard.py`, `gate_cadence_guard.py`, `unbounded_scan_guard.py`,
    `compound_cd_approver.py`, `cloud_test_enforcer.py`, `bash_shape_guard.py`,
-   `sidecar_dispatch_context.py`, the four `--hook` commit guards) — each dispatcher
-   imports its sub-hooks in-process; `pattern_enforcer.py` also registers alone on
-   Write|Edit. Other entry points: `prompt_memory_loader.py`,
+   `sidecar_dispatch_context.py`, the four `--hook` commit guards, and last
+   `bash_backslash_fidelity.py`, which repairs the Bash tool's `\\` collapse on a recorded client) — each dispatcher
+   imports its sub-hooks in-process; `pattern_enforcer.py` runs in both the Bash and the
+   Write|Edit chain. Other entry points: `prompt_memory_loader.py`,
    `critical_analysis_reminder.py`, `prompt_git_state_delta.py`,
    `tool_routing_cumulative_reset.py`, `tool_routing_prompt_synthesis.py`,
-   `session_context_loader.py`, `log_instruction_loads.py`, `transcript_backup.py`,
-   `plan_memory_reminder.py`, `check_logger_tag_prefix.py`. Sub-hooks behind the
-   dispatchers (`tool_routing_nudge.py`, `tool_routing_cumulative.py`,
-   `tool_routing_cumulative_block.py`, `tool_routing_post_grep.py`,
-   `routing_audit.py`, `file_size_preblock.py`) keep standalone `main()` for testing.
+   `runaway_scan_reaper.py` (kills orphaned search processes: `check()` runs in-process from the three
+   dispatchers, plus UserPromptSubmit and a PostToolUse matcher for the tools no dispatcher covers —
+   Agent, Workflow, TaskStop, TaskOutput, Skill, ToolSearch, LSP, NotebookEdit, `mcp__*`; AskUserQuestion,
+   SendMessage, the Task list, worktree, cron and notification tools rely on the prompt-time run),
+   `session_context_loader.py`, `log_instruction_loads.py`, `transcript_backup.py`, on PreCompact
+   `compact_directive_ledger.py` (asks the summary for a status per owner message), and on
+   SessionStart(compact) `sidecar_recompact_reprompt.py` (a sidecar child's brief) and
+   `compact_directive_anchor.py` (the owner's own messages, under the same IDs). Sub-hooks behind the
+   dispatchers (`tool_routing_nudge.py`, `tool_routing_post_grep.py`,
+   `routing_audit.py`, `file_size_preblock.py`, `indexed_reference_guard.py`,
+   `semantic_search_scope_guard.py`) keep standalone `main()` for testing.
 2. **Libraries** — imported, never registered: `routing_classifier.py`,
-   `_transcript_summary.py`, `json_merge.py` (also a CLI).
+   `_transcript_summary.py`, `json_merge.py` (also a CLI), `_owner_text.py` (the one owner-row
+   parser; kill_guard, harness_growth_guard and the digest each project it) and `_file_lock.py`
+   (the open-handle lock behind `_hook_state`, the self-evaluate store and orchestration metrics).
 3. **Command CLIs** — invoked by slash commands, not events:
    `tool_cascade_audit.py` + `apply_blanket_tool.py` (/regression_gate 1c),
    `tres_nullstrip_guard.py` (/regression_gate 1b), `analyze_godot_logs.py`
@@ -30,13 +44,9 @@ in auto-memory — model-visible advisory output on Pre/PostToolUse is
 `hookSpecificOutput.additionalContext` JSON ONLY; stderr is exit-2-only.
 Audit principles for this directory: `instruction_quality` skill §13–§16.
 
-Subagent limitation (verified 2026-07-04): prompt-cue carve-outs (audit-shape,
-K1 literal-intent, L6 verified-unique) are dead in subagent contexts.
-`tool_routing_cumulative_reset.py` writes `last_prompt` only to the
-session-level state file `<sid>.json` (its `_state_path` takes no agent_id),
-but `tool_routing_cumulative.py` / `tool_routing_cumulative_block.py` /
-`file_size_preblock.py` read the agent-keyed `<sid>_<aid>.json` when
-`agent_id` is present — so the cue check always sees an empty prompt.
-Consequences: cascade nudges reaching subagents are advisory noise regardless
-of prompt framing (ignore them on legitimately-framed audit work), and the
-file-size gate's bounded `Read(offset, limit)` recovery always passes.
+Subagent prompt state: `tool_routing_cumulative_reset.py` writes `last_prompt`
+only to the session-level state file `<sid>.json`. `tool_routing_nudge.py` and
+`tool_routing_post_grep.py` read that file, and `routing_audit.py` falls back to
+it, so their prompt-cue carve-outs see the parent's prompt inside a subagent.
+`file_size_preblock.py` reads only the agent-keyed `<sid>_<aid>.json` when
+`agent_id` is present, so its audit-cue check sees an empty prompt there.

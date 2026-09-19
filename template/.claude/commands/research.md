@@ -42,9 +42,9 @@ Name the pages before dispatching, seeded from `source_trust.md`'s P1 list. Orch
 
 Land the bytes first. Godot class questions resolve against `.claude/cache/godot-docs/doc/classes/<Class>.xml` (`.claude/scripts/godot_docs_cache.sh` builds it; docs.godotengine.org is Cloudflare-gated and unusable). Everything else goes through `.claude/scripts/fetch_source.sh --dir <scratch> <1d urls...>`, which writes the artifacts and the TSV manifest Phase 3 verifies against. Answer `QUESTIONS` by quoting the landed artifacts with bounded `Grep`/`Read`, in `source_trust.md`'s claim shape — `file` = the URL cited, `artifact` = the local path quoted from.
 
-`mcp__ai-worker__read_web(urls=[...], question=...)` only when the questions genuinely need synthesis ACROSS pages that no single artifact answers: it spends real dollars and its extractor silently truncates (measured 101,558 bytes → 71,478 chars), so a claim sourced through it cannot be machine-verified. When used, ask for the answer written to a scratchpad path with a bounded digest returned, so page text never lands in this context.
+Use `mcp__ai-worker__read_web(urls=[...], question=...)` when the answer needs cross-page synthesis. Consume its bounded answer and per-URL preflight; a summary is not a verbatim citation. The tool cannot write an arbitrary requested artifact. Preserve quotable page bytes through `fetch_source.sh` first.
 
-Sidecar unavailable or Surplus band → CLAUDE.md §Tool Routing *Offline fallback* governs the substitution; the bundling rule holds and only the executor changes.
+If that route is unavailable, choose another eligible route explicitly or report the coverage gap. `orchestration` owns model, currency and budget checks.
 
 ### Shape B — three source-class lenses through the explore engine
 
@@ -52,18 +52,18 @@ Sidecar unavailable or Surplus band → CLAUDE.md §Tool Routing *Offline fallba
 
 ```
 Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {
-  lenses: [{key, promptPath, model, effort}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
+  lenses: [{key, promptPath, model, effort, agentType: "general-purpose"}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
 ```
 
 Write each resolved mandate below to its own scratchpad file and pass `promptPath`. The CONTEXT file carries `QUESTIONS`, the 1d URL set, and the version pins (engine per `.claude/reference/project_stack.md`, .NET 9) — seeds, never caps.
 
-| Lens | Source class | Tier | Primary pin | Anthropic fallback |
-|---|---|---|---|---|
-| `res-official` | official docs, class reference, spec text | P1 | sidecar `flash·low` | `sonnet·medium` |
-| `res-source` | first-party source, release notes, changelog | P1 | sidecar `flash·low` | `sonnet·medium` |
-| `res-field` | issues, proposals, forums, prior-art write-ups | P3 | `opus·low` | — |
+| Lens | Source class | Tier |
+|---|---|---|
+| `res-official` | official docs, class reference, spec text | P1 |
+| `res-source` | first-party source, release notes, changelog | P1 |
+| `res-field` | issues, proposals, forums, prior-art write-ups | P3 |
 
-`res-field` pins `opus·low` on both providers: its whole job is judging noise, which is open-surface judgment.
+Resolve one suitable arm per lens through `orchestration`; `res-field` needs a qualified judgment role to weigh conflicting reports.
 
 ### Lens mandates
 
@@ -155,7 +155,7 @@ A research doc is **stale the moment its `expires-with` version moves** — re-r
 
 ## Constraints
 
-- **Page text never enters this context.** Fetch and digest are worker-tier by construction; the return path is a bounded claims array or a digest, never prose pages.
+- **Full pages stay in fetched artifacts.** Read the exact spans needed to verify claims; return a bounded claims array or digest, not whole pages.
 - **Hard caps: ≤8 URLs per lens, ≤3 lenses, one round.** A follow-up round needs the user, not a self-decision. Lenses are read-only and spawn nothing, so a run cannot re-trigger itself.
 - **The allowlist is the guardrail.** Sources outside `source_trust.md`'s P1 list get used only when the report names why, and open web discovery is the built-in workflow's job, not this one's.
 - **No verdict, no gate.** `/research` reports facts and gaps. What to do about them belongs to the caller.

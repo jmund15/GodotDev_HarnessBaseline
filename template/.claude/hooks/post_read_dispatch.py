@@ -3,27 +3,19 @@
 """
 Hook: PostToolUse dispatcher for the read/search tool family.
 
-Single settings.json entry replacing three separate hook commands
-(tool_routing_cumulative.py, tool_routing_post_grep.py, routing_audit.py).
-One interpreter spawn per matched call instead of three, and in-process
-writer-first ordering — the shared-state ordering that previously depended
-on same-matcher-block convention (gotcha_posttooluse_hook_read_after_write_
-ordering) is now structural.
-
-Order:
-  1. tool_routing_cumulative.process — WRITER (counts the call, owns state)
-  2. tool_routing_post_grep.process  — reader + writer (per-pattern dedupe)
-  3. routing_audit.process           — pure reader (classification log)
-  4. memory_hits_logger.process      — pure reader (auto-memory hit log)
+One settings entry runs four sub-hooks in order:
+  1. tool_routing_post_grep.process — fallback Grep advisory and receipt writer
+  2. routing_audit.process — classification log
+  3. memory_hits_logger.process — auto-memory hit log
+  4. runaway_scan_reaper.check — throttled orphaned-search reaper, one line per reaped pid
 
 Output contract:
-  - Nudge texts from 1+2 merge into ONE hookSpecificOutput.additionalContext
-    payload (exit 0) — the only model-visible advisory channel on PostToolUse.
-  - Fail-open: a sub-hook exception is swallowed; later sub-hooks still run.
+- Grep advice emits one `hookSpecificOutput.additionalContext` payload and exits 0.
+- One sub-hook fault stays fail-open and does not disable later checks.
 
 Wired in: settings.json hooks.PostToolUse with matcher
-"Read|Grep|Glob|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search".
-The three sub-hooks keep their own main() for standalone use/testing.
+"Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search|mcp__ai-worker__write_doc".
+The sub-hooks keep their own `main()` for standalone proofs.
 """
 
 import json
@@ -32,7 +24,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import tool_routing_cumulative
 import tool_routing_post_grep
 import routing_audit
 import memory_hits_logger
@@ -46,15 +37,7 @@ def main() -> None:
 
     contexts = []
 
-    # 1. Cumulative counter (state writer — must run first).
-    try:
-        nudge = tool_routing_cumulative.process(input_data)
-        if nudge:
-            contexts.append(nudge)
-    except Exception:
-        pass
-
-    # 2. Retroactive Grep nudge (reads state written above).
+    # 1. Retroactive Grep nudge and per-pattern receipt.
     try:
         nudge = tool_routing_post_grep.process(input_data)
         if nudge:
@@ -62,15 +45,24 @@ def main() -> None:
     except Exception:
         pass
 
-    # 3. Routing-audit classification log (pure reader, no output).
+    # 2. Routing-audit classification log (pure reader, no output).
     try:
         routing_audit.process(input_data)
     except Exception:
         pass
 
-    # 4. Memory-hits log (pure reader, no output).
+    # 3. Memory-hits log (pure reader, no output).
     try:
         memory_hits_logger.process(input_data)
+    except Exception:
+        pass
+
+    # 4. Runaway-scan reaper (throttled; replaces its PostToolUse `*` registration for this family).
+    try:
+        import runaway_scan_reaper
+        lines = runaway_scan_reaper.check(input_data)
+        if lines:
+            contexts.append("\n".join(lines))
     except Exception:
         pass
 

@@ -4,11 +4,9 @@ description: Measure this session's Workflow agents — cost per effort pin — 
 
 Empirical counterpart to `/self_evaluate`: that captures *what the agent thinks* went well, this measures *what each effort pin cost*. Feeds `/eval_dashboard` → Effort Calibration.
 
-Two sources, one command: Anthropic Workflow runs (harness records) AND DeepSeek sidecar runs (`deepseek_sidecar.sh -R`, read from `~/.claude/deepseek_spend.jsonl`). Sidecar rows render in their own table — real USD, requested-effort vendor coordinates — and are **never averaged into the Anthropic tables** (the axes are not commensurable). Only *labeled* sidecar runs surface (`-l "review:config-dup"` at dispatch); unlabeled rows are legacy/ad-hoc and appear only under `--sidecar-all` spend audits.
+Collect native Workflow records and labeled sidecar records through the existing collector. Keep served model, transport, native currency, cost basis and requested/effective settings separate. The sidecar ledger has a legacy filename; it is not evidence that every row belongs to one provider. Unlabeled legacy rows surface only under `--sidecar-all`, which is a spend report and never archives.
 
-**One sidecar table per `servedModel`, never a blended one.** DeepSeek's tiers differ ~3.1× on fresh tokens (2.69× on a real 105-run historical workload), so a single averaged $/run describes no model that exists — it looks like information and is not. The grand total stays a *spend* figure; the per-model subtotals are the only comparable unit. Two caveats when reading the tables:
-- **`effort` stays a requested vendor coordinate**, never an Anthropic rung — and pro's effort evidence is `unmeasured` in `.claude/reference/external_models.json`. Flash's never-request-`high` finding is a *flash* result; do not present it as a pro fact or infer a pro effort verdict from these rows.
-- **Ledger rows written before 2026-08-12 were priced with hardcoded flash rates.** Any pro row from before that date under-reports by ~3.11×, and every older row used a `0.003` cache rate rather than the correct `0.0028`. Per-model tables therefore mix corrected and uncorrected `costUSD`; treat a cross-date comparison as approximate. Rows written since carry `costBasis` naming the model the price came from.
+Group descriptive totals by compatible model/currency/basis and report missingness. Render one sidecar table per `servedModel` — never a blended average, and never merged into the Anthropic tables. Do not treat heterogeneous task totals as causal routing evidence. Rows carry `costBasis` naming the model that priced them; rows without it predate per-model pricing and are approximate (`auto-memory/gotcha_sidecar_cost_read_truth.md`). Do not copy old vendor price ratios into current recommendations.
 
 ## Arguments
 
@@ -16,7 +14,7 @@ Two sources, one command: Anthropic Workflow runs (harness records) AND DeepSeek
 |------|----------|
 | (none) or `archive` | Collect → rate → append to `.claude/orchestration_metrics.jsonl`. **The default.** |
 | `summary` | Roll up the existing archive across sessions. Skips collection. |
-| anything else | Unrecognized — run the default and name the ignored argument. Never silently skip the archive. |
+| anything else | Unrecognized — name the ignored argument and run the default. Never silently skip the archive. |
 
 Archiving is the point — an unarchived run is measured and then thrown away, and the aggregate is the only surface that can justify a ladder edit. **Invoking the command IS the decision to archive**; do not ask for confirmation before appending. Halt only on the stop-gate below.
 
@@ -34,7 +32,7 @@ If the collector prints `No Workflow runs found`, stop and say so. A session tha
 
 If confirmed synthetic, append nothing here — those belong in `Claude/Meta/Model Effort Calibration Baseline.md`.
 
-**Not synthetic:** the multi-model arms `orchestration` §0 prescribes for exploration, plan drafts, plan-check and review. Every arm's output was consumed into the shipped work, so they archive normally — rate each arm on what happened to its output (`clean` / `discarded` for the draft that lost).
+**Delivery versus comparison:** classify the run by its declared purpose and compatible evidence, not the number of providers. Independent delivery lenses archive with their actual outcomes. Explicit model/effort experiments remain separate even when some output was useful to the task.
 
 Nothing else halts. The script's own refusals (already-archived run, unresolved `?` pin) are agent-resolvable and are reported, not escalated.
 
@@ -87,7 +85,7 @@ from a clean result, a cheaper delegate, or candidate-list membership.
 ```bash
 python3 .claude/tools/orchestration_metrics.py
 ```
-Joins `<session>/workflows/<runId>.json` (label, model, phase per agent) against the per-agent transcripts (tokens, turns, tools, wall-clock). Cost is normalized to base-input-token equivalents — output ×5, cache-write ×1.25, cache-read ×0.1 — so tiers compare in one number.
+Joins `<session>/workflows/<runId>.json` (label, model, phase per agent) against the per-agent transcripts (tokens, turns, tools, wall-clock). Each Workflow row also carries `served_model`, the model its transcript reports (`null` when unrecorded); a `MODEL MISMATCH` line means the pin was not honored — a family pin such as `sonnet` is honored by any `claude-sonnet-*`. Effective effort stays unknown. Sidecar rows never gain `served_model`: a proxied child's self-report is not authority. Cost is normalized to base-input-token equivalents — output ×5, cache-write ×1.25, cache-read ×0.1 — so tiers compare in one number.
 
 **2. Resolve unpinned agents.** The harness does not record `effort`. The collector reads it from a `PINS` log line, falling back to a literal `effort:` in an `agent()` opts object. Data-driven dispatch (`effort: job.effort`) defeats the fallback and reports `?`. Supply those in step 3's verdicts file as `[verdict, effort]` pairs, and add the one-line convention to the script so the next run resolves itself:
 ```js

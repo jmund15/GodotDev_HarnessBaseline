@@ -67,3 +67,5 @@ public override void _EnterTree()
 - [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) §"Default Value Pattern" — framework-boundary caveat lives there as the canonical home for the pattern.
 - Auto-memory `jmodot_framework_boundary_rule.md` — full no-carve-out rationale.
 - Auto-memory `jmodot_combat_factory_defaults_seam.md` — six-factory inventory.
+
+<!-- retire-when: review-by: 2027-02-23 -->

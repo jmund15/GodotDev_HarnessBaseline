@@ -16,7 +16,7 @@
 #
 # What you LOSE on cloud (inherently local):
 #   - Godot MCP (run_project, get_debug_output, create_scene, add_node, etc.)
-#   - Obsidian MCP (vault access, design doc search)
+#   - Vault access, design doc search (vault not mounted on cloud)
 #   - Visual playtesting
 #   - csharp-ls plugin (needs .NET 10)
 #

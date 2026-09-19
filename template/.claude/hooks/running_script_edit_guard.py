@@ -252,31 +252,40 @@ def build_warning(basename: str, hits: list) -> str:
     )
 
 
+def process(input_data, scan=None, alive=None):
+    """Dispatcher entry: `{"context": warning}` when a live instance exists, else None.
+
+    `scan`/`alive` stay injectable for the proof. `main()` keeps the standalone channel.
+    """
+    if input_data.get("tool_name") not in ("Write", "Edit"):
+        return None
+
+    file_path = (input_data.get("tool_input") or {}).get("file_path") or ""
+    if not is_guarded_script(file_path):
+        return None
+
+    basename = file_path.replace("\\", "/").rsplit("/", 1)[-1]
+    hits = find_live_instances(basename, scan=scan, alive=alive)
+    if not hits:
+        return None
+
+    return {"context": build_warning(basename, hits)}
+
+
 def main() -> None:
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    if input_data.get("tool_name") not in ("Write", "Edit"):
-        sys.exit(0)
-
-    file_path = (input_data.get("tool_input") or {}).get("file_path") or ""
-    if not is_guarded_script(file_path):
-        sys.exit(0)
-
-    basename = file_path.replace("\\", "/").rsplit("/", 1)[-1]
-    hits = find_live_instances(basename)
-    if not hits:
-        sys.exit(0)
-
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": build_warning(basename, hits),
-        }
-    }
-    sys.stdout.write(json.dumps(payload))
+    result = process(input_data) or {}
+    if result.get("context"):
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": result["context"],
+            }
+        }))
     sys.exit(0)
 
 

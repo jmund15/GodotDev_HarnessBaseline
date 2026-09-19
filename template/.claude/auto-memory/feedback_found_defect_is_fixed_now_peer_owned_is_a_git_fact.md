@@ -4,7 +4,10 @@ description: "A defect you find mid-task is fixed in the same turn; \"that file 
 metadata: 
   node_type: memory
   type: feedback
+  originSessionId: 7e51004a-1b0c-4a30-bc93-82cc001da23b
   modified: 2026-09-09T00:51:23.112Z
+retire_when:
+  - review-by: 2027-02-01
 ---
 
 A defect found mid-task is fixed NOW, in the same turn, and a task row is written only when a

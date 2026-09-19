@@ -31,24 +31,23 @@ All lenses return the schema in [`explore_fanout.schema.json`](../../workflows/e
 
 Triggers are **rules, not judgment calls** — the caller evaluates them mechanically against the topic statement, exactly as `/plan_check` evaluates lens omission. A dispatched lens whose precondition turns out not to hold returns zero claims with `stoppedAt: "trigger-not-met"`; that is a legitimate empty and the engine reports it as such.
 
-| Lens | Trigger | Primary pin | Anthropic fallback |
-|---|---|---|---|
-| `exp-memory` | **ALWAYS** | sidecar `flash·low` | `sonnet·medium` |
-| `exp-prior-art` | **ALWAYS** | sidecar `flash·low` | `opus·low` |
-| `exp-integration-surface` | topic names an existing type, file, scene, autoload, or BB key | `sonnet·medium` | — |
-| `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula | `sonnet·medium` | — |
-| `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command | sidecar `flash·low` | `sonnet·medium` |
-| `exp-external-truth` | the topic's correctness depends on engine/library behavior (Godot, GdUnit4, .NET) | `sonnet·medium` | — |
-| `exp-empirical-state` | topic touches Logic-domain code with tests, or authored `.tres` data | sidecar `flash·low` | `sonnet·medium` |
-| `exp-change-ease` | `/explore --make-this-easy "<change>"` was invoked | `opus·low` | — |
+| Lens | Trigger |
+|---|---|
+| `exp-memory` | **ALWAYS** |
+| `exp-prior-art` | **ALWAYS** |
+| `exp-integration-surface` | topic names an existing type, file, scene, autoload, or BB key |
+| `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula |
+| `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command |
+| `exp-external-truth` | the topic's correctness depends on engine/library behavior (Godot, GdUnit4, .NET) |
+| `exp-empirical-state` | topic touches Logic-domain code with tests, or authored `.tres` data |
+| `exp-change-ease` | `/explore --make-this-easy "<change>"` was invoked |
 
-`exp-change-ease` runs only in that mode and is additive to whatever the trigger table already selected — the friction survey is worthless without the prior-art and blast-radius claims it reads against. It pins `opus·low` on both providers: judging which friction is real is open-surface judgment.
+`exp-change-ease` runs only in that mode and is additive to whatever the trigger table already selected — the friction survey is worthless without the prior-art and blast-radius claims it reads against.
 
-The two floor lenses are **never omitted** — their failure is silent, which is why they are the floor rather than triggered. Provider choice follows the `[budget-posture]` band (orchestration §5b *Budget-pressure bands*): the sidecar column applies from the On-pace band up; in the Surplus band every lens runs its Anthropic fallback.
+The two floor lenses are **never omitted**. The caller resolves one eligible arm per selected lens through `orchestration` §5b *Budget, Availability & Transport*; provider availability does not add jobs.
 
-**A sidecar pin is not dispatchable through the engine.** `explore_fanout.js` runs on the session's own endpoint, so a `Primary pin` naming the sidecar means a `deepseek_sidecar.sh` call per lens — never a `model` value handed to the Workflow. Lens COUNT never selects the provider; only the band does (`/explore` Phase 2). A row whose Anthropic fallback is `—` is Anthropic-only and always goes through the engine. `exp-prior-art` falls back to `opus·low` rather than `sonnet·medium` because its judgment is abstraction-shaped, and the fan-out row fabricates on open exploration. The pin buys judgment, not savings — it costs more than the fan-out row, not less.
 
-**Extending the roster.** These seven are a floor, not a ceiling (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
+**Extending the roster.** These lenses are a floor, not a ceiling (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
 
 ---
 

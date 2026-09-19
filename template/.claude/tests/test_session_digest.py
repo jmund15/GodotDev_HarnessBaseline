@@ -208,9 +208,14 @@ def main():
         if (selected[0]["row"] != prompts[7] or selected[1]["row"] != friction[3]):
             fails.append("selected evidence did not round-trip exact full rows")
         page = sd.evidence_page(index, "friction", 2, 20)
-        if (page["page"] != 2 or page["pages"] != 4 or len(page["rows"]) != 20
-                or page["rows"][0]["id"] != "F1020"):
-            fails.append("bounded evidence paging omitted or reordered friction rows")
+        if page["page"] != 2 or page["pages"] != 4 or len(page["rows"]) != 20:
+            fails.append("bounded evidence page metadata or size is wrong")
+        pages = [sd.evidence_page(index, "friction", n, 20) for n in range(1, 5)]
+        ids = [row["id"] for part in pages for row in part["rows"]]
+        if len(ids) != len(set(ids)) or set(ids) != {row["id"] for row in index["friction"]}:
+            fails.append("evidence pages duplicate or omit friction rows")
+        if sd.evidence_page(index, "friction", 2, 20) != page:
+            fails.append("repeated evidence paging is not deterministic")
         try:
             sd.evidence_page(index, "friction", 5, 20)
             fails.append("out-of-range evidence page should fail loudly")
@@ -222,14 +227,16 @@ def main():
         except ValueError:
             pass
         rendered = sd.render(digest, Path("session.jsonl"), "done", sd.SESSION, tools=False)
-        if len(rendered.encode("utf-8")) > sd.SESSION_MAX_BYTES:
+        if len(rendered.encode("utf-8")) > sd.OVERVIEW_MAX_BYTES:
             fails.append(f"current-session digest exceeded byte cap: {len(rendered.encode('utf-8'))}")
         if "U0" not in rendered or "U199" not in rendered or "F1079" not in rendered:
             fails.append("bounded digest lost first/last stable evidence ids")
         digest["files_modified_counts"] = {"界" * 50000: 1}
         oversized = sd.render(digest, Path("session.jsonl"), "done", sd.SESSION, tools=False)
-        if len(oversized.encode("utf-8")) > sd.SESSION_MAX_BYTES or "OUTPUT TRUNCATED" not in oversized:
-            fails.append("unusual path lengths bypassed the current-session byte cap")
+        # Migrated 2026-09-12 (small-overview slice): the 32KB tail-trim marker is retired;
+        # the overview sheds whole preview rows to hold OVERVIEW_MAX_BYTES instead.
+        if len(oversized.encode("utf-8")) > sd.OVERVIEW_MAX_BYTES or "--select" not in oversized:
+            fails.append("unusual path lengths bypassed the overview byte cap or lost retrieval")
         with tempfile.TemporaryDirectory() as atomic_dir:
             target = Path(atomic_dir) / "digest.json"
             target.write_text("old", encoding="utf-8")

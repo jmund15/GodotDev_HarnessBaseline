@@ -22,7 +22,7 @@ PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
 SID = "hesr0001"
 HARNESS = "C:/repo/.claude/skills/testing/SKILL.md"
 HOOKPY = "C:/repo/.claude/hooks/budget_posture.py"
-NOT_HARNESS = "C:/repo/src/Domain/Service.cs"
+NOT_HARNESS = "C:/repo/Spells/Fire/FireSpell.cs"
 MEMORY = "C:/repo/.claude/auto-memory/gotcha_x.md"
 
 ALLOW, DENY, NUDGE = "allow", "deny", "nudge"

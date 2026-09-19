@@ -38,6 +38,10 @@ PHASES = [
 _PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_ARCHIVE = os.path.join(_PROJECT_DIR, ".claude", "self_evaluate_archive.json")
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from self_eval_archive_store import find_session  # noqa: E402
 
 # Anchored at a path boundary so a fragment embedded in prose or a doc path cannot match, and
 # stems_seen() skips any value that names a nested worktree — a peer checkout under
@@ -132,16 +136,11 @@ def session_id_of(path):
 
 
 def phase3_artifact_ok(archive_path, sid):
-    """Phase 3 (`self_evaluate`) artifact check: a `structured_entries` row for THIS session."""
+    """Phase 3 artifact check: the effective archive contains THIS session."""
     try:
-        with open(archive_path, encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except Exception:
+        return find_session(archive_path, sid) is not None
+    except (OSError, ValueError):
         return False
-    entries = doc.get("structured_entries") if isinstance(doc, dict) else None
-    if not isinstance(entries, list):
-        return False
-    return any(isinstance(e, dict) and e.get("session_id") == sid for e in entries)
 
 
 def _file_hash(path):

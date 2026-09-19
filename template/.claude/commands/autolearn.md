@@ -30,6 +30,19 @@ Route each surviving signal through [`/codify`](codify.md) §Step 4 — the orde
 
 One constraint routing does not cover: never store large code blocks in auto-memory — link to source instead.
 
+## Retirement pass (runs beside signal detection)
+
+Codified rules carry a retirement trigger (`/codify` Step 6). Scan for fired ones so the pass removes as well as adds:
+
+```bash
+python3 .claude/tools/load_census.py --budgets --json .claude/logs/load_census.json
+python3 .claude/tools/rule_retirement.py --client-version <this client's version> \
+  --tools <comma list of the tool names in your live schema> \
+  --census .claude/logs/load_census.json --json logs/rule_retirement.json
+```
+
+Each `fired` row becomes one proposed retirement in the same review flow as the additions, naming the rule, its trigger and the reason it fired. A fired `review-by` row is proposed as keep (renew the date to today + 180 days), retire, or demote to `archive/`, citing the file's citing-session count from `memory_hit_counts` in `/tmp/eval_out/stats.json` (`tools/analyze_eval_archive.py`; memory files) and `git log -1 --format=%cs -- <path>`. Each `malformed` row becomes a proposed trigger repair — a trigger no kind matches retires nothing. Report the `undecidable` count with the evidence that was not supplied; do not read it as "still needed".
+
 ## Signal detection
 
 Scan the session for:
@@ -82,12 +95,12 @@ Only redesign if the procedure is fundamentally flawed. If execution skipped a s
 
 ### Anti-pattern: Overfit-to-Specific
 
-A captured rule that names a specific file path, PR number, ability name, commit SHA, or session date is overfit. The rule will not survive being re-read in 6 months when those details are stale. **Rewrite as a principle, or revert.**
+A captured rule that names a specific file path, PR number, spell name, commit SHA, or session date is overfit. The rule will not survive being re-read in 6 months when those details are stale. **Rewrite as a principle, or revert.**
 
 The concrete details still have value as **evidence** — keep them in the `Signal:` line of the proposal (and as `Concrete:` / `Source:` / `Why:` lines on the resulting memory entry), where they prove the principle was observed in the wild. They do not belong in the principle itself.
 
 **Litmus test before saving:**
-1. Does the rule name a specific file, function, PR, ability, or commit?
+1. Does the rule name a specific file, function, PR, spell, or commit?
 2. Could a reader from another project apply this rule without that name?
 3. If the answer is "no, only {{PROJECT_NAME}}'s `<thing>`" — rewrite or skip.
 
@@ -151,7 +164,7 @@ Don't write observations that look like any of these — each is a shape a compa
 - **Multi-paragraph observations.** A gotcha is one paragraph + (optional) one `Concrete:` line. If you find yourself writing "Furthermore," or starting a second paragraph, you have two observations.
 - **Inline implementation tour.** "Root cause is in src/metrics/symbol-match.ts where COLUMN_WEIGHTS aggregation can only amplify existing scoring ..." — code-internal reasoning belongs in source comments or commit messages, not memory. The memory entry is the *consumer-facing rule*.
 - **Symptom + Detection + Fix + Recovery + Prevention sections.** This is documentation, not a memory observation. If a gotcha needs all five, it's a runbook — write it as a cold `archive/` memory file or a skill section, then a one-line `MEMORY.md` pointer if it warrants hot-tier surfacing.
-- **"Discovered 2026-04-25 in PR #59 — player.tscn line 2110 ...".** PR # / line number / file path in the rule itself is overfit (existing Anti-pattern: Overfit-to-Specific). Move to `Concrete:`.
+- **"Discovered 2026-04-25 in PR #59 — wizard.tscn line 2110 ...".** PR # / line number / file path in the rule itself is overfit (existing Anti-pattern: Overfit-to-Specific). Move to `Concrete:`.
 
 Litmus before saving: *would a future-me searching for this rule benefit from any of those extra words, or would they just have to skim past them?* If the latter, cut.
 
@@ -217,6 +230,9 @@ Detected [N] durable preferences from this session to update auto-memory.
 
 ### MEDIUM confidence (review carefully)
 - [change 3]
+
+### Retirements (rules past their trigger)
+- [rule] — [trigger] — [why it fired]
 
 Apply high confidence changes? [y/n/selective]
 ```

@@ -49,8 +49,10 @@ STALE_AFTER_SECONDS = 5 * 3600
 
 
 def _epoch(value):
+    if isinstance(value, bool):
+        return None
     if isinstance(value, (int, float)):
-        return value
+        return value if float("-inf") < value < float("inf") else None
     if not isinstance(value, str):
         return None
     try:
@@ -81,7 +83,8 @@ def _cache_candidate(now):
             continue
         used = seven.get("used_percentage", seven.get("usedPercent"))
         resets = _epoch(seven.get("resets_at", seven.get("resetsAt")))
-        if not isinstance(used, (int, float)) or resets is None:
+        if (isinstance(used, bool) or not isinstance(used, (int, float))
+                or not 0.0 <= used <= 100.0 or resets is None):
             continue
         normalized = dict(limits)
         normalized["seven_day"] = {"usedPercent": used, "resetsAt": resets}
@@ -134,12 +137,24 @@ def _load_quota_index(index_path, ledger, stat):
     if offset == stat.st_size and index.get("mtimeNs") != stat.st_mtime_ns:
         return None
     candidate = index.get("candidate")
-    if candidate is not None and (
-        not isinstance(candidate, dict)
-        or not isinstance(candidate.get("observed"), (int, float))
-        or not isinstance(candidate.get("limits"), dict)
-    ):
-        return None
+    if candidate is not None:
+        limits = candidate.get("limits") if isinstance(candidate, dict) else None
+        seven = limits.get("seven_day") if isinstance(limits, dict) else None
+        observed = candidate.get("observed") if isinstance(candidate, dict) else None
+        used = seven.get("usedPercent") if isinstance(seven, dict) else None
+        resets = seven.get("resetsAt") if isinstance(seven, dict) else None
+        if (
+            isinstance(observed, bool)
+            or not isinstance(observed, (int, float))
+            or not float("-inf") < observed < float("inf")
+            or isinstance(used, bool)
+            or not isinstance(used, (int, float))
+            or not 0.0 <= used <= 100.0
+            or isinstance(resets, bool)
+            or not isinstance(resets, (int, float))
+            or not float("-inf") < resets < float("inf")
+        ):
+            return None
     return index
 
 

@@ -66,15 +66,13 @@ For each session-changed file in a directory where another file was DELETED in t
    - **Reproduces** the behavior (point at the new line that does it), OR
    - **Explicitly notes removal** in a comment, docstring, or PR description.
 
-Any retired surface item not accounted for is a MERGE-BLOCKER. Examples:
-- An old state's `OnEnter` created a time-scale controller; its replacement does not.
-- An old state resolved blackboard references in `OnEnter`; its replacement moved that work to
-  initialization, changing lifecycle semantics.
+Any retired surface item NOT accounted for is a MERGE-BLOCKER finding. Examples that would have caught PR #58:
+- Old `CraftWheelState.OnEnter` instantiated `SlowMotionController`; new `OpenMenuState.OnEnter` doesn't.
+- Old state resolved BB refs in `OnEnter`; new state did it in `OnInit` (silent semantic change).
 
 ### 1.5c. Gameplay-domain regression note
 
-Read the subsystem registry. If changed behavior belongs to a `gameplay` subsystem and parity lost any
-behavior, append:
+If session-changed files touch `Wizard/`, `UI/`, `VFX/`, or `Prototype/` and the parity check found ANY drops, append:
 ```
 GAMEPLAY-DOMAIN regressions cannot be verified by automated tests alone.
 Recommend manual playtest before merge: <list specific behaviors to test>
@@ -105,9 +103,9 @@ The agent fan-out and Step-1 consolidation run deterministically in the `review-
 Fetch the templates: `python3 .claude/tools/lens.py get --shared sa-design-semantics sa-robustness-performance sa-intuitiveness-testability` — add `sa-architecture-sweep` and `sa-harness-quality` only when their triggers below fire, and never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole. The registry holds:
 - Agent Spawn Rules (referenced from `review_agents.md`)
 - Finding Schema & Reporting Filter (referenced from `orchestrator_action_protocol.md`)
-- 3 always-on agent templates: `sa-design-semantics` (opus), `sa-robustness-performance` (opus), `sa-intuitiveness-testability` (sonnet)
-- 1 conditional template: `sa-architecture-sweep` (opus) — design-ideality judgment (existing-seam reuse, cleaner/more-modular/data-driven alternatives, dedup-similar-logic-into-one-source)
-- 1 conditional template: `sa-harness-quality` (opus) — every session-authored harness hunk held to `instruction_quality` (no-op sentences, second homes, evidence inline, clause storms, weak words, hook docstring parity)
+- 3 always-on agent templates: `sa-design-semantics`, `sa-robustness-performance`, `sa-intuitiveness-testability` — model/effort resolved through `orchestration`, never copied from this roster
+- 1 conditional template: `sa-architecture-sweep` — design-ideality judgment (existing-seam reuse, cleaner/more-modular/data-driven alternatives, dedup-similar-logic-into-one-source)
+- 1 conditional template: `sa-harness-quality` — every session-authored harness hunk held to `instruction_quality` (no-op sentences, second homes, evidence inline, clause storms, weak words, hook docstring parity)
 
 ### Architecture-Sweep Trigger (conditional 4th agent)
 
@@ -139,11 +137,11 @@ Dispatch through the engine (build each agent's prompt from its `session_audit_a
 Workflow({
   scriptPath: ".claude/workflows/review_fanout.js",
   args: { agents: [
-    { key: "sa-design-semantics", prompt: "<assembled>", model: "opus" },
-    { key: "sa-robustness-performance", prompt: "<assembled>", model: "opus" },
-    { key: "sa-intuitiveness-testability", prompt: "<assembled>", model: "sonnet" },
+    { key: "sa-design-semantics", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
+    { key: "sa-robustness-performance", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
+    { key: "sa-intuitiveness-testability", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
     // + when the Architecture-Sweep Trigger fires:
-    { key: "sa-architecture-sweep", prompt: "<assembled>", model: "opus" } ] }
+    { key: "sa-architecture-sweep", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" } ] }
 })
 ```
 
@@ -153,7 +151,7 @@ It returns `{ findings: [...deduped, sorted...], counts }`. Do not spawn the age
 
 ## Phase 3: Consolidate & Report
 
-The workflow already performed **Step 1** (merge/dedup by `file:line`, sort critical→tier→category) of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md). Continue with **Step 1.5** (verify each FIX `old` against the live file) and **Steps 2–4** (report, NOTE synthesis, user-gated FIX/ASK/PLAN walkthrough) yourself.
+The workflow already performed **Step 1** (lossless source ingestion and sorted/grouped views) of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md). Continue with **Step 1.5** (verify each FIX `old` against the live file) and **Steps 2–4** (report, NOTE synthesis, user-gated FIX/ASK/PLAN walkthrough) yourself.
 
 ### Report Format
 
@@ -172,6 +170,8 @@ Then present findings grouped by action tier (FIX → ASK → PLAN) per the prot
 ### Verdict — two axes, never merged
 
 Issue **two** verdicts: **correctness** (findings tagged `bug` or `rule` — silent failures, regressions, violated project rules) and **design** (findings tagged `improvement` — structure, seams, naming, taste). Never average them into one rating: strong design plus one data-loss bug is `REVIEW RECOMMENDED` on correctness and `CLEAN` on design, never "pretty good".
+
+Before `CLEAN` on correctness, run `python3 .claude/tools/task_record.py check --rerun <task_id>` on the session's active record: a STALE, MISSING or REPRO-FAIL row is a decision whose premise is unverified and holds the axis at `REVIEW RECOMMENDED` until it is re-run.
 
 Each axis's verdict is set by its **worst surviving finding** — not the average, not the count:
 

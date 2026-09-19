@@ -147,7 +147,7 @@ const INTERCEPTED_METHODS = new Set([
 //
 // History: textDocument/publishDiagnostics was previously dropped (2026-04-20)
 // because csharp-ls v0.22.0 emitted dense CS0102 false-positive duplicate-
-// definition diagnostics for types defined exactly once (BBDataSig, Player).
+// definition diagnostics for types defined exactly once (BBDataSig, Wizard).
 // Root cause was a workspace/diagnostic CPU loop fixed upstream in v0.23.0
 // (runaway diagnostic traffic) and v0.24.0 (workspace/diagnostic busy loop).
 // Re-enabled 2026-05-03 alongside csharp-ls 0.22→0.24 upgrade.
@@ -158,7 +158,7 @@ const INTERCEPTED_METHODS = new Set([
 // [Export]/[Signal] attributes trigger source generation. The flood is
 // structural (two on-disk files declare the same partial), not a server bug,
 // so the v0.24 fix can't address it. dotnet build is authoritative per
-// csharp_lsp.md:69 — push diagnostics buy nothing here.
+// csharp_lsp.md §Known-broken surface — push diagnostics buy nothing here.
 const DROPPED_NOTIFICATIONS = new Set([
   "textDocument/publishDiagnostics",
 ]);

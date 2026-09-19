@@ -9,7 +9,7 @@ Apply fixes from the documentation architecture audit report.
 
 ## Architecture: 8-Phase Orchestrator (No Sub-Agents)
 
-The fix command is a thin dispatcher — it delegates to existing commands (`/doc_full`, `/doc_start_here_update`) or performs inline Obsidian MCP operations. No parallel agents needed.
+The fix command is a thin dispatcher — it delegates to existing commands (`/doc_full`, `/doc_start_here_update`) or performs inline native vault operations (`Read`/`Write`/`Edit`). No parallel agents needed.
 
 ```
 Phase 1: INGEST          (read audit report, parse findings, validate freshness)
@@ -41,10 +41,10 @@ $ARGUMENTS — Optional filter:
 ## Phase 1: INGEST
 
 ### 1a. Vault tooling
-Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path — see the `obsidian_conventions` skill. No MCP-connectivity gate.
+Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path — see the `obsidian_conventions` skill.
 
 ### 1b. Read Audit Report
-Use `obsidian_read_note` to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Claude/Audit Reports/Documentation Audit.md`.
+Use `Read` on the vault path to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Claude/Audit Reports/Documentation Audit.md`.
 
 If no audit report exists, abort: **"No audit report found. Run `/doc_architecture_audit` first."**
 
@@ -130,7 +130,7 @@ Separate into `fixFindings[]` and `askFindings[]`.
 
 Within `fixFindings`, group by handler type for batching:
 - **`delegate` group**: batch by command (all `/doc_full` calls together, then `/doc_start_here_update`)
-- **`inline` group**: batch by target file (combine `obsidian_search_replace` calls on the same file)
+- **`inline` group**: batch by target file (combine `Edit` calls on the same file)
 
 ---
 
@@ -146,7 +146,7 @@ Display the fix plan following the orchestrator action protocol's presentation p
 **Delegate: /doc_full** ({count} systems)
 1. [S1] {SystemName} — missing {list of missing docs}
 
-**Inline: obsidian_search_replace** ({count} edits across {N} files)
+**Inline: Edit** ({count} edits across {N} files)
 2. [X2] Fix broken wikilink in {SystemA} QR → {SystemB}
 3. [X1] Add {SystemA} to {SystemB} Related Systems
 
@@ -192,24 +192,24 @@ Delegate commands create/update files that inline fixes may depend on.
 After delegate commands complete (new files exist), apply inline fixes.
 
 **Rename (S4 — Usage → Designer Usage):**
-1. `obsidian_read_note` — read the old file
-2. `obsidian_update_note` — write content to new path (`Designer Usage.md`; creates the file — new path, no `overwrite` flag needed)
-3. `obsidian_delete_note` — delete old file
-4. `obsidian_global_search` (`mode: "text"`) — find all references to old filename
-5. `obsidian_search_replace` — fix references in each found file
+1. `Read` — read the old file
+2. `Write` — write content to new path (`Designer Usage.md`; creates the file — new path, no `overwrite` flag needed)
+3. Bash `rm` — delete old file
+4. `Grep` (path set to the vault directory) — find all references to old filename
+5. `Edit` — fix references in each found file
 
 **Search-replace (X1, X2, X4 — link fixes):**
-- Group all replacements targeting the same file into a single `obsidian_search_replace` call
+- Group replacements targeting the same file, applying each via a separate `Edit` call (one old/new pair per call)
 - **Idempotent**: Before replacing, verify the old text exists. If the fix is already applied (old text not found), skip silently.
 
 **X1 (add missing Related Systems entry):**
 - Read the target QR, find the `> [!info] Related Systems` callout
 - Add the missing `> - [[{System}/Quick Reference|{System}]] — {relationship}` line
-- Use `obsidian_search_replace` with the existing callout content as search, expanded content as replace
+- Use `Edit` with the existing callout content as the old string, expanded content as the new string
 
 **X2 (fix broken wikilink):**
 - Replace the broken link text with the corrected link
-- Use `obsidian_search_replace` on the file containing the broken link
+- Use `Edit` on the file containing the broken link
 
 ### 4c. Start Here Reconciliation Last
 
@@ -245,7 +245,7 @@ Process each ASK finding following the [Orchestrator Action Protocol](agents/orc
 
    **D2 (reclassify domain):** Run `/doc_start_here_update` which handles domain table moves.
 
-   **D4 (create hub):** Write the Hub document using the template below, then `obsidian_update_note`:
+   **D4 (create hub):** Write the Hub document using the template below, then `Write`:
 
    ```markdown
    # {DomainName} — Domain Hub
@@ -275,12 +275,12 @@ Process each ASK finding following the [Orchestrator Action Protocol](agents/orc
    ```
 
    **D5 (archived hygiene):**
-   - "Remove reference": `obsidian_search_replace` to delete the stale link from the active doc
-   - "Update to successor": `obsidian_search_replace` to replace the archived link with the successor link
+   - "Remove reference": `Edit` to delete the stale link from the active doc
+   - "Update to successor": `Edit` to replace the archived link with the successor link
 
    **D6 (domain promotion):** Deferred to Phase 8 (Folder Hierarchy).
    - Record the promoted domain and its systems for inclusion in the Phase 8 reorganization plan
-   - Do NOT move files programmatically — Bash `mv` and Obsidian MCP read/write/delete do NOT trigger Obsidian's auto-link-update feature
+   - Do NOT move files programmatically — Bash `mv` and native file read/write/delete do NOT trigger Obsidian's auto-link-update feature
    - File moves must be done by the user via Obsidian's UI (drag-drop or right-click → Move) to get automatic wikilink updates
    - Phase 8 generates the exact move instructions
 
@@ -296,13 +296,13 @@ Process each ASK finding following the [Orchestrator Action Protocol](agents/orc
 
 After all fixes and ASK resolutions:
 
-1. **Spot-check modified files** — for each file that was modified, `obsidian_read_note` and verify:
+1. **Spot-check modified files** — for each file that was modified, `Read` and verify:
    - Wikilinks use correct format: `[[{SystemPath}/Quick Reference|{DisplayName}]]`
    - Related Systems callout is present and non-empty
    - File naming follows convention (`Designer Usage.md`, not `Usage.md`)
    - No duplicate entries in tables
 
-2. **Cross-reference manifest** — run `obsidian_list_notes` on the Documentation folder to verify:
+2. **Cross-reference manifest** — run `Glob` on the Documentation folder to verify:
    - No orphaned files from renames (old file still exists)
    - New Hub documents are in the correct location
 
@@ -316,7 +316,7 @@ After all fixes and ASK resolutions:
 Update the audit report to reflect what was resolved.
 
 ### 7a. Read Current Report
-Use `obsidian_read_note` to get the current report content.
+Use `Read` to get the current report content.
 
 ### 7b. Mark Resolved Findings
 For each finding that was successfully fixed or resolved via ASK:
@@ -340,7 +340,7 @@ Add a new row to the Changelog table:
 ```
 
 ### 7e. Write Updated Report
-Use `obsidian_update_note` with `overwrite: true` to write the complete updated report in a single call. Regenerate the `## Machine Findings` block from the in-memory findings (updated `status`, recomputed `counts`/`healthRating`) so it remains the authoritative contract for the next run.
+Use `Write` to write the complete updated report in a single call. Regenerate the `## Machine Findings` block from the in-memory findings (updated `status`, recomputed `counts`/`healthRating`) so it remains the authoritative contract for the next run.
 
 ### 7f. Final Summary
 Present the session summary:
@@ -357,7 +357,7 @@ Present the session summary:
 
 Generate a folder reorganization plan so the user can align the physical folder structure with the domain groupings in Start Here.
 
-**Why user-action, not automated:** Obsidian's auto-link-update only triggers when files are moved through its UI (drag-drop or right-click → Move). Programmatic moves (Bash `mv`, Obsidian MCP read/write/delete) are seen as "delete + create" and do NOT update wikilinks. This was empirically tested and confirmed.
+**Why user-action, not automated:** Obsidian's auto-link-update only triggers when files are moved through its UI (drag-drop or right-click → Move). Programmatic moves (Bash `mv`, native file read/write/delete) are seen as "delete + create" and do NOT update wikilinks. This was empirically tested and confirmed.
 
 ### 8a. Read Domain Mapping
 
@@ -365,7 +365,7 @@ Parse Start Here's "By Domain" section to build a map: `domain → [system folde
 
 ### 8b. Read Folder Structure
 
-Use `obsidian_list_notes` on the Documentation folder at `recursionDepth: 1` to get the current folder tree.
+Use `Glob` on the Documentation folder to get the current folder tree.
 
 ### 8c. Detect Misalignment
 
@@ -386,7 +386,7 @@ For each domain that has misaligned systems but no parent folder yet:
 - Create the folder on disk via Bash `mkdir -p` at the vault path
 - This is safe — empty folders have no wikilink impact
 
-Domain folder naming convention: match the Start Here domain header name, using PascalCase without spaces for multi-word names (e.g., "Data Access" → `DataAccess/`, "Runtime Services" → `RuntimeServices/`).
+Domain folder naming convention: match the Start Here domain header name, using PascalCase without spaces for multi-word names (e.g., "Visual Effects" → `VisualEffects/`, "Physics & Movement" → `PhysicsAndMovement/`, "Jmodot Framework" → `JmodotFramework/`).
 
 ### 8e. Present Reorganization Plan
 
@@ -399,14 +399,19 @@ The following system folders should be moved into their domain parent folders.
 **Action:** In Obsidian's file explorer, drag each system folder into its domain parent.
 Obsidian will automatically update all wikilinks.
 
-### Runtime/ (already exists)
-- [ ] Scheduling/
-- [ ] ResourceLoading/
-- [ ] StateController/
+### SpellPipeline/ (already exists)
+- [ ] ReactionSystem/
+- [ ] WaveSpellOverhaul/
+- [ ] FabledVariantSystem/
+- [ ] SiblingCollisionSystem/
+- [ ] Pooling/
+- [ ] SpellCollision/
+- [ ] EmitterTimingSystem/
 
-### Presentation/ (created)
-- [ ] Hud/
-- [ ] Animation/
+### AI/ (created)
+- [ ] AI Steering System/
+- [ ] Affinity System/
+- [ ] HSM-BT Critter AI/
 
 ### {Domain}/ ({status})
 - [ ] {SystemFolder}/
@@ -416,7 +421,7 @@ Obsidian will automatically update all wikilinks.
 - Start Here.md
 - Claude/
 - Prototypes/
-- LegacySystem (Archived)/
+- SpellReactionSystem (Archived)/
 ```
 
 **Skip aligned domains:** If all systems in a domain are already nested under their parent folder, omit that domain from the plan.
@@ -424,8 +429,8 @@ Obsidian will automatically update all wikilinks.
 **Empty orphan detection:** If the folder listing reveals folders that are NOT in any domain's system list and NOT classified as Structural/Archived (per `agents/documentation_structure.md` — content-based classification, no exclusion list), flag them:
 ```
 ### Possible Orphan Folders (verify before deleting)
-- LegacyRuntime/ — not assigned to any domain
-- SharedUtilities/ — not assigned to any domain
+- AIFramework/ — not assigned to any domain
+- JmodotModifiers/ — not assigned to any domain
 ```
 
 ### 8f. Naming Consistency Audit
@@ -435,8 +440,8 @@ After the hierarchy plan, audit system folder names for consistency. The naming 
 **Rules:**
 1. **PascalCase, no spaces** — `ReactionSystem/` not `Reaction System/`
 2. **Descriptive but not verbose** — name should identify the system's scope
-3. **Consistent suffix pattern** — use `System` suffix when the folder represents a self-contained system (e.g., `SchedulerSystem/`, `CacheSystem/`). Omit it when the name is already a clear noun (e.g., `Pooling/`, `Serialization/`)
-4. **No redundant prefixes** — don't repeat the parent domain in a child name (e.g., `Runtime/SchedulerSystem/` not `Runtime/RuntimeSchedulerSystem/`)
+3. **Consistent suffix pattern** — use `System` suffix when the folder represents a self-contained system (e.g., `ReactionSystem/`, `MovementSystem/`). Omit when the name is already a clear noun (e.g., `Pooling/`, `CombatSubsystem/`)
+4. **No redundant prefixes** — don't prefix with the parent domain name (e.g., `AI/SteeringSystem/` not `AI/AISteeringSystem/`)
 
 **Procedure:**
 1. List all system folder names from the domain mapping
@@ -448,9 +453,9 @@ After the hierarchy plan, audit system folder names for consistency. The naming 
 
 | Current Name | Recommended Name | Reason |
 |-------------|-----------------|--------|
-| Runtime Scheduler | SchedulerSystem (or Scheduler under Runtime/) | Contains spaces |
-| Layered-State Controller | StateController | Verbose, implementation detail in name |
-| Input Router | InputRouter | Contains space |
+| AI Steering System | AISteeringSystem (or SteeringSystem under AI/) | Contains spaces |
+| HSM-BT Critter AI | CritterAI | Verbose, implementation detail in name |
+| Affinity System | AffinitySystem | Contains space |
 | {current} | {recommended} | {reason} |
 
 **Action:** Rename in Obsidian (right-click → Rename). Obsidian auto-updates wikilinks on rename.
@@ -467,12 +472,12 @@ If all domains are fully aligned AND all names are consistent (no misaligned sys
 
 ## Constraints
 
-- **Vault tooling**: native `Read`/`Write`/`Edit` is the default (Phase 1a); the `obsidian_*` MCP calls named here are equivalents, not a connectivity gate. See `obsidian_conventions`.
+- **Vault tooling**: this command uses native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path throughout (Phase 1a). See `obsidian_conventions`.
 - **Idempotent**: Before each inline fix, read the target file and check if the fix is already applied. Skip silently if present.
 - **Sequential `/doc_full`**: Never run multiple `/doc_full` invocations in parallel (each spawns 3 subagents and is context-heavy).
 - **Cap at 3 delegates**: If >3 systems need `/doc_full` or `/doc_architecture` or `/doc_usage`, process 3 and report "run again for remaining." This prevents context exhaustion.
 - **Backward compatible**: Supports both old schema (derive action/handler from check code via routing table) and new schema (read `action`/`handler`/`options` fields directly from the finding).
 - **Freshness-aware**: Warn if audit report is >7 days old.
 - **No subagents**: This command runs inline as an orchestrator. It delegates to existing commands via `/doc_full`, `/doc_start_here_update`, etc. — those commands handle their own subagent orchestration.
-- **Single-report writes**: Always overwrite the full report in one `obsidian_update_note` (`overwrite: true`) call — never patch line by line.
+- **Single-report writes**: Always overwrite the full report in one `Write` call — never patch line by line.
 - **Preserve report structure**: When updating findings, preserve the prose report content (statistics, domain analysis tables, cross-agent patterns) and regenerate the `## Machine Findings` JSON block with updated `status`/counts. The prose RESOLVED/DEFERRED markers and the JSON `status` must always agree.

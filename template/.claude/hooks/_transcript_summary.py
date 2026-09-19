@@ -14,9 +14,14 @@ Used by transcript_backup.py during streaming copy.
 
 import heapq
 import json
+import os
 import re
+import sys
 from datetime import datetime
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _owner_text import classify  # noqa: E402
 
 
 # =============================================================================
@@ -610,7 +615,8 @@ class TranscriptSummaryBuilder:
 
     def _process_user_message(self, entry: dict, message: dict):
         """Record every real user prompt verbatim; route tool_result rows to friction capture."""
-        if entry.get('isSidechain'):
+        row = classify(dict(entry, message=message), self.source_line_count)
+        if row is None or row.sidechain:
             return  # Subagent prompts are the orchestrator's, not the user's
 
         raw = (message or {}).get('content', entry.get('content', ''))
@@ -629,18 +635,17 @@ class TranscriptSummaryBuilder:
             self.compaction_markers.append(entry.get('timestamp'))
             return
 
-        if entry.get('isMeta', False):
+        if row.meta:
             return
 
-        if content.startswith('<command-name>'):
-            # Slash-command row: the user's words are the args; the rest is harness plumbing.
-            name = re.search(r'<command-name>(.*?)</command-name>', content, re.S)
-            args = re.search(r'<command-args>(.*?)</command-args>', content, re.S)
-            args_text = (args.group(1).strip() if args else '')
+        if row.kind == 'command' and not row.injection_prefixed:
+            # Slash-command row, in either tag order (desktop rows open with <command-message>):
+            # the user's words are the args; the rest is harness plumbing.
+            args_text = row.command_args or ''
             if not args_text and not self.full_evidence:
                 return
-            content = f"{name.group(1).strip() if name else ''} {args_text}".strip()
-        elif entry.get('isMeta', False) or content.startswith((
+            content = f"{row.command_name or ''} {args_text}".strip()
+        elif row.envelope == 'agent-message' or content.startswith((
                 '<system-reminder>', '<user-prompt-submit-hook>', '<local-command-caveat>',
                 '<local-command-stdout>', '<task-notification>', '<cross-session-message ')):
             return

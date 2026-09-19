@@ -134,34 +134,43 @@ def standalone(range_arg):
     return 1
 
 
+def process(data):
+    """Dispatcher entry: `{"context": advisory}` on a header mismatch, else None.
+
+    `post_edit_dispatch.py` calls this; `hook()` keeps the `--hook` standalone channel.
+    """
+    tool_input = data.get("tool_input", {}) or {}
+    path = tool_input.get("file_path", "") or ""
+    if not path.endswith((".tres", ".tscn")):
+        return None
+    r = validate_file(path)
+    if not r:
+        return None
+    path, ls, ext, sub, expected = r
+    rel = path.replace("\\", "/")
+    # PostToolUse stderr is NOT model-visible; additionalContext is the only advisory
+    # channel (per check_logger_tag_prefix.py). Never deny -- cosmetic hygiene only.
+    return {"context": (
+        f"[load_steps_validator] {rel}: header `load_steps={ls}` but the file has {ext} "
+        f"[ext_resource] + {sub} [sub_resource] + 1 = {expected}. Cosmetic: Godot rewrites "
+        f"the header on next editor resave (no load impact). Set it to {expected} to keep "
+        "the file clean."
+    )}
+
+
 def hook():
     try:
         data = json.load(sys.stdin)
     except json.JSONDecodeError:
         print("{}")
         return 0
-    tool_input = data.get("tool_input", {}) or {}
-    path = tool_input.get("file_path", "") or ""
-    if not path.endswith((".tres", ".tscn")):
+    result = process(data) or {}
+    if not result.get("context"):
         print("{}")
         return 0
-    r = validate_file(path)
-    if not r:
-        print("{}")
-        return 0
-    path, ls, ext, sub, expected = r
-    rel = path.replace("\\", "/")
-    # PostToolUse stderr is NOT model-visible; additionalContext is the only advisory
-    # channel (per check_logger_tag_prefix.py). Never deny -- cosmetic hygiene only.
-    lines = [
-        f"[load_steps_validator] {rel}: header `load_steps={ls}` but the file has {ext} "
-        f"[ext_resource] + {sub} [sub_resource] + 1 = {expected}. Cosmetic: Godot rewrites "
-        f"the header on next editor resave (no load impact). Set it to {expected} to keep "
-        "the file clean."
-    ]
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
-        "additionalContext": "\n".join(lines),
+        "additionalContext": result["context"],
     }}))
     return 0
 
