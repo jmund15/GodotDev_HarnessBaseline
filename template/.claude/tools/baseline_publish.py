@@ -742,9 +742,19 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
             continue  # root files carry no lock row
         relpath = record["relpath"]
         if record["op"] == "D":
-            if relpath in lock.get("files", {}):
-                del lock["files"][relpath]
-                updated += 1
+            entry = lock.get("files", {}).get(relpath)
+            if entry is None:
+                continue
+            # The consumer's file outlives the upstream copy: it becomes this project's own.
+            if (root / relpath).exists():
+                if sync._entry_status(entry) != "local":
+                    entry["status"] = "local"
+                    entry.pop("hash", None)
+                    entry.pop("base", None)
+                    updated += 1
+                continue
+            del lock["files"][relpath]
+            updated += 1
             continue
         entry = lock.get("files", {}).get(relpath)
         if entry is None:

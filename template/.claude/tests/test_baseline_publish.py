@@ -1776,6 +1776,7 @@ def main() -> int:
         test_publish_refuses_malformed_adaptation_contract_fresh_run,
         test_publish_resume_refuses_malformed_adaptation_contract,
         test_published_forked_row_records_tracked_not_forked,
+        test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
     ]
     failures = []
     for case in cases:
@@ -1788,6 +1789,36 @@ def main() -> int:
     print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
 
+
+
+def test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds() -> None:
+    """An upstream `D` drops the lock row only when the consumer's file is gone too.
+
+    A file the baseline stops shipping stays this project's own while it exists here: a row
+    already `local` keeps its fields, and a `tracked` row becomes `local`. Dropping either leaves
+    an on-disk `.claude/` file with no row, which the commit guard refuses.
+    """
+    publish = _load_publish()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        held_local = ".claude/commands/held_local.md"
+        held_tracked = ".claude/commands/held_tracked.md"
+        gone = ".claude/commands/gone.md"
+        for rel in (held_local, held_tracked):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text("x\n", encoding="utf-8")
+        lock = {"files": {
+            held_local: {"status": "local", "layer": "coding", "judged": None},
+            held_tracked: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+            gone: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+        }}
+        records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in (held_local, held_tracked, gone)]
+        publish._update_lock(root, lock, records, root, "after", {"kind": "worktree"})
+        files = lock["files"]
+        assert files.get(held_local) == {"status": "local", "layer": "coding", "judged": None}, files.get(held_local)
+        assert files.get(held_tracked, {}).get("status") == "local", files.get(held_tracked)
+        assert "hash" not in files.get(held_tracked, {}), files.get(held_tracked)
+        assert gone not in files, files.get(gone)
 
 
 def test_publish_renames_project_identifiers_without_touching_the_local_file() -> None:
