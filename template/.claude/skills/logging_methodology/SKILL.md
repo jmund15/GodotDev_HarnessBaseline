@@ -79,6 +79,8 @@ JmoLogger.Debug(this, $"[Inventory][DIAG-a4f2] state={state} item={item?.Name ??
 
 Pick four random hex chars for `<id>` per debugging session. Single grep `[DIAG-` removes all of a session's instrumentation at Phase 6 cleanup.
 
+**Raise the threshold before instrumenting.** Set `JmoLogger.MinimumLevel` to `Debug` (project setting `debug/jmodot/minimum_log_level`, or `JmoLogger.DebugEnabled = true`); at the default threshold a diagnostic emits nothing and the path reads as never executed. Restore the setting at Phase 6 cleanup.
+
 **Cleanup is owed.** See `archive_diagnostic_log_cleanup_discipline.md` (auto-memory) for the worklog-item rule: any `[DIAG-]` log without a same-session removal commit needs a worklog item tracking it, or the noise calcifies. `[DEBUG-]` is reserved — would collide with `JmoLogger.Debug` itself when grepping.
 
 **Sibling tag — `[PROTO-<slug>]`.** Same family, same composition rule (`[Subsystem][PROTO-<slug>]`), same single-grep cleanup (`[PROTO-`). It marks the agent-readable channel of a `prototype` skill run; `<slug>` is the prototype's directory name under `prototypes/`, not a random id, so the tag survives across sessions on that prototype's branch. No cleanup is owed on `main` — prototype code never lands there (`prototype` skill §Containment); cleanup applies only if a `[PROTO-]` line reaches production code during promotion.

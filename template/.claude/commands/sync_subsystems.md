@@ -54,6 +54,6 @@ Print a final diff summary (added / removed / renamed / refreshed) so the user c
 
 ## What it does NOT do
 
-- Does not enforce placement decisions — `/structure_audit` owns that.
+- Does not enforce placement decisions — the project's structure audit, where it ships one, owns that.
 - Does not auto-commit.
 - Does not run on every session — Step 0 gates it.

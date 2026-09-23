@@ -90,23 +90,12 @@ If even one fails → keep it as a regular Active item. **When in doubt → regu
 
 ## Canonical domain list
 
-When deciding which `### Header` an item belongs under, pick the closest match (matches CLAUDE.md's risk table where applicable):
+When deciding which `### Header` an item belongs under, pick the closest match (matches CLAUDE.md's risk table where applicable). Each subsystem registered in `project_subsystems` is one domain: its name is the long form (Active section header) and its `id` the short form (mirror line). Three cross-cutting domains complete the list:
 
 | Long form (Active section header) | Short form (mirror line) |
 |-----------------------------------|--------------------------|
-| AI / Entities | `ai` |
-| Player | `player` |
-| Ability Architecture | `ability` |
-| Combinations / Materials | `combination` |
-| Inventory / Assembly | `assembly` |
-| Encounter | `encounter` |
-| Currency | `currency` |
-| UI / UX | `ui` |
-| VFX / Animation | `vfx` |
-| Testing | `testing` |
 | Tooling / Workflow | `tooling` |
 | Documentation | `documentation` |
-| Jmodot Framework | `jmodot` |
 | Other | `other` |
 
 If an item genuinely doesn't fit, use `Other` — never invent a new domain without surfacing it to the user first.
@@ -199,7 +188,7 @@ If unsure whether something qualifies as Future Scope → **ask, don't auto-rout
 - **My-side:** "brainstorm combinations between X and Y" *when* the output is a creative direction, not technical alternatives; "design the flavor of X", "decide what the lore around X should be"
 - **Your-side:** "I want to brainstorm X", "let me think on X combinations"
 - **Litmus:** does "brainstorming this with Claude" produce a design Claude can implement? Yes → `design` worklog item, scope 4, paired Plan doc. No (output is *your* preference, not technical) → User-Tasks.
-- **Anti-trigger:** "brainstorm a unified status-effect blackboard schema" is technical — Claude can run `architecture_brainstorm` (routed via `idea_brainstorm` first if greenfield) and produce a design doc. → `design` worklog, NOT User-Tasks.
+- **Anti-trigger:** "brainstorm a unified event schema" is technical — Claude can run the project's architecture brainstorm (routed through its idea brainstorm first if greenfield) and produce a design doc. → `design` worklog, NOT User-Tasks.
 
 #### Cross-doc design audits driven by user vision
 - **My-side:** "your game vision changed — your design docs need an audit pass", "the lore and ability docs disagree on X — needs your reconciliation"
@@ -208,12 +197,12 @@ If unsure whether something qualifies as Future Scope → **ask, don't auto-rout
 
 #### User-executed Parts (roadmap-resident, distinct from User-Tasks)
 
-Parts on a brainstorm `roadmap.md` whose execution is inherently user-domain (spatial design, manual content authoring, taste-driven tuning) but carry roadmap deps and dependents. Examples: "design 10–15 static prototype floor scenes." Route to roadmap State=`user-owned` (see `_brainstorm_shared/common.md §6.3`), NOT `User-Tasks.md` — the Part must stay on the roadmap to preserve the dependency graph.
+Parts on a brainstorm `roadmap.md` whose execution is inherently user-domain (spatial design, manual content authoring, taste-driven tuning) but carry roadmap deps and dependents. Examples: "design 10–15 static prototype floor scenes." Route to roadmap State=`user-owned` (the roadmap pipeline's state vocabulary), NOT `User-Tasks.md` — the Part must stay on the roadmap to preserve the dependency graph.
 
 #### Anti-triggers (do NOT route to User-Tasks on these)
 - Technical tasks that *touch* art (e.g., "wire the visuals component to the new ability") — Claude can do this; the art existing is a prerequisite, not the work.
 - Bug fixes that *block* feel-tuning (e.g., "fix the shake parameter not respecting amplitude") — the fix is Claude's; only the post-fix tuning is yours.
-- Brainstorms with defined technical output ("brainstorm the IBlackboardProvider migration order") — Claude tackles those via `architecture_brainstorm`.
+- Brainstorms with defined technical output ("brainstorm the provider-interface migration order") — Claude tackles those through the project's architecture brainstorm.
 
 **When in doubt → regular Active.** False-routing to User-Tasks is a permanent leak (the doc isn't surveyed by sweep/triage/plan); false-routing to Active just costs one mirror line.
 

@@ -37,7 +37,9 @@ SEED_PATTERNS = [
     ".claude/skills/project_subsystems/*",
     ".claude/commands/checklists/known_failure_modes.md",
     ".claude/reference/known_failure_modes_entries.md",
+    ".claude/prototype_registry.md",
     ".claude/reference/project_stack.md",
+    ".claude/reference/vault_taxonomy.md",
     ".claude/skills/change_control/*",
     ".claude/skills/environment_bootstrap/*",
 ]
@@ -187,7 +189,6 @@ CODING_PATTERNS = [
     ".claude/commands/plan_drive.md",
     ".claude/commands/plan_handoff.md",
     ".claude/commands/plan_part.md",
-    ".claude/commands/roadmap_audit.md",
     ".claude/commands/roadmap_next.md",
     ".claude/commands/update_roadmap.md",
     ".claude/commands/merge_pr.md",
@@ -233,9 +234,7 @@ CODING_PATTERNS = [
     ".claude/commands/create_obsidian_design_doc.md",
     ".claude/commands/test_agents.md",
     ".claude/commands/system_check.md",
-    ".claude/commands/routing_battery.md",
     ".claude/scripts/validate_commands.py",
-    ".claude/tools/score_routing_battery.py",
 
     '.claude/commands/memory_audit.md',
     '.claude/rules/design_litmus.md',

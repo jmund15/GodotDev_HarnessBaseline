@@ -13,7 +13,7 @@ paths:
 
 - **Verify the engine pin before the first launch.** `mcp__godot__get_godot_version` — the MCP runs its OWN binary (`mcpServers.godot.env.GODOT_PATH` in the user's global `~/.claude.json`), NOT `$GODOT_BIN`. An older engine DOWNGRADES `project.godot` `config/features` and the csproj SDK pin silently on open. Mismatch → skip the MCP and run `bash .claude/scripts/godot_bin.sh --editor --path <dir> > <log> 2>&1` under `timeout` (wrapper form — the raw `"$GODOT_BIN"` form prompts in auto mode; doctrine: CLAUDE.md §Shell Discipline).
 - `run_project`: only when you need no user input and can run autonomously.
-- `get_debug_output`: **MANDATORY** while the project runs — this is how you read `JmoLogger` output and exceptions.
+- `get_debug_output`: **MANDATORY** while the project runs — this is how you read `JmoLogger` output and exceptions. It returns output since the last call, so call it after every action you want to observe.
 - Post-run logs (live/`run_project` sessions only): `%APPDATA%\Godot\app_userdata\{{PROJECT_NAME}}\logs\godot.log`. Test runs write `TestResults/godot_test.log` instead. `/analyze_godot_logs` for structured analysis.
 - `create_scene` / `add_node` / `save_scene`: scaffold `.tscn` files with valid headers.
 - `get_uid`: fetch UID strings before manual `.tscn`/`.tres` edits — never guess.
@@ -70,6 +70,9 @@ Opening the editor rewrites files. Specific silent mutations:
 
 - **`--theirs` on a `.tscn` conflict drops scene-authored export wiring** added on the other side (`_property = ExtResource(...)` / `NodePath(...)`). Symptom: "input does nothing," feature disabled. Hand-merge at-risk wirings back; bump `load_steps`.
 - **Orphaned `SubResource`:** taking one side's `SubResource("X")` reference without confirming the `[sub_resource id="X"]` block survived → runtime parse error `Condition "!int_resources.has(id)" is true` (misleading — the id is *missing*, not duplicate).
+- **Both sides add to one Dictionary:** keep all entries, give each added `ext_resource` a unique id, and declare every referenced `ext_resource` at the file top.
+- **Scene node-tree conflicts:** keep both trees and check for name collisions. Triage by node count, `git show :2:<file> | grep "^\[node" | wc -l` against `:3:`; a large disparity (e.g. 517 vs 37) marks the version carrying major additions, so use it as the base.
+- **Metafiles:** `.import`, `.uid` and `uid_cache.bin` conflicts regenerate through a headless import (`bash .claude/scripts/godot_bin.sh --headless --import --quit`), never by hand. `.csproj` conflicts union all `<PackageReference>` and `<Compile>` entries; `.runsettings` takes the newer version.
 
 ## Post-edit / post-rebase audit
 

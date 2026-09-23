@@ -45,7 +45,7 @@ gh pr list --head <current-branch> --state open --json number,title,body
 
 ## Step 2: Classify & Label
 
-If `agents/pr_classification.md` exists (supplied by the code layer), classify and label per that procedure (Domain, Type, Label Colors, and `gh label` commands). Otherwise classify by conventional-commit type alone (`feat`/`fix`/`refactor`/`chore`/`docs`) and apply matching labels if the repo defines them. Use `git diff main..HEAD --name-only` to determine changed files.
+If the project ships a PR classification procedure (the coding layer supplies one among the command agents), classify and label per that procedure (Domain, Type, Label Colors, and `gh label` commands). Otherwise classify by conventional-commit type alone (`feat`/`fix`/`refactor`/`chore`/`docs`) and apply matching labels if the repo defines them. Use `git diff main..HEAD --name-only` to determine changed files.
 
 ---
 
@@ -151,4 +151,4 @@ Print a summary:
 - **Ask before creating OR editing** — show the user the title and body before running `gh pr create` / `gh pr edit`
 - **UPDATE mode preserves original body** — never rewrite original Summary / Key design decisions; surgical fixes for stale-by-new-commits claims only, called out in the Review-pass section
 - **UPDATE section length is proportional to work added** — see Step 3-Update length budget. Detail belongs in commit messages, not duplicated into the PR body
-- **Labels at creation time** — don't defer to `/merge_pr`
+- **Labels at creation time** — don't defer them to merge time

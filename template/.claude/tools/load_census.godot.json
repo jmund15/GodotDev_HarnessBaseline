@@ -1,0 +1,19 @@
+{
+  "rule_bundles": {
+    "cs": {"glob": "**/*.cs"},
+    "hsm_bt": {"rule": "hsm_bt_patterns.md"},
+    "scene_authoring": {"rule": "scene_authoring.md"}
+  },
+  "budgets": {
+    "cs_rule_bundle_bytes": [37120, 35250],
+    "hsm_bt_rule_bundle_bytes": [15360, 14513],
+    "scene_authoring_rule_bundle_bytes": [38400, 36484]
+  },
+  "shared_state_hook_skip": [
+    "session_context_loader.py",
+    "tres_script_strip_guard.py",
+    "tres_nullstrip_guard.py"
+  ],
+  "isolated_shared_state_hooks": ["activity_registry.py"],
+  "code_edit_probe": {"path": "Scripts/Example.cs"}
+}

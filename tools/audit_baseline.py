@@ -106,6 +106,8 @@ CORE_DOMAIN_ALLOWLIST = {
     # Universal hooks whose Godot resource suffixes are inert where no such files exist:
     # git_guardrails refuses a one-sided checkout of .tscn/.tres during a merge.
     ".claude/hooks/git_guardrails.py",
+    # reap.py recognizes MCP and language-server processes by executable name (dotnet, csharp-ls).
+    ".claude/tools/reap.py",
     ".claude/tests/test_git_guardrails_advice.py",
     # Two-shape lens set (harness/doctrine AND code plans): classified pure per
     # the archetype-home rule, but its plan-check targets are code/engine nouns.
@@ -264,6 +266,25 @@ def check_core_domain_nouns(f: Findings, manifest: dict) -> None:
                   "extract to an adaptation point or demote a layer")
 
 
+def check_layer_closure(f: Findings, manifest: dict, template: Path = TEMPLATE) -> None:
+    """A file of layer X reaches consumers holding only X and the layers below it, so everything it
+    cites, imports or runs must ship at X or lower. The scanner is the template's own tool, the one
+    consumers run over their locks."""
+    if not manifest:
+        return
+    tools = str(template / ".claude" / "tools")
+    sys.path.insert(0, tools)
+    try:
+        import layer_closure
+    finally:
+        sys.path.remove(tools)
+    for finding in layer_closure.scan(template, layer_closure.manifest_layers(manifest)):
+        f.add("ERROR", "layer-closure", finding.source,
+              f"{finding.kind} {finding.target} -- a consumer of this file's layer does not receive "
+              "the target: move the sentence to the target's layer, reword it to a lower-layer seam, "
+              "re-layer a file, or load the module through hooks/_optional_hooks.py")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Audit the harness baseline for clean separation.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
@@ -280,6 +301,7 @@ def main() -> int:
     check_identity(f)
     check_layer_mistag(f, manifest)
     check_core_domain_nouns(f, manifest)
+    check_layer_closure(f, manifest)
 
     errors, warns, infos = (f.by_severity(s) for s in ("ERROR", "WARN", "INFO"))
 

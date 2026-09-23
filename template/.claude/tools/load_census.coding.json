@@ -1,0 +1,7 @@
+{
+  "entrypoints": [
+    "commands/plan_check.md",
+    "commands/explore.md",
+    "skills/_brainstorm_shared/common.md"
+  ]
+}

@@ -1,6 +1,6 @@
 # Project Structure Rules
 
-> Project-owned seed for `/structure_audit`. Fill the `organization` field in
+> Project-owned seed, and the rulebook for the project's structure audit where it ships one. Fill the `organization` field in
 > [`project_subsystems`](../project_subsystems/SKILL.md); that registry is the folder-style map.
 
 This file answers: **Where should this new file live?** `SKILL.md` owns code design.
@@ -122,4 +122,4 @@ folder needs role subfolders or relocation. A `hybrid` subsystem follows its doc
 4. For a new top-level folder, update the registry in the same change.
 5. Use ASK for ownership, namespace, hybrid-style, and growth judgments.
 
-Run `/structure_audit` after a structural change or as an explicit hygiene pass.
+Run the project's structure audit, where it ships one, after a structural change or as an explicit hygiene pass.

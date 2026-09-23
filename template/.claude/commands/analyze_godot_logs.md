@@ -263,3 +263,41 @@ python .claude/hooks/analyze_godot_logs.py --json --mode errors --fields line_nu
 - Empty fields are stripped from JSON output by default (further token savings)
 - Log location: live-run `%APPDATA%\Godot\app_userdata\{{PROJECT_NAME}}\logs\godot.log` (canonical home: `.claude/rules/godot_files.md`); test-run `TestResults/godot_test.log` (`--log test`)
 - Legacy flags `--summary` and `--timeline` still work (alias to `--mode summary`/`--mode timeline`) for backward compat with prior automation
+
+## Pre-PR boot-log probe
+
+The coding layer's pre-PR battery runs this as its Step 0b on a Godot project; its Step 2 merges the verdicts below.
+
+The engine diagnoses its own wiring at boot and writes the diagnosis to `godot.log`. Nothing in the PR flow read it, so self-announced defects shipped. This step reads it.
+
+**Scope — boot and first scene load, nothing else.** Launch, let the main scene finish `_Ready`, quit. That exercises static wiring, `[Export]` validation, and singleton/`Instance` registration, which is where self-diagnosing warnings fire. It exercises no gameplay, satisfies no playtest checklist, and replaces no human play.
+
+**Verify the engine pin before launching.** `mcp__godot__get_godot_version` — the MCP runs its OWN binary, and an older one silently downgrades `project.godot` `config/features` and the csproj SDK pin on open (`.claude/rules/godot_files.md`). Version ≠ the project's → do not launch. Report `NOT RUN — engine pin mismatch (MCP <x> vs project <y>)` as a WARN and offer the human path: the user launches the project, then this probe resumes at instruction 3 against `--log latest`.
+
+**The engine is machine-wide single-flight.** Run this only after `/regression_gate` is green, never while a test run is live.
+
+1. `mcp__godot__run_project`. Launch truncates `godot.log`, so the log this step reads is exactly this run.
+2. `mcp__godot__get_debug_output` until the main scene reports ready (cap at 60s), then `mcp__godot__stop_project`. A failed launch or a boot exception is itself a BLOCKER — report it and skip the rest of the step.
+3. `python .claude/hooks/analyze_godot_logs.py --json --mode summary --log latest` for distinct warning/error GROUPS with counts; drill a group with `--mode timeline --target <term> --level warning --json`. Compose with that tool — never hand-parse the log.
+
+#### Diff correlation — what makes a boot warning a finding
+
+A pre-existing warning in a subsystem this PR never touched is noise for this PR; a warning naming something the PR changed is a finding. Build the correlation token set Claude-side from the battery's frozen Step 0 diff:
+
+- changed `.cs` basenames plus the type names declared in them
+- changed `.tres`/`.tscn` basenames plus their `script_class` values
+- the `[Subsystem]` log prefixes emitted by changed files: `git -C "$ROOT" grep -hoE "\[[A-Za-z]+\]" -- <changed .cs paths>`
+
+| verdict | condition | tier |
+|---|---|---|
+| CORRELATED | a distinct group's text contains any correlation token | **BLOCKER** (`critical: true`) — quote the group verbatim with its count and name the token that matched |
+| UNCORRELATED | no token matches | INFO, in the roll-up only |
+| NOT RUN | pin mismatch, launch failure, or empty log | WARN, naming which |
+
+A CORRELATED group blocks even when the warning predates the PR: this is the last moment anyone will look at that subsystem with its code in hand.
+
+#### Warning budget — advisory
+
+Distinct GROUPS are the health metric, not raw count — repeated-identical warnings collapse to one-with-a-count, which `--mode summary` already does. Compare this run's group signatures against `.claude/state/boot_warning_baseline.json` (`{"recorded_on": "<sha>", "groups": ["<signature>", ...]}`; create it on first run). Report the count delta and list the signatures new since the baseline. No baseline yet → record one from this run and report the raw count only. A run on `main` refreshes the baseline; a run on a branch never writes it.
+
+**Advisory, never blocking**, and a fixed threshold is deliberately absent — it would be a number nobody re-tunes, and a rising count can come from an untouched subsystem or engine churn, so blocking would gate an author on what they cannot fix. Every group that matters is already a BLOCKER by correlation. The budget's job is to give the noise floor an owner and a trend, so the log stays a readable instrument.

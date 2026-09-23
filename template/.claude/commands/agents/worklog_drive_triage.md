@@ -63,8 +63,8 @@ Run COMPLETE (`## Operation: COMPLETE` in `worklog.md`). Pre-fill a Step-2 match
 1. Read the item's `Where:` files (`read_files` if 3+; else `Read`).
 2. Make the change. Mechanical class only — if the work expands (multi-decision, or multi-file beyond the `Where:` list), abort do-now and offer fallback dispositions inline (`[c]omplete-after-manual / [f]lag for next session / [s]kip`).
 3. Verify by file type — the SSOT for tier-1 verification:
-   - `.cs` changes → `/regression_gate` MANDATORY (CLAUDE.md Build & Test Commands).
-   - `.tres` / `.tscn` Logic-affecting → the relevant Logic test suite.
+   - Code changes → the project's regression gate (`change_control` §Gate cadence names it), MANDATORY.
+   - Logic-affecting data changes → the relevant Logic test suite.
    - Doc-only / `.md` → no verification needed.
 4. Run COMPLETE with today's date as ref, or the commit hash if a commit lands this turn.
 5. Resume the walk on the next item.
@@ -119,7 +119,7 @@ The rebalance holds Active at 30 by construction, so an over-ceiling `<after>` m
 - **Race with parallel writes:** triage reads Active once at start, so another agent's mid-walk write can be double-written or dropped by the Step 6 rewrite. Solo-dev unlikely; if it surfaces, add a re-read before the mirror rewrite.
 - **Quick-win flag already present:** don't propose `flag` again; fall through to the next-priority disposition.
 - **Do-now misclassified (work blows up):** abort mid-execution, offer fallbacks inline, continue the walk. Never silently log a partially-done state.
-- **`/regression_gate` failure on a do-now `.cs` change:** stop the walk — a regression is not a triage matter. The item stays `[ ]`; the `.cs` change reverts or stays uncommitted at the user's choice.
+- **Regression-gate failure on a do-now code change:** stop the walk — a regression is not a triage matter. The item stays `[ ]`; the code change reverts or stays uncommitted at the user's choice.
 
 ## Operation: DRIVE
 
@@ -303,14 +303,14 @@ The body's **artifact** follows the ladder tier: tier 1 needs none; tier 2 keeps
 ### Verification
 
 - <how we'll know this works — test pass, manual repro, log check>
-- <regression sentinel: which test suite must still pass after — usually `/regression_gate` for .cs work>
+- <regression sentinel: which test suite must still pass after — usually the project's regression gate for code work>
 
 ### Worklog completion
 
 After landing: `/worklog complete <title>` (commit hash <pending>).
 ```
 
-**Logic-domain note:** a fill-set item in a Logic-domain area (`DomainCore`, `Combinations`, `Jmodot.Core`, `Inventory`, `Math/Parsing`, `Data Structures` per CLAUDE.md) MUST open its **Steps** with a RED test pinning the bug or proving the new behavior missing. No production-code step before a verifying test.
+**Logic-domain note:** a fill-set item in a Logic-domain area (the Logic domains the project's CLAUDE.md lists) MUST open its **Steps** with a RED test pinning the bug or proving the new behavior missing. No production-code step before a verifying test.
 
 **Multi-item drafting:** partition the fill-set by `PLAN_SHAPE` — never one plan spanning both shapes ([*Plan-file format*](../../skills/_brainstorm_shared/plan_file_format.md) → *One shape per plan file*). Within a shape, default to one plan and split further only on that rule's cohesion litmus (one `Constraints` block and one `Verification` section genuinely cover the set). Items sharing an invariant get Steps shaped "do X once, then apply across A, B, C"; items with no shared invariant but one plan's worth of spine get labelled sub-sequences under a single Verification section.
 
@@ -365,8 +365,8 @@ The event name `tackle` is historical, retained because live history lines pair 
 
 Group the fill-set and drive each item at its ladder tier ([`execution_depth.md`](../../skills/_brainstorm_shared/execution_depth.md)).
 
-- **Dispatch shape** per the `orchestration` skill §5/§11 — the depth ladder governs process artifacts, not who executes. Independent items may fan out via the generic engines (`dispatch.js`) with explicit model + effort pins; dependent or same-file items serialize. **Test and build runs are single-flight:** one gate, serially, orchestrator-side, never per-agent (`gotcha_workflow_single_flight_concurrency`).
-- **Gates are provenance-blind.** Any `.cs` change anywhere in the batch → one full `/regression_gate` before commits, however small the items.
+- **Dispatch shape** per the `orchestration` skill §5/§11 — the depth ladder governs process artifacts, not who executes. Independent items may fan out via the generic engines (`dispatch.js`) with explicit model + effort pins; dependent or same-file items serialize. **Test and build runs are single-flight:** one gate, serially, orchestrator-side, never per-agent.
+- **Gates are provenance-blind.** Any code change anywhere in the batch → one full regression-gate run before commits, however small the items.
 - **Per-item close-out:** run COMPLETE with the commit ref, in the same session the item lands.
 
 **Re-scope valve.** Trigger: the item's real file or decision count exceeds its logged scope tier mid-drive. Action: update the item's `scope:` value in `Worklog.md` (ADD-style edit), leave it `[ ]`, and report the re-scope. Budget mode continues into the deeper tier only if the remaining scope-point budget covers the new value; otherwise the item stays re-scoped-but-undriven. Named-items mode continues at the deeper tier unless the new tier is 4 → flag and route per the scope-4 rule. Never silently dropped, never silently deepened past the budget.

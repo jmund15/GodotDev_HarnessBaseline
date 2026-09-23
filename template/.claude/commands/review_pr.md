@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(git log:*), Bash(git diff:*), Bash(git -C Jmodot diff:*), Glob, Grep, Read, Workflow
+allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(git log:*), Bash(git diff:*), Bash(git -C:*), Glob, Grep, Read, Workflow
 description: "Thorough code review of a single PR or unstaged changes"
 ---
 
@@ -28,13 +28,13 @@ For each file in the diff, read the full file content. Agents need surrounding c
 
 **Scope cap (>20 changed files):** Follow the [Shared Scoping Rules](agents/review_agents.md#shared-scoping-rules). Ask the user before proceeding.
 
-**Jmodot submodule changes:** If the diff shows a Jmodot submodule pointer change (single line changing the commit hash), fetch the actual Jmodot diff so review agents can see what changed:
+**Submodule changes:** If the diff shows a submodule pointer change (single line changing the commit hash), fetch the actual submodule diff so review agents can see what changed:
 ```bash
 # Extract old and new commit hashes from the PR diff
-git -C Jmodot diff <old-commit>..<new-commit> --stat   # summary
-git -C Jmodot diff <old-commit>..<new-commit>           # full diff
+git -C <submodule> diff <old-commit>..<new-commit> --stat   # summary
+git -C <submodule> diff <old-commit>..<new-commit>           # full diff
 ```
-Include this Jmodot diff in the CONTEXT block alongside the {{PROJECT_NAME}} diff. Without this, agents only see a single hash-change line and miss all submodule code changes.
+Include this submodule diff in the CONTEXT block alongside the project diff. Without this, agents only see a single hash-change line and miss all submodule code changes.
 
 ### 1c. Classify the PR
 
@@ -49,11 +49,9 @@ Classify using the [PR Classification](agents/pr_classification.md) tables (Doma
 
 ### 1d. Load project context
 1. Read the [Architecture Philosophy Skill](/.claude/skills/architecture_philosophy/SKILL.md) — this is the primary compliance reference
-2. Read the [Testing Skill](/.claude/skills/testing/SKILL.md) — for TDD compliance checks
+2. Read CLAUDE.md §Development Philosophy: Hybrid TDD — the project's test-first policy, for TDD compliance checks
 3. Search auto-memory with single-keyword searches for each domain touched:
-   - Logic domain: search "Godot", "test"
-   - Data domain: search "UID", "tres"
-   - Gameplay domain: search "HSM", "pool"
+   - one key term per touched domain (e.g. "test" for Logic, the data format's name for Data)
    - Refactors: search "refactor"
 
 ### 1e. Find transcript summaries (PR mode only)
@@ -109,7 +107,7 @@ This file contains all agent definitions, spawn rules, scoring rubric, and fix c
 
 For each selected agent, build its prompt from the `review_agents.md` template, substituting `{{CONTEXT}}` (the block from 2b), `{{PR_NUM}}`, `{{BRANCH}}`, `{{CHECKLIST_CDS}}`, `{{CHECKLIST_RP}}`, `{{CHECKLIST_I}}`, `{{TEST_QUALITY_CHECKLIST}}`, `{{TRANSCRIPT_CORRECTIONS}}`.
 
-Then dispatch them all through the engine — it runs them in parallel, appends the read-only / no-tests / no-LSP single-flight guard to every agent (so no agent can run `/regression_gate` concurrently and wedge the Godot pipe), and consolidates per Step 1 of the action protocol:
+Then dispatch them all through the engine — it runs them in parallel, appends the read-only / no-tests / no-LSP single-flight guard to every agent (so no agent can run the project's regression gate or another single-flight tool concurrently), and consolidates per Step 1 of the action protocol:
 
 ```
 Workflow({
@@ -188,7 +186,7 @@ If reviewing unstaged changes (no PR number), omit PR-specific sections (PR Hygi
 
 ## Phase 5: Regression Gate (PR mode only)
 
-If the PR contains code changes (`.cs` files), invoke `/regression_gate` after the review but before issuing the final verdict. If the gate fails, the verdict MUST be `REQUEST CHANGES` regardless of code review findings.
+If the PR contains code changes, run the project's regression gate (`change_control` §Gate cadence names it) after the review but before issuing the final verdict. If the gate fails, the verdict MUST be `REQUEST CHANGES` regardless of code review findings.
 
 Note: For unstaged changes (pre-commit review mode), the regression gate is the caller's responsibility (e.g., `/commit_push` runs it separately).
 
@@ -196,7 +194,7 @@ Note: For unstaged changes (pre-commit review mode), the regression gate is the 
 
 ## Constraints
 
-- **Read-only** — this command never modifies code, switches branches, or pushes changes (except `/regression_gate` which only reads)
+- **Read-only** — this command never modifies code, switches branches, or pushes changes (except the regression gate, which only reads)
 - **No GitHub posting** — output is local terminal only
 - **Load skills first** — Architecture Philosophy and Testing skills are the compliance reference
 - **Search Memory** — domain-specific gotchas inform what to look for

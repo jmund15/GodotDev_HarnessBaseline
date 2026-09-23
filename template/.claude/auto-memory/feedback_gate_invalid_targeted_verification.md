@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-When a gate returns INVALID, decompose it before re-running: which phases produced real green results during the invalidated run, and what is the delta since the last full PASS? Small delta + attributable greens → verify the delta with targeted `run_test_suite.ps1` runs and commit with composite `Verified:` lines naming each phase's provenance. Reserve a full re-run for broad deltas or un-attributable failures.
+When a gate returns INVALID, decompose it before re-running: which phases produced real green results during the invalidated run, and what is the delta since the last full PASS? Small delta + attributable greens → verify the delta with targeted runs of the affected suites through the project's test runner and commit with composite `Verified:` lines naming each phase's provenance. Reserve a full re-run for broad deltas or un-attributable failures.
 
 **Why:** the user stopped a third 10+ minute full-gate run — the invalidated run's Integration phase had genuinely passed 1984/0 over the same content, and the remaining delta was two using-lines and one cref signature. (2026-08-14, audio drive Part-6 close-out.)
 

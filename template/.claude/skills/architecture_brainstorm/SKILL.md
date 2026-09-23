@@ -25,7 +25,7 @@ DO NOT INVOKE ANY IMPLEMENTATION SKILL, WRITE ANY CODE, OR
 SCAFFOLD ANY PROJECT UNTIL THE DESIGN HAS BEEN APPROVED.
 ```
 
-If you find yourself reaching for `Edit`, `Write`, or implementation-flavored skills (e.g., `spell_authoring` / `refactor_procedure`, or `architecture_philosophy`'s code patterns) before the user has approved the design — **stop**. The skill's job is to make the user's intent and the design's shape *both* precise before code writes start. Skipping ahead loses the design conversation.
+If you find yourself reaching for `Edit`, `Write`, or implementation-flavored skills (the project's authoring and refactor procedures, or `architecture_philosophy`'s code patterns) before the user has approved the design — **stop**. The skill's job is to make the user's intent and the design's shape *both* precise before code writes start. Skipping ahead loses the design conversation.
 
 ---
 
@@ -163,7 +163,7 @@ See [`common.md §5.1`](../_brainstorm_shared/common.md) — three placements (s
 
 **Rule:** Before proposing approaches, grep for existing 2+ subclass families in the relevant domain.
 
-This step **applies the discipline documented in [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Coupling & Discovery* sections (*Node Retrieval & Coupling*, *Interface Usage*)**. Don't restate the rules; surface them as a step in the design process:
+This step **applies the discipline documented in [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Coupling & Discovery* sections (*Interface Usage*, and the engine skill's retrieval rules where one applies)**. Don't restate the rules; surface them as a step in the design process:
 
 - **First move:** run `mcp__plugin_semantic-search_semantic-search__search` against the relevant abstraction. Works for known type names (`"BBDataSig"`, `"IIdentifiable"`, `"MovementProcessor3D"` — returns the class declaration in one shot) AND for fuzzy domain queries (`"combination resolution"`, `"effect lifecycle"`, `"modifier composition"`). Especially useful for abstractions whose names don't follow `abstract*` / `I*` conventions. See CLAUDE.md §9.
 - **Then:** LSP `findReferences` on the candidate base type to enumerate all subclasses / implementers (semantic-search returns the declaration; LSP returns every usage — the latter is what reveals the 2+ subclass family).
@@ -483,11 +483,11 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 **Adjacent skills:**
 - [`idea_brainstorm`](../idea_brainstorm/SKILL.md) — runs BEFORE this skill for greenfield topics; produces the idea-bank doc that Steps 2 and 4 consume
 - [`project_subsystems`](../project_subsystems/SKILL.md) — Step 5 bounded-scope criterion (≤2 subsystems) + Integration touch points uses this skill's subsystem registry
-- [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Coupling & Discovery* sections (*Node Retrieval & Coupling*, *Interface Usage*) — Step 3 cross-link, NOT duplicate
+- [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Coupling & Discovery* sections (*Interface Usage*) — Step 3 cross-link, NOT duplicate
 - [`worklog_reference`](../worklog_reference/SKILL.md) — scope 1/2/3/4 definitions used by skip rules
 - [`debugging`](../debugging/SKILL.md) — alternative path for bug fixes with known root cause; brainstorming is for forward design only
-- [`status_effect_authoring`](../status_effect_authoring/SKILL.md) / [`refactor_procedure`](../refactor_procedure/SKILL.md) — plus any project-specific authoring skills — invoked AFTER brainstorming approval, when the approved design maps to one of these authoring surfaces
-- [`testing`](../testing/SKILL.md) — design docs MUST include test-plan section (Logic-Domain TDD applies to design-mandated logic)
+- The project's authoring skills and refactor procedure — invoked AFTER brainstorming approval, when the approved design maps to one of their authoring surfaces
+- The project's test-first policy (CLAUDE.md §Development Philosophy: Hybrid TDD) and its testing skill, where it ships one — design docs MUST include test-plan section (Logic-Domain TDD applies to design-mandated logic)
 
 **Commands:**
 - [`/update_roadmap`](../../commands/update_roadmap.md) — Step 8 invocation; single executor for roadmap.md edits (Parts table, Mermaid, derived views, revision log)

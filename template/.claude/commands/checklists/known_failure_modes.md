@@ -3,15 +3,15 @@ description: >-
   Auto-load when investigating bugs, reviewing plans for landmines, or designing in
   well-trodden areas — a "have we hit this before?" lookup. Triggers: "is this a known
   failure", "have we seen this", "any past failures", "what could go wrong here",
-  "regression class", "known landmine". SKIP for forward-looking compliance review (use
-  `checklists:code_quality` or `checklists:test_quality` instead).
+  "regression class", "known landmine". SKIP for forward-looking compliance review (use the project's review rubrics
+  instead).
 ---
 
 # Known Failure Modes — Case-History Index
 
 <!-- Case-history catalog of memorialized regression patterns. -->
-<!-- Sibling to code_quality.md / test_quality.md but DIFFERENT in kind: -->
-<!--   * code_quality.md / test_quality.md = forward-looking reviewer rubrics (loaded into every audit agent's CONTEXT). -->
+<!-- Sibling to the project's review rubrics but DIFFERENT in kind: -->
+<!--   * review rubrics = forward-looking (loaded into every audit agent's CONTEXT). -->
 <!--   * known_failure_modes.md = backward-looking incident catalog (fetched ON-DEMAND, per entry). -->
 <!-- Used by: /plan_check (plc-memory-alignment, always); /explore (exp-memory, floor lens). /session_audit is NOT a consumer — its `--include-failure-history` flag never existed. -->
 <!-- PROJECT-OWNED SEED: the access contract ships; the entries are yours. An empty catalog is fine at project start. -->
@@ -33,7 +33,7 @@ The read pattern is scan every entry's trigger, read the body of the few that be
 
 Fetching is cheap; a missed entry is the failure this catalog exists to prevent. Fetch every trigger that reads ambiguous, and `get -s` the whole section when the work sits squarely inside one section's domain. Read `reference/known_failure_modes_entries.md` directly only when editing entries.
 
-This is **case-history**, not a rubric. If you're looking for "what rules should this code follow?", read `code_quality.md` and `test_quality.md`. If you're looking for "what subtle past failure does this pattern resemble?", fetch from here.
+This is **case-history**, not a rubric. If you're looking for "what rules should this code follow?", read the project's review rubrics. If you're looking for "what subtle past failure does this pattern resemble?", fetch from here.
 
 The auto-memory files named on each entry's `**Memory**:` line are the canonical source of truth — catalog entries are *pointers + detection patterns*, not summaries.
 
