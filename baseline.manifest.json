@@ -1742,6 +1742,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/reference/project_stack.md",
+      "layer": "pure",
+      "sync": "seed"
+    },
+    {
       "path": ".claude/reference/rules/csharp_lsp_examples.md",
       "layer": "coding",
       "sync": "auto"
@@ -2127,6 +2132,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/change_control/SKILL.md",
+      "layer": "pure",
+      "sync": "seed"
+    },
+    {
       "path": ".claude/skills/debugging/SKILL.md",
       "layer": "coding",
       "sync": "auto"
@@ -2140,6 +2150,11 @@
       "path": ".claude/skills/debugging/reference/phase5-fix.md",
       "layer": "coding",
       "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/environment_bootstrap/SKILL.md",
+      "layer": "pure",
+      "sync": "seed"
     },
     {
       "path": ".claude/skills/game_vision/SKILL.md",
@@ -2507,6 +2522,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_claude_core_standalone.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_claudemd_citations.py",
       "layer": "pure",
       "sync": "auto"
@@ -2859,6 +2879,11 @@
     {
       "path": ".claude/tests/test_readonly_lens_write_guard.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_reap.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -3344,6 +3369,11 @@
     {
       "path": ".claude/tools/quota_bands.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/reap.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
