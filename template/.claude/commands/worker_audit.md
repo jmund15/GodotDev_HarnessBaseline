@@ -66,7 +66,7 @@ Sample recent `mcp__ai-worker__*` calls, verify their claims against the actual 
 
 ## Reading the result
 
-**Rated coverage is stated before any verdict, and unrated is UNKNOWN rather than clean.** A fabrication rate computed over a mostly-unrated set is a denominator artifact — the same error as reading a shrinking denominator as a quality gain (`harness-bounds-v1.2` FULL-BREAKDOWN, trap instrument).
+**Rated coverage is stated before any verdict, and unrated is UNKNOWN rather than clean.** A fabrication rate computed over a mostly-unrated set is a denominator artifact — the same error as reading a shrinking denominator as a quality gain.
 
 **Thirty anchored ratings beat three hundred unanchored ones.** Resist widening the sample at the cost of actually opening files; an unverified `faithful` is worse than no rating, because it counts as coverage.
 

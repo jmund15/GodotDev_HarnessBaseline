@@ -42,7 +42,7 @@ class Env:
                              text=True, timeout=30, encoding="utf-8",
                              env=hook_env(HARNESS_HOOK_STATE_DIR=self.state, SIDECAR_LEDGER_PATH=self.ledger,
                                           CLAUDE_PROJECTS_ROOT=projects_root or os.path.join(self.root, "none"),
-                                          DISPATCH_TABLE_LAUNCH_WAIT="0"))
+                                          DISPATCH_TABLE_LAUNCH_WAIT="0", DISPATCH_TABLE_UNRESOLVED_WAIT="0"))
         assert out.returncode == 0 and "Traceback" not in out.stderr, "CRASH rc=%s %s" % (out.returncode, out.stderr)
         body = json.loads(out.stdout) if out.stdout.strip() else {}
         assert set(body) <= {"systemMessage"}, "model-facing channel emitted: %s" % sorted(body)
@@ -270,6 +270,29 @@ def test_template_labels_take_the_scripts_only_literal_effort_and_one_answer_ver
     assert msg == "▶ Workflow · 7 started\n  opus-5-5 · low · general-purpose: " + ", ".join(labels), msg
 
 
+def test_table_driven_efforts_never_print_pending():
+    """Live 2026-09-23 (bench-wave3-fix-and-k-audit): labels built as `'audit:K:' + l.lens` with
+    effort read from a LENSES table; two agents had not answered, and their rows read `pending`.
+    An unanswered agent without an exact pin shows the efforts the script declares."""
+    e = Env()
+    e.plant_run("wf_proof-1", "running", [("fix:C7", "fx7", "opus", "claude-opus-5-5", "medium"),
+                                          ("audit:K:doctrine", "akd", "opus", None, None),
+                                          ("fix:C9", "fx9", "opus", None, None)])
+    script = ("export const meta={name:'bench-wave3'}\n"
+              "const LENSES = [{ lens: 'robustness', effort: 'low' }, { lens: 'claims', effort: 'medium' }]\n"
+              "await parallel(LENSES.map(l => () => agent('x', { label: 'audit:K:' + l.lens, model: 'opus', effort: l.effort })))\n"
+              "await parallel(FIXES.map(j => () => agent('x', { label: j.label, model: 'opus', effort: 'medium' })))")
+    msg = e.run(workflow_payload({"script": script}), "--launch")
+    assert "pending" not in msg, msg
+    assert cells(msg, "fix:C9")[2] == "low|medium" and cells(msg, "audit:K:doctrine")[2] == "low|medium", msg
+    assert cells(msg, "fix:C7")[1:3] == ["opus-5-5", "medium"], msg
+    # Once the late agents answer, the next Stop reports their recorded effort.
+    e.plant_run("wf_proof-1", "running", [("audit:K:doctrine", "akd", "opus", "claude-opus-5-5", "low"),
+                                          ("fix:C9", "fx9", "opus", "claude-opus-5-5", "medium")])
+    msg = e.run(stop_payload([{"id": "t-wf_proof-1", "type": "workflow", "status": "running"}]), "--complete")
+    assert cells(msg, "audit:K:doctrine")[2] == "low" and cells(msg, "fix:C9")[2] == "medium", msg
+
+
 def test_bespoke_script_lists_every_started_agent_then_the_late_ones():
     """Regression, live 2026-09-22: a bespoke script with 2 agent() call sites started 6 agents;
     the launch table printed the 2 call sites as agents, labels 'unresolved', one effort '?'."""
@@ -281,11 +304,11 @@ def test_bespoke_script_lists_every_started_agent_then_the_late_ones():
     msg = e.run(workflow_payload({"script": script}), "--launch")
     assert msg.splitlines()[0] == "▶ Workflow · 6 started", msg
     assert [cells(msg, "exec:%s" % p) for p in "ADEF"] == [["exec:%s" % p, "opus-5-5", "medium", "general-purpose"] for p in "ADEF"], msg
-    assert cells(msg, "plc:r2a") == ["plc:r2a", "opus-5-5", "pending", "general-purpose"], msg
+    assert cells(msg, "plc:r2a") == ["plc:r2a", "opus-5-5", "?", "general-purpose"], msg
     assert msg == ("▶ Workflow · 6 started\n"
                    "  opus-5-5 · medium · general-purpose: exec:A, exec:D, exec:E, exec:F\n"
-                   "  opus-5-5 · pending · general-purpose: plc:r2a, plc:r2b"), msg
-    assert e.run(stop_payload(), "--complete") == "", "nothing new until the pending agents respond"
+                   "  opus-5-5 · ? · general-purpose: plc:r2a, plc:r2b"), msg
+    assert e.run(stop_payload(), "--complete") == "", "nothing new until the unsettled agents respond"
     e.plant_run("wf_proof-1", "running", [("plc:r2a", "eb1", "opus", "claude-opus-5-5", "low"),
                                          ("plc:r2b", "eb2", "opus", "claude-opus-5-5", "low")])
     msg = e.run(stop_payload(), "--complete")
@@ -339,6 +362,43 @@ def test_sidecar_fanout_rows():
     msg = e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s" % jobs.replace("\\", "/")), "--launch")
     assert cells(msg, "fa") == ["fa", "muse-spark-1.3-contributor-free", "max", "sidecar"], msg
     assert cells(msg, "fb") == ["fb", "DeepSeek-V4.1-Flash", "default", "sidecar"], msg
+
+
+def test_sidecar_fanout_follows_a_leading_cd():
+    """A relative jobs path resolves against the directory the command cd's into, not the
+    session's cwd, which may be any subdirectory."""
+    e = Env()
+    os.makedirs(os.path.join(e.root, "sub", "deep"))
+    os.makedirs(os.path.join(e.root, "rel"))
+    json.dump([{"label": "fc", "alias": "muse", "effort": "max", "promptFile": "c.md"}],
+              open(os.path.join(e.root, "rel", "jobs.json"), "w"))
+    payload = bash_payload("cd %s && python3 .claude/tools/sidecar_fanout.py rel/jobs.json --out-dir o"
+                           % e.root.replace("\\", "/"))
+    payload["cwd"] = os.path.join(e.root, "sub", "deep")
+    msg = e.run(payload, "--launch")
+    assert cells(msg, "fc") == ["fc", "muse-spark-1.3-contributor-free", "max", "sidecar"], msg
+
+
+def test_sidecar_fanout_expands_a_shell_variable_assigned_earlier():
+    """`P=<dir>; python3 sidecar_fanout.py $P/jobs.json` names the jobs file through a variable the
+    same command assigned; the table resolves it rather than printing unresolved."""
+    e = Env()
+    os.makedirs(os.path.join(e.root, "p"))
+    json.dump([{"label": "fv", "alias": "muse", "effort": "max", "promptFile": "v.md"}],
+              open(os.path.join(e.root, "p", "jobs.json"), "w"))
+    root = e.root.replace("\\", "/")
+    for cmd in ("cd %s && P=p; python3 .claude/tools/sidecar_fanout.py $P/jobs.json" % root,
+                "cd %s && P=p && python3 .claude/tools/sidecar_fanout.py ${P}/jobs.json" % root):
+        msg = e.run(bash_payload(cmd), "--launch")
+        assert cells(msg, "fv") == ["fv", "muse-spark-1.3-contributor-free", "max", "sidecar"], (cmd, msg)
+
+
+def test_sidecar_fanout_dry_run_prints_nothing():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "fd", "alias": "muse", "effort": "max", "promptFile": "d.md"}], open(jobs, "w"))
+    cmd = "python3 .claude/tools/sidecar_fanout.py %s --dry-run" % jobs.replace("\\", "/")
+    assert e.run(bash_payload(cmd), "--launch") == "", cmd
 
 
 def test_sidecar_mentions_print_nothing():
@@ -456,14 +516,14 @@ def test_stale_entry_reported_and_dropped():
 
 # ---------------------------------------------------------------- session-audit regressions (2026-09-23)
 
-def test_chain_and_explore_omitted_effort_is_the_engine_default_not_the_session_level():
-    """dispatch_chains and explore_fanout default an omitted effort to medium, as review_fanout does;
+def test_chain_and_lens_omitted_effort_is_the_engine_default_not_the_session_level():
+    """dispatch_chains and a lens engine default an omitted effort to medium, as review_fanout does;
     the session's `high` there printed a false launch row and a false ⚠ at finish."""
     e = Env()
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch_chains.js",
                                   "args": {"chains": [{"name": "c", "jobs": [{"label": "cj", "model": "sonnet"}]}]}}), "--launch")
     assert cells(msg, "cj") == ["cj", "sonnet-5", "medium", "general-purpose"], msg
-    msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/explore_fanout.js",
+    msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/any_lens_engine.js",
                                   "args": {"lenses": [{"key": "lz", "model": "sonnet", "agentType": "Explore"}]}},
                                  run_id="wf_proof-2"), "--launch")
     assert cells(msg, "lz") == ["lz", "sonnet-5", "medium", "Explore"], msg

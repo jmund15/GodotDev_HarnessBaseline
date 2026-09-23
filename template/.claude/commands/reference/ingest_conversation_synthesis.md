@@ -13,11 +13,11 @@ Routing judgment stays with the orchestrator. Map each candidate to exactly one 
 | # | Archetype | Route |
 |---|---|---|
 | a | focus / priority statement | `Claude/Meta/Development-Focus.md` revision proposal — the doc carries an `## At a glance` skim section under the same discipline as the digest's takeaways (step 7) |
-| b | design-identity statement | `game_vision` SKILL.md edit proposal |
-| c | design topic | verbatim idea-seed list + named downstream command — `/idea_brainstorm` when the space needs populating, `/design_drive` when converged |
+| b | design-identity statement | edit proposal to the project's vision owner, the skill or doc its CLAUDE files name for product direction |
+| c | design topic | verbatim idea-seed list + named downstream command — the project's idea brainstorm when the space needs populating, its design drive when converged |
 | d | deferred task | worklog add proposal (routes per the CLAUDE.md boundary: user-owned roadmap Parts stay on `roadmap.md`; standalone user-judgment items → `User-Tasks.md`; ambiguous → regular Active) |
-| e | roadmap change | [`/update_roadmap`](../update_roadmap.md) proposal |
-| f | cofounder-owned action item | `User-Tasks.md` proposal — only for Jmo-owned in-engine/checklist actions; both-cofounder-visible or business-level items propose a shared-board (Trello) card instead, since the cofounder doesn't read Obsidian |
+| e | roadmap change | roadmap-update proposal for the project's roadmap command |
+| f | collaborator-owned action item | `User-Tasks.md` proposal — only for owner-owned in-engine/checklist actions; items every collaborator must see, or business-level items, propose a shared-board card instead, since collaborators may not read the vault |
 
 **Done when:** every `extract-actionables` candidate maps to exactly one archetype or an explicit `no-route` with a reason, and the count reconciles against that job's candidate count plus any `outside-read`-tagged candidates from step 3.7.
 
@@ -33,7 +33,7 @@ Trend judgment stays with the orchestrator for the same reason routing does: it 
 | `pattern` | ≥2 conversations, a quote from each | "tends to …" |
 | `standing` | ≥4 conversations, no counterexample since the last promotion | the trait, unhedged |
 
-An observation enters the holding list on first sighting and earns a trait line on the second — one conversation never produces a trait (`feedback_dont_codify_never_from_single_fix`).
+An observation enters the holding list on first sighting and earns a trait line on the second — one conversation never produces a trait.
 
 **Demotion is mandatory.** An observation contradicting a `pattern`/`standing` line drops it one tier and lands in the trend log with both quotes. A profile that only accretes is a horoscope; the demotion path is what makes a promotion mean anything.
 
@@ -49,7 +49,7 @@ A single `AskUserQuestion` batch over the whole proposal set — approve / rejec
 
 ## Step 7 — Execute + record
 
-Write `digest.md` ([`ingest_conversation_templates.md`](ingest_conversation_templates.md) §digest.md template) with dispositions filled in — opening with `## High-Level Takeaways`, immediately after the title paragraph and before `## Decisions`: two subsections distilling the whole digest into a <30s skim. **Game-dev-direct** — concrete game/codebase decisions and actions, each bulleted with a link to its tracked destination (the Proposals/Decisions row's actual destination file — `Worklog.md`, `User-Tasks.md`, `Development-Focus.md`, a roadmap — or the digest's own heading when nothing external tracks it). **Trello / cofounder talking points** — business, scheduling, tracking, and communication items: open questions, outside-read reframes, ventures/Trello routing, anything meant to be raised with Lorant next. Bullets only, no verbatim quotes — the ledger below still carries every citation. Each bold lead-in states the actual point in plain language by itself — never a category label ("Reframe worth raising:") or a jargon stack requiring decode ("Tier-0 invalidation-proof asset backlog"); run every bullet through `instruction_quality` §6/§6b before finalizing. Execute approved **mechanical** actions in-session: worklog adds via [`/worklog`](../worklog.md), the focus-doc revision, `User-Tasks.md` adds, the `game_vision` edit if approved verbatim.
+Write `digest.md` ([`ingest_conversation_templates.md`](ingest_conversation_templates.md) §digest.md template) with dispositions filled in — opening with `## High-Level Takeaways`, immediately after the title paragraph and before `## Decisions`: two subsections distilling the whole digest into a <30s skim. **Project-direct** — concrete project/codebase decisions and actions, each bulleted with a link to its tracked destination (the Proposals/Decisions row's actual destination file — `Worklog.md`, `User-Tasks.md`, `Development-Focus.md`, a roadmap — or the digest's own heading when nothing external tracks it). **Shared-board / collaborator talking points** — business, scheduling, tracking, and communication items: open questions, outside-read reframes, shared-board routing, anything meant to be raised with a collaborator next. Bullets only, no verbatim quotes — the ledger below still carries every citation. Each bold lead-in states the actual point in plain language by itself — never a category label ("Reframe worth raising:") or a jargon stack requiring decode ("Tier-0 invalidation-proof asset backlog"); run every bullet through `instruction_quality` §6/§6b before finalizing. Execute approved **mechanical** actions in-session: worklog adds via [`/worklog`](../worklog.md), the focus-doc revision, `User-Tasks.md` adds, the vision-owner edit if approved verbatim.
 
 **Both living docs carry the same skim discipline.** `Meta/Development-Focus.md` and
 `Meta/Collaboration-Profile.md` are read the way a digest is — opened for the answer, not the

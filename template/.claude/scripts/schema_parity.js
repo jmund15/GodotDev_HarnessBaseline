@@ -6,8 +6,10 @@
 // a structural requirement, so the sync is checked mechanically instead of by comment.
 //
 // Usage:  node .claude/scripts/schema_parity.js <script.js> <schema.json>
-//         node .claude/scripts/schema_parity.js            # checks every known pair below
+//         node .claude/scripts/schema_parity.js            # checks every pair in .claude/workflows/
 //
+// With no arguments, every .claude/workflows/<name>.js carrying the marker pairs with
+// <name>.schema.json beside it.
 // The .js file must delimit its schema with:
 //     // SCHEMA-SSOT-BEGIN
 //     const NAME = { ... }
@@ -20,19 +22,24 @@ const fs = require('fs')
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const PAIRS = [
-  ['.claude/workflows/worklog_relevance.js', '.claude/workflows/worklog_relevance.schema.json'],
-  ['.claude/workflows/explore_fanout.js', '.claude/workflows/explore_fanout.schema.json'],
-]
+const MARKER = '// SCHEMA-SSOT-BEGIN'
+
+function workflowPairs() {
+  const dir = path.join(ROOT, '.claude', 'workflows')
+  return fs.readdirSync(dir)
+    .filter(f => f.endsWith('.js') && fs.readFileSync(path.join(dir, f), 'utf8').includes(MARKER))
+    .sort()
+    .map(f => ['.claude/workflows/' + f, '.claude/workflows/' + f.replace(/\.js$/, '.schema.json')])
+}
 
 function extractInline(jsPath) {
   const src = fs.readFileSync(jsPath, 'utf8')
-  const begin = src.indexOf('// SCHEMA-SSOT-BEGIN')
+  const begin = src.indexOf(MARKER)
   const end = src.indexOf('// SCHEMA-SSOT-END')
   if (begin < 0 || end < 0 || end < begin) {
     throw new Error('no SCHEMA-SSOT-BEGIN/END block in ' + jsPath)
   }
-  const block = src.slice(begin, end).replace('// SCHEMA-SSOT-BEGIN', '')
+  const block = src.slice(begin, end).replace(MARKER, '')
   const eq = block.indexOf('=')
   if (eq < 0) throw new Error('SSOT block in ' + jsPath + ' has no `const NAME = {...}` assignment')
   const expr = block.slice(eq + 1).trim().replace(/;\s*$/, '')
@@ -63,7 +70,7 @@ function diff(a, b, at, out) {
 }
 
 const argPair = process.argv.slice(2)
-const pairs = argPair.length === 2 ? [argPair] : PAIRS
+const pairs = argPair.length === 2 ? [argPair] : workflowPairs()
 if (argPair.length !== 0 && argPair.length !== 2) {
   console.error('usage: node schema_parity.js [<script.js> <schema.json>]')
   process.exit(2)

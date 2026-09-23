@@ -105,6 +105,12 @@ RED-first allow and block arms, then run the work through it. Never route around
 another tool, and never hand the chore to the owner. Evidence:
 `feedback-guard-denial-of-justified-work-fix-the-guard`.
 
+An auto-mode classifier denial of a harness action the owner authorizes by class gets the same
+fix: a contract in `hooks/approving_gates.py` with its proof, never a static `permissions.allow`
+entry. A contract approves one tracked tool in one-command shape, with allowlisted flags and
+in-project paths; anything else falls through to the classifier. An action that grants
+persistence, spend, detachment or writes becomes a contract only after the owner names that class.
+
 ## Deleting a flag is not done until its stale invocations name their replacement
 
 Docs, plans and memory files carry the old command text. A removed parameter yields a PowerShell

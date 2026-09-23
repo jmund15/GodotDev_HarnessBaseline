@@ -13,7 +13,7 @@ Audit all code changes from this session for code smells, sub-optimal design, an
 
 **MANDATORY: Read** [Session File Identification Procedure](agents/session_file_identification.md) **and execute ALL steps.** Do not rely on conversation memory alone — after compaction, it is incomplete. Keep two sets: the **code set** (`*.cs`, `*.tres`) and the **harness set** (`.claude/**`, `CLAUDE.md`, `MEMORY.md`, committed or not).
 
-**Scoping rule:** Only audit files identified by the [Session File Identification Procedure](agents/session_file_identification.md) as session work. Follow the procedure completely — especially Step 2 (Compaction Recovery) after compaction. If git shows changes to files not in Steps 1+2, they belong to other sessions — **exclude them** and note:
+**Scoping rule:** Only audit files identified by the [Session File Identification Procedure](agents/session_file_identification.md) as session work. If git shows changes to files not in Steps 1+2, they belong to other sessions — **exclude them** and note:
 ```
 Excluded from audit (not modified this session): [list of files]
 ```
@@ -29,7 +29,7 @@ Read the FULL content of each changed `.cs` file (not just diffs). For `.tres` f
 ### 1c. Load project context
 
 1. Read the [Architecture Philosophy Skill](/.claude/skills/architecture_philosophy/SKILL.md)
-2. Read the [Testing Skill](/.claude/skills/testing/SKILL.md)
+2. Read the project's testing skill, where its stack layer ships one
 3. Search auto-memory for domain-relevant gotchas (single-keyword searches)
 
 ---
@@ -38,7 +38,7 @@ Read the FULL content of each changed `.cs` file (not just diffs). For `.tres` f
 
 **Run this BEFORE the audit seats.** Findings here surface at the TOP of the report and are tagged MERGE-BLOCKER (above FIX/ASK/PLAN). User must explicitly approve "ship anyway" before commit.
 
-Background: PR #58 shipped three silent regressions because the audit toolchain doesn't do behavioral feature-parity checks (only diff-internal quality). See `feedback_refactor_parity_audit.md`.
+Background: the audit toolchain doesn't do behavioral feature-parity checks (only diff-internal quality). See `feedback_refactor_parity_audit.md`.
 
 ### 1.5a. Stub-marker scan
 
@@ -66,7 +66,7 @@ For each session-changed file in a directory where another file was DELETED in t
    - **Reproduces** the behavior (point at the new line that does it), OR
    - **Explicitly notes removal** in a comment, docstring, or PR description.
 
-Any retired surface item NOT accounted for is a MERGE-BLOCKER finding. Examples that would have caught PR #58:
+Any retired surface item NOT accounted for is a MERGE-BLOCKER finding. Examples:
 - Old `CraftWheelState.OnEnter` instantiated `SlowMotionController`; new `OpenMenuState.OnEnter` doesn't.
 - Old state resolved BB refs in `OnEnter`; new state did it in `OnInit` (silent semantic change).
 
@@ -149,7 +149,7 @@ Workflow({
 })
 ```
 
-It returns `{ findings: [...deduped, sorted...], counts }`. Do not spawn the agents manually.
+It returns `{ findings: [...deduped, sorted...], counts }`.
 
 ---
 

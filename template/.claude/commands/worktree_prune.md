@@ -4,7 +4,7 @@ description: Classify every worktree under .claude/worktrees/ by size, age, merg
 
 # /worktree_prune — classify and recommend, never remove
 
-`orchestration` §7 creates worktrees; nothing prunes them. A stale worktree carries a **correctness** cost on top of disk: `.claude/worktrees/` holds whole extra checkouts of this repo, and a recursive `grep -r`/`find` sweeps them — measured, 261 phantom hits where the gitignore-aware `Grep` returned 0 (CLAUDE.md §Tool Routing).
+`orchestration` §7 creates worktrees; nothing prunes them. A stale worktree carries a **correctness** cost on top of disk: `.claude/worktrees/` holds whole extra checkouts of this repo, and a recursive `grep -r`/`find` sweeps them (CLAUDE.md §Tool Routing).
 
 ## Argument
 
@@ -53,7 +53,7 @@ Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tra
 
 **The bucket is advice, not permission.** `wip:N` is N tracked uncommitted edits. Show the diff and get a decision first: removing a clean worktree is recoverable from its branch, but uncommitted work is gone. Never pass `--force`. Never remove a `locked` worktree.
 
-`git worktree remove` refuses any worktree carrying the Jmodot submodule. For those, run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`. The delete guard (`is_retired_worktree` in `hooks/_regenerable_clone.py`) decides which worktrees qualify; ignored scratch evidence or local config blocks it until moved or deleted.
+`git worktree remove` refuses any worktree carrying a submodule. For those, run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`. Where the project runs a recursive-delete guard, that guard decides which worktrees qualify; ignored scratch evidence or local config blocks it until moved or deleted.
 
 Removal happens only after the user names which ones — this command's own output is not the confirmation.
 
@@ -61,4 +61,3 @@ Removal happens only after the user names which ones — this command's own outp
 
 - Don't run `git worktree prune` as a substitute. It only clears administrative records for directories already deleted; it classifies nothing and is not what a stale-but-present worktree needs.
 - Don't recommend a worktree whose branch has unpushed commits without saying so in the Note column.
-- Don't remove another checkout's worktree — step 1's scoping is the guard.

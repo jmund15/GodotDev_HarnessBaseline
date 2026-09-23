@@ -10,8 +10,6 @@ Fans a single cluster's **Diverge** phase out across N generator agents — each
 - **Interleaved (default):** fired per-cluster by `/idea_brainstorm --fan_out` at the top of Step 3, before Filter.
 - **Standalone:** `/idea_brainstorm_fanout <cluster>` on one broad cluster when the single-agent pass under-populated it.
 
-It **augments** the curation pipeline — it never replaces it.
-
 ## The safety crux (read first)
 
 **The fan-out is a GENERATOR + CRITIC, not a CURATOR.** It populates and annotates the candidate pool; it never decides what survives. Filtering, honing, ranking, the bracketed marker tags, and the per-cluster user-react pacing **stay with Claude** in the skill's main loop (`/idea_brainstorm` Step 3 phases 2–5). Curation is the skill's core value-add and is judgment — per the worker-delegation rule, judgment never leaves Claude. A fan-out that returns "here are the 5 best" has overreached: it must return the *raw pool + critic notes*, and Claude curates.
@@ -24,7 +22,7 @@ It **augments** the curation pipeline — it never replaces it.
 - The single-agent Diverge pass **under-populated** a cluster (handoff-readiness criterion 1, approach-diversity, would fail).
 - A cluster's completeness matters enough to justify an independent **coverage-gap** pass (what did all generators collectively miss?).
 
-**Skip for** narrow/tactical clusters (single-agent Diverge is enough — fan-out adds noise and cost), mature domains (go straight to `/architecture_brainstorm`), and any cluster already past Filter. Default `/idea_brainstorm` stays single-agent; this is opt-in.
+**Skip for** narrow/tactical clusters (single-agent Diverge is enough — fan-out adds noise and cost), mature domains (go straight to architecture design), and any cluster already past Filter. Default `/idea_brainstorm` stays single-agent; this is opt-in.
 
 ## Step 0: Assemble the cluster CONTEXT (Claude-side — push-don't-pull)
 
@@ -35,8 +33,6 @@ The generators judge **pushed** content; they do NOT discover. Fanned-agent `Gre
 - **Raw seed pool** — the user-surfaced seeds, verbatim (expand around, don't restate).
 - **Already-kept survivors** — so generators produce *different* candidates, not regenerate locked ones.
 - **Tier / bin context** — the slots candidates will fill.
-
-This is the same push-don't-pull discipline `/architecture_brainstorm_redteam` Step 0 uses, for the same reason.
 
 ## Step 1: Select the lenses (the design step)
 
@@ -68,7 +64,7 @@ The lens *keys* and *axis* change per cluster; the rubric (orthogonal, spanning,
 
 ## Step 2: Dispatch
 
-**Dispatch is MANDATORY — do NOT self-generate inline.** The independence is the value: one model brainstorming four lenses sequentially in its own context cross-contaminates them (lens 2 sees lens 1's output and converges). Separate agents stay blind to each other — that's what produces the divergence. Same discipline as `/architecture_brainstorm_redteam`'s MANDATORY-dispatch crux.
+**Dispatch is MANDATORY — do NOT self-generate inline.** The independence is the value: one model brainstorming four lenses sequentially in its own context cross-contaminates them (lens 2 sees lens 1's output and converges). Separate agents stay blind to each other — that's what produces the divergence.
 
 **Keep `args` FLAT** (`gotcha_workflow_args_generation_fidelity` — large/nested/escape-dense args produce malformed JSON that `JSON.parse` throws on). Push the CONTEXT ONCE via `contextPrefix`; keep each lens `instr` to its mandate only; declare per-cluster typed fields via the flat `genFields` descriptor list (the engine builds the schema from it — do NOT nest a JSON Schema object into `args`):
 
@@ -88,12 +84,12 @@ Workflow({
       { name: "dependsOn", desc: "which referenced system it leans on" }
     ]
     // critics omitted -> engine defaults (dedup / fit / coverage-gap); pass args.critics:[{key,instr}] for cluster-specific mandates
-    // model omitted per agent -> phase default (generators executor tier, critics fanout tier); drop a mechanical lens to the fanout tier to save cost
+    // model omitted per agent -> phase default (generators architect tier, critics fanout tier); drop a mechanical lens to the fanout tier to save cost
   }
 })
 ```
 
-**Model — asymmetric defaults: generators default to the executor tier, critics floor to the fanout tier** (the engine's literal defaults are `opus` and `sonnet`). Divergence gets the executor tier; rigor (dedup / fit / coverage-gap) does not need it — and fan-out only fires on breadth-critical clusters, so the generator spend is justified by the trigger. An omitted per-agent `model` takes its phase default — it must NOT silently inherit the session model. Override per agent via `args.generators[i].model` / `args.critics[i].model`: drop a *mechanical* lens (axis-inversion / by-taxonomy) to the fanout tier to save cost, and reserve the orchestrator tier for an explicit max-fidelity request.
+**Model — asymmetric defaults: generators default to the architect tier, critics floor to the fanout tier** (the engine's literal defaults are `opus` and `sonnet`). Divergence is solution design and gets the architect tier; rigor (dedup / fit / coverage-gap) does not need it — and fan-out only fires on breadth-critical clusters, so the generator spend is justified by the trigger. An omitted per-agent `model` takes its phase default — it must NOT silently inherit the session model. Override per agent via `args.generators[i].model` / `args.critics[i].model`: drop a *mechanical* lens (axis-inversion / by-taxonomy) to the fanout tier to save cost, and reserve the orchestrator tier for an explicit max-fidelity request.
 
 **Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** dispatch the generators as parallel `Task` subagents — each one flat prompt (CONTEXT + its lens mandate inline) with an explicit fanout-tier `model` (the `Task` path bypasses the engine's floor) and the `GEN_GUARD` discipline (work from CONTEXT only, no self-filter, no condense). Merge and critique by hand. This mirrors the redteam command's `Task` fallback.
 
@@ -111,25 +107,17 @@ Workflow({
 - **Dedup** using the `dedup` critic's clusters as input, not gospel — Claude makes the keep call.
 - **Hone → Cluster & rank → present** per cluster (skill Step 3 phases 3–5), then the per-cluster user-react loop. **One cluster at a time** — the fan-out runs per cluster, not all clusters at once.
 
-The critique pass is advisory annotation for Claude's curation; it does not pre-decide survivors.
-
 ## Anti-patterns
 
 | Rationalization | Reality |
 |---|---|
-| "Run 4 agents on the same divergence prompt to get more ideas." | Lens-diversity is the lever, not agent count. Identical prompts = 4× cost, ~1× coverage. The engine rejects <2 lenses. |
-| "The fan-out returned its top 5 — present those." | Overreach. It returns the *raw pool + critic notes*; Claude curates (Filter/Hone/rank). Curation is judgment and never leaves the main loop. |
-| "Let the generators search the vault for the boundary themselves." | Fanned-agent search false-empties (`gotcha_workflow_fanout_search_false_absence`). Push the boundary into `contextPrefix`; generators work from it. |
-| "Use one fixed lens list for every cluster." | Different cluster TYPES need different lenses. Pick ~4 per cluster via the rubric (orthogonal / spanning / balanced); the worked sets are examples, not a frozen menu. |
-| "Critics are just the generators re-reading their own output." | Critics are FRESH, independent agents over the merged pool (`feedback_delegate_output_trust`). Generators self-grading share premises and bias the verdict. |
-| "Zero candidates came back from a lens — it found nothing." | A live divergence lens always returns ~`genCount`. `count:0`/`dead:true` = it died. Check `perGenerator` before curating; re-dispatch. |
-| "Nest the per-cluster schema object into `args` so fields are typed." | A nested schema is the escape-dense `args` shape that breaks the Workflow call (`gotcha_workflow_args_generation_fidelity`). Use the flat `genFields` descriptor list; the engine builds the schema. |
-| "Fan out all clusters in one Workflow, then curate the lot." | Per-cluster pacing is mandatory (skill Step 3). Fan out one cluster, curate, present, get the user-react — then the next cluster. |
+| "Run 4 agents on the same divergence prompt to get more ideas." | Lens-diversity is the lever, not agent count. The engine rejects <2 lenses. |
+| "Critics are just the generators re-reading their own output." | Critics are FRESH, independent agents over the merged pool. Generators self-grading share premises and bias the verdict. |
 | "Have the generators condense to their best few." | No-condense is load-bearing (`feedback_no_unilateral_condensation`): raw seeds must survive verbatim for Claude to expand. Generators return raw; the `GEN_GUARD` enforces it. |
 
 ## Cross-references
 
 - [`/idea_brainstorm`](../skills/idea_brainstorm/SKILL.md) — fires this command at Step 3 via `--fan_out`; owns Filter/Hone/Cluster/present + the per-cluster user-react loop + the Hard Gate.
-- [`/architecture_brainstorm_redteam`](architecture_brainstorm_redteam.md) — the mirror precedent (command + `review_fanout.js` engine + per-step skill hooks); shares the push-don't-pull, flat-`args`, MANDATORY-dispatch, and liveness discipline.
+- The coding layer's architecture red-team command — the mirror precedent (command + `review_fanout.js` engine + per-step skill hooks); shares the push-don't-pull, flat-`args`, MANDATORY-dispatch, and liveness discipline.
 - `.claude/workflows/idea_fanout.js` — the engine (parameterized: `contextPrefix` + `generators` + optional `critics` / `genFields` / `genCount` / per-agent `model`).
-- **File-based memory:** `gotcha_workflow_fanout_search_false_absence` (push-don't-pull), `gotcha_workflow_args_generation_fidelity` (flat args), `gotcha_workflow_single_flight_concurrency` (no nested fan-out of GdUnit4/LSP), `feedback_delegate_output_trust` (fresh critics), `feedback_no_unilateral_condensation` (raw seeds survive), `arch_rule_autonomous_loop_positive_liveness` (silent-empty ≠ clean).
+- **File-based memory:** `gotcha_workflow_fanout_search_false_absence` (push-don't-pull), `gotcha_workflow_args_generation_fidelity` (flat args), machine-wide single-flight tools (no per-agent test, build or language-server run), `feedback_no_unilateral_condensation` (raw seeds survive), `arch_rule_autonomous_loop_positive_liveness` (silent-empty ≠ clean).

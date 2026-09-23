@@ -1,13 +1,13 @@
 # Existing-doc check (§1)
 
-> Detail body of the brainstorming shared surface, read at the step named in [`common.md`](common.md). Not a skill — no frontmatter, never auto-loaded.
+> Detail body of the brainstorming shared surface, read at the step named in [`common.md`](common.md).
 > Section numbers are stable across the split; a § cited here that is not in this file is mapped to its file by the `common.md` index.
 
 ---
 
 ## §1. Existing-doc check (FIRST step in both skills)
 
-**Rule:** Before any other procedure step, establish what already exists. This section is the **spec** — the asks that must be answered and why each needs its own surface. [`/explore`](../../commands/explore.md) is the **execution**: it dispatches them as parallel lenses with explicit pins, an evidence contract, and a falsifiable-empty guarantee. Do not hand-roll the sweep; a hand-rolled version is what drifted into five divergent copies across the drive commands.
+**Rule:** Before any other procedure step, establish what already exists. This section is the **spec** — the asks that must be answered and why each needs its own surface. [`/explore`](../../commands/explore.md) is the **execution**: it dispatches them as parallel lenses with explicit pins, an evidence contract, and a falsifiable-empty guarantee.
 
 **Required asks, and the lens that owns each** (roster + trigger rules: [`explore_agents.md`](../../commands/agents/explore_agents.md)):
 
@@ -60,7 +60,6 @@ A `brainstorming-complete` doc whose `roadmap.md` predates the current skill sta
 - ❌ `Grep("<topic>", path=<vault dir>)` followed by `Read(path)` chains
 - ❌ Multiple `mcp__plugin_semantic-search_semantic-search__search` calls across keyword variants
 - ❌ `Read(path)` on Obsidian docs to "see what's there before bundling" (synthesis-shaped path; routes through `read_files`)
-- ❌ The "I'll bundle through `read_files` after these searches" pattern — too late, the searches already paid context
 - ❌ `read_files(paths=["<directory>/"])` — directory paths return nothing, silently; enumerate concrete files first (`feedback_read_files_enumerate_first.md`)
 - ❌ Asking the worker for Memory gotchas or code-abstraction inventory — those stores aren't in the vault paths it reads; each ask goes to the lens that owns it per the table above
-- ❌ Running the sweep inline instead of dispatching `/explore` — "it's only three searches" is the rationalization that produced five divergent copies of this procedure. The engine's evidence contract and UNCOVERED-dimension reporting are the point, not the parallelism.
+- ❌ Running the sweep inline instead of dispatching `/explore` — the engine's evidence contract and UNCOVERED-dimension reporting are required.

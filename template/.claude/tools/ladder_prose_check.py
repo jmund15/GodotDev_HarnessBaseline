@@ -49,9 +49,6 @@ TOP_LEVEL_BANNED = [
     ("candidate promotion rule", r"A claim reaches this file only"),
 ]
 
-# The `Pick by work shape` table is EXEMPT by construction: each of its rows IS a task, so the id
-# names the row rather than decorating a claim. Only Role guidance's ± cells are checked.
-
 
 # Both tendency columns are checked. `effort` is not decoration: it says which rung to pin, in the
 # same voice as `±`, and it was where every banned figure went once `±` alone was enforced. A rule

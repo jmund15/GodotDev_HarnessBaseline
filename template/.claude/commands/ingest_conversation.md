@@ -5,17 +5,17 @@ disable-model-invocation: true
 
 # /ingest_conversation
 
-Turns a cofounder conversation transcript into a durable, deduped ledger of routed actionables, and folds the same transcript into a rolling per-participant collaboration profile.
+Turns a collaborator conversation transcript into a durable, deduped ledger of routed actionables, and folds the same transcript into a rolling per-participant collaboration profile.
 
-**Vault convention:** one folder per conversation at `<vault>/Claude/Meetings/YYYY-MM-DD-<slug>/`, holding `transcript.md` (verbatim, never edited) and `digest.md` (the processed ledger). The digest corpus — never the raw transcripts — is what future ingests dedup against.
+**Vault convention:** one folder per conversation at `<vault>/Claude/Meetings/YYYY-MM-DD-<slug>/`, holding `transcript.md` (verbatim) and `digest.md` (the processed ledger). The digest corpus — never the raw transcripts — is what future ingests dedup against.
 
-**One rolling doc** at `<vault>/Claude/Meta/Collaboration-Profile.md` accumulates across ingests: tendencies, communication, strengths, watch-fors, and per-person suggestions, each line carrying the number of distinct conversations behind it. It is **private to Jmo** — suggestions addressed to another participant are drafts for Jmo to decide whether and how to raise, never written as something that person has seen or agreed to.
+**One rolling doc** at `<vault>/Claude/Meta/Collaboration-Profile.md` accumulates across ingests: tendencies, communication, strengths, watch-fors, and per-person suggestions, each line carrying the number of distinct conversations behind it.
 
 ## When to invoke
 
 A conversation happened (voice note, call, live session) and its decisions, ideas, and action items need to land somewhere durable and routed. Explicit invocation only.
 
-**Not this command:** already-converged design (`/design_drive`, `/feature_drive`), a single deferral (`/worklog`), or audio with no transcript — transcribe first, this command takes text.
+**Not this command:** already-converged design (the project's design or feature drive), a single deferral (`/worklog`), or audio with no transcript — transcribe first, this command takes text.
 
 ---
 
@@ -44,7 +44,7 @@ Seven steps in order. Read each step's reference file at the step that runs it �
 - The transcript is never edited after intake — corrections go in the digest, not the evidence.
 - No archetype is inferred silently: an unclassifiable candidate is `no-route` with a stated reason, never dropped.
 - **Design-shaped actions are STAGED, never run** — the digest names the seed list and the downstream command. Running a drive inside ingest is out of scope by design: a digest gate approving "explore this design" is not a design-lock approval.
-- The profile is private to Jmo. Write suggestions aimed at another participant as drafts for Jmo to raise or not; nothing in the doc is phrased as read, agreed to, or acknowledged by anyone else.
+- The profile is private to the owner. Write suggestions aimed at another participant as drafts for the owner to raise or not; nothing in the doc is phrased as read, agreed to, or acknowledged by anyone else.
 - The profile asserts behavior only — mental state, personality type, and clinical framing stay out at every tier, including the `## Standing read` synthesis.
 - The profile is derived, so a wrong line is repaired by correcting the digest evidence behind it and re-deriving, never by editing the conclusion alone.
 - The outside read addresses **decisions, never persons** — equal standing across participants, structurally free to land against the gate-holder's position.
@@ -54,5 +54,5 @@ Seven steps in order. Read each step's reference file at the step that runs it �
 ## Cross-references
 
 - [`/worklog`](worklog.md) — executor for archetype (d) adds
-- [`/update_roadmap`](update_roadmap.md) — executor for archetype (e)
+- The project's roadmap-update command, where the coding layer ships one — executor for archetype (e)
 - [`obsidian_conventions`](../skills/obsidian_conventions/SKILL.md) — vault taxonomy; `Meetings/` is a Live-design-surface folder

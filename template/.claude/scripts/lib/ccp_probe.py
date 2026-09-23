@@ -19,6 +19,10 @@ Subcommands:
   continuation <proxy_exe> print 1 iff that build is safe for WebSocket continuation, else 0
   server-compaction <proxy_exe>
                            print 1 iff that build supports tested native compaction, else 0
+  user-scope-bin           print the owner's user-scope CCP_BIN (Windows); exit 1 when unset
+  serves <proxy_exe> <model_id>
+                           exit 0 iff `<proxy_exe> models` lists that id; 1 when it does not,
+                           3 when the list is unreadable; the reason goes to stdout
 """
 import glob
 import json
@@ -74,6 +78,48 @@ def proxy_version_text(exe):
         return result.stdout if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def proxy_models_text(exe):
+    try:
+        result = subprocess.run([exe, "models"], capture_output=True, text=True, timeout=20)
+        return result.stdout if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def serves(models_text, model_id):
+    """The model list is compiled into each proxy build, so a registry remap to a newer id needs a
+    build that lists it; an unlisted id dies upstream on `400 Unknown model`."""
+    return model_id in re.split(r"[\s,;:]+", models_text or "")
+
+
+def user_scope_ccp_bin():
+    """CCP_BIN as the owner last set it. A long-lived session keeps the value it inherited at launch."""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            return winreg.QueryValueEx(key, "CCP_BIN")[0] or None
+    except OSError:
+        return None
+
+
+def serves_check(exe, model_id):
+    """-> (rc, reason): 0 served, 1 not served, 3 unverifiable."""
+    text = proxy_models_text(exe)
+    if not text.strip():
+        return 3, f"cannot read the model list of {exe}: `{exe} models` failed or printed nothing"
+    if serves(text, model_id):
+        return 0, ""
+    reason = f"proxy {exe} does not serve {model_id}; every dispatch would fail with 400 Unknown model."
+    scoped = user_scope_ccp_bin()
+    if scoped and os.path.normcase(os.path.normpath(scoped)) != os.path.normcase(os.path.normpath(exe)):
+        reason += f" The user-scope CCP_BIN is {scoped}; this process inherited an older value, so relaunch with CCP_BIN={scoped}."
+    else:
+        reason += " Set CCP_BIN to a build whose `models` lists it."
+    return 1, reason
 
 
 def healthy(port):
@@ -266,6 +312,19 @@ def main(argv):
             return 2
         print(1 if server_compaction_supported(proxy_version_text(argv[2])) else 0)
         return 0
+    if cmd == "user-scope-bin":
+        scoped = user_scope_ccp_bin()
+        if not scoped:
+            return 1
+        print(scoped)
+        return 0
+    if cmd == "serves":
+        if len(argv) != 4:
+            return 2
+        rc, reason = serves_check(argv[2], argv[3])
+        if reason:
+            print(reason)
+        return rc
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     return 2
 

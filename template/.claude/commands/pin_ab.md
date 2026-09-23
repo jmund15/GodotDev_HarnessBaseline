@@ -83,7 +83,7 @@ Per finding, from **both** arms pooled and de-duplicated by `file:line` + claim:
 |---|---|
 | `valid` | The defect is real and the lens's reasoning holds. |
 | `invalid` | Reasoning does not hold, but nothing was invented. |
-| `fabricated` | Rests on a file, symbol, line or quote that does not exist. **Verify first-party** — quote the raw tool output, per `feedback_delegate_output_trust`. |
+| `fabricated` | Rests on a file, symbol, line or quote that does not exist. **Verify first-party** — quote the raw tool output. |
 
 Score three axes, never one composite:
 
@@ -100,8 +100,7 @@ and biases toward the arm that produced it.
 Append one row per run to `.claude/scratch/pin_ab/<lens-key>.jsonl`: lens, mandate shape, both pins,
 input SHA, the three scores per arm, and the adjudicator.
 
-**A single paired run does not move a pin.** Effort is non-monotonic at n=1 — a measured cell scored
-7/7 on one task and produced one citation on another at the same pin. The floor for changing a pin is
+**A single paired run does not move a pin.** Effort is non-monotonic at n=1. The floor for changing a pin is
 **3 paired runs on distinct inputs with a consistent direction**; below that, report the run and leave
 the pin alone.
 

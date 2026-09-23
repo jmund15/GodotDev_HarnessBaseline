@@ -90,7 +90,7 @@ def main():
                        session=SID + "-semi") == ""))
     # Live misfire 2026-09-14: a pipe-fed rg, then an rg naming one file; neither walks a tree.
     cases.append(("a pipe-fed rg then a one-file rg is silent",
-                  scan("python3 a.py 2>&1 | rg -n 'listing'; rg -n 'x' .claude/tools/load_census.py", env,
+                  scan("python3 a.py 2>&1 | rg -n 'listing'; rg -n 'x' .claude/tools/guard_text.py", env,
                        session=SID + "-mixed") == ""))
     cases.append(("a pipe-fed rg then an rg walking a directory still advises",
                   "UNBOUNDED RECURSIVE SCAN" in scan("python3 a.py | rg -n 'listing'; rg -n 'x' Jmodot/", env,

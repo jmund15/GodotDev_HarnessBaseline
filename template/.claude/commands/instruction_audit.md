@@ -3,9 +3,7 @@ description: Audit a skill, command, hook, or CLAUDE.md against instruction-load
 disable-model-invocation: true
 ---
 
-Audit a single skill, command, or CLAUDE.md against instruction-loading principles.
-
-Static structural review — sibling to `/claudemd_compact`. Does NOT measure trigger accuracy (unowned — Claude Code dropped its bundled `skill-creator`) or adversarial pressure (use `/test_skill`). Principles live in the `instruction_quality` skill.
+Static structural review — sibling to `/claudemd_compact`. Does NOT measure trigger accuracy (unowned — Claude Code dropped its bundled `skill-creator`).
 
 ## Argument
 
@@ -89,15 +87,15 @@ Run ONLY if the target's procedure invokes `Workflow`, parallel `Agent()`, or a 
 
 1. **Resolve the invoked artifact.** For `Workflow({scriptPath: X})`, Read X. Identify its arg contract (the `args` parse-guard / destructuring — e.g. `review_fanout.js` reads `A.agents = [{key, prompt, model?}]` + `A.contextPrefix`) and any enforced output schema.
 2. **Diff the invocation shape.** Does the target build exactly the keys the script consumes? Flag missing/misnamed keys (silent no-op, not a warning) and schema-required mandate fields the target's prompt omits.
-3. **Gotcha screen.** `semantic-search(query="workflow agent args fan-out failure", restrictToDir=".claude/auto-memory")`. For each load-bearing hit (`gotcha_workflow_args_generation_fidelity`, `gotcha_workflow_fanout_search_false_absence`, `gotcha_workflow_single_flight_concurrency`), judge whether the target's design matches the failure shape. If it does and the procedure neither cites the gotcha nor prescribes its mitigation → ❌ Fail (§12).
+3. **Gotcha screen.** `semantic-search(query="workflow agent args fan-out failure", restrictToDir=".claude/auto-memory")`. For each load-bearing hit (`gotcha_workflow_args_generation_fidelity`, `gotcha_workflow_fanout_search_false_absence`, machine-wide single-flight tools), judge whether the target's design matches the failure shape. If it does and the procedure neither cites the gotcha nor prescribes its mitigation → ❌ Fail (§12).
 4. Emit findings in the same ✅/⚠️/❌ format as Phase B, tagged §12.
 
 ### Phase C.75 — Claim-freshness spot-check (conditional)
 
-Run when the target asserts codebase or harness facts: file paths a procedure writes to, type/member names it instantiates, test-tree locations, data-file conventions, tool contracts, concurrency caps, capability negations ("X is not possible"). Most reference skills qualify. Operationalizes the *Claim freshness* principle from the loaded `instruction_quality` skill (cite its current §N from the skill — don't hardcode it here).
+Run when the target asserts codebase or harness facts: file paths a procedure writes to, type/member names it instantiates, test-tree locations, data-file conventions, tool contracts, concurrency caps, capability negations ("X is not possible"). Most reference skills qualify. Operationalizes the *Claim freshness* principle from the loaded `instruction_quality` skill.
 
 1. Extract up to ~10 load-bearing verifiable claims.
-2. Verify each with one mechanical call (Glob the path / Grep the type name / check the current tool schema). Empty Glob/Grep ≠ absence — confirm with `ls` before flagging (`gotcha_grep_glob_miss_tracked_files.md`).
+2. Verify each with one mechanical call (Glob the path / Grep the type name / check the current tool schema). Empty Glob/Grep ≠ absence — confirm with `ls` before flagging.
 3. Emit ✅/⚠️/❌ findings tagged with the principle. A claim that routes work to a nonexistent location (e.g. a dead test tree) is ❌ regardless of how clean the prose reads.
 
 ### Phase D — Report
@@ -135,7 +133,7 @@ Em dashes: <count> in <words> words = 1 per <N> (norm per instruction_quality pr
 
 ### Phase E — Do NOT auto-apply
 
-The command is **advisory**. Surface findings; user decides which to act on. If user wants to apply a finding, they ask explicitly or invoke a follow-up edit.
+The command is **advisory**. Surface findings; user decides which to act on.
 
 ## When to invoke
 
@@ -150,7 +148,7 @@ The command is **advisory**. Surface findings; user decides which to act on. If 
 - **Don't audit adversarial content resistance here.** Use `/test_skill`.
 - **Don't audit a target actively being edited in this session.** Diff churn produces false positives.
 - **Don't apply CLAUDE.md size principles to skills.** The 200-line cap is for always-loaded content; skills load on description match — different threshold.
-- **Don't auto-apply findings.** This is a soft gate; user reviews each before acting.
+- **Don't auto-apply findings.**
 
 ## Pairs with
 
@@ -163,4 +161,4 @@ The command is **advisory**. Surface findings; user decides which to act on. If 
 ## Future extensions (not in v1)
 
 - `--apply <finding-id>` flag: apply a specific finding directly (skip the manual pass).
-- Integration with `/session_audit`: if a session edited skills/commands, optionally run `/instruction_audit` on each at session end.
+- Session-close integration: if a session edited skills/commands, optionally run `/instruction_audit` on each at session end.

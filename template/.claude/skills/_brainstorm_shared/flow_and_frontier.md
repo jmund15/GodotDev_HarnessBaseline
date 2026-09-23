@@ -1,6 +1,6 @@
 # Phase cardinality, decision frontier, interview rounds (§7–§9)
 
-> Detail body of the brainstorming shared surface, read at the step named in [`common.md`](common.md). Not a skill — no frontmatter, never auto-loaded.
+> Detail body of the brainstorming shared surface, read at the step named in [`common.md`](common.md).
 > Section numbers are stable across the split; a § cited here that is not in this file is mapped to its file by the `common.md` index.
 
 ---
@@ -30,7 +30,7 @@ The three brainstorming phases (`/idea_brainstorm` → `/architecture_brainstorm
 
 ## §8. Decision frontier (`decisions.md`)
 
-Every topic folder owns a `decisions.md` beside its design docs — the durable record of what is decided, what is still open, and what was ruled out. It outlives both the session and the doc: nothing that was appended dies with the session.
+Every topic folder owns a `decisions.md` beside its design docs — the durable record of what is decided, what is still open, and what was ruled out.
 
 **Path:** `<topic-folder>/decisions.md`. Durable — never deleted, no gitignored variant.
 

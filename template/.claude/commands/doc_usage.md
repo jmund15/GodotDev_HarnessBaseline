@@ -3,10 +3,8 @@ description: Create or update an Obsidian Usage Guide for a system or feature.
 disable-model-invocation: true
 ---
 
-Create or update a Usage Guide for a system/feature in Obsidian.
-
 ## Audience
-A smart, experienced game designer/developer who needs to USE this system effectively in the Godot editor. They don't need to know how the code works internally — they need to know what to do, what to expect, and what to avoid.
+A smart, experienced game designer/developer who needs to USE this system effectively in the project's editor. They don't need to know how the code works internally — they need to know what to do, what to expect, and what to avoid.
 
 ## Before Writing
 
@@ -14,7 +12,7 @@ Follow steps 1-3 from [Doc Before Writing](agents/doc_before_writing.md). Target
 
 ### 4. Read the Codebase
 - Read all relevant source files for the system (scripts, resources, scenes).
-- Identify all `[Export]` properties, configuration points, and editor-facing interfaces.
+- Identify all exported/configurable properties, configuration points, and editor-facing interfaces.
 - Understand the runtime behavior and in-game effects.
 
 ### 5. Write via `write_doc`
@@ -46,7 +44,7 @@ The reader should be able to follow these and see a result immediately.
 Step-by-step editor workflow with concrete examples.
 
 > [!example]- Setting Up {Component/Feature} in the Editor
-> Detailed steps for configuring this in Godot's inspector/scene tree.
+> Detailed steps for configuring this in the editor (e.g. an inspector or scene tree).
 > Include which nodes to add, which resources to create, which exports to set.
 
 > [!example]- Expected In-Game Behavior
@@ -74,7 +72,7 @@ Step-by-step editor workflow with concrete examples.
 > | ... | ... | ... | ... |
 
 > [!info]- Resource Types
-> Any `.tres` resources the designer needs to create or configure.
+> Any authored data resources the designer needs to create or configure.
 
 ## Common Mistakes & Pitfalls
 
@@ -103,5 +101,5 @@ Step-by-step editor workflow with concrete examples.
 - **Quick Reference:** If `Quick Reference.md` exists in the same folder, update the Usage entry in its Document Index and Key Reference Table to reflect current content.
 
 ## Formatting Rules
-The write_doc spec + call live in *Reason, Then Delegate* ([Doc Before Writing](agents/doc_before_writing.md)). Obsidian callout/wikilink formatting is auto-injected worker-side (`modifier.obsidian`); the callout map below is structural guidance to fold into the spec, not something you hand-format.
+Obsidian callout/wikilink formatting is auto-injected worker-side (`modifier.obsidian`); the callout map below is structural guidance to fold into the spec, not something you hand-format.
 - Callout types: `tip` (recommendations), `warning` (pitfalls), `example` (walkthroughs), `info` (reference data), `question` (rationale)

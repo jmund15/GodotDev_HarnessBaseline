@@ -110,7 +110,7 @@ def _nudge_grep(tool_input: dict, last_prompt: str, agent_id: str = "") -> str |
         f"[tool-routing] `Grep('{pattern}')` against {target_label} is a symbol-shaped "
         "lookup. When the name or its location is unknown, use "
         "`mcp__plugin_semantic-search_semantic-search__search`; Grep owns known literal names "
-        "and patterns. CLAUDE.md §8."
+        "and patterns. CLAUDE.coding.md §Semantic Search MCP."
     )
 
 

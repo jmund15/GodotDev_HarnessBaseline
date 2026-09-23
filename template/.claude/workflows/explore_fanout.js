@@ -119,13 +119,15 @@ const CONCURRENT = lenses.length > 1
 // mandate looks unrelated can answer that message instead of its brief.
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
-// .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
+// .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock),
+// which arms for any engine carrying the next line.
+// READONLY-FANOUT-ENGINE
 const BASE_CONTRACT = (l) => [
   '',
   '=== ENGINE CONTRACT ===',
   RELAY_LINE,
   spills(l) ? 'Read-only: do NOT modify, create, or delete any file EXCEPT the single spill file named in the SPILL-BEFORE-VALIDATE contract below.' : 'Read-only: do NOT modify, create, or delete any file.',
-  CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight); Python and Node proofs under .claude/tests/ are not single-flight, so run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — anchor with Grep and Read instead. If your mandate needs a Godot or C# test run or call-site enumeration via the LSP, report it as a gap; it needs a serialized dispatch.' : null,
+  CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run a machine-wide single-flight tool (a test runner, build, engine or language server that allows one process per machine; your delegate rails name this project\'s) — anchor with Grep and Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight, so run them. If your mandate needs a single-flight test run or call-site enumeration through a language server, report it as a gap; it needs a serialized dispatch.' : null,
   'You report STATE, never advice. A claim says what IS; it never says what should be built, fixed, or preferred. Recommendations are the orchestrator\'s to make from your claims.',
   '',
   '=== CLAIMS CONTRACT (the schema validates shape; these are the rules it cannot express) ===',
@@ -149,7 +151,7 @@ const guardRef = (l) => {
   return BASE_CONTRACT(l) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
-    'Read .claude/guards/survey.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md. Read ONLY those sections — the other tiers are for other models.',
+    'Read .claude/guards/survey.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
   ].join('\n')
 }
 

@@ -62,6 +62,6 @@ Workflow({
 
 ## Step 2: Present grouped by cluster
 
-`review_fanout` returns deduped findings (merge across batches if Step 1 chunked). Present grouped by cluster, sorted contradictions > divergent-thresholds > stale-refs > duplicate-but-consistent (informational). For each contradiction, the user picks the canonical surface; **Claude is sole writer of the reconciliation** (edit the non-canonical surfaces in place per the harness-file-edit rule — `Edit` directly, never `write_doc`).
+`review_fanout` returns deduped findings (merge across batches if Step 1 chunked). Present grouped by cluster, sorted contradictions > divergent-thresholds > stale-refs > duplicate-but-consistent (informational). For each contradiction, the user picks the canonical surface; **Claude is sole writer of the reconciliation** (edit the non-canonical surfaces in place).
 
 Before applying any stale-ref `action:FIX`, run the **Step 1.5 verification** from `agents/orchestrator_action_protocol.md` against each fix's `old` text (fanned agents can hallucinate a file:line or paraphrase the cited statement; a stale-ref FIX with a hallucinated `old` either fails the `Edit` exact-match or mangles the wrong line). Apply only after the cited text is confirmed present at the cited location.

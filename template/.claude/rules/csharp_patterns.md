@@ -19,7 +19,7 @@ Mechanical patterns for writing or editing `.cs`: lifecycle ordering, nullabilit
 - **Put the `///` above ALL of the member's attributes**, `[ExportGroup]` included. Between them it is orphaned (CS1587), dropped from the XML sidecar, and the tooltip silently vanishes with no build failure. How the tooltip is wired and what hovering shows: reference §Export tooltip mechanics.
 - **Repair on sight.** Fix a false or dangling doc comment in the turn you find it (`feedback_dont_defer_immediately_addressable.md`). Enforced at commit by the `DOCS` check in `/regression_gate`; full-tree sweep: `.claude/scripts/doc_warning_check.sh`.
 - **Strings:** prefer `StringName` for Godot identifiers (node paths, signal/animation names).
-- **A helper a second consumer needs moves to the family home** (`NodeExts`, `JmoMath`), never copied privately; match that family's conventions and migrate the existing hand-rolled call sites (`feedback_shared_helper_belongs_in_the_family_home_not_duplicated_locally`).
+- **A helper a second consumer needs moves to the family home** (`NodeExts`, `JmoMath`), never copied privately; match that family's conventions and migrate the existing hand-rolled call sites.
 - **Name a nullable-returning helper `Find*` or `Try*`, never `Get*`.** `Get*` reads as guaranteed resolution and callers skim past the compiler warning; the name is the cheapest enforcement of the contract, at the read site (`feedback_nullable_return_naming`).
 
 ## Lifecycle & Constructors
@@ -61,11 +61,11 @@ public override void _Ready()
 - **Nullable default parameters.** A parameter with an `= null` default must be nullable: `void Method(StringName? reason = null)`. Fix base → all overrides.
 - **TryGet null guard.** Add `|| result == null` after `TryGet` / `TryGetFirstChildOfType`: `if (!bb.TryGet<T>(key, out var result) || result == null) { return; }`
 - **Data-driven range guard.** When `Random.Next(min, max)` uses editor-exported values, guard with `Math.Min`/`Math.Max` **at the consumption site, not the data source** — designers can set Min > Max, and `Random.Next` throws `ArgumentOutOfRangeException` when `minValue > maxValue`. Snippet: `reference/rules/csharp_patterns_examples.md` §Data-driven range guard.
-- **Float aggregation accumulates in `double`.** Never `Enumerable.Average()`/`Sum()` over a `float` source; cast to `double` first, or accumulate explicitly. Why .NET 9 makes this lane-count-dependent, and the ~7th-decimal symptom: reference §Float aggregation.
+- **Float aggregation accumulates in `double`.** Never `Enumerable.Average()`/`Sum()` over a `float` source; cast to `double` first, or accumulate explicitly. Why vectorized float aggregation depends on lane count: reference §Float aggregation.
 - **Atomic initialization.** When a method can fail with an early return, dependent state mutations happen inside the success path, not in the caller after the call. A void return leaves the caller unable to tell success from failure, and half-initialized objects cause subtle downstream bugs. Snippet: reference §Atomic initialization.
 - **Fail-closed guards on data-resolved floats.** `x <= 0f` is not a fail-closed guard: every comparison against NaN is false, so NaN passes the guard and reaches the math behind it. Write `!(x > 0f)`, and test `float.IsFinite` on every operand a designer can author. Snippet: reference §Fail-closed float guards.
 - **A NaN threshold inverts the gate rather than breaking it** — `if (value > max) { reject; }` stops rejecting entirely, so the failure presents as a gate that silently passes everything. Guard where the value is produced AND where it is consumed: any float resolved from `[Export]`/`.tres` data (mass, speed, radius, an angle cone) is not compiler-guaranteed finite. *Litmus:* for each float guard, ask what happens when the value is NaN — if the answer is "the branch I wrote to be safe doesn't run", the test is inverted.
-- **Guard symmetry across siblings.** A guard added to one of N parallel siblings goes on all of them or none. The unguarded sibling degrades to a quiet wrong state instead of a loud error; grep the sibling set for the same entry shape and replicate (`feedback_symmetric_guards_across_siblings`).
+- **Guard symmetry across siblings.** A guard added to one of N parallel siblings goes on all of them or none. The unguarded sibling degrades to a quiet wrong state instead of a loud error; grep the sibling set for the same entry shape and replicate.
 
 ## Signals vs Events
 
@@ -105,7 +105,6 @@ Sanctioned shapes, block example, the reasons behind each clause, `/audit_test_a
 ## Touchpoints
 
 - [`reference/rules/csharp_patterns_examples.md`](../reference/rules/csharp_patterns_examples.md) — every snippet and failure mechanism this rule cites.
-- `pattern_enforcer.py` — hook enforcing the `[Export] = null!` + `[RequiredExport]` pairing.
 - Sibling rules on `**/*.cs`: [`csharp_lsp.md`](csharp_lsp.md) for symbol navigation; [`jmodot_utilities.md`](jmodot_utilities.md) for Jmodot utilities (NodeExts, JmoRng, JmoMath, Map, configuration exceptions, IComponent gotcha).
 - Sibling rule on `Jmodot/**/*.cs` only: [`jmodot_framework_authoring.md`](jmodot_framework_authoring.md) for 2D/3D parity, framework boundary, static seam pattern.
 - Companion skill: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) for design-time decisions (Resource Strategy Hierarchies, DI, Marker Interfaces).

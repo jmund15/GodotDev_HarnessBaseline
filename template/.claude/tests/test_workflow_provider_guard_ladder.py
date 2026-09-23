@@ -77,6 +77,25 @@ NO_HEADING = """## Pick by work shape
 
 RENAMED_COLUMN = LADDER.replace("| model | role |", "| row | role |")
 
+# A role cell opening with two tier tokens: the row claims both tiers, so the line prints both.
+TWO_TIER = LADDER.replace("| opus | architect & executor |", "| opus | `architect` `executor` — design & execution |")
+
+# A non-Anthropic row whose role cell is prose; its tier claim lives in registry `roles` alone.
+REGISTRY_ONLY = LADDER.replace("| haiku | scout |",
+                               "| sol | fresh architecting | 7 | - | 3 | 5 | - | `high` only | + x |\n| haiku | scout |")
+PLANTED_REGISTRY = {"transports": {}, "models": [
+    {"alias": "sol", "id": "gpt-6-sol", "transport": "codex", "roles": ["sol", "architect"]},
+    {"alias": "opus", "id": "claude-opus-5", "transport": "anthropic", "roles": ["opus"]}]}
+
+# Malformed role cells: the guard prints the tiers it could read and never raises.
+MISSPELLED = TWO_TIER.replace("`architect` `executor`", "`architect` `excutor`")
+UNCLOSED = TWO_TIER.replace("`architect` `executor`", "`architect")
+EMPTY_TABLE = """## Role guidance
+
+| model | role | intel | deleg | speed | cost | taste | effort | plusminus |
+|---|---|---|---|---|---|---|---|---|
+"""
+
 EXPECTED = [
     "opus: architect & executor, xhigh",
     "sonnet: fan-out, validation, high",
@@ -118,6 +137,27 @@ CASES = [
      lambda: parse(RENAMED_COLUMN) == [],
      "schema drift must not emit a plausible-looking wrong row"),
 
+    ("a row whose role cell opens with two tier tokens prints both tiers",
+     lambda: parse(TWO_TIER)[0] == "opus: architect/executor, xhigh",
+     "reading only the first token hid the row's second tier from every Workflow dispatch"),
+
+    ("a tier claimed only in registry `roles` prints, beside the row's role prose",
+     lambda: wpg.parse_ladder_role_lines(REGISTRY_ONLY.splitlines(True), PLANTED_REGISTRY)[2]
+             == "sol: architect (fresh architecting), high",
+     "the registry is the only home of a non-Anthropic row's tier claim; the line hid it"),
+
+    ("a misspelled second tier token prints the tier it could read, without raising",
+     lambda: parse(MISSPELLED)[0] == "opus: architect, xhigh",
+     "the guard never crashes a dispatch; `model_registry.py --check` names the bad token"),
+
+    ("an unclosed backtick prints the role prose, without raising",
+     lambda: parse(UNCLOSED)[0].startswith("opus: architect"),
+     "an unreadable token run falls back to the cell's words"),
+
+    ("an empty Role guidance table returns []",
+     lambda: parse(EMPTY_TABLE) == [],
+     "no rows, no line, no raise"),
+
     ("empty input returns []",
      lambda: parse("") == [],
      "the degraded path the caller already treats as 'no ladder'"),
@@ -151,11 +191,16 @@ def main():
     failed += not ok
     print("%s no live work-shape row leaked into the injection" % ("ok  " if ok else "FAIL"))
 
+    ok = any(l.startswith("sol: architect (") for l in live)
+    failed += not ok
+    print("%s the live sol row prints the `architect` tier it claims in registry `roles`"
+          % ("ok  " if ok else "FAIL"))
+
     ok = wpg.ladder_role_lines(path=os.path.join(HERE, "does-not-exist.md")) == []
     failed += not ok
     print("%s an unreadable ladder returns [] rather than raising" % ("ok  " if ok else "FAIL"))
 
-    total = len(CASES) + 4
+    total = len(CASES) + 5
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

@@ -30,7 +30,7 @@ $root = "{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\Documentation"
 Get-ChildItem -LiteralPath $root -Recurse -Filter *.md -Force | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | Out-Null }
 @(Get-ChildItem -LiteralPath $root -Recurse -Filter *.md -Force | Where-Object { $_.Attributes.value__ -band 4194304 }).Count  # MUST print 0
 ```
-If a doc "looks corrupted/all-null/missing," suspect dehydration before corruption — see `gotcha_onedrive_dehydration_breaks_vault_reads` in auto-memory.
+If a doc "looks corrupted/all-null/missing," suspect dehydration before corruption.
 
 ### 1b. Build System Manifest
 List `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/` (recursion depth 2). Classify every subfolder by content per the **Folder Classification** rules in `agents/documentation_structure.md` (six kinds: archived, structural, domain, system, entity-doc, everything-else). Skip `archived` and `structural` folders entirely. For each remaining subfolder, build a manifest entry that carries its classification verdict:
@@ -43,7 +43,7 @@ List `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/` (recursion depth 2). C
   "templateFormat": "4-doc | design-doc-only | mixed | empty" }
 ```
 
-`classification` and `domain` are load-bearing: the manifest is the only channel that carries skip/grouping intent to the workflow's agents (push-don't-pull). In particular, `entity-doc` folders (e.g. `NPC/` with per-entity docs + a `BuildingBlocks/` subfolder) follow `/doc_npc` conventions and are **exempt from template-compliance checks (S1-S4)** — the structural lens honors that exemption only if the manifest tags them. There is **no hand-maintained exclusion list** — skipping is derived from classification (the canonical rules are content-based and stateless).
+`classification` and `domain` are load-bearing: the manifest is the only channel that carries skip/grouping intent to the workflow's agents (push-don't-pull). In particular, `entity-doc` folders (e.g. `NPC/` with per-entity docs + a `BuildingBlocks/` subfolder) follow the entity-doc conventions `agents/documentation_structure.md` §Folder Classification assigns them and are **exempt from template-compliance checks (S1-S4)** — the structural lens honors that exemption only if the manifest tags them. There is **no hand-maintained exclusion list** — skipping is derived from classification (the canonical rules are content-based and stateless).
 
 ### 1c. Read Start Here
 Read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Start Here.md`. Parse all `[[wikilinks]]` + domain-table assignments, Role table entries (Designer/Developer), and entry-point links (Quick Reference vs Design Document).
@@ -51,7 +51,7 @@ Read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Start Here.md`. Parse al
 ### 1d. Assemble CONTEXT Block
 Build a single CONTEXT string: the full System Manifest (JSON — including each entry's `classification` + `domain`) + the full Start Here content (raw markdown) + today's date + total system count.
 
-**Inject source material verbatim — never annotate it inline.** A parenthetical inference you add (tagging a Start Here row `(BROKEN? not in tree)`) is indistinguishable from source to the lenses: they consume it as evidence, escalate on it, and then cite Start Here as independently corroborating a claim you invented. State the manifest's exclusions (`Archived/`, `Claude/`) explicitly so agents don't read manifest-absence as disk-absence; any other orchestrator observation goes in its own labelled section, never interleaved with quoted source. Archived/structural folders are excluded by construction in 1b; do not assemble a separate "exclusion list" component (the canonical rules are content-based — see `documentation_structure.md`).
+**Inject source material verbatim — never annotate it inline.** A parenthetical inference you add (tagging a Start Here row `(BROKEN? not in tree)`) is indistinguishable from source to the lenses: they consume it as evidence, escalate on it, and then cite Start Here as independently corroborating a claim you invented. State the manifest's exclusions (`Archived/`, `Claude/`) explicitly so agents don't read manifest-absence as disk-absence; any other orchestrator observation goes in its own labelled section, never interleaved with quoted source.
 
 ---
 
@@ -78,7 +78,7 @@ It returns:
   lensStatus: {structural, crossref, domain}, lensesCompleted: N, failedLenses: [...] }
 ```
 
-(No single-flight exposure — agents read only vault `.md`; no GdUnit4, no LSP. No user gate — this command is advisory; the user-confirmed FIX/ASK walkthrough lives in the separate `/doc_audit_fix`.)
+(No single-flight exposure — agents read only vault `.md`; no GdUnit4, no LSP.)
 
 ---
 
@@ -290,14 +290,13 @@ Rules for the block:
 - Keep recommendations concrete and imperative ("Add bidirectional link from X to Y", not "Consider updating links").
 - Include `/doc_full SystemName` commands in the action plan wherever a system needs template migration or doc regeneration.
 - Domain Analysis tables should show the complete picture — every system in every domain, whether it has issues or not.
-- The `## Machine Findings` JSON block is the machine contract for `/doc_audit_fix` — emit it on every run and keep its finding `id`s in sync with the prose callouts.
 
 ---
 
 ## Constraints
 
-- **Read-only.** NEVER modify existing documentation files. Only write to the audit report path.
+- **Read-only.** Only write to the audit report path.
 - **Advisory.** Present findings for user decision — do not auto-fix anything (the user-confirmed FIX/ASK walkthrough is `/doc_audit_fix`).
 - **Push-don't-pull.** Claude reads Start Here + folder structure and injects them into the CONTEXT; the workflow's agents do NOT re-read Start Here.
-- **No hallucinated findings.** Only report issues verified by reading actual files. If uncertain, skip it. Absence-shaped claims (*missing / broken / not found*) are never trusted from a lens — every one goes through the Phase-4a verification gate.
+- **No hallucinated findings.** Only report issues verified by reading actual files. If uncertain, skip it.
 - **3-lens delegation lives in the workflow.** The workflow spawns exactly 3 agents — do not perform the audit inline or combine lenses.

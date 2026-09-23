@@ -10,6 +10,8 @@ One settings entry runs five sub-hooks in order:
   4. model_ladder_gate.mark_loaded — compaction-scoped marker after a full exact-path ladder Read
   5. runaway_scan_reaper.check — throttled orphaned-search reaper, one line per reaped pid
 
+Sub-hook 1 ships in the coding layer and runs only where its file exists.
+
 Output contract:
 - Grep advice emits one `hookSpecificOutput.additionalContext` payload and exits 0.
 - One sub-hook fault stays fail-open and does not disable later checks.
@@ -25,10 +27,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import tool_routing_post_grep
+import _optional_hooks
 import routing_audit
 import memory_hits_logger
 import model_ladder_gate
+
+tool_routing_post_grep = _optional_hooks.load("tool_routing_post_grep")
 
 
 def main() -> None:
@@ -41,7 +45,7 @@ def main() -> None:
 
     # 1. Retroactive Grep nudge and per-pattern receipt.
     try:
-        nudge = tool_routing_post_grep.process(input_data)
+        nudge = tool_routing_post_grep.process(input_data) if tool_routing_post_grep else None
         if nudge:
             contexts.append(nudge)
     except Exception:

@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(git:*), Bash(dotnet build:*), Read
+allowed-tools: Bash(git:*), Read
 description: Re-inject SessionStart-equivalent context (branch, working tree, recent commits, worklog, optional build) without /clear-and-resume.
 ---
 
@@ -8,7 +8,7 @@ description: Re-inject SessionStart-equivalent context (branch, working tree, re
 
 After long sessions or major state changes (commits in another window, branch switch, submodule rebase, mid-session `/commit_push`), the SessionStart `<session-context>` block goes stale. The passive `prompt_git_state_delta.py` hook catches *deltas*, but sometimes you want to *actively* re-pull a complete fresh snapshot.
 
-This command compresses the 4-call manual pattern (git status + git log + read worklog-titles + optional dotnet build) into one keystroke and synthesizes the same `<session-refresh>` block shape as SessionStart.
+This command compresses the 4-call manual pattern (git status + git log + read worklog-titles + optional build) into one keystroke and synthesizes the same `<session-refresh>` block shape as SessionStart.
 
 ## Forms
 
@@ -16,8 +16,8 @@ Argument: `$ARGUMENTS`
 
 | Form | Operation |
 |------|-----------|
-| (no args) | **Fast snapshot.** Git + Jmodot + worklog only. ~1 s. |
-| `full` | **Verified snapshot.** Adds `dotnet build` health check. ~10–15 s. |
+| (no args) | **Fast snapshot.** Git + submodules + worklog only. ~1 s. |
+| `full` | **Verified snapshot.** Adds a build health check. |
 
 ## Procedure
 
@@ -33,15 +33,15 @@ git log -3 --format='%h %s'                                        # last 3 comm
 git rev-list --left-right --count HEAD...@{upstream} 2>/dev/null   # ahead/behind (may fail — that's fine)
 ```
 
-### 2. Capture Jmodot context (always, if submodule initialized)
+### 2. Capture submodule context (always, per submodule `git submodule status` lists)
 
 ```bash
-git -C Jmodot rev-parse --abbrev-ref HEAD
-git -C Jmodot rev-parse --short HEAD
-git -C Jmodot log -3 --format='%h %s'
+git -C <submodule> rev-parse --abbrev-ref HEAD
+git -C <submodule> rev-parse --short HEAD
+git -C <submodule> log -3 --format='%h %s'
 ```
 
-If `Jmodot/` is empty or missing, report `Jmodot: not initialized` and skip its lines.
+Report an uninitialized submodule as `<submodule>: not initialized` and skip its lines. No submodules → skip this step.
 
 ### 3. Read worklog mirror (always)
 
@@ -53,13 +53,9 @@ Extract the `## Active` section. Group by domain (the `domain — title` prefix 
 
 ### 4. Optional: build verification (only on `full`)
 
-Skip this step entirely when no argument is passed. When `full`:
+When `full`:
 
-```bash
-dotnet build --nologo -v q
-```
-
-Parse the trailing `N Error(s)` and `N Warning(s)` lines from output. Report as `Build: OK (N warnings)` or `Build: FAILED (N errors, N warnings)`.
+Run the build command `reference/project_stack.md` names on its `Build:` line. Report `Build: OK (N warnings)` or `Build: FAILED (N errors, N warnings)` from its output. No `Build:` line → report `Build: not configured`.
 
 ### 5. Synthesize the `<session-refresh>` block
 
@@ -78,7 +74,7 @@ Recent {{PROJECT_NAME}} commits:
   <sha> <subject>
   <sha> <subject>
 
-Recent Jmodot commits:
+Recent <submodule> commits:         [one block per initialized submodule]
   <sha> <subject>
   <sha> <subject>
   <sha> <subject>
@@ -86,8 +82,7 @@ Recent Jmodot commits:
 Build: OK (N warnings)             [only when /session_refresh full]
 
 Worklog Active (from .claude/worklog-titles.md):
-  ai — Wire BehaviorSuppressedState into 5 remaining NPC scenes
-  ai — Extract enemy_template.tscn from the 4 wired enemies
+  <domain> — <title>
   ...
 </session-refresh>
 ```
@@ -100,11 +95,11 @@ Print the `<session-refresh>` block as a chat-visible message. No tool calls bey
 
 - **Mid-long-session check-in** — "where am I, really?"
 - **After committing in another window** — to verify HEAD/working-tree alignment
-- **Before invoking `/regression_gate` or `/commit_push`** — confirm working tree is in expected shape
+- **Before invoking the regression gate or `/commit_push`** — confirm working tree is in expected shape
 - **Picking up after a coffee break** — refresh worklog state without nuking conversation history with `/clear`
 
 ## When NOT to use
 
 - **Right after SessionStart** — context is already fresh; this would just duplicate it
 - **As a substitute for the `<git-state-delta>` hook** — that hook fires automatically on changes; this command is for proactive full re-snapshots
-- **In place of `/regression_gate`** — `full` runs `dotnet build`, not the test suite. If you need test-pass verification, use the regression gate
+- **In place of the regression gate** — `full` runs the build, not the test suite. If you need test-pass verification, use the regression gate

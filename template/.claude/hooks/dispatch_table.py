@@ -7,9 +7,10 @@
            DISPATCH_TABLE_LAUNCH_WAIT (3 s) for started agents' first API response and reads served
            model + applied effort from their transcripts in the run dir (the per-run
            workflows/<runId>.json is only written when the run ends). Args-enumerated jobs not
-           started yet show their exact pins. Agents a script starts later, and a started agent
-           shown as `pending` (a script with no literal effort), print at the next Stop as
-           `▶ <name> · update`. An Agent call with no effort in its payload shows `?`.
+           started yet show their exact pins. A started agent whose label the script computes
+           waits up to DISPATCH_TABLE_UNRESOLVED_WAIT (12 s) for its first answer, else shows the
+           script's declared efforts (`low|medium`). Such rows, and agents a script starts later,
+           print at the next Stop as `▶ <name> · update`. An effort nothing declares shows `?`.
            Sidecars show the registry version of the pinned alias. TYPE is the agent type, which
            sets how much harness the child loads. Registers the dispatch as pending.
 --complete Stop. Checks each finished pending dispatch against what actually served it and prints a
@@ -167,12 +168,16 @@ def _live_agents(run_dir, skip=()):
 
 
 QUIET_SECONDS = 0.75
-PENDING = "pending"      # effort not known until the agent's first response; resolved at the next Stop
 
 
-def _wait_for(predicate):
-    """The value of `predicate()` — a (done, value) pair — once done, or when the launch wait runs out."""
-    deadline = time.time() + _launch_wait()
+def _unresolved_wait():
+    """Seconds the launch may wait for agents whose effort only their first answer can show."""
+    return float(os.environ.get("DISPATCH_TABLE_UNRESOLVED_WAIT") or 12)
+
+
+def _wait_for(predicate, seconds=None):
+    """The value of `predicate()` — a (done, value) pair — once done, or when the wait runs out."""
+    deadline = time.time() + (_launch_wait() if seconds is None else seconds)
     while True:
         done, value = predicate()
         if done or time.time() >= deadline:
@@ -206,30 +211,36 @@ def _job_for(label, jobs):
 
 def _row(label, display_model, pin_effort, agent_type, recorded=None, responded=False, model_for_effort=None):
     """One table row. Effort, first found: `recorded` → `none` once the agent responded without one, or
-    for a model that takes no effort → `pin_effort` (a `?` pin stays `?`) → PENDING."""
+    for a model that takes no effort → `pin_effort` (a `?` pin stays `?`) → `?`."""
     if recorded:
         effort = recorded
     elif responded or not _mr().takes_effort(model_for_effort or display_model):
         effort = NO_EFFORT
     else:
-        effort = pin_effort or PENDING
+        effort = pin_effort or UNKNOWN
     return (label, display_model, effort, agent_type)
 
 
 def _agent_row(agent, jobs, declared=None):
-    """(row, complete) for a started agent; complete means its first response has arrived.
+    """(row, settled) for a started agent. Settled: it has answered, or its effort is an exact pin, so
+    the row will not change; an unsettled row is re-reported at the next Stop.
 
     Model: the served id, else what the same pin resolved to for another agent of this run that
     already answered (`declared["models"]`), else the pin. Effort per `_row`, the pin taken from the
-    args job → the script's literal pin for this label → the script's only literal effort."""
+    args job → the script's literal pin for this label → the script's only literal effort → every
+    literal effort the script declares (`low|medium`), for labels the script computes at runtime."""
     declared = declared or {}
     job = _job_for(agent["label"], jobs) or {}
     pin = job.get("model") or agent["requested"]
     model = agent["served"] or (declared.get("models") or {}).get(pin) or _resolved_id(pin) or pin
     candidates = (job.get("effort"), (declared.get("by_label") or {}).get(agent["label"]), declared.get("only"))
     pin_effort = next((c for c in candidates if c not in (None, UNKNOWN)), None)
-    return _row(agent["label"], short(model), pin_effort, agent["type"], recorded=agent["effort"],
-                responded=agent["responded"], model_for_effort=model), agent["responded"]
+    exact = pin_effort is not None
+    if not exact and declared.get("all"):
+        pin_effort = "|".join(declared["all"])
+    row = _row(agent["label"], short(model), pin_effort, agent["type"], recorded=agent["effort"],
+               responded=agent["responded"], model_for_effort=model)
+    return row, bool(agent["responded"] or exact)
 
 
 def _declared(payload, agents):
@@ -246,7 +257,8 @@ def _declared(payload, agents):
     for a in agents:
         if a["served"] and a["requested"]:
             models.setdefault(a["requested"], a["served"])
-    return {"by_label": by_label, "only": literals.pop() if len(literals) == 1 else None, "models": models}
+    return {"by_label": by_label, "only": next(iter(literals)) if len(literals) == 1 else None,
+            "all": sorted(literals), "models": models}
 
 
 def _resolved_id(pin):
@@ -318,12 +330,17 @@ def launch(payload):
         run_id = resp.get("runId")
         run_dir = resp.get("transcriptDir") or os.path.join(session or "", "subagents", "workflows", str(run_id))
         agents = _wait_for_agents(run_dir, len(jobs) or None) if run_id else []
-        rows, reported = [], []
         declared = _declared(payload, agents)
+        if any(not _agent_row(a, jobs, declared)[1] for a in agents):
+            # An agent with no exact pin shows its real effort only once it answers: wait for it.
+            agents = _wait_for(lambda: (all(x["responded"] for x in _live_agents(run_dir)),
+                                        _live_agents(run_dir)), _unresolved_wait())
+            declared = _declared(payload, agents)
+        rows, reported = [], []
         for agent in agents:
-            row, complete = _agent_row(agent, jobs, declared)
+            row, settled = _agent_row(agent, jobs, declared)
             rows.append(row)
-            if complete or row[2] != PENDING:  # a pending effort is re-reported once it is known
+            if settled:  # an unsettled row is re-reported at the next Stop
                 reported.append(agent["id"])
         started = {_job_for(a["label"], jobs)["label"] for a in agents if _job_for(a["label"], jobs)}
         # Enumerated jobs not started yet: their pins are exactly what the engine will send.
@@ -619,7 +636,7 @@ def complete(payload):
 
 def _newly_started(entry):
     """(table, agent ids) for a Workflow's agents not fully reported yet — started after the last
-    report, or shown with a pending effort — that have now responded; (None, []) when none have."""
+    report, or shown with an unsettled effort — that have now responded; (None, []) when none have."""
     seen = set(entry.get("reported") or [])
     jobs = entry.get("jobs") or []
     rows, ids = [], []

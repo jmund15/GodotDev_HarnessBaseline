@@ -83,6 +83,12 @@ def main():
                   == {"A": True, "W": True, "m": "flash", "e": "high", "R": "r.json"}))
     cases.append(("-X is a bare flag",
                   _call("sidecar_flags", ["-X", "-m", "f"]) == {"X": True, "m": "f"}))
+    cases.append(("sidecar_flag_pairs keeps repeated -C and -a values in order",
+                  _call("sidecar_flag_pairs", ["-C", "one", "-a", "two", "-C", "three", "-a", "four"])
+                  == ([ ("C", "one"), ("a", "two"), ("C", "three"), ("a", "four") ], 8)))
+    cases.append(("sidecar_flag_pairs retains bare -X and reports the first operand",
+                  _call("sidecar_flag_pairs", ["-X", "-m", "f", "operand", "-a", "later"])
+                  == ([ ("X", True), ("m", "f") ], 3)))
     cases.append(("a --long option ends flag parsing (no spurious effort from --check)",
                   _call("sidecar_flags", ["--check", "-m", "f"]) == {}))
     cases.append(("-- and the first operand end flag parsing",

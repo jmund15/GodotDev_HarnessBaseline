@@ -35,7 +35,7 @@ import unicodedata
 
 _TAGS = re.compile(r"<[^>]+>")
 _SCRIPT = re.compile(r"<(script|style).*?</\1>", re.S | re.I)
-# Godot doc BBCode + markdown emphasis: present in the source, absent from a sensibly-quoted line.
+# Class-reference BBCode + markdown emphasis: present in the source, absent from a sensibly-quoted line.
 _BB = re.compile(r"\[/?(?:b|i|u|s|code|codeblock|codeblocks|gdscript|csharp|url|param|member|"
                  r"method|constant|enum|signal|theme_item|annotation|class)[^\]]*\]", re.I)
 _EMPH = re.compile(r"[*_`]+")

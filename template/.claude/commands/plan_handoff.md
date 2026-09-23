@@ -22,8 +22,8 @@ description: Begin execution of an approved plan in this executor session — ta
      - an unexpected tooling failure (test infra, build error)
      - an integration step produces results the plan didn't anticipate
    - CLAUDE.md still applies. Run /regression_gate before any .cs commit.
-   - Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them per feedback_delegate_output_trust.
+   - Verify load-bearing empirical claims (file paths, type existence, prior-art assertions) before acting on them.
    - Mechanical execution is yours to make — don't ask permission for unambiguous steps.
-   - Do not read prior session transcripts or memory snapshots; the plan file is self-sufficient **for SCOPE** by design — when produced by [`/part_drive`](part_drive.md), each decision's load-bearing *why* is woven inline, so the *why* travels inside the plan, not in a side artifact. **Carve-out:** auto-memory `arch_rule_*`/`gotcha_*` entries and path-scoped `.claude/rules` remain in force — when a slice introduces something the plan didn't describe (a new type, `[Export]`, or scene node), consult them; the plan bounds WHAT you build, never which design rules apply.
+   - Do not read prior session transcripts or memory snapshots; the plan file is authoritative for scope. **Carve-out:** auto-memory `arch_rule_*`/`gotcha_*` entries and path-scoped `.claude/rules` remain in force — when a slice introduces something the plan didn't describe (a new type, `[Export]`, or scene node), consult them; the plan bounds WHAT you build, never which design rules apply.
 
 3. Begin execution of the plan's first step.

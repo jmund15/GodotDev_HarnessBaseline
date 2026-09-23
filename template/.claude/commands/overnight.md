@@ -8,9 +8,9 @@ The user is leaving for hours. Every question you would normally ask has no one 
 
 ## Arguments
 
-`/overnight <goal>` — the goal text, verbatim. No argument → run `python3 .claude/hooks/overnight_ask_guard.py --status`; resume its goal only when `armed` is true. Missing or invalid `CLAUDE_CODE_SESSION_ID` → stop with the error, never claim another session's goal. Legacy anonymous `active.json` is not owned state.
+`/overnight <goal>` — the goal text, verbatim. No argument → run `python3 .claude/hooks/overnight_ask_guard.py --status`; resume its goal only when `armed` is true. Missing or invalid `CLAUDE_CODE_SESSION_ID` → stop with the error, never claim another session's goal.
 
-Pair it with `/goal <same text>` so the Stop hook blocks an early exit. This command owns the conduct; the host built-in `/goal` owns the persistence — never search the repository for a goal file. Treat host-goal state as evidence only when the owner invoked or queried `/goal`; otherwise record `HOST_GOAL_UNVERIFIED` and claim no cross-turn persistence. **The goal is met by an artifact, never by self-report**: a condition phrased as confidence ("when you are fully confident in X") is met only when the mechanical check that owns X is green and its output line is pasted in the Close doc (`bench.py gate` for the benchmark, `/regression_gate` for code, `harness_tests.py` for the harness); a red line or a missing one means the goal stays unmet and the run continues or parks.
+Pair it with `/goal <same text>` so the Stop hook blocks an early exit. This command owns the conduct; the host built-in `/goal` owns the persistence — never search the repository for a goal file. Treat host-goal state as evidence only when the owner invoked or queried `/goal`; otherwise record `HOST_GOAL_UNVERIFIED` and claim no cross-turn persistence. **The goal is met by an artifact, never by self-report**: a condition phrased as confidence ("when you are fully confident in X") is met only when the mechanical check that owns X is green and its output line is pasted in the Close doc (`bench.py gate` for the benchmark, the project's regression gate for code as `change_control` §Gate cadence names it, `harness_tests.py` for the harness); a red line or a missing one means the goal stays unmet and the run continues or parks.
 
 ## Step 1 — Arm
 
@@ -22,11 +22,11 @@ Writes `.claude/scratch/overnight/active-<session-id>.json` atomically. The hook
 
 ## Step 2 — Decide or park (the one rule)
 
-Every fork that would have been a question routes here — gate FAIL adjudication (`/regression_gate`), pre-merge `[ ]` items (`/merge_pr`), worklog confirm-prompts, plan-file forks, "A or B?" design calls.
+Every fork that would have been a question routes here — gate FAIL adjudication (the project's regression gate), pre-merge `[ ]` items (the PR merge checklist), worklog confirm-prompts, plan-file forks, "A or B?" design calls.
 
-**Decide** when all three hold: you would have marked the option "(Recommended)"; the action is reversible from the branch (a commit, a file edit, a fast-forward push of the active branch, including `main`, after fresh evidence and ownership checks); it stays inside the goal's stated scope. Record it as `D<n>` in the Close doc with the one-line reason.
+**Decide** when all three hold: you would have marked the option "(Recommended)"; the action is reversible from the branch (a commit, a file edit, a fast-forward push of the active branch, including `main`, after fresh evidence and ownership checks), or an owner prompt in this session already authorized that action class ("publish when green", "the sync is finished by session end") and its gate is green; it stays inside the goal's scope. Scope is the `/overnight` text plus every standing directive and requirement the owner stated earlier in the session. A fix that brings delivered work up to a stated requirement is in scope. Record it as `D<n>` in the Close doc with the one-line reason.
 
-**Park** everything else — irreversible actions (merge, delete, force-push, publishing another branch, external publish), scope changes, forks with no confident recommendation, and any step that fails the same way twice. Record it as one parseable `Q<n>` row, then do everything that does not depend on it:
+**Park** everything else — irreversible actions no owner prompt authorizes (merge, delete, force-push, publishing another branch, external publish), scope changes, forks with no confident recommendation, and any step that fails the same way twice. An `irreversible` Park names the owner prompts checked for authorization. An environment kill (low memory, timeout, dropped connection) is not a step failure: rerun it once before counting it. Record it as one parseable `Q<n>` row, then do everything that does not depend on it:
 
 `**Q<n> — <fork>. Options: <options>. Park: <irreversible|out-of-scope|no-recommendation|failed-twice> — <evidence>. Recommendation: <option|none>.`
 
@@ -37,7 +37,7 @@ Every fork that would have been a question routes here — gate FAIL adjudicatio
 ## Step 3 — Run
 
 - Use Bash `run_in_background` for one terminal notification; use `Monitor` for repeated events, including failure states. Follow the live tool's lifetime contract. Detach separately only when required and supported; idle alone is not cancellation evidence.
-- After compaction, run `--status` and read this session's Close doc before acting; never resume a peer's goal.
+- After compaction, run `--status` and read this session's Close doc before acting.
 - Same failure twice on one step → park it (Step 2) and move on. Never loop on a nudge or a denial.
 
 ## Step 4 — Close

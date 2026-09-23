@@ -11,11 +11,11 @@ PreToolUse hook on the `Workflow` call itself. Wiring the commands with `Bash` c
 was the alternative and was rejected: a marker written by a markdown instruction is
 armed only when the agent remembers, which is not a mechanical guarantee.
 
-WHAT IT ARMS ON. Only a dispatch whose script is a read-only fan-out ENGINE. Those
-engines inject a per-lens `Read-only: do NOT modify...` contract and are the surface
-whose read-only claim this guard exists to observe. A `dispatch.js` run is NOT armed:
-it mixes read-only and author jobs in one run, so arming it would warn on every
-legitimate authored write.
+WHAT IT ARMS ON. Only a dispatch whose script is a read-only fan-out ENGINE: a script
+file carrying the `// READONLY-FANOUT-ENGINE` line. Those engines inject a per-lens
+`Read-only: do NOT modify...` contract and are the surface whose read-only claim this
+guard exists to observe. A `dispatch.js` run is NOT armed: it mixes read-only and
+author jobs in one run, so arming it would warn on every legitimate authored write.
 
 NO DISARM, BY DESIGN. `Workflow` returns as soon as the run is backgrounded, so a
 PostToolUse disarm would clear the marker while the lenses are still running. The TTL
@@ -37,8 +37,9 @@ from _hook_state import read_json_salvage, write_json_atomic
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 TTL_SECONDS = 1800
 
-# Read-only fan-out engines. `dispatch.js` is deliberately absent -- see module docstring.
-READONLY_ENGINES = ("explore_fanout.js", "review_fanout.js")
+# The line a read-only fan-out engine declares itself with. `dispatch.js` deliberately lacks
+# it -- see module docstring.
+ENGINE_MARKER = "// READONLY-FANOUT-ENGINE"
 
 
 def _marker_path(session_id: str) -> str:
@@ -47,17 +48,26 @@ def _marker_path(session_id: str) -> str:
     return os.path.join(STATE_DIR, f"readonly-{short}.json")
 
 
-def _names_readonly_engine(tool_input: dict) -> bool:
-    """True when this dispatch runs a read-only fan-out engine.
+def _names_readonly_engine(tool_input: dict, cwd: str) -> bool:
+    """True when this dispatch runs a script file that declares ENGINE_MARKER.
 
-    `scriptPath` is the normal route. `name` covers a saved-workflow invocation. The
-    inline `script` body is NOT inspected: an ad-hoc script that merely mentions an
-    engine filename in a comment is not a dispatch of it.
+    `scriptPath` is the normal route. `name` covers a saved-workflow invocation that names
+    a script file. A relative path resolves against the payload `cwd`, then the project
+    root. The inline `script` body is NOT inspected: an ad-hoc script that merely mentions
+    the marker is not a dispatch of an engine.
     """
+    roots = [r for r in (cwd, os.environ.get("CLAUDE_PROJECT_DIR")) if r]
     for key in ("scriptPath", "name"):
-        value = str(tool_input.get(key) or "").replace("\\", "/")
-        if any(value.endswith(engine) or f"/{engine}" in value for engine in READONLY_ENGINES):
-            return True
+        value = str(tool_input.get(key) or "")
+        if not value.endswith(".js"):
+            continue
+        for path in [value] if os.path.isabs(value) else [os.path.join(r, value) for r in roots]:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    if any(line.strip() == ENGINE_MARKER for line in handle):
+                        return True
+            except OSError:
+                continue
     return False
 
 
@@ -89,7 +99,8 @@ def main() -> None:
         return
 
     tool_input = payload.get("tool_input") or {}
-    if not isinstance(tool_input, dict) or not _names_readonly_engine(tool_input):
+    cwd = str(payload.get("cwd") or "")
+    if not isinstance(tool_input, dict) or not _names_readonly_engine(tool_input, cwd):
         return
 
     session_id = str(payload.get("session_id") or "")

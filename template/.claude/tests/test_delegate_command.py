@@ -24,7 +24,7 @@ REQUIRED = {
     "route and guard shape stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+shape[\s\S]+any\|survey\|review\|author",
     "native executor owners": r"dispatch\.js[\s\S]+dispatch_chains\.js[\s\S]+review_fanout\.js",
     "cross-transport owner": r"alias[\s\S]+promptFile[\s\S]+sidecar_fanout\.py",
-    "specialized command refusal": r"/explore[\s\S]+/plan_check",
+    "specialized command refusal": r"own coverage contract[\s\S]+exploration, plan drafting or plan review",
     "one arm per delivery job": r"One suitable arm per independently needed job, including review lenses",
     "provider availability cannot add jobs": r"Adding an available provider does not add jobs",
     "comparison is explicit and bounded": r"explicit comparison request[\s\S]+named arms, frozen inputs and a finite budget",

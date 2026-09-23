@@ -8,11 +8,10 @@ description: Pressure-test a skill by dispatching adversarial subagent scenarios
 
 Adversarial integration tests for `.claude/skills/<name>/SKILL.md`. For each rationalization, red-flag, or rule documented in the target skill, a fresh subagent is dispatched with the skill in-context against a prompt that *invites* the rationalization, then scored COMPLIES / DRIFTS / FAILS. The deterministic orchestration (surface detection, the ≤15 cap, single-message parallel dispatch, the validate-EVERY-COMPLIES gate, calibration independence) lives in the workflow `.claude/workflows/test_skill_pressure.js` — this command assembles its input and renders its output.
 
-**Sibling command:** `/test_agents` runs integration tests for review/audit *agents*. Both gate COMPLIES verdicts on independent validation.
+**Sibling command:** the coding layer's agent-test command runs integration tests for review/audit *agents*. Both gate COMPLIES verdicts on independent validation.
 
 **Arguments:** `$ARGUMENTS`
 - Required: a single skill name (e.g., `/test_skill testing`, `/test_skill debugging`).
-- No `--all` mode in v1 — single-skill only (see Notes).
 
 ---
 
@@ -84,7 +83,7 @@ If `mode == "B"`, prefix the report with: `NOTE: Skill has no explicit rationali
 ## Notes
 
 - **Cost:** ~1 synthesize + N Sonnet dispatch + N score + (COMPLIES-count) validators per run. Roughly $0.10–0.30 on a typical skill.
-- **No `--all` mode in v1** — running against all skills would exceed the 15-prompt fan-out budget. Re-evaluate if {{PROJECT_NAME}} adopts a quarterly harness-audit cadence.
-- **Manual invocation only** — not auto-run from `/regression_gate`. Validates *harness correctness* (skill quality), not *production correctness*.
-- **No file modifications** — read-only. No single-flight exposure (subagents reason over the injected skill text; no GdUnit4, no LSP).
+- **No `--all` mode in v1** — running against all skills would exceed the 15-prompt fan-out budget. Re-evaluate if the project adopts a quarterly harness-audit cadence.
+- **Manual invocation only** — not auto-run from the regression gate. Validates *harness correctness* (skill quality), not *production correctness*.
+- **No file modifications** — read-only. No single-flight exposure (subagents reason over the injected skill text; no test runner, no LSP).
 - **Calibration integrity** is enforced in the workflow: each validator is built from a fixed template with zero prior-run context, so re-testing a patched skill measures the patch, not the history.

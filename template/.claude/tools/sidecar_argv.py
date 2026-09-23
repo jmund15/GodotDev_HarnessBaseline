@@ -97,27 +97,35 @@ def launcher_calls(command):
     return [(c.kind, c.script, c.args) for c in launcher_invocations(command)]
 
 
-def sidecar_flags(args):
-    """{flag letter: value, or True for a bare flag} read the way getopts reads SC_OPTSTRING:
-    clustered letters, a value glued to its flag or in the next token. Parsing stops at `--`,
-    a `--long` option, or the first operand."""
-    flags, index = {}, 0
+def sidecar_flag_pairs(args):
+    """([(letter, value), ...], first operand index) read like getopts reads SC_OPTSTRING.
+    Repeated flags remain visible. Parsing stops at `--`, a `--long` option, or the first operand;
+    a value-taking flag without a value is represented with None for the caller to reject."""
+    pairs, index = [], 0
     while index < len(args):
         token = args[index]
         if not token.startswith('-') or token == '-' or token.startswith('--'):
-            break
+            return pairs, index
         for pos, letter in enumerate(token[1:], 1):
             if letter in SIDECAR_VALUE_FLAGS:
                 rest = token[pos + 1:]
                 if rest:
-                    flags[letter] = rest
+                    pairs.append((letter, rest))
                 elif index + 1 < len(args):
                     index += 1
-                    flags[letter] = args[index]
+                    pairs.append((letter, args[index]))
+                else:
+                    pairs.append((letter, None))
                 break
-            flags[letter] = True
+            pairs.append((letter, True))
         index += 1
-    return flags
+    return pairs, len(args)
+
+
+def sidecar_flags(args):
+    """{flag letter: value, or True for a bare flag}, retaining the last repeated value."""
+    pairs, _operand_index = sidecar_flag_pairs(args)
+    return dict(pairs)
 
 
 def parse_fanout_args(args):

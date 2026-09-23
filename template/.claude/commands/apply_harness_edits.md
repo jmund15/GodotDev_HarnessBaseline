@@ -9,7 +9,7 @@ Apply `.claude/pending_harness_edits.md`. No argument runs the normal queue; `--
 
 1. **Read the queue.** Absent or empty below the header → report `No pending harness edits.` and stop.
 2. **Check targets and ownership.** Read each target and its current diff. A conflicting peer edit, active audit freeze, missing anchor or changed premise leaves that entry pending with its reason; continue independent entries. Do not overwrite drift or treat it as completed work.
-3. **Apply exact entries** with `Edit`. Runtime instruction files use direct edits, never `write_doc`. Verify the changed decision, inbound references and relevant tests. A changed disk file does not evict text already loaded in this session.
+3. **Apply exact entries** with `Edit`. Verify the changed decision, inbound references and relevant tests.
 4. **Reconcile the queue.** Remove only successfully applied entries. Keep unresolved entries and their evidence. Delete an empty queue only after verifying it still contains no peer additions.
 5. **Close within the user's Git authority.** Propose a commit unless already authorized; stage only these changes. Run the gate required by the actual staged file classes in CLAUDE.md §Build & Test Commands. With `--check-baseline`, surface `/sync_baseline` drift without publishing it.
 

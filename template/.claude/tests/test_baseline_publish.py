@@ -1650,12 +1650,15 @@ sys.exit(0)
 """
 
 
-def _layer_fixture(path: Path, fresh_layer: str | None):
+def _layer_fixture(path: Path, fresh_layer: str | None, pinned_existing_layer: str | None = None):
     existing = ".claude/tools/fixture.py"
     fresh = ".claude/tools/fresh_" + "row.py"
     cache = path / "cache"
     _init_repo(cache)
     _write(cache / "template" / existing, b"value = 'old'\n")
+    if pinned_existing_layer:
+        manifest = {"version": 1, "files": [{"path": existing, "layer": pinned_existing_layer, "sync": "auto"}]}
+        _write(cache / "baseline.manifest.json", json.dumps(manifest).encode("utf-8"))
     _write(cache / "tools" / "gen_manifest.py", RECORDING_GEN_MANIFEST)
     baseline_sha = _commit(cache, "seed")
     root = path / "consumer"
@@ -1691,6 +1694,30 @@ def test_materialize_records_new_row_layers_and_regenerates_manifest() -> None:
         assert calls[0]["entries"] == {fresh: "coding"}, calls
 
 
+def test_materialize_records_a_layer_move_for_an_existing_row() -> None:
+    # Re-layering a shipped row (the lock says pure, the pinned manifest says coding) must reach
+    # the baseline too, or pure consumers never receive the file the move was for.
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, "coding", "coding")
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(path / "calls.json")}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "coding", ".claude/tools/fixture.py": "pure"}, entries
+
+
+def test_materialize_records_no_entry_for_an_unmoved_existing_row() -> None:
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, "coding", "pure")
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(path / "calls.json")}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "coding"}, entries
+
+
 def test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_worktree() -> None:
     with _fixture() as path:
         root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, None)
@@ -1715,6 +1742,8 @@ def main() -> int:
         test_collect_without_rows_takes_only_push_verdicts,
         test_materialize_writes_source_bytes_unsubstituted,
         test_materialize_records_new_row_layers_and_regenerates_manifest,
+        test_materialize_records_a_layer_move_for_an_existing_row,
+        test_materialize_records_no_entry_for_an_unmoved_existing_row,
         test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
         test_local_merge_refuses_remote_url,
         test_no_ci_refuses_when_workflow_exists,

@@ -1209,18 +1209,19 @@ def _iso_instant(value):
 
 
 def _launcher_calls(command):
-    """Actual top-level launcher calls as (kind, launcher arguments)."""
-    return [(kind, args) for kind, _, args in _launcher_calls_named(command)]
+    """Actual top-level launcher calls as (kind, launcher arguments), read through the one launch
+    reader so a caller cannot skip its `cd` and variable resolution."""
+    return [(kind, args) for kind, _, args in _resolved_launcher_calls(command, _PROJECT_DIR)[1]]
 
 
 def sidecar_launches(command, cwd=None):
     """[{kind, launcher, label, model, effort, record}] per sidecar job this shell command EXECUTES:
     a registered `.claude/scripts/*_sidecar.sh` launcher, or each job of a `sidecar_fanout.py` jobs
     file. [] for a command that only mentions one, or a `<launcher> --check` probe. Omitted values are None; the reader labels them."""
-    cwd = cwd or _PROJECT_DIR
+    cwd, calls = _resolved_launcher_calls(command, cwd or _PROJECT_DIR)
     scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
     out = []
-    for kind, script, args in _launcher_calls_named(command):
+    for kind, script, args in calls:
         if kind == 'sidecar':
             if args[:1] == ['--check']:
                 continue
@@ -1233,6 +1234,8 @@ def sidecar_launches(command, cwd=None):
                             model=f.get('m') if isinstance(f.get('m'), str) else None,
                             effort=f.get('e') if isinstance(f.get('e'), str) else None,
                             record=_resolve_session_path(record, cwd) if isinstance(record, str) else None))
+            continue
+        if '--dry-run' in args:
             continue
         parsed = _parse_fanout_args(args, cwd)
         if not parsed:
@@ -1254,6 +1257,38 @@ def sidecar_launches(command, cwd=None):
                             label=label, model=job.get('alias'), effort=job.get('effort'),
                             record=os.path.join(out_dir, '%s.record.json' % label) if label else None))
     return out
+
+
+def _command_cwd(command, cwd):
+    """(cwd, variables) a command's launcher runs with: `cwd` moved by each `cd <dir>` segment, and
+    each `NAME=value` segment, that precedes the first launcher segment. An MSYS drive path (/c/...)
+    maps to its Windows form."""
+    env = {}
+    for tokens in sidecar_argv.shell_segments(command):
+        if any(t.endswith(('sidecar_fanout.py', '_sidecar.sh')) for t in tokens):
+            break
+        if len(tokens) == 2 and tokens[0] == 'cd':
+            target = re.sub(r'^/([a-zA-Z])(?=/|$)', lambda m: m.group(1).upper() + ':',
+                            _expand_vars(tokens[1], env))
+            cwd = _resolve_session_path(target, cwd)
+        elif len(tokens) == 1 and re.match(r'^[A-Za-z_]\w*=', tokens[0]):
+            name, _, value = tokens[0].partition('=')
+            env[name] = _expand_vars(value, env)
+    return cwd, env
+
+
+def _resolved_launcher_calls(command, cwd):
+    """(run cwd, [(kind, script, args)]) for a command's launcher calls, with the leading `cd` and
+    `NAME=value` segments applied: the one launch reader every attribution path uses."""
+    run_cwd, env = _command_cwd(command, cwd)
+    return run_cwd, [(kind, script, [_expand_vars(a, env) for a in args])
+                     for kind, script, args in _launcher_calls_named(command)]
+
+
+def _expand_vars(token, env):
+    """`$NAME` and `${NAME}` in `token` replaced from `env`; an unknown name stays as written."""
+    return re.sub(r'\$(?:\{(\w+)\}|(\w+))',
+                  lambda m: env.get(m.group(1) or m.group(2), m.group(0)), token)
 
 
 def _launcher_calls_named(command):
@@ -1293,10 +1328,11 @@ def _fanout_jobs_paths(transcript):
             command = tool_input.get('command') if isinstance(tool_input, dict) else None
             if not isinstance(command, str):
                 continue
-            for kind, args in _launcher_calls(command):
+            run_cwd, calls = _resolved_launcher_calls(command, cwd)
+            for kind, _script, args in calls:
                 if kind != 'fanout':
                     continue
-                parsed = _parse_fanout_args(args, cwd)
+                parsed = _parse_fanout_args(args, run_cwd)
                 if parsed:
                     paths.add(parsed[0])
     return paths
@@ -1372,10 +1408,11 @@ def _sidecar_record_launches(session):
             command = tool_input.get('command')
             if not isinstance(command, str):
                 continue
-            for kind, args in _launcher_calls(command):
+            run_cwd, calls = _resolved_launcher_calls(command, cwd)
+            for kind, _script, args in calls:
                 paths = []
                 if kind == 'fanout':
-                    parsed = _parse_fanout_args(args, cwd)
+                    parsed = _parse_fanout_args(args, run_cwd)
                     if not parsed:
                         continue
                     jobs_path, out_dir = parsed
@@ -1391,16 +1428,11 @@ def _sidecar_record_launches(session):
                         if label:
                             paths.append(os.path.join(out_dir, str(label) + '.record.json'))
                 else:
-                    try:
-                        record_index = args.index('-R')
-                        paths.append(_resolve_session_path(args[record_index + 1], cwd))
-                    except (ValueError, IndexError):
-                        record_arg = next((arg.split('=', 1)[1] for arg in args
-                                           if arg.startswith('-R=')), None)
-                        if record_arg:
-                            paths.append(_resolve_session_path(record_arg, cwd))
+                    record = sidecar_argv.sidecar_flags(args).get('R')
+                    if isinstance(record, str):
+                        paths.append(_resolve_session_path(record, run_cwd))
                 for path in paths:
-                    absolute = _resolve_session_path(path, cwd)
+                    absolute = _resolve_session_path(path, run_cwd)
                     prior = launches.get(absolute)
                     if prior is None or (launched_at and (not prior or launched_at > prior)):
                         launches[absolute] = launched_at

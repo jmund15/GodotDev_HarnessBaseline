@@ -1432,11 +1432,10 @@ Assert-NoEditor -Phase 'suite:Integration'
 $intT0  = Get-Date
 $intPeers0 = @(Get-SuitePeers)
 $intRun = Invoke-IntegrationRun -Retry:$RetryOnly
-# exit 5 = BUDGET_EXCEEDED: the runner's wall-clock budget counts the wrapper's wait on the
-# machine-global runtime mutex, so a concurrent suite run starves the last batches without anything
-# having failed. -RetryOnly resumes exactly those batches and keeps prior greens, so recover
-# automatically instead of reporting a partial count. Once only — a second overrun is real contention
-# the gate cannot resolve on its own.
+# exit 5 = BUDGET_EXCEEDED: the run's work (lock-wait excluded) outran its plan-derived budget, so
+# batches were skipped without anything having failed. -RetryOnly resumes exactly those batches and
+# keeps prior greens, so recover automatically instead of reporting a partial count. Once only — a
+# second overrun means the machine is genuinely slow, which the gate cannot resolve on its own.
 # A STATUS=LOCKED completion (mutex starvation, no budget skip) is NOT auto-retried: the
 # automatic -RetryOnly pass would re-wait a still-held mutex. It routes to the queue
 # conversion at the verdict cascade instead.

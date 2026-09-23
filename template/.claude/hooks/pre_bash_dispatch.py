@@ -37,20 +37,41 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Import with the REAL sys.stdout bound: four sub-hooks call sys.stdout.reconfigure() at import.
 import bash_backslash_fidelity  # noqa: E402
 import bash_shape_guard  # noqa: E402
-import cloud_test_enforcer  # noqa: E402
 import compound_cd_approver  # noqa: E402
-import gate_cadence_guard  # noqa: E402
 import git_guardrails  # noqa: E402
-import pattern_enforcer  # noqa: E402
-import prototype_containment_guard  # noqa: E402
 try:  # project-local (rail battery); absent in projects that sync only the baseline
     import rail_probe_guard  # noqa: E402
 except ImportError:
     rail_probe_guard = None
-import provisional_totality_guard  # noqa: E402
 import sidecar_dispatch_context  # noqa: E402
-import tres_nullstrip_guard  # noqa: E402
-import tres_script_strip_guard  # noqa: E402
+import _optional_hooks  # noqa: E402
+
+# Godot-layer guards: a project that did not adopt the godot layer has no file for them.
+(cloud_test_enforcer, gate_cadence_guard, pattern_enforcer, prototype_containment_guard,
+ provisional_totality_guard, tres_nullstrip_guard, tres_script_strip_guard) = _optional_hooks.load(
+    "cloud_test_enforcer", "gate_cadence_guard", "pattern_enforcer", "prototype_containment_guard",
+    "provisional_totality_guard", "tres_nullstrip_guard", "tres_script_strip_guard")
+class _ApprovingGatesImportStub:
+    """Stands in for `approving_gates` when it fails to import: it approves nothing, the deny
+    guards still run, and its exit 1 puts the import error on the user-visible stderr channel."""
+    __name__ = "approving_gates"
+    __file__ = "approving_gates.py"
+
+    def __init__(self, error):
+        self.error = error
+
+    def main(self):
+        sys.stderr.write("approving_gates failed to import (%s); no harness action is auto-approved "
+                         "until hooks/approving_gates.py imports cleanly.\n" % self.error)
+        return 1
+
+
+try:
+    import approving_gates  # noqa: E402
+    _APPROVING_GATES_IMPORT_ERROR = None
+except Exception as _exc:
+    _APPROVING_GATES_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
+    approving_gates = _ApprovingGatesImportStub(_APPROVING_GATES_IMPORT_ERROR)
 import unbounded_scan_guard  # noqa: E402
 
 # Guarded: baseline_classification_guard also imports baseline_sync (tools/), a heavier
@@ -107,9 +128,11 @@ HOOKS += (
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
     (sidecar_dispatch_context, ()),
+    (approving_gates, ()),
     # Last: it rewrites the command through updatedInput, so every deny above must win first.
     (bash_backslash_fidelity, ()),
 )
+HOOKS = tuple((module, argv_tail) for module, argv_tail in HOOKS if module is not None)
 
 _DECISION_RANK = {"deny": 3, "ask": 2, "allow": 1}
 

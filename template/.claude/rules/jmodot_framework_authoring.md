@@ -5,7 +5,7 @@ paths:
 
 # Jmodot Framework Authoring Rules
 
-**Context:** Rules that fire only when editing files *inside* the Jmodot submodule — framework-internal authoring concerns that don't apply to {{PROJECT_NAME}} consumer code. For consumer-facing utility reference (NodeExts, JmoRng, etc.), see [`jmodot_utilities.md`](jmodot_utilities.md). Auto-loads on `Jmodot/**/*.cs` reads.
+**Context:** Rules that fire only when editing files *inside* the Jmodot submodule — framework-internal authoring concerns that don't apply to {{PROJECT_NAME}} consumer code. For consumer-facing utility reference (NodeExts, JmoRng, etc.), see [`jmodot_utilities.md`](jmodot_utilities.md).
 
 ## 2D/3D Parity Convention
 
@@ -63,9 +63,7 @@ public override void _EnterTree()
 
 ## Touchpoints
 
-- [`jmodot_utilities.md`](jmodot_utilities.md) — consumer-facing utility reference.
 - [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) §"Default Value Pattern" — framework-boundary caveat lives there as the canonical home for the pattern.
-- Auto-memory `jmodot_framework_boundary_rule.md` — full no-carve-out rationale.
 - Auto-memory `jmodot_combat_factory_defaults_seam.md` — six-factory inventory.
 
 <!-- retire-when: review-by: 2027-02-23 -->

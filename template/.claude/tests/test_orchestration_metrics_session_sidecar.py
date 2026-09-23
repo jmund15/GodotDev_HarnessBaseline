@@ -100,6 +100,8 @@ def _run(root):
     dump(options_jobs, [{"label": "options"}])
     dump(default_jobs, [{"label": "default"}])
     dump(live_jobs, [{"label": "live-only"}])
+    var_jobs = os.path.join(root, "sub2", "live2", "jobs.json")
+    dump(var_jobs, [{"label": "var-only"}])
     dump(noun_jobs, [{"label": "noun-only"}])
     record(os.path.join(records, "mine.record.json"), "mine", "2026-09-10T10:01:00Z")
     record(os.path.join(records, "options.record.json"), "options", "2026-09-10T10:01:30Z")
@@ -119,6 +121,10 @@ def _run(root):
     same_second = os.path.join(root, "same-second.record.json")
     foreign_overwrite = os.path.join(root, "foreign-overwrite.record.json")
     record(direct, "direct", "2026-09-10T10:03:00Z")
+    varpath = os.path.join(root, "sub", "recs", "varpath.record.json")
+    record(varpath, "varpath", "2026-09-10T10:03:00Z")
+    record(os.path.join(root, "glued.record.json"), "glued", "2026-09-10T10:03:00Z")
+    record(os.path.join(root, "eqform.record.json"), "eqform", "2026-09-10T10:03:00Z")
     record(stale, "stale", "2026-09-10T09:00:00Z")
     record(timestamp_label, "09", "2026-09-10T10:03:10Z")
     record(noun_direct, "noun-direct", "2026-09-10T10:03:20Z")
@@ -182,6 +188,11 @@ def _run(root):
             "2026-09-10T10:00:50Z",
         ),
         tool_use(
+            "cd sub2 && J=live2; python3 .claude/tools/sidecar_fanout.py $J/jobs.json --authorize",
+            root,
+            "2026-09-10T10:00:51Z",
+        ),
+        tool_use(
             "python3 inspect.py .claude/tools/sidecar_fanout.py noun/jobs.json "
             "--out-dir records",
             root,
@@ -202,6 +213,21 @@ def _run(root):
         ),
         tool_use(
             "bash .claude/scripts/opencode_sidecar.sh -m muse -l direct -R direct.record.json",
+            root,
+            "2026-09-10T10:02:00Z",
+        ),
+        tool_use(
+            "bash .claude/scripts/opencode_sidecar.sh -m muse -l glued -Rglued.record.json",
+            root,
+            "2026-09-10T10:02:00Z",
+        ),
+        tool_use(
+            "bash .claude/scripts/opencode_sidecar.sh -m muse -l eqform -R=eqform.record.json",
+            root,
+            "2026-09-10T10:02:00Z",
+        ),
+        tool_use(
+            "cd sub && P=recs; bash .claude/scripts/opencode_sidecar.sh -m muse -l varpath -R $P/varpath.record.json",
             root,
             "2026-09-10T10:02:00Z",
         ),
@@ -267,6 +293,9 @@ def _run(root):
     cases.append(("a launched fanout whose jobs file no Write captured is named, not silent",
                   uncaptured is not None
                   and os.path.normcase(live_jobs) in {os.path.normcase(p) for p in uncaptured}))
+    cases.append(("an uncaptured fanout named through a leading cd and a shell variable resolves",
+                  uncaptured is not None
+                  and os.path.normcase(var_jobs) in {os.path.normcase(p) for p in uncaptured}))
     cases.append(("a captured jobs file is not reported uncaptured",
                   uncaptured is not None
                   and os.path.normcase(jobs) not in {os.path.normcase(p) for p in uncaptured}))
@@ -285,6 +314,9 @@ def _run(root):
                       "python3 .claude/tools/sidecar_fanout.py j.json 2>&1 --out-dir r")
                   == [("fanout", ["j.json", "--out-dir", "r"])]))
     cases.append(("direct launcher record is included", "direct" in labels))
+    cases.append(("a -R path built from a leading cd and a shell variable resolves", "varpath" in labels))
+    cases.append(("a glued -R<path> is read the way getopts reads it", "glued" in labels))
+    cases.append(("-R=<path> names no record (getopts reads the value as '=<path>')", "eqform" not in labels))
     cases.append(("timestamp is parsed by the final label suffix", "09" in labels))
     unknown_row = next((row for row in got if row["label"] == "unknown-model"), None)
     cases.append(("missing servedModel remains unknown",

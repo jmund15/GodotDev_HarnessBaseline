@@ -8,7 +8,7 @@ Read at the run step, named from `SKILL.md` §Recipe index. The entrypoint owns 
 
 ## Hang-safe runs (Windows) — the wrapper underneath
 
-`pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter "FullyQualifiedName~Tests.<Suite>" -Label <Suite>` file-redirects output and tree-kills on a hard wall-clock cap; bare `dotnet test`'s testhost→Godot grandchildren otherwise hold the caller's stdout pipe open so the read never EOFs. Returns `STATUS=DONE`/`STATUS=HANG` + the count line; `/regression_gate` uses it. The bare commands in `SKILL.md` §Quick Start stay valid as the **cloud path** (`xvfb-run`; both runners are Windows-only). Recovery: `archive_gdunit4_process_kill_and_orphans.md`.
+`pwsh -NoProfile -File .claude/scripts/run_test_suite.ps1 -Filter "FullyQualifiedName~Tests.<Suite>" -Label <Suite>` file-redirects output and tree-kills on a hard wall-clock cap; bare `dotnet test`'s testhost→Godot grandchildren otherwise hold the caller's stdout pipe open so the read never EOFs. Returns `STATUS=DONE`/`STATUS=HANG` + the count line; `/regression_gate` uses it. The bare commands in `SKILL.md` §Quick Start stay valid as the **cloud path** (`xvfb-run`; both runners are Windows-only).
 
 ## Sizing `-TimeoutMs`
 
@@ -18,7 +18,7 @@ Read at the run step, named from `SKILL.md` §Recipe index. The entrypoint owns 
 
 `SKILL.md` §Quick Start owns the single-flight rule itself. `-NoGodotRuntime` is only for a filter provably containing zero runtime tests (per-worktree lock, no pipe drain).
 
-Shipped for parallel dev instead: worktree-scoped pre-flight tree-kill (unattributable orphans still reaped), per-worktree pipe salt (`GDUNIT4_PIPE_SUFFIX` + forked gdUnit4.api, so overlapping runs mis-connect instead of cross-talking), per-worktree `TestResults/godot_test.log`. Detail: `gotcha_runtime_suite_pipe_contention.md`.
+Parallel runs use a worktree-scoped pre-flight tree-kill that still reaps unattributable orphans. Per-worktree pipe salt (`GDUNIT4_PIPE_SUFFIX` + forked gdUnit4.api) makes overlapping runs mis-connect instead of cross-talking, with per-worktree logs at `TestResults/godot_test.log`.
 
 ## Batched integration runs
 
@@ -42,7 +42,7 @@ Shipped for parallel dev instead: worktree-scoped pre-flight tree-kill (unattrib
 
 **This is a SILENT TEST SKIP.** All `[RequireGodotRuntime]` tests report "Passed" while never running — the regression gate is INVALID.
 
-- **~388 is a silent-skip SENTINEL, not a suite size.** It is the count of Logic tests passing WITHOUT the Godot runtime — the signature when the executor fails to connect. The real Logic baseline is ~19× larger; current counts and machine-readable floors (`silent_skip_sentinels`, e.g. `Logic_min: 500`) live in `Tests/regression_baseline.json`, auto-updated on green by `/regression_gate` — never hardcode them. Logic ≈ 388 ⇒ silent skip however green the output looks. The sentinel does not drift with test growth.
+- **~388 is a silent-skip SENTINEL, not a suite size.** It is the count of Logic tests passing WITHOUT the Godot runtime — the signature when the executor fails to connect. The real Logic baseline is ~19× larger; current counts and machine-readable floors (`silent_skip_sentinels`, e.g. `Logic_min: 500`) live in `Tests/regression_baseline.json`, auto-updated on green by `/regression_gate` — never hardcode them. Logic ≈ 388 ⇒ silent skip however green the output looks.
 - **Pre-test checklist:** kill orphaned Godot processes BEFORE running (positive identification only — Editor/Playtest/Unknown are constitutionally spared):
   ```powershell
   . .claude/scripts/GodotProcess.ps1

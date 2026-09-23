@@ -31,8 +31,7 @@ done. Concurrency has no fixed count; the codex band in `[budget-posture]` gates
 
 The launcher starts a dedicated `claude-code-proxy` on its own port and kills it at exit. It clears
 `CCP_CODEX_MODEL` and `CCP_CODEX_EFFORT` before proxy startup, so model and effort stay request-scoped.
-The sidecar launcher sets those server-wide pins on its own proxy for strict dispatch attestation
-(`gotcha_codex_proxy_transport_operations`).
+The sidecar launcher sets those server-wide pins on its own proxy for strict dispatch attestation.
 
 ## Orchestrating from inside a codex session
 
@@ -99,7 +98,7 @@ grep -a -A85 '"slug": "<candidate>"' "$B"   # the entry, pretty-printed JSON
 ```
 
 Each entry carries `minimal_client_version`; that field, not the announcement date, is why a slug is
-missing from an older CLI. Delete the extraction afterwards — the binary is ~295 MB.
+missing from an older CLI. Delete the extraction afterwards.
 
 ## Roster snapshot — 2026-09-12
 

@@ -18,11 +18,14 @@
 #
 # Exit 0 only if EVERY url landed OK. Any failure exits 1 — a partially-fetched set must never read
 # as complete, which is the silent-degradation class this whole effort removes.
+#
+# A pinned source a layer adopts is a resolver, fetch_source.d/<name>.sh, run as `bash <resolver> <url>`
+# before the network fetch. It exits 2 when the URL is not its own (notes on stderr are fine), or
+# answers the URL: one manifest row on stdout, exit 0 when it landed OK and 1 when it refused.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STACK="$REPO_ROOT/.claude/reference/project_stack.md"
-CACHE="$REPO_ROOT/.claude/cache/godot-docs/doc/classes"
+RESOLVERS="$(dirname "${BASH_SOURCE[0]}")/fetch_source.d"
 
 OUTDIR="${TMPDIR:-/tmp}/claude-sources"
 if [[ "${1:-}" == "--dir" ]]; then OUTDIR="$2"; shift 2; fi
@@ -51,29 +54,15 @@ rc=0
 for url in "$@"; do
   slug="$(slugify "$url")"; art="$OUTDIR/$slug"
 
-  # Godot CLASS reference always resolves from the cache, never the network — /en/stable/ is a
-  # moving alias, so the rendered page cannot be pinned to the engine, and the cache holds the very
-  # XML that page is generated from at the exact pin. Non-class Godot URLs (tutorials, guides) DO
-  # fetch: the host is only intermittently Cloudflare-gated, so refusing them outright throws away
-  # a source that usually works.
-  if [[ "$url" == *docs.godotengine.org* ]]; then
-    cls=""
-    [[ "$url" =~ class_([a-z0-9_]+)\.html ]] && cls="${BASH_REMATCH[1]}"
-    if [[ -n "$cls" ]]; then
-      hit=""
-      [[ -d "$CACHE" ]] && hit="$(find "$CACHE" -iname "${cls}.xml" | head -1)"
-      if [[ -n "$hit" ]]; then
-        printf 'OK\tcache\t%s\t%s\t%s\n' "$(wc -c < "$hit" | tr -d ' ')" "$(winpath "$hit")" "$url"
-        continue
-      fi
-      printf 'BLOCKED\t-\t0\t-\t%s\n' "$url"
-      echo "fetch_source: class '$cls' is not in the version-pinned cache, and the rendered page" >&2
-      echo "  cannot be pinned to the engine. Build the cache: .claude/scripts/godot_docs_cache.sh" >&2
-      rc=1; continue
-    fi
-    echo "fetch_source: note — docs.godotengine.org is intermittently Cloudflare-gated; on a" >&2
-    echo "  CHALLENGE or non-2xx below, fall back to context7 /websites/godotengine_en_4_7." >&2
-  fi
+  answered=""
+  for resolver in "$RESOLVERS"/*.sh; do
+    [[ -f "$resolver" ]] || continue
+    bash "$resolver" "$url"; r=$?
+    [[ $r -eq 2 ]] && continue
+    answered=1; [[ $r -eq 0 ]] || rc=1
+    break
+  done
+  [[ -n "$answered" ]] && continue
 
   code="$(curl -sSL --max-time 45 -A 'Mozilla/5.0 (compatible; {{PROJECT_NAME}}-harness)' \
           -o "$art.part" -w '%{http_code}' "$url" 2>/dev/null || echo 000)"

@@ -2,7 +2,7 @@
 """Generate the committed, semantic-searchable index of the Godot class reference.
 
 The bulk cache (`.claude/cache/godot-docs/`) is gitignored `.xml` — invisible to
-semantic-search on both counts (CLAUDE.md §8: `.xml` is not an indexed extension, and
+semantic-search on both counts (`reference/semantic_search.md`: `.xml` is not an indexed extension, and
 gitignored paths are excluded). This index is the committed `.md` counterpart that
 restores discovery ("which class handles navigation baking?"); precision lookup
 ("what does Node.reparent do?") reads the XML directly.

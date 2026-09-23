@@ -105,7 +105,7 @@ AssertThat(withItem.Stat).IsGreater(baseline.Stat);
 
 ## Seam-Injected Dependencies Need One Real-Scene Test
 
-When a node's production dependencies are wired via scene/Inspector (`[Export]` node refs, autoload children) but tests supply them through a `#if TOOLS SetXForTesting` seam, **at least one test must load the real production scene** (`ResourceLoader.Load<PackedScene>(...).Instantiate<T>()` + `AddChild`). A suite that *only* injects via the seam never exercises production wiring — a missing scene (e.g. a script-only autoload that can't satisfy `[RequiredExport]` node refs) then passes every test while being null at runtime. Assert by behavior (the dependency does its job), not that the field is set. Sibling: `archive_godot_node_init_timing.md`.
+When a node's production dependencies are wired via scene/Inspector (`[Export]` node refs, autoload children) but tests supply them through a `#if TOOLS SetXForTesting` seam, **at least one test must load the real production scene** (`ResourceLoader.Load<PackedScene>(...).Instantiate<T>()` + `AddChild`). A suite that *only* injects via the seam never exercises production wiring — a missing scene (e.g. a script-only autoload that can't satisfy `[RequiredExport]` node refs) then passes every test while being null at runtime. Assert by behavior (the dependency does its job), not that the field is set.
 
 ## Mock at boundaries only
 
@@ -120,7 +120,7 @@ Mock at **system boundaries**, never at internal collaborators. Applies to every
 
 **Warning sign:** the test breaks when you refactor an internal collaborator though *behavior* is unchanged — you mocked too deep, and the test now pins implementation, not contract.
 
-**The Godot runtime is not a boundary you double.** Engine APIs (nodes, scene tree, physics, `GD.Load`) run for real via `[RequireGodotRuntime]` / `ISceneRunner`; the engine-lifecycle failure class is exactly what a double hides. Where a double is unavoidable, its Godot base type must be the type the *consumer* resolves against, not merely one satisfying the physics API (`arch_rule_godot_base_type_proven_by_consumer_resolution.md`).
+**The Godot runtime is not a boundary you double.** Engine APIs (nodes, scene tree, physics, `GD.Load`) run for real via `[RequireGodotRuntime]` / `ISceneRunner`; the engine-lifecycle failure class is exactly what a double hides. Where a double is unavoidable, its Godot base type must be the type the *consumer* resolves against, not merely one satisfying the physics API.
 
 **Testability of system-boundary code:**
 - Inject dependencies (`IRngSource` parameter) rather than `new`-ing externally inside the method.
@@ -129,7 +129,6 @@ Mock at **system boundaries**, never at internal collaborators. Applies to every
 
 The Don't Mock column is a boundary constraint, not a cost/benefit tradeoff — setup cost is not a counterweight. Name the fixture and proceed.
 
-**Reference:** `archive_testing_design_patterns.md` for fixture-vs-mock tradeoffs in project-specific contexts (real `Blackboard` instance vs. fake).
 
 ## Godot timing gotchas
 
@@ -146,7 +145,6 @@ await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 **Programmatic nodes need explicit setup:**
 - `AddChild()` does NOT set `Owner` — set `hurtbox.Owner = target` explicitly.
 - `Initialize()` calls using `SetDeferred` (Monitorable, etc.) need scene tree + 2 frames.
-- Wait 100ms after `AddChild(target)` for the physics server to register Area3D nodes.
 - `SetDeferred` properties don't take effect on nodes outside the scene tree.
 
 **Float accumulation in duration tests** — testing time-based BT actions or timers, avoid accumulating small deltas (`60 × 1f/60f ≠ 1.0f`, IEEE 754). Use a single large delta:
@@ -175,7 +173,7 @@ bool flag = value is Variant v && v.AsBool();
 | Out-of-tree Node (`new NodeType()`) | `Free()` in `[AfterTest]`/`[After]` |
 | Resource / RefCounted (loaded `.tres`, `new SomeResource()`) | Drop references — no Free/QueueFree call at all |
 
-**No numeric orphan/leak ceiling exists today.** At process exit Godot prints one engine ERROR per leaked Node (`Cannot get path of node...` in the ObjectDB leak dump), so `TestResults/godot_test.log` error counts scale with orphan count, not bug count — and exit code `-1073740791` correlates with accumulation. Leak-dump math and log interpretation: `diagnostics_toolkit` skill.
+**No numeric orphan/leak ceiling exists today.** At process exit Godot prints one engine ERROR per leaked Node (`Cannot get path of node...` in the ObjectDB leak dump), so `TestResults/godot_test.log` error counts scale with orphan count, not bug count — and exit code `-1073740791` correlates with accumulation. The same dump prints one `Leaked instance:` line per leaked object, and the engine emits that ERROR text itself, so no code site exists to hunt; `/analyze_godot_logs` parses the log.
 
 ```csharp
 // 1. Use 'using' with ISceneRunner (auto-cleanup)

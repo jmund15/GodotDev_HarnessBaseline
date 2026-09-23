@@ -50,7 +50,7 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 | **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) — `reference/logic_tdd.md` | the Logic subsystems CLAUDE.md *Development Philosophy: Hybrid TDD* names |
 | **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel — `reference/choosing.md` | the Gameplay subsystems CLAUDE.md *Development Philosophy: Hybrid TDD* names |
 
-**Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. A new top-level `Tests/<X>/` tree is **silently un-gated** until both the gate filters and `Tests/regression_baseline.json` are extended. Live deliberate example: `Tests/ProcGenSim/` (manual-only, via `/procgen_sim`).
+**Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. A new top-level `Tests/<X>/` tree is **silently un-gated** until both the gate filters and `Tests/regression_baseline.json` are extended.
 
 **Before deferring a playtest or fingerprint list to the user, screen each item.** Such lists mix subjective items with automatable ones; `reference/choosing.md` owns the screen.
 
@@ -65,7 +65,6 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 Run `/regression_gate` before committing code changes; the command owns the procedure.
 - Run AFTER the final staged state, never from a cached previous run.
 - ALL 3 suites (Logic, Integration, Sanity) must pass — one domain is insufficient.
-- Windows pipe crashes can silently drop tests — always `--filter` batches, never bare `dotnet test`.
 - Exempt: pure meta commits (`.claude/`, skills, docs) touching no code — harness commits instead need a green `harness_tests.py` stamp (CLAUDE.md §Build & Test Commands).
 
 ## See Also

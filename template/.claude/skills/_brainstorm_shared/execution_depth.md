@@ -2,13 +2,13 @@
 
 > Shared depth ladder for the drive commands. Referenced by [`/worklog drive`](../../commands/worklog.md), [`/feature_drive`](../../commands/feature_drive.md), and [`/part_drive`](../../commands/part_drive.md) via *"depth per `_brainstorm_shared/execution_depth.md`."*
 >
-> This file is NOT a skill — no frontmatter, not directly invocable. It sets the default process depth a unit of work earns from its scope.
+> This file sets the default process depth a unit of work earns from its scope.
 
 ---
 
 ## The ladder
 
-Keyed on the `worklog_reference` *Scope* vocabulary — that table is the SSOT; this one references it and never redefines it. Tiers state **process artifacts only**.
+Keyed on the `worklog_reference` *Scope* vocabulary — that table is the SSOT; this one references it and never redefines it.
 
 | Scope | Default process depth |
 |---|---|
@@ -17,10 +17,8 @@ Keyed on the `worklog_reference` *Scope* vocabulary — that table is the SSOT; 
 | 3 | Plan file + `/plan_check` (lens set by plan shape) + execute — the `/feature_drive` steps 2–6 shape. Full `/explore` per its trigger table. |
 | 4 | Not drivable. Own design track: `/design_drive` (no design doc) or `/part_drive` (roadmap Part exists). |
 
-Who executes each tier is not this table's call — [`orchestration`](../orchestration/SKILL.md) §5/§11 owns it.
-
 ## Reconciliation rules
 
-1. **Each command owns its gate and coverage.** This ladder sets default depth, not exemptions from `/plan_check`, the CLAUDE.md Planning Phase Checklist, `/regression_gate`, or `/explore`'s no-op rule. An unknown-root-cause debug item still invokes `/explore`; every selected floor and triggered lens remains required. A scope-2 item meeting the plan-check threshold writes a plan file and runs that check.
+1. **Each command owns its gate and coverage.** This ladder sets default depth, not exemptions from `/plan_check`, the CLAUDE.md Planning Phase Checklist, the project's regression gate (`change_control` §Gate cadence names it), or `/explore`'s no-op rule. An unknown-root-cause debug item still invokes `/explore`; every selected floor and triggered lens remains required. A scope-2 item meeting the plan-check threshold writes a plan file and runs that check.
 
 2. **The ladder governs process artifacts only** — plan artifact and default drive depth. Each invoked command owns its lens selection; panel seat width belongs to `orchestration` §2; dispatch grain and executor choice to §5/§11.

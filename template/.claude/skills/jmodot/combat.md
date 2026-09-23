@@ -67,7 +67,7 @@ Factory creates Runner → Runner added to StatusEffectComponent → Runner tick
 
 ### Tag System
 
-StatusEffectComponent tracks which tags are currently active. This enables queries like "is this entity stunned?" without iterating all runners. `CombatTag` is a Resource (`CombatTag : Category`, `Jmodot/Core/Combat/CombatTag.cs`) authored as `.tres` — there is NO static `CombatTags` constants class; obtain the tag via an `[Export]` or the registry.
+StatusEffectComponent tracks active tags for queries like "is this entity stunned?" without iterating runners. `CombatTag` is a `.tres` `Resource` (`CombatTag : Category`, `Jmodot/Core/Combat/CombatTag.cs`); obtain it via an `[Export]` or the registry.
 
 ```csharp
 [Export, RequiredExport] public CombatTag StunTag { get; private set; } = null!;
@@ -117,7 +117,5 @@ return new DamageEffect { Amount = 50 };
 // GOOD - use factory with exports
 [Export] public float BaseDamage { get; private set; }
 ```
-
-**Checking status by iterating runners** - Use the tag system instead.
 
 **Modifying combatant state in Apply()** - Effects should calculate, not directly modify. Return results and let the combatant handle it.

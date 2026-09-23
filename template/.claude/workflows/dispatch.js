@@ -64,12 +64,13 @@ log('PINS ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, PIN(j.mo
 if (A.__transport) log('ENDPOINT: ' + A.__transport.name + ' — pins are that transport\'s own ids; role names are denied by the provider guard')
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
-// Concurrency safety: with >1 concurrent job, tests and the csharp-ls LSP are machine-wide
-// single-flight (gotcha_workflow_single_flight_concurrency). A single job gets no such restriction.
+// Concurrency safety: with >1 concurrent job, the project's test runners, builds and language servers
+// are machine-wide single-flight (gotcha_workflow_single_flight_concurrency); the delegate rails name
+// them. A single job gets no such restriction.
 const CONCURRENCY_GUARD = jobs.length > 1 ? [
   '',
   '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-  'Do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight). Python and Node proofs under .claude/tests/ are not single-flight; run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read instead. If your task file mandates a Godot or C# test or build run, STOP and report that it needs a serialized dispatch.',
+  'Do NOT run a machine-wide single-flight tool (a test runner, build, engine or language server that allows one process per machine); your delegate rails name this project\'s. Python and Node proofs under .claude/tests/ are not single-flight; run them. If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.',
 ].join('\n') : ''
 
 // Delegate rails — ONE home (.claude/guards/), assembled by tools/guard_text.py for every route: the
@@ -120,7 +121,7 @@ const guardRef = (j) => {
   return [
     '',
     '=== DELEGATE RAILS ===',
-    'Read ' + files + ' with the Read tool and follow the `## ' + tier + '` section of each. Read ONLY that section — the other tiers are for other models.',
+    'Read ' + files + ' with the Read tool, plus each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists, and follow the `## ' + tier + '` section of each. Read ONLY that section — the other tiers are for other models.',
   ].join('\n')
 }
 log('SHAPES ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, shapeOf(j) + '/' + tierOf(j)]))))

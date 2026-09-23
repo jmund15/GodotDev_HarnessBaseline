@@ -38,7 +38,7 @@ retire_when:
 - Cross-branch content checks: `git -C <wt> log --all -G'<pat>' --oneline | head -20`.
 - Ref enumeration: `git -C <wt> grep -l -E '<pat>' refs/heads/* refs/remotes/*/* -- '*.cs'` (globs must expand or git errors on the literal; nested local branches add `refs/heads/*/*`). Never `for b in $(git for-each-ref …)`.
 - Probe/script files: Write tool, never heredoc `cat > … <<'EOF'`.
-- Engine invocations in auto mode: `bash .claude/scripts/godot_bin.sh <args>` (statically allowlisted via `Bash(bash *)`; resolves the engine internally) or the literal install path — the raw `"$GODOT_BIN"` form prompts (expansion flag blocks rule matching), never emit it. `$GODOT_BIN` remains the machine-level env pin.
+- Engine invocations in auto mode: a repo launcher script run as `bash <launcher> <args>` (statically allowlisted via `Bash(bash *)`; resolves the engine internally) or the literal install path — the raw `"$GODOT_BIN"` form prompts (expansion flag blocks rule matching), never emit it. `$GODOT_BIN` remains the machine-level env pin.
 - Multi-step probes: committed wrapper under `.claude/scripts/`, invoked `bash <script> <worktree>`.
 - **The guard scans the WHOLE command string, so a shell metacharacter denies even inside quoted DATA.** A backtick in a `sed` *replacement* — `sed -i 's/x/see \`orchestration\` §5b/'` — reads as command substitution and is denied, though nothing would expand. Markdown citations are backtick-dense, so any `sed` rewriting doc citations trips this: route those to the `Edit` tool, which needs no shell.
 

@@ -10,14 +10,12 @@ description: >-
 
 # Benchmark Design
 
-**An instrument that has stopped measuring does not look broken — it looks tidy.** Every check below
-is mechanical rather than editorial for that reason.
+**An instrument that has stopped measuring does not look broken — it looks tidy.**
 
-**For the model-effort battery, run `python3 .claude/scripts/benchmark_campaign/bench.py doctor` before
+**For the model-effort battery, run the battery's `bench.py doctor` before
 designing or citing anything** — it reports which published scores are safe, which need only
 arithmetic, and which need a paid re-judge, plus the G4 integrity sweep. Never hand-assemble an
-answer from the data roots: there are five, one is gitignored, and a hand-built list has already
-produced a false absence in an audit.
+answer from the data roots; `bench.py where` lists all six.
 
 Section numbers are cited across the harness and from `scripts/benchmark_campaign/` — never renumber.
 Each section states its verdict and names the file to read at that step; read only the sections your
@@ -82,16 +80,17 @@ Answer values, decoys and the join operator all have to defeat a blind guess. Re
 
 ## 7. Scoring — the failure mode is punishing correct behaviour
 
-**Before you believe a scorer, read six raw answers against the key by hand — once, out loud.** Every
-other rule says what to fix; this one is how you learn there is anything to fix.
+**Before you believe a scorer, read six raw answers against the key by hand — once, out loud.**
 
 Read `reference/scoring.md` §A scorer that has only scored wrong answers is untested and §Scorer rules
 while writing or auditing the scorer, §Score-dict keys are a shared namespace when naming score
-fields, and §Judge tier and key freshness when choosing a panel or refreshing a key.
+fields, and §Judge tier and key freshness when choosing a panel, replacing a judge or refreshing a
+key. That section is the one home of judge succession: exact-id pins, Admit by correctness, Pool by
+agreement, the self-judge audit and the retirement warning.
 
-A scorer pin nobody declared is the engine's default, not a decision: declare `defaultPanel` on the
-task's descriptor with the study or probe that admits it; `bench doctor` §0d lists every task still
-on the default.
+Before citing a task, read `bench doctor` §0 and every lettered subsection under it: unruled gate
+findings, tasks with no current record, probe state (§0c), descriptors without a `defaultPanel` (§0d),
+judge availability (§0e), paid cells never scored, and a stale board or index.
 
 When labelling an axis, read `reference/configuration_and_transport.md` §The instrument's TRANSPORT
 must match the deployment's transport — a FAIL on the richer transport holds for the poorer one, a
@@ -99,8 +98,10 @@ PASS establishes nothing.
 
 ## 8. Configurations are not repetitions
 
-A change of context window, cache precision, quantisation, output cap, or prompt revision creates a
-**different configuration**. Pooling averages a resident cell with a spilled one, or ANDs a stale
+A change of context window, cache precision, quantisation, output cap, prompt revision, or the model
+version served behind an unchanged alias creates a **different configuration**. Identify the arm by
+the model its record attests or the server reports, never by the dispatch token: a bare alias moves
+to each new version. Pooling averages a resident cell with a spilled one, or ANDs a stale
 verdict into a corrected rung. Read `reference/configurations_and_outcomes.md` §Stamping a
 configuration before stamping or publishing any row.
 

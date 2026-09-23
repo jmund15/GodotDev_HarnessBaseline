@@ -174,6 +174,9 @@ def build_tree(base):
     ))
 
     write(os.path.join(base, "settings.json"), json.dumps({"hooks": {}}))
+    # The C# bundle is a layer profile's declaration, not a load_census default.
+    write(os.path.join(base, "tools", "load_census.fixture.json"),
+          json.dumps({"rule_bundles": {"cs": {"glob": "**/*.cs"}}}))
 
     census_low = os.path.join(base, "logs", "load_census.json")
     low_report = produce_census(base, census_low)

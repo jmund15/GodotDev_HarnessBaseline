@@ -11,7 +11,7 @@ Existing MVPs are NOT overwritten by default — the command appends new MVPs or
 **Sister surface, mostly-disjoint:** `/update_roadmap` owns Parts + Mermaid + derived views + revision log, and additionally *recomputes* two derived elements inside the MVP section each run — the Required-Part check-marks and the non-terminal Status line (pure functions of Part state). `/mvp_plan` owns the MVP *narrative* (Goal / Validates / Acceptance / Excluded / Playtest / Required-Part membership) and sets the terminal `✅ Verified` status via `verify` mode. Both share the same revision log; both validate against the same `common.md §6` schema.
 
 **When to invoke:**
-- Recommended automatically by `/architecture_brainstorm` Step 5 (`skills/architecture_brainstorm/reference/part_authoring.md` §*MVP recommendation — the three firing conditions*) when the design produces ≥5 Parts AND the target roadmap has no MVP section.
+- Recommended automatically by `/architecture_brainstorm` Step 5 (its Step 5 MVP recommendation, which names the three firing conditions) when the design produces ≥5 Parts AND the target roadmap has no MVP section.
 - Standalone after any brainstorm to add, refine, or rewrite MVPs.
 
 ---
@@ -22,7 +22,7 @@ Existing MVPs are NOT overwritten by default — the command appends new MVPs or
 - `/mvp_plan <path-to-roadmap.md>` — explicit target.
 - `/mvp_plan --rewrite` — discard existing MVP section, author fresh. Confirms before discarding.
 - `/mvp_plan refine MVP-N` — re-author a single existing MVP.
-- `/mvp_plan verify MVP-N` — mark MVP-N's Status `✅ Verified` after a successful playtest. Sole writer of the terminal status. Requires all Required Parts `complete` (refuses otherwise, naming the incomplete Parts). See *Verify mode* below.
+- `/mvp_plan verify MVP-N` — mark MVP-N's Status `✅ Verified` after a successful playtest. Sole writer of the terminal status. See *Verify mode* below.
 
 If target roadmap doesn't exist → print *"No roadmap.md at <path> or ancestors. Author Parts first via a brainstorm skill + /update_roadmap."* and exit.
 
@@ -34,7 +34,6 @@ If target roadmap doesn't exist → print *"No roadmap.md at <path> or ancestors
 | `refine MVP-N` where `N` doesn't resolve to an existing MVP | List existing MVP numbers + labels (e.g., *"MVP-1: Combat parity, MVP-2: One playable room"*) and exit without edits. Don't auto-create — `refine` operates on existing MVPs only. Use default `/mvp_plan` (append mode) to add new MVPs. |
 | `refine MVP-N` against a roadmap with no MVP section at all | Print *"No MVP section exists; refine has nothing to operate on. Run `/mvp_plan` (no args) to author the initial section."* and exit. |
 | `verify MVP-N` where `N` doesn't resolve to an existing MVP | List existing MVP numbers + labels and exit without edits (same as `refine` miss). |
-| `verify MVP-N` where not all Required Parts are `complete` | Refuse: *"MVP-N has incomplete Required Parts: <list>. Verify only after all Required Parts complete and you've playtested."* Exit without edits. |
 | `<path-to-roadmap.md>` resolves to a file that exists but isn't a roadmap (no `## Parts` table, or frontmatter lacks `topic`) | Print *"`<path>` doesn't look like a roadmap.md (no Parts table or topic frontmatter). Aborting."* and exit. |
 
 ---
@@ -49,7 +48,7 @@ Find target `roadmap.md` per Arguments. Read frontmatter + Parts table. Extract 
 
 > *"MVP Checkpoints are top-level-roadmap-only per common.md §6.11. This roadmap is a sub-roadmap of `<parent-roadmap path from frontmatter>`. Sub-roadmaps don't carry their own MVPs — the playable-milestone narrative belongs to the parent (the project-level surface is where the player actually experiences the game; sub-roadmaps are impl-decomposition only). Run `/mvp_plan` on the parent roadmap instead, or use parent MVPs to reference this sub-roadmap's Parts directly."*
 
-Exit without edits. The redirect-to-parent message is mandatory — don't silently no-op.
+Exit without edits.
 
 **Empty-Parts guard:** if no Parts exist → abort: *"Roadmap has no Parts. MVPs frame Parts as playable surfaces; author Parts first via /update_roadmap or a brainstorm skill."*
 
@@ -57,7 +56,7 @@ Exit without edits. The redirect-to-parent message is mandatory — don't silent
 - 1-4 Parts → warn: *"Roadmap has N Parts. MVPs are usually redundant at this scale — the Parts themselves are the milestones. Continue anyway?"*
 - 5+ Parts → proceed.
 
-**Existing MVP section detection** — if `## MVP Checkpoints` header found AND no `--rewrite` / `refine` arg → switch to **append mode**: show existing MVPs, ask user which to keep / add to / replace. `--rewrite` skips append-mode entirely but still requires the destructive-confirm before discarding the existing section (per Arguments — the *"Confirms before discarding"* clause).
+**Existing MVP section detection** — if `## MVP Checkpoints` header found AND no `--rewrite` / `refine` arg → switch to **append mode**: show existing MVPs, ask user which to keep / add to / replace. `--rewrite` skips append-mode entirely.
 
 ### Step 2 — Bundle design-doc context (one read_files call)
 
@@ -109,7 +108,7 @@ For each MVP-N in approved order, walk the 7 fields per the `common.md §6.11` s
    - **Manual surface** — the playtest.md section: named scene path + step-by-step procedure + what to look for (the Acceptance's cross-Part checks, verified by hand). If the playtest needs a scene/artifact that must be authored (stacking frame, demo scenario), name it as a **Checkpoint artifact** (next field) and make it a deliverable of a Required Part's Trigger — the plan's scene path must exist by Status-flip time, not after.
    - **`Automated-only — no manual surface`** — the explicit carve-out when every Acceptance criterion is a deterministic test with no human verdict. An absent plan is NOT the carve-out; a `🧪` with neither branch is a lie by omission.
 
-6. **Checkpoint artifact** — *optional, ask when the Playtest plan names a surface that must be authored.* Propose the named deliverable + which Required Part's Trigger carries it (per common.md §6.11). Default deliverable: the scenario scene [`/playtest_artifact --part <Required Part>`](playtest_artifact.md) emits under `Playtest/Scenarios/` — name that path here. The artifact is the playtest surface's existence guarantee; `🧪` presumes it.
+6. **Checkpoint artifact** — *optional, ask when the Playtest plan names a surface that must be authored.* Propose the named deliverable + which Required Part's Trigger carries it (per common.md §6.11). Default deliverable: the scenario the project's playtest-artifact command emits for `--part <Required Part>`, where it ships one — name that path here. The artifact is the playtest surface's existence guarantee; `🧪` presumes it.
 7. **Validates** — propose design commitments being exercised. Pull from each Required Part's design-doc commitments. This field is the *"why this MVP earns its slot"* — connects the milestone narrative back to architectural commitments.
 
 After the 7 fields, **initialize Status** to `🔨 In progress (0/Y parts)` (Y = Required-Parts count) — non-Socratic, no user input; `/update_roadmap` recomputes it on its next run. Never author `🧪`/`✅` at creation.
@@ -163,14 +162,15 @@ Sets MVP-N's Status to `✅ Verified` after the user confirms a successful playt
 | "Skip Acceptance — the test suite covers it" | The test suite is what each Part's design enumerates; Acceptance is what the *MVP* verifies (often cross-Part integration the per-Part tests don't cover). Different surface. |
 | "Inline-author MVPs during /architecture_brainstorm Step 5 instead of routing through /mvp_plan" | The brainstorm SKILL recommends; it doesn't author. Inline MVP authoring inflates Step 5 cognitive load when the brainstorm is the wrong surface for milestone-narrative thinking. The cognitive-mode shift (per-Part Socratic → cross-Part playable-surface narrative) is real; honor it by using the separate command. |
 | "Hand-edit MVPs directly in roadmap.md" | Like Parts, the MVP narrative is an authoring surface owned by this command. Direct edits work but bypass the revision-log discipline + the §6.11 schema validator. Prefer `/mvp_plan refine MVP-N` for material changes. (Hand-toggling the Required-Part check-marks or Status is futile — `/update_roadmap` recomputes them from Part state next run.) |
-| "Auto-fire /mvp_plan from /update_roadmap when Parts hit 5+" | Routing-confusion failure mode. `/update_roadmap` owns Parts; `/mvp_plan` owns the MVP *narrative*. `/update_roadmap` may *recompute* the derived check-marks + Status inside the MVP section (pure Part-state roll-up), but it never *authors* an MVP — and it must not auto-*fire* `/mvp_plan`. The authoring recommendation surfaces from the brainstorm SKILL (Step 5, `skills/architecture_brainstorm/reference/part_authoring.md` §*MVP recommendation — the three firing conditions*) at the natural moment, not from inside `/update_roadmap`. |
+| "Auto-fire /mvp_plan from /update_roadmap when Parts hit 5+" | Routing-confusion failure mode. `/update_roadmap` must not auto-*fire* `/mvp_plan`. The authoring recommendation surfaces from the brainstorm SKILL (its Step 5 MVP recommendation) at the natural moment, not from inside `/update_roadmap`. |
+| "Auto-fire /mvp_plan from /update_roadmap when Parts hit 5+" | Routing-confusion failure mode. `/update_roadmap` must not auto-*fire* `/mvp_plan`. The authoring recommendation surfaces from the brainstorm SKILL (its Step 5 MVP recommendation) at the natural moment, not from inside `/update_roadmap`. |
 | "Drive sub-roadmap creation from /mvp_plan when an MVP gets too big" | Out of scope. Sub-roadmap creation is a brainstorm-skill spawn-placement decision (`common.md §5.1`), driven by the *deeper scope* criterion. If an MVP's Required Parts span too much surface, that's a signal to invoke `/architecture_brainstorm` for the over-scoped Part, not to author the decomposition here. |
 
 ---
 
 ## Vault tooling
 
-`roadmap.md` is a vault file edited with native `Read`/`Edit`. See [`_brainstorm_shared/common.md §3`](../skills/_brainstorm_shared/common.md). The Step 2 design-doc bundling uses `mcp__ai-worker__read_files`.
+`roadmap.md` is a vault file edited with native `Read`/`Edit`. See [`_brainstorm_shared/common.md §3`](../skills/_brainstorm_shared/common.md).
 
 ---
 
@@ -179,6 +179,6 @@ Sets MVP-N's Status to `✅ Verified` after the user confirms a successful playt
 - [`_brainstorm_shared/common.md §6.11`](../skills/_brainstorm_shared/common.md) — MVP Checkpoints schema (source of truth)
 - [`_brainstorm_shared/common.md §6.5`](../skills/_brainstorm_shared/common.md) — derived view section placement (MVPs sit between §6.5 and §6.6)
 - [`_brainstorm_shared/common.md §6`](../skills/_brainstorm_shared/common.md) — full roadmap.md schema
-- [`architecture_brainstorm/reference/part_authoring.md`](../skills/architecture_brainstorm/reference/part_authoring.md) §*MVP recommendation — the three firing conditions* — surfaces this command when Parts ≥ 5 AND no existing MVP section
-- [`/update_roadmap`](update_roadmap.md) — sibling executor for Parts + Mermaid + derived views; *recomputes* the Required-Part check-marks + Status inside the MVP section each run, but never authors the narrative fields
+- `architecture_brainstorm` Step 5 MVP recommendation (three firing conditions) — surfaces this command when Parts ≥ 5 AND no existing MVP section
+- [`/update_roadmap`](update_roadmap.md) — sibling executor for Parts + Mermaid + derived views
 - `obsidian_conventions` skill — wikilink and heading-anchor conventions for `Required Parts` links

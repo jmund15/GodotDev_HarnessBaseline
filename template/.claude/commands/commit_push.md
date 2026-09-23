@@ -24,7 +24,7 @@ as a path or a commit message.
 
 Based on the above changes:
 
-1. **Identify session files.** Follow the [Session File Identification Procedure](agents/session_file_identification.md) to determine which files belong to this session. Files not identified by the procedure are pre-existing dirty — **skip them**.
+1. **Identify session files.** Follow the [Session File Identification Procedure](agents/session_file_identification.md) to determine which files belong to this session.
 2. Group session changes into **categorical commits** by logical concern (e.g., feat, fix, refactor, chore, data, docs). Each commit should be independently revertable.
 3. **Paired repos first** (read `adaptation.json` `paired_repos` for the list; skip if it's empty): if a listed submodule or paired repo has changes you made this session, commit and push it FIRST per its own procedure, then stage its pointer update here in the appropriate commit.
 4. For each category: stage only the relevant files, then commit with an appropriate message.

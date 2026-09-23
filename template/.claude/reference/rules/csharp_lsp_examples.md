@@ -55,8 +55,6 @@ Column 53 is the dangerous one: the output shape is identical to a correct answe
 
 The verified-unique-name carve-out was softened into the doctrine after the C2 routing-battery case, and the same case shows why the verification step is not optional: `ApplySynergies` *is* unique, but `Apply` alone returns 500+ matches. An agent cannot reliably tell which of the two shapes it is holding before it searches, so uniqueness has to be established rather than assumed.
 
-`.claude/tests/routing_compliance.md` L6 is the live test of whether the carve-out is recognised as an override rather than merely documented.
-
 ## Why diagnostics are disabled
 
 Push-mode diagnostics are dropped at the adapter level (re-disabled 2026-05-07). csharp-ls indexes Godot's generated `obj/.../*.g.cs` partial-class output alongside the source `.cs`, producing structural `CS0102` / `CS0111` false positives that the v0.24 server-side fixes cannot address. Pull-mode diagnostics may also be unreliable. `dotnet build` (~8s) remains the authoritative compile-error check.

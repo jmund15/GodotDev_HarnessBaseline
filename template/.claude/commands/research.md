@@ -6,13 +6,13 @@ description: Answer listed external-fact questions with tiered citations and a v
 
 Establish what an engine, library, runtime, or spec **actually does**, when the codebase cannot settle it. `/research` returns cited claims and leaves a dated artifact; the doctrine it runs on — trust tiers, cite-or-gap, P3 escalation, the stopping criterion — lives in [`source_trust.md`](../reference/source_trust.md) and is read by every shape below.
 
-`/explore` establishes what the repo IS. `/research` establishes what the world outside it IS. Facts are the agent's job; decisions are not — if the output would be a choice rather than a fact, this is the wrong command.
+`/explore` establishes what the repo IS. `/research` establishes what the world outside it IS.
 
 ## When to invoke
 
 The next step depends on an external fact: engine or library behavior, a version claim, spec text, a library evaluation, game-design prior art. Mid-execution, during debugging, or from any planning surface.
 
-**SKIP** when the question is answerable from the repo (`/explore`), when one source settles it (the Godot class cache, or `WebFetch` direct — CLAUDE.md §4's fetch order), when the output would be a decision (`/architecture_brainstorm`), or when the question needs open discovery across the whole web rather than this stack's sources — say so and hand off to the built-in deep-research workflow rather than growing toward it.
+**SKIP** when the question is answerable from the repo (`/explore`), when one source settles it (the local docs cache, or `WebFetch` direct — CLAUDE.md §4's fetch order), when the output would be a decision (`/architecture_brainstorm`), or when the question needs open discovery across the whole web rather than this stack's sources — say so and hand off to the built-in deep-research workflow rather than growing toward it.
 
 ## Phase 1: Questions & Shape
 
@@ -32,7 +32,7 @@ Find the most recent `[budget-posture]` line; absent one, read `<TEMP>/cc-caches
 
 ### 1d. Choose the URL set yourself
 
-Name the pages before dispatching, seeded from `source_trust.md`'s P1 list. Orchestrator-chosen URLs are what keep this cheap — an agent that discovers its own reading list has no bound. **≤8 URLs per lens.**
+Name the pages before dispatching, seeded from the P1 lists in `source_trust.md` and its stack sibling file. Orchestrator-chosen URLs are what keep this cheap — an agent that discovers its own reading list has no bound.
 
 ---
 
@@ -40,7 +40,7 @@ Name the pages before dispatching, seeded from `source_trust.md`'s P1 list. Orch
 
 ### Shape A — deterministic fetch, then digest
 
-Land the bytes first. Godot class questions resolve against `.claude/cache/godot-docs/doc/classes/<Class>.xml` (`.claude/scripts/godot_docs_cache.sh` builds it; docs.godotengine.org is Cloudflare-gated and unusable). Everything else goes through `.claude/scripts/fetch_source.sh --dir <scratch> <1d urls...>`, which writes the artifacts and the TSV manifest Phase 3 verifies against. Answer `QUESTIONS` by quoting the landed artifacts with bounded `Grep`/`Read`, in `source_trust.md`'s claim shape — `file` = the URL cited, `artifact` = the local path quoted from.
+Land the bytes first. A question the project's version-pinned local docs cache covers resolves against that cache, at the path and with the builder the stack sibling of `source_trust.md` names. Everything else goes through `.claude/scripts/fetch_source.sh --dir <scratch> <1d urls...>`, which writes the artifacts and the TSV manifest Phase 3 verifies against. Answer `QUESTIONS` by quoting the landed artifacts with bounded `Grep`/`Read`, in `source_trust.md`'s claim shape — `file` = the URL cited, `artifact` = the local path quoted from.
 
 Use `mcp__ai-worker__read_web(urls=[...], question=...)` when the answer needs cross-page synthesis. Consume its bounded answer and per-URL preflight; a summary is not a verbatim citation. The tool cannot write an arbitrary requested artifact. Preserve quotable page bytes through `fetch_source.sh` first.
 
@@ -73,7 +73,7 @@ You are res-official. You establish what the OFFICIAL documentation says about e
 **RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/reference/source_trust.md` and follow it — every claim cites a fetched P1 URL in `file`, names the local path it was quoted from in `artifact` when one exists, quotes verbatim in `evidence`, and ends its `claim` text with `[P1]` plus the version. Never answer from memory; unfetched is a gap, not an inference.**
 
 ## Your Scope
-1. For each question, fetch the documentation that owns it: Godot classes from `.claude/cache/godot-docs/doc/classes/<Class>.xml` (docs.godotengine.org is Cloudflare-gated and unusable), `mcp__plugin_context7_context7__query-docs` for a resolved library id, otherwise `.claude/scripts/fetch_source.sh <url>...` to land the bytes. `WebFetch` for a single page it cannot reach; `read_web` only when the answer needs synthesis across pages.
+1. For each question, fetch the documentation that owns it: the version-pinned local docs cache where it covers the question (its path is in the stack sibling of `source_trust.md`), `mcp__plugin_context7_context7__query-docs` for a resolved library id, otherwise `.claude/scripts/fetch_source.sh <url>...` to land the bytes. `WebFetch` for a single page it cannot reach; `read_web` only when the answer needs synthesis across pages.
 2. Quote the sentence that answers the question. If the page discusses the API but not the behavior asked about, that is `polarity: "unclear"` — silence in the docs is not permission to assume.
 3. Note deprecations and behavior changes across versions that touch the question.
 
@@ -157,5 +157,5 @@ A research doc is **stale the moment its `expires-with` version moves** — re-r
 
 - **Full pages stay in fetched artifacts.** Read the exact spans needed to verify claims; return a bounded claims array or digest, not whole pages.
 - **Hard caps: ≤8 URLs per lens, ≤3 lenses, one round.** A follow-up round needs the user, not a self-decision. Lenses are read-only and spawn nothing, so a run cannot re-trigger itself.
-- **The allowlist is the guardrail.** Sources outside `source_trust.md`'s P1 list get used only when the report names why, and open web discovery is the built-in workflow's job, not this one's.
+- **The allowlist is the guardrail.** Sources outside the P1 lists of `source_trust.md` and its stack sibling get used only when the report names why.
 - **No verdict, no gate.** `/research` reports facts and gaps. What to do about them belongs to the caller.

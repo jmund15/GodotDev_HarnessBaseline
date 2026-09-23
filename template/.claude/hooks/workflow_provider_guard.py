@@ -525,34 +525,63 @@ def _ladder_path():
     )
 
 
-def parse_ladder_role_lines(raw_lines):
+def parse_ladder_role_lines(raw_lines, data=None):
     """model/role/effort per ROW of the ladder's Role guidance table ([] on any schema drift).
 
     The table SCAN is `model_registry.parse_ladder_rows` -- one reader, so a column inserted into
     either ladder table cannot shift this projection and the registry's differently. Without the
     registry this returns nothing: an advisory injection is worth less than a second parser.
+    `data` is the registry (default: the live one); an unloadable registry drops only the tiers it
+    would have added.
     """
     if model_registry is None:
         return []
+    raw_lines = list(raw_lines)
+    tiers = model_registry.parse_role_tiers(raw_lines)
+    if data is None:
+        try:
+            data = model_registry.load()
+        except Exception:
+            data = None
     rows = model_registry.parse_ladder_rows(raw_lines, LADDER_ROLE_COLUMNS, LADDER_ROLE_HEADING)
-    return [_compact_role_row(r) for r in rows]
+    return [_compact_role_row(r, tiers, data) for r in rows]
 
 
 # One header for every injection of these rows (here and hooks/skill_load_marker.py).
-ROLE_LADDER_HEADER = ("[role ladder (orchestration §5)] model: tier, first-listed effort. "
+ROLE_LADDER_HEADER = ("[role ladder (orchestration §5)] model: tier(s), first-listed effort. "
                       "Pin from the full table in .claude/reference/model_ladder_evidence.md, "
                       "not the registry roster. ")
 _EFFORT = re.compile(r"`?\b(low|medium|high|xhigh|max)\b`?")
 _PARENS = re.compile(r"\s*\([^)]*\)")
 
 
-def _compact_role_row(row):
-    """`model: tier, effort` from whole tokens of a Role guidance row, never a cut clause."""
+def _compact_role_row(row, tiers, data):
+    """`model: tier, effort` from whole tokens of a Role guidance row, never a cut clause.
+
+    Every tier the row claims is printed (`architect/executor`), from its role cell or its registry
+    `roles` (`model_registry.row_tier_claims`). A row whose cell holds prose rather than tier tokens
+    keeps that prose in parentheses, since it says which of the tier's work the row does; a row
+    claiming no tier prints the prose alone."""
     model = _PARENS.sub("", row["model"]).replace("`", "").strip()
-    if model.endswith(" excluded"):
-        model = model[: -len(" excluded")] + " (excluded)"
-    tier = re.search(r"`([^`]+)`", row["role"])
-    tier = tier.group(1) if tier else row["role"].split(" — ")[0].strip()
+    excluded = model.endswith(" excluded")
+    if excluded:
+        model = model[: -len(" excluded")]
+    cell_tokens = model_registry.leading_tier_tokens(row["role"])
+    claimed = cell_tokens
+    if data is not None:
+        try:
+            claimed = model_registry.row_tier_claims(model, row["role"], tiers, data)
+        except Exception:
+            pass
+    prose = row["role"].split(" — ")[0].replace("`", "").strip()
+    if not claimed:
+        tier = prose
+    elif cell_tokens:
+        tier = "/".join(claimed)
+    else:
+        tier = "%s (%s)" % ("/".join(claimed), prose)
+    if excluded:
+        model += " (excluded)"
     # First rung clause, parentheticals dropped; a lead-in before its colon is qualifier, not a rung.
     clause = _PARENS.sub("", row["effort"]).split(" / ")[0].rsplit(":", 1)[-1]
     effort = _EFFORT.search(clause)

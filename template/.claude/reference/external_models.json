@@ -370,7 +370,7 @@
       "transport": "codex",
       "label": "GPT-6 Sol", "family": "sol", "version": "gpt-6-sol", "lifecycle": "current", "order": 60, "costRank": 2, "prior": "frontier", "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
       "_comment": "Registered 2026-09-22 (owner ruling O-alias: the bare alias names the current version). Listed in OpenAI's own models cache (~/.codex/models_cache.json, read 2026-09-22). Unmeasured itself: it takes the sol family's roles and effort from gpt-5.6-sol (effort.measuredVersion) until its own cells or an owner ruling show it differs.",
-      "roles": ["sol", "expansiveArchitecting", "scopedArchitecting", "thinPlanning"],
+      "roles": ["sol", "architect"],
       "limits": {
         "contextTokens": 272000,
         "maxContextTokens": 872000,
@@ -626,7 +626,7 @@
       "effort": {
         "evidence": "measured",
         "measuredVersion": "muse-spark-1.3-contributor-free",
-        "_note": "measured at max on 8 cells; one low-effort dispatch exists (t7-r2, opencode-muse-campaign-2026-09-03, completed cleanly) but its arm-patches export never ran, so the code delta is gone with the root and it cannot be scored -- zero comparative low-vs-max evidence exists despite the dispatch. Dispatch at max until a scorable rung comparison does."
+        "_note": "measured at max on 8 cells and at low on 3 campaign-1.1 cells (t7 r2, t9, t10). At low it reaches the max on parity refactor (t9) and test authoring (t10), where no max cell exists; the t7 low/max pair crosses instrument generations and is not a rung comparison. The ladder's muse effort cell sets the rung per work shape."
       },
       "authTier": "gated",
       "apiMode": "responses",
@@ -641,7 +641,7 @@
       "id": "claude-opus-5-5",
       "railTier": "condensed",
       "railTierEvidence": {"evidence": "unmeasured"},
-      "_railTierComment": "Carried from the claude-opus-5 row: before this row existed a claude-opus-5-5 session read that row by id prefix, so condensed is the tier Opus 5.5 sessions already ran on. Phase A (dispatch.js, low) was NO-POWER: without rails it still broke only P5 (6/6 capped a review list; 0/6 with detailed rails) and kept P1, P6, P7 and P8. Report: .claude/scripts/rail_battery/reports/opus-A-2026-09-22-2520307f/report.json",
+      "_railTierComment": "Carried from the claude-opus-5 row: before this row existed a claude-opus-5-5 session read that row by id prefix, so condensed is the tier Opus 5.5 sessions already ran on. O10 (low, pressure probes): the rails are NEEDED for P5 and P15, and condensed CARRIED both against detailed; P13, P14 and P16 HELD without rails. Report: .claude/scripts/rail_battery/reports/o10-matrix-2026-09-23/README.md",
       "alias": "opus",
       "transport": "anthropic",
       "label": "Opus 5.5", "family": "opus", "version": "claude-opus-5-5", "lifecycle": "current", "order": 20, "costRank": 2, "prior": "frontier",
@@ -718,6 +718,7 @@
       "id": "claude-fable-5-1",
       "railTier": "minimal",
       "railTierEvidence": {"evidence": "unmeasured"},
+      "_railTierComment": "O10 (medium, pressure probes) is partial for this row: P5 NEEDED; P13 UNDERPOWERED at 10 reps with 7/10 whole-log reads even under the detailed rail, and minimal carries no bounded-read rule. P14-P16 and the minimal-vs-detailed carriage stage are not run. Report: .claude/scripts/rail_battery/reports/o10-matrix-2026-09-23/README.md",
       "driverNotes": [{"text": "Recognizing a name is not knowing its current state: verify before answering, and include the name as written in at least one search.", "evidenceRef": "plans/archive/fable51_harness_assessment.md F12"}],
       "alias": "fable",
       "transport": "anthropic",

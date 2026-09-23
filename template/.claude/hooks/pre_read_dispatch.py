@@ -10,6 +10,7 @@ One settings entry runs four checks in order:
      `updatedInput`, or blocked when its first line alone exceeds the budget
   4. tool_routing_nudge.process — optional hard block or advisory
 
+Checks 1, 2 and 4 ship in the coding layer; each runs only where its file exists.
 A dispatched subagent skips only the file-size block because its context is discarded after the
 returned digest. The index and scope guards prevent per-agent input or index-build cost, and routing
 advice remains correct for every agent. `agent_id` is the measured subagent marker; `session_id` is
@@ -37,9 +38,10 @@ try:  # project-local (rail battery); absent in projects that sync only the base
     import rail_probe_guard
 except ImportError:
     rail_probe_guard = None
-import indexed_reference_guard
-import semantic_search_scope_guard
-import tool_routing_nudge
+import _optional_hooks
+
+indexed_reference_guard, semantic_search_scope_guard, tool_routing_nudge = _optional_hooks.load(
+    "indexed_reference_guard", "semantic_search_scope_guard", "tool_routing_nudge")
 
 
 def _is_subagent(input_data) -> bool:
@@ -99,7 +101,7 @@ def main() -> None:
     # 0. Index-served reference block. NOT subagent-exempt: the cost it prevents is per-agent
     # input spend multiplied across a fan-out, which a discarded context does not recover.
     try:
-        block_msg = indexed_reference_guard.process(input_data)
+        block_msg = indexed_reference_guard.process(input_data) if indexed_reference_guard else None
         if block_msg:
             sys.stderr.write(block_msg + "\n")
             sys.exit(2)
@@ -109,7 +111,7 @@ def main() -> None:
     # 0b. Semantic-search scope guard. NOT subagent-exempt: an out-of-root searchDir costs the same
     # index rebuild whoever calls it, unlike the orchestrator-context cost the exemption targets.
     try:
-        result = semantic_search_scope_guard.process(input_data)
+        result = semantic_search_scope_guard.process(input_data) if semantic_search_scope_guard else None
         if result and result.get("deny"):
             sys.stderr.write(str(result["deny"]) + "\n")
             sys.exit(2)
@@ -132,7 +134,7 @@ def main() -> None:
     # 2. Routing nudge: hard block (env-gated) or advisory.
     nudge = None
     try:
-        block_msg, nudge = tool_routing_nudge.process(input_data)
+        block_msg, nudge = tool_routing_nudge.process(input_data) if tool_routing_nudge else (None, None)
         if block_msg:
             sys.stderr.write(block_msg + "\n")
             sys.exit(2)

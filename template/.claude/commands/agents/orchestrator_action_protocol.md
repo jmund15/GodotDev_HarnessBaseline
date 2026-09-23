@@ -8,7 +8,7 @@ One owner for consuming review findings. Keep original evidence, verify the clai
 
 ## Finding Schema
 
-Use `.claude/schemas/review_findings.json`; do not maintain a second schema example here. A finding names its agent, action, category, location, claim and rationale. The schema leaves `old`/`new`/`question`/`options`/`scope` optional, but a lens must still supply the pair its action needs: FIX carries `old`/`new`, ASK carries `question`/`options` ranked best guess first, PLAN carries `scope`. A downstream consumer such as `pr_pipeline` applies FIX and resolves ASK/PLAN from those fields, so a finding missing them is not actionable even though it validates.
+Use `.claude/schemas/review_findings.json`; do not maintain a second schema example here. A finding names its agent, action, category, location, claim and rationale. The schema leaves `old`/`new`/`question`/`options`/`scope` optional, but a lens must still supply the pair its action needs: FIX carries `old`/`new`, ASK carries `question`/`options` ranked best guess first, PLAN carries `scope`. A downstream consumer, such as a PR pipeline, applies FIX and resolves ASK/PLAN from those fields, so a finding missing them is not actionable even though it validates.
 
 ### Action Tiers
 

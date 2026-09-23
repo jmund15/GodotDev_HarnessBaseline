@@ -23,7 +23,7 @@ Companion to `/aiworker_write_doc_audit` (post-hoc real-output scanner). This ba
 0. `mcp__ai-worker__*` tools are present in the session tool list — check live with `ToolSearch("select:mcp__ai-worker__write_doc")`; the SessionStart `[ai-worker]` line prints `Ollama OK` when it is up. If absent, STOP: every scenario's pass criterion depends on `write_doc` output shape; running offline produces all-FLAG results.
 1. `models.yaml` has the expected `doc_writer` alias (last recorded default: `deepseek-flash`). Read `~/.config/ai-worker/models.yaml` — the file lives in the ai-worker install, so this check only runs where check 0 passes; if `doc_writer` is anything else, note the deviation.
 2. `write_doc.design.md` and `.retrospective.md` and `.architecture.md` contain the load-bearing-filter rules (rejected-approach specificity, no inline provenance, idea-pool sampling, line-count discipline). Quick Grep for `inline provenance` in each — should match.
-3. `_brainstorm_shared/common.md` §2 contains the rationale spot-check (extracted from the brainstorming-skill split; was Step 7.5 in the pre-split `brainstorming` skill). Quick Grep for `Rationale spot-check` in `.claude/skills/_brainstorm_shared/common.md`.
+3. `_brainstorm_shared/common.md` §2 contains the rationale spot-check. Quick Grep for `Rationale spot-check` in `.claude/skills/_brainstorm_shared/common.md`.
 
 If any pre-flight fails, STOP and report — running the battery against a misconfigured baseline produces meaningless results.
 
@@ -64,7 +64,7 @@ For each subagent response, capture:
 2. **Full response text** for manual pass/fail review.
 3. **Tool-use trace from UI** as sanity check.
 
-Persist to `.claude/tools/_doc_battery_responses.json` (dict mapping `test_id → {agent_id, response_text, tool_trace}`).
+Persist to `.claude/logs/doc_battery_responses.json` (dict mapping `test_id → {agent_id, response_text, tool_trace}`).
 
 ## Scoring
 
@@ -98,7 +98,6 @@ For each test, classify into one of:
 ## Anti-contamination discipline
 
 The orchestrator MUST NOT:
-- Tell subagents this is a workflow-compliance test.
 - Inject the Documentation Delegation Rule, `write_doc.*.md` rules, or the rationale spot-check (`_brainstorm_shared/common.md` §2) into subagent prompts.
 - Mention CLAUDE.md sections or `feedback_*.md` memory entries.
 - Use `Plan` or `Explore` subagent types — they have their own protocols.
@@ -114,4 +113,4 @@ The orchestrator MAY (and should):
 - **`write_doc` worker availability** — tests assume `mcp__ai-worker__*` tools are in the subagent toolkit. If the subagent reports the tool unavailable, that's a FLAG, not a FAIL.
 - **Doc-size measurement** — W1's "~80–120 KB" target is a soft band reflecting DeepSeek's preservation bias; widen to ~70–140 KB if running against a different `doc_writer`. Note: under the no-clarifying-questions session directive, subagents collapse Steps 2+5 (Socratic + per-section approval) into a single drafting pass with flagged-leading-hypotheses, which can land docs significantly under the band; that is a procedure adaptation, not a failure.
 - **W6 dependency on W1** — W6's "this session's work" references the W1 brainstorm output; if W1 FLAGs, W6 may have nothing to retrospect on. Re-dispatch W6 with explicit scenario context if needed.
-- **W4 single-dispatch design** — W4's prompt bakes the opinionated constraints INTO the opening brief so provenance leak is measurable from one doc artifact (no multi-turn iteration needed). The pass criterion is grep-clean on a fixed list of conversational provenance markers PLUS structural placement (constraints as design commitments in body, attribution allowed only in Revision History / "Constraints supplied at brief"). Older versions of this test required multi-turn iteration; that shape is incompatible with one-shot subagent dispatch and was retired.
+- **W4 single-dispatch design** — W4's prompt bakes the opinionated constraints INTO the opening brief so provenance leak is measurable from one doc artifact (no multi-turn iteration needed). The pass criterion is grep-clean on a fixed list of conversational provenance markers PLUS structural placement (constraints as design commitments in body, attribution allowed only in Revision History / "Constraints supplied at brief").

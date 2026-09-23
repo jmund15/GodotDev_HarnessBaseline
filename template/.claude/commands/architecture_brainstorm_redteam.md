@@ -21,7 +21,7 @@ Both modes **augment** the Socratic dialogue — they never replace it (`feedbac
 ## When to use
 
 - **Mode B — interleaved (Steps 2/4/5 of `/architecture_brainstorm --red_team`):** the per-step adversarial pass. Its taste-forks become Socratic seeds for the user; its rigor-holes feed back into the live design before the next question/section.
-- **Mode A — standalone (at `/architecture_brainstorm` Step 7 spec self-review, or against any drafted design doc):** the full-doc hardening pass before the design hardens into roadmap Parts. This is also what `skills/architecture_brainstorm/reference/socratic_and_approaches.md` §*Step 7 — Mode A adversarial pass* invokes.
+- **Mode A — standalone (at `/architecture_brainstorm` Step 7 spec self-review, or against any drafted design doc):** the full-doc hardening pass before the design hardens into roadmap Parts. This is also what `architecture_brainstorm` Step 7's Mode A adversarial pass invokes.
 
 Skip for designs already approved (it's a pre-approval hardening tool) and for trivial/mechanical changes.
 
@@ -32,20 +32,20 @@ The critics judge **pushed** content; they do NOT discover (intermittent fan-out
 - **Mode A (drafted):** the design doc text (or the specific sections under review) + the Step-3 abstraction inventory (existing 2+ subclass families in the touched domain — `git grep` for `abstract class` / `interface I` + the relevant `semantic-search` hits) + the domain's gotchas + the framework-boundary rule.
 - **Mode B (interleaved):** the **single in-flight decision** — `{ the Socratic question, the user's tentative pick OR the 2–3 candidate approaches from arch Step 4 }` + the same abstraction inventory + domain gotchas. There is no drafted doc yet; do NOT fabricate one.
 
-If Step 0.5 adds `rt-systemic` or `rt-vision`, extend the push accordingly: the relevant sections of adjacent topic-folder design docs (for `rt-systemic`) and a `game_vision` digest (for `rt-vision`) — the lenses compare, never discover.
+If Step 0.5 adds `rt-systemic` or `rt-vision`, extend the push accordingly: the relevant sections of adjacent topic-folder design docs (for `rt-systemic`) and a digest of the project's vision owner, the skill or doc its CLAUDE files name for product direction (for `rt-vision`) — the lenses compare, never discover.
 
 ## Step 0.5: Compose the panel — fixed floor + risk-derived bespoke lenses
 
 The five core lenses (Step 1) are the **floor**: guaranteed-minimum coverage, never dropped within their phase eligibility. They are deliberately generic; extending the panel to fit THIS design is the orchestrator's judgment (`feedback_prescribe_verification_not_cognition` — which lenses to run is cognition; that the floor runs at the seat width `orchestration` §2 sets, with liveness and taste-classification enforced, is verification).
 
-**Seat map** (`orchestration` §2 *Sizing the width*; tier facts from the design's planned file list and named subsystems). Mode A at Wide: one seat per lens. Standard: structure (`rt-boundary` + `rt-abstraction`), `rt-failuremode`, and scope (`rt-yagni-scope` + `rt-testability`). Small: one seat for the core five. Conditional and bespoke lenses keep their own seats at every tier, and Mode B's phase subsets run one seat per lens. The Standard and Small maps are provisional; every seat keeps Step 1's `xhigh`.
+**Seat map** (`orchestration` §2 *Sizing the width*; tier facts from the design's planned file list and named subsystems). Mode A at Wide: one seat per lens. Standard: structure (`rt-boundary` + `rt-abstraction`), `rt-failuremode`, and scope (`rt-yagni-scope` + `rt-testability`). Small: one seat for the core five. Conditional and bespoke lenses keep their own seats at every tier, and Mode B's phase subsets run one seat per lens. The Standard and Small maps are provisional. Width never sets a seat's effort; the review rung below does.
 
 **Conditional core lenses** — add when the trigger holds:
 
 | key | fires when | mandate |
 |---|---|---|
 | `rt-systemic` | adjacent topic-folder design docs / roadmaps exist in the touched domains | Does this design conflict with, duplicate, or silently reshape a NEIGHBORING committed design? Judge only the pushed adjacent-design excerpts; cite the conflicting section pair. |
-| `rt-vision` | the design is player-facing (mechanics, feel, content, UI) | Does this serve the game per the pushed `game_vision` digest? Fit findings are usually TASTE-FORKS (`action: ASK`) — flag misalignment, never decide fit. |
+| `rt-vision` | the design is user- or player-facing (mechanics, feel, content, UI) | Does this serve the product per the pushed vision digest? Fit findings are usually TASTE-FORKS (`action: ASK`) — flag misalignment, never decide fit. |
 
 **Bespoke lenses (0–3)** — derive from the design's risk profile: domains touched, memorialized-gotcha density, what the design uniquely bets on (save-compat, procgen determinism, hot-path perf, concurrency, migration/rollback, stated-direction evolution pressure). **Each mandate MUST name the concrete failure mode it hunts** — *"attack the save-schema migration path: what breaks a v1 save under this design?"* — never a quality ("review holistically", "check robustness"). A lens that can't say what it would find is noise generation; this is the panel sibling of arch Step 4's live-option litmus. Eligible only where the design has committed shape: Steps 4/5/7 and Mode A.
 
@@ -57,7 +57,7 @@ Compose ONCE per pass; `--auto` rounds reuse the round-1 composition, and livene
 
 ## Step 1: Dispatch the critic panel
 
-**Sub-agent dispatch (Workflow or the Task fallback) is MANDATORY — do NOT self-critique inline.** A model grading its own design defeats the adversarial independence the panel exists to provide (mirrors `plan_check`'s MANDATORY-dispatch discipline). Inline self-review is the failure this command guards against.
+**Sub-agent dispatch (Workflow or the Task fallback) is MANDATORY — do NOT self-critique inline.** A model grading its own design defeats the adversarial independence the panel exists to provide (mirrors `plan_check`'s MANDATORY-dispatch discipline).
 
 The five core lenses (+ any Step 0.5 additions), each judging the pushed input (read-only; no tests, no LSP). The **interleave column** says which boundary each lens can fire at — four of five need committed design shape, so early Socratic steps run a reduced subset:
 
@@ -71,7 +71,7 @@ The five core lenses (+ any Step 0.5 additions), each judging the pushed input (
 
 **Phase-scoped subsets for Mode B:** Step 2 → `rt-boundary` + `rt-failuremode` + `rt-yagni-scope` (premise-challenge only). Step 4 → those three + `rt-abstraction` (+ `rt-testability` if an approach already names test surface; + Step 0.5 additions once approaches have shape). Step 5 / Mode A → all five core + Step 0.5 additions.
 
-**Model — pin every lens to the executor tier (the ladder: `reference/model_ladder_evidence.md` §Role guidance); NEVER inherit the session model.** Adversarial-design critique is reasoning-heavy, so the executor tier is its floor (`orchestration` skill §5) — the default-fan-out tier is marked down on architecture in the table's `±` column and must not staff these lenses to save cost. A critic panel is a fan-out: omitting `model` inherits the session model, turning a 5-lens panel into 5 orchestrator-tier critics — orchestrator cost at zero intelligence gain. **Escalation is deliberate, never blanket:** the orchestrator tier as a delegate is a cost default, not a capability rule — open it per lens via `/pin_ab` (`orchestration` §5), never by blanket pin. A purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to the default-fan-out tier. **Effort: `xhigh` on every executor-tier critic lens** — the ladder's review verdict (§Pick by work shape): `high` finds a fraction of the planted defects, `max` adds nothing.
+**Model — pin every lens to the architect tier at its review rung (ladder §Role guidance); NEVER inherit the session model.** Critique of a design holds the architect-tier floor (`orchestration` §5b) — the default-fan-out tier is marked down on architecture in the table's `±` column and must not staff these lenses to save cost. A critic panel is a fan-out: omitting `model` inherits the session model, turning a 5-lens panel into 5 orchestrator-tier critics — orchestrator cost at zero intelligence gain. **Escalation is deliberate, never blanket:** the orchestrator tier as a delegate is a cost default, not a capability rule — open it per lens via `/pin_ab` (`orchestration` §5), never by blanket pin. A purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to the default-fan-out tier. **Effort: the review rung** keys effort to how deep defects can hide in the design, not to the panel's size; one lens rises above it only per `orchestration` §5 *Effort*.
 
 **Dispatch — keep `args` FLAT (per `gotcha_workflow_args_generation_fidelity`).** Push the input ONCE via the shared `contextPrefix`; keep each lens `prompt` to its mandate only (do NOT duplicate the design into every prompt — that deeply-nested, escape-dense shape makes the tool call's JSON malformed):
 
@@ -84,15 +84,15 @@ Workflow({
       { key: "rt-boundary",    prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
       { key: "rt-failuremode", prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
       { key: "rt-yagni-scope", prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" }
-      // + rt-abstraction / rt-testability per the phase subset above (model: "<executor>", effort: "xhigh")
-      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (model: "<executor>", effort: "xhigh")
+      // + rt-abstraction / rt-testability per the phase subset above (model: "<architect>", effort: "<review rung>")
+      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (model: "<architect>", effort: "<review rung>")
       // a purely mechanical bespoke lens may drop to the fanout tier; the orchestrator tier only via an explicit per-lens pin
     ]
   }
 })
 ```
 
-**Large design, or a JSON-parse failure on dispatch:** move the payload out of `args` — write the design and each mandate to brief files and run the lenses through `dispatch.js` (`label` and `promptPath` per lens, the executor-tier `model`, `effort` per the panel, `agentType: "general-purpose"`, `contextPath` for the shared design). That keeps the pins and the PINS row while sidestepping `gotcha_workflow_args_generation_fidelity`. Parallel `Task` subagents with an explicit executor-tier `model` are the Workflow-unavailable fallback only (`orchestration` §0).
+**Large design, or a JSON-parse failure on dispatch:** move the payload out of `args` — write the design and each mandate to brief files and run the lenses through `dispatch.js` (`label` and `promptPath` per lens, the architect-tier `model`, `effort` per the panel, `agentType: "general-purpose"`, `contextPath` for the shared design). That keeps the pins and the PINS row while sidestepping `gotcha_workflow_args_generation_fidelity`. Parallel `Task` subagents with an explicit architect-tier `model` are the Workflow-unavailable fallback only (`orchestration` §0).
 
 **Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` returns an **empty findings array for any lens that errors, times out, or returns malformed JSON** (its guard: `Array.isArray(r.findings) ? r.findings : []`). So "0 findings" can mean "ran and found nothing" OR "never ran." Before reporting or converging, read the workflow's `perAgent: [{key, count}]` and confirm **every dispatched lens key is present**. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. If any lens is missing → do NOT report CLEAN; surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses (or halt). This closes the false-absence path inside the red-team itself.
 
@@ -105,7 +105,7 @@ Each lens returns findings per the schema. **Classification embedded in every ma
 
 ### Mode A — the structured hand-off block
 
-**Read every finding before adjudicating any.** The three groups below organize the report; they do not license reading only the critical group. A non-critical rigor-hole is still a defect with one right answer, and the cheapest place to catch it is before the design locks — a panel whose findings are partially read has been paid for and mostly wasted (`feedback_exhaust_review_findings_before_locking`).
+**Read every finding before adjudicating any.** The three groups below organize the report; they do not license reading only the critical group. A non-critical rigor-hole is still a defect with one right answer, and the cheapest place to catch it is before the design locks — a panel whose findings are partially read has been paid for and mostly wasted.
 
 Present findings in three groups, then a machine-branchable verdict (this IS the surface `/architecture_brainstorm` Step 7 consumes):
 
@@ -143,7 +143,7 @@ DEAD-END: <only if a critical PLAN surfaced — HALT and surface to the user>
 (lenses returned: X/<dispatched>)
 ```
 
-Routing back into `/architecture_brainstorm`: **rigor-holes** adjust the current tentative pick/approach before the next question; **taste-forks** become the **next Socratic question** (never a silent pick — the appetite invariant holds inside the live dialogue exactly as in Mode A); a **dead-end** halts the brainstorm for a reframe.
+Routing back into `/architecture_brainstorm`: **rigor-holes** adjust the current tentative pick/approach before the next question; **taste-forks** become the **next Socratic question**; a **dead-end** halts the brainstorm for a reframe.
 
 ## Optional: `--auto` mode (Mode A only — trusted topics)
 
@@ -156,7 +156,7 @@ Routing back into `/architecture_brainstorm`: **rigor-holes** adjust the current
 
 **Hard rules for `--auto`:**
 - **The `--auto` output is always a DRAFT-FOR-REVIEW, never an approved design.** Convergence is advisory, not approval.
-- **No taste-fork is ever auto-answered or silently absorbed** — not even a low-stakes-looking one (a naming/convention/default pick a later Part would inherit is treated as load-bearing-for-downstream and halts the loop immediately).
+- **No taste-fork is ever auto-answered or silently absorbed** — not even a low-stakes-looking one (a naming/convention/default pick a later Part would inherit is load-bearing-for-downstream: it joins the placeholder batch, and the loop keeps running).
 - **Batch-first, never deferred:** the user answers the taste-batch FIRST → the design is reconciled against those answers. The answered batch IS the approval — no separate approve-the-design question follows unless reconciliation introduced content beyond the answers' direct consequences. There is still no "approve-design-and-defer-taste" action — approval cannot precede the batch.
 
 ## Anti-patterns

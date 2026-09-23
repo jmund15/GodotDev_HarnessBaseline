@@ -71,7 +71,7 @@ processor.ProcessMovement(_dashStrategy, dashDir, delta);
 processor.ProcessMovement(_airStrategy, moveDir, delta);
 ```
 
-Each strategy is a Resource with its own logic. No code changes needed to add new movement types.
+Each strategy is a Resource with its own logic.
 
 ## Anti-Patterns
 

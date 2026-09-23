@@ -6,23 +6,23 @@ Read at Phase 5 of [`../SKILL.md`](../SKILL.md).
 
 ## Write a failing test FIRST
 
-Per `testing`'s Logic-Domain Iron Law, the test must fail because of the hypothesised cause and pass after the fix. No "I'll add the test once it works" — you will adapt the test to the fix.
+Per the project's TDD rule, the test must fail because of the hypothesised cause and pass after the fix. No "I'll add the test once it works" — you will adapt the test to the fix.
 
 A correct seam exercises the **real bug pattern as it occurs at the call site**. A seam too shallow — single-caller test when the bug needs multiple callers, Logic unit test that can't replicate the engine-lifecycle chain — gives false confidence.
 
-Even when the domain classifies as Gameplay, if the bug class IS the integration (hot-loop, race, BB-flag-soup), write the seam-level integration test BEFORE shipping (`feedback_strict_tdd_for_integration_regressions.md`).
+Even when the domain classifies as Gameplay, if the bug class IS the integration (hot-loop, race, BB-flag-soup), write the seam-level integration test BEFORE shipping.
 
 ## Picking the right suite
 
-Per `testing/SKILL.md` domain classification:
+Follow the project's test-domain classification:
 
-- **Pure logic / data / math:** `Tests/Logic/` (no Godot runtime).
-- **Cross-system seam** (BT+BTState, Pool+Spawn, HSM+child-state, Spell+Collision+Reaction): `Tests/Integration/` — even if the C# diff looks trivial. Memorialised integration regressions REQUIRE a seam test.
-- **Player-observable behavior:** `Tests/Sanity/` or E2E with `ISceneRunner` (POB rule from `testing/SKILL.md`).
+- **Pure logic / data / math:** the unit suite (no engine or runtime).
+- **Cross-system seam** (behavior tree + its states, pool + spawn, state machine + child state): the integration suite, even if the diff looks trivial. Memorialised integration regressions REQUIRE a seam test.
+- **Player-observable behavior:** an end-to-end test through the real runtime.
 
 ## If no correct seam exists, that itself is the finding
 
-Note it explicitly — the architecture is preventing the bug from being locked down. Hand off to the **Worklog** with `arch | <description>`. Do **not** invent a new slash command here, and do not repurpose `/spell_arch_audit` (Spell-only) or `/session_audit` (post-hoc, wrong shape).
+Note it explicitly — the architecture is preventing the bug from being locked down. Hand off to the **Worklog** with `arch | <description>`. Do **not** invent a new slash command here, and do not repurpose a single-domain audit command or `/session_audit` (post-hoc, wrong shape).
 
 ## If a correct seam exists
 
@@ -39,9 +39,9 @@ Note it explicitly — the architecture is preventing the bug from being locked 
 ## Verify
 
 - The failing test now passes.
-- The original symptom is gone (manual repro or post-run `godot.log` check).
-- No `JmoLogger.Error` lines in the run output (errors trigger test failures).
-- Run the broader suite (`/regression_gate` if appropriate) before claiming the bug is fixed. *"Should work now"* is not evidence.
+- The original symptom is gone (manual repro or a post-run runtime-log check).
+- No error-level log lines in the run output.
+- Run the broader suite (the project's regression gate if appropriate; `change_control` §Gate cadence names it) before claiming the bug is fixed. *"Should work now"* is not evidence.
 
 ## The 3-fixes-failed gate
 

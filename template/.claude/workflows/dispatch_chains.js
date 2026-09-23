@@ -69,7 +69,7 @@ log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label,
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // The concurrency contract this engine exists to express. Contention scope is NOT one boolean:
-// a machine-wide single-flight resource (the GdUnit4 named pipe, the csharp-ls wrapper) is unsafe
+// a machine-wide single-flight resource (a test runner's named pipe, a language-server wrapper) is unsafe
 // whenever ANY other chain is live, while a per-lane resource (a worktree's obj/bin) is safe
 // precisely because a chain runs its own jobs one at a time. `chain.exclusiveResource` names what
 // this lane owns outright; `A.sharedSingleFlight` lists what no lane may touch.
@@ -114,7 +114,7 @@ const guardRef = (j) => {
   if (inline) return inline
   const files = shape === 'any' ? '.claude/guards/any.md' : '.claude/guards/any.md and .claude/guards/' + shape + '.md'
   return ['', '=== DELEGATE RAILS ===',
-    'Read ' + files + ' with the Read tool and follow the `## ' + tier
+    'Read ' + files + ' with the Read tool, plus each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists, and follow the `## ' + tier
     + '` section of each. Read ONLY that section — the other tiers are for other models.'].join('\n')
 }
 

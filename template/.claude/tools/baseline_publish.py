@@ -310,17 +310,29 @@ def _classify(source: dict, lock: dict) -> str:
 MANIFEST_LAYERS = ("pure", "coding", "godot")
 
 
+def _pinned_manifest_layers(cache: Path, baseline_sha: str) -> dict[str, str]:
+    shown = _git(cache, ["show", f"{baseline_sha}:baseline.manifest.json"], check=False)
+    if shown.returncode != 0:
+        return {}
+    return {entry["path"]: entry.get("layer") for entry in json.loads(shown.stdout).get("files", [])}
+
+
 def _new_row_layers(records: list[dict], lock: dict, cache: Path, baseline_sha: str) -> dict[str, str]:
-    """Template relpath -> layer for each lock row the pinned baseline does not have yet. A new row
-    with no layer refuses: validate's `gen_manifest.py --check` fails on any unclassified file."""
+    """Template relpath -> layer for each lock row the pinned baseline does not have yet, and for
+    each existing row whose lock layer differs from the pinned manifest's (a layer move). A new
+    row with no layer refuses: validate's `gen_manifest.py --check` fails on any unclassified file."""
     layers, missing = {}, []
+    pinned = _pinned_manifest_layers(cache, baseline_sha)
     for record in records:
         if record.get("kind") != "lock" or record["op"] == "D":
             continue
+        layer = (lock.get("files", {}).get(record["relpath"]) or {}).get("layer")
         exists = _git(cache, ["cat-file", "-e", f"{baseline_sha}:{record['dest_path']}"], check=False)
         if exists.returncode == 0:
+            template_rel = record["dest_path"][len("template/"):]
+            if layer in MANIFEST_LAYERS and pinned.get(template_rel) not in (None, layer):
+                layers[template_rel] = layer
             continue
-        layer = (lock.get("files", {}).get(record["relpath"]) or {}).get("layer")
         if layer in MANIFEST_LAYERS:
             layers[record["dest_path"][len("template/"):]] = layer
         else:

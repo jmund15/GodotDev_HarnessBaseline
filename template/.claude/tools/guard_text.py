@@ -19,6 +19,10 @@ carries the concurrency bar, the read-only bar, the confidence ladder and the te
 the rules that bind every delegate — so it must not depend on the delegate choosing to follow
 a pointer it finds inside another file.
 
+A higher baseline layer adds rails through an overlay, `<shape>.<layer>.md` (layers in
+OVERLAY_LAYERS order). Each present overlay's tier section follows its base file's section; an
+overlay without that tier adds nothing, and a project without the layer has no overlay file.
+
 CLI:  guard_text.py <shape> <tier>   -> the text on stdout, exit 0
       bad arguments                  -> the legal set on stderr, exit 2
 """
@@ -28,6 +32,7 @@ import sys
 
 VALID_SHAPES = ("any", "survey", "review", "author")
 VALID_TIERS = ("detailed", "condensed", "minimal", "none")
+OVERLAY_LAYERS = ("coding", "godot")
 
 _GUARDS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "guards"
@@ -71,18 +76,22 @@ def guard_text(shape: str, tier: str) -> str:
     if tier == "none":
         return ""
 
-    universal = _section(os.path.join(_GUARDS, "any.md"), tier)
-    if shape == "any":
-        return "[delegate rails — shape 'any', %s tier; home: .claude/guards/any.md]\n%s" % (
-            tier,
-            universal,
-        )
-
-    specific = _section(os.path.join(_GUARDS, shape + ".md"), tier)
-    return (
-        "[delegate rails — shape '%s', %s tier; home: .claude/guards/any.md + "
-        ".claude/guards/%s.md]\n%s\n\n%s" % (shape, tier, shape, universal, specific)
-    )
+    names = ["any"] if shape == "any" else ["any", shape]
+    homes, parts = [], []
+    for name in names:
+        homes.append(".claude/guards/%s.md" % name)
+        parts.append(_section(os.path.join(_GUARDS, name + ".md"), tier))
+        for layer in OVERLAY_LAYERS:
+            overlay = os.path.join(_GUARDS, "%s.%s.md" % (name, layer))
+            if not os.path.isfile(overlay):
+                continue
+            try:
+                parts.append(_section(overlay, tier))
+            except ValueError:
+                continue
+            homes.append(".claude/guards/%s.%s.md" % (name, layer))
+    return "[delegate rails — shape '%s', %s tier; home: %s]\n%s" % (
+        shape, tier, " + ".join(homes), "\n\n".join(parts))
 
 
 def main() -> int:

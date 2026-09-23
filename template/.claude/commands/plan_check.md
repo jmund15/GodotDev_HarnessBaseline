@@ -5,17 +5,17 @@ description: Audit a plan for missing scope, weak evidence and design or harness
 
 # Plan check
 
-Review the written plan before implementation. The findings are advisory; the normal execution approval remains the user's, unless explicit unattended authority applies. Do not enter Plan Mode. Skip a known mechanical change below the project's planning threshold, not a large plan merely because it is metadata.
+Review the written plan before implementation. The findings are advisory; the normal execution approval remains the user's, unless explicit unattended authority applies. Skip a known mechanical change below the project's planning threshold, not a large plan merely because it is metadata.
 
 ## Phase 1: Scope & Load
 
 ### 1a. Read the plan
 Accept inline text or `@<path>`; no argument selects the newest `.claude/plans/*.md`. Missing/malformed input is an error, not an empty review. `--meta`/`--code` overrides detection and is reported.
 
-`PLAN_SHAPE=meta` when every change is harness/docs infrastructure; any production C#/scene/resource/project change makes it `code`. The always-loaded surface is `CLAUDE.md`, `.claude/auto-memory/MEMORY.md`, any `rules/*.md` whose `paths:` glob the plan's own edits would trigger, and a skill `description:`. A plan targeting `prototypes/<slug>/` files, or landing on a `prototype/<slug>` branch, is prototype work (`prototype` skill) — route it to `/prototype`, not this audit; the capital-P `Prototype/` arena-floor subsystem is production code and does not qualify. A plan that only cites `prototypes/<slug>/ANSWER.md` under Constraints is a real plan — audit it fully. Split independent code and meta work. If inseparable, use the Mixed shape: the code mandates plus `plc-instruction-quality` and `plc-doctrine-consistency`; report any unavailable lens as uncovered.
+`PLAN_SHAPE=meta` when every change is harness/docs infrastructure; any production code, scene, resource or project-data change makes it `code`. The always-loaded surface is `CLAUDE.md`, `.claude/auto-memory/MEMORY.md`, any `rules/*.md` whose `paths:` glob the plan's own edits would trigger, and a skill `description:`. A plan for throwaway prototype work, at the paths or branch the project's prototype route names, goes to that route, not this audit; production code whose name merely resembles it does not qualify. A plan that only cites a prototype's answer under Constraints is a real plan — audit it fully. Split independent code and meta work. If inseparable, use the Mixed shape: the code mandates plus `plc-instruction-quality` and `plc-doctrine-consistency`; report any unavailable lens as uncovered.
 
 ### 1b. Scope coverage
-Map every requirement to an implementation and verification step. Check conflicting steps, invented scope, unverified dependencies, stubs/deferrals and closing work. A replacement enumerates the old contract before removal. C# drive closure names the full regression gate; intermediate slices use the scoped verifier. Meta changes name executable, channel, registration and reference checks as applicable. No-tests or unavailable coverage is not green. A `.cs` plan is incomplete if it omits the closing `/regression_gate`, `<summary>` coverage for each new `[Export]`, or (roadmap Part) the closing `/update_roadmap` state flip.
+Map every requirement to an implementation and verification step. Check conflicting steps, invented scope, unverified dependencies, stubs/deferrals and closing work. A replacement enumerates the old contract before removal. C# drive closure names the full regression gate; intermediate slices use the scoped verifier. Meta changes name executable, channel, registration and reference checks as applicable. No-tests or unavailable coverage is not green. A `.cs` plan is incomplete if it omits the closing regression gate (`change_control` §Gate cadence names it), `<summary>` coverage for each new `[Export]`, or (roadmap Part) the closing `/update_roadmap` state flip.
 
 Collect the tier facts `orchestration` §2 *Sizing the width* reads: the file count and whether each file is new, edited or deleted; added types, exports, nodes, commands or concepts; operations git cannot undo; the top-level subsystems touched and any Jmodot/game crossing; replaced contracts and their callers' subsystems; and rule changes in an always-loaded surface. Record the tier with the fact that set it.
 
@@ -35,7 +35,7 @@ For code plans, enumerate introduced types and authored fields/parameters/flags.
 For changed harness rules, paths, anchors and keys, Grep the cited path or key across `.claude/` (commands, skills, rules, hooks, memory, tests) and the Obsidian vault, then inspect active callers and fixtures. A rename must not leave a matcher or test silently on the retired contract. Distinguish intentional policy migration from accidental contradiction.
 
 ### 1g. Lens-specific context
-Supply the full plan plus the evidence each lens needs, not a shared megabundle of every skill. Code design lenses receive `rules/design_litmus.md` whole, `rules/scene_authoring.md` §Scene anatomy, the matching family rows, and for pattern-fit `architecture_philosophy/SKILL.md` with its `structure_rules.md`, because the mandates forbid re-loading them; test readiness receives the TDD contract. Meta instruction quality receives its rubric; doctrine consistency reads the actual changed owners. Inject facts (surfaces, sibling counts, structure), never conclusions. Label inherited claims unverified until checked.
+Supply the full plan plus the evidence each lens needs, not a shared megabundle of every skill. Code design lenses receive `rules/design_litmus.md` whole, the authored-data litmus the project's stack layer names, the matching family rows, and for pattern-fit `architecture_philosophy/SKILL.md` with its `structure_rules.md`, because the mandates forbid re-loading them; test readiness receives the TDD contract. Meta instruction quality receives its rubric; doctrine consistency reads the actual changed owners. Inject facts (surfaces, sibling counts, structure), never conclusions. Label inherited claims unverified until checked.
 
 ## Phase 2: Launch Plan-Check Sub-Agents
 
@@ -45,17 +45,17 @@ Every mandate of the shape always runs. The tier from 1b picks the seat map: Wid
 
 | Shape | Mandates | Standard seats | Small |
 |---|---|---|---|
-| Code | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding` | one seat per mandate (the width replay's merged design + tests + grounding map recovered 31% of baseline findings against a 34% bar) | one seat |
+| Code | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding` | one seat per mandate | one seat |
 | Meta | `plc-memory-alignment`, `plc-instruction-quality`, `plc-doctrine-consistency`, `plc-evidence-grounding` | text (`plc-instruction-quality` + `plc-doctrine-consistency`) and grounding (`plc-evidence-grounding` + `plc-memory-alignment`) | one seat |
 | Mixed | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding`, `plc-instruction-quality`, `plc-doctrine-consistency` | one seat per code mandate plus the meta text seat (`plc-instruction-quality` + `plc-doctrine-consistency`) | one seat |
 
-Add a lens only for a distinct uncovered risk. Judgment needs a qualified review role. Effort follows the plan-check tier row in the ladder.
+Add a lens only for a distinct uncovered risk. Judgment needs a qualified review role. Pin each seat to the architect tier at its review rung (ladder §Role guidance).
 
 Fetch mandates with `python3 .claude/tools/lens.py get --shared <keys>`. Do not load the whole mandate catalog. Put shared context and each seat's prompt in files; a merged seat's prompt carries each of its mandates and the §2 per-mandate coverage rule.
 
 Invoking `/plan_check` is this fan-out's Workflow authorization (`orchestration` §0). Native route: `review_fanout.js` under `.claude/workflows/`, with `args.agents=[{key,promptPath,model,effort,agentType}]`, `contextPrefixPath`, and run-specific `spillDir`. Off-transport: the registered sidecar owner with the canonical `.claude/schemas/review_findings.json`. Keep the same finding/coverage contract across routes. Do not substitute an unpinned Agent call.
 
-Lenses are read-only except their evidence artifacts. Tests, builds and shared LSP operations remain serialized by the parent; independent source inspection is required. Briefs carry constraints, exclusions and done-conditions. A profile without Write cannot promise a spill file. Recover incomplete runs before any fresh dispatch; failed coverage is not a clean review.
+Lenses are read-only except their evidence artifacts. Tests, builds and shared LSP operations remain serialized by the parent; independent source inspection is required. Briefs carry constraints, exclusions and done-conditions. A profile without Write cannot promise a spill file. Recover incomplete runs before any fresh dispatch.
 
 ## Phase 3: Consolidate & Report
 
