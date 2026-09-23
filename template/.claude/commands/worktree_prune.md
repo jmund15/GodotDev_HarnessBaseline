@@ -53,6 +53,8 @@ Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tra
 
 **The bucket is advice, not permission.** `wip:N` is N tracked uncommitted edits. Show the diff and get a decision first: removing a clean worktree is recoverable from its branch, but uncommitted work is gone. Never pass `--force`. Never remove a `locked` worktree.
 
+`git worktree remove` refuses any worktree carrying the Jmodot submodule. For those, run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`. The delete guard (`is_retired_worktree` in `hooks/_regenerable_clone.py`) decides which worktrees qualify; ignored scratch evidence or local config blocks it until moved or deleted.
+
 Removal happens only after the user names which ones — this command's own output is not the confirmation.
 
 ## Don'ts

@@ -50,18 +50,24 @@ def main() -> None:
         state["skills_loaded"] = skills
 
     update_json_locked(state_path(session_id), record)
-    if skill.split(":")[-1] == "orchestration":
-        try:
-            from workflow_provider_guard import ladder_role_lines
-            roles = ladder_role_lines()
-        except Exception:
-            roles = []
-        if roles:
+    if bare == "orchestration":
+        note = ladder_note()
+        if note:
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
-                "additionalContext": "[role ladder — pin against THESE rows, not the registry roster (orchestration §5)] " + " ;; ".join(roles),
+                "additionalContext": note,
             }}))
     sys.exit(0)
+
+
+def ladder_note():
+    """The role-ladder injection, built by workflow_provider_guard's one formatter ("" on any failure)."""
+    try:
+        import workflow_provider_guard as wpg
+        roles = wpg.ladder_role_lines()
+        return wpg.ROLE_LADDER_HEADER + "; ".join(roles) if roles else ""
+    except Exception:
+        return ""
 
 
 if __name__ == "__main__":

@@ -291,10 +291,10 @@ class _BatchReader:
         except OSError as exc:
             raise BaselineError(f"could not start git cat-file --batch: {exc}") from exc
 
-    def read(self, relpath: str) -> bytes | None:
+    def read(self, relpath: str, commit: str | None = None) -> bytes | None:
         if self.process.stdin is None or self.process.stdout is None:
             raise BaselineError("git cat-file --batch pipes are unavailable")
-        query = f"{self.commit}:template/{relpath}\n".encode("utf-8")
+        query = f"{commit or self.commit}:template/{relpath}\n".encode("utf-8")
         try:
             self.process.stdin.write(query)
             self.process.stdin.flush()
@@ -338,6 +338,10 @@ class BaselineSource:
 
     def read(self, relpath: str) -> bytes | None:
         return self.batch.read(relpath)
+
+    def read_at(self, commit: str, relpath: str) -> bytes | None:
+        """`relpath` at another commit of the same object store; None when absent or unreadable."""
+        return self.batch.read(relpath, commit)
 
     def close(self) -> None:
         self.batch.close()
@@ -1142,7 +1146,15 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
         base = entry.get("base")
         if not base:
             return "forked-base-unknown"
-        return "forked" if base == source.sha else "forked-upstream-moved"
+        if base == source.sha:
+            return "forked"
+        # Every publish moves the pin; the fork moved only when its own upstream file did.
+        reader = getattr(source, "read_at", None)
+        at_base = reader(base, relpath) if reader else None
+        at_pin = source.read(relpath) if reader else None
+        if at_base is not None and at_pin is not None and _lf(at_base) == _lf(at_pin):
+            return "forked"
+        return "forked-upstream-moved"
     if status == "composed":
         local = local_text(root, relpath)
         if entry.get("hash") is None or local is None or sha(local.encode("utf-8")) != entry.get("hash"):
@@ -1280,7 +1292,8 @@ def _whole_file_as_added_diff(relpath: str, text: str) -> str:
     return "\n".join(body) + "\n"
 
 
-def _classify_identity_hit(root: Path, relpath: str, profile: dict, data: bytes | None = None):
+def _classify_identity_hit(root: Path, relpath: str, profile: dict, data: bytes | None = None,
+                           substitutions: dict | None = None):
     """The first identity-scan hit in `relpath`'s current content (index, else HEAD, else the
     working copy -- `_content_bytes`), scanned as if every line were newly added.
 
@@ -1288,12 +1301,15 @@ def _classify_identity_hit(root: Path, relpath: str, profile: dict, data: bytes 
     other profile kind (concatenation, home path, topology token, content noun) and any hit in
     a file that already existed with different content. `baseline_identity.scan_changed` is the
     one profile-aware scanner (Design §3); running it over the whole file as added lines is how
-    a `classify --status tracked` proof plants a hit and gets a real refusal."""
+    a `classify --status tracked` proof plants a hit and gets a real refusal. The scanned text is
+    the reverse-substituted form `publish` materializes, so a lock substitution value alone is
+    not a hit."""
     if data is None:
         data = _content_bytes(root, relpath)
     if data is None:
         return None
-    diff_text = _whole_file_as_added_diff(relpath, data.decode("utf-8", errors="replace"))
+    text = reverse_for(relpath, data.decode("utf-8", errors="replace"), substitutions or {})
+    diff_text = _whole_file_as_added_diff(relpath, text)
     hits = baseline_identity.scan_changed(diff_text, profile)
     return hits[0] if hits else None
 
@@ -1313,6 +1329,16 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         raise UsageError("--inputs is only valid with --status composed")
     if inputs:
         _validate_relpaths(inputs)
+    # A `local` row may name a path only upstream carries: the consumer declines that file.
+    absent_upstream: dict[str, str] = {}
+    missing = [relpath for relpath in relpaths if relpath not in _git_contents(root, relpaths)]
+    if missing and status == "local":
+        lock_now = load_lock(root)
+        source = ensure_baseline(lock_now, root, baseline_dir)
+        for relpath in missing:
+            upstream = _upstream_sha(source, relpath, lock_now.get("substitutions", {}))
+            if upstream is not None:
+                absent_upstream[relpath] = upstream
 
     def apply(lock: dict):
         files = lock.setdefault("files", {})
@@ -1322,12 +1348,14 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         profile = None  # built on the first tracked row: it reads the pinned template tree
         committed = _git_contents(root, relpaths)
         for relpath in relpaths:
-            if relpath not in committed:
-                raise BaselineError(f"classify requires an index or HEAD path: {relpath}")
+            if relpath not in committed and relpath not in absent_upstream:
+                raise BaselineError(
+                    f"classify requires an index or HEAD path, or a local row for a path upstream carries: {relpath}")
             if status == "tracked":
                 if profile is None:
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
-                hit = _classify_identity_hit(root, relpath, profile, committed[relpath])
+                hit = _classify_identity_hit(root, relpath, profile, committed[relpath],
+                                             lock.get("substitutions", {}))
                 if hit is not None:
                     raise BaselineError(
                         f"identity scan hit in {relpath}:{hit.line} "
@@ -1339,7 +1367,8 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         changed = []
         for relpath in relpaths:
             existing = files.get(relpath)
-            current_sha = sha(committed[relpath])
+            absent = relpath not in committed
+            current_sha = absent_upstream[relpath] if absent else sha(committed[relpath])
             # --layer records a row the baseline manifest does not list yet; publish needs it.
             layer = layer_override or (
                 (source_entry or {}).get("layer") if source_entry else (existing or {}).get("layer"))
@@ -1351,6 +1380,7 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
                 and existing.get("layer") == layer
                 and existing.get("inputs") == desired_inputs
                 and existing.get("from") == source_relpath
+                and bool(existing.get("absent")) == absent
             )
             if same:
                 continue
@@ -1372,6 +1402,10 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
                 entry["base"] = None
             else:
                 entry.pop("base", None)
+            if absent:
+                entry["absent"] = True
+            else:
+                entry.pop("absent", None)
             entry["judged"] = _decision(root, relpath, _classify_decision_verdict(status), sha_value=current_sha)
             files[relpath] = entry
             changed.append(relpath)
@@ -1386,8 +1420,18 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
     return 0
 
 
+def _commit_shas(root: Path, commit: str, relpaths: list[str]) -> dict[str, str | None]:
+    """Each row's sha at `commit`, never the shared index: `publish --from-commit` checks the
+    judged sha against that commit's blob, and a peer's staged edit would otherwise stand in."""
+    shas: dict[str, str | None] = {}
+    for relpath in relpaths:
+        result = _git(root, ["show", f"{commit}:{relpath}"], check=False)
+        shas[relpath] = sha(result.stdout) if result.returncode == 0 else None
+    return shas
+
+
 def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
-              confirm: bool, force: bool) -> int:
+              confirm: bool, force: bool, commit: str | None = None) -> int:
     if verdict not in VERDICTS:
         raise UsageError("--verdict must be push, keep-local or fork")
     if borderline and confirm:
@@ -1397,7 +1441,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
     def apply(lock: dict):
         files = lock.get("files", {})
         decisions = {}
-        current = _content_shas(root, relpaths)
+        current = _commit_shas(root, commit, relpaths) if commit else _content_shas(root, relpaths)
         for relpath in relpaths:
             if relpath not in files:
                 raise BaselineError(f"not a row: {relpath}")
@@ -1496,12 +1540,14 @@ def v2_forget(root: Path, relpaths: list[str], force: bool) -> int:
 
 def _gc_rows(root: Path, lock: dict) -> tuple[list[tuple[str, str]], dict[str, int]]:
     rows = []
-    totals = {"drop": 0, "keep-tracked": 0, "unreadable": 0}
+    totals = {"drop": 0, "keep-tracked": 0, "keep-declined": 0, "unreadable": 0}
     for relpath, entry in sorted(lock.get("files", {}).items()):
         if (root / relpath).exists():
             continue
         status = _entry_status(entry) if isinstance(entry, dict) else ""
-        if status in ("local", "forked", "watch"):
+        if status == "local" and entry.get("absent"):
+            tag = "keep-declined"
+        elif status in ("local", "forked", "watch"):
             tag = "drop"
         elif status == "tracked":
             tag = "keep-tracked"
@@ -1518,8 +1564,8 @@ def v2_gc(root: Path, apply_changes: bool) -> int:
     scanned = sum(totals.values())
     for relpath, tag in rows:
         print(f"{tag}: {relpath}")
-    print("totals: scanned=%d drop=%d keep-tracked=%d unreadable=%d" % (
-        scanned, totals["drop"], totals["keep-tracked"], totals["unreadable"]))
+    print("totals: scanned=%d drop=%d keep-tracked=%d keep-declined=%d unreadable=%d" % (
+        scanned, totals["drop"], totals["keep-tracked"], totals["keep-declined"], totals["unreadable"]))
     if not apply_changes:
         if not rows:
             print("no change")
@@ -1704,6 +1750,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
             else:
                 if _entry_status(files[relpath]) == "local":
                     files[relpath].pop("hash", None)
+                    files[relpath].pop("absent", None)
                 else:
                     files[relpath]["hash"] = upstream_hash
             changed.append(relpath)
@@ -2367,7 +2414,8 @@ def main(argv=None) -> int:
         if args.op == "ignore":
             return v2_classify(root, args.relpaths, "local", None, None, args.force, args.baseline_dir)
         if args.op == "judge":
-            return v2_judge(root, args.relpaths, args.verdict, args.borderline, args.confirm, args.force)
+            return v2_judge(root, args.relpaths, args.verdict, args.borderline, args.confirm, args.force,
+                            args.commit)
         if args.op == "sub":
             return v2_sub(root, args.sub, args.unset)
         if args.op == "candidates":

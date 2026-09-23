@@ -60,10 +60,10 @@ import sidecar_launch  # noqa: E402  -- owns the shell choice; see plan_job's ar
 import sidecar_resume_check as stream_check  # noqa: E402  -- owns stream-event classification
 
 # A PROCESS cap, chosen here rather than read from the registry's `limits.concurrency`: that field
-# carries 2500 (flash), 500 (pro) and null (luna/terra/sol) -- an API/token ceiling, not a count of
-# child CLIs. The default rests on one luna 7-wide fan-out that died 403 at a single instant, cause
-# unverified (`gotcha_luna_sidecar_concurrency_cap`). That is a hypothesis, not a measurement, so
-# the number is a flag rather than a rule.
+# is a vendor API/token ceiling (or null), not a count of child CLIs. The default rests on one
+# 7-wide codex fan-out that died 403 at a single instant, cause unverified
+# (`gotcha_luna_sidecar_concurrency_cap`). That is a hypothesis, not a measurement, so the number
+# is a flag rather than a rule.
 DEFAULT_MAX_PARALLEL = 4
 
 # The review deliverable's shape, shipped so `-S` needs no caller decision. Structurally identical
@@ -251,8 +251,8 @@ def plan_job(job, data, out_dir, authorize):
             raise JobError(f"job {label}: contextFile not found: {cf}")
         argv += ["-C", _posix(cf)]
     # The ladder pins this to the EFFORT rung, not the shape: a `max` run compacts and returns
-    # prose without `-P` (gpt-5.6-luna row; the work-shape table lists a luna arm without -S/-P
-    # under `never`). Schema and review shape stay as additional triggers.
+    # prose without `-P` (model_ladder_evidence.md, §Role guidance). Schema and review shape stay as
+    # additional triggers.
     # -P is also the stall watchdog's switch (sc_run_watched watches this stream), so EVERY job
     # gets one: an unattended fan-out child is the exact case the watchdog exists for.
     argv += ["-P", _posix(out_dir / f"{label}.stream")]

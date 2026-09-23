@@ -331,9 +331,9 @@ def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
         # that silently routes all delegation back to Anthropic quota.
         proc = subprocess.run(
             [bash, script.resolve().as_posix(), "--check"],
-            # 45 s matches the dispatch preflight (sidecar_dispatch_context.PREFLIGHT_TIMEOUT): a balance
-            # probe that retries (sc_gate_balance, up to 34 s) must not read as "timed out" here only.
+            # 45 s matches dispatch preflight; normalized live capacity probes cap at 35 s.
             capture_output=True, text=True, timeout=45, cwd=str(root),
+            env=dict(os.environ, PROVIDER_CAPACITY_ADVISORY="1"),
         )
     except FileNotFoundError:
         return "UNAVAILABLE (bash not on PATH)"
@@ -1061,10 +1061,11 @@ def main():
     output_lines.append("<context-reload-reminder>")
     output_lines.append("If resuming from compaction: search auto-memory (semantic-search) for task-relevant gotchas.")
     output_lines.append("Picking up another session's work (after /clear, a handoff, or a parallel session): "
-                        "`python3 .claude/tools/session_digest.py --session <id-prefix> --brief` prints its prompts, "
-                        "friction, files touched and last message; holding a pasted message from it, "
-                        "`--match-file <paste.txt>` finds the transcript. Read the documents its prompts "
-                        "supplied as inputs, not only its digest.")
+                        "use `python3 .claude/tools/session_digest.py --session <id-prefix> --handoff` for the "
+                        "bounded resume packet. `--brief` is only an identity card and is not enough to resume "
+                        "non-trivial work. `--full` is an offline human-readable export, not model context. "
+                        "Holding a pasted message from the session, use `--match-file <paste.txt>` to find the "
+                        "transcript. Read the documents its prompts supplied as inputs, not only its digest.")
     output_lines.append("</context-reload-reminder>")
 
     print("\n".join(output_lines))

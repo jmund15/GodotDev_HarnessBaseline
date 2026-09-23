@@ -17,7 +17,7 @@ A job requires `label`, `promptPath`, `role`, `model`, `effort`, `transport`, `c
 
 ## 1. Normalize and preflight
 
-Check needed model fields through `model_registry.py resolve <model>` / `for-role <role>` and the role ladder. Use `available` when selecting a model, not as a repeated full-catalog ritual. Preserve explicit owner overrides as overrides, not capability promotions; availability and permission boundaries still bind.
+Check needed model fields through `model_registry.py resolve <model>`, locate rows with `for-role <role>`, and take the effort from the role ladder's cell; `for-role` picks none. Use `available` when selecting a model, not as a repeated full-catalog ritual. Preserve explicit owner overrides as overrides, not capability promotions; availability and permission boundaries still bind.
 
 Namespace labels `<runKey>-<label>` and reject duplicates. State model, effort, profile and currency before dispatch. Keep unknown effective settings null.
 
@@ -30,7 +30,7 @@ Do not silently change a pin, role, provider or currency to get past a failure.
 
 ## 2. Keep the declared run
 
-**One suitable arm per independently needed job, including review lenses.** Adding an available provider does not add jobs. Keep independent required coverage; related checks may share a scoped lens when coverage stays explicit.
+**One suitable arm per independently needed job, including review lenses at their seat width: a review lens is one mandate; seats follow `orchestration` §2.** Adding an available provider does not add jobs. Keep independent required coverage; related checks may share a scoped lens when coverage stays explicit.
 
 Same-task model comparisons belong to an explicit comparison request (`/pin_ab` or a declared comparison workflow), with named arms, frozen inputs and a finite budget. Do not turn ordinary delivery into calibration or infer comparison eligibility from a mixed-model run.
 

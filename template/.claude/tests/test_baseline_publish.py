@@ -561,6 +561,29 @@ def test_tracer_publishes_one_row_to_fixture_remote() -> None:
         assert _field(journal, "pr_url"), "step 6 did not record a PR url"
 
 
+def test_peer_edit_after_the_source_commit_leaves_step_eight_green() -> None:
+    """Step 8 checks what was published -- the source commit's bytes -- not the working
+    tree. In a shared checkout a peer may edit a published row after the source commit;
+    that edit is new local work for `triage`, not a failed publication."""
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(
+            path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        _write(root / rel, b"value = 'a peer edited this after the commit'\n")
+
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(
+                root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                [rel], [], False, True, None,
+            )
+        steps = _field(journal, "steps")
+        assert all(step["status"] == "green" for step in steps), steps
+        assert (root / rel).read_bytes() == b"value = 'a peer edited this after the commit'\n"
+
+
 def test_collect_without_rows_takes_only_push_verdicts() -> None:
     pushed = ".claude/tools/pushed.py"
     unjudged = ".claude/tools/unjudged.py"
@@ -1572,6 +1595,7 @@ def main() -> int:
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,
+        test_peer_edit_after_the_source_commit_leaves_step_eight_green,
         test_collect_without_rows_takes_only_push_verdicts,
         test_materialize_writes_source_bytes_unsubstituted,
         test_materialize_records_new_row_layers_and_regenerates_manifest,
@@ -1603,6 +1627,7 @@ def main() -> int:
         test_worktree_source_leaves_hash_for_consumer_pull_when_out_of_sync,
         test_publish_refuses_malformed_adaptation_contract_fresh_run,
         test_publish_resume_refuses_malformed_adaptation_contract,
+        test_published_forked_row_records_tracked_not_forked,
     ]
     failures = []
     for case in cases:
@@ -1654,6 +1679,52 @@ def test_publish_renames_project_identifiers_without_touching_the_local_file() -
         assert b"GenericWidget" in published, published
         assert b"FixtureWidget" not in published, published
         assert (root / rel).read_bytes() == local_content, "the local file must keep the real name"
+
+
+def test_published_forked_row_records_tracked_not_forked() -> None:
+    """A forked row judged `push` is upstream's content once step 7 has rewritten its hash,
+    so the row is no longer a fork. Leaving `status: forked` there makes the next
+    `check --strict` report `forked-upstream-moved`: the recorded `base` can no longer match a
+    baseline that now carries this very content -- a clean publication that reads as drift."""
+    rel = ".claude/tools/fixture_forked.py"
+    baseline_content = b"value = 'old'\n"
+    local_content = b"value = 'fixture'\n"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, baseline_content, local_content)
+        lock_path = root / ".claude" / "baseline.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["files"][rel]["status"] = "forked"
+        lock["files"][rel]["base"] = baseline_commit
+        # Schema 2 is what makes the consequence reachable: on a v1-shaped lock `_v2_state`
+        # short-circuits a forked row to plain `forked` (quiet), so the drift this case exists
+        # to prevent would not appear and the case would prove only the row-dict change.
+        lock["schema"] = 2
+        _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
+        _commit(root, "forked row judged push")
+        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(
+                root,
+                {"kind": "commit", "repo": str(root), "commit": source_commit},
+                [rel],
+                [],
+                False,
+                True,
+                None,
+            )
+        steps = _field(journal, "steps")
+        assert all(step["status"] == "green" for step in steps), steps
+        assert _git(remote, "show", "main:" + "template/" + rel) != baseline_content
+
+        row = json.loads(lock_path.read_text(encoding="utf-8"))["files"][rel]
+        assert row["status"] == "tracked", (
+            "a published row now holds upstream's content; leaving it `forked` makes the "
+            "next check read forked-upstream-moved: %r" % (row,)
+        )
+        assert "base" not in row, row
 
 
 if __name__ == "__main__":

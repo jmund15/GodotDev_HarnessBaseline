@@ -6,10 +6,12 @@ Fires for a direct `*_sidecar.sh` launch or a structurally validated `sidecar_fa
 
 1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-W]`
    synchronously. The same launcher gates each validated fan-out child at runtime. Availability,
-   budget-band, balance, and provider-ceiling refusals remain owned by the launchers.
-2. APPROVAL. A validated fan-out gets `permissionDecision: allow` because auto mode cannot inspect
+   budget-band, provider-capacity, balance, and pricing refusals remain owned by the launchers.
+2. LADDER (deny path). One successful full model-ladder Read authorizes every direct launch or
+   validated fan-out until the next compaction clears the marker.
+3. APPROVAL. A validated fan-out gets `permissionDecision: allow` because auto mode cannot inspect
    its jobs JSON. `--authorize`, `extraArgs`, shell compounds, and non-project paths fall through.
-3. CONTEXT (advisory). Emits the reference once per session, and again after compaction. A
+4. CONTEXT (advisory). Emits the sidecar reference once per session and after compaction. A
    backgrounded lib-launcher call with `-R` also gets a one-line pointer at its `.exit` file (the
    launcher itself writes it on every exit path — Design §1); a backgrounded fan-out gets its own
    advisory instead. Neither is a deny: backgrounding is not refused.
@@ -27,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import fire_once_since_compaction
+import model_ladder_gate
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
@@ -305,6 +308,14 @@ def fanout_allowed(payload):
             and all(_safe_fanout_job(job, root, registry) for job in jobs))
 
 
+def _executes_launcher(cmd):
+    """True when a top-level shell segment runs a `*_sidecar.sh` launcher, per the quote-aware parser
+    orchestration_metrics.sidecar_launches uses. LAUNCH_RE alone also matches a quoted mention."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import orchestration_metrics
+    return any(kind == "sidecar" for kind, _, _ in orchestration_metrics._launcher_calls_named(cmd))
+
+
 def main():
     data = json.load(sys.stdin)
     if data.get("tool_name") != "Bash":
@@ -313,6 +324,8 @@ def main():
     cmd = tool_input.get("command") or ""
     run_in_background = bool(tool_input.get("run_in_background"))
     direct = LAUNCH_RE.search(cmd)
+    if direct and not _executes_launcher(cmd):
+        direct = None  # the launcher is only named: quoted in `python3 -c "…"`, `echo '…'`, a heredoc
     fanout_is_allowed = fanout_allowed(data)
     # `--check` must be THIS launcher's own first token; the word elsewhere on the line, or past a
     # `;`/`&&`/`|`, is not a probe (§2's shlex parse replaces a plain substring test).
@@ -345,6 +358,21 @@ def main():
                 }
             }))
             return
+
+    if not model_ladder_gate.claim_loaded(data.get("session_id") or ""):
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "Sidecar dispatch denied: first run a full Read of `%s` (this absolute "
+                    "path; a relative one resolves to a worktree's copy, which does not count). "
+                    "One full Read authorizes every direct launch or validated fan-out until "
+                    "the next compaction." % model_ladder_gate.expected_path(data)
+                ),
+            }
+        }))
+        return
 
     output = {"hookEventName": "PreToolUse"}
     if fanout_is_allowed:

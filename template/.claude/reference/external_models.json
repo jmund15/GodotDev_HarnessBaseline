@@ -1,29 +1,56 @@
 {
-  "revision": "2026-09-03",
-  "_comment": "SSOT for DISPATCHABLE models on every transport, host included (the `anthropic` transport was added 2026-09-04; before that this file was external-only): per-transport role resolution, prices, limits, authorization gates. Policy prose home: .claude/skills/orchestration/SKILL.md section 5. The ladder in .claude/reference/model_ladder_evidence.md owns role SEMANTICS and the Anthropic-transport mapping; this file owns per-transport resolution. Model churn is an edit in exactly one of the two, never both. Validate with: python3 .claude/tools/model_registry.py --check",
+  "revision": "2026-09-22",
+  "_comment": "SSOT for DISPATCHABLE models on every transport, host included (the `anthropic` transport was added 2026-09-04; before that this file was external-only): per-transport role resolution, prices, limits, authorization gates, and model IDENTITY -- one row per model version (label, family, version, lifecycle, display order, cost rank), and `aliasHistory` for which id each alias served when. Policy prose home: .claude/skills/orchestration/SKILL.md section 5. The ladder in .claude/reference/model_ladder_evidence.md owns role SEMANTICS and the Anthropic-transport mapping; this file owns per-transport resolution. A bare alias names the CURRENT version of its family on every route; a superseded version keeps its row under a versioned alias (opus5, sol56, luna56). A version move is therefore an edit here: a new row that takes its family's roles and effort (effort.measuredVersion names the predecessor), an alias remap and an aliasHistory boundary. The ladder's family row needs no edit until a cell or an owner ruling shows the new version differs. `prior` is an intake input (frontier|mid|small), never a measurement: rows without an owner statement take their tier. Validate with: python3 .claude/tools/model_registry.py --check",
   "transports": {
     "deepseek": {
       "baseUrl": "https://api.deepseek.com/anthropic",
       "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "DEEPSEEK_API_KEY",
-      "balanceUrl": "https://api.deepseek.com/user/balance",
+      "capacityProbe": {
+        "command": "python",
+        "args": [".claude/scripts/deepseek_balance_probe.py"],
+        "kind": "balance",
+        "timeoutSeconds": 15
+      },
       "launcher": ".claude/scripts/deepseek_sidecar.sh",
       "costModel": "marginal-usd",
+      "pricingSchedule": {
+        "offPeakMultiplier": 0.5,
+        "peakWindowsUTC": [
+          {"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "01:00", "end": "04:00"},
+          {"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "start": "06:00", "end": "10:00"}
+        ],
+        "source": "https://api-docs.deepseek.com/quick_start/pricing",
+        "asOf": "2026-09-15"
+      },
+      "_pricingScheduleNote": "Row prices are the LIST (peak) rates; off-peak bills at offPeakMultiplier. Windows are start-inclusive, end-exclusive, UTC; an end earlier than its start crosses midnight and belongs to the day it starts.",
+      "effortValues": ["low", "high", "max"],
+      "_effortValuesNote": "The rungs DeepSeek actually serves (https://api-docs.deepseek.com/guides/thinking_mode/, read 2026-09-15): medium and xhigh are served as high, so the launcher refuses them rather than record a coordinate that did not run. Thinking is on by default at high. The V4.1 model card describes a native 1-100 effort scale but publishes no mapping from these strings to it.",
       "status": {
-        "state": "unavailable",
-        "since": "2026-08-18",
-        "reason": "API balance not being replenished; per-token prices rose."
+        "state": "available",
+        "since": "2026-09-15",
+        "reason": "Owner refilled the API balance for V4.1 Flash (2026-09-15)."
       }
     },
     "codex": {
-      "_comment": "OpenAI Codex, billed against a ChatGPT Plus plan — NOT an OpenAI API key, and unrelated to the failure_archaeology `codex/*` git branches. ONE launcher (2026-08-20): the proxy path, which runs the real `claude` binary against a local proxy translating Anthropic Messages traffic to the Codex backend, so the full .claude harness applies. The former `codex exec` launcher (codex_sidecar.sh) is a retired refusing stub — it passed the prompt as argv (dies on the Windows command-line length limit) and its child loaded none of .claude. Proxy is raine/claude-code-proxy v0.1.35 — caixiaoshun/claudex v1.0.0 was tested and REJECTED: its Anthropic->OpenAI tool-schema conversion emits invalid schemas (widens `required` to every property; adds `type:object` beside an `anyOf`), and all three tool-bearing E2E runs failed while the tools-disabled run passed.",
+      "_comment": "OpenAI Codex, billed against a ChatGPT Plus plan — NOT an OpenAI API key, and unrelated to the failure_archaeology `codex/*` git branches. ONE launcher (2026-08-20): the proxy path, which runs the real `claude` binary against a local proxy translating Anthropic Messages traffic to the Codex backend, so the full .claude harness applies. The former `codex exec` launcher stub was retired (it passed the prompt as argv — dies on the Windows command-line length limit — and its child loaded none of .claude), then deleted (2026-09-14); git history at the pre-retirement tag point (fix(sidecar) 26393ee81) still has it. Proxy is raine/claude-code-proxy v0.1.35 — caixiaoshun/claudex v1.0.0 was tested and REJECTED: its Anthropic->OpenAI tool-schema conversion emits invalid schemas (widens `required` to every property; adds `type:object` beside an `anyOf`), and all three tool-bearing E2E runs failed while the tools-disabled run passed.",
+      "_limitsSource": "OpenAI's own models cache (~/.codex/models_cache.json, written by the Codex client from the backend), read 2026-09-22. Applies to every registered codex row: context_window 272000, max_context_window 872000, effective_context_window_percent 95. Each codex row's `effortValues` is that model's supported_reasoning_levels from the same read; `effort-values` narrows it to serverSidePins.effortValues, the rungs the proxy can pin.",
+      "longContextTier": {
+        "thresholdInputTokens": 272000,
+        "multipliers": {"input": 2.0, "cachedInput": 2.0, "output": 1.5},
+        "appliesPer": "request",
+        "exemptInCodex": ["gpt-6-astra"],
+        "planUsageLimits": "unpublished for GPT-5.6/GPT-6 on Plus/Pro allowances; the GPT-5.4 launch post says requests over 272K count 2x against usage limits",
+        "sources": ["https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "https://developers.openai.com/api/docs/pricing", "https://developers.openai.com/api/docs/models/gpt-5.6-sol", "https://openai.com/index/introducing-gpt-5-4/"],
+        "asOf": "2026-09-22"
+      },
       "launcher": ".claude/scripts/codex_proxy_sidecar.sh",
       "costModel": "plan-quota",
-      "quotaProbe": {
+      "capacityProbe": {
         "command": "python",
-        "args": [
-          ".claude/scripts/codex_quota_probe.py"
-        ]
+        "args": [".claude/scripts/codex_quota_probe.py"],
+        "kind": "quota",
+        "timeoutSeconds": 35
       },
       "modelAttestation": {
         "_comment": "A proxied child CANNOT report which model served it. Claude Code's system prompt asserts a Claude identity, so the arm parrots it; worse, a run with CCP_CODEX_MODEL forcing gpt-5.6-luna reported `modelUsage: [gpt-5.4-mini]` — the child's own pin, not the served model. Any void-check reading modelUsage mislabels the arm. The proxy's own capture is the only valid attestation.",
@@ -50,16 +77,21 @@
     },
     "opencode": {
       "_limitsSource": "models.dev, the OpenCode team's own catalog (first-party metadata, not a benchmark) - refreshed by scripts/opencode_refresh_models.py. Recorded once here because ONE catalog sourced every row on this transport.",
-      "_comment": "OpenCode Zen FREE tier (https://opencode.ai/zen) — keyless (`Authorization: Bearer public`; any other unauthenticated key 401s, measured 2026-08-22). ONE shape: the proxy path — Zen's own Anthropic surface (/v1/messages) serves free models TEXT-ONLY (any request carrying `tools` upstream-errors [1210] on every free id tested) while its OpenAI surface (/v1/chat/completions) carries function-calling, streaming and tool loops, verified end-to-end including a real `claude` child completing tool-bearing work. Proxy is LiteLLM (uv tool install 'litellm[proxy]' --with 'fastapi<0.120'; newer fastapi removed get_flat_dependant and this LiteLLM imports it), started PER DISPATCH from a generated config pinning exactly one deployment under the requested id — unknown ids fail routing loudly ('No deployments available'), there is NO alias surface, so unlike the codex transport the child's own modelUsage.canonicalModel IS trustworthy identity evidence. costModel is marginal-usd WITH $0-AUTHORED PRICES because the calls ARE $0 (`cost:\"0\"` in every Zen response); the legal costModel set has no 'free', and plan-quota would demand a quotaProbe nothing here can satisfy — so costUSD 0.0 in records is measured truth, not the pricing artifact it would be on a priced model. Privacy: Zen documents some free ids as permitted to train on submissions during their free period — check its Privacy section before dispatching proprietary material. ONE row on this transport (muse) is Contributor-Free rather than anonymous-free: it needs a real logged-in-account key (credentialVar below), trains on submissions by design, and 500s under the anonymous `public` bearer — see the muse model row's own comment.",
+      "_comment": "OpenCode Zen FREE tier (https://opencode.ai/zen) — keyless (`Authorization: Bearer public`; any other unauthenticated key 401s, measured 2026-08-22). ONE shape: the proxy path — Zen's own Anthropic surface (/v1/messages) serves free models TEXT-ONLY (any request carrying `tools` upstream-errors [1210] on every free id tested) while its OpenAI surface (/v1/chat/completions) carries function-calling, streaming and tool loops, verified end-to-end including a real `claude` child completing tool-bearing work. Proxy is LiteLLM (uv tool install 'litellm[proxy]' --with 'fastapi<0.120'; newer fastapi removed get_flat_dependant and this LiteLLM imports it), started PER DISPATCH from a generated config pinning exactly one deployment under the requested id — unknown ids fail routing loudly ('No deployments available'), there is NO alias surface, so unlike the codex transport the child's own modelUsage.canonicalModel IS trustworthy identity evidence. costModel is marginal-usd WITH $0-AUTHORED PRICES because the calls ARE $0 (`cost:\"0\"` in every Zen response); the legal costModel set has no 'free', and plan-quota would require a quota-capable capacityProbe nothing here can satisfy — so costUSD 0.0 in records is measured truth, not the pricing artifact it would be on a priced model. Privacy: Zen documents some free ids as permitted to train on submissions during their free period — check its Privacy section before dispatching proprietary material. ONE row on this transport (muse) is Contributor-Free rather than anonymous-free: it needs a real logged-in-account key (credentialVar below), trains on submissions by design, and 500s under the anonymous `public` bearer — see the muse model row's own comment.",
       "baseUrl": "https://opencode.ai/zen/v1",
+      "effortValues": ["low", "medium", "high", "xhigh", "max"],
+      "_effortValuesNote": "Claude Code request vocabulary, not measured effective effort. Model-specific recommendations remain in the role ladder.",
       "launcher": ".claude/scripts/opencode_sidecar.sh",
       "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "OPENCODE_API_KEY",
       "costModel": "marginal-usd",
+      "capacityUnsupported": {
+        "reason": "OpenCode publishes dispatch eligibility but no account amount endpoint."
+      },
       "status": {
         "state": "available",
         "since": "2026-09-03",
-        "reason": "Re-enabled for muse-spark-1.3 only, after the owner supplied a real Zen account key (2026-09-03). Every other registered row on this transport is individually excluded (owner tested directly -- usage limits too low) -- see each row's own status. x-preview-f-free and hy3-free were removed outright: gone from Zen's live catalog, not an owner exclusion."
+        "reason": "Re-enabled for muse-spark-1.3 only, after the owner supplied a real Zen account key (2026-09-03). Every other registered row on this transport is individually excluded (owner tested directly -- usage limits too low) -- see each row's own status. x-preview-f-free and hy3-free left Zen's live catalog (not an owner exclusion) and stay only as retired rows."
       }
     },
     "anthropic": {
@@ -68,11 +100,11 @@
       "credentialPath": "~/.claude/.credentials.json",
       "roleSource": "reference/model_ladder_evidence.md",
       "costModel": "plan-quota",
-      "quotaProbe": {
+      "capacityProbe": {
         "command": "python",
-        "args": [
-          ".claude/scripts/anthropic_quota_probe.py"
-        ]
+        "args": [".claude/scripts/anthropic_capacity_probe.py"],
+        "kind": "quota",
+        "timeoutSeconds": 20
       },
       "status": {
         "state": "available",
@@ -81,40 +113,78 @@
       }
     }
   },
+  "_aliasHistoryComment": "Which id each alias served, and until when (`until` exclusive, UTC; `since` on the first entry marks the earliest evidenced service, and a date before it resolves to nothing). Read by model_registry.resolve_alias_at for records with no attested or served id (sealed rows, Workflow-transport cells). An alias absent here has only ever served its current row. The last entry is always the row holding the alias now. Every boundary names its evidence; a boundary that cannot be evidenced is left out rather than guessed.",
+  "aliasHistory": {
+    "opus": [
+      {"id": "claude-opus-4-8", "since": "2026-07-15T23:32:11Z", "until": "2026-07-24T19:43:00Z", "evidence": "Transcript census 2026-09-22 (message.model over every ~/.claude/projects transcript, 7,419 files): first claude-opus-4-8 2026-07-15T23:32:11Z, first claude-opus-5 2026-07-24T19:43:00Z. The prior claude-opus-4-7 was last seen 2026-04-28, so the 4-7 -> 4-8 switch falls in a gap with no evidence and stays open."},
+      {"id": "claude-opus-5", "until": "2026-09-22T22:45:03Z", "evidence": "Same census: first claude-opus-5-5 2026-09-22T22:45:03Z. Every Anthropic-transport opus arm record (2026-09-05 .. 2026-09-15) reports servedModel claude-opus-5."},
+      {"id": "claude-opus-5-5"}
+    ],
+    "fable": [
+      {"id": "claude-fable-5", "since": "2026-07-19T14:42:49Z", "until": "2026-09-01T23:48:39Z", "evidence": "Transcript census 2026-09-22: claude-fable-5 first 2026-07-19T14:42:49Z, last 2026-08-31T09:39:19Z; claude-fable-5-1 first 2026-09-01T23:48:39Z, no overlap. Every fable arm record (2026-09-05 onward) reports servedModel claude-fable-5-1."},
+      {"id": "claude-fable-5-1"}
+    ],
+    "sonnet": [
+      {"id": "claude-sonnet-5", "since": "2026-07-16T01:05:12Z", "evidence": "Transcript census 2026-09-22: claude-sonnet-5 is the only sonnet id in transcripts that begin 2026-04-27, first seen 2026-07-16T01:05:12Z; earlier sonnet service has no evidence."}
+    ],
+    "haiku": [
+      {"id": "claude-haiku-4-5-20251001", "since": "2026-04-27T22:36:35Z", "evidence": "Transcript census 2026-09-22: claude-haiku-4-5-20251001 is the only haiku id, first seen 2026-04-27T22:36:35Z (the earliest transcript); arm records echo it as claude-haiku-4-5 (servedIds)."}
+    ],
+    "luna": [
+      {"id": "gpt-5.6-luna", "since": "2026-08-20T06:04:50Z", "until": "2026-09-22", "evidence": "Earliest luna arm record 2026-08-20T06:04:50Z (attestedModel gpt-5.6-luna; 44 codex records, all attesting it, to 2026-09-10). The boundary is this registry's O-alias remap (2026-09-22): the codex sidecar resolves `luna` through this file, and the census finds no gpt-6-luna message.model before it (last gpt-5.6-luna 2026-09-20T21:14:17Z). Codex records carry attestedModel, so this boundary labels none of them."},
+      {"id": "gpt-6-luna"}
+    ],
+    "sol": [
+      {"id": "gpt-5.6-sol", "since": "2026-09-04T19:42:18Z", "until": "2026-09-22", "evidence": "Registered as `sol` by commit 437c2d695 (2026-09-04T19:42:18Z); every sol arm record (2026-09-14 .. 2026-09-15) attests gpt-5.6-sol. The boundary is this registry's O-alias remap (2026-09-22); the census finds no gpt-6-sol message.model before it (last gpt-5.6-sol 2026-09-20T21:59:09Z)."},
+      {"id": "gpt-6-sol"}
+    ],
+    "muse": [
+      {"id": "muse-spark-1.2-contributor-free", "since": "2026-08-22T16:37:33Z", "until": "2026-09-04T05:34:09Z", "evidence": "Registered as `muse` by commit 54f11f5f0 (2026-08-22T16:37:33Z); last 1.2 arm record 2026-08-26T08:33:34Z (requestedModel), first 1.3 arm record 2026-09-04T05:34:09Z (servedModel); the registry commit 437c2d695 later that day recorded the move."},
+      {"id": "muse-spark-1.3-contributor-free"}
+    ],
+    "flash": [
+      {"id": "deepseek-v4-flash", "until": "2026-09-15T18:02:15Z", "evidence": "The 2026-08-03 campaign records served deepseek-v4-flash; the first deepseek-flash arm record is 2026-09-15T18:02:15Z (servedModel), and commit ef3d0e4d5 (2026-09-15T19:32:57Z) renamed the row. The model behind the versionless name is the row's `version`, not this history."},
+      {"id": "deepseek-flash"}
+    ]
+  },
   "models": [
     {
-      "_limitsSource": "UNRECORDED - these values predate the 2026-09-04 provenance rule and no source was captured at the time. Re-derive from DeepSeek's published model card before relying on them; do not treat as first-party.",
-      "id": "deepseek-v4-flash",
+      "_limitsSource": "https://api-docs.deepseek.com/quick_start/pricing, read 2026-09-15: deepseek-flash 1M context, 384K max output. Concurrency is not published there.",
+      "id": "deepseek-flash",
       "alias": "flash",
       "transport": "deepseek",
-      "version": "DeepSeek-V4-Flash-0731",
-      "_comment": "roles emptied and evidence downgraded 2026-09-16. The row asserted `effort.evidence: measured` with no `effort.measuredVersion`, which the validator rejects as an unbacked routing assertion -- so every consumer of this template failed the registry load, and with it every proof that reads the registry. The sibling `pro` row was corrected the same way on 2026-09-04. A consumer that benchmarks this model restores its roles and sets `effort.measuredVersion` to the version it measured.",
-      "roles": [],
+      "label": "DeepSeek V4.1 Flash", "family": "flash", "lifecycle": "current", "order": 90, "costRank": 2,
+      "version": "DeepSeek-V4.1-Flash",
+      "_comment": "The vendor's versionless name: DeepSeek serves V4.1-Flash under it since 2026-09-10 04:00 UTC, and the API echoes no version, so `version` records what the vendor says the name serves. The legacy id deepseek-v4-flash still resolves upstream to the same model. Evidence for the retired DeepSeek-V4-Flash-0731 (SCORES-SIDECAR-CAMPAIGN-2026-08-03.md, SCORES-T2-DEEPSEEK-2026-08-03.md) V4.1 has its own cells for five of these tasks (campaign deepseek-v41-flash-2026-09-15, 2026-09-15, all at max), and those supersede the retired version's CELL BY CELL wherever both ran; the rest of `effort` is still V4-Flash-0731's, kept until V4.1 tests it. See `evidenceRef`.",
+      "prior": "frontier",
+      "_priorComment": "Owner's stated expectation 2026-09-15: flash-class likely opus/sonnet shape; V4's fable claim was too high. Intake input only, not a measurement.",
+      "roles": ["sonnet"],
       "price": {
-        "cacheHitPer1M": 0.0028,
-        "cacheMissPer1M": 0.14,
-        "outputPer1M": 0.28,
+        "cacheHitPer1M": 0.006,
+        "cacheMissPer1M": 0.3,
+        "outputPer1M": 1.2,
         "currency": "USD",
-        "asOf": "2026-08-12",
+        "asOf": "2026-09-15",
         "source": "https://api-docs.deepseek.com/quick_start/pricing"
       },
       "limits": {
         "contextTokens": 1000000,
         "maxOutputTokens": 384000,
-        "concurrency": 2500
+        "concurrency": null
       },
       "effort": {
         "converged": "low",
         "open": "max",
-        "avoid": [
-          "high"
-        ],
-        "evidence": "unmeasured"
+        "avoid": ["high"],
+        "evidence": "measured",
+        "measuredVersion": "DeepSeek-V4.1-Flash",
+        "evidenceRef": "POOLED across two versions; the newer cell wins wherever both ran. V4.1 (campaign deepseek-v41-flash-2026-09-15, 2026-09-15, every cell at max): T7 20/22; T12 R 53.1 / R_disc 50.6 of 77, 0 fabrications; T1 37.6% at 0 fabrications; T8 17/20 (re-derived 2026-09-15, A2(ii)); T11 R 20.6 / R_disc 14.3 of 28, 4 false positives -- the review-shaped weakness. V4-Flash-0731 (SCORES-SIDECAR-CAMPAIGN-2026-08-03.md), standing for every task V4.1 has not run: T4 15/16 tie at low, T6 21/22 at low, T9 20/20 byte-identical at low, T10 18/18 kills at low, T3 axes A+B PASS, T5 P/A/C PASS, T2 R_disc 22.6. Rungs: low-on-converged / max-on-open is V4-0731's confirmed policy and NO LOWER RUNG HAS RUN ON V4.1, so it stands until V4.1 tests it; requested high fabricated on V4-0731 and is avoided on that basis. n=1 per cell. Ranks live on the board, never in this field."
       },
       "authTier": "gated",
       "gate": {
         "minBand": "On pace",
-        "minBalanceUSD": 1.0
+        "minBalanceUSD": 1.0,
+        "peakPolicy": "refuse"
       }
     },
     {
@@ -122,15 +192,16 @@
       "id": "deepseek-v4-pro",
       "alias": "pro",
       "transport": "deepseek",
-      "_comment": "roles emptied 2026-09-04. This row asserted `roles: [\"opus\"]` while its own effort block said `evidence: unmeasured` -- an unbacked routing assertion, surfaced when _validate began rejecting that pair. The transport is suspended, so nothing routed on it; if DeepSeek returns, this row earns its role from a battery cell like every other, and until then it is dispatchable by alias only (-m pro). The sibling `flash` row keeps its roles: its evidence is `measured`.",
+      "label": "DeepSeek V4 Pro", "family": "pro", "lifecycle": "current", "order": 95, "costRank": 3, "prior": "frontier",
+      "_comment": "roles emptied 2026-09-04. This row asserted `roles: [\"opus\"]` while its own effort block said `evidence: unmeasured` -- an unbacked routing assertion, surfaced when _validate began rejecting that pair. It earns a role from a battery cell like every other row; until then it is dispatchable by alias only (-m pro).",
       "version": "DeepSeek-V4-Pro-0813",
       "roles": [],
       "price": {
-        "cacheHitPer1M": 0.003625,
-        "cacheMissPer1M": 0.435,
-        "outputPer1M": 0.87,
+        "cacheHitPer1M": 0.044,
+        "cacheMissPer1M": 1.32,
+        "outputPer1M": 3.96,
         "currency": "USD",
-        "asOf": "2026-08-12",
+        "asOf": "2026-09-15",
         "source": "https://api-docs.deepseek.com/quick_start/pricing"
       },
       "limits": {
@@ -147,19 +218,18 @@
       "authTier": "gated",
       "gate": {
         "minBand": "Ahead",
-        "minBalanceUSD": 1.0
+        "minBalanceUSD": 1.0,
+        "peakPolicy": "refuse"
       }
     },
     {
       "id": "gpt-5.6-luna",
-      "alias": "luna",
+      "alias": "luna56",
       "transport": "codex",
-      "_comment": "The live catalog also carries gpt-5.5, gpt-5.4, gpt-5.4-mini and codex-auto-review (captured 2026-08-19; raine additionally registers `-fast` variants and a `[1m]` long-context suffix); those remain unregistered. terra and sol WERE registered 2026-09-04 and are still UNROUTED -- the rule stands unchanged: a `roles` array is a routing assertion, and nothing measured establishes where terra/sol sit relative to this row, so both carry `roles: []` and are reachable only by explicit alias. Registering an id asserts it is dispatchable; only a benchmark asserts what it is FOR.",
-      "roles": [
-        "sonnet",
-        "haiku"
-      ],
-      "_limitsComment": "context_window/max_context_window read from OpenAI's own models cache (~/.codex/models_cache.json, written by the codex CLI from the backend) on 2026-08-20 -- first-party metadata, not a benchmark or a community figure. contextTokens is the DEFAULT window; maxContextTokens is the ceiling the model can be opted into, which nothing in this harness currently requests. Claude Code defaults an unrecognized model to 200000, which UNDER-declares this one by 72K, so a launcher must set CLAUDE_CODE_MAX_CONTEXT_TOKENS from contextTokens rather than accept the default. maxOutputTokens stays null: the 32000 a proxied child reports is Claude Code's own default and the cache states no value, so authoring it would record a client artifact as a model fact.",
+      "label": "GPT-5.6 Luna", "family": "luna", "version": "gpt-5.6-luna", "lifecycle": "superseded", "order": 71, "costRank": 1, "prior": "mid", "effortValues": ["low", "medium", "high", "xhigh", "max"],
+      "_comment": "SUPERSEDED by gpt-6-luna (bare alias `luna`, owner ruling O-alias 2026-09-22); reachable as `luna56`. Its measured evidence stays bound to this version; gpt-6-luna took its roles and effort and cites this version as measuredVersion. The proxy recognizes `-fast` as a service-tier flag and `[1m]` as a request modifier; neither gets a registry row.",
+      "roles": [],
+      "_limitsComment": "contextTokens is the default window; maxContextTokens is the backend-declared ceiling. maxOutputTokens stays null: the 32000 a proxied child reports is Claude Code's own default and the cache states no value, so authoring it would record a client artifact as a model fact.",
       "limits": {
         "contextTokens": 272000,
         "maxContextTokens": 872000,
@@ -180,8 +250,9 @@
         "neverCapTurns": true,
         "_avoidComment": "Empty deliberately. `medium` measured flat, but on T2 alone -- one task is not grounds for a never. `high` is the opposite of avoid: it is the measured pin for thick planning.",
         "evidence": "measured",
-        "evidenceRef": "reference/model_ladder_evidence.md, gpt-5.6-luna section (model-effort-v1.0, 16 engagement-verified cells, 2026-08-20)",
-        "_evidenceComment": "model-effort-v1.0, 16 engagement-verified cells, 2026-08-20 (reference/model_ladder_evidence.md, gpt-5.6-luna section). low: T6 22/22 and T10 18/18 kills, both at ceiling already at the floor pin. max: T2 monotone low->max 41->58/151, and T9 parity refactor 12/20 at low -> 20/20 at max, the battery's largest effort movement. high: T4 11/16->14.5/16 at 3x turns and 6x api. medium: flat on T2, one task only. Never cap turns -- T2 triples api time across its bracket while turns plateau at 99->102, so a cap truncates depth rather than cost."
+        "measuredVersion": "gpt-5.6-luna",
+        "evidenceRef": "BenchmarkHoldout Meta/Benchmark/model-effort-v1.0/results/SCORES-LUNA-2026-08-20.md (16 engagement-verified cells, 2026-08-20); summarized in the ladder's `luna` row",
+        "_evidenceComment": "model-effort-v1.0, 16 engagement-verified cells, 2026-08-20. low: T6 22/22 and T10 18/18 kills, both at ceiling already at the floor pin. max: T2 monotone low->max 41->58/151, and T9 parity refactor 12/20 at low -> 20/20 at max, the battery's largest effort movement. high: T4 11/16->14.5/16 at 3x turns and 6x api. medium: flat on T2, one task only. Never cap turns -- T2 triples api time across its bracket while turns plateau at 99->102, so a cap truncates depth rather than cost."
       },
       "authTier": "open",
       "gate": {
@@ -193,7 +264,8 @@
       "id": "gpt-6-astra",
       "alias": "astra",
       "transport": "codex",
-      "_comment": "Registered 2026-09-05 for the model-effort benchmark: gpt-6 Astra via the codex proxy, same transport and attestation rules as gpt-5.6-luna. Probe: `codex exec -m gpt-6-astra` answered (4,239 tokens); `gpt-6.0-astra` is rejected by codex. MEASURED at high: review, debugging and expansive architecting (T2) are its strongest shapes, scoped architecting (T12) mid-board, chained research below opus/flash; scores in evidenceRef. EXCLUDED from dispatch (status block) — ladder row keeps the verdicts.",
+      "label": "GPT-6 Astra", "family": "astra", "version": "gpt-6-astra", "lifecycle": "current", "order": 10, "costRank": 3, "prior": "frontier", "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "_comment": "Registered 2026-09-05 for the model-effort benchmark: gpt-6 Astra via the codex proxy, same transport and attestation rules as every codex row. Probe: `codex exec -m gpt-6-astra` answered (4,239 tokens); `gpt-6.0-astra` is rejected by codex. MEASURED at high; scores in evidenceRef, ranks on the board. EXCLUDED from dispatch (status block) — ladder row keeps the verdicts.",
       "roles": [
         "astra",
         "debugging",
@@ -218,15 +290,15 @@
         },
         "neverCapTurns": true,
         "evidence": "measured",
-        "evidenceRef": "2026-09-05 at high: T11 17/28 (2nd of 10; opus·xhigh 18), T12 37/77 (4th of 6), T8 19/20 (1st; first arm past the 16 tie), T1 R 27.4 (4th of 7); T2 r1 VOID (read the design source in the vault); guarded rerun astra-t2-r2: R 51.7 / R_disc 47.6 (59/124), 0 fabrications [inst 1.1]; under instrument 1.2 (2026-09-05, fabrications beside, 146/119): R 52.1 / R_disc 48.7 (58/119), 0 fabrications, still 1st; [inst 1.3] R_disc_firm 37.8 (45/119 firm, arguable +10.9) — T2 is a recall probe, not a ranking — 1st of the T2 board (prior best 39)",
-        "_evidenceComment": "Only the high rung is measured; the other rungs stay unmeasured placeholders copied from gpt-5.6-luna. Excluded from dispatch by the owner (codex quota) — the row stays so the ladder can cite it."
+        "measuredVersion": "gpt-6-astra",
+        "evidenceRef": "2026-09-05 at high, as scored that day (ranks live on the board): T11 17/28, T12 37/77, T8 19/20, T1 R 27.4; T2 r1 VOID (read the design source in the vault); guarded rerun astra-t2-r2: R 51.7 / R_disc 47.6 (59/124), 0 fabrications [inst 1.1]; under instrument 1.2 (2026-09-05, fabrications beside, 146/119): R 52.1 / R_disc 48.7 (58/119), 0 fabrications; [inst 1.3] R_disc_firm 37.8 (45/119 firm, arguable +10.9) — T2 is a recall probe, not a ranking",
+        "_evidenceComment": "Only the high rung is measured; the other rungs are unmeasured placeholders. Excluded from dispatch by the owner (codex quota) — the row stays so the ladder can cite it."
       },
       "authTier": "open",
       "gate": {
         "minBand": "Surplus",
         "maxProviderBand": "Ahead"
       },
-      "_limitsSource": "UNVERIFIED placeholder copied from gpt-5.6-luna on 2026-09-05; codex has published no window for gpt-6-astra. Replace when a catalog or a measured context event names it.",
       "status": {
         "state": "unavailable",
         "scope": "all",
@@ -237,11 +309,14 @@
       "id": "gpt-5.6-terra",
       "alias": "terra",
       "transport": "codex",
-      "_comment": "Registered 2026-09-04, deliberately UNROUTED. `roles: []` means dispatchable by explicit alias (-m terra) and never auto-selected to fill a role -- the rule the luna row states holds: a `roles` array is a measured routing assertion, and nothing has measured where terra sits. Upstream reachability IS measured: a request pinning this id reached upstream as gpt-5.6-terra (probe2.sh, 2026-09-04, proxy traffic capture). Effort is unmeasured, so any -e is a guess, not a pin you can defend.",
+      "label": "GPT-5.6 Terra", "family": "terra", "version": "gpt-5.6-terra", "lifecycle": "current", "order": 75, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "prior": "mid",
+      "_priorComment": "Owner's stated expectation 2026-09-14 (terra ~ sonnet); intake input only, not a measurement.",
+      "_comment": "Registered 2026-09-04, deliberately UNROUTED. `roles: []` means dispatchable by explicit alias (-m terra) and never auto-selected to fill a role: a `roles` array is a measured routing assertion, and nothing has measured where terra sits. Upstream reachability IS measured: a request pinning this id reached upstream as gpt-5.6-terra (probe2.sh, 2026-09-04, proxy traffic capture). Effort is unmeasured, so any -e is a guess, not a pin you can defend.",
       "roles": [],
       "limits": {
-        "contextTokens": null,
-        "maxContextTokens": null,
+        "contextTokens": 272000,
+        "maxContextTokens": 872000,
         "effectiveContextPercent": 95,
         "maxOutputTokens": null,
         "concurrency": null
@@ -251,7 +326,7 @@
         "open": "max",
         "avoid": [],
         "evidence": "unmeasured",
-        "_evidenceComment": "No battery cell has run on this row. The converged/open values are the transport's shape (identical vocabulary to luna's -e), NOT a measurement. Do not cite them as evidence."
+        "_evidenceComment": "No battery cell has run on this row. The converged/open values are the transport's shape, NOT a measurement. Do not cite them as evidence."
       },
       "authTier": "open",
       "gate": {
@@ -261,23 +336,27 @@
     },
     {
       "id": "gpt-5.6-sol",
-      "alias": "sol",
+      "alias": "sol56",
       "transport": "codex",
-      "_comment": "Registered 2026-09-04, deliberately UNROUTED -- see the terra row. Upstream reachability measured the same day: a request pinning gpt-5.6-sol-fast resolved upstream to gpt-5.6-sol (probe3.sh; `-fast` is a service-tier flag, not a distinct model, which is why no -fast row exists).",
+      "label": "GPT-5.6 Sol", "family": "sol", "version": "gpt-5.6-sol", "lifecycle": "superseded", "order": 61, "costRank": 2, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "prior": "frontier",
+      "_priorComment": "Owner's stated expectation 2026-09-14 (sol ~ opus); intake input only, not a measurement.",
+      "_comment": "SUPERSEDED by gpt-6-sol (bare alias `sol`, owner ruling O-alias 2026-09-22); reachable as `sol56`. Routed 2026-09-14 on the sol-high campaign (T1, T2/T2N, T3, T5 at high). Its measured evidence stays bound to this version; gpt-6-sol took its roles and effort and cites this version as measuredVersion. Upstream reachability measured 2026-09-04: a request pinning gpt-5.6-sol-fast resolved upstream to gpt-5.6-sol (probe3.sh; `-fast` is a service-tier flag, not a distinct model, which is why no -fast row exists).",
       "roles": [],
       "limits": {
-        "contextTokens": null,
-        "maxContextTokens": null,
+        "contextTokens": 272000,
+        "maxContextTokens": 872000,
         "effectiveContextPercent": 95,
         "maxOutputTokens": null,
         "concurrency": null
       },
       "effort": {
         "converged": "low",
-        "open": "max",
+        "open": "high",
         "avoid": [],
-        "evidence": "unmeasured",
-        "_evidenceComment": "No battery cell has run on this row. See the terra row."
+        "evidence": "measured",
+        "measuredVersion": "gpt-5.6-sol",
+        "evidenceRef": "2026-09-14 at high, as scored that day (ranks live on the board): T2N 63.3/100, 0 fabrications; T5 4/7; T3 19/32; T1 22.1/100; T2 archive 29.7 firm. Only `high` measured; `open: high` is that rung, not a sweep."
       },
       "authTier": "open",
       "gate": {
@@ -286,10 +365,76 @@
       }
     },
     {
-      "_rosterComment": "The opencode rows below are the Zen FREE tier, refreshed live 2026-09-03. Windows/prices are FIRST-PARTY metadata from models.dev (the OpenCode team's own catalog), not benchmarks. Each row's `roles` is its own alias — a self-identity placeholder that asserts NO Anthropic-tier equivalence; tier claims land only on scored evidence from the model-effort battery. Until then nothing routes to these by role — dispatch by -m alias or id. x-preview-f-free (\"preview\") and hy3-free were removed 2026-09-03: both gone from Zen's live catalog entirely.",
+      "id": "gpt-6-sol",
+      "alias": "sol",
+      "transport": "codex",
+      "label": "GPT-6 Sol", "family": "sol", "version": "gpt-6-sol", "lifecycle": "current", "order": 60, "costRank": 2, "prior": "frontier", "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "_comment": "Registered 2026-09-22 (owner ruling O-alias: the bare alias names the current version). Listed in OpenAI's own models cache (~/.codex/models_cache.json, read 2026-09-22). Unmeasured itself: it takes the sol family's roles and effort from gpt-5.6-sol (effort.measuredVersion) until its own cells or an owner ruling show it differs.",
+      "roles": ["sol", "expansiveArchitecting", "scopedArchitecting", "thinPlanning"],
+      "limits": {
+        "contextTokens": 272000,
+        "maxContextTokens": 872000,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "converged": "low",
+        "open": "high",
+        "avoid": [],
+        "evidence": "measured",
+        "measuredVersion": "gpt-5.6-sol",
+        "evidenceRef": "2026-09-14 at high, as scored that day (ranks live on the board): T2N 63.3/100, 0 fabrications; T5 4/7; T3 19/32; T1 22.1/100; T2 archive 29.7 firm. Only `high` measured; `open: high` is that rung, not a sweep."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Ahead"
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "alias": "luna",
+      "transport": "codex",
+      "label": "GPT-6 Luna", "family": "luna", "version": "gpt-6-luna", "lifecycle": "current", "order": 70, "costRank": 1, "prior": "mid", "effortValues": ["low", "medium", "high", "xhigh", "max"],
+      "_comment": "Registered 2026-09-22 (owner ruling O-alias: the bare alias names the current version). Listed in OpenAI's own models cache (~/.codex/models_cache.json, read 2026-09-22). Unmeasured itself: it takes the luna family's roles and effort from gpt-5.6-luna (effort.measuredVersion) until its own cells or an owner ruling show it differs.",
+      "roles": ["sonnet", "haiku"],
+      "limits": {
+        "contextTokens": 272000,
+        "maxContextTokens": 872000,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "converged": "low",
+        "open": "max",
+        "avoid": [],
+        "byShape": {
+          "convergedOrTightSpec": "low",
+          "openArchitecting": "max",
+          "thickPlanning": "high",
+          "parityMigration": "max"
+        },
+        "neverCapTurns": true,
+        "_avoidComment": "Empty deliberately. `medium` measured flat, but on T2 alone -- one task is not grounds for a never. `high` is the opposite of avoid: it is the measured pin for thick planning.",
+        "evidence": "measured",
+        "measuredVersion": "gpt-5.6-luna",
+        "evidenceRef": "BenchmarkHoldout Meta/Benchmark/model-effort-v1.0/results/SCORES-LUNA-2026-08-20.md (16 engagement-verified cells, 2026-08-20); summarized in the ladder's `luna` row",
+        "_evidenceComment": "model-effort-v1.0, 16 engagement-verified cells, 2026-08-20. low: T6 22/22 and T10 18/18 kills, both at ceiling already at the floor pin. max: T2 monotone low->max 41->58/151, and T9 parity refactor 12/20 at low -> 20/20 at max, the battery's largest effort movement. high: T4 11/16->14.5/16 at 3x turns and 6x api. medium: flat on T2, one task only. Never cap turns -- T2 triples api time across its bracket while turns plateau at 99->102, so a cap truncates depth rather than cost."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Ahead"
+      }
+    },
+    {
+      "_rosterComment": "The opencode rows below are the Zen FREE tier, refreshed live 2026-09-03. Windows/prices are FIRST-PARTY metadata from models.dev (the OpenCode team's own catalog), not benchmarks. Each row's `roles` is its own alias — a self-identity placeholder that asserts NO Anthropic-tier equivalence; tier claims land only on scored evidence from the model-effort battery. Until then nothing routes to these by role — dispatch by -m alias or id. x-preview-f-free (\"preview\") and hy3-free left Zen's live catalog 2026-09-03; they stay registered as retired, unavailable rows so stored records resolve.",
       "id": "big-pickle",
       "alias": "pickle",
       "transport": "opencode",
+      "label": "Big Pickle", "family": "pickle", "version": "big-pickle", "lifecycle": "current", "order": 150, "costRank": 0, "prior": "small",
       "status": {
         "state": "unavailable",
         "since": "2026-09-03",
@@ -323,6 +468,7 @@
       "id": "mimo-v2.5-free",
       "alias": "mimo",
       "transport": "opencode",
+      "label": "MiMo V2.5", "family": "mimo", "version": "mimo-v2.5-free", "lifecycle": "current", "order": 160, "costRank": 0, "prior": "small",
       "status": {
         "state": "unavailable",
         "since": "2026-09-03",
@@ -356,6 +502,7 @@
       "id": "nemotron-3-ultra-free",
       "alias": "nemotron-ultra",
       "transport": "opencode",
+      "label": "Nemotron 3 Ultra", "family": "nemotron-ultra", "version": "nemotron-3-ultra-free", "lifecycle": "current", "order": 130, "costRank": 0, "prior": "small",
       "status": {
         "state": "unavailable",
         "since": "2026-09-03",
@@ -389,6 +536,7 @@
       "id": "nemotron-3.5-lightning-free",
       "alias": "lightning",
       "transport": "opencode",
+      "label": "Nemotron 3.5 Lightning", "family": "lightning", "version": "nemotron-3.5-lightning-free", "lifecycle": "current", "order": 140, "costRank": 0, "prior": "small",
       "status": {
         "state": "unavailable",
         "since": "2026-09-03",
@@ -422,6 +570,7 @@
       "id": "laguna-s-2.1-free",
       "alias": "laguna",
       "transport": "opencode",
+      "label": "Laguna S 2.1", "family": "laguna", "version": "laguna-s-2.1-free", "lifecycle": "current", "order": 120, "costRank": 0, "prior": "small",
       "status": {
         "state": "unavailable",
         "since": "2026-09-03",
@@ -455,8 +604,9 @@
       "id": "muse-spark-1.3-contributor-free",
       "alias": "muse",
       "transport": "opencode",
-      "_comment": "Contributor-Free tier (OpenCode's own docs): trains future Meta models on submissions in exchange for access. 1.2 is retired in favor of 1.3 -- 1.2 401s 'Model is disabled' on every call, key or no key; 1.3 answers cleanly on both. The 500s that looked like an auth/account gate (verified 2026-09-03, ~20+ attempts: curl anon+authed, litellm openai+nvidia_nim providers, raw Node fetch, all failing identically) were NEVER about the key -- see apiMode below, the actual cause. The anonymous `public` bearer also answers fine via /v1/responses (verified), so authTier=gated here is the DOCUMENTED/sanctioned path for this tier's training-consent framing, not a technically-enforced gate -- keep using the real key regardless; it costs nothing and is the account-attributable path Contributor-Free's terms describe. 'gated' means 'the credential must not be the public placeholder' (enforced by opencode_sidecar.sh's explicit check), not a dollar floor: this transport declares no balanceUrl, so sc_gate_balance no-ops regardless of gate.minBalanceUSD -- that field is a schema placeholder (model_registry.py requires a numeric value on every gated row) with no live effect here.",
-      "_rolesComment": "Promoted from self-identity-only to sonnet 2026-09-04: scored on model-effort-v1.0 against gpt-5.6-luna's own sonnet-claiming evidence on the same battery -- T3/T5 axes tied, T7/T8 execution within one point or exact, one fabrication each on the T1/T2 citation-grounded tasks (identical count, not an asymmetry). No haiku claim: no scout-shaped evidence exists either way. Same principle as terra/sol's `_comment` above: a benchmark asserts what a model is FOR, and this one now has one.",
+      "label": "Muse Spark 1.3", "family": "muse", "version": "muse-spark-1.3-contributor-free", "lifecycle": "current", "order": 80, "costRank": 0, "prior": "mid",
+      "_comment": "Contributor-Free tier (OpenCode's own docs): trains future Meta models on submissions in exchange for access. 1.2 is retired in favor of 1.3 -- 1.2 401s 'Model is disabled' on every call, key or no key; 1.3 answers cleanly on both. The 500s that looked like an auth/account gate (verified 2026-09-03, ~20+ attempts: curl anon+authed, litellm openai+nvidia_nim providers, raw Node fetch, all failing identically) were NEVER about the key -- see apiMode below, the actual cause. The anonymous `public` bearer also answers fine via /v1/responses (verified), so authTier=gated here is the DOCUMENTED/sanctioned path for this tier's training-consent framing, not a technically-enforced gate -- keep using the real key regardless; it costs nothing and is the account-attributable path Contributor-Free's terms describe. 'gated' means 'the credential must not be the public placeholder' (enforced by opencode_sidecar.sh's explicit check), not a dollar floor: this transport declares `capacityUnsupported`, so the zero floor is allowed and launcher eligibility remains authoritative.",
+      "_rolesComment": "Promoted from self-identity-only to sonnet 2026-09-04: scored on model-effort-v1.0 (`opencode-muse-campaign-2026-09-03`) against gpt-5.6-luna's own sonnet-claiming evidence on the same battery -- T3/T5 axes tied, T7/T8 execution within one point or exact, one fabrication each on the T1/T2 citation-grounded tasks (identical count, not an asymmetry). No haiku claim: no scout-shaped evidence exists either way. A benchmark asserts what a model is FOR, and this one has one.",
       "roles": [
         "sonnet"
       ],
@@ -475,7 +625,8 @@
       },
       "effort": {
         "evidence": "measured",
-        "_note": "measured at max on 8 cells; one low-effort dispatch exists (completed cleanly) but its arm-patches export never ran, so the code delta is gone with the root and it cannot be scored -- zero comparative low-vs-max evidence exists despite the dispatch. Dispatch at max until a scorable rung comparison does."
+        "measuredVersion": "muse-spark-1.3-contributor-free",
+        "_note": "measured at max on 8 cells; one low-effort dispatch exists (t7-r2, opencode-muse-campaign-2026-09-03, completed cleanly) but its arm-patches export never ran, so the code delta is gone with the root and it cannot be scored -- zero comparative low-vs-max evidence exists despite the dispatch. Dispatch at max until a scorable rung comparison does."
       },
       "authTier": "gated",
       "apiMode": "responses",
@@ -486,10 +637,14 @@
       }
     },
     {
-      "_rosterComment": "The anthropic rows below are the HOST transport, added 2026-09-04. They are DISPATCHABILITY rows only: what anthropic_sidecar.sh can spawn. Role SEMANTICS -- which role to reach for and at what effort -- stay in reference/model_ladder_evidence.md (the transport's roleSource), which is why each row's effort.evidence is `see-ladder` rather than a measurement duplicated here. `roles` is each row's own name because on this transport the alias IS the role; that is not a tier claim about another transport.",
-      "id": "claude-opus-5",
+      "_rosterComment": "The anthropic rows below are the HOST transport, added 2026-09-04. They are DISPATCHABILITY rows only: what anthropic_sidecar.sh can spawn. Role SEMANTICS -- which role to reach for and at what effort -- stay in reference/model_ladder_evidence.md (the transport's roleSource), which is why each current row's effort.evidence is `see-ladder` rather than a measurement duplicated here. A current row's `roles` is its own name because on this transport the alias IS the role; that is not a tier claim about another transport. Superseded and retired rows claim no role.",
+      "id": "claude-opus-5-5",
+      "railTier": "condensed",
+      "railTierEvidence": {"evidence": "unmeasured"},
+      "_railTierComment": "Carried from the claude-opus-5 row: before this row existed a claude-opus-5-5 session read that row by id prefix, so condensed is the tier Opus 5.5 sessions already ran on.",
       "alias": "opus",
       "transport": "anthropic",
+      "label": "Opus 5.5", "family": "opus", "version": "claude-opus-5-5", "lifecycle": "current", "order": 20, "costRank": 2, "prior": "frontier",
       "roles": [
         "opus"
       ],
@@ -503,9 +658,30 @@
       }
     },
     {
+      "id": "claude-opus-5",
+      "railTier": "condensed",
+      "railTierEvidence": {"evidence": "unmeasured"},
+      "alias": "opus5",
+      "transport": "anthropic",
+      "label": "Opus 5", "family": "opus", "version": "claude-opus-5", "lifecycle": "superseded", "order": 21, "costRank": 2, "prior": "frontier",
+      "roles": [],
+      "effort": {
+        "evidence": "measured",
+        "measuredVersion": "claude-opus-5",
+        "evidenceRef": "Every `opus` cell on the model-effort battery through 2026-09-22 ran on this version (arm records' servedModel); the ladder's `opus` row rests on it until claude-opus-5-5's own cells land."
+      },
+      "authTier": "open",
+      "gate": {
+        "minBand": "Surplus",
+        "maxProviderBand": "Hot"
+      }
+    },
+    {
       "id": "claude-sonnet-5",
+      "railTier": "detailed",
       "alias": "sonnet",
       "transport": "anthropic",
+      "label": "Sonnet 5", "family": "sonnet", "version": "claude-sonnet-5", "lifecycle": "current", "order": 40, "costRank": 1, "prior": "mid",
       "roles": [
         "sonnet"
       ],
@@ -520,14 +696,18 @@
     },
     {
       "id": "claude-haiku-4-5-20251001",
+      "railTier": "detailed",
       "alias": "haiku",
       "transport": "anthropic",
+      "label": "Haiku 4.5", "family": "haiku", "version": "claude-haiku-4-5-20251001", "lifecycle": "current", "order": 50, "costRank": 0, "prior": "small", "servedIds": ["claude-haiku-4-5"],
       "roles": [
         "haiku"
       ],
       "effort": {
         "evidence": "see-ladder"
       },
+      "effortParam": false,
+      "_effortParamComment": "The model takes no effort setting: haiku-4-5 transcripts record no per-turn `effort` while sonnet/opus ones do (every haiku agent in runs wf_95acd8cb-71b, wf_84b6e398-c67, wf_73d08cf8-a68 and the anthropic sidecar probe, 2026-09-22). A pinned effort is ignored, so hooks/dispatch_table.py shows `none`.",
       "authTier": "open",
       "gate": {
         "minBand": "Surplus",
@@ -536,8 +716,12 @@
     },
     {
       "id": "claude-fable-5-1",
+      "railTier": "minimal",
+      "railTierEvidence": {"evidence": "unmeasured"},
+      "driverNotes": [{"text": "Recognizing a name is not knowing its current state: verify before answering, and include the name as written in at least one search.", "evidenceRef": "plans/archive/fable51_harness_assessment.md F12"}],
       "alias": "fable",
       "transport": "anthropic",
+      "label": "Fable 5.1", "family": "fable", "version": "claude-fable-5-1", "lifecycle": "current", "order": 30, "costRank": 3, "prior": "frontier",
       "roles": [
         "fable"
       ],
@@ -549,7 +733,74 @@
         "minBand": "Surplus",
         "maxProviderBand": "Hot"
       }
+    },
+    {
+      "_rosterComment": "RETIRED rows below: versions no alias serves and no dispatch may reach. Each is registered so stored records and `aliasHistory` resolve to a labelled row instead of an unregistered id; none carries a price, because an uncallable row owes no rate.",
+      "id": "claude-opus-4-8",
+      "alias": "opus48",
+      "transport": "anthropic",
+      "label": "Opus 4.8", "family": "opus", "version": "claude-opus-4-8", "lifecycle": "retired", "order": 22, "costRank": 2, "prior": "frontier",
+      "status": {"state": "unavailable", "reason": "Retired version: the `opus` alias served it until 2026-07-24 (aliasHistory). Registered for record identity only; not a dispatch target."},
+      "roles": [],
+      "effort": {"evidence": "unmeasured", "_note": "The registry records no evidence for this version; any cell dated inside its aliasHistory span lives in the vault archive."},
+      "authTier": "open",
+      "gate": {"minBand": "Surplus", "maxProviderBand": "Hot"}
+    },
+    {
+      "id": "claude-fable-5",
+      "alias": "fable5",
+      "transport": "anthropic",
+      "label": "Fable 5", "family": "fable", "version": "claude-fable-5", "lifecycle": "retired", "order": 31, "costRank": 3, "prior": "frontier",
+      "status": {"state": "unavailable", "reason": "Retired version: the `fable` alias served it until 2026-09-01 (aliasHistory). Registered for record identity only; not a dispatch target."},
+      "roles": [],
+      "effort": {"evidence": "unmeasured", "_note": "The registry records no evidence for this version; any cell dated inside its aliasHistory span lives in the vault archive."},
+      "authTier": "open",
+      "gate": {"minBand": "Surplus", "maxProviderBand": "Hot"}
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "alias": "flashv4",
+      "transport": "deepseek",
+      "label": "DeepSeek V4 Flash", "family": "flash", "version": "DeepSeek-V4-Flash-0731", "lifecycle": "retired", "order": 91, "costRank": 2, "prior": "frontier",
+      "status": {"state": "unavailable", "reason": "Retired id: the `flash` alias moved to the versionless deepseek-flash on 2026-09-15 (aliasHistory). Registered because the 2026-08-03 campaign records name it; not a dispatch target."},
+      "roles": [],
+      "effort": {"evidence": "measured", "measuredVersion": "DeepSeek-V4-Flash-0731", "evidenceRef": "results/sidecar-campaign-2026-08-03 (SCORES-SIDECAR-CAMPAIGN-2026-08-03.md); pooled into the flash row's evidence wherever V4.1 has not run"},
+      "authTier": "gated",
+      "gate": {"minBand": "On pace", "minBalanceUSD": 1.0}
+    },
+    {
+      "id": "muse-spark-1.2-contributor-free",
+      "alias": "muse12",
+      "transport": "opencode",
+      "label": "Muse Spark 1.2", "family": "muse", "version": "muse-spark-1.2-contributor-free", "lifecycle": "retired", "order": 81, "costRank": 0, "prior": "mid",
+      "status": {"state": "unavailable", "reason": "Retired: 401s 'Model is disabled' on every call (2026-09-03); the `muse` alias moved to 1.3 (aliasHistory)."},
+      "roles": [],
+      "effort": {"evidence": "unmeasured", "_note": "Its 2026-08-24..26 dispatches voided; no scorable cell exists."},
+      "authTier": "gated",
+      "gate": {"minBand": "Surplus", "minBalanceUSD": 0}
+    },
+    {
+      "id": "hy3-free",
+      "alias": "hy3",
+      "transport": "opencode",
+      "label": "Hy3", "family": "hy3", "version": "hy3-free", "lifecycle": "retired", "order": 110, "costRank": 0, "prior": "small",
+      "status": {"state": "unavailable", "reason": "Gone from Zen's live catalog (2026-09-03)."},
+      "roles": [],
+      "effort": {"evidence": "measured", "measuredVersion": "hy3-free", "evidenceRef": "results/opencode-campaign-2026-08-22"},
+      "authTier": "open",
+      "gate": {"minBand": "Surplus"}
+    },
+    {
+      "id": "x-preview-f-free",
+      "alias": "preview",
+      "transport": "opencode",
+      "label": "X Preview F", "family": "preview", "version": "x-preview-f-free", "lifecycle": "retired", "order": 100, "costRank": 0, "prior": "small",
+      "status": {"state": "unavailable", "reason": "Gone from Zen's live catalog (2026-09-03)."},
+      "roles": [],
+      "effort": {"evidence": "measured", "measuredVersion": "x-preview-f-free", "evidenceRef": "results/opencode-campaign-2026-08-22"},
+      "authTier": "open",
+      "gate": {"minBand": "Surplus"}
     }
   ],
-  "_rosterComment": "The opencode roster was hand-audited 2026-09-03 against Zen's live catalog and the owner's own direct testing (opencode_refresh_models.py's automated probe cannot distinguish Contributor-Free auth failures from dead models, so it did not drive this pass). x-preview-f-free and hy3-free were removed (gone from Zen's catalog). big-pickle, mimo-v2.5-free, nemotron-3-ultra-free, nemotron-3.5-lightning-free and laguna-s-2.1-free stay registered but are individually status:unavailable (owner tested directly -- usage limits too low). Only muse (now muse-spark-1.3-contributor-free, gated) is selectable on this transport. Each row's `roles` is its own alias - a self-identity placeholder asserting NO Anthropic-tier equivalence; tier claims land only on scored evidence from the model-effort battery. Until scored, nothing routes to these by role - dispatch by -m alias or id. Re-run opencode_refresh_models.py to pick up anonymous-tier catalog churn; re-verify Contributor-Free rows by hand."
+  "_rosterComment": "The opencode roster was hand-audited 2026-09-03 against Zen's live catalog and the owner's own direct testing (opencode_refresh_models.py's automated probe cannot distinguish Contributor-Free auth failures from dead models, so it did not drive this pass). x-preview-f-free, hy3-free and muse-spark-1.2 are retired rows (gone from Zen's catalog or disabled), kept so stored records resolve. big-pickle, mimo-v2.5-free, nemotron-3-ultra-free, nemotron-3.5-lightning-free and laguna-s-2.1-free stay registered but are individually status:unavailable (owner tested directly -- usage limits too low). Only muse (now muse-spark-1.3-contributor-free, gated) is selectable on this transport. Each row's `roles` is its own alias - a self-identity placeholder asserting NO Anthropic-tier equivalence; tier claims land only on scored evidence from the model-effort battery. Until scored, nothing routes to these by role - dispatch by -m alias or id. Re-run opencode_refresh_models.py to pick up anonymous-tier catalog churn; re-verify Contributor-Free rows by hand."
 }

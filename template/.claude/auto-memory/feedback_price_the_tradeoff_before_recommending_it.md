@@ -6,8 +6,6 @@ metadata:
   type: feedback
   originSessionId: 40a30e2c-3efb-4fd4-ad4d-3a6ee32ba28f
   modified: 2026-08-21T03:06:59.129Z
-retire_when:
-  - review-by: 2027-01-14
 ---
 
 # Measure the cost side before you recommend the trade, not after approval

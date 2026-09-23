@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
-"""Session digest — the whole-session record rebuilt from the LIVE transcript (append-only across
-compactions), so a session with N compactions gets the same input as one with zero.
+"""Rebuild and present one session from its append-only live transcript.
 
-Two readers:
-  /session_end, /autolearn, /self_evaluate — a bounded prompt/friction index with stable IDs.
-      The full evidence stays in JSON; fetch only rows a phase needs:
-        python3 .claude/tools/session_digest.py --prompt-tail session_end
-        python3 .claude/tools/session_digest.py --digest-file <json> --select U123 --select F456
-  a session picking up ANOTHER session's work (after /clear, a handoff doc, a parallel session)
-      — the same, plus what that session left behind: files it modified and its last message.
-      `--brief` caps prompt and friction text so a day-long session lands in a few KB:
-        python3 .claude/tools/session_digest.py --session <uuid-prefix> --brief
-  the user pasted a session's closing message and wants THAT session — write the paste to a file
-      and let token overlap find the transcript whose assistant wrote it (the terminal re-renders
-      tables and strips code marks, so substring search misses; the pasted message need not be the
-      session's last, since the session may have run on to a limit or a goodbye afterwards):
-        python3 .claude/tools/session_digest.py --match-file .claude/scratch/digest_paste.txt --brief
+Presentation modes are deliberately separate:
+  --brief is a bounded identity card (2,048 UTF-8 bytes) for locating a session. It is not a
+      resume packet.
+  --handoff, and the no-mode default, are a bounded resume packet (16,384 UTF-8 bytes) that keeps
+      the task anchor, priority corrections/answers, recent owner input, friction and files.
+  --full is an offline human-readable Markdown projection. It writes atomically to
+      logs/session_digest_<sid8>.full.md and prints only a bounded receipt. It is not raw JSON or
+      transcript parity; use --select/--evidence-page for exact machine evidence.
 
-Writes logs/session_digest_<sid8>.json (full record) and prints the markdown digest.
+All modes preserve the full JSON and evidence index before presentation. Workflow --workflow-full
+is a separate, hash-checked result operation and cannot be mixed with transcript presentation.
 """
 import argparse
 import hashlib
@@ -33,11 +27,43 @@ sys.path.insert(0, str(HERE.parent / "hooks"))
 from _transcript_summary import TranscriptSummaryBuilder  # noqa: E402
 from _owner_text import classify, meta_arguments  # noqa: E402
 
-BRIEF = {"mode": "overview"}
-SESSION = {"mode": "overview"}
+BRIEF_MAX_BYTES = 2_048
+HANDOFF_MAX_BYTES = 16_384
+FULL_RECEIPT_MAX_BYTES = 2_048
+BRIEF = {"mode": "brief"}
+HANDOFF = {"mode": "handoff"}
+SESSION = {"mode": "handoff"}
 FULL = {"mode": "full"}
-SESSION_MAX_BYTES = 32_000
-OVERVIEW_MAX_BYTES = 2048
+
+_SUBSTANTIVE_CONTROL_COMMANDS = frozenset({
+    "/model", "/effort", "/fast", "/compact", "/context", "/clear", "/cost",
+    "/status", "/config", "/help", "/resume", "/exit",
+})
+_SUBSTANTIVE_ROUTING_COMMANDS = frozenset({"/effort"})
+_TASK_ANCHOR_WRAPPER_COMMANDS = frozenset({
+    "/overnight", "/session_end", "/commit_push", "/clean_push", "/create_pr", "/pr_ready",
+})
+_SUBSTANTIVE_SLASH_RE = re.compile(r"/[\w:.-]+$")
+
+
+def is_substantive_owner_prompt(message: dict) -> bool:
+    """Return the shared owner-row policy used by digest selection and compact recovery.
+
+    Interrupts, bare slash commands and client controls are session mechanics. Argument-bearing
+    feature commands and `/effort <level>` remain owner evidence even though the transcript shape
+    cannot prove whether a recovered command argument was typed or model-invoked.
+    """
+    content = (message.get("content") or "").strip() if isinstance(message, dict) else ""
+    if not content or "interrupt" in (message.get("signals") or []):
+        return False
+    if content.startswith("(command) "):
+        content = content[len("(command) "):].lstrip()
+    if not content.startswith("/"):
+        return True
+    words = content.split()
+    if words[0] in _SUBSTANTIVE_CONTROL_COMMANDS:
+        return words[0] in _SUBSTANTIVE_ROUTING_COMMANDS and len(words) > 1
+    return not (len(words) == 1 and _SUBSTANTIVE_SLASH_RE.fullmatch(words[0]))
 
 
 def projects_dir(cwd: str) -> Path:
@@ -191,6 +217,8 @@ def merge_recovered_prompts(user_messages: list[dict], recovered: list[dict]) ->
         else:
             existing["content"] = "\n".join(
                 text for text in (existing.get("content"), row.get("content")) if text)
+            if row.get("recovered") == "command_arguments":
+                existing["recovered"] = "command_arguments"
         seen.add(key)
     merged.sort(key=lambda m: m.get("index") or 0)
     return merged
@@ -391,6 +419,8 @@ def build_evidence_index(d: dict) -> dict:
             "id": _evidence_id("U", row), "timestamp": row.get("timestamp"),
             "signals": row.get("signals") or [], "chars": len(content),
             "excerpt": clip(" ".join(content.split()), 160),
+            "attribution": ("unattributed" if row.get("recovered") == "command_arguments"
+                            else "owner"),
         })
     friction = []
     for row in d.get("friction") or []:
@@ -535,13 +565,12 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
             raise ValueError(f"malformed journal row at line {line_number}: expected an object")
         rows.append((line_number, row))
 
-    starts: list[dict] = []
+    attempts_by_key: dict[str, list[dict]] = {}
+    key_order: list[str] = []
     starts_by_pair: dict[tuple[str, str], dict] = {}
     starts_by_agent: dict[str, tuple[str, str]] = {}
-    starts_by_key: dict[str, tuple[str, str]] = {}
+    open_by_key: dict[str, tuple[str, str]] = {}
     terminals: dict[tuple[str, str], dict] = {}
-    terminals_by_agent: dict[str, tuple[str, str]] = {}
-    terminals_by_key: dict[str, tuple[str, str]] = {}
 
     for line_number, row in rows:
         event_type = row.get("type")
@@ -555,34 +584,41 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
         if event_type == "started":
             if not _workflow_string(row.get("label")) or not _workflow_string(row.get("phase")):
                 raise ValueError(f"malformed started metadata at journal line {line_number}")
-            if pair in starts_by_pair or agent_id in starts_by_agent or key in starts_by_key:
+            if pair in starts_by_pair or agent_id in starts_by_agent or key in open_by_key:
                 raise ValueError(f"duplicate started event at journal line {line_number}")
             start = dict(row, _line=line_number)
-            starts.append(start)
             starts_by_pair[pair] = start
             starts_by_agent[agent_id] = pair
-            starts_by_key[key] = pair
+            open_by_key[key] = pair
+            if key not in attempts_by_key:
+                attempts_by_key[key] = []
+                key_order.append(key)
+            attempts_by_key[key].append(start)
             continue
-        if pair in terminals or agent_id in terminals_by_agent or key in terminals_by_key:
+        if pair in terminals:
             raise ValueError(f"duplicate terminal event at journal line {line_number}")
-        terminal = dict(row, _line=line_number)
-        terminals[pair] = terminal
-        terminals_by_agent[agent_id] = pair
-        terminals_by_key[key] = pair
+        if pair not in starts_by_pair:
+            if agent_id in starts_by_agent:
+                expected = starts_by_agent[agent_id][1]
+                raise ValueError(f"terminal key mismatch for agentId {agent_id!r}: {key!r} != {expected!r}")
+            if key in attempts_by_key:
+                expected = attempts_by_key[key][-1]["agentId"]
+                raise ValueError(f"terminal agentId mismatch for key {key!r}: {agent_id!r} != {expected!r}")
+            raise ValueError(f"orphan terminal event at journal line {line_number}")
+        if open_by_key.get(key) != pair:
+            raise ValueError(f"terminal does not match the active attempt at journal line {line_number}")
+        terminals[pair] = dict(row, _line=line_number)
+        del open_by_key[key]
 
-    if not starts:
+    if not attempts_by_key:
         raise ValueError("workflow journal has no started agent events")
-    for pair, terminal in terminals.items():
-        if pair in starts_by_pair:
-            continue
-        agent_id, key = pair
-        if agent_id in starts_by_agent:
-            expected = starts_by_agent[agent_id][1]
-            raise ValueError(f"terminal key mismatch for agentId {agent_id!r}: {key!r} != {expected!r}")
-        if key in starts_by_key:
-            expected = starts_by_key[key][0]
-            raise ValueError(f"terminal agentId mismatch for key {key!r}: {agent_id!r} != {expected!r}")
-        raise ValueError(f"orphan terminal event at journal line {terminal['_line']}")
+
+    starts: list[dict] = []
+    for key in key_order:
+        attempts = attempts_by_key[key]
+        successful = [start for start in attempts
+                      if (terminals.get((start["agentId"], key)) or {}).get("type") == "result"]
+        starts.append(successful[-1] if successful else attempts[-1])
 
     items: list[dict] = []
     lenses: list[dict] = []
@@ -763,7 +799,9 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
     coverage_counts = {name: sum(row["status"] == name for row in lenses)
                        for name in ("completed", "partial", "failed", "uncovered")}
     counts = {
-        "starts": len(starts), "terminals": len(terminals), "results": result_events,
+        "starts": len(starts), "terminals": result_events + failed_events,
+        "attempts": sum(len(attempts) for attempts in attempts_by_key.values()),
+        "attemptTerminals": len(terminals), "results": result_events,
         "failedTerminals": failed_events, "missingTerminals": missing_events,
         "items": len(items), "reports": len(reports), "gaps": len(gaps), "merges": len(merges),
         "rejected": rejected_total,
@@ -905,6 +943,24 @@ def write_json_atomic(path: Path, value: dict) -> None:
         raise
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Publish a UTF-8 Markdown projection without exposing a partial target."""
+    payload = (text or "").encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=".session-digest-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _prompt_preview(rows: list[dict], cap: int) -> list[dict]:
     """First row plus the most recent rows: stable row IDs, the latest row always present,
     never more than `cap` rows. A non-positive cap means uncapped."""
@@ -981,97 +1037,226 @@ def _retrieval_footer(d: dict) -> list:
             "Select: session_digest.py --digest-file <full-json> --select <ID> [--select <ID> ...]"]
 
 
-def _render_overview(d: dict, path: Path, outcome: str, project_dir: str = "",
-                     tools: bool = False) -> str:
-    """The default presentation: identity, counts, the latest user request, the last
-    assistant outcome, and the retrieval route — globally within OVERVIEW_MAX_BYTES of
-    UTF-8 regardless of session size. Optional preview rows are shed whole (files,
-    then friction, then the prompt range) before any mandatory line shrinks, and the
-    outcome/retrieval footer is never dropped. Counts are source-population sizes;
-    no byte total here describes live context."""
+def _mode_row_attribution(row: dict) -> str:
+    return "unattributed" if row.get("recovered") == "command_arguments" else "owner"
+
+
+def _mode_row_tag(row: dict) -> str:
+    timestamp = row.get("timestamp") or ""
+    stamp = timestamp[11:16] if len(timestamp) >= 16 else "--:--"
+    signals = ",".join(row.get("signals") or []) or "-"
+    return f"{stamp} {signals} {_mode_row_attribution(row)}"
+
+
+def _mode_prompt_line(row: dict, limit: int) -> str:
+    return (f"- [{_evidence_id('U', row)} {_mode_row_tag(row)}] "
+            f"{_excerpt(row.get('content') or '', limit)}")
+
+
+def _mode_friction_line(row: dict, limit: int) -> str:
+    kind = "DENIED" if row.get("denied") else "error"
+    detail = (f"error: {row.get('error') or '(none)'} | "
+              f"next: {row.get('response') or '(no text before the next prompt)'}")
+    return (f"- [{_evidence_id('F', row)} {kind}] {row.get('tool') or 'unknown'}: "
+            f"{_excerpt(detail, limit)}")
+
+
+def _mode_filtered_prompts(d: dict) -> list[dict]:
+    return [row for row in (d.get("user_messages") or []) if is_substantive_owner_prompt(row)]
+
+
+def _mode_is_task_anchor(row: dict) -> bool:
+    if row.get("recovered") == "command_arguments":
+        return False
+    content = (row.get("content") or "").strip()
+    if content.startswith("(command) "):
+        content = content[len("(command) "):].lstrip()
+    if content.startswith("/"):
+        command = content.split()[0]
+        if command in _SUBSTANTIVE_CONTROL_COMMANDS or command in _TASK_ANCHOR_WRAPPER_COMMANDS:
+            return False
+    return True
+
+
+def _mode_task_anchor(rows: list[dict]) -> dict | None:
+    owned = [row for row in rows if row.get("recovered") != "command_arguments"]
+    return next((row for row in owned if _mode_is_task_anchor(row)), owned[0] if owned else None)
+
+
+def _mode_unique_rows(rows: list[dict]) -> list[dict]:
+    seen = set()
+    unique = []
+    for row in rows:
+        key = _evidence_id("U", row)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return sorted(unique, key=lambda row: row.get("index", -1))
+
+
+def _mode_priority_timeline(rows: list[dict]) -> list[dict]:
+    anchor = _mode_task_anchor(rows)
+    priority = [anchor] if anchor else []
+    priority += [row for row in rows
+                 if row.get("signals") or row.get("recovered") == "question_answer"]
+    priority += rows[-12:]
+    return _mode_unique_rows([row for row in priority if row is not None])
+
+
+def _mode_files(d: dict, project_dir: str) -> list[tuple[str, int]]:
+    return sorted(_display_files(d, project_dir).items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _mode_task_text(task_record: str, limit: int) -> str:
+    return _clip_bytes(task_record, max(0, limit))[0] if task_record else ""
+
+
+def _brief_mode_body(d: dict, path: Path, outcome: str, project_dir: str, task_record: str,
+                     clips: tuple[int, int, int, int]) -> str:
+    anchor_clip, latest_clip, outcome_clip, task_clip = clips
     census = d.get("tool_census") or {}
-    sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts; --tools for the table)"
+    sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts)"
                 if census.get("subagent_total") else "")
-    prompts = d.get("user_messages") or []
-    fr = d.get("friction") or []
-    files = _display_files(d, project_dir)
-    head = _digest_head(d, path, sub_note)
-    footer = _retrieval_footer(d)
-
-    def prompt_tag(u: dict) -> str:
-        tags = ",".join(u.get("signals") or []) or "-"
-        return f"{(u.get('timestamp') or '')[11:16]} {tags}"
-
-    latest = next((row for row in reversed(prompts)
+    owner_rows = _mode_filtered_prompts(d)
+    anchor = _mode_task_anchor(owner_rows)
+    latest = next((row for row in reversed(owner_rows)
                    if row.get("recovered") != "command_arguments"), None)
-    command_rows = [row for row in prompts if row.get("recovered") == "command_arguments"]
-    latest_command = command_rows[-1] if command_rows else None
-    prompt_clip, command_clip, outcome_clip = 400, 400, 400
-    show_files, show_friction, show_range = True, True, True
+    latest_command = next((row for row in reversed(owner_rows)
+                           if row.get("recovered") == "command_arguments"), None)
+    out = _digest_head(d, path, sub_note)
+    out += ["", "## Task anchor",
+            _mode_prompt_line(anchor, anchor_clip) if anchor else "(none recorded)",
+            "", "## Latest owner input/directive",
+            _mode_prompt_line(latest, latest_clip) if latest else "(none recorded)"]
+    if latest_command is not None:
+        out += ["", "## Latest command request (unattributed)",
+                _mode_prompt_line(latest_command, latest_clip)]
+    out += ["", "## Status evidence — last substantive assistant text (not a completion verdict)",
+            _excerpt(outcome, outcome_clip) or "(no assistant text)"]
+    if task_record:
+        out += ["", "## Active task record", _mode_task_text(task_record, task_clip)]
+    out += _retrieval_footer(d)
+    return "\n".join(out)
+
+
+def _render_brief_mode(d: dict, path: Path, outcome: str, project_dir: str = "", tools: bool = False,
+                       task_record: str = "") -> str:
+    """Render the locating card, including the task record, clipping toward BRIEF_MAX_BYTES.
+    Returns the text over the cap when every clip has reached its floor."""
+    clips = [500, 500, 500, 1200]
     while True:
-        out = list(head)
-        if show_range and len(prompts) > 1:
-            out += ["", f"## Prompts ({len(prompts)} total) — oldest {_evidence_id('U', prompts[0])}, "
-                        f"latest {_evidence_id('U', prompts[-1])} below; select full rows by ID"]
-        out += ["", "## Latest user request"]
-        if latest is None:
-            out.append("(none)")
-        else:
-            out.append(f"- [{_evidence_id('U', latest)} {prompt_tag(latest)}] "
-                       f"{_excerpt(latest.get('content') or '', prompt_clip)}")
-        if latest_command is not None:
-            out += ["", "## Latest command request (unattributed)",
-                    f"- [{_evidence_id('U', latest_command)} {prompt_tag(latest_command)}] "
-                    f"{_excerpt(latest_command.get('content') or '', command_clip)}"]
-        if show_friction and fr:
-            last = fr[-1]
-            kind = "DENIED" if last.get("denied") else "error"
-            out += ["", f"## Latest friction (1 of {len(fr)})",
-                    f"- [{_evidence_id('F', last)} {kind}] {last.get('tool') or 'unknown'}: "
-                    f"{_excerpt(last.get('error') or '', 120)}"]
-        elif not fr:
-            out += ["", "## Latest friction", "(none)"]
-        if show_files:
-            out += ["", f"## Files modified ({len(files)}) — page kind files for names"]
-        out += ["", "## Outcome — the session's last message",
-                _excerpt(outcome, outcome_clip) or "(no assistant text)"]
-        out += footer
-        if len("\n".join(out).encode("utf-8")) <= OVERVIEW_MAX_BYTES:
-            break
-        if show_files:
-            show_files = False
-        elif show_friction and fr:
-            show_friction = False
-        elif show_range and len(prompts) > 1:
-            show_range = False
-        elif outcome_clip > 60:
-            outcome_clip //= 2
-        elif prompt_clip > 60:
-            prompt_clip //= 2
-        elif command_clip > 60:
-            command_clip //= 2
-        else:
-            break
-    text = "\n".join(out)
-    if tools and census:
-        text += ("\n\n[Explicit --tools detail below: outside the overview byte budget.]"
-                 "\n" + "\n".join(render_tools(census)))
-    return text
+        text = _brief_mode_body(d, path, outcome, project_dir, task_record, tuple(clips))
+        if len(text.encode("utf-8")) <= BRIEF_MAX_BYTES:
+            return text
+        changed = False
+        for index in (3, 2, 1, 0):
+            if clips[index] > 48:
+                clips[index] = max(48, clips[index] // 2)
+                changed = True
+                break
+        if not changed:
+            return text
 
 
-def _render_full(d: dict, path: Path, outcome: str, project_dir: str = "", tools: bool = False) -> str:
-    """Opt-in complete rendering: every prompt, every friction row, every file, the whole
-    outcome. No caps; use only when the overview plus --select/--evidence-page is not enough."""
+def _handoff_mode_body(d: dict, path: Path, outcome: str, project_dir: str, task_record: str,
+                       timeline: list[dict], friction_limit: int, file_limit: int,
+                       clips: tuple[int, int, int, int, int, int]) -> str:
+    row_clip, friction_clip, anchor_clip, latest_clip, outcome_clip, task_clip = clips
+    census = d.get("tool_census") or {}
+    sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts)"
+                if census.get("subagent_total") else "")
+    all_rows = _mode_filtered_prompts(d)
+    anchor = _mode_task_anchor(all_rows)
+    latest = next((row for row in reversed(all_rows)
+                   if row.get("recovered") != "command_arguments"), None)
+    latest_command = next((row for row in reversed(all_rows)
+                           if row.get("recovered") == "command_arguments"), None)
+    all_friction = list(d.get("friction") or [])
+    files = _mode_files(d, project_dir)
+    shown_friction = all_friction[-friction_limit:] if friction_limit else []
+    shown_files = files[:file_limit] if file_limit else []
+    out = _digest_head(d, path, sub_note)
+    out += ["", "## Task anchor",
+            _mode_prompt_line(anchor, anchor_clip) if anchor else "(none recorded)",
+            "", "## Latest owner input/directive",
+            _mode_prompt_line(latest, latest_clip) if latest else "(none recorded)"]
+    if latest_command is not None:
+        out += ["", "## Latest command request (unattributed)",
+                _mode_prompt_line(latest_command, latest_clip)]
+    out += ["", "## Status evidence — last substantive assistant text (not a completion verdict)",
+            _excerpt(outcome, outcome_clip) or "(no assistant text)",
+            "", f"## Prompt timeline (shown/total: {len(timeline)}/{len(all_rows)})"]
+    out += [_mode_prompt_line(row, row_clip) for row in timeline] or ["(none recorded)"]
+    if len(timeline) < len(all_rows):
+        omitted_ids = [_evidence_id("U", row) for row in all_rows if row not in timeline]
+        out.append("Omitted prompt IDs: " + ", ".join(omitted_ids[:40])
+                   + (f" …[+{len(omitted_ids) - 40} IDs]" if len(omitted_ids) > 40 else ""))
+    out += ["", f"## Recent friction (shown/total: {len(shown_friction)}/{len(all_friction)})"]
+    out += [_mode_friction_line(row, friction_clip) for row in shown_friction] or ["(none)"]
+    out += ["", f"## Files modified (shown/total: {len(shown_files)}/{len(files)})"]
+    out += [f"- {name} ×{count}" for name, count in shown_files] or ["(none; use the files evidence pages for the complete list)"]
+    if len(shown_friction) < len(all_friction) or len(shown_files) < len(files):
+        out.append("Optional friction/file rows omitted; use evidence pages for exact retrieval.")
+    if task_record:
+        out += ["", "## Active task record", _mode_task_text(task_record, task_clip)]
+    out += _retrieval_footer(d)
+    return "\n".join(out)
+
+
+def _render_handoff_mode(d: dict, path: Path, outcome: str, project_dir: str = "", tools: bool = False,
+                         task_record: str = "") -> str:
+    """Render a deterministic bounded resume packet, shedding optional evidence first."""
+    rows = _mode_filtered_prompts(d)
+    priority = _mode_priority_timeline(rows)
+    timeline = list(rows)
+    friction_limit = min(8, len(d.get("friction") or []))
+    file_limit = min(16, len(d.get("files_modified_counts") or {}))
+    clips = [500, 260, 500, 500, 1800, 2000]
+    while True:
+        text = _handoff_mode_body(d, path, outcome, project_dir, task_record, timeline,
+                                  friction_limit, file_limit, tuple(clips))
+        if len(text.encode("utf-8")) <= HANDOFF_MAX_BYTES:
+            return text
+        if file_limit:
+            file_limit = 0
+            continue
+        if friction_limit > 1:
+            friction_limit = 1
+            continue
+        minimum = _mode_unique_rows(priority + rows[-4:])
+        if timeline != minimum and len(timeline) > len(minimum):
+            timeline = minimum
+            continue
+        if len(timeline) > 8:
+            timeline = _prompt_preview(timeline, max(8, len(timeline) // 2))
+            continue
+        if len(timeline) > 2:
+            timeline = _prompt_preview(timeline, max(2, len(timeline) // 2))
+            continue
+        changed = False
+        for index in (4, 5, 3, 2, 0, 1):
+            floor = 256 if index == 5 else 48
+            if clips[index] > floor:
+                clips[index] = max(floor, clips[index] // 2)
+                changed = True
+                break
+        if changed:
+            continue
+        raise ValueError("handoff mandatory packet exceeds HANDOFF_MAX_BYTES")
+
+
+def _render_full_mode(d: dict, path: Path, outcome: str, project_dir: str = "", tools: bool = False,
+                      task_record: str = "") -> str:
+    """Render the uncapped human projection; exact machine fields remain in JSON/index files."""
     census = d.get("tool_census") or {}
     sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts)"
                 if census.get("subagent_total") else "")
     out = _digest_head(d, path, sub_note)
+    out += ["", "Projection: human-readable evidence; not raw transcript or JSON field parity."]
     prompts = d.get("user_messages") or []
-    out += ["", f"## User prompts ({len(prompts)}) — complete text"]
-    for u in prompts:
-        tags = ",".join(u.get("signals") or []) or "-"
-        ts = (u.get("timestamp") or "")[11:16]
-        out.append(f"- [{_evidence_id('U', u)} {ts} {tags}] {u.get('content') or ''}")
+    out += ["", f"## User prompts ({len(prompts)}) — complete recovered prompt projection"]
+    out += [_mode_prompt_line(row, 0) for row in prompts] or ["(none)"]
     fr = d.get("friction") or []
     out += ["", f"## Friction ({len(fr)}) — complete error and response text"]
     if not fr:
@@ -1081,24 +1266,32 @@ def _render_full(d: dict, path: Path, outcome: str, project_dir: str = "", tools
         out.append(f"- [{_evidence_id('F', f)} {kind}] {f.get('tool') or 'unknown'}: `{f.get('input') or ''}`"
                    f"\n  error: {f.get('error') or ''}"
                    f"\n  next: {f.get('response') or '(no text before the next prompt)'}")
-    files = _display_files(d, project_dir)
-    items = sorted(files.items(), key=lambda kv: (-kv[1], kv[0]))
+    items = _mode_files(d, project_dir)
     out += ["", f"## Files modified ({len(items)}) — complete list"]
     out += [f"- {p} ×{c}" for p, c in items] or ["(none)"]
-    if tools and census:
-        out += render_tools(census)
-    out += ["", "## Outcome — the session's last message", outcome or "(no assistant text)"]
+    if tools:
+        normalized = {"main": census.get("main", {}), "subagents": census.get("subagents", {}),
+                      "subagent_transcripts": census.get("subagent_transcripts", 0),
+                      "main_total": census.get("main_total", 0),
+                      "subagent_total": census.get("subagent_total", 0)}
+        out += render_tools(normalized)
+    out += ["", "## Status evidence — last substantive assistant text block (not a completion verdict)",
+            outcome or "(no assistant text)"]
+    if task_record:
+        out += ["", "## Active task record", task_record]
     out += _retrieval_footer(d)
     return "\n".join(out)
 
 
-def render(d: dict, path: Path, outcome: str, caps: dict, project_dir: str = "", tools: bool = False) -> str:
-    """caps selects the presentation only: SESSION/BRIEF render the small overview,
-    FULL renders everything. The evidence dict `d` is never mutated, so --select and
-    pagination read the same rows the overview summarizes."""
+def render(d: dict, path: Path, outcome: str, caps: dict, project_dir: str = "", tools: bool = False,
+           task_record: str = "") -> str:
+    """Render one presentation without mutating the durable evidence dictionary."""
     if caps.get("mode") == "full":
-        return _render_full(d, path, outcome, project_dir, tools)
-    return _render_overview(d, path, outcome, project_dir, tools)
+        return _render_full_mode(d, path, outcome, project_dir, tools, task_record)
+    if caps.get("mode") == "brief":
+        return _render_brief_mode(d, path, outcome, project_dir, tools, task_record)
+    return _render_handoff_mode(d, path, outcome, project_dir, tools, task_record)
+
 
 
 def render_context(d: dict) -> str:
@@ -1134,15 +1327,38 @@ def render_context(d: dict) -> str:
     return "\n".join(out)
 
 
+def full_export_receipt(d: dict, export_path: Path, projection: str, task_record: str,
+                       project_dir: str = "", tools: bool = False) -> str:
+    """Describe an already-published full projection without printing its body."""
+    census = d.get("tool_census") or {}
+    files = d.get("files_modified_counts") or {}
+    tool_count = census.get("main_total", 0) + census.get("subagent_total", 0)
+    receipt = "\n".join([
+        f"Full export: {export_path}",
+        f"UTF-8 bytes: {len(projection.encode('utf-8'))}",
+        "Sections: prompts=%d friction=%d files=%d tools=%d task_record=%s last_assistant=%s" % (
+            len(d.get("user_messages") or []), len(d.get("friction") or []), len(files),
+            tool_count if tools else 0, "yes" if task_record else "no",
+            "yes" if d.get("outcome_last_assistant_text") else "no"),
+        "Exact retrieval: --digest-file <full-json> --select <ID> or --evidence-page prompts|friction|files --page <N>",
+        "Resume retrieval: session_digest.py --session <id-prefix> --handoff",
+    ])
+    clipped, _ = _clip_bytes(receipt, FULL_RECEIPT_MAX_BYTES)
+    return clipped
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--session", help="session id or unique prefix")
     ap.add_argument("--prompt-tail", help="text the session's latest real prompt must contain (e.g. session_end)")
     ap.add_argument("--project-dir", default=os.getcwd(), help="repo root the session ran in (default cwd)")
-    ap.add_argument("--brief", action="store_true",
-                    help="same small overview as the default (kept for existing callers)")
-    ap.add_argument("--full", action="store_true",
-                    help="opt-in complete rendering: every prompt, friction row, file and the whole outcome")
+    presentation = ap.add_mutually_exclusive_group()
+    presentation.add_argument("--brief", action="store_true",
+                              help="bounded 2,048-byte identity card; not sufficient for pickup")
+    presentation.add_argument("--handoff", action="store_true",
+                              help="bounded 16,384-byte resume packet (also the default)")
+    presentation.add_argument("--full", action="store_true",
+                              help="atomically export a human-readable Markdown projection; print only a receipt")
     ap.add_argument("--digest-file", metavar="PATH", help="saved full JSON used by --select")
     ap.add_argument("--workflow-dir", metavar="PATH",
                     help="exact Workflow transcriptDir containing journal.jsonl")
@@ -1177,10 +1393,10 @@ def main() -> None:
                          "so re-rendered markdown still matches")
     ap.add_argument("--match-file", metavar="PATH", help="like --match, text read from PATH (long pastes, quotes)")
     ap.add_argument("--tools", action="store_true",
-                    help="print the per-tool call census, main transcript and subagent transcripts separately")
+                    help="include the per-tool call census in the --full offline export")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
     workflow_operation = (a.workflow_manifest or a.workflow_select
                           or a.workflow_page or a.workflow_full)
@@ -1191,7 +1407,7 @@ def main() -> None:
             ap.error("--workflow-dir/--workflow-kind requires a --workflow-manifest/select/page/full operation")
         if not a.workflow_dir or not a.workflow_kind:
             ap.error("Workflow result operations require --workflow-dir and --workflow-kind")
-        session_options = (a.session or a.prompt_tail or a.brief or a.full or a.digest_file
+        session_options = (a.session or a.prompt_tail or a.brief or a.handoff or a.full or a.digest_file
                            or a.select or a.evidence_page or a.json_only or a.context_only
                            or a.previous or a.list or a.match or a.match_file or a.tools)
         if session_options:
@@ -1233,8 +1449,8 @@ def main() -> None:
         return
     if a.digest_file:
         ap.error("--digest-file requires --select or --evidence-page")
-    if a.brief and a.full:
-        ap.error("--brief and --full are mutually exclusive")
+    if a.tools and not a.full:
+        ap.error("--tools requires --full; read the census from the exported .full.md")
 
     pdir = projects_dir(a.project_dir)
     if a.list:
@@ -1243,7 +1459,8 @@ def main() -> None:
     if a.match or a.match_file:
         text = Path(a.match_file).read_text(encoding="utf-8", errors="replace") if a.match_file else a.match
         path, ranked = match_transcript(pdir, text)
-        print("MATCH " + "  ".join(f"{p.stem[:8]}={s:.2f}" for s, p in ranked) + "  (first is used)")
+        print("MATCH " + "  ".join(f"{p.stem[:8]}={s:.2f}" for s, p in ranked) + "  (first is used)",
+              file=sys.stderr)
     else:
         path = pick_transcript(pdir, a.session, a.prompt_tail, a.previous)
     b = TranscriptSummaryBuilder(path.stem, str(path), full_evidence=not a.context_only)
@@ -1277,11 +1494,19 @@ def main() -> None:
     elif a.context_only:
         print(render_context(d))
     else:
-        caps = BRIEF if a.brief else (FULL if a.full else SESSION)
-        print(render(d, path, outcome, caps, a.project_dir, a.tools))
         block = task_record_block(path.stem, a.project_dir)
-        if block:
-            print("\n" + block)
+        caps = BRIEF if a.brief else (FULL if a.full else SESSION)
+        projection = render(d, path, outcome, caps, a.project_dir, a.tools, block)
+        if a.full:
+            export_path = logs / f"session_digest_{path.stem[:8]}.full.md"
+            try:
+                write_text_atomic(export_path, projection)
+            except OSError as exc:
+                print(f"full export failed: {exc}", file=sys.stderr)
+                raise SystemExit(1)
+            sys.stdout.write(full_export_receipt(d, export_path, projection, block, a.project_dir, a.tools))
+        else:
+            sys.stdout.write(projection)
 
 
 def task_record_block(session_id: str, project_dir: str) -> str:

@@ -27,7 +27,8 @@ operand, walks no tree and is not flagged.
 
 ADVISE — scope: `find` is blind to .gitignore and sweeps `.claude/worktrees/` (measured
 2026-08-09: 261 worktree hits where the Grep tool returned 0). Not flagged when a flag or a
-narrowing path operand scopes the walk, or when cwd is inside `.claude/worktrees/`.
+narrowing path operand scopes the walk, or when cwd is inside a nested checkout
+(`.claude/worktrees/<checkout>/` or `.claude/.cache/<name>-worktrees/<checkout>/`).
 
 Advisories are full on the first fire per axis and one line afterwards, re-armed by a compaction
 (`_hook_state.fire_once_since_compaction`). The deny is emitted as `permissionDecision: deny`
@@ -41,6 +42,7 @@ import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _claude_scope import in_nested_checkout
 from _command_text import executable_text
 from _hook_state import fire_once_since_compaction
 
@@ -284,18 +286,10 @@ def runs_recursive_grep(tool, command):
 
 
 DENY_REASON = (
-    "RECURSIVE GREP DENIED — this command runs a recursive grep (`grep -r`/`-R`/`--recursive`/"
-    "`-d recurse`, `find -exec grep`, `find | xargs grep`, or `Get-ChildItem -Recurse | "
-    "Select-String`). A recursive grep that reaches a giant single-line or special file buffers "
-    "without bound, and on Git Bash it keeps running after its parent shell or a downstream "
-    "reader exits: two such orphans reached 14.3 GB and 21.5 GB and starved the machine. A path "
-    "operand, `-l` or an output cap does not make it safe.\n"
-    "Use instead:\n"
-    "  • the Grep tool, scoped with `path` or `glob` and bounded with `head_limit`\n"
-    "  • `rg -n <pat> <dir>` — honours .gitignore and skips binaries; `rg -uu <pat> <dir>` for an "
-    "ignored tree; bound with `--max-count N`\n"
-    "  • `git grep -n <pat> -- <path>` — tracked files only; bound with `-m N`\n"
-    "Canon: CLAUDE.md §Tool Routing."
+    "RECURSIVE GREP DENIED: `grep -r`, `find -exec grep`, `find | xargs grep` and "
+    "`Get-ChildItem -Recurse | Select-String` can run away without bound. Use the Grep tool "
+    "(`path`/`glob`, `head_limit`), `rg -n <pat> <dir> --max-count N` (`-uu` for ignored trees), "
+    "or `git grep -n <pat> -- <path>` (CLAUDE.md §Tool Routing)."
 )
 
 # ---------------------------------------------------------------------------------------------
@@ -433,43 +427,29 @@ def rg_walks_no_tree(command: str, cwd: str = "") -> bool:
 
 
 def in_worktree(cwd: str) -> bool:
-    """Inside a worktree checkout the scope advisory would warn against the caller's own tree."""
-    return ".claude/worktrees" in (cwd or "").replace("\\", "/")
+    """Inside a nested checkout (any layout `_claude_scope` rebases) the scope advisory would warn
+    against the caller's own tree."""
+    return in_nested_checkout(cwd or "")
 
 
 SCOPE_ADVICE = (
-    "⚠ GITIGNORE-BLIND SCAN — `find` walks ignored trees that every git-aware search excludes, "
-    "chiefly `.claude/worktrees/`: whole extra checkouts of this repo whose hits are "
-    "indistinguishable from real ones. Measured: 261 worktree hits on a query where the Grep "
-    "tool returned 0.\n"
-    "Capping output does NOT fix this — a bounded, worktree-polluted result reads as "
-    "authoritative.\n"
-    "Use a tool that honours .gitignore:\n"
-    "  • the Grep tool or the Glob tool — respect .gitignore\n"
-    "  • `git ls-files` — when you want the path list\n"
-    "  • keep `find` only with `-path ./.claude -prune` (or a narrower root path), and say why "
-    "the git-aware tools don't fit\n"
-    "Canon: CLAUDE.md §Tool Routing."
+    "⚠ GITIGNORE-BLIND SCAN — `find` sweeps `.claude/worktrees/`, whose duplicate hits look "
+    "real; capping output does not fix that. Use the Grep or Glob tool, `git ls-files`, or "
+    "`find` with `-path ./.claude -prune` or a narrower root (CLAUDE.md §Tool Routing)."
 )
 
 ADVICE = (
-    "⚠ UNBOUNDED RECURSIVE SCAN — this command walks a tree and prints matching LINES with no "
-    "cap. Output size is unknown before the call; a wide match set lands in context permanently "
-    "and can spill to a tool-results file.\n"
-    "Bound it before running:\n"
-    "  • `rg --max-count N` (`-m N`) — stop after N matches per file\n"
-    "  • `-l` (files only) or `-c` (counts) — reduce, then read the few that matter\n"
-    "  • narrow the path/glob instead of filtering a wide scan through a second command\n"
-    "Canon: CLAUDE.md §Tool Routing. Prefer the Grep tool with `head_limit` over raw shell "
-    "search when you just need matches."
+    "⚠ UNBOUNDED RECURSIVE SCAN — output size is unknown, and every match stays in context. "
+    "Bound it: `rg --max-count N`, `-l`/`-c`, a narrower path/glob, or the Grep tool's "
+    "`head_limit` (CLAUDE.md §Tool Routing)."
 )
 
 SCOPE_ADVICE_SHORT = (
-    "⚠ GITIGNORE-BLIND SCAN — this sweeps `.claude/worktrees/`. Use the Grep tool, `git ls-files`, "
+    "⚠ GITIGNORE-BLIND SCAN — sweeps `.claude/worktrees/`. Use the Grep tool, `git ls-files`, "
     "or `find` with `-path ./.claude -prune`."
 )
 ADVICE_SHORT = (
-    "⚠ UNBOUNDED RECURSIVE SCAN — cap it (`--max-count N`), reduce it (`-l` / `-c`), or use the "
+    "⚠ UNBOUNDED RECURSIVE SCAN — cap it (`--max-count N`), reduce it (`-l`/`-c`), or use the "
     "Grep tool's `head_limit`."
 )
 

@@ -724,6 +724,13 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
             if local_hash != merged_hash:
                 continue  # leave `hash` untouched; the consumer's `pull` catches up (§5)
         entry["hash"] = merged_hash
+        # A `forked` row judged `push` is upstream's content once this hash is rewritten, so it
+        # is no longer a fork. Keeping the status and its stale `base` makes the next
+        # `check --strict` report `forked-upstream-moved` against a baseline that now carries
+        # this very content -- a clean publication that reads as drift.
+        if sync._entry_status(entry) == "forked":
+            entry["status"] = "tracked"
+            entry.pop("base", None)
         updated += 1
     lock["synced_commit"] = baseline_sha_after
     sync.save_lock(root, lock)
@@ -735,8 +742,9 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
     # §5: for `--from-worktree`, the consumer's local copy is not required to be in sync
     # yet -- step 8 instead verifies the merged tree holds each published path's bytes
     # from the source commit (reproducing the same reverse-substitution `scrub` applied),
-    # and names the rows the consumer must pull. `--from-commit` keeps the old rule: the
-    # consumer is the source, so local in-sync is required.
+    # and names the rows the consumer must pull. `--from-commit` compares the merged row with
+    # the source commit's bytes, never the working tree: a peer edit made after the source
+    # commit is new local work for `triage`, not a failed publication.
     from_worktree = source["kind"] == "worktree"
     needs_pull: list[str] = []
     for record in records:
@@ -768,8 +776,9 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
         expected = sync.forward_for(
             record["relpath"], content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
         )
-        local = sync.local_text(root, record["relpath"])
-        if local is None or sync.sha(local.encode("utf-8")) != sync.sha(expected.encode("utf-8")):
+        published = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
+        published_text = sync._lf(published).decode("utf-8", errors="replace") if published is not None else None
+        if published_text is None or sync.sha(published_text.encode("utf-8")) != sync.sha(expected.encode("utf-8")):
             raise PublishError(f"check failed: {record['relpath']}")
     if from_worktree and needs_pull:
         return "all published rows verified; pull needed: " + ", ".join(sorted(needs_pull))

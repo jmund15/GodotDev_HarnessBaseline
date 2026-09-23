@@ -24,7 +24,6 @@ import builtins
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,6 +35,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
 ROOT = os.path.abspath(os.path.join(CLAUDE, ".."))
 HOOKS = os.path.join(CLAUDE, "hooks")
+TOOLS = os.path.join(CLAUDE, "tools")
+sys.path.insert(0, TOOLS)
+from sidecar_launch import git_bash  # noqa: E402
+
 DISPATCH = os.path.join(HOOKS, "pre_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
@@ -124,12 +127,14 @@ def live_script_instance(tmp):
     script = os.path.join(script_dir, "harness_b2_probe.sh")
     with open(script, "w", newline="\n", encoding="utf-8") as fh:
         fh.write("#!/usr/bin/env bash\nsleep 120\n")
-    bash = shutil.which("bash")
+    bash = git_bash()
     if not bash:
         return script, None
     proc = subprocess.Popen([bash, script.replace("\\", "/")],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.0)  # let the process table catch up before the scan
+    if proc.poll() is not None:
+        return script, None
     return script, proc
 
 

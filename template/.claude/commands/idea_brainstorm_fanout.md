@@ -88,14 +88,14 @@ Workflow({
       { name: "dependsOn", desc: "which referenced system it leans on" }
     ]
     // critics omitted -> engine defaults (dedup / fit / coverage-gap); pass args.critics:[{key,instr}] for cluster-specific mandates
-    // model omitted per agent -> phase default (generators opus, critics sonnet); drop a mechanical lens to model:"sonnet" to save cost
+    // model omitted per agent -> phase default (generators executor tier, critics fanout tier); drop a mechanical lens to the fanout tier to save cost
   }
 })
 ```
 
-**Model — asymmetric defaults: generators default `opus`, critics floor to `sonnet`.** Divergence wants the strong model; rigor (dedup / fit / coverage-gap) does not — and fan-out only fires on breadth-critical clusters, so the generator spend is justified by the trigger. An omitted per-agent `model` takes its phase default — it must NOT silently inherit the session model (under Fable that would spawn Fable generators). Override per agent via `args.generators[i].model` / `args.critics[i].model`: drop a *mechanical* lens (axis-inversion / by-taxonomy) to `sonnet` to save cost, and reserve `fable` for an explicit max-fidelity request.
+**Model — asymmetric defaults: generators default to the executor tier, critics floor to the fanout tier** (the engine's literal defaults are `opus` and `sonnet`). Divergence gets the executor tier; rigor (dedup / fit / coverage-gap) does not need it — and fan-out only fires on breadth-critical clusters, so the generator spend is justified by the trigger. An omitted per-agent `model` takes its phase default — it must NOT silently inherit the session model. Override per agent via `args.generators[i].model` / `args.critics[i].model`: drop a *mechanical* lens (axis-inversion / by-taxonomy) to the fanout tier to save cost, and reserve the orchestrator tier for an explicit max-fidelity request.
 
-**Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** dispatch the generators as parallel `Task` subagents — each one flat prompt (CONTEXT + its lens mandate inline) with an explicit `model: "sonnet"` (the `Task` path bypasses the engine's floor) and the `GEN_GUARD` discipline (work from CONTEXT only, no self-filter, no condense). Merge and critique by hand. This mirrors the redteam command's `Task` fallback.
+**Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** dispatch the generators as parallel `Task` subagents — each one flat prompt (CONTEXT + its lens mandate inline) with an explicit fanout-tier `model` (the `Task` path bypasses the engine's floor) and the `GEN_GUARD` discipline (work from CONTEXT only, no self-filter, no condense). Merge and critique by hand. This mirrors the redteam command's `Task` fallback.
 
 ## Step 3: Liveness, then hand back to Claude for curation
 

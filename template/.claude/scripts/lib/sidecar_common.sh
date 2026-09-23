@@ -229,8 +229,13 @@ SC_MAX_TURNS=""   # empty = NO turn cap (user directive 2026-08-03: a cap discar
 SC_FORMAT="json"
 SC_WORKDIR="$PWD"
 SC_PROMPT_FILE=""
-SC_TIMEOUT=""     # empty = NO wall-clock kill. A timeout only ever WAKES the orchestrator to
-                  # check for a hang via -P heartbeat staleness; it never halts a long run.
+# `timeout` really does kill the child (exit 124); the comment that used to sit here claimed it
+# only woke the orchestrator, which was wrong. Bounded by default because an unbounded dispatch
+# hangs forever when the provider never answers -- and with no -P stream the stall watchdog is off
+# too, so such a run has no bound of any kind. The default sits far above every recorded run, so
+# it bounds a hang without discarding completed work, which the `-n` rule below forbids.
+# Pass -T for a closer bound, or SIDECAR_TIMEOUT="" to opt out.
+SC_TIMEOUT="${SIDECAR_TIMEOUT-14400}"
 SC_RECORD=""
 SC_INVENTORY=""
 SC_INVENTORY_STALE_SECONDS="${SIDECAR_INVENTORY_STALE_SECONDS:-604800}"
@@ -271,7 +276,9 @@ SC_SHIFT=0
 # One spend ledger across providers. A per-provider file would need a second reader in
 # /orchestration_metrics, and the one that got forgotten would drop its runs silently;
 # every record carries requestedModel and costBasis, so the rows stay separable.
-SC_LEDGER_DEFAULT="$HOME/.claude/deepseek_spend.jsonl"
+# SIDECAR_LEDGER_PATH overrides this path here and in orchestration_metrics.py, so writer and
+# delegation reader move together. Provider capacity is account-wide and uses a separate cache.
+SC_LEDGER_DEFAULT="${SIDECAR_LEDGER_PATH:-$HOME/.claude/sidecar_ledger.jsonl}"
 
 # One option string, defined once, so the -X pre-scan in sc_reexec_snapshot (which needs to know
 # which single-letter flags consume the next token as their argument, e.g. "-l -X" is not a
@@ -432,7 +439,7 @@ sc_resolve_model() {
     exit 2
   fi
   IFS='|' read -r SC_MODEL SC_ALIAS SC_AUTH_TIER SC_MIN_BAND SC_MIN_BALANCE SC_FRESH_RATE \
-    SC_BALANCE_URL SC_TRANSPORT_STATE SC_TRANSPORT_REASON SC_COST_MODEL SC_MAX_PROVIDER_BAND \
+    SC_RETIRED_BALANCE_URL SC_TRANSPORT_STATE SC_TRANSPORT_REASON SC_COST_MODEL SC_MAX_PROVIDER_BAND \
     SC_API_MODE \
     <<< "$fields"
 }
@@ -567,150 +574,139 @@ PY
 # ("plan quota going unused - spend it"), Ahead/Hot are HIGH-pressure ones. Every message
 # prints the pressure NUMBER with the name, because the name alone reads backwards.
 sc_gate_band() {
-  local out rc sat_rc
-  out="$(python3 "$SC_BUDGET_HOOK" --band --pressure 2>/dev/null)"; rc=$?
-  SC_BAND="${out%%$'\t'*}"
-  SC_BAND_P="${out##*$'\t'}"
-  [ "$SC_BAND_P" = "$SC_BAND" ] && SC_BAND_P="?"
+  local runner="$SC_ROOT/tools/provider_capacity.py" seat raw rc parsed status sat_rc
+  seat="${CLAUDE_CODE_TRANSPORT:-anthropic}"
+  raw="$(python3 "$runner" "$seat" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    parsed="$(CAP_V="$raw" python3 -c '
+import json,os,sys
+try:
+ d=json.loads(os.environ["CAP_V"]); q=d.get("quota") or {}; wins=q.get("windows") or []
+ w=next((x for x in wins if x.get("name")=="seven_day"), None) or next((x for x in wins if x.get("name")==q.get("bindingWindow")), {})
+ print("%s|%s|%s" % (d.get("status") or "", q.get("routingBand") or "", w.get("pressure") if w.get("pressure") is not None else ""))
+except Exception: sys.exit(1)
+' 2>/dev/null)" || rc=2
+  fi
+  if [ "$rc" -eq 0 ]; then
+    IFS='|' read -r status SC_BAND SC_BAND_P <<< "$parsed"
+    if [ "$status" = "exhausted" ]; then
+      SC_BAND="Hot"; SC_BAND_P="spent"
+    elif [ "$status" != "available" ] || [ -z "$SC_BAND" ]; then
+      rc=2
+    fi
+  fi
 
   if [ "$SC_AUTHORIZED" -eq 1 ]; then
-    echo "[sidecar] -A: band gate bypassed for $SC_ALIAS ($SC_MODEL); band=$SC_BAND pressure=$SC_BAND_P, floor=$SC_MIN_BAND" >&2
+    echo "[sidecar] -A: host-band floor bypassed for $SC_ALIAS ($SC_MODEL); seat=$seat band=${SC_BAND:-unknown} floor=$SC_MIN_BAND" >&2
     return 0
   fi
   if [ "$rc" -ne 0 ]; then
-    # WHY it is unreadable decides the fix, so ask rather than asserting a cause. Some
-    # entrypoints send no rate_limits at all: the writer is healthy and "restore the
-    # statusline" would be the wrong instruction.
-    local why
-    why="$(python3 "$SC_BUDGET_HOOK" --why 2>/dev/null)"
-    # A floor the LOWEST band already satisfies is vacuous: no reading could fail it, so an
-    # unreadable band refuses nothing. ($0 tiers and plan-quota rows at the Surplus floor.)
     if python3 "$SC_REGISTRY_CLI" band-satisfies Surplus "$SC_MIN_BAND" >/dev/null 2>&1; then
-      echo "[sidecar] band UNREADABLE (${why:-no cc-cachestat state file}); floor $SC_MIN_BAND is the lowest band, so the gate passes." >&2
+      echo "[sidecar] host capacity unavailable for $seat; floor $SC_MIN_BAND is the lowest band, so no reading could fail it." >&2
       SC_BAND="unknown"; SC_BAND_P="?"
       return 0
     fi
-    # `unknown` is NOT a band. Treated as not-satisfied, and said so explicitly:
-    # "unreadable" and "too low" are different problems with different fixes.
-    {
-      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): budget band is UNREADABLE (not low)."
-      echo "  $SC_BUDGET_HOOK --band exited $rc."
-      if [ -n "$why" ]; then
-        echo "  Cause: $why."
-        echo "  The gate has no input and cannot certify the floor of $SC_MIN_BAND. This will"
-        echo "  not clear on its own - dispatch deliberately with -A."
-      else
-        echo "  No cc-cachestat state file was findable. That file is written by"
-        echo "  ~/.claude/statusline.py every turn - if it is absent, the gate has no input"
-        echo "  and cannot certify the floor of $SC_MIN_BAND."
-        echo "  Override deliberately with -A, or restore the statusline."
-      fi
-    } >&2
+    echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): live host capacity for $seat is unavailable; cannot certify floor $SC_MIN_BAND. Use -A only for deliberate off-quota spend." >&2
     exit 5
   fi
   python3 "$SC_REGISTRY_CLI" band-satisfies "$SC_BAND" "$SC_MIN_BAND"; sat_rc=$?
   [ "$sat_rc" -eq 0 ] && return 0
   {
     if [ "$sat_rc" -eq 2 ]; then
-      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): band name '$SC_BAND' is not in quota_bands.BANDS."
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): host band '$SC_BAND' is invalid."
     else
-      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): band $SC_BAND (7d pressure $SC_BAND_P) is below the floor $SC_MIN_BAND."
-      echo "  Bands rank by BURN RATE: Surplus < On pace < Ahead < Hot. A low band means"
-      echo "  plan quota is going unused - spend that first; it expires."
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): host band $SC_BAND (pressure ${SC_BAND_P:-?}) is below floor $SC_MIN_BAND."
+      echo "  Surplus < On pace < Ahead < Hot; spend expiring plan quota before marginal dollars."
     fi
-    echo "  Override: re-run with -A. Policy home: .claude/skills/orchestration/SKILL.md section 5."
+    echo "  Override deliberate off-quota spend with -A."
   } >&2
   exit 5
 }
 
-# ------------------------------------------------- gate 3: the PROVIDER's own quota band
-# Only a plan-quota transport has one. This is a CEILING, the inverse of the floor above:
-# the refusal case is the provider running HOT, i.e. burning its own allowance faster than
-# the window can carry. A floor here would permit dispatch precisely when the allowance is
-# most exhausted.
-#
-# `unknown` does NOT refuse. The probe reports band-or-unknown, and an unreadable provider
-# band is an advisory failure, not evidence of exhaustion; refusing on it would make every
-# probe hiccup look like a spent quota. The band FLOOR above fails closed because its input
-# is local and always available; this one depends on a network round-trip.
-sc_gate_provider_band() {
-  [ "$SC_COST_MODEL" = "plan-quota" ] || return 0
-  [ -n "$SC_MAX_PROVIDER_BAND" ] || return 0
-
-  local probe reading band
-  probe="$SC_ROOT/scripts/${SC_TRANSPORT}_quota_probe.py"
-  [ -f "$probe" ] || return 0
-  reading="$(python3 "$probe" 2>/dev/null)" || {
-    echo "[sidecar] $SC_TRANSPORT quota probe failed; provider-band gate SKIPPED (not a refusal)." >&2
-    return 0
-  }
-  band="$(READING="$reading" python3 -c 'import json,os;print((json.loads(os.environ["READING"]).get("band") or ""))' 2>/dev/null)"
-  if [ -z "$band" ]; then
-    echo "[sidecar] $SC_TRANSPORT quota band is UNKNOWN (window not computable); gate SKIPPED." >&2
-    return 0
+# --------------------------------------------------------- unified provider capacity gate
+# Every transport delegates amount evidence to tools/provider_capacity.py. Expected provider
+# outcomes are normalized JSON; a nonzero exit is a runner/schema fault and refuses before launch.
+sc_gate_capacity() {
+  local runner="$SC_ROOT/tools/provider_capacity.py" raw rc parsed status band amount source cmp_rc
+  if [ ! -f "$runner" ]; then
+    echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity runner is missing." >&2
+    exit 8
   fi
-  SC_PROVIDER_BAND="$band"
-  local ceil_rc
-  python3 "$SC_REGISTRY_CLI" band-within-ceiling "$band" "$SC_MAX_PROVIDER_BAND"; ceil_rc=$?
-  [ "$ceil_rc" -eq 0 ] && return 0
-  if [ "$ceil_rc" -ne 1 ]; then
-    # 2 = a band name the registry does not know. That is a config fault, not evidence of
-    # exhaustion, and this gate does not fail closed on advisory input.
-    echo "[sidecar] provider-band comparison failed (rc=$ceil_rc); gate SKIPPED (not a refusal)." >&2
-    return 0
+  raw="$(PROVIDER_CAPACITY_TOKEN="${SC_CREDENTIAL:-}" python3 "$runner" "$SC_TRANSPORT" 2>/dev/null)"; rc=$?
+  SC_CAPACITY_JSON="$raw"
+  if [ "$rc" -ne 0 ]; then
+    echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity runner failed (exit $rc)." >&2
+    exit 8
   fi
-  if [ "$SC_AUTHORIZED" -eq 1 ]; then
-    echo "[sidecar] -A: provider-band ceiling bypassed for $SC_ALIAS; $SC_TRANSPORT band=$band, ceiling=$SC_MAX_PROVIDER_BAND" >&2
-    return 0
-  fi
-  {
-    echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT's OWN quota band is $band, above the $SC_MAX_PROVIDER_BAND ceiling."
-    echo "  This is the PROVIDER's allowance, not this session's (that gate passed): the account"
-    echo "  is burning its plan quota faster than the window can carry."
-    echo "  Read it: python3 .claude/scripts/${SC_TRANSPORT}_quota_probe.py"
-    echo "  Override: re-run with -A."
-  } >&2
-  exit 8
-}
-
-# ---------------------------------------------------------------- gate 4: dollar balance
-# `gated` models only, and only where the registry knows a balance endpoint — so it costs a
-# plan-quota transport nothing. Applies ALWAYS, -A included: -A authorizes intent, it cannot
-# conjure funds.
-sc_gate_balance() {
-  [ "$SC_AUTH_TIER" = "gated" ] || return 0
-  [ -n "$SC_BALANCE_URL" ] || return 0
-  local raw now try
-  # Three tries: a single probe timeout is usually transient. A parsed balance, low or not, is an
-  # answer and never retries.
-  # Worst case 3x10 s + 2x2 s = 34 s stays under the dispatch hook's 45 s --check budget.
-  for try in 1 2 3; do
-    raw="$(curl -s --max-time 10 "$SC_BALANCE_URL" -H "Authorization: Bearer $SC_CREDENTIAL" 2>/dev/null)"
-    now="$(BAL_V="$raw" python3 -c '
-import json, os, sys
+  parsed="$(CAP_V="$raw" python3 -c '
+import json,os,sys
 try:
-    infos = json.loads(os.environ["BAL_V"]).get("balance_infos") or []
-    # total_balance is a STRING in this API ("6.74"), not a number.
-    print(max(float(i["total_balance"]) for i in infos))
+ d=json.loads(os.environ["CAP_V"])
+ status=d["status"]; source=d["sourceKind"]
+ quota=d.get("quota") or {}; balance=d.get("balance") or {}
+ print("%s|%s|%s|%s" % (status, quota.get("dispatchBand") or "", balance.get("amount") if balance.get("amount") is not None else "", source))
 except Exception:
-    sys.exit(1)
-' 2>/dev/null)" || now=""
-    [ -n "$now" ] && break
-    [ "$try" -lt 3 ] && sleep 2
-  done
-  if [ -z "$now" ]; then
-    {
-      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): balance probe FAILED (not: balance low)."
-      echo "  $SC_BALANCE_URL returned nothing parsable on 3 tries. Failing loud before spending, because"
-      echo "  an unverified balance on a gated model is the case this gate exists for."
-    } >&2
-    exit 6
+ sys.exit(1)
+' 2>/dev/null)" || {
+    echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity output is malformed." >&2
+    exit 8
+  }
+  IFS='|' read -r status band amount source <<< "$parsed"
+  SC_PROVIDER_BAND="$band"
+  case "$status" in
+    exhausted)
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT plan allowance is exhausted." >&2
+      exit 10 ;;
+    insufficient)
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT balance is insufficient." >&2
+      exit 6 ;;
+    auth-error)
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT authentication failed." >&2
+      exit 3 ;;
+    network-error|malformed)
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): $SC_TRANSPORT capacity is $status." >&2
+      exit 8 ;;
+    unsupported)
+      if [ "$SC_COST_MODEL" = "plan-quota" ] || awk -v f="${SC_MIN_BALANCE:-0}" 'BEGIN{exit !(f+0 > 0)}'; then
+        echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): required provider amount is unsupported." >&2
+        exit 8
+      fi
+      echo "[sidecar] $SC_ALIAS capacity: amount unsupported, no amount floor; launcher eligibility remains authoritative." >&2
+      return 0 ;;
+    available) ;;
+    *)
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): unknown provider capacity status '$status'." >&2
+      exit 8 ;;
+  esac
+
+  if [ "$SC_COST_MODEL" = "plan-quota" ]; then
+    [ -n "$band" ] || {
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider quota has no dispatch band." >&2
+      exit 8
+    }
+    python3 "$SC_REGISTRY_CLI" band-within-ceiling "$band" "$SC_MAX_PROVIDER_BAND"; cmp_rc=$?
+    if [ "$cmp_rc" -ne 0 ]; then
+      if [ "$cmp_rc" -eq 1 ] && [ "$SC_AUTHORIZED" -eq 1 ]; then
+        echo "[sidecar] -A: known provider band $band exceeds $SC_MAX_PROVIDER_BAND; owner-authorized spend." >&2
+        return 0
+      fi
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider band '$band' does not satisfy ceiling '$SC_MAX_PROVIDER_BAND'." >&2
+      exit 8
+    fi
+    return 0
   fi
-  if ! awk -v b="$now" -v f="$SC_MIN_BALANCE" 'BEGIN{exit !(b+0 >= f+0)}'; then
-    echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): balance \$$now is below the \$$SC_MIN_BALANCE floor. -A does not override this." >&2
-    exit 6
+
+  if awk -v f="${SC_MIN_BALANCE:-0}" 'BEGIN{exit !(f+0 > 0)}'; then
+    [ -n "$amount" ] || {
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): provider capacity has no required balance." >&2
+      exit 8
+    }
+    if ! awk -v b="$amount" -v f="$SC_MIN_BALANCE" 'BEGIN{exit !(b+0 >= f+0)}'; then
+      echo "[sidecar] REFUSING $SC_ALIAS ($SC_MODEL): balance \$$amount is below the \$$SC_MIN_BALANCE floor." >&2
+      exit 6
+    fi
   fi
-  echo "[sidecar] $SC_ALIAS preflight OK: band=$SC_BAND (pressure $SC_BAND_P, floor $SC_MIN_BAND), balance=\$$now (floor \$$SC_MIN_BALANCE), fresh-token rate \$$SC_FRESH_RATE/1M" >&2
+  return 0
 }
 
 # ---------------------------------------------------------------- gate 5: price window
@@ -1083,10 +1079,10 @@ SC_AUTONOMY
         # Assemble exactly what the SessionStart hook would inline — any.md plus the shape
         # file, one tier — rather than appending the raw shape file. The raw file ships BOTH
         # tiers and omits any.md entirely, and these isolated tiers are precisely where no
-        # hook fires to correct it. Strict matches the hook's own default.
+        # hook fires to correct it. `detailed` matches the hook's own default.
         local guard_tmp guard_arg
         guard_tmp="$(mktemp)"
-        python3 "$SC_ROOT/tools/guard_text.py" "$SC_SHAPE" strict > "$guard_tmp" || {
+        python3 "$SC_ROOT/tools/guard_text.py" "$SC_SHAPE" detailed > "$guard_tmp" || {
           rm -f "$guard_tmp" 2>/dev/null || :
           echo "could not assemble guards for shape '$SC_SHAPE' — refusing to dispatch unguarded" >&2
           exit 2
@@ -1149,18 +1145,13 @@ sc_check_model_override() {
   return 0
 }
 
-# `--check` runs the SAME refusal gates a dispatch runs (availability 7, band floor 5, provider
-# ceiling 8), so a refusal arrives synchronously — hooks/sidecar_dispatch_context.py runs this for
-# every launch and denies the Bash call on a non-zero exit. Measured 2026-09-08: a backgrounded
-# dispatch refused at exit 8 surfaced only when its task "completed" minutes later.
+# `--check` runs the SAME refusal gates a dispatch runs (availability, host band, provider
+# capacity, price window), so a refusal arrives synchronously before a model request.
 sc_check_gates() {
-  # Same order as a real dispatch (band -> provider band -> balance -> price window): the balance
-  # gate's OK line reads SC_BAND, which only sc_gate_band sets.
   sc_resolve_model
   sc_gate_availability
   [ -n "${SC_MIN_BAND:-}" ] && sc_gate_band
-  sc_gate_provider_band
-  sc_gate_balance
+  sc_gate_capacity
   SC_CHECK_MODE=1 sc_gate_price_window
   return 0
 }
@@ -1291,23 +1282,33 @@ if parser == "codex":
         "error": err,
     }
 else:
-    try:
-        data = json.loads(raw)
-    except Exception:
-        # stream-json: one event per line; the record source is the result event. A synthetic
-        # usage-limit event carries no usage, so the child's own last result keeps the tokens.
+    def _result_event(events):
+        # The record source is the result event. A synthetic usage-limit event carries no usage,
+        # so the child's own last result keeps the tokens.
         data, real = {}, None
-        for line in raw.splitlines():
-            try:
-                o = json.loads(line)
-            except Exception:
-                continue
+        for o in events:
             if isinstance(o, dict) and o.get("type") == "result":
                 data = o
                 if not o.get("synthetic"):
                     real = o
-        if real is not None and data.get("synthetic"):
-            data = real
+        return real if real is not None and data.get("synthetic") else data
+
+    def _events(lines):
+        for line in lines:
+            try:
+                yield json.loads(line)
+            except Exception:
+                continue
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        # stream-json: one event per line.
+        data = _result_event(_events(raw.splitlines()))
+    if isinstance(data, list):
+        # `-o json` under the user setting `"verbose": true` is an ARRAY of every event, not the
+        # single result object (live 2026-09-22: every launch died on data.get).
+        data = _result_event(data)
     usage = data.get("usage") or {}
     mu = {k: v for k, v in (data.get("modelUsage") or {}).items() if isinstance(v, dict)}
     served = sorted({v.get("canonicalModel") for v in mu.values() if v.get("canonicalModel")})

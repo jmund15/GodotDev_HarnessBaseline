@@ -13,9 +13,9 @@ fixture transcript; an exit outside {0} or a traceback is a CRASH, never a pass.
     python3 .claude/tests/test_compact_directive_anchor.py
 """
 import ast
+import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +23,9 @@ import time
 from pathlib import Path
 
 import _settings_probe
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from sidecar_launch import git_bash  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -158,8 +161,9 @@ def main():
                       "Read the answers carefully" not in out))
         cases.append(("the uncapped file keeps the whole answer",
                       full.exists() and LONG_QUESTION in full.read_text(encoding="utf-8")))
-        cases.append(("a named session with a transcript gets a digest pointer",
-                      f"session_digest.py --session {REFERENCED} --brief" in out))
+        cases.append(("a named session with a transcript gets a bounded handoff pointer",
+                      f"session_digest.py --session {REFERENCED} --handoff" in out
+                      and f"session_digest.py --session {REFERENCED} --brief" not in out))
         cases.append(("a hex token without a transcript gets no pointer", f"--session {UNREFERENCED}" not in out))
         cases.append(("the messages are framed as a record, not open orders",
                       "not a list of open orders" in out and "override the summary" not in out
@@ -237,7 +241,8 @@ def main():
                       out.strip() == "" and not crashed))
         out, crashed, _ = run_hook(tmp, dict(payload, transcript_path=str(Path(tmp) / "missing.jsonl")))
         cases.append(("an unreadable transcript says so instead of failing silently",
-                      not crashed and "[owner-directives]" in out and "could not read" in out))
+                      not crashed and "[owner-directives]" in out and "could not read" in out
+                      and "--handoff" in out and "--full" not in out))
 
         multi_answer = ('The user answered: "Policy?"="' + "long reason " * 90 + '", "Rails?"="PAIR-2-KEPT", '
                         '"Cadence?"="PAIR-3-KEPT", "Baseline?"="PAIR-4-KEPT". Read the answers carefully '
@@ -323,7 +328,7 @@ def main():
         if expected_command in registered_commands:
             # Git Bash, as Claude Code runs hooks. A bare "bash" from Windows Python resolves System32's
             # WSL bash first, and WSL does not inherit CLAUDE_PROJECT_DIR.
-            bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or shutil.which("bash") or "bash"
+            bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or git_bash()
             env = dict(os.environ, CLAUDE_PROJECT_DIR=project.as_posix(), PYTHONIOENCODING="utf-8")
             env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
             try:
@@ -339,6 +344,25 @@ def main():
         cases.append(("the exact registered command runs through bash",
                       registration_rc == 0 and "Traceback" not in registration_err
                       and registration_directive in registration_out))
+
+        compact_spec = importlib.util.spec_from_file_location("compact_for_compact_parity", HOOK)
+        compact = importlib.util.module_from_spec(compact_spec)
+        compact_spec.loader.exec_module(compact)
+        digest_spec = importlib.util.spec_from_file_location(
+            "digest_for_compact_parity", Path(HOOK).parent.parent / "tools" / "session_digest.py")
+        digest = importlib.util.module_from_spec(digest_spec)
+        digest_spec.loader.exec_module(digest)
+        classifier_cases = [
+            {"content": "[Request interrupted by user]", "signals": []},
+            {"content": "/model fable", "signals": []},
+            {"content": "/effort", "signals": []},
+            {"content": "/effort xhigh", "signals": []},
+            {"content": "/feature run", "signals": []},
+            {"content": "owner prose", "signals": []},
+        ]
+        cases.append(("compact keep() matches the digest owner-prompt classifier",
+                      all(digest.is_substantive_owner_prompt(message) == compact.keep(message)
+                          for message in classifier_cases)))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

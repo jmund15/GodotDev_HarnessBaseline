@@ -63,10 +63,12 @@ def run_hook(command, repo, env_extra=None):
     payload = {"tool_name": "Bash", "session_id": "s1", "cwd": repo,
                "tool_input": {"command": command}}
     env = dict(os.environ)
+    # Budget 0 keeps every stale-stamp case on the plain deny path; section 0d opts in.
+    env["HARNESS_AUTO_STAMP_BUDGET"] = "0"
     if env_extra:
         env.update(env_extra)
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
-                        capture_output=True, text=True, timeout=30, env=env, cwd=repo)
+                        capture_output=True, text=True, timeout=120, env=env, cwd=repo)
     if r.returncode == 2:
         return DENY, r.stderr
     return ALLOW, r.stdout
@@ -97,6 +99,81 @@ def main():
         "a `cd /c/...` prefix resolves to the repo, so a clean commit is not blocked",
         run_hook("cd %s; git commit -F msg -- Tests/Foo.cs" % msys, repo), ALLOW))
 
+    # 0b. `git -C /c/...` is the same MSYS form through the other retarget route.
+    failures.append(case(
+        "a `git -C /c/...` operand resolves to the repo, so a clean commit is not blocked",
+        run_hook("git -C %s commit -F msg -- Tests/Foo.cs" % msys, repo), ALLOW))
+
+    # 0c. A target named through a variable this command assigns resolves like the literal.
+    #     Unresolvable targets still deny, and resolution never skips the stamp check.
+    failures.append(case(
+        "`D=<repo>; cd $D; git commit` resolves the variable -> allow",
+        run_hook('D=%s; cd $D; git commit -F msg -- Tests/Foo.cs' % msys, repo), ALLOW))
+    failures.append(case(
+        "`W=\"<repo>\"; git -C \"$W\" commit` resolves the variable -> allow",
+        run_hook('W="%s"; git -C "$W" commit -F msg -- Tests/Foo.cs' % repo.replace("\\", "/"), repo), ALLOW))
+    failures.append(case(
+        "`git -C $UNSET commit` stays unresolvable -> deny",
+        run_hook('git -C $UNSET commit -F msg', repo), DENY, "rev-parse"))
+    fresh = os.path.join(tempfile.mkdtemp(prefix="ggfresh_"), "probe").replace("\\", "/")
+    failures.append(case(
+        "a repo this command creates with `git init` has no stamp to check -> allow",
+        run_hook('D=%s; mkdir -p $D && cd $D && git init -q; git add f && git commit -qm i' % fresh, repo),
+        ALLOW))
+    hooked = make_repo()
+    write(hooked, ".claude/hooks/x.py", "x = 1\n")
+    git(hooked, ["add", "-A"])
+    failures.append(case(
+        "a variable-resolved harness commit with no stamp -> deny",
+        run_hook('D=%s; cd "$D"; git commit -F msg' % hooked.replace("\\", "/"), hooked,
+                 {"HARNESS_TEST_STAMP": os.path.join(hooked, "none.json")}), DENY))
+    failures.append(case(
+        "`git init` on an existing repo is a no-op, so the stamp check still runs -> deny",
+        run_hook('git init -q; git commit -F msg', hooked,
+                 {"HARNESS_TEST_STAMP": os.path.join(hooked, "none.json")}), DENY))
+
+    # 0d. A stale stamp runs the proofs bound to the committed files inside the guard, within a
+    #     budget below the hook timeout: green commits, red denies naming the proof, and a budget
+    #     of 0 keeps today's deny.
+    auto = make_repo()
+    auto_stamp = os.path.join(auto, "auto_stamp.json")
+    write_stamp(auto, auto_stamp, tree_hash(auto))  # an older full run the scoped run extends
+    write(auto, ".claude/hooks/x.py", "x = 1\n")
+    write(auto, ".claude/tests/test_x_ok.py", "print('ok')\n")
+    git(auto, ["add", "-A"])
+    failures.append(case(
+        "stale stamp + green bound proof -> guard stamps and allows",
+        run_hook('git commit -F msg -- .claude', auto,
+                 {"HARNESS_TEST_STAMP": auto_stamp, "HARNESS_AUTO_STAMP_BUDGET": "55"}), ALLOW))
+    red = make_repo()
+    write_stamp(red, os.path.join(red, "s.json"), tree_hash(red))
+    write(red, ".claude/hooks/x.py", "x = 1\n")
+    write(red, ".claude/tests/test_x_ok.py", "raise SystemExit(1)\n")
+    git(red, ["add", "-A"])
+    failures.append(case(
+        "stale stamp + red bound proof -> deny naming the proof",
+        run_hook('git commit -F msg -- .claude', red,
+                 {"HARNESS_TEST_STAMP": os.path.join(red, "s.json"), "HARNESS_AUTO_STAMP_BUDGET": "55"}),
+        DENY, "test_x_ok"))
+    # The budget covers the whole hook run, not each commit segment: two slow stamps in one
+    #     command must not add up past the hook timeout.
+    slow = make_repo()
+    write_stamp(slow, os.path.join(slow, "s.json"), tree_hash(slow))
+    write(slow, ".claude/hooks/x.py", "x = 1\n")
+    write(slow, ".claude/hooks/y.py", "y = 1\n")
+    write(slow, ".claude/tests/test_x_ok.py", "import time\ntime.sleep(3)\n")
+    write(slow, ".claude/tests/test_y_ok.py", "import time\ntime.sleep(3)\n")
+    git(slow, ["add", "-A"])
+    failures.append(case(
+        "two stale-stamp commits share one budget -> the second runs out and denies",
+        run_hook('git commit -F msg -- .claude/hooks/x.py && git commit -F msg -- .claude/hooks/y.py', slow,
+                 {"HARNESS_TEST_STAMP": os.path.join(slow, "s.json"), "HARNESS_AUTO_STAMP_BUDGET": "5"}),
+        DENY))
+    failures.append(case(
+        "stale stamp with budget 0 -> today's deny",
+        run_hook('git commit -F msg -- .claude', red, {"HARNESS_TEST_STAMP": os.path.join(red, "s0.json")}),
+        DENY, "no stamp"))
+
     # 1. commit of a non-harness path -> allow, no stamp needed at all.
     repo = make_repo()
     write(repo, "Tests/Foo.cs", "class Foo {}\n")
@@ -121,6 +198,20 @@ def main():
     failures.append(case(
         "staged hook+tool w/ proofs + fresh stamp -> allow",
         run_hook('git commit -F msg -- .claude', repo, {"HARNESS_TEST_STAMP": stamp_path}),
+        ALLOW))
+
+    # 2a. The hook may run from a different checkout than the commit target (EnterWorktree keeps
+    #     the original hook process). With no explicit override, the stamp belongs to the TARGET
+    #     repo, not the checkout that supplied this script.
+    repo = make_repo()
+    write(repo, ".claude/hooks/x.py", "x = 1\n")
+    write(repo, ".claude/tests/test_x_ok.py", "# proof\n")
+    git(repo, ["add", "-A"])
+    target_stamp = os.path.join(repo, ".claude", "logs", "harness_tests_stamp.json")
+    write_stamp(repo, target_stamp, tree_hash(repo))
+    failures.append(case(
+        "hook checkout differs from target repo -> target repo stamp allows",
+        run_hook('git commit -F msg -- .claude', repo, {"HARNESS_TEST_STAMP": ""}),
         ALLOW))
 
     # 2b. `instruction_quality` before a harness edit is enforced at the Write|Edit call
@@ -407,8 +498,9 @@ def main():
         run_hook('git commit -F msg -- .claude/hooks/x.py', repo, {"HARNESS_TEST_STAMP": stamp_path}),
         DENY, "stale stamp"))
 
-    # 20. Merge / cherry-pick that bring harness code in are denied unless --no-commit;
-    #     a merge of non-harness content passes.
+    # 20. Merge / cherry-pick re-commit content judged when it was committed on its source ref:
+    #     they pass with no stamp. The commit closing a `--no-commit` merge is judged only on what
+    #     it authors beyond MERGE_HEAD.
     repo = make_repo()
     git(repo, ["checkout", "-q", "-b", "feature"])
     write(repo, ".claude/hooks/h.py", "h = 1\n")
@@ -423,17 +515,25 @@ def main():
     git(repo, ["checkout", "-q", git(repo, ["log", "--format=%H", "-1", "HEAD~1"]).strip()])
     git(repo, ["checkout", "-q", "-b", "trunk"])
     failures.append(case(
-        "git merge <branch carrying a hook> -> deny naming --no-commit",
-        run_hook("git merge feature", repo), DENY, "--no-commit"))
+        "git merge <branch carrying a hook> -> allow (judged when committed on the branch)",
+        run_hook("git merge feature", repo), ALLOW))
     failures.append(case(
-        "git merge --no-commit <branch carrying a hook> -> allow (the later commit is judged)",
-        run_hook("git merge --no-commit feature", repo), ALLOW))
-    failures.append(case(
-        "git cherry-pick <rev carrying a hook> -> deny naming --no-commit",
-        run_hook("git cherry-pick feature", repo), DENY, "--no-commit"))
+        "git cherry-pick <rev carrying a hook> -> allow",
+        run_hook("git cherry-pick feature", repo), ALLOW))
     failures.append(case(
         "git merge <branch with no harness content> -> allow",
         run_hook("git merge docs-only", repo), ALLOW))
+    git(repo, ["merge", "-q", "--no-commit", "--no-ff", "feature"])
+    no_stamp = {"HARNESS_TEST_STAMP": os.path.join(repo, "absent.json")}
+    failures.append(case(
+        "commit closing a merge whose harness files equal MERGE_HEAD -> allow, no stamp needed",
+        run_hook("git commit -F msg", repo, no_stamp), ALLOW))
+    write(repo, ".claude/hooks/h.py", "h = 2  # edited during the merge\n")
+    git(repo, ["add", ".claude/hooks/h.py"])
+    failures.append(case(
+        "commit closing a merge with a harness file edited beyond MERGE_HEAD -> judged (no stamp)",
+        run_hook("git commit -F msg", repo, no_stamp), DENY, "BLOCKED harness commit"))
+    git(repo, ["merge", "--abort"])
 
     # Live block 2026-09-14: a pathspec commit publishes only its pathspec (git's default --only
     # mode) and other staged paths stay staged, yet the guard judged the whole index.

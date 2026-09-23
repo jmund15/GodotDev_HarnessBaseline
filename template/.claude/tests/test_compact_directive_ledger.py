@@ -14,13 +14,15 @@ is a CRASH, never a pass.
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import _settings_probe
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from sidecar_launch import git_bash  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -184,6 +186,11 @@ def main():
                       "## Artifacts" in out and "one line per changed file" in out
                       and "Never restate a file's contents" in out
                       and "exact error" in out))
+        # Live defect 2026-09-22 (fd4ff546): the rule read as Artifacts-only, so "Key technical concepts"
+        # restated the plan's design section, and an open question's observed value came back wrong
+        # ("clean" -> "right-sized" where the file said ["clean", "low"]).
+        cases.append(("the no-restating rule covers every section, and open questions keep their observed values",
+                      "contents in any section" in out and "open question's observed values" in out))
         cases.append(("every owner message is listed by its anchor ID",
                       all(f"U{i} ·" in out for i in (1, 5, 6, 8, 10))))
         cases.append(("hook echoes, interrupts, the summary and session-control commands are not listed",
@@ -223,7 +230,7 @@ def main():
         rc, reg_out, reg_err = 1, "", "not registered"
         if COMMAND in registered:
             # Git Bash, as Claude Code runs hooks; a bare "bash" from Windows Python can resolve to WSL.
-            bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or shutil.which("bash") or "bash"
+            bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or git_bash()
             env = dict(os.environ, CLAUDE_PROJECT_DIR=project.as_posix(), PYTHONIOENCODING="utf-8")
             env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
             result = subprocess.run([bash, "-lc", COMMAND], input=json.dumps(payload), capture_output=True,

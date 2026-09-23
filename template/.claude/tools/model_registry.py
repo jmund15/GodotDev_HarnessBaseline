@@ -38,12 +38,14 @@ CLI:
     model_registry.py for-role executor             rows serving a tier, in-transport and across
     model_registry.py for-role fanout --from codex  ...as seen from another seat
     model_registry.py context-window <model> [--max]  print the effective default or max window
+    model_registry.py rail-tier <model>             print strict|terse|fable; strict when unknown
     model_registry.py price <id> <fresh> <cache_read> <output>   (priced at the current window)
     model_registry.py price-window <model>          billing window now (SC_PRICE_AT overrides), rates
-    model_registry.py effort-values <model>         effort rungs the transport serves; [] = undeclared
+    model_registry.py effort-values <model>         effort rungs the row may request; [] = undeclared
     model_registry.py band-satisfies <current> <required>   exit 0 yes, 1 no, 2 bad name
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -86,6 +88,15 @@ _LEGAL_COST_MODELS = {"marginal-usd", "plan-quota"}
 # answers cleanly the moment the call shape changes (verified 2026-09-04).
 _LEGAL_API_MODES = {"responses"}
 
+# Rail tiers are the guards/*.md section names. A row without `railTier` reads `detailed`: a tier
+# above it is earned by evidence that the model follows the shorter rails, never by capability.
+_LEGAL_RAIL_TIERS = ("detailed", "condensed", "minimal")
+# A tier above `detailed` names its evidence (rules/harness_authoring.md): `unmeasured`, or a
+# /rail_battery Phase B report. Shape is checked on every load; the report file only by --check, so
+# a moved report never breaks a registry read.
+_SHORTER_RAIL_TIERS = ("condensed", "minimal")
+_RAIL_EVIDENCE_KINDS = ("measured", "unmeasured")
+
 # Time-of-day pricing. A provider that bills a window at a discount declares ONE schedule on its
 # transport (the windows apply to every model it bills); row prices stay the list rates. Any
 # future time-priced provider is a registry edit, never a launcher change.
@@ -94,6 +105,18 @@ _HHMM = __import__("re").compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 # What a launcher does when a dispatch starts inside a peak window. Absent = allow.
 _LEGAL_PEAK_POLICIES = {"allow", "refuse"}
+
+# Version succession. `current` is the newest version of its family and holds the bare alias;
+# `superseded` is an older version still served under a versioned alias; `retired` is kept only so
+# stored records and the alias history resolve. One family has at most one current row.
+_LEGAL_LIFECYCLES = ("current", "superseded", "retired")
+
+# Intake input (bench intake), never a measurement.
+_LEGAL_PRIORS = ("frontier", "mid", "small")
+
+# The one-model-table fields every row carries; consumers derive their order and rank tables from
+# these instead of hand-copying a constant per view.
+_ROW_TABLE_FIELDS = ("label", "family", "version", "lifecycle", "order", "costRank", "prior")
 
 
 class RegistryError(Exception):
@@ -106,34 +129,54 @@ class UnknownModel(RegistryError):
 
 # --------------------------------------------------------------------------- bands
 
-def _bands():
-    """Import BANDS from the module that owns them. Never copy the list."""
+def _quota_bands():
+    """The band SSOT module. Never re-implement a band comparison in this file."""
     tools = Path(__file__).resolve().parent
     if str(tools) not in sys.path:
         sys.path.insert(0, str(tools))
     try:
-        from quota_bands import BANDS  # noqa: WPS433 - deliberate late import
+        import quota_bands  # noqa: WPS433 - deliberate late import
     except Exception as exc:  # pragma: no cover - environment breakage
-        raise RegistryError(f"cannot import quota_bands.BANDS (band SSOT): {exc}")
-    return [name for _bound, name, _desc in BANDS]
+        raise RegistryError(f"cannot import quota_bands (band SSOT): {exc}")
+    return quota_bands
+
+
+def _bands():
+    """Import BANDS from the module that owns them. Never copy the list."""
+    return [name for _bound, name, _desc in _quota_bands().BANDS]
 
 
 def band_rank(name):
-    """Index into the ascending-pressure band order. Raises on an unknown name."""
-    names = _bands()
-    if name not in names:
-        raise RegistryError(f"unknown band {name!r}; legal bands: {', '.join(names)}")
-    return names.index(name)
+    """Index into the ascending-pressure band order. Raises on an unknown name.
+
+    `Exhausted` deliberately has NO rank (quota_bands.EXHAUSTED_BAND): it is a quantity, not a
+    rung, so asking for its rank is an error here and a refusal in both comparators below.
+    """
+    try:
+        return _quota_bands().band_rank(name)
+    except ValueError as exc:
+        raise RegistryError(str(exc))
 
 
 def band_satisfies(current, required):
-    """FLOOR: true when `current` is at or above `required` burn rate. See module docstring."""
-    return band_rank(current) >= band_rank(required)
+    """FLOOR: true when `current` is at or above `required` burn rate. See module docstring.
+
+    Delegates to the SSOT rather than comparing ranks locally. A locally-computed rank would
+    raise on `Exhausted`, and the launcher's gate reads that failure as SKIPPED, i.e. a PASS --
+    so a spent allowance would sail through the very gate meant to stop it (2026-09-18).
+    """
+    try:
+        return _quota_bands().band_satisfies(current, required)
+    except ValueError as exc:
+        raise RegistryError(str(exc))
 
 
 def band_within_ceiling(current, ceiling):
-    """CEILING: true when `current` is at or below `ceiling` burn rate. See module docstring."""
-    return band_rank(current) <= band_rank(ceiling)
+    """CEILING: true when `current` is at or below `ceiling` burn rate. Delegates, as above."""
+    try:
+        return _quota_bands().band_within_ceiling(current, ceiling)
+    except ValueError as exc:
+        raise RegistryError(str(exc))
 
 
 # ------------------------------------------------------------------------ discovery
@@ -199,29 +242,39 @@ def _validate(data, target):
     for tname, tcfg in transports.items():
         if not isinstance(tcfg, dict):
             raise RegistryError(f"{target}: transport {tname!r} must be an object")
+        _validate_driver_notes(tcfg.get("driverNotes"), f"{target}: transport {tname}")
         cost = tcfg.get("costModel")
         if cost not in _LEGAL_COST_MODELS:
             raise RegistryError(
                 f"{target}: transport {tname} costModel {cost!r} must be one of "
                 f"{', '.join(sorted(_LEGAL_COST_MODELS))}")
-        # Required rather than optional now that a consumer branches on it. An absent
-        # costModel used to be harmless because nothing read the field; once the sidecar
-        # decides whether to run a dollar-balance check from it, "absent" would silently
-        # pick one billing shape for a transport that never declared one.
-        probe = tcfg.get("quotaProbe")
-        if cost == "plan-quota":
-            if not isinstance(probe, dict):
-                raise RegistryError(
-                    f"{target}: plan-quota transport {tname} needs a 'quotaProbe' object - "
-                    f"its remaining allowance is not observable any other way")
-            if not probe.get("command") or not isinstance(probe.get("args"), list):
-                raise RegistryError(
-                    f"{target}: transport {tname} quotaProbe needs a 'command' string "
-                    f"and an 'args' array")
-        elif probe is not None:
+        capacity_probe = tcfg.get("capacityProbe")
+        capacity_unsupported = tcfg.get("capacityUnsupported")
+        if (capacity_probe is None) == (capacity_unsupported is None):
             raise RegistryError(
-                f"{target}: transport {tname} is {cost} and must not declare a 'quotaProbe' - "
-                f"a dollar-billed transport is gated on balance, not on a band")
+                f"{target}: transport {tname} needs exactly one capacityProbe or "
+                "capacityUnsupported declaration")
+        if capacity_probe is not None:
+            if not isinstance(capacity_probe, dict):
+                raise RegistryError(f"{target}: transport {tname} capacityProbe must be an object")
+            kind = capacity_probe.get("kind")
+            timeout = capacity_probe.get("timeoutSeconds")
+            if (not isinstance(capacity_probe.get("command"), str)
+                    or not isinstance(capacity_probe.get("args"), list)
+                    or kind not in ("quota", "balance")
+                    or isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                    or not 1 <= timeout <= 35):
+                raise RegistryError(
+                    f"{target}: transport {tname} capacityProbe needs command, args, "
+                    "kind quota|balance, and timeoutSeconds 1..35")
+            if cost == "plan-quota" and kind != "quota":
+                raise RegistryError(
+                    f"{target}: plan-quota transport {tname} needs a quota capacityProbe")
+        elif (not isinstance(capacity_unsupported, dict)
+              or not isinstance(capacity_unsupported.get("reason"), str)
+              or not capacity_unsupported.get("reason").strip()):
+            raise RegistryError(
+                f"{target}: transport {tname} capacityUnsupported needs a non-empty reason")
         _validate_schedule(tname, tcfg, cost, target)
         status = tcfg.get("status")
         if status is None:
@@ -252,10 +305,14 @@ def _validate(data, target):
         if transport not in transports:
             raise RegistryError(f"{target}: model {mid} names unknown transport {transport!r}")
 
-        for name in (mid, alias):
+        served_ids = entry.get("servedIds", [])
+        if not isinstance(served_ids, list) or not all(isinstance(s, str) and s for s in served_ids):
+            raise RegistryError(f"{target}: model {mid} servedIds must be an array of id strings")
+        for name in (mid, alias, *served_ids):
             if name in seen_names:
                 raise RegistryError(f"{target}: duplicate id/alias {name!r}")
             seen_names[name] = mid
+        _validate_table_fields(entry, target)
 
         # Same shape as transport-level status (line ~195), and consumed the same way by
         # model_available() -- but until now nothing validated it, so a malformed model-level
@@ -335,9 +392,13 @@ def _validate(data, target):
         # SSOT -- the exact failure the file exists to prevent. It stays ALLOWED there,
         # because a plan-quota provider may publish rates for accounting while still costing
         # nothing marginal to run; if present it must be complete.
+        # A retired row that is also excluded from dispatch can never be called, so it owes no rate:
+        # it exists so stored records resolve, and demanding a price would force an invented one.
         cost_model = transports[transport].get("costModel")
         price = entry.get("price")
-        if price is None and cost_model == "plan-quota":
+        uncallable = (entry.get("lifecycle") == "retired"
+                      and (entry.get("status") or {}).get("state") == "unavailable")
+        if price is None and (cost_model == "plan-quota" or uncallable):
             pass
         elif not isinstance(price, dict):
             raise RegistryError(f"{target}: model {mid} missing 'price' object")
@@ -376,6 +437,12 @@ def _validate(data, target):
         band_rank(min_band)  # raises naming the legal set
         if auth == "gated" and not isinstance(gate.get("minBalanceUSD"), (int, float)):
             raise RegistryError(f"{target}: gated model {mid} needs a numeric gate.minBalanceUSD")
+        if (transports[transport].get("capacityUnsupported") is not None
+                and isinstance(gate.get("minBalanceUSD"), (int, float))
+                and gate.get("minBalanceUSD") > 0):
+            raise RegistryError(
+                f"{target}: model {mid} requires a positive balance floor but transport "
+                f"{transport} declares capacityUnsupported")
 
         max_provider = gate.get("maxProviderBand")
         if cost_model == "plan-quota":
@@ -412,21 +479,135 @@ def _validate(data, target):
                 f"{target}: model {mid} claims effort.evidence 'see-ladder' but transport "
                 f"{transport} declares no 'roleSource' naming who owns those semantics")
 
-        # Evidence is bound to the version it measured. A vendor upgrade is an edit of `version`
-        # (and price); this check then forces the routing claim to be re-earned instead of letting
-        # the old model's scores silently route work to the new one.
+        # Evidence names the version it measured. A new version takes over its family's claims until
+        # a benchmark or an owner ruling shows it differs (owner ruling 2026-09-22), so measured
+        # evidence may name this row's own version or a registered SAME-FAMILY row's version
+        # (inherited). Any other version is a claim with no measured owner.
         version = entry.get("version")
-        if version and effort.get("evidence") == "measured" and effort.get("measuredVersion") != version:
-            raise RegistryError(
-                f"{target}: model {mid} effort.measuredVersion {effort.get('measuredVersion')!r} does "
-                f"not match version {version!r} - the version changed since measurement. "
-                f"Re-benchmark, or set effort.evidence 'unmeasured' and roles []")
+        if version and effort.get("evidence") == "measured":
+            measured = effort.get("measuredVersion")
+            family = entry.get("family")
+            inherited = measured is not None and family is not None and any(
+                other is not entry and other.get("family") == family and other.get("version") == measured
+                for other in data.get("models", []))
+            if measured != version and not inherited:
+                raise RegistryError(
+                    f"{target}: model {mid} effort.measuredVersion {measured!r} is neither its version "
+                    f"{version!r} nor a registered {family!r}-family version. Re-benchmark, or set "
+                    f"effort.evidence 'unmeasured' and roles []")
 
         api_mode = entry.get("apiMode")
         if api_mode is not None and api_mode not in _LEGAL_API_MODES:
             raise RegistryError(
                 f"{target}: model {mid} apiMode {api_mode!r} must be one of "
                 f"{', '.join(sorted(_LEGAL_API_MODES))}")
+
+        rail = entry.get("railTier")
+        if rail is not None and rail not in _LEGAL_RAIL_TIERS:
+            raise RegistryError(
+                f"{target}: model {mid} railTier {rail!r} must be one of {', '.join(_LEGAL_RAIL_TIERS)}")
+        if rail in _SHORTER_RAIL_TIERS:
+            ev = entry.get("railTierEvidence")
+            if not isinstance(ev, dict) or ev.get("evidence") not in _RAIL_EVIDENCE_KINDS:
+                raise RegistryError(
+                    f"{target}: model {mid} railTier {rail!r} needs railTierEvidence "
+                    f"{{evidence: {'|'.join(_RAIL_EVIDENCE_KINDS)}}} (/rail_battery)")
+            if ev["evidence"] == "measured":
+                missing = [k for k in ("evidenceRef", "route", "effort") if not str(ev.get(k) or "").strip()]
+                if missing:
+                    raise RegistryError(
+                        f"{target}: model {mid} measured railTierEvidence is missing {', '.join(missing)}")
+        _validate_driver_notes(entry.get("driverNotes"), f"{target}: model {mid}")
+
+    current_by_family = {}
+    order_owner = {}
+    for entry in models:
+        if entry["lifecycle"] == "current":
+            other = current_by_family.setdefault(entry["family"], entry["id"])
+            if other != entry["id"]:
+                raise RegistryError(
+                    f"{target}: family {entry['family']!r} has two current rows ({other}, "
+                    f"{entry['id']}) - mark the older one superseded and give it a versioned alias")
+        other = order_owner.setdefault(entry["order"], entry["id"])
+        if other != entry["id"]:
+            raise RegistryError(
+                f"{target}: display order {entry['order']} is used by both {other} and {entry['id']}")
+    _validate_alias_history(data.get("aliasHistory"), models, target)
+
+
+def _validate_table_fields(entry, target):
+    mid = entry["id"]
+    for field in ("label", "family", "version"):
+        if not isinstance(entry.get(field), str) or not entry[field].strip():
+            raise RegistryError(f"{target}: model {mid} needs a non-empty '{field}' string")
+    if entry.get("lifecycle") not in _LEGAL_LIFECYCLES:
+        raise RegistryError(
+            f"{target}: model {mid} lifecycle {entry.get('lifecycle')!r} must be one of "
+            f"{', '.join(_LEGAL_LIFECYCLES)}")
+    for field in ("order", "costRank"):
+        value = entry.get(field)
+        if type(value) is not int or value < 0:
+            raise RegistryError(f"{target}: model {mid} '{field}' must be a non-negative integer")
+    if entry.get("prior") not in _LEGAL_PRIORS:
+        raise RegistryError(
+            f"{target}: model {mid} prior {entry.get('prior')!r} must be one of {', '.join(_LEGAL_PRIORS)}")
+    values = entry.get("effortValues")
+    if values is not None and (not isinstance(values, list)
+                               or not all(isinstance(v, str) and v for v in values)):
+        raise RegistryError(f"{target}: model {mid} effortValues must be an array of rung names")
+
+
+def _validate_alias_history(history, models, target):
+    """`aliasHistory`: which id each alias served, and until when. The last entry is the alias's
+    current row; every boundary names its evidence, because a guessed date relabels records."""
+    if history is None:
+        return
+    if not isinstance(history, dict):
+        raise RegistryError(f"{target}: aliasHistory must be an object keyed by alias")
+    ids = {m["id"] for m in models}
+    holder = {m["alias"]: m["id"] for m in models}
+    for alias, entries in history.items():
+        where = f"{target}: aliasHistory[{alias!r}]"
+        if not isinstance(entries, list) or not entries:
+            raise RegistryError(f"{where} must be a non-empty array")
+        previous = None
+        for i, item in enumerate(entries):
+            last = i == len(entries) - 1
+            if not isinstance(item, dict) or item.get("id") not in ids:
+                raise RegistryError(f"{where} entry {i} names no registered id: {item!r}")
+            if ("until" in item) == last:
+                raise RegistryError(
+                    f"{where} entry {i}: every entry but the last needs 'until'; the last has none")
+            if "since" in item and i != 0:
+                raise RegistryError(f"{where} entry {i}: only the first entry may carry 'since'")
+            if ("until" in item or "since" in item) and not str(item.get("evidence") or "").strip():
+                raise RegistryError(f"{where} entry {i}: a boundary needs non-empty 'evidence'")
+            for key in ("since", "until"):
+                if key not in item:
+                    continue
+                at = _history_time(item[key])
+                if at is None:
+                    raise RegistryError(f"{where} entry {i}: {key} {item[key]!r} is not an ISO date")
+                if previous is not None and at <= previous:
+                    raise RegistryError(f"{where} entry {i}: boundaries must strictly increase")
+                previous = at
+        if entries[-1]["id"] != holder.get(alias):
+            raise RegistryError(
+                f"{where}: the last entry must be the row that holds alias {alias!r} now "
+                f"({holder.get(alias)}), got {entries[-1]['id']}")
+
+
+def _history_time(value):
+    """ISO date or datetime -> aware UTC datetime; None when unparseable. A bare date is midnight."""
+    from datetime import datetime, timezone
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        at = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at.astimezone(timezone.utc)
 
 
 def _validate_schedule(tname, tcfg, cost, target):
@@ -558,6 +739,70 @@ def stale_prices(data=None, max_age_days=_STALE_PRICE_DAYS):
 
 # ------------------------------------------------------------------------ accessors
 
+def _validate_driver_notes(notes, where):
+    """`driverNotes` is optional; when present every note names the evidence that earned it."""
+    if notes is None:
+        return
+    if not isinstance(notes, list):
+        raise RegistryError(f"{where} driverNotes must be an array")
+    for note in notes:
+        if (not isinstance(note, dict) or not str(note.get("text") or "").strip()
+                or not str(note.get("evidenceRef") or "").strip()):
+            raise RegistryError(
+                f"{where} driverNotes entries need non-empty 'text' and 'evidenceRef' - "
+                f"a per-model correction without its evidence cannot be scoped or retired")
+
+
+def row_for_model(model, data=None):
+    """The registry row a session payload's model string names, or None.
+
+    Payload strings are not registry ids: they carry a context suffix (`[1m]`) and may name a
+    longer, unregistered version of a registered id. Match an alias, id or `servedIds` spelling
+    exactly, else the longest id the string starts with. Unknown stays None; callers treat that as
+    strict. Record identity uses `row_by_id`, which never takes the prefix step.
+    """
+    name = str(model or "").strip().lower()
+    if "[" in name:
+        name = name.split("[", 1)[0]
+    if not name:
+        return None
+    try:
+        rows = [m for m in (data or load())["models"] if isinstance(m, dict)]
+    except Exception:
+        return None
+    for m in rows:
+        names = [m.get("id", ""), m.get("alias", ""), *(m.get("servedIds") or [])]
+        if name in (str(n).lower() for n in names):
+            return m
+    prefixed = [m for m in rows if m.get("id") and name.startswith(str(m["id"]).lower())]
+    return max(prefixed, key=lambda m: len(m["id"])) if prefixed else None
+
+
+def rail_tier(model, data=None):
+    """`detailed|condensed|minimal` for a model string; `detailed` for anything unknown or unreadable."""
+    try:
+        row = row_for_model(model, data)
+    except Exception:
+        return "detailed"
+    tier = (row or {}).get("railTier")
+    return tier if tier in _LEGAL_RAIL_TIERS else "detailed"
+
+
+def driver_notes(model, data=None):
+    """[(text, evidenceRef)] for the model driving a session: its row's notes, then its transport's."""
+    try:
+        data = data or load()
+        row = row_for_model(model, data)
+        if row is None:
+            return []
+        transport = (data.get("transports") or {}).get(row.get("transport")) or {}
+        notes = list(row.get("driverNotes") or []) + list(transport.get("driverNotes") or [])
+        return [(n["text"].strip(), n["evidenceRef"].strip()) for n in notes
+                if isinstance(n, dict) and n.get("text") and n.get("evidenceRef")]
+    except Exception:
+        return []
+
+
 def resolve(name, data=None):
     """Accept an alias or a full id; return the model entry."""
     data = data or load()
@@ -566,6 +811,124 @@ def resolve(name, data=None):
             return entry
     legal = sorted({v for e in data["models"] for v in (e["id"], e["alias"])})
     raise UnknownModel(f"unknown model {name!r}; legal values: {', '.join(legal)}")
+
+
+# ------------------------------------------------------------------ model identity (S1)
+#
+# A cell token is the dispatch alias, never identity: `opus` names a different model on each side
+# of a version bump. Identity is the model a record attests, resolved to its registry row.
+
+def _bare_id(model_id):
+    name = str(model_id or "").strip().lower()
+    return name.split("[", 1)[0] if "[" in name else name
+
+
+def row_by_id(model_id, data=None):
+    """The row whose id (or a `servedIds` spelling the vendor echoes) is `model_id`, else None.
+
+    Exact ids only -- never an alias, never a prefix: a record's served id either is registered or
+    is reported as an unregistered model; it is never folded into a neighbour's row.
+    """
+    name = _bare_id(model_id)
+    if not name:
+        return None
+    for m in (data or load())["models"]:
+        if name == m["id"].lower() or name in (s.lower() for s in m.get("servedIds") or []):
+            return m
+    return None
+
+
+def label(model_id, data=None):
+    """Display label for a model id; the id itself when unregistered."""
+    row = row_by_id(model_id, data)
+    return row["label"] if row else str(model_id)
+
+
+def family(model_id, data=None):
+    row = row_by_id(model_id, data)
+    return row["family"] if row else None
+
+
+def lifecycle(model_id, data=None):
+    """`current|superseded|retired`, or None for an unregistered id."""
+    row = row_by_id(model_id, data)
+    return row["lifecycle"] if row else None
+
+
+def rows(lifecycle=None, data=None):
+    """Every row in display order, optionally only one lifecycle."""
+    out = [m for m in (data or load())["models"] if lifecycle is None or m["lifecycle"] == lifecycle]
+    return sorted(out, key=lambda m: m["order"])
+
+
+def anthropic_ids(data=None):
+    """Exact ids of the dispatchable Anthropic-transport rows -- the only judge ids a scorer accepts."""
+    data = data or load()
+    return [m["id"] for m in rows(data=data)
+            if m["transport"] == HOST_ROLE_SOURCE and model_available(m["id"], data)]
+
+
+def transport_is_direct(transport, data=None):
+    """True when a child on this transport reports its served model truthfully.
+
+    A transport declaring `modelAttestation` is a proxy whose child reports its own client pin, so
+    its `servedModel` is not identity. An unregistered transport is never direct.
+    """
+    cfg = (data or load())["transports"].get(transport) if isinstance(transport, str) else None
+    return isinstance(cfg, dict) and "modelAttestation" not in cfg
+
+
+def resolve_alias_at(alias, when, data=None):
+    """The id `alias` served at ISO date/datetime `when`, or None when no evidence covers it.
+
+    An alias absent from `aliasHistory` has only ever served its current row. A date before the
+    history's first evidenced `since` is unresolved rather than assigned to the earliest known id.
+    """
+    data = data or load()
+    at = _history_time(when)
+    history = (data.get("aliasHistory") or {}).get(alias)
+    if not history:
+        for m in data["models"]:
+            if alias in (m["alias"], m["id"]):
+                return m["id"]
+        return None
+    if at is None:
+        return None
+    first = history[0]
+    if "since" in first and at < _history_time(first["since"]):
+        return None
+    for item in history:
+        if "until" not in item or at < _history_time(item["until"]):
+            return item["id"]
+    return None
+
+
+def record_model_id(record, token=None, when=None, data=None):
+    """The model id an arm record ran on, by authority; None when nothing identifies it.
+
+    attestedModel (the proxy's own capture) > modelVersion > servedModel on a direct transport only
+    > the alias history for the dispatch token at the record's date.
+    """
+    data = data or load()
+    rec = record or {}
+    attested = rec.get("attestedModel")
+    if isinstance(attested, str) and attested.strip():
+        return attested
+    version = rec.get("modelVersion")
+    if isinstance(version, str) and version.strip():
+        if row_by_id(version, data):
+            return version
+        # A vendor version string (a versionless id's `version`), mapped to the row recording it.
+        for m in data["models"]:
+            if m.get("version") == version:
+                return m["id"]
+        return version  # unregistered: row_by_id -> None flags it; never relabel via the alias
+    served = rec.get("servedModel")
+    if isinstance(served, str) and served.strip() and transport_is_direct(rec.get("transport"), data):
+        return served
+    if token:
+        return resolve_alias_at(token, when or rec.get("timestamp"), data)
+    return None
 
 
 def models_for(transport, data=None):
@@ -723,34 +1086,18 @@ def rows_for_tier(tier, data=None, tiers=None, seat=None):
     return hits
 
 
-def _ladder_effort(alias, path=None):
-    """The ladder's effort rung for an Anthropic row, or None. One bare token only.
-
-    The `effort` cell is prose ("xhigh for the hardest design"), and a launcher takes one rung, so
-    anything past the first word is dropped rather than guessed at.
-    """
-    try:
-        with open(path or ladder_path(), encoding="utf-8") as fh:
-            for row in parse_ladder_rows(fh, ("model", "role", "effort")):
-                if row["model"].strip().strip("`") == alias:
-                    token = row["effort"].strip().strip("`").split()[0].strip("`.,")
-                    return token if token in ("low", "medium", "high", "xhigh") else None
-    except Exception:
-        return None
-    return None
-
-
 def _sidecar_line(m, data):
+    """The hop command for a row. It never prints `-e`: the ladder's effort cell owns the rung.
+
+    Printing a rung from the row (the ladder's first word, or a measured open/converged rung) put
+    `-e xhigh`/`-e max` on every hop line (F167), including scoped executors that never run at high
+    or above. The line points at the ladder cell instead.
+    """
     launcher = (data["transports"].get(m["transport"]) or {}).get("launcher")
     if not launcher:
         return f"(no launcher registered for transport {m['transport']} -- cannot hop)"
-    eff = m.get("effort") or {}
-    # An Anthropic row carries no `effort` block -- the LADDER owns its rung. Without the fallback
-    # the printed hop command omitted `-e` entirely, so a copy-pasted Anthropic hop ran at the
-    # launcher default while every provider hop beside it printed its pin.
-    rung = eff.get("open") or eff.get("converged") or _ladder_effort(m["alias"])
-    flag = f" -e {rung}" if rung else ""
-    return f"bash {launcher} -m {m['alias']}{flag} -f <prompt-file> -R <record.json> -l <label>"
+    return (f"bash {launcher} -m {m['alias']} -f <prompt-file> -R <record.json> -l <label>"
+            "  (add -e from the ladder's effort cell for this work shape)")
 
 
 def for_role(role, transport, data=None, tiers=None):
@@ -925,19 +1272,6 @@ def cost_model_for(transport, data=None):
     return cfg["costModel"]
 
 
-def quota_probe_for(transport, data=None):
-    """{command, args} for a plan-quota transport's usage probe, or None.
-
-    None means "this transport has no observable allowance", which for a marginal-usd
-    transport is correct rather than a gap: its gate reads a dollar balance instead.
-    """
-    data = data if data is not None else load()
-    cfg = (data.get("transports") or {}).get(transport)
-    if cfg is None:
-        raise RegistryError(f"unknown transport {transport!r}")
-    return cfg.get("quotaProbe")
-
-
 def attestation_for(transport, data=None):
     """The transport's server-side model-attestation block, or None.
 
@@ -981,9 +1315,56 @@ def price_run(model_id, fresh, cache_read, output, data=None, at=None):
 
 # ----------------------------------------------------------------------------- CLI
 
+def _rail_treatment_hashes(repo):
+    """sha256 of each file a rail tier's treatment is made of, keyed relative to `.claude/`."""
+    base = Path(repo) / ".claude"
+    files = sorted((base / "guards").glob("*.md")) + [base / "workflows" / "dispatch.js"]
+    out = {}
+    for f in files:
+        if f.is_file():
+            out[f.relative_to(base).as_posix()] = hashlib.sha256(
+                f.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    return out
+
+
+def rail_evidence_problems(data, repo):
+    """(errors, stale) for every measured railTierEvidence: errors fail --check, stale only warns."""
+    errors, stale = [], []
+    current = _rail_treatment_hashes(repo)
+    for entry in data.get("models") or []:
+        rail = entry.get("railTier")
+        ev = entry.get("railTierEvidence") or {}
+        if rail not in _SHORTER_RAIL_TIERS or ev.get("evidence") != "measured":
+            continue
+        mid = entry.get("id")
+        ref = Path(ev["evidenceRef"])
+        ref = ref if ref.is_absolute() else Path(repo) / ref
+        try:
+            report = json.loads(ref.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            errors.append(f"{mid}: railTierEvidence report unreadable at {ref}: {exc}")
+            continue
+        want = {"phase": "B", "modelId": mid, "tier": rail, "route": ev.get("route"),
+                "effort": ev.get("effort"), "verdict": "PASS"}
+        bad = [f"{k} {report.get(k)!r} != {v!r}" for k, v in want.items() if report.get(k) != v]
+        if bad:
+            errors.append(f"{mid}: railTierEvidence report {ref} does not support this row: {'; '.join(bad)}")
+            continue
+        recorded = report.get("treatmentHashes") or {}
+        moved = sorted(k for k in current if recorded.get(k) != current[k])
+        if moved:
+            stale.append(f"{mid}: {', '.join(moved)} changed since the measured run - re-run /rail_battery")
+    return errors, stale
+
+
 def _cmd_check(argv):
     path = argv[0] if argv else None
     data = load(path)
+    rail_errors, rail_stale = rail_evidence_problems(data, Path(__file__).resolve().parents[2])
+    if rail_errors:
+        raise RegistryError("; ".join(rail_errors))
+    for line in rail_stale:
+        print(f"STALE railTierEvidence {line}", file=sys.stderr)
     warnings = stale_prices(data)
     print(f"registry OK: {len(data['models'])} models, {len(data['transports'])} transports")
     for mid, why in warnings:
@@ -1055,10 +1436,13 @@ def _cmd_for_role(argv):
 
     def describe(m):
         eff = m.get("effort") or {}
-        rungs = "/".join(f"{k}={eff[k]}" for k in ("converged", "open") if eff.get(k))
+        measured = eff.get("evidence") == "measured"
+        rungs = "/".join(f"{k}={eff[k]}" for k in ("converged", "open") if measured and eff.get(k))
         if not rungs:
-            # The ladder owns every Anthropic row's effort cell; a bare "unstated" reads as a gap.
-            rungs = "per the ladder row" if m["transport"] == HOST_ROLE_SOURCE else "unstated"
+            # The ladder owns every Anthropic row's effort cell; an unmeasured row's rungs are
+            # transport placeholders, never a pick.
+            rungs = ("per the ladder row" if m["transport"] == HOST_ROLE_SOURCE
+                     else "measured, rung unstated" if measured else "unmeasured")
         cost = (data["transports"].get(m["transport"]) or {}).get("costModel", "unstated")
         claims = ",".join(m.get("roles") or []) or "-"
         return f"  {m['alias']:8s} {m['id']:22s} {m['transport']:10s} effort {rungs}; {cost}; claims {claims}"
@@ -1132,17 +1516,15 @@ def _cmd_sidecar_fields(argv):
         gate["minBand"],
         gate.get("minBalanceUSD", ""),
         (entry.get("price") or {}).get("cacheMissPer1M", ""),
-        transport.get("balanceUrl", ""),
+        "",  # retired balanceUrl slot; kept empty until every external consumer moves past v1
         # Appended rather than inserted so an older consumer reading only the first seven fields
         # keeps working. The suspension travels on THIS call because the sidecar already pays one
         # Python startup here and a second process spawn to ask "may I run at all" would double
         # the cost of the check on the common path.
         "available" if model_available(entry["id"], data) else "unavailable",
         (transport.get("status") or {}).get("reason", ""),
-        # Fields 10-11: which currency this dispatch spends, and the provider-band ceiling
-        # its own quota gate compares against. A launcher branches on field 10 to decide
-        # whether a dollar-balance check runs at all; without it, a plan-quota dispatch
-        # would look for a balance URL that does not exist and fail closed on nothing.
+        # Fields 10-11: which currency this dispatch spends, and its quota-band ceiling.
+        # Provider amount evidence now comes from the transport's capacity declaration.
         transport["costModel"],
         gate.get("maxProviderBand", ""),
         # Field 12: which OpenAI-compatible call shape the backend actually answers on. Absent
@@ -1240,6 +1622,15 @@ def _cmd_context_window(argv):
     return 0
 
 
+def _cmd_rail_tier(argv):
+    """Print the rail tier (`strict|terse|fable`) a model string reads at."""
+    if len(argv) != 1:
+        print("usage: model_registry.py rail-tier <model>", file=sys.stderr)
+        return 2
+    print(rail_tier(argv[0]))
+    return 0
+
+
 def _cmd_price_window(argv):
     """The billing window a dispatch of <model> starts in now, and the rates it would pay."""
     if len(argv) != 1:
@@ -1256,6 +1647,24 @@ def _cmd_price_window(argv):
     return 0
 
 
+def effort_values(entry, data):
+    """Rungs a dispatch of this row may request; [] = undeclared (the launcher accepts any).
+
+    A row's own `effortValues` (the vendor's per-model list) wins, narrowed to the rungs its
+    transport can pass through -- `effortValues`, else the proxy pin vocabulary -- so a rung the
+    model serves but the launcher cannot forward is refused rather than silently dropped.
+    """
+    tcfg = data["transports"][entry["transport"]]
+    own = entry.get("effortValues")
+    if own is None:
+        return list(tcfg.get("effortValues") or [])
+    vocab = tcfg.get("effortValues") or (tcfg.get("serverSidePins") or {}).get("effortValues")
+    served = [v for v in own if not vocab or v in vocab]
+    if not served:
+        raise RegistryError(f"model {entry['id']} declares no effort rung its transport can forward")
+    return served
+
+
 def _cmd_effort_values(argv):
     """The effort rungs <model>'s transport actually serves, as a JSON array; [] = undeclared.
 
@@ -1266,7 +1675,7 @@ def _cmd_effort_values(argv):
         return 2
     data = load()
     entry = resolve(argv[0], data)
-    print(json.dumps(data["transports"][entry["transport"]].get("effortValues") or []))
+    print(json.dumps(effort_values(entry, data)))
     return 0
 
 
@@ -1275,6 +1684,7 @@ _COMMANDS = {
     "price-window": _cmd_price_window,
     "effort-values": _cmd_effort_values,
     "context-window": _cmd_context_window,
+    "rail-tier": _cmd_rail_tier,
     "resolve": _cmd_resolve,
     "role-map": _cmd_role_map,
     "for-role": _cmd_for_role,

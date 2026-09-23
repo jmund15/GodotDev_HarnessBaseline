@@ -75,9 +75,12 @@ def write_receipts(tmpdir, sid):
     directory.mkdir(exist_ok=True)
     evidence = Path(tmpdir) / 'fixture-evidence.json'
     evidence.write_text('{}')
+    prune = Path(tmpdir) / 'fixture-harness-prune.md'
+    prune.write_text('### Plans\nfixture\n\n### Worktrees\nfixture\n\n### Scratch\nfixture\n')
     for stem in checker.required_phases('precommit'):
+        phase_evidence = prune if stem == 'harness_prune' else evidence
         receipt = checker.make_receipt(sid, stem, 'completed', [str(evidence)],
-            [str(evidence)], 'Synthetic phase proof')
+            [str(phase_evidence)], 'Synthetic phase proof')
         (directory / (stem + '.json')).write_text(json.dumps(receipt))
 
 
@@ -157,6 +160,16 @@ def main():
         observed = checker.phase_observations(succeeded_path)["session_digest"]
         check("a successful tool result is observed but never marks completion",
               observed["tool_succeeded"] and not observed["completed"])
+
+        own_path = write_transcript(tmp, [tool_use("read", ".claude/commands/worklog.md")], sid=SID + "-own")
+        check("this checkout's own phase command read is observed (control for the peer cases)",
+              checker.phase_observations(own_path)["worklog"]["accessed"])
+        for layout in (".claude/worktrees", ".claude/.cache/task-worktrees", ".claude/.cache/baseline-worktrees"):
+            peer_path = write_transcript(
+                tmp, [tool_use("read", layout + "/peer/.claude/commands/worklog.md")],
+                sid=SID + "-peer-" + layout.rsplit("/", 1)[-1])
+            check("a peer checkout under %s opening a phase command is not this session's phase" % layout,
+                  not checker.phase_observations(peer_path)["worklog"]["accessed"])
         rc, out = run(["--transcript", succeeded_path])
         check("successful invocation without a receipt does not complete the phase",
               rc == 1 and "[unknown]" in line_with(out, "session_digest"), detail=out[-400:])
@@ -285,7 +298,9 @@ def main():
             input_path = Path(tmp) / (stem + "-input.txt")
             evidence_path = Path(tmp) / (stem + "-result.json")
             input_path.write_text(stem, encoding="utf-8")
-            evidence_path.write_text("{}", encoding="utf-8")
+            evidence_path.write_text(
+                "### Plans\nfixture\n\n### Worktrees\nfixture\n\n### Scratch\nfixture\n"
+                if stem == "harness_prune" else "{}", encoding="utf-8")
             status = "completed" if mandatory else "skipped"
             args = ["--transcript", cold_path, "--record", stem, "--status", status,
                     "--input", str(input_path), "--reason", "isolated cold replay"]

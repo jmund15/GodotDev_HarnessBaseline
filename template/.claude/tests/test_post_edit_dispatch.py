@@ -204,7 +204,13 @@ def main():
                       "tool_input": {"file_path": memory_path, "content": no_trigger_md},
                       "tool_response": {"type": "create", "filePath": memory_path}}
     rc, out, err = run(payload_memory, env)
-    cases.append(("retire_trigger_advisory fires on a new memory file with no trigger",
+    cases.append(("retire_trigger_advisory stays silent on a new memory file with no trigger",
+                  rc == 0 and "[retire-trigger-advisory]" not in context(out)))
+    malformed_md = ("---\nname: malformed\ndescription: fixture\nretire_when:\n---\n\nBody.\n")
+    payload_malformed = dict(payload_memory, session_id="postmemm",
+                             tool_input={"file_path": memory_path, "content": malformed_md})
+    rc, out, err = run(payload_malformed, env)
+    cases.append(("retire_trigger_advisory fires through the dispatcher on malformed retire_when",
                   rc == 0 and "[retire-trigger-advisory]" in context(out)))
     update_memory = dict(payload_memory, session_id="postmemu",
                          tool_response={"type": "update", "filePath": memory_path})

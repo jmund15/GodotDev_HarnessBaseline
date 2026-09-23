@@ -89,12 +89,14 @@ const guardFor = (c) => {
 
 // Delegate rails — ONE home (.claude/guards/<shape>.md); never inline a copy here.
 const VALID_SHAPES = ['any', 'survey', 'review', 'author']
-const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'none' }
+// Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
+// hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
+// does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
 const shapeOf = (j) => VALID_SHAPES.includes(j.shape) ? j.shape : 'any'
-const tierOf = (j) => A.__transport ? 'strict' : (TIER_OF[j.model] || 'strict')
+const tierOf = (j) => RAILS[j.model] || 'detailed'
 const guardRef = (j) => {
   const tier = tierOf(j)
-  if (tier === 'none') { return '' }
   return ['', '=== DELEGATE RAILS ===',
     'Read .claude/guards/' + shapeOf(j) + '.md with the Read tool and follow its `## ' + tier
     + '` section. Read ONLY that section — the other tiers are for other models.'].join('\n')

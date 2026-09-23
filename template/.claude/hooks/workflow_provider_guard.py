@@ -38,11 +38,16 @@ DECISION (see `decide`):
   state file (_hook_state), and later dispatches of the same roles under the same band pass
   with that reason cited. A band change voids the record — a new band is a new decision.
 
+RULE 3 — CAPACITY. Before any native Workflow/Agent call, `provider_capacity_guard` reads the
+current transport through the shared live-first capacity contract. Exhausted quota, insufficient
+balance, auth/network/malformed results, or runner failure deny before the endpoint receives work.
+An explicit unsupported amount source remains eligible when the registry permits a zero floor.
+
 CHANNEL: hookSpecificOutput.permissionDecision=deny (block) or additionalContext (advice).
 
-FAIL POSTURE: the DENY branch needs three facts — the band, the slacker transports, the roster
-roles. Any one unreadable → advisory only, exit 0 (an enforcement hook must not brick every
-dispatch on its own I/O), but the note says which fact was unreadable so the silence is legible.
+FAIL POSTURE: vocabulary and provider capacity fail closed. Currency-comparison advice still needs
+band + slacker transports + roster roles; an unreadable advisory fact emits a gap and never invents
+a routing verdict.
 
 ROLE-LADDER INJECTION: every Workflow call (all bands) also receives the role + effort cell of
 each row in reference/model_ladder_evidence.md's ladder table, read live at fire time
@@ -71,8 +76,10 @@ except Exception:  # no session record → every conserving dispatch states its 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import _session_transport
-except Exception:  # no resolver → vocabulary rule cannot run; currency rule still can
+    import provider_capacity_guard
+except Exception:  # no resolver/capacity guard → vocabulary cannot run; main emits advisory
     _session_transport = None
+    provider_capacity_guard = None
 
 # Bare Anthropic role names, always legal on the host transport. `claude-*` ids are NOT matched
 # by a wildcard here: `claude-[A-Za-z0-9._-]+` admitted a typo (`claude-sonnet-4`) or a retired id
@@ -95,6 +102,8 @@ FANOUT_ENGINES = ("explore_fanout", "review_fanout", "dispatch", "doc_architectu
 # The floor comparison, not a restated list: quota_bands owns the band order.
 CONSERVING_BANDS = tuple(b for b in quota_bands.BAND_NAMES if quota_bands.band_satisfies(b, "Ahead"))
 REVIEW_FANOUT_DEFAULT_MODEL = "sonnet"   # review_fanout.js DEFAULT_MODEL — an omitted pin lands here
+# DEFAULT_EFFORT of review_fanout.js, dispatch_chains.js and explore_fanout.js on the host transport.
+ENGINE_DEFAULT_EFFORT = "medium"
 MIN_REASON_CHARS = 20
 AGENT_OVERRIDE_RE = re.compile(r"^\s*CURRENCY:\s*anthropic\b.{%d,}" % MIN_REASON_CHARS, re.I | re.M)
 
@@ -162,28 +171,52 @@ def _args(tool_input):
     return a if isinstance(a, dict) else {}
 
 
-def pinned_models(payload):
-    """[(label, model)] every pin this call will dispatch. An omitted review_fanout pin is the engine's default."""
+def _is_review_fanout(tool_input):
+    return "review_fanout" in os.path.basename(
+        str(tool_input.get("scriptPath") or tool_input.get("name") or "")).replace("-", "_")
+
+
+def dispatch_jobs(payload):
+    """[{label, model, effort, agentType}] per job this call's ARGS declare.
+
+    `model`/`effort` are the caller's literal values, None when omitted, except where the engine
+    fills an omission: a review_fanout model, and the effort of a chain job, an explore lens or a
+    review agent (ENGINE_DEFAULT_EFFORT). dispatch.js requires every pin.
+    """
     tool = payload.get("tool_name")
     ti = payload.get("tool_input") or {}
     if tool == "Agent":
-        m = ti.get("model")
-        return [(str(ti.get("description") or "agent"), str(m))] if m else []
+        return [{"label": str(ti.get("description") or "agent"), "model": ti.get("model") or None,
+                 "effort": None, "agentType": str(ti.get("subagent_type") or "general-purpose")}]
     a = _args(ti)
     out = []
+
+    def job(j, label_key, default_label, default_effort=None):
+        return {"label": str(j.get(label_key) or default_label), "model": j.get("model") or None,
+                "effort": j.get("effort") or default_effort, "agentType": j.get("agentType") or None}
+
+    for j in a.get("jobs") or []:
+        out.append(job(j or {}, "label", "job"))
+    for c in a.get("chains") or []:
+        for j in (c or {}).get("jobs") or []:
+            out.append(job(j or {}, "label", "job", ENGINE_DEFAULT_EFFORT))
+    for lens in a.get("lenses") or []:
+        out.append(job(lens or {}, "key", "lens", ENGINE_DEFAULT_EFFORT))
+    review = _is_review_fanout(ti)
+    for ag in a.get("agents") or []:
+        row = job(ag or {}, "key", "agent", ENGINE_DEFAULT_EFFORT if review else None)
+        # An omitted review_fanout pin is the engine's default, not an absent pin.
+        row["model"] = row["model"] or REVIEW_FANOUT_DEFAULT_MODEL
+        out.append(row)
+    return out
+
+
+def pinned_models(payload):
+    """[(label, model)] every pin this call will dispatch. An omitted review_fanout pin is the engine's default."""
     # `dispatch.js` requires a pin per job, so an entry without one is malformed input, not a pin.
     # Emitting `(label, "")` denied it as "Pin not serviceable: ''" -- a message naming no model,
     # about a pin the caller never wrote.
-    for j in a.get("jobs") or []:
-        if (j or {}).get("model"):
-            out.append((str(j.get("label") or "job"), str(j["model"])))
-    for c in a.get("chains") or []:
-        for j in (c or {}).get("jobs") or []:
-            if (j or {}).get("model"):
-                out.append((str(j.get("label") or "job"), str(j["model"])))
-    for ag in a.get("agents") or []:
-        out.append((str((ag or {}).get("key") or "agent"), str((ag or {}).get("model") or REVIEW_FANOUT_DEFAULT_MODEL)))
-    return out
+    return [(j["label"], str(j["model"])) for j in dispatch_jobs(payload) if j["model"]]
 
 
 # Characters of a `scriptPath` file this hook will read. The committed workflows are all well under
@@ -217,9 +250,25 @@ def script_pins(payload):
     A pin computed at runtime (a variable, a map lookup, a template literal) is not statically
     visible and is NOT returned — that limit is stated in the rails rather than papered over.
     """
+    blobs, incomplete = _script_blobs(payload)
+    out = []
+    for label, text in blobs:
+        for m in SCRIPT_PIN_RE.finditer(text):
+            out.append((label, m.group(2)))
+    # A scan that could not read its whole input reports it as a pin the endpoint cannot serve,
+    # which is the channel `decide_vocabulary` already has for "do not dispatch this". Silence
+    # here would be indistinguishable from a script with no pins at all.
+    for why in incomplete:
+        out.append(("scan-incomplete", "<unscanned: %s>" % why))
+    return out
+
+
+def _script_blobs(payload):
+    """([(label, comment-stripped text)], [incomplete reasons]) for a Workflow's inline script and
+    the file its `scriptPath` names."""
     ti = payload.get("tool_input") or {}
     if payload.get("tool_name") != "Workflow":
-        return []
+        return [], []
     incomplete = []
     blobs = []
     inline = ti.get("script")
@@ -252,17 +301,7 @@ def script_pins(payload):
             # merely failed to resolve. Truncation is different -- the file WAS found, and the
             # part not read could hold a pin.
             pass
-    out = []
-    for label, text in blobs:
-        text = _strip_comments(text)
-        for m in SCRIPT_PIN_RE.finditer(text):
-            out.append((label, m.group(2)))
-    # A scan that could not read its whole input reports it as a pin the endpoint cannot serve,
-    # which is the channel `decide_vocabulary` already has for "do not dispatch this". Silence
-    # here would be indistinguishable from a script with no pins at all.
-    for why in incomplete:
-        out.append(("scan-incomplete", "<unscanned: %s>" % why))
-    return out
+    return [(label, _strip_comments(text)) for label, text in blobs], incomplete
 
 
 def override_stated(payload):
@@ -337,8 +376,34 @@ def decide(band, slackers, roles, payload, record=None):
     return "deny", reason, pins
 
 
+def _native_model_ids(transport, data=None):
+    """Canonical endpoint ids accepted by native Workflow/Agent calls."""
+    data = _session_transport._registry() if data is None else data
+    return [model_id for _, model_id in _session_transport.roster(transport, data) if model_id]
+
+
+def _rails_map(transport, data):
+    """{id or alias: rail tier} for every registry row on `transport`; absent `railTier` reads detailed.
+
+    The engines cannot read files, so this is the only route by which a per-model rail tier reaches
+    a delegate's guard section. `model_registry.rail_tier` owns the reading of the field.
+    """
+    out = {}
+    for m in (data or {}).get("models") or []:
+        if not isinstance(m, dict) or m.get("transport") != transport:
+            continue
+        tier = model_registry.rail_tier(m.get("id"), data) if model_registry else "detailed"
+        for key in (m.get("id"), m.get("alias")):
+            if key:
+                out[key] = tier
+    return out
+
+
 def transport_injection(payload, transport, data=None):
-    """`updatedInput` adding `args.__transport`, or None when there is nothing to inject.
+    """`updatedInput` adding `args.__rails` (every known transport) and `args.__transport`
+    (provider transports only), or None when there is nothing to inject.
+
+    `__rails` carries each row's registry rail tier to the engines, host included.
 
     The dispatch engines hard-code `VALID_MODELS = ['opus','sonnet','haiku','fable']` — an
     Anthropic vocabulary. Without this, a codex session that pins its own ids has them rejected
@@ -348,13 +413,14 @@ def transport_injection(payload, transport, data=None):
 
     Replaces the retired pin-translation injection, which carried a role→id MAP because the
     engines pinned roles and something had to translate. Nothing translates now, so what the
-    engines need is not a mapping but a VOCABULARY.
+    engines need is not a mapping but the endpoint's canonical model-id VOCABULARY. Registry
+    aliases remain sidecar/CLI inputs; native Workflow and Agent calls reject them.
     """
-    if transport == _session_transport.HOST_TRANSPORT or transport == _session_transport.UNKNOWN:
+    if transport == _session_transport.UNKNOWN:
         return None
     if payload.get("tool_name") != "Workflow":
         return None  # the Agent tool has no script-side resolver to feed
-    ids = _session_transport.legal_model_ids(transport, data)
+    data = _session_transport._registry() if data is None else data
     ti = dict(payload.get("tool_input") or {})
     raw = ti.get("args")
     parsed = raw
@@ -368,11 +434,16 @@ def transport_injection(payload, transport, data=None):
     if not isinstance(parsed, dict):
         return None  # an array payload has nowhere to hang the key
     parsed = dict(parsed)
+    parsed["__rails"] = _rails_map(transport, data)
+    if transport == _session_transport.HOST_TRANSPORT:
+        ti["args"] = json.dumps(parsed) if isinstance(raw, str) else parsed
+        return ti
+    roster = _session_transport.roster(transport, data)
+    ids = _native_model_ids(transport, data)
     # `default` answers what `ids` cannot: which id an ENGINE-INTERNAL stage should use.
     # review_fanout's consolidation agent pins its OWN model, not a caller's, so it is invisible
     # to both the widening and the guard's scanner. First registry row for the transport, so the
     # answer is data-driven rather than a second hardcoded vocabulary.
-    roster = _session_transport.roster(transport, data)
     efforts = _session_transport.legal_effort_values(transport, data)
     parsed["__transport"] = {
         "name": transport,
@@ -420,9 +491,10 @@ def _host_alias_excluded(model, data):
 def decide_vocabulary(transport, source, payload, data=None):
     """RULE 1 — is every pin a name this session's ENDPOINT can serve? ("deny", reason) | (None, None).
 
-    One predicate over the transport family, not a branch per provider: legal pins on transport T
-    are the ids and aliases of T's registry rows. `anthropic` additionally accepts the four role
-    names, because on the host transport a role name IS how you pin.
+    One predicate over the transport family, not a branch per provider: native pins on transport T
+    are the canonical ids of T's registry rows. Registry aliases remain sidecar/CLI inputs because
+    Workflow and Agent pass their model string straight to the endpoint. `anthropic` additionally
+    accepts the four role names, because on the host transport a role name IS how you pin.
 
     This runs BEFORE the currency rule: a pin the endpoint cannot serve is wrong at any band, and
     saying so first gives the clearer message.
@@ -444,7 +516,8 @@ def decide_vocabulary(transport, source, payload, data=None):
             f"in the launcher or profile function that started this session, then re-issue."
         )
 
-    legal = set(_session_transport.legal_model_ids(transport, data))
+    roster = _session_transport.roster(transport, data)
+    legal = {model_id for _, model_id in roster if model_id}
     bad = []
     for label, model in pins:
         if model in legal:
@@ -462,8 +535,7 @@ def decide_vocabulary(transport, source, payload, data=None):
     if not bad:
         return None, None
 
-    roster = _session_transport.roster(transport, data)
-    listed = "; ".join(f"{a} = {i}" for a, i in roster) or "(none registered)"
+    listed = "; ".join(f"{i} (registry alias {a})" for a, i in roster) or "(none registered)"
     who = ", ".join(f"{label}→{model}" for label, model in bad[:8])
     if transport == _session_transport.HOST_TRANSPORT:
         why = ("a vendor id on an Anthropic session makes agent() return null, and the fan-out "
@@ -476,7 +548,8 @@ def decide_vocabulary(transport, source, payload, data=None):
         f"Pin not serviceable on transport '{transport}' (identified by {source}) — {who}. "
         f"{why.capitalize()}. Legal pins here: {listed}. "
         f"Pin one of those ids, or dispatch to another transport through its own sidecar "
-        f"launcher (reference/sidecar_dispatch.md) — Workflow/Agent never cross transports."
+        f"launcher (reference/sidecar_dispatch.md) — Workflow/Agent never cross transports. "
+        f"A tier-named command pin resolves through `model_registry.py for-role <tier>`."
     )
 
 
@@ -495,8 +568,7 @@ def non_thinking_review_pins(payload):
     """Agent keys pinned sonnet·low on a review_fanout dispatch — the one cell the ladder marks non-thinking,
     on the one engine that only dispatches judgment."""
     ti = payload.get("tool_input") or {}
-    target = os.path.basename(str(ti.get("scriptPath") or ti.get("name") or "")).replace("-", "_")
-    if "review_fanout" not in target:
+    if not _is_review_fanout(ti):
         return []
     return [str((a or {}).get("key") or "agent") for a in (_args(ti).get("agents") or [])
             if str((a or {}).get("model") or REVIEW_FANOUT_DEFAULT_MODEL) == "sonnet" and str((a or {}).get("effort") or "") == "low"]
@@ -523,7 +595,28 @@ def parse_ladder_role_lines(raw_lines):
     if model_registry is None:
         return []
     rows = model_registry.parse_ladder_rows(raw_lines, LADDER_ROLE_COLUMNS, LADDER_ROLE_HEADING)
-    return ["%s: %s (effort: %s)" % (r["model"], r["role"], r["effort"][:60]) for r in rows]
+    return [_compact_role_row(r) for r in rows]
+
+
+# One header for every injection of these rows (here and hooks/skill_load_marker.py).
+ROLE_LADDER_HEADER = ("[role ladder (orchestration §5)] model: tier, first-listed effort. "
+                      "Pin from the full table in .claude/reference/model_ladder_evidence.md, "
+                      "not the registry roster. ")
+_EFFORT = re.compile(r"`?\b(low|medium|high|xhigh|max)\b`?")
+_PARENS = re.compile(r"\s*\([^)]*\)")
+
+
+def _compact_role_row(row):
+    """`model: tier, effort` from whole tokens of a Role guidance row, never a cut clause."""
+    model = _PARENS.sub("", row["model"]).replace("`", "").strip()
+    if model.endswith(" excluded"):
+        model = model[: -len(" excluded")] + " (excluded)"
+    tier = re.search(r"`([^`]+)`", row["role"])
+    tier = tier.group(1) if tier else row["role"].split(" — ")[0].strip()
+    # First rung clause, parentheticals dropped; a lead-in before its colon is qualifier, not a rung.
+    clause = _PARENS.sub("", row["effort"]).split(" / ")[0].rsplit(":", 1)[-1]
+    effort = _EFFORT.search(clause)
+    return "%s: %s, %s" % (model, tier, effort.group(1)) if effort else "%s: %s" % (model, tier)
 
 
 def ladder_role_lines(path=None):
@@ -535,11 +628,14 @@ def ladder_role_lines(path=None):
         return []
 
 
-def _emit_advice(parts):
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "additionalContext": "[provider check] " + " | ".join(parts),
-    }}))
+def _emit_advice(parts, updated=None):
+    out = {"hookEventName": "PreToolUse"}
+    if parts:
+        out["additionalContext"] = "[provider check] " + " | ".join(parts)
+    if updated is not None:
+        out["updatedInput"] = updated
+    if len(out) > 1:
+        print(json.dumps({"hookSpecificOutput": out}))
 
 
 def main():
@@ -572,8 +668,7 @@ def main():
     if tool == "Workflow" and "orchestration" not in (_session_record(payload)[1].get("skills_loaded") or []):
         roles = ladder_role_lines()
         if roles:
-            roles_note = ["[role ladder — pin against THESE rows, not the registry roster (orchestration §5)] "
-                          + " ;; ".join(roles)]
+            roles_note = [ROLE_LADDER_HEADER + "; ".join(roles)]
 
     transport, source = (_session_transport.resolve() if _session_transport
                          else ("anthropic", "resolver-unavailable"))
@@ -589,13 +684,24 @@ def main():
         }}))
         return
 
+    capacity_reason = (provider_capacity_guard.refusal(transport)
+                       if provider_capacity_guard else
+                       "Provider capacity guard is unavailable; native dispatch is blocked")
+    if capacity_reason:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": capacity_reason,
+        }}))
+        return
+
     # RULE 2 — currency. Only on the host transport: on a provider session, launching that
     # session IS the authorization to spend its allowance, and this session's Anthropic quota is
     # not what the dispatch draws on.
     if _session_transport and transport != _session_transport.HOST_TRANSPORT:
         parts = [f"transport={transport} ({source})",
                  "currency gate N/A off the host transport — launching this session authorized its allowance",
-                 f"legal pins: {', '.join(a for a, _ in _session_transport.roster(transport)) or 'none registered'}"]
+                 f"legal native pins: {', '.join(i for _, i in _session_transport.roster(transport)) or 'none registered'}"]
         updated = transport_injection(payload, transport)
         out = {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -632,9 +738,9 @@ def main():
             "permissionDecisionReason": body,
         }}))
         return
+    host_update = transport_injection(payload, transport) if _session_transport else None
     if verdict == "silent":
-        if roles_note:
-            _emit_advice(roles_note)
+        _emit_advice(roles_note, host_update)
         return
 
     note = list(body)
@@ -652,7 +758,7 @@ def main():
             + f" vs this session's {band} — its allowance expires unused; launcher: {' or '.join(row['launchers'])}"
         )
     note.extend(roles_note)
-    _emit_advice(note)
+    _emit_advice(note, host_update)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,10 @@ import gate_cadence_guard  # noqa: E402
 import git_guardrails  # noqa: E402
 import pattern_enforcer  # noqa: E402
 import prototype_containment_guard  # noqa: E402
+try:  # project-local (rail battery); absent in projects that sync only the baseline
+    import rail_probe_guard  # noqa: E402
+except ImportError:
+    rail_probe_guard = None
 import provisional_totality_guard  # noqa: E402
 import sidecar_dispatch_context  # noqa: E402
 import tres_nullstrip_guard  # noqa: E402
@@ -88,7 +92,8 @@ except Exception as _exc:  # noqa: BLE001 - any import failure must still deny, 
     baseline_classification_guard = _BaselineGuardImportStub()
 
 # (module, argv tail). Deny-shaped guards first, cheapest first; the approver; then advisories.
-HOOKS = (
+HOOKS = ((rail_probe_guard, ()),) if rail_probe_guard else ()  # inert unless a rail-battery run is armed
+HOOKS += (
     (pattern_enforcer, ()),
     (cloud_test_enforcer, ()),
     (bash_shape_guard, ()),

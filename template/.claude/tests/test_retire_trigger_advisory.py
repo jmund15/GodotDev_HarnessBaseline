@@ -80,13 +80,12 @@ def main():
         outside_scope = os.path.join(repo, ".claude", "commands", "probe.md")
         rules_scope = os.path.join(repo, ".claude", "rules", "probe.md")
 
-        print("case 1 — a new in-scope memory file with no trigger fires")
+        print("case 1 — a new memory file with no trigger is valid and stays silent")
         result = hook.process(payload("Write", in_scope, NO_TRIGGER, repo))
-        check("fires with a context line",
-              bool(result) and "[retire-trigger-advisory]" in result["context"], str(result))
-        check("names the file and the missing trigger",
-              result and "auto-memory/archive/probe.md" in result["context"]
-              and "no retire_when trigger" in result["context"], str(result))
+        check("a markerless archive memory file is silent", result is None, str(result))
+        hot = os.path.join(repo, ".claude", "auto-memory", "probe.md")
+        result = hook.process(payload("Write", hot, NO_TRIGGER, repo))
+        check("a markerless hot memory file is silent", result is None, str(result))
 
         print("case 2 — a new in-scope memory file with a malformed trigger fires")
         result = hook.process(payload("Write", in_scope, MALFORMED_TRIGGER, repo))
@@ -105,20 +104,27 @@ def main():
         result = hook.process(payload("Write", outside_scope, NO_TRIGGER, repo))
         check("commands/ is outside scope", result is None, str(result))
 
-        print("case 11 — a new rules file needs a retire-when comment")
+        print("case 11 — a rules file warns only on a malformed declared retire-when comment")
         rule_body = "---\npaths:\n  - \"**/*.cs\"\n---\n\nRule.\n"
         result = hook.process(payload("Write", rules_scope, rule_body, repo))
-        check("a new rules file with no retire-when comment fires, naming the file",
-              bool(result) and "rules/probe.md" in result["context"] and "retire-when" in result["context"],
-              str(result))
+        check("a new rules file with no retire-when comment is silent", result is None, str(result))
         result = hook.process(payload("Write", rules_scope,
                                       rule_body + "\n<!-- retire-when: review-by: 2999-01-01 -->\n", repo))
-        check("a new rules file with a retire-when comment stays silent", result is None, str(result))
-        result = hook.process(payload("Write", rules_scope, rule_body, repo, response_type="update"))
+        check("a new rules file with a valid retire-when comment stays silent", result is None, str(result))
+        result = hook.process(payload("Write", rules_scope, rule_body + "\n<!-- retire-when: -->\n", repo))
+        check("an empty retire-when comment warns, naming the file",
+              bool(result) and "rules/probe.md" in result["context"]
+              and "[retire-trigger-advisory]" in result["context"], str(result))
+        result = hook.process(payload("Write", rules_scope,
+                                      rule_body + "\n<!-- retire-when: someday maybe -->\n", repo))
+        check("an unknown retire-when trigger warns, naming the trigger",
+              bool(result) and "someday maybe" in result["context"], str(result))
+        result = hook.process(payload("Write", rules_scope, rule_body + "\n<!-- retire-when: -->\n", repo,
+                                      response_type="update"))
         check("an update Write of a rules file stays silent", result is None, str(result))
         result = hook.process(payload("Write", os.path.join(repo, ".claude", "rules", "sub", "probe.md"),
-                                      rule_body, repo))
-        check("a new rules file in a subdirectory also fires", bool(result), str(result))
+                                      rule_body + "\n<!-- retire-when: -->\n", repo))
+        check("a malformed comment in a rules subdirectory also warns", bool(result), str(result))
 
         print("case 6 — a non-.md file inside auto-memory/ stays silent")
         result = hook.process(payload(

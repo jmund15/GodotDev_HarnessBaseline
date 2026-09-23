@@ -17,6 +17,10 @@ Use `/part_drive` when the work IS a roadmap Part. Use `/architecture_brainstorm
 3. **Scope litmus** — if planning reveals the work is roadmap-shaped (new system, crosses subsystems beyond the conversation design, file list won't bound), halt and propose promotion to `/architecture_brainstorm` or a roadmap Part instead of driving on.
 4. **Assess the ladder tier** of the captured design against [`_brainstorm_shared/execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md), and run the flow at that depth. Tier 1–2 takes the ladder's reduced path — no plan file at tier 1, an in-conversation plan at tier 2 (a plan *file* only when the executor is dispatched cold), and `/explore` using its own trigger table — with the ladder's rule-1 litmuses binding throughout: any pass `/plan_check`'s litmus, CLAUDE.md's planning threshold, `/regression_gate`, or `/explore`'s SKIP litmus mandates still runs. Tier 3 runs steps 1–7 as written. Tier 4 is rule 3's promotion case.
 
+## Dispatch topology receipt
+
+Before every dispatch stage, compose `orchestration` §0, §5, and §11 into one **Dispatch Topology Receipt**. Its pre-dispatch half names independent outputs, risks, fixed seats, contained-job deduplication, width, role floor, effort, and currency. Its post-journal/PINS half compares actual rows, pins, and coverage with that receipt. This call site adds no role or model table.
+
 ## The flow
 
 Steps 2–6 are `/part_drive` steps 2–6 verbatim (plan in-session → `/plan_check` converge → execute → gate → commits); only steps 1 and 7 differ:

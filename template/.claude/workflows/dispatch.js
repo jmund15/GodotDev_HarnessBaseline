@@ -85,14 +85,22 @@ const CONCURRENCY_GUARD = jobs.length > 1 ? [
 // Unlike model/effort, a missing or unrecognized shape is NOT a caller bug — it means the
 // orchestrator asserts no specific shape applies, which is exactly what `any` covers.
 const VALID_SHAPES = ['any', 'survey', 'review', 'author']
-const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'fable' }
+// Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
+// hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
+// does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
 const shapeOf = (j) => VALID_SHAPES.includes(j.shape) ? j.shape : 'any'
-// Off-Anthropic, the RECEIVING model is deepseek whatever role name the caller pinned, and deepseek
-// sits in the strict band — so endpoint translation overrides the role-derived tier.
-// Off-Anthropic ids carry no TIER_OF row, so a provider session reads at the strict tier.
-const tierOf = (j) => A.__transport ? 'strict' : (TIER_OF[j.model] || 'strict')
+// A job's own `railTier` wins over the map: it holds the model fixed while the tier varies, which is
+// how /rail_battery measures a tier through this exact prompt. `none` sends no rails block.
+const VALID_RAIL_TIERS = ['detailed', 'condensed', 'minimal', 'none']
+const badTier = jobs.filter(j => j.railTier !== undefined && !VALID_RAIL_TIERS.includes(j.railTier))
+if (badTier.length > 0) {
+  return { error: 'railTier must be one of [' + VALID_RAIL_TIERS.join('|') + '] when set.', badJobs: badTier.map(j => j.label) }
+}
+const tierOf = (j) => j.railTier || RAILS[j.model] || 'detailed'
 const guardRef = (j) => {
   const tier = tierOf(j)
+  if (tier === 'none') return ''
   const shape = shapeOf(j)
   const files = shape === 'any'
     ? '.claude/guards/any.md'
@@ -159,6 +167,10 @@ if (SPILL_DIR) {
   }
 }
 
+// The platform relays the triggering user message to every agent as authoritative; a job whose
+// brief looks unrelated can answer that message instead of its brief.
+const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
+
 phase('Dispatch')
 const results = await parallel(jobs.map(j => () => {
   const ctx = A.contextPath
@@ -166,6 +178,7 @@ const results = await parallel(jobs.map(j => () => {
     : ''
   const prompt = ctx
     + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry once if the read fails). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
+    + '\n' + RELAY_LINE
     + (j.readOnly ? readOnlyGuard(j) : '')
     + CONCURRENCY_GUARD
     + guardRef(j)

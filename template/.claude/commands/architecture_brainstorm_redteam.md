@@ -36,7 +36,9 @@ If Step 0.5 adds `rt-systemic` or `rt-vision`, extend the push accordingly: the 
 
 ## Step 0.5: Compose the panel — fixed floor + risk-derived bespoke lenses
 
-The five core lenses (Step 1) are the **floor**: guaranteed-minimum coverage, never dropped within their phase eligibility. They are deliberately generic; extending the panel to fit THIS design is the orchestrator's judgment (`feedback_prescribe_verification_not_cognition` — which lenses to run is cognition; that the floor runs, independently, with liveness and taste-classification enforced, is verification).
+The five core lenses (Step 1) are the **floor**: guaranteed-minimum coverage, never dropped within their phase eligibility. They are deliberately generic; extending the panel to fit THIS design is the orchestrator's judgment (`feedback_prescribe_verification_not_cognition` — which lenses to run is cognition; that the floor runs at the seat width `orchestration` §2 sets, with liveness and taste-classification enforced, is verification).
+
+**Seat map** (`orchestration` §2 *Sizing the width*; tier facts from the design's planned file list and named subsystems). Mode A at Wide: one seat per lens. Standard: structure (`rt-boundary` + `rt-abstraction`), `rt-failuremode`, and scope (`rt-yagni-scope` + `rt-testability`). Small: one seat for the core five. Conditional and bespoke lenses keep their own seats at every tier, and Mode B's phase subsets run one seat per lens. The Standard and Small maps are provisional; every seat keeps Step 1's `xhigh`.
 
 **Conditional core lenses** — add when the trigger holds:
 
@@ -69,7 +71,7 @@ The five core lenses (+ any Step 0.5 additions), each judging the pushed input (
 
 **Phase-scoped subsets for Mode B:** Step 2 → `rt-boundary` + `rt-failuremode` + `rt-yagni-scope` (premise-challenge only). Step 4 → those three + `rt-abstraction` (+ `rt-testability` if an approach already names test surface; + Step 0.5 additions once approaches have shape). Step 5 / Mode A → all five core + Step 0.5 additions.
 
-**Model — pin every lens to the executor tier (the ladder: `reference/model_ladder_evidence.md` §Role guidance); NEVER inherit the session model.** Adversarial-design critique is reasoning-heavy, so the executor tier is its floor (`orchestration` skill §5) — the default-fan-out tier is marked down on architecture in the table's `±` column and must not staff these lenses to save cost. A critic panel is a fan-out: omitting `model` inherits the session model, turning a 5-lens panel into 5 orchestrator-tier critics — orchestrator cost at zero intelligence gain. **Escalation is deliberate, never blanket:** the orchestrator tier as a delegate is a cost default, not a capability rule — open it per lens via `/pin_ab` (`orchestration` §5), never by blanket pin. A purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to the default-fan-out tier. **Effort: `xhigh` on every opus critic lens** — the ladder's review verdict (§Pick by work shape): `high` finds a fraction of the planted defects, `max` adds nothing.
+**Model — pin every lens to the executor tier (the ladder: `reference/model_ladder_evidence.md` §Role guidance); NEVER inherit the session model.** Adversarial-design critique is reasoning-heavy, so the executor tier is its floor (`orchestration` skill §5) — the default-fan-out tier is marked down on architecture in the table's `±` column and must not staff these lenses to save cost. A critic panel is a fan-out: omitting `model` inherits the session model, turning a 5-lens panel into 5 orchestrator-tier critics — orchestrator cost at zero intelligence gain. **Escalation is deliberate, never blanket:** the orchestrator tier as a delegate is a cost default, not a capability rule — open it per lens via `/pin_ab` (`orchestration` §5), never by blanket pin. A purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to the default-fan-out tier. **Effort: `xhigh` on every executor-tier critic lens** — the ladder's review verdict (§Pick by work shape): `high` finds a fraction of the planted defects, `max` adds nothing.
 
 **Dispatch — keep `args` FLAT (per `gotcha_workflow_args_generation_fidelity`).** Push the input ONCE via the shared `contextPrefix`; keep each lens `prompt` to its mandate only (do NOT duplicate the design into every prompt — that deeply-nested, escape-dense shape makes the tool call's JSON malformed):
 
@@ -82,17 +84,17 @@ Workflow({
       { key: "rt-boundary",    prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
       { key: "rt-failuremode", prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" },
       { key: "rt-yagni-scope", prompt: "<mandate only>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose" }
-      // + rt-abstraction / rt-testability per the phase subset above (model: "opus", effort: "xhigh")
-      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (model: "opus", effort: "xhigh")
-      // a purely mechanical bespoke lens may drop to "sonnet"; "fable" only via an explicit per-lens pin
+      // + rt-abstraction / rt-testability per the phase subset above (model: "<executor>", effort: "xhigh")
+      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (model: "<executor>", effort: "xhigh")
+      // a purely mechanical bespoke lens may drop to the fanout tier; the orchestrator tier only via an explicit per-lens pin
     ]
   }
 })
 ```
 
-**Large design, or a JSON-parse failure on dispatch:** move the payload out of `args` — write the design and each mandate to brief files and run the lenses through `dispatch.js` (`label` and `promptPath` per lens, `model: "opus"`, `effort` per the panel, `agentType: "general-purpose"`, `contextPath` for the shared design). That keeps the pins and the PINS row while sidestepping `gotcha_workflow_args_generation_fidelity`. Parallel `Task` subagents with an explicit `model: "opus"` are the Workflow-unavailable fallback only (`orchestration` §0).
+**Large design, or a JSON-parse failure on dispatch:** move the payload out of `args` — write the design and each mandate to brief files and run the lenses through `dispatch.js` (`label` and `promptPath` per lens, the executor-tier `model`, `effort` per the panel, `agentType: "general-purpose"`, `contextPath` for the shared design). That keeps the pins and the PINS row while sidestepping `gotcha_workflow_args_generation_fidelity`. Parallel `Task` subagents with an explicit executor-tier `model` are the Workflow-unavailable fallback only (`orchestration` §0).
 
-**Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` returns an **empty findings array for any lens that errors, times out, or returns malformed JSON** (its guard: `Array.isArray(r.findings) ? r.findings : []`). So "0 findings" can mean "ran and found nothing" OR "never ran." Before reporting or converging, read the workflow's `perAgent: [{key, count}]` and confirm **every dispatched lens key is present**. If any lens is missing → do NOT report CLEAN; surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses (or halt). This closes the false-absence path inside the red-team itself.
+**Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` returns an **empty findings array for any lens that errors, times out, or returns malformed JSON** (its guard: `Array.isArray(r.findings) ? r.findings : []`). So "0 findings" can mean "ran and found nothing" OR "never ran." Before reporting or converging, read the workflow's `perAgent: [{key, count}]` and confirm **every dispatched lens key is present**. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. If any lens is missing → do NOT report CLEAN; surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses (or halt). This closes the false-absence path inside the red-team itself.
 
 Each lens returns findings per the schema. **Classification embedded in every mandate:**
 - **Rigor-hole** → `action: FIX` (a concrete design correction) or `PLAN` (needs a redesign pass). `category: rule | bug | improvement`.

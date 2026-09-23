@@ -18,7 +18,7 @@ Run the routing-compliance battery against current hooks + doctrine. The test ro
 
 ## Pre-flight checks (orchestrator runs these BEFORE dispatching)
 
-1. **Derive the test count `N`** — count unique `[ROUTECHECK-XX]` IDs in `.claude/tests/routing_compliance.md` (44 as of 2026-07-04), then cross-check `N` against the key count of the `EXPECTED` dict in `.claude/tools/score_routing_battery.py`. Mismatch → rubric and scorer are out of sync — STOP and reconcile before running.
+1. **Derive the test count `N`** — count unique `[ROUTECHECK-XX]` IDs in `.claude/tests/routing_compliance.md`, then cross-check `N` against the key count of the `EXPECTED` dict in `.claude/tools/score_routing_battery.py`. Mismatch → rubric and scorer are out of sync — STOP and reconcile before running.
 2. Confirm `agent_dispatch_preamble.py` is NOT wired in `settings.json` — that hook (if present) injects routing doctrine into subagent prompts and contaminates the test (rubric leakage). The hook should not exist; if it does, the run is invalid.
 
 ## Execution

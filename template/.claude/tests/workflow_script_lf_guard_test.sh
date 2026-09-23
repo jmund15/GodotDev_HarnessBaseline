@@ -21,6 +21,18 @@ printf 'export const meta = {}\r\n' > "$TMP/msys.js"
 printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$(cygpath -u "$TMP/msys.js" 2>/dev/null || echo "$TMP/msys.js")" | python3 "$HOOK" >/dev/null
 check "MSYS /c/ path is translated and rewritten" 0 "$(crs "$TMP/msys.js")"
 
+WT="$ROOT/worktrees/scope_probe"
+mkdir -p "$WT/.CLAUDE/Hooks"
+printf 'export const meta = {}\r\n' > "$WT/.CLAUDE/Hooks/upper.js"
+out=$(printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$WT/.CLAUDE/./Hooks/upper.js" | python3 "$HOOK")
+check "uppercase worktree harness path is rewritten" 0 "$(crs "$WT/.CLAUDE/Hooks/upper.js")"
+check "uppercase worktree rewrite is reported" 1 "$(printf '%s' "$out" | grep -c 'rewrote 1 CRLF')"
+
+mkdir -p "$WT/.claude/hooks"
+printf 'export const meta = {}\r\n' > "$WT/Game.js"
+out=$(printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$WT/.claude/./hooks/../../Game.js" | python3 "$HOOK")
+check "dot-segment escape keeps a worktree game script untouched" "1|" "$(crs "$WT/Game.js")|$out"
+
 printf 'export const meta = {}\nawait agent("x")\n' > "$TMP/lf.js"
 out=$(printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$TMP/lf.js" | python3 "$HOOK")
 check "LF script untouched and silent" "0|" "$(crs "$TMP/lf.js")|$out"
@@ -35,4 +47,5 @@ check "path outside .claude left alone" 1 "$(crs "$OUT")"; rm -f "$OUT"
 
 printf 'not json' | python3 "$HOOK" >/dev/null; check "malformed payload exits 0" 0 "$?"
 rm -f "$TMP/crlf.js" "$TMP/msys.js" "$TMP/lf.js" "$TMP/agent.js"; rmdir "$TMP" 2>/dev/null
+rm -rf "$WT"
 exit $fail

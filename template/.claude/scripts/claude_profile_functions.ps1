@@ -39,9 +39,16 @@ function claude-secondary {
 # Never hardcode a rate or an id in this file.
 # --------------------------------------------------------------------------
 
+function Get-RegistryPath {
+    # HARNESS_MODEL_REGISTRY is the same override tools/model_registry.py honours, so a proof can point
+    # both readers at one planted copy instead of depending on the live roster's current state.
+    if ($env:HARNESS_MODEL_REGISTRY) { return $env:HARNESS_MODEL_REGISTRY }
+    Join-Path $PSScriptRoot "..\reference\external_models.json"
+}
+
 function Get-ExternalModel {
     param([Parameter(Mandatory)][string]$Alias)
-    $registry = Join-Path $PSScriptRoot "..\reference\external_models.json"
+    $registry = Get-RegistryPath
     if (-not (Test-Path $registry)) { return $null }
     try { $data = Get-Content $registry -Raw | ConvertFrom-Json } catch { return $null }
     $data.models | Where-Object { $_.alias -eq $Alias -or $_.id -eq $Alias } | Select-Object -First 1
@@ -54,7 +61,7 @@ function Get-TransportModelIds {
     # `/model` target. Telling the user to "name a GPT id" without naming them leaves them guessing,
     # and the one guess the client accepts silently is a Claude name, which resolves to whatever the
     # proxy feels like.
-    $registry = Join-Path $PSScriptRoot "..\reference\external_models.json"
+    $registry = Get-RegistryPath
     if (-not (Test-Path $registry)) { return @() }
     try { $data = Get-Content $registry -Raw | ConvertFrom-Json } catch { return @() }
     @($data.models | Where-Object { $_.transport -eq $Transport } | ForEach-Object { $_.id })
@@ -70,7 +77,7 @@ function Get-SubagentFallback {
     #
     # No alias is written here. A literal stops tracking the registry the day it is excluded, and
     # the banner then names a dead model with total confidence.
-    $registry = Join-Path $PSScriptRoot "..\reference\external_models.json"
+    $registry = Get-RegistryPath
     if (-not (Test-Path $registry)) { return $null }
     try { $data = Get-Content $registry -Raw | ConvertFrom-Json } catch { return $null }
     # Dispatchability is TWO checks, and model_registry.py applies both: the row's own status, and
@@ -148,9 +155,9 @@ function Invoke-ClaudeDeepSeek {
     # by the workflow_provider_guard.py PreToolUse hook.
     $env:ANTHROPIC_SMALL_FAST_MODEL  = $sub.id
     $env:CLAUDE_CODE_SUBAGENT_MODEL  = $sub.id
-    # This build has no registry entry for `deepseek-v4-flash` and assumes a 200K
-    # window, auto-compacting far too early. Declare the real window (1M, DeepSeek
-    # docs [P1]) here instead of via the `[1m]` model-name suffix: the suffix rides
+    # Claude Code has no built-in entry for DeepSeek ids and assumes a 200K
+    # window, auto-compacting far too early. Declare the registry's window here
+    # instead of via the `[1m]` model-name suffix: the suffix rides
     # on the API string and only Anthropic-registry names survive that round-trip.
     # Compaction threshold = min(autoCompactWindow, this number); the supported knob
     # is `autoCompactWindow` in ~/.claude/settings.json (700000 = 70% of this).
@@ -161,7 +168,14 @@ function Invoke-ClaudeDeepSeek {
     Write-Host "  DeepSeek session - driving model: " -NoNewline -ForegroundColor Cyan
     Write-Host "$($model.id)" -NoNewline -ForegroundColor White
     Write-Host "  [$($model.version)]" -ForegroundColor DarkGray
-    Write-Host "    price/1M   cache-hit `$$($p.cacheHitPer1M)   fresh `$$($p.cacheMissPer1M)   output `$$($p.outputPer1M)" -ForegroundColor DarkGray
+    Write-Host "    list (peak) price/1M   cache-hit `$$($p.cacheHitPer1M)   fresh `$$($p.cacheMissPer1M)   output `$$($p.outputPer1M)" -ForegroundColor DarkGray
+    # The schedule is printed, not evaluated: which window is live now is model_registry.py's to
+    # compute (one implementation), and this profile stays free of a Python dependency.
+    $sched = (Get-Content (Get-RegistryPath) -Raw | ConvertFrom-Json).transports.deepseek.pricingSchedule
+    if ($sched) {
+        $spans = ($sched.peakWindowsUTC | ForEach-Object { "$($_.days[0])-$($_.days[-1]) $($_.start)-$($_.end)" }) -join ', '
+        Write-Host "    off-peak x$($sched.offPeakMultiplier) outside peak ($spans UTC); window now: python3 .claude/tools/model_registry.py price-window $($model.alias)" -ForegroundColor DarkGray
+    }
     Write-Host "    unpinned subagents -> $($sub.id)" -NoNewline -ForegroundColor DarkGray
     if ($model.id -ne $sub.id) { Write-Host "  (NOT $($model.alias) - reaching $($model.alias) is always deliberate)" -ForegroundColor DarkGray }
     else { Write-Host "" }
@@ -198,30 +212,25 @@ function claude-deepseek-flash { Invoke-ClaudeDeepSeek -Alias 'flash' -Passthru 
 function claude-deepseek       { Invoke-ClaudeDeepSeek -Alias 'pro'   -Passthru $args }
 
 # --------------------------------------------------------------------------
-# GPT sessions, billed against the ChatGPT plan. Same shape as the DeepSeek
-# block, but the varying axis is EFFORT, not model — the Codex route exposes one
-# model and grades it by reasoning effort:
+# GPT sessions, billed against the ChatGPT plan. Standard aliases use the
+# registry's default window; their `-1m` twins request its max window:
 #
-#     claude-gpt-high    deep reasoning
-#     claude-gpt-low     fast, mechanical
-#     claude-gpt         = medium
+#     claude-gpt / claude-gpt-low / claude-gpt-high    luna by effort
+#     claude-gpt-terra / claude-gpt-sol / claude-gpt-astra
+#     <each name>-1m                                   long-context twin
 #
-# DeepSeek reaches its endpoint with env vars alone. This one cannot: the Codex
-# backend speaks a different protocol, so a local claude-code-proxy translates,
-# and this function owns its whole lifecycle — start on a free port, wait for
-# health, kill on exit. That per-session proxy is forced, not tidiness: the model
-# and effort pins are read from the PROXY SERVER's environment at startup, never
-# the client's, so a shared proxy would serve whichever pins its starter happened
-# to set. The same constraint fixes effort for the session's lifetime; a
-# mid-session change means exiting and relaunching.
-#
-# Mechanism, exit codes and attestation: .claude/scripts/codex_proxy_sidecar.sh.
+# A per-session claude-code-proxy translates Anthropic Messages traffic to the
+# Codex backend. Model and effort stay request-scoped so `/model`, `/effort`, and
+# pinned Workflow jobs work live; the launcher clears proxy-wide CCP pins before
+# startup. The sidecar has the opposite contract (server-wide pins and attestation):
+# .claude/scripts/codex_proxy_sidecar.sh.
 # --------------------------------------------------------------------------
 
 function Invoke-ClaudeGpt {
     param(
         [ValidateSet('low', 'medium', 'high', 'max')][string]$Effort = 'medium',
         [string]$Model = 'luna',
+        [switch]$LongContext,
         [string[]]$Passthru = @()
     )
 
@@ -231,6 +240,49 @@ function Invoke-ClaudeGpt {
     $row = Get-ExternalModel -Alias $Model      # registry lookup is alias-generic
     if (-not $row) { Write-Error "model '$Model' not on the codex transport in .claude/reference/external_models.json - run: python .claude/tools/model_registry.py available"; return }
     if ($row.transport -ne 'codex') { Write-Error "'$Model' is on the '$($row.transport)' transport, not codex - this launcher starts a Codex proxy"; return }
+
+    $modelArgAt = [array]::IndexOf($Passthru, '--model')
+    if ($modelArgAt -ge 0) {
+        if ($modelArgAt + 1 -ge $Passthru.Count) { Write-Error "--model needs a codex model id or alias"; return }
+        $modelArg = $Passthru[$modelArgAt + 1]
+        $modelArgIsLong = $modelArg.EndsWith('[1m]')
+        if ($modelArgIsLong) { $modelArg = $modelArg.Substring(0, $modelArg.Length - 4) }
+        if ($modelArgIsLong -and -not $LongContext) { Write-Error "use a -1m launcher with '$($Passthru[$modelArgAt + 1])'"; return }
+        $overrideRow = Get-ExternalModel -Alias $modelArg
+        if (-not $overrideRow) { Write-Error "model '$modelArg' not registered - run: python .claude/tools/model_registry.py available"; return }
+        if ($overrideRow.transport -ne 'codex') { Write-Error "'$modelArg' is on the '$($overrideRow.transport)' transport, not codex"; return }
+        $row = $overrideRow
+    }
+
+    $registryScript = Join-Path $root "tools\model_registry.py"
+    $contextArgs = @('context-window', $row.id)
+    if ($LongContext) { $contextArgs += '--max' }
+    $ctx = & python $registryScript @contextArgs
+    $contextExit = $LASTEXITCODE
+    $lookupCommand = "python .claude/tools/model_registry.py $($contextArgs -join ' ')"
+    if ($contextExit -ne 0) { Write-Error "context window lookup failed for '$($row.id)' (exit $contextExit) - run: $lookupCommand"; return }
+    if (-not $ctx) {
+        $tier = if ($LongContext) { 'max' } else { 'default' }
+        Write-Error "model '$($row.id)' has no $tier context window - run: $lookupCommand"
+        return
+    }
+    # `[1m]` changes Claude Code's local context policy; the proxy strips it before forwarding.
+    # The registry's effective max (not a literal million) remains the hard client declaration.
+    $requestId = if ($LongContext) { "$($row.id)[1m]" } else { $row.id }
+    if ($modelArgAt -ge 0) { $Passthru[$modelArgAt + 1] = $requestId }
+
+    $fallback = Get-SubagentFallback -Row $row
+    $subagentBaseId = if ($fallback) { $fallback.id } else { $row.id }
+    if ($LongContext -and $fallback) {
+        $fallbackArgs = @('context-window', $fallback.id, '--max')
+        $fallbackCtx = & python $registryScript @fallbackArgs
+        $fallbackExit = $LASTEXITCODE
+        $fallbackCommand = "python .claude/tools/model_registry.py $($fallbackArgs -join ' ')"
+        if ($fallbackExit -ne 0) { Write-Error "context window lookup failed for fallback '$($fallback.id)' (exit $fallbackExit) - run: $fallbackCommand"; return }
+        if (-not $fallbackCtx) { Write-Error "fallback model '$($fallback.id)' has no max context window - run: $fallbackCommand"; return }
+        if ("$fallbackCtx" -ne "$ctx") { Write-Error "fallback '$($fallback.id)' has effective max $fallbackCtx, but driver '$($row.id)' has $ctx"; return }
+    }
+    $subagentId = if ($LongContext) { "$($subagentBaseId)[1m]" } else { $subagentBaseId }
 
     $ccp = $env:CCP_BIN
     if (-not $ccp -or -not (Test-Path $ccp)) { $ccp = "$HOME\AppData\Local\claude-code-proxy\claude-code-proxy.exe" }
@@ -261,13 +313,34 @@ function Invoke-ClaudeGpt {
     # model as `medium`). Unset, the client's own `output_config.effort` passes through, which
     # Claude Code sends on essentially every request. The launch rung is handed to the CHILD via
     # `--effort` below instead, so it is honoured AND remains changeable in session.
+    # WebSocket continuation and native server-side compaction are read from the RESOLVED binary's
+    # version, never assumed: older builds mis-handle both, and the proxy reads each setting from
+    # its own environment at startup. A probe that cannot answer stops the launch - an unproven
+    # capability silently turned on is the failure this probe exists to prevent.
+    $ccpProbe = Join-Path $PSScriptRoot "lib\ccp_probe.py"
+    $continuation = & python $ccpProbe continuation $ccp
+    if ($LASTEXITCODE -ne 0) { Write-Error "continuation capability probe failed for $ccp (exit $LASTEXITCODE) - run: python .claude/scripts/lib/ccp_probe.py continuation `"$ccp`""; return }
+    $continuation = if ("$continuation".Trim() -eq '1') { '1' } else { '0' }
+    $serverCompaction = & python $ccpProbe server-compaction $ccp
+    if ($LASTEXITCODE -ne 0) { Write-Error "server-compaction capability probe failed for $ccp (exit $LASTEXITCODE) - run: python .claude/scripts/lib/ccp_probe.py server-compaction `"$ccp`""; return }
+    $serverCompaction = if ("$serverCompaction".Trim() -eq '1') { '1' } else { '0' }
+
     $oldCcpModel = $env:CCP_CODEX_MODEL; $oldCcpEffort = $env:CCP_CODEX_EFFORT
+    $oldCcpCont = $env:CCP_CODEX_PREVIOUS_RESPONSE_ID; $oldCcpCompact = $env:CCP_CODEX_SERVER_COMPACTION
     Remove-Item Env:CCP_CODEX_MODEL -ErrorAction SilentlyContinue   # REMOVE, not set-empty
     Remove-Item Env:CCP_CODEX_EFFORT -ErrorAction SilentlyContinue
+    # Explicit on OR off: an absent value leaves the proxy on its own default, which is the
+    # capability question this launcher just answered.
+    $env:CCP_CODEX_PREVIOUS_RESPONSE_ID = $continuation
+    $env:CCP_CODEX_SERVER_COMPACTION = $serverCompaction
     $proxy = Start-Process -FilePath $ccp -ArgumentList @('serve', '--no-monitor', '--port', "$port") `
                            -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
     if ($oldCcpModel) { $env:CCP_CODEX_MODEL = $oldCcpModel }
     $env:CCP_CODEX_EFFORT = $oldCcpEffort
+    if ($oldCcpCont) { $env:CCP_CODEX_PREVIOUS_RESPONSE_ID = $oldCcpCont }
+    else { Remove-Item Env:CCP_CODEX_PREVIOUS_RESPONSE_ID -ErrorAction SilentlyContinue }
+    if ($oldCcpCompact) { $env:CCP_CODEX_SERVER_COMPACTION = $oldCcpCompact }
+    else { Remove-Item Env:CCP_CODEX_SERVER_COMPACTION -ErrorAction SilentlyContinue }
 
     # /healthz, not /health - the latter 404s on v0.1.35. Bounded: a proxy that cannot bind
     # fails the same way forever, and waiting longer only delays the report.
@@ -281,8 +354,6 @@ function Invoke-ClaudeGpt {
         Write-Error "proxy did not become healthy on :$port within 25s - see $log"
         return
     }
-
-    $ctx = & python (Join-Path $root "tools\model_registry.py") context-window $row.id 2>$null
 
     $oldBase  = $env:ANTHROPIC_BASE_URL
     $oldTok   = $env:ANTHROPIC_AUTH_TOKEN
@@ -299,41 +370,44 @@ function Invoke-ClaudeGpt {
     $env:ANTHROPIC_AUTH_TOKEN = "unused"
     $env:ANTHROPIC_API_KEY    = ""
     $env:CLAUDE_CODE_ENTRYPOINT = "cli"
-    $env:ANTHROPIC_SMALL_FAST_MODEL = $row.id
+    $env:ANTHROPIC_SMALL_FAST_MODEL = $requestId
     # A row excluded from dispatch is still session-launchable -- this function's alias lookup never
     # reads availability. But defaulting unpinned subagent spawns (a bare Agent call with no model
     # param) to the SAME excluded model would reopen the quota leak the exclusion exists to stop.
     # Pinned Workflow jobs are unaffected; they resolve their own model.
-    $fallback = Get-SubagentFallback -Row $row
-    $subagentId = if ($fallback) { $fallback.id } else { $row.id }
     $env:CLAUDE_CODE_SUBAGENT_MODEL = $subagentId
     # Tells the CHILD which transport it is on, so hooks/_session_transport.py resolves it from a
     # declaration rather than from a loopback URL that carries no vendor name. Without it the
     # session reports `unknown` and every model pin is denied.
     $oldTransport = $env:CLAUDE_CODE_TRANSPORT
     $env:CLAUDE_CODE_TRANSPORT = 'codex'
-    # The child cannot see CCP_CODEX_EFFORT: it is restored above, right after the proxy reads it.
-    # So the session had no way to learn its own real effort, `/effort` and the statusline both
-    # showed the CLIENT value the proxy overrides, and the rails could only say "run a probe".
-    # Hand the number down instead; hooks/session_model_rails.py states it as fact.
+    # Keep the proxy-wide effort pin absent so `/effort` stays live. Record the wrapper's
+    # default rung for SessionStart rails; `--effort` below sends it unless the caller overrides it.
     $oldPpEffort = $env:HARNESS_SESSION_EFFORT
     $env:HARNESS_SESSION_EFFORT = $Effort
     # Claude Code assumes 200,000 for any model it does not recognize, and every GPT id is
     # unrecognized to it. The registry derives the real effective window; never a literal
     # here, and never DeepSeek's 1000000 - over-declaring past this model's ceiling turns a
     # managed client-side compaction into a hard upstream error mid-session.
-    if ($ctx) { $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = "$ctx" }
+    $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = "$ctx"
 
     Write-Host ""
     Write-Host "  GPT session - driving model: " -NoNewline -ForegroundColor Cyan
-    Write-Host "$($row.id)" -NoNewline -ForegroundColor White
+    Write-Host "$requestId" -NoNewline -ForegroundColor White
     Write-Host "  [effort $Effort]" -ForegroundColor DarkGray
     Write-Host "    cost       ChatGPT plan quota - no marginal dollars, but a PER-MODEL allowance" -ForegroundColor DarkGray
-    Write-Host "    context    $ctx tokens declared; auto-compaction fires near 80% of that" -ForegroundColor DarkGray
+    $contextTier = if ($LongContext) { 'long [1m]' } else { 'standard' }
+    Write-Host "    context    $ctx tokens declared ($contextTier tier)" -ForegroundColor DarkGray
+    if ($LongContext) {
+        # Rate, not capacity: the declared window is free; each request above the threshold is not.
+        Write-Host "    rate       each request over 272K input tokens bills 2x input and cached input, 1.5x output;" -ForegroundColor DarkYellow
+        Write-Host "               /compact once the turn that needed the room is done (codex_session_runbook.md)" -ForegroundColor DarkYellow
+    }
     Write-Host "    effort     /effort works mid-session; the model gets the new value." -ForegroundColor DarkGray
     Write-Host "    /model     switches the driver mid-session. Ids it takes here:" -ForegroundColor DarkGray
     $ids = @(Get-TransportModelIds -Transport $row.transport | ForEach-Object {
-        if ($_ -eq $row.id) { "$_ (current)" } else { $_ } })
+        $id = if ($LongContext) { "$($_)[1m]" } else { $_ }
+        if ($_ -eq $row.id) { "$id (current)" } else { $id } })
     if ($ids.Count) { Write-Host ("               " + ($ids -join "   ")) -ForegroundColor White }
     Write-Host "               opus, sonnet and haiku are NOT on that list. Type one and the proxy" -ForegroundColor DarkYellow
     Write-Host "               picks some GPT model for you, without saying which." -ForegroundColor DarkYellow
@@ -351,7 +425,7 @@ function Invoke-ClaudeGpt {
         # changeable with /effort. Skipped when the caller passed their own.
         $effortArgs = if ($Passthru -contains '--effort') { @() } else { @('--effort', $Effort) }
         if ($Passthru -contains '--model') { claude @effortArgs @Passthru }
-        else { claude --model $row.id @effortArgs @Passthru }
+        else { claude --model $requestId @effortArgs @Passthru }
     } finally {
         Stop-Process -Id $proxy.Id -Force -ErrorAction SilentlyContinue
         $env:ANTHROPIC_BASE_URL   = $oldBase
@@ -375,6 +449,13 @@ function claude-gpt-sol   { Invoke-ClaudeGpt -Model 'sol'   -Effort 'medium' -Pa
 # subagent-fallback note in Invoke-ClaudeGpt above. Unpinned subagent spawns from this session
 # land on luna, never astra.
 function claude-gpt-astra { Invoke-ClaudeGpt -Model 'astra' -Effort 'medium' -Passthru $args }
+
+function claude-gpt-high-1m  { Invoke-ClaudeGpt -Effort 'high'   -LongContext -Passthru $args }
+function claude-gpt-low-1m   { Invoke-ClaudeGpt -Effort 'low'    -LongContext -Passthru $args }
+function claude-gpt-1m       { Invoke-ClaudeGpt -Effort 'medium' -LongContext -Passthru $args }
+function claude-gpt-terra-1m { Invoke-ClaudeGpt -Model 'terra' -Effort 'medium' -LongContext -Passthru $args }
+function claude-gpt-sol-1m   { Invoke-ClaudeGpt -Model 'sol'   -Effort 'medium' -LongContext -Passthru $args }
+function claude-gpt-astra-1m { Invoke-ClaudeGpt -Model 'astra' -Effort 'medium' -LongContext -Passthru $args }
 
 # --------------------------------------------------------------------------
 # OpenCode Zen FREE-tier sessions (https://opencode.ai/zen):
@@ -406,6 +487,17 @@ function Get-OpencodeAliases {
         $data = Get-Content $registry -Raw | ConvertFrom-Json
         @($data.models | Where-Object { $_.transport -eq 'opencode' } | ForEach-Object { $_.alias })
     } catch { @() }
+}
+
+function Get-AnthropicTierNames {
+    # Every id, alias and served spelling on the registry's anthropic rows: the names a harness
+    # agent may request by model pin. Read live, never listed here, so a version bump reaches it.
+    $registry = Get-RegistryPath
+    # An unreadable registry throws: an empty list would start a proxy that 400s every agent pin.
+    if (-not (Test-Path $registry)) { throw "model registry not found at $registry; cannot build the Anthropic tier aliases" }
+    try { $data = Get-Content $registry -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { throw "model registry $registry is unreadable: $_" }
+    @($data.models | Where-Object { $_.transport -eq 'anthropic' } | ForEach-Object {
+        $_.id; $_.alias; @($_.servedIds) } | Where-Object { $_ })
 }
 
 function Invoke-ClaudeOpenCode {
@@ -480,12 +572,12 @@ function Invoke-ClaudeOpenCode {
         )
     }
     # INTERACTIVE-ONLY alias surface. Harness agents spawn with Anthropic-tier names
-    # (measured 2026-08-22: explore-fanout lenses requested claude-sonnet-5 -> instant
+    # (measured 2026-08-22: explore-fanout lenses requested an Anthropic id -> instant
     # 400 at the no-alias proxy). Tier names route to the DRIVEN model here; nothing
     # records servedModel identity in an interactive session, so the ambiguity is free.
+    # The names come from the registry's anthropic rows, so a version bump is a registry edit.
     # The benchmark sidecar keeps strict single-deployment configs and must not grow this.
-    foreach ($tier in @('claude-sonnet-5', 'claude-haiku-4-5', 'claude-opus-4-6',
-                        'sonnet', 'haiku', 'opus')) {
+    foreach ($tier in @(Get-AnthropicTierNames)) {
         if ($tier -ne $model.id -and $tier -ne $companion.id) {
             $yaml += @(
                 "  - model_name: $tier"

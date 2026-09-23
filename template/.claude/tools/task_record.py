@@ -233,7 +233,13 @@ def archive_item(task_id, decision_id):
     return _mutate(task_id, mutation)
 
 
+def _session_key(session_id):
+    """Records are opened with either the full session id or the 8-char sid the hooks print; both name one session."""
+    return (session_id or "")[:8].lower()
+
+
 def active(session_id):
+    key = _session_key(session_id)
     newest = None
     try:
         names = os.listdir(record_dir())
@@ -243,7 +249,7 @@ def active(session_id):
         if not name.endswith(".json"):
             continue
         rec = _hook_state.read_json_salvage(os.path.join(record_dir(), name))
-        if rec.get("session_id") != session_id:
+        if not key or _session_key(rec.get("session_id")) != key:
             continue
         if newest is None or (rec.get("updated") or "") > (newest.get("updated") or ""):
             newest = rec

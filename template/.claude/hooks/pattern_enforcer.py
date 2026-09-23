@@ -16,8 +16,10 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _claude_scope import harness_tail  # noqa: E402
 from _command_text import executable_text  # noqa: E402
-from _regenerable_clone import is_regenerable_clone  # noqa: E402
+from _regenerable_clone import is_regenerable_clone, is_retired_worktree  # noqa: E402
+from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
 
 
 # Patterns to BLOCK (exit code 2) in code content
@@ -107,15 +109,18 @@ def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
 # by /reindex_search) and Python bytecode/test caches. Matched by PATH SEGMENT, never substring:
 # the old `\.claude[\\/](?:\.cache|logs)\b` regex passed `.claude/logs-old` and
 # `.claude/.cache/../..` (the repo root). Evidence folders (`.claude/scratch`) and checkouts
-# (`.claude/worktrees`) are gitignored but are NOT caches, so they stay blocked.
+# (`.claude/worktrees`) are gitignored but are NOT caches, so they stay blocked unless
+# `_regenerable_clone` proves the target loses nothing.
 _CACHE_SEGMENTS = frozenset({".search-index", "__pycache__", ".pytest_cache"})
 _CACHE_PAIRS = frozenset({(".claude", ".cache"), (".claude", "logs")})
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
-_CACHE_HINT = (" Allowed without asking: literal targets inside this repo at or under .claude/.cache,"
-               " .claude/logs, .search-index, __pycache__ or .pytest_cache, or a clean, fully pushed git"
-               " clone under .claude/scratch/ (no .., globs, variables or chaining). A justified cleanup"
-               " this still blocks is a guard defect: .claude/rules/harness_tooling.md, section"
-               " 'A guard that blocks justified work is a guard defect'.")
+_CACHE_HINT = (" Allowed, chained or through a variable assigned once: a path under the system temp"
+               " directory; a named .claude/scratch subfolder (a git clone there only if clean and pushed);"
+               " .claude/.cache, .claude/logs, .godot, .search-index, __pycache__ or .pytest_cache here or in"
+               " a .claude/worktrees/* checkout. Alone in its command: a retired .claude/worktrees/<name>"
+               " (registered, unlocked, no untracked/ignored file but .import or cache, all pushed); run"
+               " `git worktree prune` next. Never inside $(...), backticks, sudo or xargs. A justified"
+               " cleanup this blocks is a guard defect (rules/harness_tooling.md).")
 
 
 def _project_root() -> str:
@@ -177,15 +182,82 @@ def _strip_quoted(command: str) -> str:
     """Blank single/double-quoted spans so a dangerous-looking pattern that is merely a
     QUOTED argument (e.g. `grep "rm -rf"`, an echo, a commit body) isn't mistaken for a
     real command. A genuine `rm -rf "<target>"` still trips the guard — only the quoted
-    target blanks; the unquoted `rm -rf` remains to match."""
-    return re.sub(r"'[^']*'|\"[^\"]*\"", " ", command)
+    target blanks; the unquoted `rm -rf` remains to match. A `$(...)` or backtick span
+    inside double quotes still runs, so it stays, and quoting restarts inside it."""
+    return _strip_span(command, 0, "")[0]
+
+
+def _strip_span(s: str, i: int, close: str) -> tuple[str, int]:
+    """Blank quoted text from `i` until the unquoted `close` (")" or "`"; "" = end of input).
+    Returns the kept text and the index just past `close`."""
+    out, depth, cases = [], 0, 0
+    while i < len(s):
+        ch = s[i]
+        word = re.match(r"(case|esac)(?![\w-])", s[i:]) if ch in "ce" else None
+        if word and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] in "_-")):
+            cases += 1 if word.group(1) == "case" else -1 if cases else 0
+            out.append(word.group(1))
+            i += 4
+        elif ch == "\\":
+            out.append(s[i:i + 2])
+            i += 2
+        elif ch == ")" and cases:
+            out.append(ch)  # a case arm's pattern closer, not the substitution's
+            i += 1
+        elif close == ")" and ch == ")" and depth == 0:
+            return "".join(out), i + 1
+        elif close == "`" and ch == "`":
+            return "".join(out), i + 1
+        elif s.startswith("$'", i):
+            j = i + 2  # ANSI-C quoting: a backslash escapes the next char, including a quote
+            while j < len(s) and s[j] != "'":
+                j += 2 if s[j] == "\\" else 1
+            i = j + 1
+            out.append(" ")
+        elif ch == "'":
+            end = s.find("'", i + 1)
+            i = len(s) if end < 0 else end + 1
+            out.append(" ")
+        elif ch == '"':
+            kept, i = _strip_double(s, i + 1)
+            out.append(" " + kept + " ")
+        elif s.startswith("$(", i):
+            inner, i = _strip_span(s, i + 2, ")")
+            out.append("$(" + inner + ")")
+        elif ch == "`":
+            inner, i = _strip_span(s, i + 1, "`")
+            out.append("`" + inner + "`")
+        else:
+            depth += (ch == "(") - (ch == ")")
+            out.append(ch)
+            i += 1
+    return "".join(out), i
+
+
+def _strip_double(s: str, i: int) -> tuple[str, int]:
+    """Inside a double-quoted string starting at `i`: drop literal text, keep each command
+    substitution. Returns the kept substitutions and the index just past the closing quote."""
+    kept = []
+    while i < len(s) and s[i] != '"':
+        if s[i] == "\\":
+            i += 2
+        elif s.startswith("$(", i):
+            inner, i = _strip_span(s, i + 2, ")")
+            kept.append("$(" + inner + ")")
+        elif s[i] == "`":
+            inner, i = _strip_span(s, i + 1, "`")
+            kept.append("`" + inner + "`")
+        else:
+            i += 1
+    return " ".join(kept), i + 1
 
 
 def _is_regenerable_target(token: str, cwd: str | None) -> bool:
-    """A clean, fully pushed standalone clone under `.claude/scratch/` (`_regenerable_clone`).
-    A relative token resolves against the caller's cwd, else the project root."""
+    """A clean, fully pushed standalone clone under `.claude/scratch/`, or a retired worktree under
+    `.claude/worktrees/` (`_regenerable_clone`). A relative token resolves against the caller's
+    cwd, else the project root."""
     root = _project_root()
-    return is_regenerable_clone(token, cwd or root, root)
+    return is_regenerable_clone(token, cwd or root, root) or is_retired_worktree(token, cwd or root, root)
 
 
 def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None) -> bool:
@@ -287,6 +359,119 @@ def _is_owned_temp_cleanup(raw: str) -> bool:
     return True
 
 
+# Resolved-target allow: each delete segment's targets resolve through literal paths, variables the
+# same command assigns once, and the tracked `cd`; every one must land strictly below the system temp
+# directory, in a named subdirectory of `.claude/scratch`, or in a regenerable cache of this checkout
+# or one of its `.claude/worktrees/*` checkouts. The classifier still judges what passes here.
+_SEPARATORS = re.compile(r'&&|\|\||[;|&\n]')
+_GLOB_CHARS = re.compile(r'[*?\[\]]')
+
+
+def _segments_with_quotes(raw: str) -> list[str]:
+    blanked = _blank_quotes_samelen(raw)
+    out, pos = [], 0
+    for m in _SEPARATORS.finditer(blanked):
+        out.append(raw[pos:m.start()].strip())
+        pos = m.end()
+    out.append(raw[pos:].strip())
+    return [s for s in out if s]
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _strictly_under(path: str, base: str) -> bool:
+    try:
+        return path != base and os.path.commonpath([base, path]) == base
+    except ValueError:  # different drives
+        return False
+
+
+def _checkout_rel_parts(path: str) -> list[str] | None:
+    """Path parts relative to the checkout holding `path`: the primary root, or the
+    `.claude/worktrees/<name>` checkout nested inside it (KFM #42). None outside the repo."""
+    root = _norm(_project_root())
+    if not _strictly_under(path, root):
+        return None
+    parts = os.path.relpath(path, root).replace("\\", "/").split("/")
+    if parts[:2] == [".claude", "worktrees"]:
+        return parts[3:] if len(parts) > 3 else None
+    return parts
+
+
+_GIT_WALK_CAP = 20000
+
+
+def _holds_git(path: str) -> bool:
+    """True when `path` is, or contains, a git repository or worktree. A walk that hits the cap
+    reads as True: an unknown tree is never judged plain."""
+    seen = 0
+    for _dirpath, dirnames, filenames in os.walk(path):
+        if ".git" in dirnames or ".git" in filenames:
+            return True
+        seen += len(dirnames) + len(filenames)
+        if seen > _GIT_WALK_CAP:
+            return True
+    return False
+
+
+def _is_regenerable_or_scratch(path: str) -> bool:
+    """`path` (absolute, normalized) is safe to delete recursively without asking."""
+    import tempfile
+    if _strictly_under(path, _norm(tempfile.gettempdir())):
+        return True
+    parts = _checkout_rel_parts(path)
+    if not parts:
+        return False
+    lowered = [p.lower() for p in parts]
+    if lowered[:2] == [".claude", "scratch"]:
+        if len(parts) < 3:
+            return False
+        if _holds_git(path):  # a clone can hold unpushed work: only the clean, pushed test passes it
+            root = _project_root()
+            return is_regenerable_clone(path, root, root)
+        return True
+    if lowered[:2] in ([".claude", ".cache"], [".claude", "logs"]) or lowered[0] == ".godot":
+        return True
+    return any(p in _CACHE_SEGMENTS for p in lowered)
+
+
+def _is_resolved_safe_cleanup(raw: str, cwd: str | None) -> bool:
+    """True when every recursive-delete segment in `raw` is a plain delete command whose targets
+    all resolve to `_is_regenerable_or_scratch` paths. A delete that does not head its segment
+    (inside `$(...)`, backticks, behind `sudo`/`xargs`) or any unresolvable target disqualifies
+    the whole command (KFM #50)."""
+    assignments = literal_assignments(raw)
+    here = cwd or _project_root()
+    found = False
+    for segment in _segments_with_quotes(raw):
+        tokens = _cleanup_tokens(segment)
+        if tokens and tokens[0] == "cd" and len(tokens) == 2:
+            moved = expand_literal(tokens[1], assignments)
+            here = resolve_cd(here, moved) if moved and not _GLOB_CHARS.search(moved) else None
+            continue
+        if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
+            continue
+        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or '`' in segment or '$(' in segment:
+            return False
+        targets = [t for t in tokens[1:] if not t.startswith('-')]
+        if not targets:
+            return False
+        for token in targets:
+            value = expand_literal(token, assignments)
+            if value is None or here is None or value.startswith('~') or '%' in value:
+                return False
+            head, tail = os.path.split(value.replace("\\", "/").rstrip("/"))
+            if _GLOB_CHARS.search(head):
+                return False
+            target = head if _GLOB_CHARS.search(tail) else value
+            if not _is_regenerable_or_scratch(_norm(resolve_cd(here, target))):
+                return False
+        found = True
+    return found
+
+
 # `git`'s global options sit BETWEEN `git` and the subcommand (`git -C <path> rm ...`),
 # which defeats the fixed-width `(?<!git\s)` lookbehind that exempts `git rm` below —
 # the four chars before `rm` are the tail of <path>, not "git ". Collapsing the globals
@@ -320,7 +505,8 @@ def check_bash_command(command: str, cwd: str | None = None) -> tuple[bool, str]
             # `NAME=$(mktemp -d)` variable this same command owns; never relax a drive-format
             # block regardless of target.
             if ('format' not in message.lower()
-                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd) or _is_owned_temp_cleanup(raw))):
+                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd) or _is_owned_temp_cleanup(raw)
+                         or _is_resolved_safe_cleanup(raw, cwd))):
                 continue
             if 'recursive' in message.lower():
                 return True, message + _CACHE_HINT
@@ -378,7 +564,8 @@ def check_tool_cascade(content: str, file_path: str) -> tuple[bool, str]:
     if not norm.endswith(".cs"):
         return False, ""
     # Jmodot is a black-box framework (paired-PR only); Tests are throwaway fixtures.
-    if "/Jmodot/" in norm or "/Tests/" in norm or "/.claude/" in norm or "/addons/" in norm:
+    if ("/Jmodot/" in norm or "/Tests/" in norm or "/addons/" in norm
+            or harness_tail(norm) is not None):
         return False, ""
     resource_classes = _load_resource_classes()
     lines = content.split("\n")

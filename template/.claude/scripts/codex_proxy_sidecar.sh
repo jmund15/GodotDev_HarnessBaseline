@@ -152,13 +152,8 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
-  sc_gate_exhausted   # a live exhausted marker refuses before the network quota probe
-  if ! _check_q="$(python3 "$SC_ROOT/scripts/codex_quota_probe.py" 2>&1)"; then
-    echo "UNAVAILABLE (quota probe failed: ${_check_q%%$'\n'*})"; exit 3
-  fi
   sc_check_gates
-  _band="$(READING="$_check_q" python3 -c 'import json,os;d=json.loads(os.environ["READING"]);print(d.get("band") or "unknown", d.get("planType") or "?")')"
-  echo "OK (model=${_check_reg%%|*} plan-quota band=$_band proxy=per-dispatch)"
+  echo "OK (model=${_check_reg%%|*} plan-quota band=${SC_PROVIDER_BAND:-unknown} proxy=per-dispatch)"
   exit 0
 fi
 
@@ -183,8 +178,7 @@ sc_validate_common
 }
 
 sc_gate_band
-sc_gate_provider_band
-sc_gate_balance      # no-op: a plan-quota transport declares no balance endpoint
+sc_gate_capacity     # one live Codex quota read, shared with --check
 sc_gate_price_window # no-op without a registry pricingSchedule; present so the ladder is uniform
 sc_build_disclosure
 sc_validate_effort
@@ -206,11 +200,11 @@ SC_CONTEXT_TOKENS="${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-$(python3 "$SC_REGISTRY_CL
 # auto-compaction watches input alone against the declared figure: declared at the provider's own
 # effective window, the child reaches the provider's ceiling BEFORE its compaction threshold and the
 # request dies "Prompt is too long" with no compact_boundary for the re-prompt rail to act on
-# (measured 2026-09-08, luna T1 curator: 243.5k input, 0 compactions, 258400 declared, 107 turns lost).
+# (measured 2026-09-08, gpt-5.6-luna T1 curator: 243.5k input, 0 compactions, 258400 declared, 107 turns lost).
 # The child's max output tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS) IS the output reserve: the provider enforces
 # input + max_output <= its window, and the CLI auto-compacts at declared - max_output - ~3k (measured 2026-09-09:
-# luna T1 08-20 258,400/225,872; luna T1 09-09 226,400/190,957; 90k probes at 32k vs 8k caps). Leaving the CLI's
-# 32k default AND subtracting 32k here stacked two reserves and compacted Luna at 70% of its real window. 16k is
+# gpt-5.6-luna T1 08-20 258,400/225,872; T1 09-09 226,400/190,957; 90k probes at 32k vs 8k caps). Leaving the CLI's
+# 32k default AND subtracting 32k here stacked two reserves and compacted gpt-5.6-luna at 70% of its real window. 16k is
 # ample for one response (a 46 KB design doc is ~12k tokens); a child that must emit more sets
 # SIDECAR_MAX_OUTPUT_TOKENS, and SIDECAR_OUTPUT_RESERVE still overrides the subtraction alone.
 SC_MAX_OUTPUT="${SIDECAR_MAX_OUTPUT_TOKENS:-16000}"
@@ -219,7 +213,7 @@ if [ -n "$SC_CONTEXT_TOKENS" ] && [ -z "${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-}" ] 
   SC_CONTEXT_TOKENS=$((SC_CONTEXT_TOKENS - SC_OUTPUT_RESERVE))
 fi
 [ -n "$SC_CONTEXT_TOKENS" ] &&   echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry effective window minus the ${SC_OUTPUT_RESERVE}-token output reserve; max output ${SC_MAX_OUTPUT}; auto-compaction expected near $((SC_CONTEXT_TOKENS - SC_MAX_OUTPUT - 3000)))" >&2
-# Window-relative harness cost (measured 2026-09-03 on Luna: -D bare 22k, pointer 25k, full 37k tokens at turn 1).
+# Window-relative harness cost (measured 2026-09-03 on gpt-5.6-luna: -D bare 22k, pointer 25k, full 37k tokens at turn 1).
 # Under 400k a survey/review child at -D full spends ~14% of its window before the brief; the shape table
 # (reference/sidecar_dispatch.md) pins lenses at pointer. Advisory only — an author/verdict child may need full.
 if [ -n "$SC_CONTEXT_TOKENS" ] && [ "$SC_CONTEXT_TOKENS" -lt 400000 ] && [ "${SC_DISCLOSURE:-}" = "full" ] \

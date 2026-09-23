@@ -37,6 +37,7 @@ __all__ = [
     "segments", "git_invocation", "cd_target", "commit_invocations",
     "parse_commit_args", "run_git", "staged_paths", "incoming_paths", "bypass_declared",
     "export_assignments", "command_git_env", "git_environ",
+    "resolve_cd", "literal_assignments", "expand_literal",
 ]
 
 SEGMENT_SPLIT = re.compile(r"\|\||&&|[;|&\n]")
@@ -123,6 +124,60 @@ def cd_target(segment):
     return None
 
 
+_MSYS_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_ASSIGN_SEGMENT = re.compile(r"^(?:export\s+)?(" + _NAME + r")=(.*)$")
+_EXPANSION = re.compile(r"\$\{(" + _NAME + r")\}|\$(" + _NAME + r")")
+_NON_LITERAL = re.compile(r"[$`()*?\[\]{}~]")
+
+
+def resolve_cd(cwd, moved):
+    """`cwd` after a `cd <moved>`, understanding Git Bash's `/c/...` drive form.
+
+    The Bash tool runs Git Bash, so an operand is routinely MSYS-absolute. `os.path.join` on
+    Windows treats a leading `/` as root-relative to the CURRENT drive and produces
+    `C:\\repo\\c\\Users\\...`, a path that does not exist. `/tmp` maps to the system temp directory,
+    as Git Bash mounts it."""
+    moved = os.path.expanduser(moved)
+    posix = moved.replace("\\", "/")
+    m = _MSYS_DRIVE.match(posix)
+    if m:
+        moved = "%s:\\%s" % (m.group(1).upper(), posix[3:].replace("/", os.sep))
+    elif (posix == "/tmp" or posix.startswith("/tmp/")) and os.name == "nt":
+        import tempfile
+        moved = os.path.join(tempfile.gettempdir(), posix[5:])
+    return moved if os.path.isabs(moved) else os.path.join(cwd, moved)
+
+
+def literal_assignments(command):
+    """{NAME: value} for every variable the command assigns exactly once, by a bare or exported
+    `NAME=value` segment whose value is a literal. A name that appears bare anywhere else
+    (`read NAME`, `for NAME in`, a second assignment) is absent: its value is not knowable."""
+    found = {}
+    for segment in segments(command):
+        tokens = _tokens(segment)
+        if len(tokens) not in (1, 2) or (len(tokens) == 2 and tokens[0] != "export"):
+            continue
+        m = _ASSIGN_SEGMENT.match(" ".join(tokens))
+        if m and not _NON_LITERAL.search(m.group(2)):
+            found.setdefault(m.group(1), []).append(m.group(2))
+    result = {}
+    for name, values in found.items():
+        bare = re.findall(r"(?<![A-Za-z0-9_$])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])", command)
+        if len(values) == 1 and len(bare) == 1:
+            result[name] = values[0]
+    return result
+
+
+def expand_literal(token, assignments):
+    """`token` with `$NAME` / `${NAME}` replaced from `assignments`, or None when an unknown name,
+    a substitution or any other `$` remains."""
+    expanded = _EXPANSION.sub(lambda m: assignments.get(m.group(1) or m.group(2), "\0"), token)
+    if "\0" in expanded or "$" in expanded or "`" in expanded:
+        return None
+    return expanded
+
+
 def export_assignments(segment):
     """{KEY: value} an `export K=V ...` segment sets, {KEY: None} an `unset K ...` clears, else None."""
     tokens = _tokens(segment)
@@ -149,10 +204,12 @@ def commit_invocations(command, cwd):
     cwd = cwd or "."
     found = []
     exported = {}
-    for segment in segments(executable_text(command or "")):
+    text = executable_text(command or "")
+    assigned_once = literal_assignments(text)
+    for segment in segments(text):
         moved = cd_target(segment)
         if moved is not None:
-            cwd = os.path.join(cwd, os.path.expanduser(moved))
+            cwd = resolve_cd(cwd, expand_literal(moved, assigned_once) or moved)
             continue
         assigned = export_assignments(segment)
         if assigned is not None:
@@ -164,7 +221,7 @@ def commit_invocations(command, cwd):
         args, chdir, inline_env = parsed
         if not args or args[0] not in COMMIT_LIKE:
             continue
-        target = os.path.join(cwd, chdir) if chdir else cwd
+        target = resolve_cd(cwd, expand_literal(chdir, assigned_once) or chdir) if chdir else cwd
         found.append(CommitInvocation(args[0], args[1:], target, inline_env,
                                       command_git_env(exported, inline_env)))
     return found

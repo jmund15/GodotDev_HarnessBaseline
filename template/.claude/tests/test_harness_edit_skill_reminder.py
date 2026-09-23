@@ -16,14 +16,26 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(HERE, "..", "hooks")
+sys.path.insert(0, HOOKS)
 HOOK = os.path.join(HOOKS, "harness_edit_skill_reminder.py")
 PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
+
+from _claude_scope import harness_tail, in_nested_checkout  # noqa: E402
 
 SID = "hesr0001"
 HARNESS = "C:/repo/.claude/skills/testing/SKILL.md"
 HOOKPY = "C:/repo/.claude/hooks/budget_posture.py"
 NOT_HARNESS = "C:/repo/Spells/Fire/FireSpell.cs"
 MEMORY = "C:/repo/.claude/auto-memory/gotcha_x.md"
+
+# A checkout at <repo>/.claude/worktrees/<name>/ carries a `.claude` segment in
+# EVERY path inside it, so these are the two cells that separate the worktree
+# root from the harness surface. Distinct sessions give each one a fresh
+# advisory window, so ALLOW/NUDGE reflects the classification, not the dedup.
+WT = "C:/repo/.claude/worktrees/sync-pr110"
+WT_UNLOADED = "hesr0002"   # nothing loaded — a misclassification would DENY
+WT_LOADED = "hesr0003"     # loaded — a fresh window, so a NUDGE proves harness
+WT_LOADED2 = "hesr0004"
 
 ALLOW, DENY, NUDGE = "allow", "deny", "nudge"
 
@@ -79,7 +91,7 @@ def main():
     mark_skill_loaded(tmp, SID)
     got, reason = edit(HARNESS, env)
     cases.append(("the first edit after loading gets the advisory",
-                  got == NUDGE and "Core Code Conventions" in reason))
+                  got == NUDGE and "§3 SSOT" in reason and "§13-16" in reason))
 
     got, _ = edit(HOOKPY, env)
     cases.append(("a second harness edit in the same session is silent", got == ALLOW))
@@ -97,6 +109,53 @@ def main():
     got, _ = run(HOOK, {"tool_name": "Bash", "session_id": SID,
                         "tool_input": {"command": "ls"}}, env)
     cases.append(("an adjacent tool is untouched", got == ALLOW))
+
+    cases.append(("uppercase drive/backslash harness paths keep their tail spelling",
+                  harness_tail(r"C:\\repo\\.CLAUDE\\worktrees\\SYNC-PR110\\.CLAUDE\\Hooks\\Rule.md")
+                  == "Hooks/Rule.md"))
+    cases.append(("dot segments are removed from an in-repo harness tail",
+                  harness_tail("C:/repo/.claude/./skills/../rules/rule.md")
+                  == "rules/rule.md"))
+    cases.append(("dot segments that escape a worktree do not create a harness path",
+                  harness_tail("C:/repo/.claude/worktrees/sync-pr110/./.claude/./hooks/../../Spells/FireSpell.cs")
+                  is None))
+    cases.append(("uppercase worktree game paths remain outside the harness",
+                  harness_tail(r"C:\\repo\\.CLAUDE\\worktrees\\SYNC-PR110\\Spells\\FireSpell.cs")
+                  is None))
+
+    # Any .claude/.cache/<name>-worktrees/<checkout>/ layout re-bases the same way; other .cache dirs do not.
+    cases.append(("a game file in a .claude/.cache/task-worktrees checkout is outside the harness",
+                  harness_tail("C:/repo/.claude/.cache/task-worktrees/x/Visual/a.md") is None))
+    cases.append(("a .cache dir not named *worktrees is not a checkout",
+                  not in_nested_checkout("C:/repo/.claude/.cache/baseline-repo/x/Visual/a.md")))
+    cases.append(("that checkout's own .claude/ tail is its harness surface",
+                  harness_tail("C:/repo/.claude/.cache/task-worktrees/x/.claude/rules/r.md") == "rules/r.md"))
+
+    # The third layout, .claude/.cache/baseline-worktrees/<name>/ (baseline_sync / baseline_publish).
+    cases.append(("a game file in a .claude/.cache/baseline-worktrees checkout is outside the harness",
+                  harness_tail("C:/repo/.claude/.cache/baseline-worktrees/x/Visual/a.md") is None))
+    cases.append(("that checkout's own .claude/ tail is its harness surface too",
+                  harness_tail("C:/repo/.claude/.cache/baseline-worktrees/x/.claude/rules/r.md") == "rules/r.md"))
+
+    # A cache mirror under .claude/.cache/ is not guidance this session authors.
+    got, _ = edit("C:/repo/.claude/.cache/baseline-repo/skills/x/SKILL.md", env, session="hesr0005")
+    cases.append(("a .claude/.cache/ mirror file is not gated", got == ALLOW))
+    got, _ = edit("C:/repo/.claude/.cache/task-worktrees/x/.claude/skills/x/SKILL.md", env, session="hesr0006")
+    cases.append(("a cache-hosted checkout's own .claude/ surface is still gated", got == DENY))
+
+    # A worktree nested under .claude/worktrees/ re-bases onto its own root.
+    got, reason = edit(WT + "/Visual/CREDITS.md", env, session=WT_UNLOADED)
+    cases.append(("a repo file inside a .claude/worktrees checkout is not gated",
+                  got == ALLOW))
+
+    mark_skill_loaded(tmp, WT_LOADED)
+    got, reason = edit(WT + "/.claude/hooks/foo.py", env, session=WT_LOADED)
+    cases.append(("that checkout's own .claude/ surface is still gated",
+                  got == NUDGE))
+
+    mark_skill_loaded(tmp, WT_LOADED2)
+    got, reason = edit(WT + "/.claude/CLAUDE.md", env, session=WT_LOADED2)
+    cases.append(("and so is its CLAUDE.md", got == NUDGE))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

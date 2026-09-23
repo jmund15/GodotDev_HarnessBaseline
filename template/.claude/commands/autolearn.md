@@ -17,22 +17,33 @@ Do NOT activate for one-off corrections or when the user declines skill modifica
 Signal detection runs over the digest, never over what survived compaction. In `/session_end` Phase 0 already printed it; standalone, run it now:
 
 ```bash
-python3 .claude/tools/session_digest.py --prompt-tail autolearn
+python3 .claude/tools/session_digest.py --prompt-tail autolearn --handoff
 ```
 
-It rebuilds the whole session from the live transcript (append-only across compactions): every real user prompt verbatim, every tool error / denial / interrupt with your next move, the compaction count. JSON at `logs/session_digest_<sid8>.json`; older pre-compaction backups (`logs/pre_compact.json` → `.summary.json`) are the same schema and only needed if the live transcript is gone.
+Use the handoff only as the bounded orientation packet. Before claiming whole-session coverage, page every
+prompt and friction row in the saved evidence index until each kind's reported `pages` count is exhausted:
+
+```bash
+python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>
+python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page friction --page <N>
+```
+
+The digest rebuilds the whole session from the live transcript (append-only across compactions). JSON at
+`logs/session_digest_<sid8>.json`; older pre-compaction backups (`logs/pre_compact.json` → `.summary.json`) are
+the same schema and only needed if the live transcript is gone. Recovered command-argument rows stay in the
+index as `unattributed`; they are excluded only from the task-anchor choice.
 
 **Nuance recall (conditional):** if the digest shows 3+ compactions or the session had redesigns/go-backs, run [Transcript Nuance Recall](agents/transcript_nuance_recall.md) for the implicit signals a regex misses. Candidates enter at MEDIUM confidence through the normal filter.
 
 ## Surface routing
 
-Route each surviving signal through [`/codify`](codify.md) §Step 4 — the ordered table over all six surfaces (`rules/` + `paths:`, cold memory, `commands/`, hooks, skills, always-loaded), with §Step 5's cost gate on the always-loaded rows. Decide the surface there, not here; the two mapping sections below carry only the mechanics once a surface is chosen.
+Route each surviving signal through [`/codify`](codify.md) §Step 4 — the ordered table over all six surfaces (`rules/` + `paths:`, cold memory, `commands/`, hooks, skills, always-loaded), with §Step 5's admission and audit on the always-loaded rows. Decide the surface there, not here; the two mapping sections below carry only the mechanics once a surface is chosen.
 
 One constraint routing does not cover: never store large code blocks in auto-memory — link to source instead.
 
 ## Retirement pass (runs beside signal detection)
 
-Codified rules carry a retirement trigger (`/codify` Step 6). Scan for fired ones so the pass removes as well as adds:
+Codified rules may carry a retirement trigger (`/codify` Step 6). A missing marker is intentional when no invalidating condition is known; it is not malformed and implies no permanence. Scan the declared triggers and propose only rows whose supplied evidence says they fired, so the pass removes as well as adds:
 
 ```bash
 python3 .claude/tools/load_census.py --budgets --json .claude/logs/load_census.json
@@ -137,9 +148,9 @@ If I'd give the same advice to any project, it doesn't belong in a skill.
 - Preserve existing file structure and tone
 - When uncertain, downgrade to MEDIUM confidence and ask
 
-### Brevity budget (hard targets, not aspirations)
+### Brevity budget (audit thresholds)
 
-The `MEMORY.md` index auto-loads into every session (first 200 lines / 25KB), and a hot topic file is read whenever its index line is followed — bloat there is paid repeatedly. Write at the budget *first*; do not write long and "trim later" — the trim never comes. Cold `archive/` files are search-only, so length matters far less there.
+The `MEMORY.md` index auto-loads into every session (first 200 lines / 25KB), and a hot topic file is read whenever its index line is followed — bloat there is paid repeatedly. Start concise and inside the measured budget, then run the focused audit after the addition; never delete a required condition or an evidence-bearing explanation to balance bytes. Cold `archive/` files are search-only, so length matters far less there.
 
 | Where | Target | Hard cap |
 |---|---|---|
@@ -149,7 +160,7 @@ The `MEMORY.md` index auto-loads into every session (first 200 lines / 25KB), an
 | Hot topic file body (rule + Why + How) | as short as the rule allows | ~500 chars |
 | Cold archive file body | as long as the reference genuinely needs | n/a |
 
-A budget-violation on a hot entry signals *split into two principles* (or demote bulk detail to `archive/`), not "allow more characters." If a hot rule + concrete genuinely needs > 500 chars, it's probably two rules.
+A budget violation on a hot entry is an audit signal: merge genuinely redundant principles, demote bulk detail to `archive/`, or keep a larger faithful rule with a recorded reason. Over 500 characters in a hot topic body signals a split or review, not proof that information must be removed.
 
 The per-line link cap is the one budget that binds in *aggregate* rather than per-entry: the index hits its byte cap through link count, not through any single entry being too long, so a store of individually-compliant entries can still blow it. Bytes bind before the 200-line budget does — a dense index reaches 25KB at ~90 lines.
 
@@ -188,7 +199,7 @@ at write time. (Retroactive cleanup: `/memory_audit` lens 5.)
 - Extends an existing topic file → append to its body; **no new `MEMORY.md` link**.
 - Genuinely new concept → create `<slug>.md` (frontmatter: `name`, `description`, `metadata.type` of
   user|feedback|project|reference).
-- **Default tier is COLD** (`archive/`, no pointer). Hot requires, written in the save report: the decision the pointer pre-empts AND why it fires before any search would run (CLAUDE.md §2 *Admission, not headroom*). Absent either → cold. Hot add → one-line `MEMORY.md` pointer in the *same turn*, naming the line it outranks.
+- **Default tier is COLD** (`archive/`, no pointer). Hot requires, written in the save report: the decision the pointer pre-empts AND why it fires before any search would run (CLAUDE.md §2 *Admission, not headroom*). Absent either → cold. Hot add → one-line `MEMORY.md` pointer in the *same turn*; the save report records the pre-trigger decision, byte delta and focused audit result.
 - **Placement gate — three-way routing, `instruction_quality` §5 standard, destinations at [`/codify`](codify.md) §Step 4:**
   no trigger, pre-existing → hot topic file + `MEMORY.md` pointer in the *same turn*; decided with a file
   of a prefix-anchored class open → split — the rule to `rules/<name>.md` + `paths:`, the evidence file
