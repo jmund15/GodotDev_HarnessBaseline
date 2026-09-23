@@ -208,8 +208,8 @@ def test_review_fanout_omitted_effort_is_engine_default():
                                   "args": {"agents": [{"key": "k1", "model": "opus", "effort": "low"}, {"key": "k2"}]}}),
                 "--launch")
     assert msg.splitlines()[0] == "▶ review_fanout · 2 agents", msg
-    assert cells(msg, "k1") == ["k1", "opus", "low", "general-purpose"], msg
-    assert cells(msg, "k2") == ["k2", "sonnet", "medium", "general-purpose"], msg
+    assert cells(msg, "k1") == ["k1", "opus-5-5", "low", "general-purpose"], msg
+    assert cells(msg, "k2") == ["k2", "sonnet-5", "medium", "general-purpose"], msg
 
 
 def test_dispatch_jobs_rows():
@@ -217,7 +217,7 @@ def test_dispatch_jobs_rows():
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                   "args": {"jobs": [{"label": "j1", "model": "haiku", "effort": "low", "agentType": "Explore"}]}}),
                 "--launch")
-    assert cells(msg, "j1") == ["j1", "haiku", "none", "Explore"], msg
+    assert cells(msg, "j1") == ["j1", "haiku-4-5", "none", "Explore"], msg
 
 
 def test_inline_script_literal_pins():
@@ -243,7 +243,7 @@ def test_model_without_effort_param_shows_none_at_launch_never_pending():
     e = Env()
     e.plant_run("wf_proof-1", "running", [("hk%d" % i, "hk%d" % i, "haiku", None, None, "Explore") for i in range(2)])
     msg = e.run(workflow_payload({"script": "export const meta={name:'x'}"}), "--launch")
-    assert cells(msg, "hk0") == ["hk0", "haiku", "none", "Explore"] and "pending" not in msg, msg
+    assert cells(msg, "hk0") == ["hk0", "haiku-4-5", "none", "Explore"] and "pending" not in msg, msg
 
 
 def test_haiku_agent_and_sidecar_show_none_not_the_pin():
@@ -252,7 +252,7 @@ def test_haiku_agent_and_sidecar_show_none_not_the_pin():
                               response={"status": "async_launched", "agentId": "h1", "resolvedModel": "claude-haiku-4-5"}), "--launch")
     assert cells(msg, "hA") == ["hA", "haiku-4-5", "none", "general-purpose"], msg
     msg = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m haiku -e low -l hS -f p.md"), "--launch")
-    assert cells(msg, "hS") == ["hS", "claude-haiku-4-5-20251001", "none", "sidecar"], msg
+    assert cells(msg, "hS") == ["hS", "haiku-4-5", "none", "sidecar"], msg
 
 
 def test_template_labels_take_the_scripts_only_literal_effort_and_one_answer_versions_all():
@@ -462,11 +462,11 @@ def test_chain_and_explore_omitted_effort_is_the_engine_default_not_the_session_
     e = Env()
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch_chains.js",
                                   "args": {"chains": [{"name": "c", "jobs": [{"label": "cj", "model": "sonnet"}]}]}}), "--launch")
-    assert cells(msg, "cj") == ["cj", "sonnet", "medium", "general-purpose"], msg
+    assert cells(msg, "cj") == ["cj", "sonnet-5", "medium", "general-purpose"], msg
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/explore_fanout.js",
                                   "args": {"lenses": [{"key": "lz", "model": "sonnet", "agentType": "Explore"}]}},
                                  run_id="wf_proof-2"), "--launch")
-    assert cells(msg, "lz") == ["lz", "sonnet", "medium", "Explore"], msg
+    assert cells(msg, "lz") == ["lz", "sonnet-5", "medium", "Explore"], msg
 
 
 def test_reused_sidecar_label_is_not_judged_by_the_previous_runs_ledger_row():
@@ -481,7 +481,7 @@ def test_reused_sidecar_label_is_not_judged_by_the_previous_runs_ledger_row():
 def test_unlabeled_sidecar_without_record_prints_its_row_but_is_not_tracked():
     e = Env()
     msg = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m sonnet -e low -f p.md"), "--launch")
-    assert cells(msg, "(unlabeled)") == ["(unlabeled)", "claude-sonnet-5", "low", "sidecar"], msg
+    assert cells(msg, "(unlabeled)") == ["(unlabeled)", "sonnet-5", "low", "sidecar"], msg
     assert e.pending() == [], e.pending()
 
 
@@ -509,6 +509,25 @@ def test_background_agent_that_died_without_end_turn_finishes_once_gone_and_quie
     msg = e.run(stop_payload(), "--complete")
     assert msg == "" and e.pending() == [], (msg, e.pending())
 
+
+
+def test_unresolvable_pins_still_print_the_launch_table():
+    """`inherit`, `?` and a typo reach the registry lookup; an UnknownModel must never cost the table."""
+    e = Env()
+    os.makedirs(os.path.join(e.session, "subagents"))
+    with open(os.path.join(e.session, "subagents", "agent-a0003.jsonl"), "w") as fh:
+        fh.write(json.dumps({"type": "assistant", "effort": "low",
+                             "message": {"id": "m1", "model": "claude-sonnet-5", "stop_reason": "end_turn",
+                                         "content": []}}) + "\n")
+    msg = e.run(agent_payload({"description": "inh", "prompt": "x"},
+                              response={"status": "completed", "agentId": "a0003"}), "--launch")
+    assert cells(msg, "inh") == ["inh", "sonnet-5", "low", "general-purpose"], msg
+    script = "export const meta={name:'q'}\nawait agent(p, {label: 'q1', model: pick(r), effort: 'low'})"
+    e.plant_run("wf_proof-1", "running", [("q1", "q1a", "?", None, None)])
+    msg = e.run(workflow_payload({"script": script}), "--launch")
+    assert cells(msg, "q1") == ["q1", "?", "low", "general-purpose"], msg
+    msg = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m opsu -e low -l ty -f p.md"), "--launch")
+    assert cells(msg, "ty") == ["ty", "opsu", "low", "sidecar"], msg
 
 if __name__ == "__main__":
     fails = 0

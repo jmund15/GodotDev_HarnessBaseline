@@ -87,7 +87,7 @@ const guardFor = (c) => {
   return lines.join('\n')
 }
 
-// Delegate rails — ONE home (.claude/guards/<shape>.md); never inline a copy here.
+// Delegate rails — ONE home (.claude/guards/), assembled and inlined by the Workflow hook (see dispatch.js).
 const VALID_SHAPES = ['any', 'survey', 'review', 'author']
 // Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
 // hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
@@ -95,11 +95,27 @@ const VALID_SHAPES = ['any', 'survey', 'review', 'author']
 const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
 const shapeOf = (j) => VALID_SHAPES.includes(j.shape) ? j.shape : 'any'
 const tierOf = (j) => RAILS[j.model] || 'detailed'
+// Rails text per (shape, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
+// `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
+// inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
+// none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
+const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
+const inlineRails = (label, shape, tier) => {
+  const text = RAILS_TEXT[shape + '/' + tier]
+  if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
+  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + shape + '/' + tier)
+  return null
+}
 const guardRef = (j) => {
   const tier = tierOf(j)
+  const shape = shapeOf(j)
+  const inline = inlineRails(j.label, shape, tier)
+  if (inline) return inline
+  const files = shape === 'any' ? '.claude/guards/any.md' : '.claude/guards/any.md and .claude/guards/' + shape + '.md'
   return ['', '=== DELEGATE RAILS ===',
-    'Read .claude/guards/' + shapeOf(j) + '.md with the Read tool and follow its `## ' + tier
-    + '` section. Read ONLY that section — the other tiers are for other models.'].join('\n')
+    'Read ' + files + ' with the Read tool and follow the `## ' + tier
+    + '` section of each. Read ONLY that section — the other tiers are for other models.'].join('\n')
 }
 
 // Return-path spill (optional), identical contract to dispatch.js: bound what lands in orchestrator

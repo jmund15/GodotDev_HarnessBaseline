@@ -430,9 +430,8 @@ def record_path_of(argv):
 
 
 def _pid_alive(pid):
-    """Best-effort PID-existence check: OpenProcess (query-only) on Windows, `os.kill(pid, 0)` on
-    POSIX -- the same idiom as `hooks/activity_registry.py`'s `_pid_exists`, duplicated locally
-    rather than imported so this tool carries no runtime dependency on a hook module.
+    """Best-effort PID-existence check: on Windows, MSYS `/proc/<pid>` through Git Bash (the
+    launchers' pids are MSYS pids), else OpenProcess (query-only); `os.kill(pid, 0)` on POSIX.
 
     Existence-only: it cannot tell a live detached job from an unrelated process that later reused
     the same PID. That matches `_wait_detached`'s own tolerance -- a stale "alive" reading costs
@@ -442,6 +441,15 @@ def _pid_alive(pid):
     if pid is None:
         return False
     if platform.system() == "Windows":
+        # Launchers record `$BASHPID`/`$!`: an MSYS pid, which Git Bash numbers apart from Windows
+        # pids, so OpenProcess cannot see it. MSYS's own /proc is the authority when bash runs.
+        bash = sidecar_launch.git_bash()
+        if bash and os.path.isabs(bash):
+            try:
+                return subprocess.run([bash, "-c", "test -e /proc/%d" % int(pid)],
+                                      capture_output=True, timeout=10).returncode == 0
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
         import ctypes
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -492,8 +500,13 @@ def _wait_detached(record_path, poll_interval=None):
         if os.path.isfile(exitf):
             try:
                 with open(exitf, encoding="utf-8", errors="replace") as fh:
-                    return int(fh.read().strip()), False
-            except (OSError, ValueError):
+                    code = fh.read().strip()
+                # An empty file is a write caught between open and flush: poll again.
+                if code:
+                    return int(code), False
+            except OSError:
+                pass
+            except ValueError:
                 return None, False
         pid = _detached_pid(record_path)
         if pid is not None and not _pid_alive(pid):

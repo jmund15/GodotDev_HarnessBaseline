@@ -33,6 +33,9 @@ import time
 import urllib.request
 import uuid
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli_envelope  # noqa: E402
+
 # `/healthz`, not `/health` -- measured 2026-08-20 against v0.1.35, where `/health` returns
 # 404. A launcher polling the wrong path never sees ready and times out on a proxy that came
 # up fine, which reads as "the proxy is broken" rather than "the path is wrong".
@@ -115,21 +118,7 @@ def _session_id(value):
 
 def session_from_output(raw):
     """Read CLI envelope identity, never session-like text inside a model's answer."""
-    try:
-        parsed = json.loads(raw)
-        # `-o json` under the user setting `"verbose": true` is an ARRAY of every event.
-        records = parsed if isinstance(parsed, list) else [parsed]
-    except (ValueError, TypeError):
-        records = []
-        for line in (raw or "").splitlines():
-            try:
-                records.append(json.loads(line))
-            except ValueError:
-                continue
-    ids = {_session_id(row.get("session_id")) for row in records
-           if isinstance(row, dict) and row.get("type") in ("system", "result")}
-    ids.discard(None)
-    return next(iter(ids)) if len(ids) == 1 else None
+    return cli_envelope.session_id(cli_envelope.events(raw))
 
 
 def _is_compaction_request(body):

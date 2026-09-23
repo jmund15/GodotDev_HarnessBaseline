@@ -55,12 +55,14 @@ Usage:
   orchestration_metrics.py --manifest-seed seed.json --manifest-out manifest.json
                                                 join exact Workflow/sidecar evidence; never archive
 """
-import argparse, json, os, re, shlex, sys
+import argparse, json, os, re, sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hooks'))
 from _file_lock import locked  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sidecar_argv  # noqa: E402
 
 IN_W, OUT_W, CW_W, CR_W = 1.0, 5.0, 1.25, 0.1
 
@@ -1179,94 +1181,25 @@ def _iso_instant(value):
         return None
 
 
-_FD_REDIRECTION = re.compile(r'(?<!\S)(?:\d*>\s*&\s*(?:\d+|-)|&>>?(?:[^\s;&|]+|\s+[^\s;&|]+))')
-
-
-def _shell_segments(command):
-    command = _FD_REDIRECTION.sub(' ', command)
-    try:
-        lexer = shlex.shlex(command.replace('\n', ' ; '), posix=True,
-                            punctuation_chars=';&|')
-        lexer.whitespace_split = True
-        lexer.commenters = ''
-        tokens = list(lexer)
-    except ValueError:
-        return []
-    segments, current = [], []
-    for token in tokens:
-        if token and all(char in ';&|' for char in token):
-            if current:
-                segments.append(current)
-                current = []
-        else:
-            current.append(token)
-    if current:
-        segments.append(current)
-    return segments
-
-
-_REDIRECTION = re.compile(r'^\d*(?:>>?|<)(.*)$')
-
-
-def _strip_redirections(tokens):
-    """Tokens without shell redirections such as `> log` and `2>/dev/null`. A quoted argument
-    beginning with `>` is indistinguishable from a redirect after shlex removes its quotes."""
-    out, skip_target = [], False
-    for token in tokens:
-        if skip_target:
-            skip_target = False
-            continue
-        match = _REDIRECTION.match(token)
-        if match:
-            skip_target = not match.group(1)
-            continue
-        out.append(token)
-    return out
-
-
 def _launcher_calls(command):
     """Actual top-level launcher calls as (kind, launcher arguments)."""
     return [(kind, args) for kind, _, args in _launcher_calls_named(command)]
 
 
-# lib/sidecar_common.sh SC_OPTSTRING letters that take a value (the `:`-suffixed ones).
-_SIDECAR_VALUE_FLAGS = set("metnodfTRxPSrpLlaGDCZ")
-
-
-def _sidecar_flags(args):
-    """{flag letter: value} for a launcher's argv, read the way getopts reads it: clustered letters,
-    a value glued to its flag or in the next token, and parsing stops at `--` or the first operand."""
-    flags, index = {}, 0
-    while index < len(args):
-        token = args[index]
-        if token == '--' or not token.startswith('-') or token == '-':
-            break
-        for pos, letter in enumerate(token[1:], 1):
-            if letter in _SIDECAR_VALUE_FLAGS:
-                rest = token[pos + 1:]
-                if rest:
-                    flags[letter] = rest
-                elif index + 1 < len(args):
-                    index += 1
-                    flags[letter] = args[index]
-                break
-            flags[letter] = True
-        index += 1
-    return flags
-
-
 def sidecar_launches(command, cwd=None):
     """[{kind, launcher, label, model, effort, record}] per sidecar job this shell command EXECUTES:
     a registered `.claude/scripts/*_sidecar.sh` launcher, or each job of a `sidecar_fanout.py` jobs
-    file. [] for a command that only mentions one. Omitted values are None; the reader labels them."""
+    file. [] for a command that only mentions one, or a `<launcher> --check` probe. Omitted values are None; the reader labels them."""
     cwd = cwd or _PROJECT_DIR
     scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
     out = []
     for kind, script, args in _launcher_calls_named(command):
         if kind == 'sidecar':
+            if args[:1] == ['--check']:
+                continue
             if not os.path.isfile(os.path.join(scripts, script)):
                 continue
-            f = _sidecar_flags(args)
+            f = sidecar_argv.sidecar_flags(args)
             record = f.get('R')
             out.append(dict(kind='sidecar', launcher=script[:-len('_sidecar.sh')],
                             label=f.get('l') if isinstance(f.get('l'), str) else None,
@@ -1298,71 +1231,15 @@ def sidecar_launches(command, cwd=None):
 
 def _launcher_calls_named(command):
     """Actual top-level launcher calls as (kind, script basename, launcher arguments)."""
-    calls = []
-    for raw_segment in _shell_segments(command):
-        segment = _strip_redirections(raw_segment)
-        index = 0
-        while index < len(segment) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', segment[index]):
-            index += 1
-        if index >= len(segment):
-            continue
-        executable = os.path.basename(segment[index].replace('\\', '/')).lower()
-        script_index = index
-        if re.fullmatch(r'python(?:3(?:\.\d+)?)?|py', executable):
-            script_index += 1
-            while script_index < len(segment) and segment[script_index].startswith('-'):
-                if segment[script_index] in ('-c', '-m'):
-                    script_index = len(segment)
-                    break
-                script_index += 1
-        elif executable in ('bash', 'sh'):
-            script_index += 1
-            while script_index < len(segment) and segment[script_index].startswith('-'):
-                script_index += 1
-        script = (os.path.basename(segment[script_index].replace('\\', '/')).lower()
-                  if script_index < len(segment) else '')
-        if script == 'sidecar_fanout.py':
-            calls.append(('fanout', script, segment[script_index + 1:]))
-        elif script.endswith('_sidecar.sh'):
-            calls.append(('sidecar', script, segment[script_index + 1:]))
-    return calls
+    return sidecar_argv.launcher_calls(command)
 
 
 def _parse_fanout_args(args, cwd):
-    jobs_value = out_value = None
-    index = 0
-    positional_only = False
-    while index < len(args):
-        token = args[index]
-        if not positional_only and token == '--':
-            positional_only = True
-            index += 1
-            continue
-        if not positional_only and token in ('--authorize', '--compare', '--dry-run'):
-            index += 1
-            continue
-        if not positional_only and token in ('--max-parallel', '--out-dir'):
-            if index + 1 >= len(args):
-                return None
-            if token == '--out-dir':
-                out_value = args[index + 1]
-            index += 2
-            continue
-        if not positional_only and token.startswith('--out-dir='):
-            out_value = token.split('=', 1)[1]
-            index += 1
-            continue
-        if not positional_only and token.startswith('--max-parallel='):
-            index += 1
-            continue
-        if not positional_only and token.startswith('-'):
-            return None
-        if jobs_value is not None:
-            return None
-        jobs_value = token
-        index += 1
-    if jobs_value is None:
+    """(jobs path, out dir) resolved against cwd; the out dir defaults to <jobs parent>/fanout."""
+    parsed = sidecar_argv.parse_fanout_args(args)
+    if not parsed:
         return None
+    jobs_value, out_value = parsed
     jobs_path = _resolve_session_path(jobs_value, cwd)
     out_dir = (_resolve_session_path(out_value, cwd) if out_value is not None
                else os.path.join(os.path.dirname(jobs_path), 'fanout'))

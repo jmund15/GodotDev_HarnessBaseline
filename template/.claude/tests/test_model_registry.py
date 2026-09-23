@@ -600,6 +600,16 @@ def _identity_cases(live):
                   "nemotron-3.5-lightning-free", "x-preview-f-free"]
 
     cases = [
+        # ---- effortParam: a row declaring `effortParam: false` takes no effort, by alias, id or served id ----
+        ("takes_effort: the `haiku` alias takes none", lambda: mr.takes_effort("haiku", live) is False),
+        ("takes_effort: haiku's served id `claude-haiku-4-5` takes none",
+         lambda: mr.takes_effort("claude-haiku-4-5", live) is False),
+        ("takes_effort: haiku's registry id with a context suffix takes none",
+         lambda: mr.takes_effort("claude-haiku-4-5-20251001[1m]", live) is False),
+        ("takes_effort: `opus` and its id take an effort",
+         lambda: mr.takes_effort("opus", live) is True and mr.takes_effort("claude-opus-5-5", live) is True),
+        ("takes_effort: an unknown name, `inherit` or `?` takes an effort",
+         lambda: all(mr.takes_effort(n, live) is True for n in ("no-such-model", "inherit", "?", None))),
         # ---- O-alias: the bare alias names the CURRENT version on every route ----
         ("`opus` resolves to claude-opus-5-5", lambda: rid("opus") == "claude-opus-5-5"),
         ("`opus5` resolves to claude-opus-5", lambda: rid("opus5") == "claude-opus-5"),

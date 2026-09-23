@@ -14,7 +14,7 @@ Surveys every `roadmap.md` under `BrainstormingDesigns/`, builds the cross-roadm
 
 ## Why this exists
 
-The schema's lazy-resolution policy (`common.md §6.8`) deliberately tolerates stale cross-folder *state* snapshots, and `/update_roadmap` regenerates Mermaid + derived views deterministically for the roadmap it edits. Neither mechanism keeps a **parent's denormalized references to a child** in sync when the child mutates. Empirically (2026-05-21 audit), four drift classes accumulated:
+The schema's lazy-resolution policy (`common.md §6.8`) deliberately tolerates stale cross-folder *state* snapshots, and `/update_roadmap` regenerates Mermaid + derived views deterministically for the roadmap it edits. Neither mechanism keeps a **parent's denormalized references to a child** in sync when the child mutates. Empirically, four drift classes accumulated:
 
 - A sub-roadmap split 8 → 11 Parts; the parent's submap Trigger, Spawned table, and MVP "all N Parts" claims still said 8.
 - A sub-roadmap renumbered Pos 3–8 → 4–9; the parent's MVP Checkpoints cited pre-split Pos numbers.

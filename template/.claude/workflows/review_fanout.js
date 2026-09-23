@@ -74,7 +74,8 @@ const spillContract = (a) => spills(a) ? [
 
 // Rails appended to EVERY fanned agent — protects all consumers by construction, in two layers.
 // DOCTRINE (what a good review looks like) lives in .claude/guards/{any,review}.md, ONE home shared
-// with dispatch.js and hooks/session_model_rails.py; this engine injects a reference, never a copy.
+// with dispatch.js and hooks/session_model_rails.py; the Workflow hook inlines it, and this engine
+// holds no copy (the Read pointer is the fallback).
 // MACHINE SAFETY + the output contract stay inline below, because they are this engine's own
 // invariants (it is read-only by construction, it owns FINDINGS_SCHEMA, it knows the agent count) and
 // hold at every guard tier.
@@ -85,6 +86,18 @@ const spillContract = (a) => spills(a) ? [
 // does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
 const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
 const tierOf = (m) => RAILS[m] || 'detailed'
+// Rails text per (shape, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
+// `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
+// inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
+// none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
+const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
+const inlineRails = (label, shape, tier) => {
+  const text = RAILS_TEXT[shape + '/' + tier]
+  if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
+  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + shape + '/' + tier)
+  return null
+}
 // MACHINE SAFETY + delivery mechanics, owned by this engine and shipped at EVERY tier (strict,
 // terse, fable). Only DOCTRINE tiers by model — a fable lens that wedges the single-flight GdUnit4 pipe or
 // writes to the tree does the same damage a sonnet lens would, and this engine is read-only by
@@ -108,6 +121,8 @@ const BASE_CONTRACT = (a) => [
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3).
 const guardRef = (a) => {
   const tier = tierOf(a.model)
+  const inline = inlineRails(a.label || a.key, 'review', tier)
+  if (inline) return BASE_CONTRACT(a) + '\n' + inline
   return BASE_CONTRACT(a) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',

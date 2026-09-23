@@ -46,7 +46,7 @@ awk '/^#{2,4} /{if(h)printf "%6d B  %s\n",b,h; h=$0; b=0} {b+=length($0)+1} END{
 
 Dispatch all four in a single message. **Do NOT pass `args.spillDir`** — `Explore` has no `Write` tool, so a spilling scout job silently returns its deliverable inline and the bounded-return contract is lost without an error.
 
-**Brief every lens with the §Don'ts list below.** Omitting it in the 2026-08-19 run produced two confidently-wrong extraction proposals that §Don'ts already pre-refutes — a briefing gap that reads as a lens error. Each returns a focused report; do NOT pre-read CLAUDE.md sections yourself before delegating — that defeats the cost model. An agent's EMPTY search result is INCONCLUSIVE, not evidence of "UNIQUE" / "no conflict" — re-run that specific search yourself before accepting a no-finding verdict (`gotcha_grep_glob_miss_tracked_files`).
+**Brief every lens with the §Don'ts list below.** Omitting it once produced two confidently-wrong extraction proposals that §Don'ts already pre-refutes — a briefing gap that reads as a lens error. Each returns a focused report; do NOT pre-read CLAUDE.md sections yourself before delegating — that defeats the cost model. An agent's EMPTY search result is INCONCLUSIVE, not evidence of "UNIQUE" / "no conflict" — re-run that specific search yourself before accepting a no-finding verdict (`gotcha_grep_glob_miss_tracked_files`).
 
 **Agent 1 — Path-scope candidates.** For each top-level section of CLAUDE.md, classify by path-scope axis:
 - Universal (every interaction)
@@ -71,7 +71,7 @@ Report: DUP / PARTIAL / UNIQUE per section, with file path evidence. PARTIAL mea
 - Negative-reinforcement bullets vs exception clauses (single-decision-with-3-overrides shape)
 - Skill cross-references vs inline restatement (does CLAUDE.md tell Claude to use a skill while also reproducing the skill's content?)
 
-The 2026-05-03 inaugural run found a §2-forbidden-keyword-list vs Proactive-Context-Loading-table conflict on `refactor` and `MCP`. Pattern: structured data vs prose drift. Report each finding with quoted text from both sides.
+The inaugural run found a §2-forbidden-keyword-list vs Proactive-Context-Loading-table conflict on `refactor` and `MCP`. Pattern: structured data vs prose drift. Report each finding with quoted text from both sides.
 
 **Agent 4 — Admission test.** The only lens that asks whether a section belongs in an always-loaded file at all. Agents 1–3 return UNIQUE / WRONG-MECHANISM / no-conflict for content that is one-of-a-kind, not path-scopable, and self-consistent — and none of those verdicts answers `instruction_quality` §5 **A2**. Without this lens the panel is structurally blind to the largest remaining class.
 
@@ -79,7 +79,7 @@ Its question is ordering, not conditionality: *when is this decision made, and d
 
 Pin this lens `high` — it is open discovery with no supplied inventory, unlike Agents 1–3.
 
-**Re-read any text an agent quotes as "exact current text" before applying it.** Measured 2026-08-19: a lens's quoted block omitted a whole sentence present in the file. `Edit`'s exact-match failure is the backstop; a looser apply deletes content silently.
+**Re-read any text an agent quotes as "exact current text" before applying it.** A lens's quoted block omitted a whole sentence present in the file. `Edit`'s exact-match failure is the backstop; a looser apply deletes content silently.
 
 ### Phase C — Plan
 
@@ -131,7 +131,7 @@ A rule WITHOUT `paths:` loads always — equivalent to inline CLAUDE.md content 
 - **Don't touch the path-scoped rule files** to hit the budget. The byte band is for CLAUDE.md. Rule files load conditionally — their size is amortized across only the sessions that load them.
 - **Don't skip Phase B to save time.** The compression IS the audit; bypassing the read-only agent scans means you're guessing where the bloat is.
 
-## Inaugural-run reference data (2026-05-03)
+## Inaugural-run reference data
 
 For calibration if you're unsure whether your current proposed cut is reasonable:
 

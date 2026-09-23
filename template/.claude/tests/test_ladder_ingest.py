@@ -268,6 +268,16 @@ def case_launcher_event_array_output_is_read(failures):
     final, prompt = ladder_ingest._launcher_result(out)
     if final != "the deliverable" or prompt != "the brief":
         failures.append("event array: got (%r, %r)" % (final, prompt))
+    # An empty trailing result or an empty leading user turn never displaces real text.
+    out.write_text("\n".join(json.dumps(o) for o in [
+        {"type": "user", "message": {"role": "user", "content": []}},
+        {"type": "user", "message": {"role": "user", "content": "the brief"}},
+        {"type": "result", "result": "the deliverable"},
+        {"type": "result", "result": ""},
+    ]), encoding="utf-8")
+    final, prompt = ladder_ingest._launcher_result(out)
+    if final != "the deliverable" or prompt != "the brief":
+        failures.append("empty events skipped: got (%r, %r)" % (final, prompt))
 
 
 def main():

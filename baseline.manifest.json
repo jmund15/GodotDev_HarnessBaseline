@@ -1312,6 +1312,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_dispatch_pins.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_file_lock.py",
       "layer": "pure",
       "sync": "auto"
@@ -2027,6 +2032,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/lib/cli_envelope.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/lib/oc_proxy_probe.py",
       "layer": "pure",
       "sync": "auto"
@@ -2627,6 +2637,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_cli_envelope.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_codex_effort_probe.py",
       "layer": "pure",
       "sync": "auto"
@@ -2693,6 +2708,11 @@
     },
     {
       "path": ".claude/tests/test_dispatch_mechanism_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_dispatch_pins.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3192,6 +3212,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_argv.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_balance_retry.sh",
       "layer": "pure",
       "sync": "auto"
@@ -3609,6 +3634,11 @@
     {
       "path": ".claude/tools/setup-csharp-ls.sh",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/sidecar_argv.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {

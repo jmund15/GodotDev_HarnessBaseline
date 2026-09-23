@@ -251,7 +251,7 @@ SquadPolicy chain → SquadDirectiveBrain → Blackboard (SquadDirective)
 
 `FormationActive` (`bool`), `FormationSlotPositions` (`Dictionary<int, Vector3>`, squad BB), `FormationSlotIndex` (`int`, member BB, -1 = unassigned), `FormationLeader` (`Node3D`, squad BB), `SquadDirective` (`SquadDirectiveDefinition`, squad BB).
 
-Retired 2026-07-18 by the `SquadManager` decomposition: `ActiveSquadTag`, `HasSquadTag`, `SquadAverageHealth`.
+Retired by the `SquadManager` decomposition: `ActiveSquadTag`, `HasSquadTag`, `SquadAverageHealth`.
 
 See [squad_formations.md](squad_formations.md) for the full deep-dive.
 
