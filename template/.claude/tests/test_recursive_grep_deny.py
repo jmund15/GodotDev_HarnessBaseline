@@ -39,6 +39,14 @@ DENY = [
     ("PowerShell", "gci -r -Filter *.cs | sls foo"),
     ("PowerShell", "Select-String -Pattern foo -Path (Get-ChildItem -Recurse -File)"),
     ("PowerShell", "grep -rn foo ."),
+    # -r with no path operand walks the cwd; a directory operand among files walks it; xargs or
+    # find appends operands the command text cannot show.
+    ("Bash", "grep -rn foo"),
+    ("Bash", "grep -rn -e foo -e bar"),
+    ("Bash", "grep -rn foo a.py src"),
+    ("Bash", "grep -rn foo .claude/**/*.py"),
+    ("Bash", "printf '%s\\n' a.py | xargs grep -rn foo b.py"),
+    ("Bash", "find . -name x | xargs grep -rl foo a.py"),
 ]
 
 ALLOW = [
@@ -55,6 +63,11 @@ ALLOW = [
     ("PowerShell", "Get-ChildItem -Recurse -Filter *.cs"),
     ("PowerShell", "Select-String -Pattern foo -Path a.py"),
     ("PowerShell", "Write-Output 'Get-ChildItem -Recurse | Select-String foo'"),
+    # Every path operand a named file or one-level file glob: -r walks no tree.
+    ("Bash", "grep -rn foo a.py b.md"),
+    ("Bash", "grep -rn PROVIDER .claude/tests/*.py | head"),
+    ("Bash", "grep -rn \"s9_h\\|headless\" notes/ledger.md 2>/dev/null | head -5"),
+    ("Bash", "grep -rn -e foo a.py"),
 ]
 
 

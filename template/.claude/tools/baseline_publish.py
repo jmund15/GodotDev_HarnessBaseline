@@ -801,7 +801,7 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
             record["relpath"], content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
         )
         published = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
-        published_text = sync._lf(published).decode("utf-8", errors="replace") if published is not None else None
+        published_text = _lf(published).decode("utf-8", errors="replace") if published is not None else None
         if published_text is None or sync.sha(published_text.encode("utf-8")) != sync.sha(expected.encode("utf-8")):
             raise PublishError(f"check failed: {record['relpath']}")
     if from_worktree and needs_pull:

@@ -459,6 +459,33 @@ def apply_verdict(r, ent):
         r['outcome'] = 'unrated'
 
 
+def _verdict_effort(ent):
+    """The effort a verdict entry names, or None."""
+    if isinstance(ent, (list, tuple)):
+        return ent[1] if len(ent) > 1 and ent[1] else None
+    if isinstance(ent, dict):
+        return ent.get('effort') or None
+    return None
+
+
+def _select_verdict(row, verdicts, label_counts):
+    """(key, entry) for one row: its exact `run:label` key first; else a bare `label` key when the
+    label is unique in this collection. A bare entry naming an effort that contradicts the row's
+    attested pin is another run's verdict (the pending file is shared across sessions), so it
+    selects nothing and stays pending."""
+    exact_key = f"{row['run']}:{row['label']}"
+    if exact_key in verdicts:
+        return exact_key, verdicts[exact_key]
+    if label_counts.get(row['label']) != 1 or row['label'] not in verdicts:
+        return None, None
+    ent = verdicts[row['label']]
+    named = _verdict_effort(ent)
+    attested = _norm_effort(row.get('effort', '?'))
+    if named and attested != '?' and _norm_effort(named) != attested:
+        return None, None
+    return row['label'], ent
+
+
 PANEL_YIELD_WINDOW = 5
 
 
@@ -2094,16 +2121,7 @@ def main():
         for r in rows:
             label_counts[r['label']] = label_counts.get(r['label'], 0) + 1
         for r in rows:
-            exact_key = f"{r['run']}:{r['label']}"
-            selected_key = None
-            if exact_key in v:
-                selected_key = exact_key
-                ent = v[exact_key]
-            elif label_counts[r['label']] == 1:
-                selected_key = r['label']
-                ent = v.get(r['label'])
-            else:
-                ent = None
+            selected_key, ent = _select_verdict(r, v, label_counts)
             if selected_key in pending_root:
                 consumed_pending.setdefault(r['run'], {}).setdefault('root', set()).add(selected_key)
             elif selected_key in pending_legacy:

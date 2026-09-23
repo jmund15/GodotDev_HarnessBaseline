@@ -1331,7 +1331,8 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         _validate_relpaths(inputs)
     # A `local` row may name a path only upstream carries: the consumer declines that file.
     absent_upstream: dict[str, str] = {}
-    missing = [relpath for relpath in relpaths if relpath not in _git_contents(root, relpaths)]
+    present = _git_contents(root, relpaths)
+    missing = [relpath for relpath in relpaths if relpath not in present]
     if missing and status == "local":
         lock_now = load_lock(root)
         source = ensure_baseline(lock_now, root, baseline_dir)
@@ -1423,11 +1424,10 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
 def _commit_shas(root: Path, commit: str, relpaths: list[str]) -> dict[str, str | None]:
     """Each row's sha at `commit`, never the shared index: `publish --from-commit` checks the
     judged sha against that commit's blob, and a peer's staged edit would otherwise stand in."""
-    shas: dict[str, str | None] = {}
-    for relpath in relpaths:
-        result = _git(root, ["show", f"{commit}:{relpath}"], check=False)
-        shas[relpath] = sha(result.stdout) if result.returncode == 0 else None
-    return shas
+    blobs = _cat_file_many(root, [f"{commit}:{relpath}" for relpath in relpaths])
+    if blobs is None:
+        return {relpath: None for relpath in relpaths}
+    return {relpath: (sha(data) if data is not None else None) for relpath, data in zip(relpaths, blobs)}
 
 
 def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,

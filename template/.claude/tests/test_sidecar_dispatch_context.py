@@ -357,6 +357,18 @@ def main():
         os.remove(linked_jobs_path)
         cases.append(("a symlinked jobs file falls through (is_symlink simulated; no symlink privilege)",
                       linked_allowed is False))
+    if os.name == "nt":
+        # A directory junction is not is_symlink(), and mklink /J needs no privilege.
+        away = os.path.join(tmp, "junction-target")
+        os.makedirs(away)
+        with open(os.path.join(away, "jobs.json"), "w", encoding="utf-8") as fh:
+            json.dump([base_job], fh)
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", os.path.join(scratch, "jdir"), away],
+                              capture_output=True).returncode == 0
+        cases.append(("a jobs file reached through a directory junction falls through",
+                      made and run(fanout_cmd.replace(".claude/scratch/jobs.json",
+                                                      ".claude/scratch/jdir/jobs.json"),
+                                   fanout_env, session="sdc00067") == {}))
     cases.append(("a jobs path with a .. segment falls through",
                   run(fanout_cmd.replace(".claude/scratch/jobs.json", ".claude/scratch/../scratch/jobs.json"),
                       fanout_env, session="sdc00066") == {}))

@@ -2482,6 +2482,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/_lock_rows.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/_settings_probe.py",
       "layer": "pure",
       "sync": "auto"

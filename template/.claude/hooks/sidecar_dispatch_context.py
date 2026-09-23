@@ -175,12 +175,14 @@ def _resolve(root, value):
 
 
 def _path_has_symlink(root, path):
+    """True when any component below `root` is a symlink or a Windows directory junction, which
+    `is_symlink()` does not report."""
     if not _inside(path, root):
         return True
     current = root
     for part in path.relative_to(root).parts:
         current = current / part
-        if current.exists() and current.is_symlink():
+        if current.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(current)):
             return True
     return False
 

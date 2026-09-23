@@ -63,6 +63,7 @@
     ".claude/skills/testing/reference/logic_tdd.md": "godot",
     ".claude/skills/testing/reference/running.md": "godot",
     ".claude/tests/_commit_guard_cases.py": "godot",
+    ".claude/tests/_lock_rows.py": "pure",
     ".claude/tests/_settings_probe.py": "pure",
     ".claude/tests/dispatch_transport_effort_test.js": "coding",
     ".claude/tests/engine_rails_test.js": "coding",

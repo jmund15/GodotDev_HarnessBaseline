@@ -389,6 +389,28 @@ def main():
     cases.append(("legacy merge notice goes to stderr, stdout stays empty",
                   "Merged" in err.getvalue() and out.getvalue() == ""))
 
+    # --- a bare-label verdict whose effort contradicts the row's attested pin is another run's ---
+    row = {"run": "wf_mine", "label": "review:lens", "effort": "medium"}
+    counts = {"review:lens": 1}
+    theirs = {"review:lens": {"outcome": "clean", "effort": "xhigh", "tier": "Wide"}}
+    cases.append(("a bare verdict naming a different effort than the attested pin is not applied",
+                  om._select_verdict(row, theirs, counts) == (None, None)))
+    cases.append(("a bare [outcome, effort] pair that contradicts the pin is not applied",
+                  om._select_verdict(row, {"review:lens": ["clean", "high"]}, counts) == (None, None)))
+    cases.append(("a bare verdict naming the attested effort is applied",
+                  om._select_verdict(row, {"review:lens": ["defects", "medium"]}, counts)
+                  == ("review:lens", ["defects", "medium"])))
+    cases.append(("a bare outcome-only verdict is applied",
+                  om._select_verdict(row, {"review:lens": "clean"}, counts) == ("review:lens", "clean")))
+    cases.append(("a bare effort resolves an unresolved '?' pin",
+                  om._select_verdict(dict(row, effort="?"), {"review:lens": ["clean", "high"]}, counts)
+                  == ("review:lens", ["clean", "high"])))
+    cases.append(("an exact run:label key wins even with a different effort",
+                  om._select_verdict(row, {"wf_mine:review:lens": ["clean", "xhigh"]}, counts)
+                  == ("wf_mine:review:lens", ["clean", "xhigh"])))
+    cases.append(("an ambiguous bare label selects nothing",
+                  om._select_verdict(row, {"review:lens": "clean"}, {"review:lens": 2}) == (None, None)))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

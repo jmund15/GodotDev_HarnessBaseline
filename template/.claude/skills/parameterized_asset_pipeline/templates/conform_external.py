@@ -11,7 +11,7 @@ verify the original of this file).
 
 Companion to ``generate_unit.py``. Where generate_unit DRAWS palette-correct
 pixels from templates, conform_external PROJECTS arbitrary external pixel art
-(e.g. a CC0 third-party sheet) onto the same contract: project palette palette,
+(e.g. a CC0 third-party sheet) onto the same contract: the project palette,
 1px-feet-on-ground-line framing, and a tick-faithful manifest. The external
 RGB never reaches the canvas -- only its luminance *level* (which ramp step) and
 hue *material* (which ramp) survive, so palette compliance holds by construction

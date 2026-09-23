@@ -233,6 +233,101 @@ def main() -> int:
         proc = _run_dispatch(str(scratch), command, env)
         check(label + " -> allow", _classify(proc), "ALLOW", proc)
 
+    # --- 11-15: a lock commit must not drop a row HEAD holds while its file still exists.
+    # A peer's temp-index commit updates HEAD but not the shared working-tree lock, so the
+    # next pathspec commit of the lock silently reverts the peer's rows.
+    def dropped_row_repo():
+        repo = _make_consumer_repo()
+        for name in ("kept.md", "peer.md"):
+            _write(repo / ".claude" / "commands" / name, "# %s\n" % name)
+            _git(repo, "add", "-A")
+            subprocess.run([sys.executable, str(BASELINE_SYNC), "classify",
+                            ".claude/commands/" + name, "--status", "local"],
+                           cwd=repo, capture_output=True, text=True, check=True)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "rows")
+        lock_path = repo / ".claude" / "baseline.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        del lock["files"][".claude/commands/peer.md"]
+        _write_json(lock_path, lock)
+        return repo
+
+    repo11 = dropped_row_repo()
+    proc = _run_dispatch(str(repo11), 'git commit -m m -- .claude/baseline.lock.json', env)
+    check("11: pathspec lock commit dropping a HEAD row whose file exists -> deny",
+          _classify(proc), "DENY", proc)
+    cases.append(("11: the denial names the dropped row",
+                  ".claude/commands/peer.md" in proc.stderr, proc.stderr[:500]))
+
+    repo12 = dropped_row_repo()
+    _git(repo12, "rm", "-q", ".claude/commands/peer.md")
+    proc = _run_dispatch(
+        str(repo12), 'git commit -m m -- .claude/baseline.lock.json .claude/commands/peer.md', env)
+    check("12: the row leaves with its deleted file -> allow", _classify(proc), "ALLOW", proc)
+
+    repo13 = dropped_row_repo()
+    _git(repo13, "add", ".claude/baseline.lock.json")
+    proc = _run_dispatch(str(repo13), "git commit -m m", env)
+    check("13: whole-index commit of a staged lock dropping a row -> deny",
+          _classify(proc), "DENY", proc)
+
+    repo14 = dropped_row_repo()
+    _write(repo14 / "other.txt", "x\n")
+    _git(repo14, "add", "other.txt")
+    proc = _run_dispatch(str(repo14), "git commit -m m", env)
+    check("14: an unstaged lock edit is not in the commit -> allow", _classify(proc), "ALLOW", proc)
+
+    repo15 = _make_consumer_repo()
+    _write(repo15 / ".claude" / "commands" / "fresh.md", "# fresh\n")
+    _git(repo15, "add", "-A")
+    subprocess.run([sys.executable, str(BASELINE_SYNC), "classify", ".claude/commands/fresh.md",
+                    "--status", "local"], cwd=repo15, capture_output=True, text=True, check=True)
+    _git(repo15, "add", "-A")
+    proc = _run_dispatch(
+        str(repo15), 'git commit -m m -- .claude/baseline.lock.json .claude/commands/fresh.md', env)
+    check("15: a lock commit that only adds rows -> allow", _classify(proc), "ALLOW", proc)
+
+    # --- 16: a declined row (`absent`: the consumer declines an upstream-only file) has no file
+    # by design, so a missing file is no evidence it left: dropping it still denies.
+    declined = ".claude/commands/declined.md"
+    repo16 = _make_consumer_repo({declined: {
+        "status": "local", "layer": None, "absent": True,
+        "judged": {"sha": "0" * 64, "verdict": "keep-local", "at": "2026-01-01T00:00:00Z",
+                   "borderline": False, "confirmed_at": None}}})
+    lock16 = repo16 / ".claude" / "baseline.lock.json"
+    body16 = json.loads(lock16.read_text(encoding="utf-8"))
+    del body16["files"][declined]
+    _write_json(lock16, body16)
+    proc = _run_dispatch(str(repo16), 'git commit -m m -- .claude/baseline.lock.json', env)
+    check("16: dropping a declined row (no file by design) -> deny", _classify(proc), "DENY", proc)
+
+    # --- 17b-18: `_dropped_lock_rows` alone, since git_guardrails' stamp check runs its own
+    # `git diff HEAD` first and would decide both commits before this guard is reached.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bcg_under_test", GUARD_PATH)
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    lock_rel = ".claude/baseline.lock.json"
+    rest = ["-m", "m", "--", lock_rel]
+
+    repo17b = _make_consumer_repo()
+    _git(repo17b, "rm", "-q", "--cached", lock_rel)
+    _git(repo17b, "commit", "-q", "-m", "untrack lock")
+    _git(repo17b, "add", lock_rel)
+    cases.append(("17b: HEAD without a lock: adding the lock drops nothing",
+                  guard._dropped_lock_rows(rest, str(repo17b), str(repo17b)) == ([], None), ""))
+
+    repo18 = dropped_row_repo()
+    real_run_git = guard.run_git
+    guard.run_git = lambda args, cwd, env=None: (
+        None if args[:1] == ["show"] and args[1].startswith("HEAD:") else real_run_git(args, cwd, env))
+    try:
+        result18 = guard._dropped_lock_rows(rest, str(repo18), str(repo18))
+    finally:
+        guard.run_git = real_run_git
+    cases.append(("18: HEAD lists the lock but its read fails: unknown -> a failing step, never allow",
+                  result18[0] is None and "HEAD:" + lock_rel in (result18[1] or ""), repr(result18)))
+
     failures = [(label, detail) for label, ok, detail in cases if not ok]
     for label, ok, detail in cases:
         print("%-4s %s%s" % ("ok" if ok else "FAIL", label, ("  -- " + detail) if detail and not ok else ""))

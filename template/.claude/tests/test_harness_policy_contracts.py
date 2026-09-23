@@ -2,30 +2,18 @@
 import json
 import re
 from pathlib import Path
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lock_rows import project_owned  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _project_owned(relpath):
-    """True only when this checkout's own baseline.lock.json marks `relpath` `forked` or `local`.
-
-    A published/shared proof file must not assume the checkout it runs in is {{PROJECT_NAME}}'s
-    own repo: `baseline.lock.json` itself is never published (it is the publisher's own
-    bookkeeping), so a template checkout has none. A `forked` row's content (verdict "fork",
-    never "push" -- baseline_publish.py `_collect_commit`) never syncs upstream, and a `local`
-    row never exists upstream. A test asserting either file's prose belongs only to the
-    checkout that owns it.
-    """
-    lock_path = ROOT / 'baseline.lock.json'
-    if not lock_path.is_file():
-        return False
-    try:
-        lock = json.loads(lock_path.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return False
-    entry = (lock.get('files') or {}).get('.claude/' + relpath)
-    return bool(entry) and entry.get('status') in ('forked', 'local')
+    """`_lock_rows.project_owned` for a path relative to `.claude/`."""
+    return project_owned('.claude/' + relpath)
 
 
 ORCHESTRATION_CONTRACTS = {
