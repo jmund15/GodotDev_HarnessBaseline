@@ -32,6 +32,9 @@ RETRY_429 = ev(type="system", subtype="api_retry", error_status=429, session_id=
 RETRY_500 = ev(type="system", subtype="api_retry", error_status=500)
 LIMIT_RESULT = ev(type="result", is_error=True, terminal_reason="api_error",
                   result="API Error: 429 · The usage limit has been reached", session_id="s1")
+WEEKLY_LIMIT_RESULT = ev(type="result", is_error=True, terminal_reason="api_error",
+                         api_error_status=429,
+                         result="You've hit your weekly limit · resets 1pm", session_id="s1")
 DONE = ev(type="result", is_error=False, terminal_reason="completed", session_id="s1")
 REJECTED = ev(type="rate_limit_event", rate_limit_info={"status": "rejected", "resetsAt": 1900000000})
 
@@ -70,6 +73,8 @@ case("retries are not work; an assistant event is",
      lambda: rc.watch([RETRY_429], 0, 10)[0] is False and rc.watch([WORK], 0, 10)[0] is True)
 case("a terminal usage-limit result is limited and not work",
      lambda: rc.watch([LIMIT_RESULT], 0, 10)[0:3:2] == (False, True))
+case("a terminal weekly-limit 429 is limited and not work",
+     lambda: rc.watch([WEEKLY_LIMIT_RESULT], 0, 10)[0:3:2] == (False, True))
 case("a rejected rate_limit_event names the reset time and the session id is kept",
      lambda: rc.watch([WORK, REJECTED], 0, 10)[3:] == (1900000000, "s1"))
 

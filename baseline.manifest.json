@@ -137,6 +137,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/archive/feedback_brief_the_defect_class_not_your_candidate_list.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/archive/feedback_command_descriptions_one_line.md",
       "layer": "pure",
       "sync": "auto"
@@ -212,7 +217,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/archive/gotcha_bash_windows_path_separator_mixing.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/archive/gotcha_editing_shell_script_corrupts_running_instances.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/archive/gotcha_global_vs_project_claude_dir.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -223,6 +238,11 @@
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_regression_gate_baseline_inflation.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/auto-memory/archive/gotcha_schedulewakeup_is_loop_only.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -617,6 +637,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/auto-memory/gotcha_guard_can_be_an_algebraic_identity.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/auto-memory/gotcha_inherited_scene_empty_resource_slot.md",
       "layer": "godot",
       "sync": "auto"
@@ -893,6 +918,11 @@
     },
     {
       "path": ".claude/commands/delegate.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/delegation_usage.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1272,6 +1302,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_claude_scope.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_command_text.py",
       "layer": "pure",
       "sync": "auto"
@@ -1377,6 +1412,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/composed_output_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/compound_cd_approver.py",
       "layer": "pure",
       "sync": "auto"
@@ -1398,6 +1438,11 @@
     },
     {
       "path": ".claude/hooks/dispatch_mechanism_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/dispatch_table.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1482,6 +1527,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/model_ladder_gate.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/overnight_ask_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -1534,6 +1584,16 @@
     {
       "path": ".claude/hooks/prototype_containment_guard.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/provenance_label_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/provider_capacity_guard.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -1862,7 +1922,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/anthropic_capacity_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/anthropic_quota_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/anthropic_sidecar.sh",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1897,7 +1967,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/codex_quota_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/codex_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/deepseek_balance_probe.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2412,6 +2492,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/engine_rails_test.js",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/explore_fanout_transport_test.js",
       "layer": "coding",
       "sync": "auto"
@@ -2453,6 +2538,11 @@
     },
     {
       "path": ".claude/tests/test_analyze_eval_archive.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_anthropic_capacity_probe.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2527,12 +2617,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_claude_profile_functions.ps1",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_claudemd_citations.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_codex_effort_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_codex_quota_probe.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2552,12 +2652,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_composed_output_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_compound_cd_approver_adaptation.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_critical_analysis_reminder.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_deepseek_balance_probe.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2583,6 +2693,11 @@
     },
     {
       "path": ".claude/tests/test_dispatch_mechanism_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_dispatch_table.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2624,6 +2739,16 @@
     {
       "path": ".claude/tests/test_git_guardrails_harness_commit.py",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_git_guardrails_md_density.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_godot_process_nested_worktree.ps1",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -2722,7 +2847,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_model_ladder_gate.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_model_registry.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_model_registry_capacity.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_model_registry_rails.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2747,12 +2887,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_orchestration_metrics_panel_yield.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_orchestration_metrics_pending.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_orchestration_metrics_resource_lifetime.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_orchestration_metrics_served_effort.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2788,6 +2938,11 @@
     },
     {
       "path": ".claude/tests/test_pattern_enforcer_rm_scope.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_pattern_enforcer_tool_cascade.py",
       "layer": "godot",
       "sync": "auto"
     },
@@ -2857,7 +3012,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_provenance_label_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_provider_bands_cache.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_provider_capacity.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_provider_capacity_guard.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3027,6 +3197,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_capacity_gate.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_detach.sh",
       "layer": "pure",
       "sync": "auto"
@@ -3072,6 +3247,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_price_window.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_producer_identity.py",
       "layer": "pure",
       "sync": "auto"
@@ -3088,6 +3268,11 @@
     },
     {
       "path": ".claude/tests/test_sidecar_scrub_passthrough.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_snapshot_sweep.sh",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3217,6 +3402,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_workflow_provider_guard_rails.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_workflow_provider_guard_roles.py",
       "layer": "pure",
       "sync": "auto"
@@ -3224,6 +3414,11 @@
     {
       "path": ".claude/tests/test_workflow_provider_guard_vocabulary.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/workflow_relay_line_test.js",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -3363,6 +3558,11 @@
     },
     {
       "path": ".claude/tools/provider_bands.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/provider_capacity.py",
       "layer": "pure",
       "sync": "auto"
     },

@@ -23,4 +23,4 @@ Who executes each tier is not this table's call — [`orchestration`](../orchest
 
 1. **Each command owns its gate and coverage.** This ladder sets default depth, not exemptions from `/plan_check`, the CLAUDE.md Planning Phase Checklist, `/regression_gate`, or `/explore`'s no-op rule. An unknown-root-cause debug item still invokes `/explore`; every selected floor and triggered lens remains required. A scope-2 item meeting the plan-check threshold writes a plan file and runs that check.
 
-2. **The ladder governs process artifacts only** — plan artifact and default drive depth. Each invoked command owns its lens selection; dispatch grain and executor choice belong to `orchestration` §5/§11.
+2. **The ladder governs process artifacts only** — plan artifact and default drive depth. Each invoked command owns its lens selection; panel seat width belongs to `orchestration` §2; dispatch grain and executor choice to §5/§11.

@@ -18,7 +18,7 @@ python3 .claude/tools/session_digest.py --digest-file logs/session_digest_<sid8>
 
 Page until the response's `page` equals `pages`. Run `session_digest.py --prompt-tail <command>` first if the digest file is absent. Proceed to Step 3 for cross-verification.
 
-`logs/session_files/<session_id>.json` is written by the PreCompact hook only, so it stops at the last compaction and omits every later edit (measured 2026-09-15: 28 of 40 files). Use it, with Step 2, only when the live transcript is unavailable.
+`logs/session_files/<session_id>.json` is written by the PreCompact hook only, so it stops at the last compaction and omits every later edit. Use it, with Step 2, only when the live transcript is unavailable.
 
 ## Step 2: Compaction Recovery (MANDATORY)
 

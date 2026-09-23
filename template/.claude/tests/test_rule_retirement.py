@@ -291,6 +291,18 @@ def main():
                   and not fired_only["malformed"],
                   "exit %d" % fired_proc.returncode)
 
+        print("case 0 — a generated .cache mirror is not a live rule owner")
+        with tempfile.TemporaryDirectory(prefix="rulecache_") as cache_base:
+            planted = "Rule.\n\n<!-- retire-when: review-by: 2020-01-01 -->\n"
+            write(os.path.join(cache_base, ".cache", "mirror", "rule.md"), planted)
+            write(os.path.join(cache_base, "rules", "rule.md"), planted)
+            _proc, cache_data = run(cache_base, "--today", "2026-09-14")
+            paths = [row["path"] for bucket in ("fired", "live", "undecidable", "malformed")
+                     for row in cache_data[bucket]]
+            check("positive control: rules/rule.md outside .cache is scanned",
+                  any(p.endswith("rules/rule.md") for p in paths), str(paths))
+            check("the .cache mirror yields no row", not any(".cache" in p for p in paths), str(paths))
+
         print("case 1 — expired review-by fires, live one does not")
         proc, data = run(base, "--today", "2026-09-14", "--tools", "Read,Edit,Grep")
         fired = names(data["fired"])

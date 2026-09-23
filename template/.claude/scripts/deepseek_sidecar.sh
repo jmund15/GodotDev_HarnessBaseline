@@ -87,7 +87,7 @@
 #       .claude/guards/<shape>.md on the child's SessionStart, assembled by
 #       tools/guard_text.py. any.md carries the rules binding every delegate, so
 #       it is concatenated rather than left as a pointer the child may not follow.
-#       Tier is strict unless CLAUDE_CODE_SIDECAR_TIER says otherwise.
+#       Tier is detailed unless CLAUDE_CODE_SIDECAR_TIER says otherwise.
 #   -D  disclosure tier       bare|pointer|full (default: full). `bare`: child
 #       runs from an empty scratch run-cwd — vendor prompt + CLI only; user-level
 #       config is intentionally KEPT (isolating CLAUDE_CONFIG_DIR would drop
@@ -104,7 +104,7 @@
 #       spec excerpt). Missing file exits 2. This is the per-dispatch composition
 #       layer on top of -D.
 #   -L  spend-ledger JSONL: appends the run-record as one line (default:
-#       ~/.claude/deepseek_spend.jsonl when -R is set; -L "" disables)
+#       ~/.claude/sidecar_ledger.jsonl when -R is set; -L "" disables)
 #   -l  label: attribution tag stored on the run-record (e.g. "review:config-dup").
 #       /orchestration_metrics reads the spend ledger as a second source and
 #       reports/rates sidecar runs BY THIS LABEL — an unlabeled delegate run is
@@ -198,7 +198,7 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
-  SC_CREDENTIAL="$_check_key"   # sc_gate_balance authenticates the balance probe with it
+  SC_CREDENTIAL="$_check_key"   # provider_capacity forwards it only to the live balance adapter
   sc_check_gates
   echo "OK (model=${_check_reg%%|*} endpoint=$BASE_URL key=***${_check_key: -4})${SC_PRICE_SUMMARY:+ $SC_PRICE_SUMMARY}"
   exit 0
@@ -225,8 +225,7 @@ case "$SC_CREDENTIAL" in
 esac
 
 sc_gate_band
-sc_gate_provider_band   # no-op on a marginal-usd transport; present so the ladder is uniform
-sc_gate_balance
+sc_gate_capacity        # one live DeepSeek balance read, shared with --check
 sc_gate_price_window    # refuses a peak dispatch on a peakPolicy:refuse row unless -W
 sc_build_disclosure
 sc_validate_effort

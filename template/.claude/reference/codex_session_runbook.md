@@ -12,45 +12,55 @@ From a PowerShell profile shell (`claude_profile_functions.ps1`):
 
 | Command | Session model |
 |---|---|
-| `claude-gpt` | `gpt-5.6-luna` · medium |
-| `claude-gpt-sol` | `gpt-5.6-sol` · medium |
-| `claude-gpt-terra` | `gpt-5.6-terra` · medium |
-| `claude-gpt-low` / `claude-gpt-high` | luna at that effort |
-| `Invoke-ClaudeGpt -Model sol -Effort high` | any roster alias × any effort |
+| `claude-gpt` | `gpt-5.6-luna` · medium · default context |
+| `claude-gpt-sol` / `claude-gpt-terra` / `claude-gpt-astra` | named model · medium · default context |
+| `claude-gpt-low` / `claude-gpt-high` | luna at that effort · default context |
+| `<any command above>-1m` | same model and effort · max context |
+| `Invoke-ClaudeGpt -Model sol -Effort high -LongContext` | any Codex roster alias × effort × context tier |
 
-The launcher starts a dedicated `claude-code-proxy` on its own port and kills it at exit. Never reuse
-a running proxy: `CCP_CODEX_MODEL` / `CCP_CODEX_EFFORT` are read from the **server's** environment at
-startup, so a shared proxy serves whichever pin its starter set while attesting nothing
+The `-1m` launchers pass the proxy's `[1m]` request modifier and set Claude Code's declared window
+from `maxContextTokens`. The name is conventional; the exact effective limit comes from
+`external_models.json`, printed by `model_registry.py context-window <model> --max`. `[1m]` stays a
+request modifier, not a duplicate registry row.
+
+**Launch standard; use `-1m` only for a named turn that needs more than ~258K of live context.** Each
+request whose prompt exceeds the codex `longContextTier` threshold in `external_models.json` bills at
+its multipliers, and a long session re-sends its whole context every turn, so most `-1m` turns land in
+the tier (cost: `gotcha_long_context_gpt_sessions_cost_by_context_size`). `/compact` once that turn is
+done. Concurrency has no fixed count; the codex band in `[budget-posture]` gates a new session.
+
+The launcher starts a dedicated `claude-code-proxy` on its own port and kills it at exit. It clears
+`CCP_CODEX_MODEL` and `CCP_CODEX_EFFORT` before proxy startup, so model and effort stay request-scoped.
+The sidecar launcher sets those server-wide pins on its own proxy for strict dispatch attestation
 (`gotcha_codex_proxy_transport_operations`).
 
 ## Orchestrating from inside a codex session
 
-The session resolves its own transport at SessionStart (`hooks/_session_transport.py`), and both
-dispatch engines then accept that transport's model ids directly. A Workflow dispatched from a
-`sol` session reaches `luna` and `terra` **in-harness — no sidecar**.
+Pin a Codex model id on each Workflow job. The SessionStart transport marker lets both dispatch
+engines accept sibling ids directly, so a `sol` session reaches `luna` and `terra` in-harness with no
+sidecar.
 
-**Pin vocabulary is per transport, enforced by `hooks/workflow_provider_guard.py`.** On a codex
-session, pin `luna` / `sol` / `terra` (or their full `gpt-5.6-*` ids). Anthropic role names —
-`opus`, `sonnet`, `haiku`, `fable` — are Anthropic-session vocabulary and are **denied** here; the
-denial names the legal roster. The rule is symmetric: vendor ids are denied on an Anthropic session.
+Pin `luna` / `sol` / `terra` or their full `gpt-5.6-*` ids. `hooks/workflow_provider_guard.py`
+denies Anthropic names (`opus`, `sonnet`, `haiku`, `fable`) and names the legal Codex roster. The
+same guard denies vendor ids on an Anthropic session.
 
-**Effort is per session, not per job.** The proxy honours a per-request model but not a per-request
-effort, so every job in a codex-hosted Workflow inherits the session's effort pin. Split by effort
-across separate sessions, never across jobs in one fan-out.
+Per-job Workflow effort passthrough is not yet proven end to end. Treat the request as unverified
+until proxy traffic attests `reasoning.effort`. `/model` and `/effort` do change the live parent
+session; the launcher sets their starting values.
 
-## Live proof (unverified end-to-end as of 2026-09-04)
+## Live proof (unverified end-to-end as of 2026-09-12)
 
-Every piece below is built and passes its structural check; no codex-hosted session has yet run a
-real Workflow. Run this to close that gap:
+No successful codex-hosted Workflow has yet proved both model and effort routing. Run this to close
+that gap:
 
-1. `claude-gpt-sol` — confirm the SessionStart block reports transport `codex`, roster
-   `luna, sol, terra`, and names sol as the session model.
-2. In-session, dispatch a two-agent Workflow pinning `luna` and `terra`. Both must return findings.
-3. Confirm the guard bites: pin `sonnet` in a third job. Expect a deny naming the codex roster.
-4. Read the proxy traffic capture and confirm the **upstream** request models are `gpt-5.6-luna` and
-   `gpt-5.6-terra`. A delegate's self-reported identity is not evidence — behind a translating proxy
-   it echoes the client's own pin (`gotcha_self_reported_model_identity_is_not_authority`).
-5. Delete the capture afterwards; captures are never pruned and hold full prompt bodies.
+1. `claude-gpt-sol` — confirm SessionStart reports transport `codex`, roster `luna, sol, terra`,
+   and sol as the session model.
+2. Dispatch a two-agent Workflow: `luna` at one effort and `terra` at another. Both must return.
+3. Pin `sonnet` in a third job. Expect a deny naming the Codex roster.
+4. Read proxy traffic and confirm upstream `model` values are `gpt-5.6-luna` and
+   `gpt-5.6-terra`, and each `reasoning.effort` matches its job's request. A delegate's identity claim
+   is not evidence behind a translating proxy (`gotcha_self_reported_model_identity_is_not_authority`).
+5. Delete the capture; it has full prompt bodies and no pruning.
 
 Verify the surfaces agree at any time with `python3 .claude/tools/verify_transport_status.py
 --transport codex`.
@@ -91,16 +101,12 @@ grep -a -A85 '"slug": "<candidate>"' "$B"   # the entry, pretty-printed JSON
 Each entry carries `minimal_client_version`; that field, not the announcement date, is why a slug is
 missing from an older CLI. Delete the extraction afterwards — the binary is ~295 MB.
 
-## Roster snapshot — 2026-09-04
+## Roster snapshot — 2026-09-12
 
-Dispatchable: **`luna`, `sol`, `terra`**, plus **`gpt-6-astra` once the CLI is on ≥ 0.153.0**.
+Session drivers: **`luna`, `sol`, `terra`, `astra`**. Delegate targets: **`luna`, `sol`,
+`terra`**. Luna can also be selected by role; Sol and Terra require explicit pins. Context limits live
+in `reference/external_models.json`.
 
-- **GPT-6 Astra: entitled on this ChatGPT plan.** Accepted against a passing `gpt-5.6-sol` positive
-  control and a rejected bogus slug, probed on an extracted 0.153.4 binary (2026-09-04). Efforts
-  `low|medium|high|xhigh|max|ultra`, `context_window` 272,000 / `max` 872,000, `tool_mode`
-  `code_mode_only`, `minimal_client_version` `0.153.0`. The 09-04 "not reachable" reading was the
-  stale-client false negative the probe method warns about — installed CLI was 0.148.0.
-- **Blocked on the global install**, still `0.148.0`. `npm i -g @openai/codex@latest`, then add astra
-  to `reference/external_models.json` before any dispatch pins it.
-- **`gpt-5.6-pro`: known-but-unentitled** — in the CLI table, rejected by the backend. Correctly
-  absent from the registry; no action.
+- **GPT-6 Astra is entitled and session-launchable but owner-excluded from all delegation.** It needs
+  Codex CLI ≥ 0.153.0; `claude-gpt-astra` and `claude-gpt-astra-1m` remain valid.
+- **`gpt-5.6-pro` is known but not entitled.** It remains absent from the registry.

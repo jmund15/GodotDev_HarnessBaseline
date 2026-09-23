@@ -73,7 +73,8 @@ def main():
     homes = []
 
     def scratch(seed, plan_text):
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed, extra_hook_files=("_hook_state.py",))
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed,
+                              extra_hook_files=("_hook_state.py", "_claude_scope.py"))
         scratches.append(tmp)
         home = tempfile.mkdtemp(prefix="pmr_home_")
         homes.append(home)

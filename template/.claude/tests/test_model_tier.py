@@ -52,33 +52,43 @@ print("=" * 78)
 
 # --- tier_of ------------------------------------------------------------------------------
 for model, expected in [
-    ("fable", "fable"),
-    ("claude-mythos-5-1", "fable"),
-    ("claude-opus-5[1m]", "opus"),
-    ("claude-opus-5", "opus"),
-    ("sonnet", "strict"),
-    ("claude-haiku-4-5", "strict"),
-    (None, "strict"),
-    ("", "strict"),
+    ("fable", "minimal"),
+    ("claude-fable-5-1[1m]", "minimal"),
+    ("claude-mythos-5-1", "detailed"),        # no registry row: unknown reads detailed
+    ("claude-opus-5[1m]", "condensed"),
+    ("claude-opus-5-5[1m]", "condensed"),
+    ("claude-opus-5", "condensed"),
+    ("sonnet", "detailed"),
+    ("claude-haiku-4-5", "detailed"),
+    ("gpt-5.6-sol[1m]", "detailed"),          # capability evidence is not rail-adherence evidence
+    (None, "detailed"),
+    ("", "detailed"),
 ]:
     got = _model_tier.tier_of(model)
     check(f"tier_of({model!r}) == {expected}", got == expected, got)
 
 # --- session_tier round trip --------------------------------------------------------------
 os.environ["HARNESS_HOOK_STATE_DIR"] = STATE_DIR
-check("session_tier() of an unseen session is strict",
-      _model_tier.session_tier("unseen-session") == "strict")
+check("session_tier() of an unseen session is detailed",
+      _model_tier.session_tier("unseen-session") == "detailed")
 _model_tier.write_session_tier("sess-fable-1", "fable")
 check("session_tier() reads back the cached tier",
-      _model_tier.session_tier("sess-fable-1") == "fable")
+      _model_tier.session_tier("sess-fable-1") == "minimal")
+from _hook_state import state_path, update_json_locked  # noqa: E402
+for legacy, expected in [("opus", "condensed"), ("terse", "condensed"), ("strict", "detailed"),
+                         ("fable", "minimal")]:
+    sid = f"sess-legacy-{legacy}"
+    update_json_locked(state_path(sid), lambda st, v=legacy: st.__setitem__(_model_tier.TIER_KEY, v))
+    check(f"a cached legacy `{legacy}` tier reads as {expected}",
+          _model_tier.session_tier(sid) == expected)
 
-# --- rails stdout: exactly one tier line, with the right tier-only clauses ------------------
+# --- rails stdout: exactly one tier line, no output-shape clause ---------------------------
 CASES = [
-    ("fable", "fable", True),
-    ("claude-opus-5[1m]", "opus", False),
-    ("sonnet", "strict", False),
-    ("claude-mythos-5-1", "fable", True),
-    (None, "strict", False),
+    ("fable", "minimal", True),
+    ("claude-opus-5[1m]", "condensed", False),
+    ("sonnet", "detailed", False),
+    ("claude-mythos-5-1", "detailed", False),
+    (None, "detailed", False),
 ]
 for model, expected, wants_verify in CASES:
     payload = {"session_id": f"sid-{expected}-{model}", "hook_event_name": "SessionStart"}
@@ -90,20 +100,19 @@ for model, expected, wants_verify in CASES:
     check(f"[{label}] exactly one tier line", len(lines) == 1, f"{len(lines)} lines")
     check(f"[{label}] tier line names `{expected}`",
           bool(lines) and f"`{expected}`" in lines[0], lines[0] if lines else "")
-
-    open_tier = expected in ("opus", "fable")
-    check(f"[{label}] shortest-response clause {'present' if open_tier else 'absent'}",
-          ("shortest response that fully answers" in out) == open_tier)
-    check(f"[{label}] voice clause {'present' if open_tier else 'absent'}",
-          ("no sentence whose job is to sound good" in out) == open_tier)
+    # Output shape belongs to the output style, never to a tier line.
+    check(f"[{label}] no shortest-response clause", "shortest response that fully answers" not in out)
+    check(f"[{label}] no voice clause", "no sentence whose job is to sound good" not in out)
     check(f"[{label}] verify-the-name clause {'present' if wants_verify else 'absent'}",
           ("Recognizing a name is not knowing its current state" in out) == wants_verify)
-    check(f"[{label}] strict-only instruction {'present' if expected == 'strict' else 'absent'}",
-          ("read every `## strict` section" in out) == (expected == "strict"))
+    check(f"[{label}] detailed-only instruction {'present' if expected == 'detailed' else 'absent'}",
+          ("read every `## detailed` section" in out) == (expected == "detailed"))
+    check(f"[{label}] no old tier heading named", "## strict" not in out)
 
 # --- delegate branch: tier comes from CLAUDE_CODE_SIDECAR_TIER, never the payload model -----
-for env_tier, expected in [("terse", "opus"), ("none", "fable"), ("fable", "fable"),
-                           ("strict", "strict"), ("", "strict"), ("bogus", "strict")]:
+for env_tier, expected in [("condensed", "condensed"), ("none", "minimal"), ("minimal", "minimal"),
+                           ("detailed", "detailed"), ("", "detailed"), ("bogus", "detailed"),
+                           ("terse", "detailed")]:  # old names are not accepted from the env
     out = rails_stdout(
         {"session_id": "sid-delegate", "model": "fable", "hook_event_name": "SessionStart"},
         {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_SHAPE": "review",
@@ -114,6 +123,11 @@ for env_tier, expected in [("terse", "opus"), ("none", "fable"), ("fable", "fabl
           f"{len(lines)} lines")
     check(f"[delegate TIER={env_tier or '<unset>'}] tier is `{expected}`",
           bool(lines) and f"`{expected}`" in lines[0], lines[0] if lines else "")
+    if env_tier != "none":
+        check(f"[delegate TIER={env_tier or '<unset>'}] guard header names the {expected} tier",
+              f"{expected} tier; home:" in out, out[-400:])
+    check(f"[delegate TIER={env_tier or '<unset>'}] no driver notes (notes follow the model, not the tier)",
+          "Driver notes" not in out and "Recognizing a name" not in out)
 
 print("-" * 78)
 print(f"{'FAILED: ' + ', '.join(failures) if failures else 'all checks passed'}")

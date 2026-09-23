@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+from session_model_rails import ANTHROPIC_RAILS  # noqa: E402  the real rail the transport parse reads
+
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools")
 TOOL = os.path.join(TOOLS_DIR, "ladder_ingest.py")
 
@@ -43,7 +46,7 @@ def _a(text=None, model="claude-opus-5", tool=None, ts="2026-09-08T10:01:00.000Z
 
 def _rails(marker="[anthropic session — dispatch transport]", effort_line=None,
            ts="2026-09-08T09:59:00.000Z"):
-    content = ("[session] Session tier: `opus` — skip `## strict` sections.\n" + marker
+    content = ("[session] Session tier: `condensed` — skip `## detailed` sections.\n" + marker
                + ("\n" + effort_line if effort_line else ""))
     return {"type": "attachment", "isSidechain": False, "timestamp": ts,
             "attachment": {"type": "hook_success", "hookName": "SessionStart:startup",
@@ -66,7 +69,7 @@ def make_projects(sessions):
 
 def transcript_a():
     return [
-        _rails("[anthropic session — dispatch transport]"),
+        _rails(ANTHROPIC_RAILS),
         _u(PROMPT),
         _a("Let me look into delegation.", tool="Bash", effort="medium"),
         _u(REVIEW_PROMPT, ts="2026-09-08T10:02:00.000Z"),
@@ -250,6 +253,23 @@ def case_apply_fills_adjudication(failures):
                         % (r.returncode, r.stdout[-300:], comp[-300:]))
 
 
+def case_launcher_event_array_output_is_read(failures):
+    """`-o json` under the user setting `"verbose": true` writes an ARRAY of every event."""
+    sys.path.insert(0, TOOLS_DIR)
+    from pathlib import Path
+    import ladder_ingest
+    d = tempfile.mkdtemp(prefix="li_array_")
+    out = Path(d) / "run.out.json"
+    out.write_text(json.dumps([
+        {"type": "system", "subtype": "init", "session_id": "s1"},
+        {"type": "user", "message": {"role": "user", "content": "the brief"}},
+        {"type": "result", "subtype": "success", "result": "the deliverable", "session_id": "s1"},
+    ]), encoding="utf-8")
+    final, prompt = ladder_ingest._launcher_result(out)
+    if final != "the deliverable" or prompt != "the brief":
+        failures.append("event array: got (%r, %r)" % (final, prompt))
+
+
 def main():
     failures = []
     case_session_files_carry_model_and_turns(failures)
@@ -257,8 +277,9 @@ def main():
     case_same_prompt_false_names_hashes(failures)
     case_empty_transcript_fails_loud(failures)
     case_apply_fills_adjudication(failures)
+    case_launcher_event_array_output_is_read(failures)
 
-    total = 5
+    total = 6
     print("\n%d/%d cases pass" % (total - len(failures), total))
     for f in failures:
         print("  FAIL " + f)

@@ -33,6 +33,10 @@ import _regenerable_clone as rc  # noqa: E402
 PREFIX = os.path.join(CLAUDE, "scratch", "_regenerable_clone_fixture_")
 FIX = PREFIX + str(os.getpid())
 STALE_AFTER_S = 1800  # a live run takes well under a minute
+# The fixture sits under this checkout's scratch, so a deeply nested checkout (a publish worktree)
+# pushes its submodule objects past Windows MAX_PATH. Every git this proof starts, the hook's
+# included, runs with long paths on.
+os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.longpaths", GIT_CONFIG_VALUE_0="true")
 ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
        "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -65,12 +69,12 @@ def rel(path):
     return os.path.relpath(path, PROJECT).replace("\\", "/")
 
 
-def channel(cmd):
+def channel(cmd, project=PROJECT):
     payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "regen-clone-proof",
-               "hook_event_name": "PreToolUse", "cwd": PROJECT}
+               "hook_event_name": "PreToolUse", "cwd": project}
     proc = subprocess.run([sys.executable, os.path.join(CLAUDE, "hooks", "pre_bash_dispatch.py")],
                           input=json.dumps(payload), capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "CLAUDE_PROJECT_DIR": PROJECT})
+                          env={**os.environ, "CLAUDE_PROJECT_DIR": project})
     if proc.returncode not in (0, 2) or "Traceback" in proc.stderr:
         return "CRASH", proc
     denied = proc.returncode == 2 or '"deny"' in proc.stdout or "BLOCKED" in (proc.stdout + proc.stderr)
@@ -102,6 +106,124 @@ def expect_channel(label, cmd, want):
               f"{(proc.stdout + proc.stderr)[:240]!r}")
     else:
         print(f"  ok   channel {label}: {want}")
+
+
+def expect_wt(label, token, want, project, cwd=None):
+    global fails, total
+    total += 1
+    got = rc.is_retired_worktree(token, cwd or project, project)
+    if got != want:
+        fails += 1
+        print(f"  FAIL worktree {label}: expected {want}, got {got} ({token})")
+    else:
+        print(f"  ok   worktree {label}: {'pass' if want else 'block'}")
+
+
+def expect_wt_channel(label, cmd, want, project):
+    global fails, total
+    total += 1
+    got, proc = channel(cmd, project)
+    if got != want:
+        fails += 1
+        print(f"  FAIL worktree channel {label}: expected {want}, got {got} (exit {proc.returncode}) "
+              f"{(proc.stdout + proc.stderr)[:240]!r}")
+    else:
+        print(f"  ok   worktree channel {label}: {want}")
+
+
+def retired_worktree_cases():
+    """A linked worktree under a fixture project's `.claude/worktrees/`, with a submodule, since
+    `git worktree remove` refuses every worktree that carries one."""
+    sub_seed = os.path.join(FIX, "sub_seed")
+    os.makedirs(sub_seed)
+    git("init", "-q", "-b", "main", cwd=sub_seed)
+    write(os.path.join(sub_seed, "s.txt"), "s\n")
+    git("add", "s.txt", cwd=sub_seed)
+    git("commit", "-q", "-m", "s", cwd=sub_seed)
+    sub_remote = os.path.join(FIX, "sub_remote.git")
+    git("clone", "-q", "--bare", sub_seed, sub_remote)
+
+    proj_seed = os.path.join(FIX, "proj_seed")
+    os.makedirs(proj_seed)
+    git("init", "-q", "-b", "main", cwd=proj_seed)
+    write(os.path.join(proj_seed, "a.txt"), "a\n")
+    write(os.path.join(proj_seed, ".gitignore"), ".claude/worktrees/\n.claude/scratch/\n.godot/\n")
+    git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub_remote, "Sub", cwd=proj_seed)
+    git("add", ".", cwd=proj_seed)
+    git("commit", "-q", "-m", "a", cwd=proj_seed)
+    proj_remote = os.path.join(FIX, "proj_remote.git")
+    git("clone", "-q", "--bare", proj_seed, proj_remote)
+    proj = os.path.join(FIX, "proj")
+    git("clone", "-q", proj_remote, proj)
+    home = os.path.join(proj, ".claude", "worktrees")
+    os.makedirs(home)
+
+    def add_wt(name, submodule=False):
+        path = os.path.join(home, name)
+        git("worktree", "add", "-q", "--detach", path, cwd=proj)
+        if submodule:
+            git("-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init", cwd=path)
+        return path
+
+    clean = add_wt("clean")
+    expect_wt("clean, pushed, relative token", ".claude/worktrees/clean", True, proj)
+    expect_wt("clean, pushed, absolute token", clean, True, proj)
+
+    with_sub = add_wt("with_sub", submodule=True)
+    expect_wt("populated submodule, clean and pushed", with_sub, True, proj)
+
+    imports = add_wt("imports")
+    write(os.path.join(imports, "icon.png.import"), "generated\n")
+    expect_wt("untracked Godot .import only", imports, True, proj)
+
+    cache = add_wt("cache")
+    os.makedirs(os.path.join(cache, ".godot", "imported"))
+    write(os.path.join(cache, ".godot", "imported", "icon.ctex"), "c\n")
+    expect_wt("ignored regenerable .godot cache", cache, True, proj)
+
+    evidence = add_wt("evidence")
+    os.makedirs(os.path.join(evidence, ".claude", "scratch"))
+    write(os.path.join(evidence, ".claude", "scratch", "gate.out"), "VERDICT=PASS\n")
+    expect_wt("ignored .claude/scratch evidence", evidence, False, proj)
+
+    untracked = add_wt("untracked")
+    write(os.path.join(untracked, "notes.md"), "n\n")
+    expect_wt("untracked authored file", untracked, False, proj)
+
+    dirty = add_wt("dirty")
+    write(os.path.join(dirty, "a.txt"), "changed\n")
+    expect_wt("modified tracked file", dirty, False, proj)
+
+    ahead = add_wt("ahead")
+    write(os.path.join(ahead, "b.txt"), "b\n")
+    git("add", "b.txt", cwd=ahead)
+    git("commit", "-q", "-m", "local only", cwd=ahead)
+    expect_wt("local-only HEAD commit", ahead, False, proj)
+
+    sub_dirty = add_wt("sub_dirty", submodule=True)
+    write(os.path.join(sub_dirty, "Sub", "s.txt"), "changed\n")
+    expect_wt("modified file inside the submodule", sub_dirty, False, proj)
+
+    locked = add_wt("locked")
+    git("worktree", "lock", locked, cwd=proj)
+    expect_wt("locked worktree", locked, False, proj)
+
+    stray = os.path.join(home, "stray")
+    os.makedirs(stray)
+    expect_wt("unregistered directory", stray, False, proj)
+    expect_wt("the worktrees directory itself", home, False, proj)
+    expect_wt("a directory inside a worktree", os.path.join(with_sub, "Sub"), False, proj)
+    elsewhere = os.path.join(FIX, "elsewhere_wt")
+    git("worktree", "add", "-q", "--detach", elsewhere, cwd=proj)
+    expect_wt("registered worktree outside .claude/worktrees", elsewhere, False, proj)
+    expect_wt("traversal token", ".claude/worktrees/clean/../clean", False, proj)
+    expect_wt("glob token", ".claude/worktrees/cl*", False, proj)
+    expect_wt("a clean worktree of another project", clean, False, os.path.join(FIX, "proj_seed"))
+
+    expect_wt_channel("rm -rf retired worktree", "rm -rf .claude/worktrees/clean", "allow", proj)
+    expect_wt_channel("rm -rf dirty worktree", "rm -rf .claude/worktrees/dirty", "deny", proj)
+    expect_wt_channel("rm -rf retired worktree chained", "rm -rf .claude/worktrees/clean && rm -rf .claude/worktrees/dirty", "deny", proj)
+    expect_wt_channel("rm -rf worktrees directory", "rm -rf .claude/worktrees", "deny", proj)
 
 
 print("_regenerable_clone — regenerable scratch clone discriminator")
@@ -182,9 +304,15 @@ try:
     # The real pre_bash_dispatch.py channel: a crash or traceback is never an allow.
     expect_channel("rm -rf clean clone", "rm -rf " + rel(clean), "allow")
     expect_channel("rm -rf dirty clone", "rm -rf " + rel(dirty), "deny")
-    expect_channel("rm -rf clean clone plus evidence dir", "rm -rf " + rel(clean) + " " + rel(plain), "deny")
+    # A plain scratch folder (no .git inside) is deletable; a clone inside scratch still needs
+    # the clean, fully pushed test (pattern_enforcer._is_resolved_safe_cleanup).
+    expect_channel("rm -rf clean clone plus plain dir", "rm -rf " + rel(clean) + " " + rel(plain), "allow")
+    expect_channel("rm -rf plain dir holding a dirty clone", "rm -rf " + rel(FIX), "deny")
     expect_channel("rm -rf clean clone chained", "rm -rf " + rel(clean) + " && rm -rf " + rel(dirty), "deny")
     expect_channel("rm -rf scratch", "rm -rf .claude/scratch", "deny")
+
+    print("_regenerable_clone — retired worktree discriminator")
+    retired_worktree_cases()
 finally:
     force_rmtree(FIX)
     force_rmtree(outside)

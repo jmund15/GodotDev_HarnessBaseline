@@ -20,8 +20,21 @@ spec.loader.exec_module(fanout)
 BASH = fanout.sidecar_launch.git_bash()
 
 
+CHILD = '11111111-1111-4111-8111-111111111111'
+
+
 class ProducerIdentityTests(unittest.TestCase):
-    def record(self, parent, launch, rc):
+    def test_verbose_json_array_output_keeps_child_identity_and_usage(self):
+        """`-o json` under the user setting `"verbose": true` is an ARRAY of events (live 2026-09-22:
+        every launch died in the record writer with AttributeError: 'list' object has no attribute 'get')."""
+        raw = json.dumps([{"type": "system", "subtype": "init", "session_id": CHILD},
+                          {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}},
+                          {"type": "result", "session_id": CHILD, "usage": {"input_tokens": 3, "output_tokens": 2}}])
+        record, _, _ = self.record('parent-fixture', str(uuid.uuid4()), 0, raw=raw)
+        self.assertEqual(CHILD, record.get('sessionId'))
+
+
+    def record(self, parent, launch, rc, raw=None):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
             script = home / 'fixture.sh'
@@ -39,14 +52,16 @@ SC_RECORD_PARSER="claude"
 SC_LABEL="same-label"
 sc_scrub_env
 env "${SC_SCRUB[@]}" python3 -c 'import os; assert "SIDECAR_LAUNCH_ID" not in os.environ'
-RAW='{"type":"result","session_id":"11111111-1111-4111-8111-111111111111","usage":{"input_tokens":3,"output_tokens":2}}'
+RAW="$RAW_JSON"
 sc_write_record "$RAW" "$RC"
 cp "$SC_RECORD" "$FIXTURE/first.json"
 sc_write_record "$RAW" "$RC"
 ''', encoding='utf-8', newline='\n')
             env = dict(os.environ, COMMON=COMMON.as_posix(), FIXTURE=home.as_posix(),
                        REGISTRY=(ROOT / '.claude/tools/model_registry.py').as_posix(),
-                       RC=str(rc), HOME=str(home), USERPROFILE=str(home), PYTHONDONTWRITEBYTECODE='1')
+                       RC=str(rc), HOME=str(home), USERPROFILE=str(home), PYTHONDONTWRITEBYTECODE='1',
+                       RAW_JSON=raw or json.dumps({"type": "result", "session_id": CHILD,
+                                                   "usage": {"input_tokens": 3, "output_tokens": 2}}))
             env.pop('SIDECAR_LAUNCH_ID', None)
             env.pop('CLAUDE_CODE_SESSION_ID', None)
             if parent is not None:

@@ -161,6 +161,29 @@ CASES = [
     ("every format placeholder is filled -- no stray braces reach the model",
      lambda: "{" not in CODEX and "}" not in CODEX
              and "{" not in BROKEN and "{" not in OPENCODE),
+    # Driver notes: registry data, keyed to the model that DRIVES the session.
+    ("a fable driver gets the F12 note from the registry, with its evidence",
+     lambda: "Recognizing a name" in smr.driver_notes_block("claude-fable-5-1")
+             and "F12" in smr.driver_notes_block("claude-fable-5-1")),
+    ("a codex sol driver gets no notes block (the -1m launcher banner owns that warning)",
+     lambda: smr.driver_notes_block("gpt-5.6-sol[1m]") == ""),
+    ("an opus driver gets no notes block", lambda: smr.driver_notes_block("claude-opus-5-5[1m]") == ""),
+    ("an unknown or absent model gets no notes block",
+     lambda: smr.driver_notes_block("mythos-x") == "" and smr.driver_notes_block(None) == ""),
+    ("the hardcoded fable clause is gone from the hook", lambda: not hasattr(smr, "TIER_LINE_FABLE_EXTRA")),
+    # Anthropic rail: one line, and it keeps the marker tools/ladder_ingest.py reads transport from.
+    ("the Anthropic rail is one line opening with the transport marker",
+     lambda: len(smr.ANTHROPIC_RAILS.strip().splitlines()) == 1
+             and smr.ANTHROPIC_RAILS.startswith("[anthropic session")),
+    ("the Anthropic rail names the sidecar route and no retired hook",
+     lambda: "reference/sidecar_dispatch.md" in smr.ANTHROPIC_RAILS
+             and "translate" not in smr.ANTHROPIC_RAILS),
+    # The tier line carries no output-shape clause: that belongs to the output style.
+    ("an open tier line is the tier alone",
+     lambda: smr.tier_line("condensed") == "[session] Session tier: `condensed` — skip `## detailed` sections."
+             and smr.tier_line("minimal") == "[session] Session tier: `minimal` — skip `## detailed` sections."),
+    ("the detailed tier line names the detailed sections",
+     lambda: "read every `## detailed` section" in smr.tier_line("detailed")),
 ]
 
 

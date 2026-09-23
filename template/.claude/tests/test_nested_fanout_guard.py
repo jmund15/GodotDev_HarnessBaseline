@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 BRIEFS = os.path.join(HERE, "..", "tools", "lens_briefs.py")
+LENS = os.path.join(HERE, "..", "tools", "lens.py")
 
 ALLOW, DENY = "allow", "deny"
 MARKERS = ("Dispatch Shape — decide this " + "FIRST") + "\n" + ("Every dispatched agent " + "pins both") + "\n"
@@ -32,9 +33,39 @@ def checked_run(args, allowed=(0, 2), **kwargs):
     return result
 
 
+def review_keys():
+    """The first two review lenses with a fenced prompt block; each project names its own lenses."""
+    def lens(*args):
+        return checked_run([sys.executable, LENS] + list(args), allowed=(0,), capture_output=True,
+                           text=True, encoding="utf-8", cwd=ROOT, timeout=60).stdout
+    listed = [line.split()[0] for line in lens("index", "review").splitlines()
+              if line.strip() and not line.startswith("#")]
+    keys = []
+    for key in listed:
+        if len(keys) == 2:
+            break
+        if "```\n" in lens("get", key):
+            keys.append(key)
+    if len(keys) < 2:
+        raise RuntimeError("review registry has fewer than 2 lenses with a prompt block: %r" % listed)
+    return keys
+
+
+STATE = tempfile.mkdtemp(prefix="nestedfanout_state_")
+
+
+def arm_ladder(session_id):
+    """The ladder-read check is not under test: arm its one-use marker so only the nested-fan-out check decides."""
+    path = os.path.join(STATE, (session_id or "default")[:8] + ".json")
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"model_ladder_ready": True}, fh)
+
+
 def run(payload):
+    arm_ladder(payload.get("session_id") or "")
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE)
     r = checked_run([sys.executable, HOOK], input=json.dumps(payload, ensure_ascii=False),
-                    capture_output=True, text=True, encoding="utf-8", timeout=60)
+                    capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
     out = (r.stdout or "").strip()
     if not out or out == "{}":
         return ALLOW, ""
@@ -43,6 +74,11 @@ def run(payload):
 
 
 def main():
+    try:
+        key_a, key_b = review_keys()
+    except RuntimeError as exc:
+        print("FAIL lens.py index review did not run:", exc)
+        return 1
     tmp = tempfile.mkdtemp(prefix="nestedfanout_")
     transcript = os.path.join(tmp, "t.jsonl")
     with open(transcript, "w", encoding="utf-8") as fh:
@@ -71,7 +107,7 @@ def main():
         ("agent told to call Workflow", DENY, agent(
             "Run the lenses: invoke Workflow({ scriptPath: '.claude/workflows/dispatch.js', args: {...} }) and consolidate.")),
         ("agent doing one bounded review", ALLOW, agent(
-            "You are error-hunter for PR #7. Read the changed files in the worktree and return a JSON findings array.")),
+            "You are " + key_a + " for PR #7. Read the changed files in the worktree and return a JSON findings array.")),
         ("agent brief that only NAMES the engine", ALLOW, agent(
             "Context: these findings were produced by review_fanout.js earlier. Verify each FIX anchor against the file and report.")),
         ("dispatch.js brief telling the delegate to dispatch", DENY, workflow([brief(
@@ -86,9 +122,9 @@ def main():
         fh.write("# CONTEXT\nnothing\n")
     try:
         gen = checked_run(
-            [sys.executable, BRIEFS, "--keys", "code-reviewer", "error-hunter",
+            [sys.executable, BRIEFS, "--keys", key_a, key_b,
              "--out", tmp, "--prefix", "t1", "--pr-num", "1", "--branch", "x",
-             "--context-path", ctx, "--model", "sonnet"],
+             "--context-path", ctx, "--model", "sonnet", "--model-for", key_a + "=opus"],
             allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
             timeout=60,
         )

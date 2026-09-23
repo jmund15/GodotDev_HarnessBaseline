@@ -70,6 +70,12 @@ FIXTURE = [
                                            {"type": "text", "text": "text typed beside a tool result"}], "u13")),
     ("prompt", user("continue", "u14")),
     ("prompt", user("continue", "u15")),
+    # A message the owner sends MID-TURN is never a user row: the harness records it as an
+    # `attachment` of type `queued_command`. Until this shape parsed, such a message was invisible
+    # to every consumer, so a stop order given mid-turn could not authorize a TaskStop.
+    ("queued_prompt (mid-turn)",
+     {"type": "attachment", "uuid": "u17",
+      "attachment": {"type": "queued_command", "prompt": "stop the two hung codex shells"}}),
 ]
 TURN_BEFORE_ANSWERS = "u08"   # the latest turn when the transcript ends at the tool_result row u13
 
@@ -115,7 +121,8 @@ def main():
     cases.append(("kinds per shape", kinds == {
         "u01": "prompt", "u02": "prompt", "u03": "meta_arguments", "u04": "prompt", "u05": "prompt",
         "u06": "prompt", "u07": "prompt", "u08": "command", "u09": "command", "u10": None,
-        "u11": "answer", "u12": "tool_result", "u13": "prompt", "u14": "prompt", "u15": "prompt"}))
+        "u11": "answer", "u12": "tool_result", "u13": "prompt", "u14": "prompt", "u15": "prompt",
+        "u17": "queued_prompt"}))
     cases.append(("index is the 1-based transcript line", [row.index for row in rows if row] ==
                   [i + 1 for i, row in enumerate(rows) if row]))
     cases.append(("meta and sidechain flags", r["u02"].meta and r["u03"].meta and r["u04"].sidechain

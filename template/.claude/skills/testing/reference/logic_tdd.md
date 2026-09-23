@@ -27,7 +27,7 @@ Production logic-domain code written before the test: **delete it and start over
 
 **Refusal stance for every row:** state the rule as non-negotiable, then prescribe the action. Don't justify it technically under pushback; don't frame Logic-Domain TDD as a tradeoff. Writing "the reason this is better is..." — **STOP**.
 
-Catching yourself thinking any of these ⇒ **stop, delete, restart with a failing test**. The other seven excuses are tabled under `## strict` at the end of this file:
+Catching yourself thinking any of these ⇒ **stop, delete, restart with a failing test**. The other seven excuses are tabled under `## detailed` at the end of this file:
 
 | Excuse | Reality |
 |---|---|
@@ -46,9 +46,9 @@ If the test feels hard to write, **listen to the test**: hard-to-test usually me
 - `reference/choosing.md` anti-pattern sections — how Logic-Domain tests fail in practice once written.
 - `debugging` skill Phase 5 — surviving record of the Wave-2 hot-loop domain-misclassification case.
 
-## strict
+## detailed
 
-Read this section only if your session tier line says `strict`.
+Read this section only if your session tier line says `detailed`.
 
 ### Rationalizations to refuse — the remaining rows
 

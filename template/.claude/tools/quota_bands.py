@@ -51,6 +51,36 @@ BANDS = [
 
 BAND_NAMES = [name for _bound, name, _desc in BANDS]
 
+# The SPENT state, which no burn rate can express: pace measures how fast you are spending, never
+# whether anything is left, so a spent window grades mid-band and a rate-only gate permits it.
+# Deliberately NOT a rung of BANDS: a rank would satisfy the floor shape and violate the ceiling
+# shape, or the reverse, so whichever comparison a gate uses, one direction would silently invert.
+# Both comparators reject it by name.
+EXHAUSTED_BAND = "Exhausted"
+
+
+def is_exhausted(used_percentage, credits=None):
+    """True when the allowance is spent, so no dispatch can proceed on plan quota.
+
+    `credits` is the modifier the Codex probe already documents: purchased credits keep work
+    running after the plan allowance is spent, so exhaustion blocks only when they are absent,
+    empty, or a zero balance. A plan-quota account with no credit balance is the NORMAL case, so
+    `used_percentage` is the trigger and credits only ever excuse it -- never the reverse.
+    """
+    if not isinstance(used_percentage, (int, float)):
+        return False
+    if used_percentage < 100:
+        return False
+    credits = credits or {}
+    if credits.get("unlimited"):
+        return False
+    if credits.get("hasCredits"):
+        try:
+            return float(credits.get("balance")) <= 0
+        except (TypeError, ValueError):
+            return False
+    return True
+
 
 def band_for(pressure):
     """(name, description) for a pressure. Ascending burn rate: Surplus is the LOW one."""
@@ -74,6 +104,8 @@ def band_satisfies(current, required):
     dispatch at Surplus -- spending dollars while prepaid quota expires unused is waste --
     and permits it at Hot, where dollars are the cheaper currency.
     """
+    if current == EXHAUSTED_BAND:
+        return False
     return band_rank(current) >= band_rank(required)
 
 
@@ -85,6 +117,8 @@ def band_within_ceiling(current, ceiling):
     precisely then. Two names because one comparison cannot serve both directions and a
     single misread `min`/`max` prefix silently inverts a gate.
     """
+    if current == EXHAUSTED_BAND:
+        return False
     return band_rank(current) <= band_rank(ceiling)
 
 

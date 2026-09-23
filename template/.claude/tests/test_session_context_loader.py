@@ -5,12 +5,15 @@ SessionStart probes only available off-transport sidecars. Pure in-process — n
 
     python3 .claude/tests/test_session_context_loader.py
 """
+import contextlib
+import io
 import json
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "hooks")))
@@ -145,6 +148,48 @@ def main():
         scl.subprocess.run = real_run
     check("due-line subprocess timeout is 15 s, above the store's 10 s lock wait",
           seen.get("timeout") == 15, repr(seen))
+
+    # The SessionStart proof must exercise the registered script's main() output path, not only
+    # inspect a helper string. Every expensive setup branch is planted so the assertion observes
+    # the continuation guidance emitted to stdout.
+    with tempfile.TemporaryDirectory(prefix="scl_main_") as main_dir:
+        main_root = Path(main_dir)
+        patches = {
+            "get_project_root": lambda: main_root,
+            "is_worktree": lambda: False,
+            "is_cloud": lambda: False,
+            "sweep_stray_search_indexes": lambda _root: None,
+            "setup_submodule": lambda _root: "OK",
+            "setup_import_cache": lambda _root: "OK",
+            "build_status": lambda _root, _source, _ready: "OK",
+            "verify_lsp_plugin": lambda: "OK",
+            "sidecar_health": lambda _root: {},
+            "roster_health": lambda _root: "OK",
+            "get_git_branch": lambda: "main",
+            "get_uncommitted_count": lambda: 0,
+            "get_recent_commits": lambda count=3, cwd=None: [],
+            "get_jmodot_commits": lambda _root, count=3: [],
+            "get_godot_bin": lambda: "",
+            "self_improvement_advisory": lambda _root, _source: "",
+            "godot_docs_cache_issue": lambda _root: None,
+        }
+        payload = {"source": "startup", "session_id": "main-proof", "cwd": str(main_root)}
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), patch.dict(os.environ, {}, clear=False):
+            with contextlib.ExitStack() as stack:
+                for name, value in patches.items():
+                    stack.enter_context(patch.object(scl, name, value))
+                stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(payload))))
+                try:
+                    scl.main()
+                except SystemExit as exc:
+                    check("SessionStart main exits successfully", exc.code == 0, repr(exc.code))
+        output = stdout.getvalue()
+        check("live SessionStart output points pickup to handoff", "--handoff" in output)
+        check("live SessionStart output has no stale brief pickup flag",
+              "session_digest.py --session <id-prefix> --brief" not in output)
+        check("live SessionStart output has no full pickup flag",
+              "session_digest.py --session <id-prefix> --full" not in output)
 
     if failures:
         print("\nFAILED:\n  " + "\n  ".join(failures))

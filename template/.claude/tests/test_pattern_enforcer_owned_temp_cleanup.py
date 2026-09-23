@@ -9,9 +9,10 @@ never reassigns. `_is_safe_ephemeral_cleanup` rejects ANY chaining, `$(`, or var
 design (`pattern_enforcer.py:198-199`), so it can only over-block a self-owned temp-dir cleanup —
 this is a second, narrower allow path alongside it, not a relaxation of it.
 
-Arms: the F8303 command verbatim MUST PASS. Five shapes that look similar but carry no ownership
-evidence MUST BLOCK: no mktemp assignment, a reassigned variable, an extra target, a `/..` suffix,
-and a literal `/tmp/tmp.AbCdEf1234` target. A chained-but-unrelated second delete riding alongside
+Arms: the F8303 command verbatim MUST PASS. Four shapes that look similar but carry no ownership
+evidence MUST BLOCK: no mktemp assignment, a reassigned variable, an extra target and a `/..`
+suffix. A literal path under the system temp directory is judged by the resolved-target allow,
+which `test_pattern_enforcer_rm_scope.py` owns. A chained-but-unrelated second delete riding alongside
 an owned one MUST BLOCK (ownership is judged per delete segment, never for the whole command). The
 existing `test_pattern_enforcer_cache_cleanup.py` and `test_pattern_enforcer_rm_scope.py` batteries
 must stay green, except the one `test_pattern_enforcer_rm_scope.py` MUST_BLOCK case A4 intentionally
@@ -47,7 +48,6 @@ MUST_BLOCK = {
     "reassigned variable": 'TMPD=$(mktemp -d); TMPD="/other/path"; rm -rf "$TMPD"',
     "extra target": 'TMPD=$(mktemp -d); rm -rf "$TMPD" /extra/path',
     "/.. suffix": 'TMPD=$(mktemp -d); rm -rf "$TMPD/.."',
-    "literal mktemp-looking target": 'TMPD=$(mktemp -d); rm -rf /tmp/tmp.AbCdEf1234',
     # Parent review 2026-09-14: a recursive delete that does not HEAD its own segment must still
     # disqualify the command, or one owned delete green-lights a hidden one.
     "delete hidden in command substitution": 'T=$(mktemp -d); echo $(rm -rf /); rm -rf "$T"',

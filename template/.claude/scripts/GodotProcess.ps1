@@ -52,12 +52,13 @@ function Test-UnderRoot {
     param([string] $Text, [string] $Root)
     if ([string]::IsNullOrEmpty($Text)) { return $false }
     if ($Text.IndexOf($Root, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
-    # Nested-worktree guard: worktrees live UNDER the main repo root (<main>\.claude\worktrees\<x>),
-    # so a peer worktree's path also CONTAINS the main root. A reference into the worktrees dir
-    # belongs to that worktree, not to Root. (When Root itself is a worktree, this infix never
-    # occurs in its own paths, so the guard is inert.)
-    $nested = $Root.TrimEnd('\') + '\.claude\worktrees\'
-    return $Text.IndexOf($nested, [System.StringComparison]::OrdinalIgnoreCase) -lt 0
+    # Nested-worktree guard: checkouts live UNDER the main repo root (<main>\.claude\worktrees\<x>
+    # or <main>\.claude\.cache\<name>-worktrees\<x>, e.g. baseline-worktrees), so a
+    # peer checkout's path also CONTAINS the main root. A reference into any of those dirs belongs
+    # to that checkout, not to Root. (When Root itself is a checkout, these infixes never occur in
+    # its own paths, so the guard is inert.)
+    $nested = [regex]::Escape($Root.TrimEnd('\')) + '\\\.claude\\(?:worktrees|\.cache\\[\w.-]*worktrees)\\'
+    return -not [regex]::IsMatch($Text, $nested, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 }
 
 # 'MINE' = attributable to $Root | 'PEER' = another worktree's live process (SPARE it)

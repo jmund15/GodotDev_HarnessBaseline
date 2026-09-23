@@ -17,8 +17,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import (fire_once_since_compaction, read_json_salvage, state_path,
-                         write_json_atomic)
+from _hook_state import (fire_once, fire_once_since_compaction, state_path,
+                         update_json_locked)
+from _prompt_provenance import is_user_intent_prompt
 
 _TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
 if _TOOLS_DIR not in sys.path:
@@ -162,40 +163,43 @@ def get_drive_reminder(prompt: str) -> str:
 
 # Cadence for the STANDARD MemoryCheck nudge only (plan-mode and high-risk nudges stay
 # uncapped — higher signal). The full text says the same thing every time, so after the
-# first delivery the only new information is a domain the session has not searched yet.
-MEMORY_CHECK_SESSION_CAP = 5    # `strict` tier only
+# first delivery the only new information is a domain the session has not been
+# reminded about yet.
+MEMORY_CHECK_SESSION_CAP = 5    # `detailed` tier only
+# When no domain matched, a repeat of the full text carries nothing the session does not
+# already hold: there is no domain name in it to be new. One delivery, every tier, and
+# nothing re-arms it — not the repeat cap, not a compaction.
+GENERIC_MEMORY_CHECK_KEY = "memory_check_generic"
 
 
 def _session_tier(session_id: str) -> str:
-    """The session's model tier, or `strict` when the tier module is absent.
+    """The session's model tier, or `detailed` when the tier module is absent.
 
-    Guarded import: `strict` is the safe default — it keeps the repeat-capped cadence
+    Guarded import: `detailed` is the safe default — it keeps the repeat-capped cadence
     rather than assuming one delivery is enough."""
     try:
         from _model_tier import session_tier
-        return str(session_tier(session_id) or "strict")
+        return str(session_tier(session_id) or "detailed")
     except Exception:
-        return "strict"
+        return "detailed"
 
 
 def _bump_memory_check_count(session_id: str) -> int:
-    """Increment + return this session's standard-nudge fire count.
-    Best-effort read-modify-write on the shared session state file;
-    returns 1 on any failure (fail-open toward nudging)."""
+    """Increment the standard-nudge count; fail open toward nudging."""
     path = state_path(session_id)
-    state = read_json_salvage(path)
-    count = int(state.get("memory_check_fires", 0) or 0) + 1
-    state["memory_check_fires"] = count
-    try:
-        write_json_atomic(path, state)
-    except Exception:
-        pass
-    return count
+
+    def update(state):
+        count = int(state.get("memory_check_fires", 0) or 0) + 1
+        state["memory_check_fires"] = count
+        return count
+
+    written, count = update_json_locked(path, update)
+    return count if written else 1
 
 
 def _memory_check_is_new(session_id: str) -> bool:
     """True when the FULL MemoryCheck text is still news to this session."""
-    if _session_tier(session_id) == "strict":
+    if _session_tier(session_id) == "detailed":
         return _bump_memory_check_count(session_id) <= MEMORY_CHECK_SESSION_CAP
     return fire_once_since_compaction(session_id, "memory_check")
 
@@ -212,20 +216,25 @@ def _prompt_domains(prompt: str) -> list:
     return names or ["unclassified"]
 
 
-def _record_domains(session_id: str, domains: list) -> list:
-    """Add `domains` to this session's searched set; return the ones that were new."""
+def _record_reminded_domains(session_id: str, domains: list) -> list:
+    """Record reminder delivery; return domains not previously reminded.
+
+    The legacy `searched_domains` key was also written on reminder emission, so
+    it is discarded rather than migrated as evidence of a completed search.
+    """
     path = state_path(session_id)
-    state = read_json_salvage(path)
-    seen = state.get("searched_domains")
-    seen = list(seen) if isinstance(seen, list) else []
-    new = [d for d in domains if d not in seen]
-    if new:
-        state["searched_domains"] = seen + new
-        try:
-            write_json_atomic(path, state)
-        except Exception:
-            pass
-    return new
+
+    def update(state):
+        seen = state.get("reminded_domains")
+        seen = list(seen) if isinstance(seen, list) else []
+        new = [d for d in domains if d not in seen]
+        state.pop("searched_domains", None)
+        if new:
+            state["reminded_domains"] = (seen + new)[-50:]
+        return new
+
+    written, new = update_json_locked(path, update)
+    return new if written else list(domains)
 
 
 def main():
@@ -235,11 +244,14 @@ def main():
     except json.JSONDecodeError:
         print("{}")  # Workaround for Claude Code #10463
         sys.exit(0)
+    if not isinstance(input_data, dict):
+        print("{}")
+        sys.exit(0)
 
     prompt = input_data.get("prompt", "")
     permission_mode = input_data.get("permission_mode", "default")
 
-    if not prompt:
+    if not prompt or not is_user_intent_prompt(prompt):
         print("{}")
         sys.exit(0)
 
@@ -291,13 +303,23 @@ Avoid reflexive agreement. Instead, provide substantive technical analysis.
     else:
         session_id = input_data.get("session_id", "") or ""
         domains = _prompt_domains(prompt)
-        if _memory_check_is_new(session_id):
-            _record_domains(session_id, domains)
+        # A generic prompt gets one full delivery per session. Short-circuit order matters:
+        # once the generic gate is spent, the domain gate below is left untouched, so a
+        # later prompt that DOES name a domain still earns the full text.
+        generic = domains == ["unclassified"]
+        if generic and not fire_once(session_id, GENERIC_MEMORY_CHECK_KEY):
+            fresh = False
+        else:
+            fresh = _memory_check_is_new(session_id)
+        if fresh:
+            _record_reminded_domains(session_id, domains)
             print("""<user-prompt-submit-hook>
-MEMORY CHECK — search auto-memory for domain gotchas before proceeding (semantic-search if connected, else Grep, restrictToDir=.claude/auto-memory); use CLAUDE.md for query seeds, max ~3 searches. Report: Memory: [query | N/A] | Skills: [invoked|auto-rules|N/A]. Re-search NEW domains if scope grows.
+MEMORY CHECK — before acting, semantic-search .claude/auto-memory (else Grep) for this task's domain gotchas, up to 3 queries. Report `Memory: <query|N/A> | Skills: <invoked|auto-rules|N/A>`.
 </user-prompt-submit-hook>""")
         else:
-            new = _record_domains(session_id, domains)
+            # `unclassified` means "no domain matched" — it earns the one generic delivery above,
+            # never a NEW DOMAIN line once that delivery is spent.
+            new = _record_reminded_domains(session_id, [d for d in domains if d != "unclassified"])
             if new:
                 print("""<user-prompt-submit-hook>
 NEW DOMAIN: %s — search auto-memory before acting.

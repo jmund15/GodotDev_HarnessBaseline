@@ -71,14 +71,31 @@ def checked_run(args, **kwargs):
     return result
 
 
-def run(command, env, session=SID, run_in_background=False):
+def arm_ladder(env, session):
+    state_dir = env["HARNESS_HOOK_STATE_DIR"]
+    os.makedirs(state_dir, exist_ok=True)
+    path = os.path.join(state_dir, (session or "default")[:8] + ".json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except Exception:
+        state = {}
+    state["model_ladder_ready"] = True
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(state, fh)
+
+
+def run(command, env, session=SID, run_in_background=False, ladder=True, cwd=None):
+    if ladder:
+        arm_ladder(env, session)
     tool_input = {"command": command}
     if run_in_background:
         tool_input["run_in_background"] = True
-    r = checked_run([sys.executable, HOOK],
-                    input=json.dumps({"tool_name": "Bash", "session_id": session,
-                                      "tool_input": tool_input}),
-                    capture_output=True, text=True, timeout=90, env=env)
+    payload = {"tool_name": "Bash", "session_id": session, "tool_input": tool_input}
+    if cwd:
+        payload["cwd"] = cwd
+    r = checked_run([sys.executable, HOOK], input=json.dumps(payload),
+                    capture_output=True, text=True, timeout=90, env=env, cwd=cwd)
     out = (r.stdout or "").strip()
     if not out:
         return {}
@@ -169,6 +186,29 @@ def main():
                   run("bash %s -W -m fake -f brief.md" % peak, env, session="sdc00942").get("permissionDecision") is None))
     cases.append(("a passing --check is never denied",
                   run(launch, env, session="sdc00012").get("permissionDecision") is None))
+    no_ladder = run(launch, env, session="sdc00950", ladder=False)
+    cases.append(("a direct dispatch without a fresh ladder Read is denied",
+                  no_ladder.get("permissionDecision") == "deny"
+                  and "model_ladder_evidence.md" in no_ladder.get("permissionDecisionReason", "")))
+    # A session working inside a worktree: the gate accepts only the primary checkout's ladder
+    # (CLAUDE_PROJECT_DIR), so the denial must name that file absolutely.
+    worktree = os.path.join(project, ".claude", "worktrees", "wt1")
+    os.makedirs(os.path.join(worktree, ".claude", "reference"), exist_ok=True)
+    primary_ladder = os.path.realpath(
+        os.path.join(project, ".claude", "reference", "model_ladder_evidence.md"))
+    worktree_ladder = os.path.realpath(
+        os.path.join(worktree, ".claude", "reference", "model_ladder_evidence.md"))
+    wt_denial = run(launch, env, session="sdc00952", ladder=False, cwd=worktree)
+    wt_reason = wt_denial.get("permissionDecisionReason", "")
+    cases.append(("a worktree-cwd sidecar denial names the primary checkout's ladder absolutely",
+                  wt_denial.get("permissionDecision") == "deny" and primary_ladder in wt_reason))
+    cases.append(("a worktree-cwd sidecar denial never names the worktree's stale copy",
+                  wt_denial.get("permissionDecision") == "deny" and worktree_ladder not in wt_reason))
+    first = run(launch, env, session="sdc00951")
+    second = run(launch, env, session="sdc00951", ladder=False)
+    cases.append(("one ladder Read authorizes later sidecar dispatches without a re-read",
+                  first.get("permissionDecision") is None
+                  and second.get("permissionDecision") is None))
     with patch.object(sidecar, "_git_bash", return_value="bash"), patch.object(
         sidecar.subprocess,
         "run",
@@ -349,6 +389,7 @@ def main():
          if os.path.isfile(os.path.join(real_root, ".claude", "scripts", n))),
         None)
     real_cmd = ("bash .claude/scripts/%s -m sonnet -R %s" % (real_launcher, real_record))
+    arm_ladder(real_env, "sdc00041")
     real = subprocess.run(
         [sys.executable, PRE_BASH_DISPATCH],
         input=json.dumps({"tool_name": "Bash", "session_id": "sdc00041",
@@ -388,6 +429,13 @@ def main():
     cases.append(("an unrelated command is silent", run("git status", env, session="sdc00004") == {}))
     cases.append(("a launcher named as an ARGUMENT is not a launch (--launcher x.sh --tasks)",
                   run("python3 bench.py campaign zz --launcher %s --tasks t4" % refusing, env, session="sdc00005") == {}))
+    cases.append(("a launch line inside a quoted python -c string is not a launch",
+                  run("python3 -c \"print(parse('bash %s -m fake -f b.md'))\"" % refusing, env, session="sdc00006") == {}))
+    cases.append(("a launch line echoed in quotes is not a launch",
+                  run("echo 'bash %s -m fake -f b.md'" % refusing, env, session="sdc00007") == {}))
+    cases.append(("an env-prefixed launch after && is still a launch",
+                  run("cd /tmp && FOO=1 bash %s -m fake -f b.md" % refusing, env, session="sdc00008")
+                  .get("permissionDecision") == "deny"))
 
     failures = [label for label, ok_ in cases if not ok_]
     for label, ok_ in cases:

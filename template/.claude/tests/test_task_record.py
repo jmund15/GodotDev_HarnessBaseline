@@ -127,6 +127,20 @@ def main():
     tr.open_record("s1-later", session_id="s1", title="Later")
     check("active picks the newest record of the session", tr.active("s1")["task_id"] == "s1-later")
     check("active is None for an unknown session", tr.active("nope") is None)
+    # A record opened with the 8-char sid the hooks print must re-inject for the full session id the
+    # compaction hook passes, and the reverse (2026-09-22: bench-ready-0922 opened as `fd4ff546`
+    # was reported as "No task record" after compaction).
+    full = "fd4ff546-999d-4ad3-add7-12dfa2498b7c"
+    tr.open_record("sid8-drive", session_id=full[:8], title="Opened with sid8")
+    got = tr.active(full)
+    check("a record opened with the 8-char sid is active for the full session id",
+          bool(got) and got["task_id"] == "sid8-drive", got and got.get("task_id"))
+    other = "0a1b2c3d-1111-2222-3333-444455556666"
+    tr.open_record("full-drive", session_id=other, title="Opened with the full id")
+    got = tr.active(other[:8])
+    check("a record opened with the full session id is active for its 8-char sid",
+          bool(got) and got["task_id"] == "full-drive", got and got.get("task_id"))
+    check("a 7-char prefix matches no session", tr.active(full[:7]) is None)
 
     # bounded block: requirements and exclusions whole, decisions water-filled, omissions named
     tr.open_record("s1-block", session_id="s1b", title="Block")

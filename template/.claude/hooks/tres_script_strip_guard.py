@@ -144,7 +144,7 @@ def hook():
         print("{}")
         return 0
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from _git_commit import commit_invocations, bypass_declared, git_environ
+    from _git_commit import commit_invocations, bypass_declared, git_environ, git_invocation, segments
     cmd = data.get("tool_input", {}).get("command", "")
     commits = [c for c in commit_invocations(cmd, data.get("cwd") or ".") if c.sub == "commit"]
     if commits:
@@ -176,22 +176,61 @@ def hook():
             "permissionDecisionReason": reason,
         }}))
         return 0
-    if ("git restore" in cmd or "git checkout" in cmd) and re.search(r"\.tres|restore \.|checkout \.", cmd):
+    if any(_restores_tres(git_invocation(seg)) for seg in segments(cmd)):
         # A git-restore of a .tres re-plants the OLD-FORMAT dirty-flag bomb (missing ext_resource
         # uids -> the editor rewrites on the next save -> the strip recurs). Allow, but advise.
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "additionalContext": (
-                "[tres-script-strip-guard] `git restore`/`checkout` of a .tres re-plants the "
-                "OLD-FORMAT dirty-flag bomb (ext_resource uid-less -> editor rewrites at the next "
-                "save -> strip recurs, the 4x encounter corruption). For a stripped file use "
-                "`tres_script_strip_guard.py --worktree --repair-inplace` (keeps the editor's "
-                "normalization); godot_files.md §UID handling."
+                "[tres-script-strip-guard] Restoring an old-format .tres re-strips it on the next "
+                "editor save. For a stripped file run "
+                "`tres_script_strip_guard.py --worktree --repair-inplace` instead."
             ),
         }}))
         return 0
     print("{}")
     return 0
+
+
+# Flags of `git restore` / `git checkout` whose value is the next token, never a pathspec.
+_RESTORE_VALUE_FLAGS = {"-s", "--source", "-b", "-B", "--orphan"}
+
+
+def _may_hold_tres(path):
+    """A pathspec that names a .tres, or one that could contain one: `.`, a directory, a glob."""
+    name = path.rstrip("/").rsplit("/", 1)[-1].lstrip(".")
+    return (path.endswith(".tres") or path.endswith("/") or any(c in path for c in "*?[")
+            or "." not in name)
+
+
+def _restores_tres(invocation):
+    """True when a parsed git invocation is a restore/checkout whose pathspecs may hold a .tres.
+    Without `--`, checkout's first positional is a tree-ish unless it is `.`, a .tres or a glob."""
+    if not invocation or not invocation[0] or invocation[0][0] not in ("restore", "checkout"):
+        return False
+    sub, rest = invocation[0][0], invocation[0][1:]
+    if any(a.startswith("--pathspec-from-file") for a in rest):
+        return True
+    positional, after_dashdash, i = [], None, 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--" and after_dashdash is None:
+            after_dashdash = len(positional)
+        elif arg in _RESTORE_VALUE_FLAGS:
+            i += 1
+        elif not arg.startswith("-"):
+            positional.append(arg)
+        i += 1
+    if after_dashdash is not None:
+        paths = positional[after_dashdash:]
+    elif sub == "checkout" and positional:
+        first = positional[0]
+        paths = positional[1:]
+        if first.rstrip("/") == "." or first.endswith(".tres") or any(c in first for c in "*?["):
+            paths = positional
+    else:
+        paths = positional
+    return any(_may_hold_tres(p) for p in paths)
 
 
 def worktree_scan(revert, repair=False):

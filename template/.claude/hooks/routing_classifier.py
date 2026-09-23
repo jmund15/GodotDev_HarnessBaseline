@@ -34,9 +34,7 @@ Design contract:
   vs worker — measured, never judged). The other three are noise from the dashboard's
   perspective.
 
-This module is the single home for these helpers and cue lists — the former
-inline copies in tool_routing_nudge.py / tool_routing_post_grep.py were removed at extraction
-(2026-05-04).
+This module is the single home for these helpers and cue lists.
 """
 
 from __future__ import annotations
@@ -46,34 +44,31 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from _claude_scope import harness_tail
 
-# === Cue-word constants (extracted verbatim from existing hooks) =============
+
+# === Cue-word constants =====================================================
 
 # K1 carve-out: user explicitly wanted literal text scan including comments,
 # doc-comments, string-literal mentions. LSP would filter those out;
-# semantic-search ranks by similarity, not exact-text occurrence. Grep is
-# correct here despite the PascalCase shape. Source: tool_routing_nudge.py:77-87
-# and tool_routing_post_grep.py:59-69 (now centralized here).
+# semantic-search ranks by similarity, not exact-text occurrence.
+# Grep remains correct for literal text even when the pattern is PascalCase.
 LITERAL_INTENT_CUES = (
     "literal",
     "verbatim",
-    # Narrowed from bare "comment" (2026-06-09): substring matching made any
-    # prompt mentioning "a comment" exempt the literal-scan rule.
+    # Keep comment cues qualified; a bare "comment" matches ordinary prose.
     "including comments",
     "in comments",
     "comment scan",
     "string literal",
-    # Bare "audit" retired (owner decision R4, 2026-09-14): "Audit X for bugs" is not a literal scan.
+    # Bare "audit" describes review shape, not a literal scan.
     "documentation audit",
     "every occurrence",
     "exact text",
     "raw text",
 )
 
-# L6 carve-out: user explicitly invoked the verified-unique-name override
-# documented in csharp_lsp.md. Grep returns the same set as LSP for verified-
-# unique names, so anchor-then-navigate is unnecessary overhead.
-# Source: tool_routing_nudge.py:92-100.
+# L6 carve-out: verified-unique names return the same set through Grep as through LSP.
 VERIFIED_UNIQUE_CUES = (
     "verified-unique",
     "verified unique",
@@ -106,15 +101,6 @@ AUDIT_INTENT_CUES = (
     "review for issues",
 )
 
-# Path fragments that are agent-runtime instruction surfaces, never synthesis
-# targets. CLAUDE.md §Tool Routing write-routing forbids routing `.claude/` markdown
-# through the worker at all — so a Read here can only be an execute/edit read,
-# and the digest nudge is always wrong. Matched case-insensitively on the path
-# with separators normalized.
-HARNESS_PATH_MARKERS = (
-    "/.claude/",
-)
-
 # High-precision prompt evidence for the worker's copyable bulk-I/O lane. A path,
 # extension, or read count is never enough. The paired cue groups accept plain
 # task wording while avoiding derived requests such as "compare and recommend".
@@ -141,21 +127,21 @@ COPYABLE_OUTPUT_CUES = (
     "extract",
 )
 
-# Bulk-search thresholds for obsidian_search_notes. Source: tool_routing_nudge.py:125-126.
+# Bulk-search thresholds for obsidian_search_notes.
 BULK_CONTEXT_THRESHOLD = 100
 BULK_MAXMATCHES_THRESHOLD = 5
 
 
-# === Pattern matchers (extracted verbatim from tool_routing_nudge.py) ========
+# === Pattern matchers ========================================================
 
-# PascalCase identifier with no regex metacharacters. Source: tool_routing_nudge.py:129-130.
+# PascalCase identifier with no regex metacharacters.
 _PASCAL_IDENT = re.compile(r"^[A-Z][A-Za-z0-9_]+$")
 _REGEX_METACHARS = set(r".\^$|?*+()[]{}")
 
 
 def is_pascal_identifier(pattern: str) -> bool:
     """True if pattern is a single PascalCase identifier with no regex meta.
-    Verbatim from tool_routing_nudge.py:_is_pascal_identifier()."""
+    """
     if not pattern or not _PASCAL_IDENT.match(pattern):
         return False
     return not any(c in _REGEX_METACHARS for c in pattern)
@@ -173,7 +159,6 @@ def grep_target_family(tool_input: dict) -> str:
                       indexed file families; semantic-search broadly applicable
       other         — file family not indexed by semantic-search (rare)
 
-    Verbatim from tool_routing_nudge.py:_grep_target_family().
     """
     glob = (tool_input.get("glob") or "").lower()
     type_ = (tool_input.get("type") or "").lower()
@@ -200,7 +185,7 @@ def grep_target_family(tool_input: dict) -> str:
 
 
 def is_cloud_session() -> bool:
-    """Cloud sessions disable LSP. Verbatim from tool_routing_nudge.py:_is_cloud_session()."""
+    """Cloud sessions disable LSP."""
     return os.environ.get("CLAUDE_CODE_REMOTE", "").lower() in ("1", "true", "yes")
 
 
@@ -231,10 +216,8 @@ def prompt_has_audit_intent(prompt: str) -> bool:
 
 
 def is_harness_path(path: str) -> bool:
-    """True if the path is an agent-runtime instruction surface (`.claude/`)."""
-    if not path:
-        return False
-    return any(m in path.replace("\\", "/").lower() for m in HARNESS_PATH_MARKERS)
+    """True if the canonical path is an agent-runtime instruction surface."""
+    return harness_tail(path) is not None
 
 
 def is_bounded_read(tool_input: dict) -> bool:
@@ -257,7 +240,6 @@ def prompt_has_grep_override_cue(prompt: str) -> bool:
     """
     True if prompt contains EITHER literal-intent (K1) OR verified-unique (L6) cue.
     Combined check used by the Grep-on-PascalCase rule.
-    Verbatim from tool_routing_nudge.py:_prompt_has_override_cue().
     """
     return prompt_has_literal_intent(prompt) or prompt_has_verified_unique_intent(prompt)
 

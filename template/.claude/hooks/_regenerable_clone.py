@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Is a recursive-delete target a regenerable git clone under `.claude/scratch/`?
+"""Is a recursive-delete target a regenerable git clone under `.claude/scratch/`, or a retired
+worktree under `.claude/worktrees/` (`is_retired_worktree`)?
 
 `pattern_enforcer.py` blocks every recursive delete outside its cache allowlist, and it keeps
 `.claude/scratch` blocked on purpose: scratch holds evidence. A throwaway clone a session made
@@ -87,5 +88,95 @@ def is_regenerable_clone(token: str, cwd: str, project_root: str) -> bool:
                  ["rev-list", "--branches", "--tags", "--not", "--remotes"]):
         out = _git(args, target)
         if out is None or out.strip():
+            return False
+    return True
+
+
+_GENERATED_UNTRACKED_SUFFIXES = (".import",)
+_REGENERABLE_IGNORED_SEGMENTS = frozenset({".godot", "__pycache__", ".pytest_cache", ".search-index", ".cache",
+                                           "TestResults"})
+_REGENERABLE_IGNORED_PAIRS = frozenset({(".claude", "cache"), (".claude", "logs")})
+
+
+def _regenerable_ignored(entry: str) -> bool:
+    parts = entry.split("/")
+    return (bool(_REGENERABLE_IGNORED_SEGMENTS & set(parts))
+            or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(parts, parts[1:])))
+
+
+def _pushed(repo: Path) -> bool:
+    out = _git(["rev-list", "HEAD", "--not", "--remotes"], repo)
+    return out is not None and not out.strip()
+
+
+def _registered_unlocked(listing: str, target: Path) -> bool:
+    for block in listing.strip().split("\n\n"):
+        lines = block.splitlines()
+        if not lines or not lines[0].startswith("worktree "):
+            continue
+        try:
+            path = Path(lines[0][len("worktree "):]).resolve(strict=True)
+        except OSError:
+            continue
+        if _same_path(path, target):
+            return not any(line == "locked" or line.startswith("locked ") for line in lines)
+    return False
+
+
+def is_retired_worktree(token: str, cwd: str, project_root: str) -> bool:
+    """True only when `token` names a linked worktree of `project_root`, directly under
+    `<project>/.claude/worktrees/`, whose deletion loses nothing.
+
+    `git worktree remove` refuses every worktree carrying a submodule, so a retired one can only go
+    by a recursive delete followed by `git worktree prune`. The worktree must be registered and
+    unlocked; its status may hold only untracked Godot `.import` files and ignored regenerable caches
+    (`_REGENERABLE_IGNORED_SEGMENTS`, `_REGENERABLE_IGNORED_PAIRS`), so ignored scratch evidence or
+    local config blocks the delete; its HEAD and every populated
+    submodule's HEAD must be reachable from a remote-tracking ref, and each submodule must be clean.
+    """
+    if not token or _UNSAFE_PATH_CHARS.search(token):
+        return False
+    parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return False
+    raw = Path(token) if os.path.isabs(token) else Path(cwd) / token
+    try:
+        target = raw.resolve(strict=True)
+        root = Path(project_root).resolve(strict=True)
+        home = (root / ".claude" / "worktrees").resolve(strict=True)
+    except OSError:
+        return False
+    if not _same_path(target.parent, home) or not (target / ".git").is_file():
+        return False
+
+    listing = _git(["worktree", "list", "--porcelain"], root)
+    if listing is None or not _registered_unlocked(listing, target):
+        return False
+    status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching",
+                   "--ignore-submodules=none"], target)
+    if status is None:
+        return False
+    for line in status.splitlines():
+        entry = line[3:].rstrip("/")
+        if line.startswith("?? ") and entry.endswith(_GENERATED_UNTRACKED_SUFFIXES):
+            continue
+        if line.startswith("!! ") and _regenerable_ignored(entry):
+            continue
+        return False
+    if not _pushed(target):
+        return False
+
+    submodules = _git(["submodule", "status", "--recursive"], target)
+    if submodules is None:
+        return False
+    for line in submodules.splitlines():
+        fields = line[1:].split()
+        if len(fields) < 2:
+            return False
+        sub = target / fields[1]
+        if not (sub / ".git").exists():
+            continue
+        sub_status = _git(["status", "--porcelain", "--untracked-files=all"], sub)
+        if sub_status is None or sub_status.strip() or not _pushed(sub):
             return False
     return True

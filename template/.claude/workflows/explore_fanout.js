@@ -95,17 +95,23 @@ if (SPILL_DIR) {
 // survey looks like — routing, and the three absence gotchas) lives in .claude/guards/{any,survey}.md,
 // ONE home shared with dispatch.js and hooks/session_model_rails.py; this engine injects a reference,
 // never a copy. MACHINE SAFETY + the output contract stay inline because they are this engine's own
-// invariants (read-only by construction, it owns CLAIMS_SCHEMA, it knows the lens count) and must
-// hold even at the tier where the doctrine reference is suppressed.
-const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'none' }
-// Off-Anthropic the RECEIVING model is deepseek whatever role name was pinned — strict band.
-const tierOf = (m) => A.__transport ? 'strict' : (TIER_OF[m] || 'strict')
+// invariants (read-only by construction, it owns CLAIMS_SCHEMA, it knows the lens count) and hold
+// at every guard tier.
+// Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
+// hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
+// does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
+const tierOf = (m) => RAILS[m] || 'detailed'
 const CONCURRENT = lenses.length > 1
+// The platform relays the triggering user message to every agent as authoritative; a lens whose
+// mandate looks unrelated can answer that message instead of its brief.
+const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
 const BASE_CONTRACT = (l) => [
   '',
   '=== ENGINE CONTRACT ===',
+  RELAY_LINE,
   spills(l) ? 'Read-only: do NOT modify, create, or delete any file EXCEPT the single spill file named in the SPILL-BEFORE-VALIDATE contract below.' : 'Read-only: do NOT modify, create, or delete any file.',
   CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight); Python and Node proofs under .claude/tests/ are not single-flight, so run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — anchor with Grep and Read instead. If your mandate needs a Godot or C# test run or call-site enumeration via the LSP, report it as a gap; it needs a serialized dispatch.' : null,
   'You report STATE, never advice. A claim says what IS; it never says what should be built, fixed, or preferred. Recommendations are the orchestrator\'s to make from your claims.',
@@ -126,7 +132,6 @@ const BASE_CONTRACT = (l) => [
 // this engine is discovery-shaped by construction, so unlike dispatch.js there is nothing to select.
 const guardRef = (l) => {
   const tier = tierOf(l.model)
-  if (tier === 'none') { return BASE_CONTRACT(l) }
   return BASE_CONTRACT(l) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',

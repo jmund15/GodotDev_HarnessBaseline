@@ -19,13 +19,15 @@ import tempfile
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1] / "tools" / "baseline_sync.py"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from harness_tests import GIT_REPO_ENV  # noqa: E402
 
 
 def _env(root: Path) -> dict[str, str]:
     env = os.environ.copy()
     # A caller committing from a temporary index (GIT_INDEX_FILE) or another repository must not
-    # redirect the scratch repositories these proofs build.
-    for key in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY"):
+    # redirect the scratch repositories these proofs build: drop every repo-local git variable.
+    for key in GIT_REPO_ENV:
         env.pop(key, None)
     env["GIT_CEILING_DIRECTORIES"] = str(root.parent)
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -492,6 +494,9 @@ def test_cli_root_stops_at_the_git_top_level() -> None:
 
 
 
+PROJECT_PLACEHOLDER = "{{" + "PROJECT_NAME" + "}}"  # assembled so the residual-placeholder check never flags this file
+
+
 def _write_json(path: Path, value: object) -> None:
     _write(path, (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode())
 
@@ -660,6 +665,25 @@ def test_v2_classify_tracked_refuses_planted_topology_token() -> None:
         assert "files" not in _load_lock(root) or rel not in _load_lock(root)["files"]
 
 
+def test_v2_classify_tracked_scans_the_reverse_substituted_text() -> None:
+    """`publish` reverse-substitutes a row before its scrub scan, so a lock substitution value
+    in a consumer file publishes as its placeholder. `classify --status tracked` scans that same
+    text: the value alone is not a hit. The value is assembled at runtime from fragments."""
+    rel = ".claude/commands/substituted.md"
+    value = "Zorb" + "laxian"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(path, {})
+        lock = _load_lock(root)
+        lock["substitutions"] = {"{{" + "PROJECT_NAME" + "}}": value}
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _write(root / rel, ("The " + value + " harness runs this.\n").encode())
+        _git(root, "add", "-A")
+        result = _run(root, "classify", rel, "--status", "tracked")
+        output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+        assert result.returncode == 0, output
+        assert _load_lock(root)["files"][rel]["status"] == "tracked"
+
+
 def test_v2_judge_success_refusal_and_repeat() -> None:
     rel = ".claude/tools/judge.py"
     with _fixture() as path:
@@ -676,6 +700,25 @@ def test_v2_judge_success_refusal_and_repeat() -> None:
         assert refusal.returncode == 1, refusal.stdout.decode(errors="replace")
         bad = _run_baseline(root, baseline, "judge", rel, "--verdict", "fork", "--confirm")
         assert bad.returncode == 1
+
+
+def test_v2_judge_commit_reads_that_commit_not_the_shared_index() -> None:
+    # A peer's staged edit sits in the shared index; `publish --from-commit` compares the
+    # judged sha with the commit's blob, so the judgment must read the same blob.
+    rel = ".claude/tools/pinned.py"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {rel: {"upstream": b"value = 1\n"}}
+        )
+        (root / rel).write_bytes(b"value = 2\n")
+        pinned = _commit(root, "pinned content")
+        (root / rel).write_bytes(b"value = 3\n")
+        _git(root, "add", rel)
+        result = _run(root, "judge", rel, "--verdict", "push", "--commit", pinned)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["judged"]["sha"] == _sha(b"value = 2\n")
+        missing = _run(root, "judge", ".claude/tools/absent.py", "--verdict", "push", "--commit", pinned)
+        assert missing.returncode == 1
 
 
 def test_v2_triage_json_fields_and_truncation() -> None:
@@ -744,6 +787,50 @@ def test_v2_gc_success_refusal_and_repeat() -> None:
         _write_json(root / ".claude" / "baseline.lock.json", corrupt)
         refused = _run(root, "gc", "--apply")
         assert refused.returncode == 1
+
+
+def test_v2_classify_local_declines_an_upstream_only_path() -> None:
+    """A consumer that deliberately does not carry an upstream file records that with
+    `classify --status local`: the row keeps the path out of `new-upstream`, and `gc` keeps it
+    although the local file is absent. A path upstream lacks too is still refused."""
+    declined = ".claude/commands/declined.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {declined: {"upstream": b"upstream body\n", "local": None}}
+        )
+        lock = _load_lock(root)
+        del lock["files"][declined]
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "no row")
+        before = _json_output(_run_baseline(root, baseline, "check", "--json"))
+        assert before["results"][declined] == "new-upstream"
+
+        first = _run_baseline(root, baseline, "classify", declined, "--status", "local")
+        assert first.returncode == 0, (first.stdout + first.stderr).decode(errors="replace")
+        row = _load_lock(root)["files"][declined]
+        assert row["status"] == "local" and row["absent"] is True
+        assert row["judged"]["verdict"] == "keep-local"
+        assert row["judged"]["sha"] == _sha(b"upstream body\n")
+        _assert_no_change(_run_baseline(root, baseline, "classify", declined, "--status", "local"))
+
+        strict = _run_baseline(root, baseline, "check", "--strict", "--json")
+        assert strict.returncode == 0, strict.stdout.decode(errors="replace")
+        assert _json_output(strict)["results"][declined] == "local"
+
+        gc_result = _run(root, "gc", "--apply")
+        assert gc_result.returncode == 0, gc_result.stderr.decode(errors="replace")
+        assert "keep-declined: " + declined in gc_result.stdout.decode()
+        assert declined in _load_lock(root)["files"]
+
+        typo = _run_baseline(root, baseline, "classify", ".claude/commands/nowhere.md", "--status", "local")
+        assert typo.returncode == 1, typo.stdout.decode(errors="replace")
+        tracked = _run_baseline(root, baseline, "classify", declined, "--status", "tracked", "--force")
+        assert tracked.returncode == 1, tracked.stdout.decode(errors="replace")
+
+        adopted = _run_baseline(root, baseline, "pull", declined, "--force")
+        assert adopted.returncode == 0, (adopted.stdout + adopted.stderr).decode(errors="replace")
+        assert (root / declined).read_bytes() == b"upstream body\n"
+        assert "absent" not in _load_lock(root)["files"][declined]
 
 
 def test_v2_fork_success_and_repeat() -> None:
@@ -857,6 +944,31 @@ def test_v2_check_strict_forked_drift_states() -> None:
         data = _json_output(result)
         assert data["results"][moved] == "forked-upstream-moved"
         assert data["results"][unknown] == "forked-base-unknown"
+
+
+def test_v2_forked_row_moves_only_when_its_own_upstream_file_changed() -> None:
+    """A publish moves the pinned commit for every row. A forked row reports
+    `forked-upstream-moved` only when ITS upstream file differs between the fork base and the
+    pin; an unrelated upstream change leaves it `forked`."""
+    stays = ".claude/tools/forked_stays.py"
+    moves = ".claude/tools/forked_moves.py"
+    with _fixture() as path:
+        root, baseline, _remote_path, first_commit = _v2_fixture(
+            path,
+            {
+                stays: {"status": "forked", "upstream": b"stays = 1\n", "local": b"stays = 'local'\n"},
+                moves: {"status": "forked", "upstream": b"moves = 1\n", "local": b"moves = 'local'\n"},
+            },
+        )
+        lock = _load_lock(root)
+        for rel in (stays, moves):
+            lock["files"][rel]["base"] = first_commit
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _write(baseline / "template" / moves, b"moves = 2\n")
+        _commit(baseline, "second: only the moves file changes")
+        data = _json_output(_run_baseline(root, baseline, "check", "--json"))
+        assert data["results"][stays] == "forked", data["results"]
+        assert data["results"][moves] == "forked-upstream-moved", data["results"]
 
 
 def test_v2_paths_filters_success_refusal_and_repeat() -> None:
@@ -1326,7 +1438,7 @@ def test_sub_adds_a_substitution_to_an_existing_lock() -> None:
             "baseline_ref": "main",
             "synced_commit": "0" * 40,
             "profile": "pure",
-            "substitutions": {"{{PROJECT_NAME}}": "Consumer"},
+            "substitutions": {PROJECT_PLACEHOLDER: "Consumer"},
             "files": {".claude/tools/kept.py": {"status": "tracked", "layer": "pure",
                                                  "hash": "a" * 64}},
         }
@@ -1338,7 +1450,7 @@ def test_sub_adds_a_substitution_to_an_existing_lock() -> None:
 
         after = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
         assert after["substitutions"]["GenericWidget"] == "FixtureWidget", after["substitutions"]
-        assert after["substitutions"]["{{PROJECT_NAME}}"] == "Consumer", "existing pair lost"
+        assert after["substitutions"][PROJECT_PLACEHOLDER] == "Consumer", "existing pair lost"
         assert list(after["files"]) == [".claude/tools/kept.py"], "rows must be untouched"
         assert after["files"][".claude/tools/kept.py"]["hash"] == "a" * 64, "row detail must survive"
 
@@ -1358,7 +1470,7 @@ def test_sub_unset_removes_a_substitution() -> None:
             "baseline_ref": "main",
             "synced_commit": "0" * 40,
             "profile": "pure",
-            "substitutions": {"{{PROJECT_NAME}}": "Consumer", "Doomed": "RealName"},
+            "substitutions": {PROJECT_PLACEHOLDER: "Consumer", "Doomed": "RealName"},
             "files": {".claude/tools/kept.py": {"status": "tracked", "layer": "pure",
                                                  "hash": "a" * 64}},
         }
@@ -1369,15 +1481,31 @@ def test_sub_unset_removes_a_substitution() -> None:
         assert result.returncode == 0, result.stdout + result.stderr
         after = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
         assert "Doomed" not in after["substitutions"], after["substitutions"]
-        assert after["substitutions"]["{{PROJECT_NAME}}"] == "Consumer", "other pairs must survive"
+        assert after["substitutions"][PROJECT_PLACEHOLDER] == "Consumer", "other pairs must survive"
         assert list(after["files"]) == [".claude/tools/kept.py"], "rows must be untouched"
 
         missing = _run(root, "sub", "--unset", "NeverPresent")
         assert missing.returncode != 0, "unsetting an absent placeholder must fail loudly"
 
 
+def test_env_strips_every_git_local_env_var() -> None:
+    planted = {"GIT_CONFIG_PARAMETERS": "'core.bare=true'", "GIT_COMMON_DIR": "/elsewhere", "GIT_INDEX_FILE": "x"}
+    saved = {k: os.environ.get(k) for k in planted}
+    os.environ.update(planted)
+    try:
+        leaked = sorted(set(planted) & set(_env(Path(tempfile.gettempdir()))))
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    assert not leaked, "scratch-repo env kept %s" % leaked
+
+
 def main() -> int:
     cases = [
+        test_env_strips_every_git_local_env_var,
         test_sub_unset_removes_a_substitution,
         test_sub_adds_a_substitution_to_an_existing_lock,
         test_object_store_read_ignores_worktree_deletion,
@@ -1395,16 +1523,20 @@ def main() -> int:
         test_v2_classify_layer_sets_overrides_from_and_refuses_unknown,
         test_v2_classify_tracked_refuses_planted_home_path,
         test_v2_classify_tracked_refuses_planted_topology_token,
+        test_v2_classify_tracked_scans_the_reverse_substituted_text,
         test_v2_judge_success_refusal_and_repeat,
+        test_v2_judge_commit_reads_that_commit_not_the_shared_index,
         test_v2_triage_json_fields_and_truncation,
         test_v2_forget_success_refusal_and_repeat,
         test_v2_gc_success_refusal_and_repeat,
+        test_v2_classify_local_declines_an_upstream_only_path,
         test_v2_fork_success_and_repeat,
         test_v2_track_success_refusal_and_repeat,
         test_v2_ignore_alias_success_refusal_and_repeat,
         test_v2_check_strict_success_refusal_and_repeat,
         test_v2_check_strict_forked_drift_states,
         test_v2_check_strict_git_spawns_do_not_grow_with_rows,
+        test_v2_forked_row_moves_only_when_its_own_upstream_file_changed,
         test_v2_paths_filters_success_refusal_and_repeat,
         test_v2_pull_explicit_states_and_new_hash,
         test_v2_pull_keeps_placeholder_ok_files_verbatim,

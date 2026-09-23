@@ -12,7 +12,8 @@ a record of what the owner said and when, each bound to the scope it was given, 
 to reconcile them against the summary, which records what happened since. Selection is structural,
 never a keyword judgment: the filter drops interrupt markers, bare slash commands and client
 session-control commands such as `/model fable`. A question answer keeps the owner's words; its
-question text is shortened and the tool's trailing instruction is removed.
+question text is shortened and the tool's trailing instruction is removed. The digest's public
+`is_substantive_owner_prompt()` helper owns the filter so compact recovery and digest selection stay in parity.
 
 The whole output has a byte cap, TOTAL_BYTES, under Claude Code's 10,000-character hook output limit
 (past it the client swaps the text for a file preview). The first HEAD_WHOLE messages (the directive)
@@ -56,9 +57,6 @@ LISTED_IDS = 10
 REFERENCED_SESSIONS = 3
 PRUNE_AFTER_SEC = 30 * 86400
 TAG = "[owner-directives]"
-CONTROL_COMMANDS = frozenset({"/model", "/effort", "/fast", "/compact", "/context", "/clear", "/cost",
-                              "/status", "/config", "/help", "/resume", "/exit"})
-ROUTING_COMMANDS = frozenset({"/effort"})
 ANSWER_PREFIX = "(answer) The user answered: "
 ANSWER_TRAILER = re.compile(r"\.?\s*Read the answers carefully\b.*\Z", re.S)
 ANSWER_PAIR = re.compile(r'"(.*?)"="(.*?)"(?=, "|\Z)', re.S)
@@ -77,20 +75,8 @@ def _digest():
 
 
 def keep(message: dict) -> bool:
-    content = (message.get("content") or "").strip()
-    if not content or "interrupt" in (message.get("signals") or []):
-        return False
-    if content.startswith("(command) "):
-        content = content[len("(command) "):].lstrip()
-    if not content.startswith("/"):
-        return True
-    words = content.split()
-    if words[0] in CONTROL_COMMANDS:
-        # `/effort xhigh` is an owner routing decision the session cannot otherwise see: no hook
-        # payload carries the level. A model switch needs no record here -- the system prompt
-        # names the model. Bare forms and every other control command are session mechanics.
-        return words[0] in ROUTING_COMMANDS and len(words) > 1
-    return not (len(words) == 1 and re.fullmatch(r"/[\w:.-]+", words[0]))
+    """Reuse session_digest's public substantive-owner-prompt policy."""
+    return _digest().is_substantive_owner_prompt(message)
 
 
 def clip(text: str, limit: int) -> str:
@@ -291,7 +277,7 @@ def main() -> int:
     except Exception as exc:
         print(f"{TAG} context was compacted, but this hook could not read the transcript "
               f"({type(exc).__name__}: {exc}). Recover the owner's messages before continuing: "
-              f"python3 .claude/tools/session_digest.py --session {sid[:8]} --full")
+              f"python3 .claude/tools/session_digest.py --session {sid[:8]} --handoff")
         return 0
     if not messages:
         return 0
@@ -302,7 +288,9 @@ def main() -> int:
         fetch = f"python3 .claude/hooks/compact_directive_anchor.py --show {where} <ID>"
     except OSError as exc:
         where = f"unavailable ({exc})"
-        fetch = f"python3 .claude/tools/session_digest.py --session {sid[:8]} --full"
+        fetch = (f"python3 .claude/tools/session_digest.py --session {sid[:8]} --handoff (writes "
+                 f"logs/session_digest_{sid[:8]}.json), then session_digest.py --digest-file "
+                 f"logs/session_digest_{sid[:8]}.json --select <ID>")
 
     lines = [f"{TAG} Context was compacted. Below are the owner's own messages from this session, oldest first, "
              f"with send times: typed prompts, command arguments and question answers (answer wording kept; "
@@ -318,7 +306,7 @@ def main() -> int:
     if refs:
         lines.append(f"{TAG} These messages name other sessions. Read their owner messages for the root goal they "
                      f"set; their later messages steered that session and bind here only if restated: "
-                     + "; ".join(f"python3 .claude/tools/session_digest.py --session {r} --brief" for r in refs))
+                     + "; ".join(f"python3 .claude/tools/session_digest.py --session {r} --handoff" for r in refs))
     worst_note = note("clipped for injection", [{"index": 10 ** 7}] * LISTED_IDS, fetch) + " and 9999999 more"
     reserve = 2 * (len(worst_note.encode("utf-8")) + 1)
     # The task record's block shares TOTAL_BYTES with the owner messages: the messages are clipped

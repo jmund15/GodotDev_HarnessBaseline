@@ -1,6 +1,6 @@
 ---
 description: Verify regressions before any commit or merge — the single source-of-truth gate.
-allowed-tools: Bash(pwsh:*), Bash(dotnet build:*), Bash(git:*)
+allowed-tools: Bash(pwsh:*), Bash(dotnet build:*), Bash(git:*), Monitor
 ---
 
 ## Purpose
@@ -33,7 +33,19 @@ pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
 
 Every position runs the same full gate; there are no tiers to choose. Between drive start and drive close the expected gate count is **zero** — commits batch to the close gate, and slice/Part verification is `verify.ps1 -Scope <domains>`, which the hook never blocks. Cadence canon: `change_control` §Gate cadence.
 
-**`-Detach` is mandatory from an agent session; `run_in_background: true` is not durable.** Claude Code reaps a backgrounded Bash task once the session goes idle and the whole process tree dies with it — a full gate survives only while the session keeps issuing tool calls. `-Detach` returns in ~1s with `OUT=<path>`; poll that file (Monitor, or a `verify.ps1`-shaped wait) until a line begins `VERDICT=`, which is the only completion signal. A killed poller loses the wake-up, never the run. **Do not edit any file under test while it runs:** the gate verifies the CURRENT working tree, so a mid-run edit invalidates the result. Editing `.claude/` markdown is safe.
+**`-Detach` is mandatory from an agent session; `run_in_background: true` is not durable.** Claude Code reaps a backgrounded Bash task once the session goes idle and the whole process tree dies with it — a full gate survives only while the session keeps issuing tool calls. `-Detach` returns in ~1s with `OUT=<path>`; watch that file until a line begins `VERDICT=`, which is the only completion signal. A killed poller loses the wake-up, never the run. **The watch streams progress; a silent `until grep VERDICT` loop is forbidden** — the user must see each stage line (`GUARDS`, `BUILD`, `SUITE ...`, `VERDICT`) as it lands, or a ten-minute Integration batch is indistinguishable from a hang. Integration prints ONE `SUITE` line when all batches are done; its per-batch progress lives in `.claude/scratch/test_runs/integration_batches.json` (`label`, `status` GREEN/RED/PENDING, `passed`, `failed`, `elapsed`), so the watch also emits each batch as its status leaves PENDING — without that the Integration phase is a 10-minute silence. Canonical Monitor script (emits each new stage line and each finished batch, exits on the verdict):
+
+```bash
+F="<OUT path>"; J=".claude/scratch/test_runs/integration_batches.json"; S=$(mktemp); P="^(REAP|PEERS|QUEUE_WAIT|ENGINE|GUARDS|BUILD|DOCS|SUITE|IMPORT_GATE|BASELINE|TREE_CHANGED|VERDICT)"
+emit() { while IFS= read -r l; do l=${l%$'\r'}; [ -n "$l" ] && ! grep -qxF -- "$l" "$S" && { echo "$l"; echo "$l" >> "$S"; }; done; }
+while true; do
+  grep -E "$P" "$F" 2>/dev/null | emit
+  python3 -c "import json;d=json.load(open('$J'));b=d if isinstance(d,list) else d.get('batches',d);[print(x['label'],x['status'],'passed='+str(x.get('passed')),'failed='+str(x.get('failed'))) for x in (b if isinstance(b,list) else b.values()) if isinstance(x,dict) and x.get('status')!='PENDING']" 2>/dev/null | emit
+  grep -q "^VERDICT=" "$F" 2>/dev/null && break; sleep 10
+done
+```
+The seen-list lives in a file: a shell variable rebuilt each cycle re-emits old lines. `emit` strips `\r` because Windows Python prints CRLF and `grep` drops the CR when reading the file, so an unstripped line is never seen and re-emits every cycle.
+**Do not edit any file under test while it runs:** the gate verifies the CURRENT working tree, so a mid-run edit invalidates the result. Editing `.claude/` markdown is safe.
 
 | Flag | Use |
 |---|---|

@@ -1,9 +1,9 @@
 ---
-description: Audit this session's code changes for smells and design debt via 3 parallel agents.
+description: Audit this session's code changes for smells and design debt via a parallel review panel.
 allowed-tools: Bash(git diff:*), Bash(git ls-files:*), Bash(git log:*), Glob, Grep, Read, Workflow
 ---
 
-Audit all code changes from this session for code smells, sub-optimal design, and substantive improvements. Delegates analysis to 3 specialized subagents running in parallel, then consolidates findings.
+Audit all code changes from this session for code smells, sub-optimal design, and substantive improvements. Delegates analysis to the seats of its seat map, running in parallel, then consolidates findings.
 
 **This command is advisory — it does NOT block commits.** Findings are improvement opportunities, not failures.
 
@@ -20,7 +20,7 @@ Excluded from audit (not modified this session): [list of files]
 
 If both sets are empty, report "No changes to audit" and exit. A non-empty harness set fires `sa-harness-quality` (Phase 2); `/instruction_audit` stays the per-file deep audit for cross-reference rot and structure, suggested per file when that lens returns a structural ASK.
 
-**Scope cap (>20 files):** Follow the [Shared Scoping Rules](agents/review_agents.md#shared-scoping-rules). Ask the user before proceeding.
+**Scope cap (>20 `.cs` files):** Follow [Shared Scoping Rules](agents/review_agents.md#shared-scoping-rules). Associated resources and harness files do not count toward the cap.
 
 ### 1b. Read all session-modified files
 
@@ -36,7 +36,7 @@ Read the FULL content of each changed `.cs` file (not just diffs). For `.tres` f
 
 ## Phase 1.5: Refactor Parity Check (MERGE-BLOCKER tier)
 
-**Run this BEFORE the 3 subagents.** Findings here surface at the TOP of the report and are tagged MERGE-BLOCKER (above FIX/ASK/PLAN). User must explicitly approve "ship anyway" before commit.
+**Run this BEFORE the audit seats.** Findings here surface at the TOP of the report and are tagged MERGE-BLOCKER (above FIX/ASK/PLAN). User must explicitly approve "ship anyway" before commit.
 
 Background: PR #58 shipped three silent regressions because the audit toolchain doesn't do behavioral feature-parity checks (only diff-internal quality). See `feedback_refactor_parity_audit.md`.
 
@@ -98,6 +98,8 @@ If clean, log a single line `Refactor parity: CLEAN` and proceed to Phase 2.
 
 The agent fan-out and Step-1 consolidation run deterministically in the `review-fanout` workflow. Below, assemble the agent prompts + the shared CONTEXT, then dispatch them through the engine — it runs them in parallel, appends the read-only / no-tests / no-LSP single-flight guard to each, and merges/dedups/sorts the findings.
 
+**Missing-lane recovery:** salvage the engine spill/transcript first. If coverage remains absent, redispatch only the missing lane once through orchestration's legal route with its original template/model/effort. Under armed `/overnight`, this branch needs no second owner prompt. Save planned/returned IDs and terminal results to `.claude/scratch/session_audit_<sid8>_recovery.json`; denial, terminal unavailability, or the second same failure is blocked coverage, never clean.
+
 ### Agent Templates & Spawn Rules
 
 Fetch the templates: `python3 .claude/tools/lens.py get --shared sa-design-semantics sa-robustness-performance sa-intuitiveness-testability` — add `sa-architecture-sweep` and `sa-harness-quality` only when their triggers below fire, and never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole. The registry holds:
@@ -106,6 +108,8 @@ Fetch the templates: `python3 .claude/tools/lens.py get --shared sa-design-seman
 - 3 always-on agent templates: `sa-design-semantics`, `sa-robustness-performance`, `sa-intuitiveness-testability` — model/effort resolved through `orchestration`, never copied from this roster
 - 1 conditional template: `sa-architecture-sweep` — design-ideality judgment (existing-seam reuse, cleaner/more-modular/data-driven alternatives, dedup-similar-logic-into-one-source)
 - 1 conditional template: `sa-harness-quality` — every session-authored harness hunk held to `instruction_quality` (no-op sentences, second homes, evidence inline, clause storms, weak words, hook docstring parity)
+
+**Seat map** (`orchestration` §2 *Sizing the width*; tier facts from `git diff --stat` plus the added and deleted paths of the session's files). Wide and Standard: one seat per always-on lens, and each fired conditional gets its own seat. Small: one seat carrying every selected lens; this map is provisional. A merged seat's prompt carries each of its lenses' templates.
 
 ### Architecture-Sweep Trigger (conditional 4th agent)
 
@@ -123,7 +127,7 @@ Assemble a `CONTEXT` string containing:
 - auto-memory gotchas for touched domains
 - List of which files are NEW vs MODIFIED
 - **Subset exclusions (conditional):** when the scope cap trimmed the roster, list what was excluded and its verification status (e.g. "test suites excluded — exist, gate-green") so lenses don't report excluded-but-existing artifacts as gaps.
-- **Prior-coverage note (conditional):** when the session executed against a plan file (`.claude/plans/*.md`) whose Decision record contains a close-out design-review entry, include a note that the Part's diff was four-axis reviewed + plan-conformance-checked pre-gate — `sa-design-semantics` then concentrates fresh findings on the non-Part session surface and its own axes, and treats re-covering the Part's code as expected re-coverage rather than re-litigation (validated 2026-08-08: the note steered the lens to fresh findings — visibility, catch narrowing — instead of re-covering the close-out review).
+- **Prior-coverage note (conditional):** when the session executed against a plan file (`.claude/plans/*.md`) whose Decision record contains a close-out design-review entry, include a note that the Part's diff was four-axis reviewed + plan-conformance-checked pre-gate — `sa-design-semantics` then concentrates fresh findings on the non-Part session surface and its own axes, and treats re-covering the Part's code as expected re-coverage rather than re-litigation.
 
 Additionally, read these shared checklists and inject their contents into agent prompts:
 - Read `/.claude/commands/checklists/code_quality.md` → inject as `{{CODE_QUALITY_CHECKLIST}}`
@@ -196,5 +200,5 @@ Follow the protocol's Step 4:
 - **No feature changes.** Audit focuses on internal quality of existing changes, not new functionality.
 - **Substantive only.** Skip cosmetic issues (whitespace, comment style) unless they indicate a real problem.
 - **Respect TDD.** Any approved fix in Logic Domain must have test coverage.
-- **The agent fan-out lives in the `review-fanout` workflow** — it spawns the 3 always-on agents plus the conditional `sa-architecture-sweep` (templates in [`session_audit_agents.md`](agents/session_audit_agents.md)) in parallel and consolidates. Do not perform the audit inline or re-spawn agents manually.
+- **The agent fan-out lives in the `review-fanout` workflow** — it spawns the seats of its seat map (templates in [`session_audit_agents.md`](agents/session_audit_agents.md)) in parallel and consolidates. Do not perform the audit inline or re-spawn agents manually.
 - **Report honestly.** False positives waste time. When in doubt, don't report.

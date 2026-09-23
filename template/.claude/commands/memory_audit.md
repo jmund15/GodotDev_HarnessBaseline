@@ -12,7 +12,7 @@ Per-entry (Step 1):
 1. **Mechanism-claim verification** — isolate cause vs symptom (the original core; *the core discipline* below). Retroactive sibling of `/autolearn`'s question-5 gate.
 2. **Overfit-to-Specific** — does the *rule itself* name a specific file/PR/ability/SHA/session-date? (gate definition: `/autolearn`'s *Anti-pattern: Overfit-to-Specific* is the single source of truth — this pass applies it retroactively, it does not redefine it).
 3. **Documentation-drift** — is this a gotcha/rule, or feature-doc that belongs in a code `<summary>`? (litmus: CLAUDE.md Core Principle 8 save filter).
-4. **Decision-time placement** — at what moment is this rule needed, and does its destination match? (litmus: CLAUDE.md §2 *Placement* and `instruction_quality` §5, the SoTs — this pass applies them retroactively).
+4. **Decision-time placement** — at what moment is this rule needed, and does its destination match? (litmus: CLAUDE.md §2 *Memory (One Store, Two Tiers)* and `instruction_quality` §5, the SoTs — this pass applies them retroactively).
 
 Index-level (Step 0), on `MEMORY.md` alone:
 
@@ -92,7 +92,7 @@ Enumerate all files (`ls .claude/auto-memory/*.md` + `archive/*.md`). Fan out cl
     - **file-class `<glob>`** — the decision is made with a file of that class already open. Qualifies only when the glob is prefix-anchored below the repo root (`Tests/**/*.cs`, `DomainCore/**`, `HSM/**`). An extension-only glob (`**/*.cs`, `**/*.tscn`, `**/*.md`) matches nearly every session and defers the cost rather than removing it — report those as `pre-trigger`. Decide width by **reading the glob string**, never by counting files and never with `git ls-files` (it reports the git index, not the loader's filesystem glob, and returns 0 for `Jmodot/**`).
     - **domain-entry** — surfaced by a deliberate domain search.
   
-  **The burden of proof is on hot** (CLAUDE.md §2 *Admission, not headroom*): for every hot file, state the decision its pointer pre-empts AND why that decision fires before any search would run. Cannot state both → demote-candidate; `domain-entry` or `file-class` verdicts are automatic demote/split candidates. A **cold** file promotes only when it passes that same two-part test — rare by design; when in doubt it stays cold, because search is the recall path.
+  **The burden of proof is on hot** (`CLAUDE.core.md` §2 Memory, "Hot admission requires a decision..."): for every hot file, state the decision its pointer pre-empts AND why that decision fires before any search would run. Cannot state both → demote-candidate; `domain-entry` or `file-class` verdicts are automatic demote/split candidates. A **cold** file promotes only when it passes that same two-part test — rare by design; when in doubt it stays cold, because search is the recall path.
 
 ### Step 2 — Triage each mechanism claim (serial, Claude-side)
 Verification is bespoke and stays Claude-side — **never delegate the adjudication** (delegated guessing is the failure mode this whole pass exists to catch). For each claim, assess evidence quality per *the core discipline*:

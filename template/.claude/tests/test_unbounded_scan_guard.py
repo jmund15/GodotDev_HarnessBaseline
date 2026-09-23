@@ -49,25 +49,27 @@ def main():
 
     out = scan(UNBOUNDED, env)
     cases.append(("first unbounded scan gets the full advisory",
-                  "Output size is unknown before the call" in out))
+                  "output size is unknown" in out and "--max-count N" in out and "head_limit" in out))
 
     out = scan(UNBOUNDED, env)
     cases.append(("the repeat drops to the one-line form",
                   out.startswith("\u26a0 UNBOUNDED RECURSIVE SCAN")
-                  and "Output size is unknown before the call" not in out))
+                  and "output size is unknown" not in out))
 
     out = scan(BLIND, env)
     cases.append(("the scope axis carries its own first-fire, still full",
-                  "261 " in out and "\u26a0 UNBOUNDED RECURSIVE SCAN \u2014 cap it" in out))
+                  "capping output does not fix" in out and "-path ./.claude -prune" in out
+                  and "\u26a0 UNBOUNDED RECURSIVE SCAN \u2014 cap it" in out))
 
     out = scan(BLIND, env)
     cases.append(("both axes are short on the repeat",
-                  "261 " not in out and "Use the Grep tool" in out))
+                  "capping output does not fix" not in out and "Use the Grep tool" in out
+                  and "-path ./.claude -prune" in out))
 
     run(PRECOMPACT, {"session_id": SID, "trigger": "auto"}, env)
     out = scan(UNBOUNDED, env)
     cases.append(("a compaction re-arms the full advisory",
-                  "Output size is unknown before the call" in out))
+                  "output size is unknown" in out))
 
     # Negatives — a cadence change must not widen or narrow what fires.
     cases.append(("a bounded scan is silent", scan(BOUNDED, env) == ""))
@@ -114,6 +116,10 @@ def main():
     cases.append(("a worktree cwd still suppresses the scope axis",
                   "GITIGNORE-BLIND" not in scan(BLIND, env, session="usg00002",
                                                 cwd="C:/repo/.claude/worktrees/w1")))
+    for layout in ("task-worktrees", "baseline-worktrees"):
+        cases.append(("a .claude/.cache/%s cwd suppresses the scope axis too" % layout,
+                      "GITIGNORE-BLIND" not in scan(BLIND, env, session="usg-" + layout,
+                                                    cwd="C:/repo/.claude/.cache/%s/w1" % layout)))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

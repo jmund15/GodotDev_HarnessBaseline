@@ -103,7 +103,7 @@ PROVIDER_RAILS_HEAD = """\
 - COVERAGE LIMIT of that deny: it reads pins that are statically visible — args, the Agent `model`, and quoted literals in the script (a `PIN('x')` wrapper included). A pin COMPUTED at runtime (a variable, a map lookup, a template literal) is not seen and not denied, so it reaches the endpoint and returns a null agent. Write pins as literals in scripts you run here.
 - Reaching ANOTHER transport (including Anthropic itself) goes through its own sidecar launcher — `reference/sidecar_dispatch.md`, roster above. Workflow/Agent never cross transports.
 - You ARE the orchestrator this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
-- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|executor|fanout|scout>` prints what serves a tier here, what serves it one hop away with the launcher line, and the nearest in-transport row when nothing here does.{lacked_tiers}
+- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|executor|fanout|scout>` prints what serves a tier here, what serves it one hop away with the launcher line, and the nearest in-transport row when nothing here does. It picks no effort: take the rung from the ladder's effort cell for the work shape.{lacked_tiers}
 - DISPATCH ROUTING is a judgment you own: a Workflow fan-out here is NOT band-gated, so state the intended model and cost before dispatching, then check the journal's model column against it.
 - COST SHAPE — bound prompts, use args.spillDir, and prefer FEW LONG agents to many short ones: each agent pays a large cold-start toll, so width multiplies it while depth amortizes it.
 """
@@ -122,12 +122,10 @@ UNKNOWN_RAILS = """\
 # Anthropic session's role-name pins dispatch claude-* agents — expected, not a
 # failure. External-model work needs a separate transport; the sidecar script is
 # the deepseek one. Canon: orchestration §0 *Dispatch is transport-bound*.
-ANTHROPIC_RAILS = """\
-[anthropic session — dispatch transport; canon: orchestration §0 + §5b]
-- Workflow/Agent subagents run on this session's transport only: role-name pins (opus/sonnet/fable) dispatch claude-* agents — expected, not a pin-translate failure (the translate hook fires only on deepseek sessions).
-- No external model (GPT, opencode, deepseek, local) is reachable via Workflow/Agent from here — every one dispatches through its transport's sidecar launcher: one recipe for all, `reference/sidecar_dispatch.md` (auto-injected on the launch call). Roster: `python3 .claude/tools/model_registry.py available`; excluded models are out — re-select under the ladder, never substitute by rule.
-- A vendor-model literal in an agent() pin here returns null agents and a fan-out reading "0 findings", so workflow_provider_guard.py DENIES one outright; verify each dispatch's journal models against the provider you intended.
-"""
+ANTHROPIC_RAILS = (
+    "[anthropic session] Workflow/Agent reach claude-* models only; every other model runs "
+    "through its sidecar launcher (`reference/sidecar_dispatch.md`).\n"
+)
 
 
 def sidecar_delegate_shape() -> str | None:
@@ -143,49 +141,56 @@ def sidecar_delegate_shape() -> str | None:
 
 
 def sidecar_delegate_tier() -> str:
-    """How verbosely this delegate's rails are spelled out, mirroring dispatch.js TIER_OF.
+    """How verbosely this delegate's rails are spelled out: CLAUDE_CODE_SIDECAR_TIER, else detailed.
 
-    Read from the environment rather than fixed here so that adding an opus-class external
-    model is a one-line export in its launcher, not a hook edit. No launcher sets it today, and
-    no currently-selectable external row claims a tier above the cheap one -- terra and sol are
-    registered `roles: []` (unmeasured), so `strict` stays correct until a battery says otherwise.
-    Check `model_registry.py available` rather than trusting this sentence's roster.
-    Anything unset or unrecognized therefore falls to `strict` — the safe direction, since an
+    The env override is the only input. No launcher sets it today, and no sidecar row carries a
+    registry `railTier`, so every external delegate reads `detailed`, measured rows included.
+    Anything unset or unrecognized therefore falls to `detailed` — the safe direction, since an
     over-explicit rail costs bytes while an under-explicit one costs adherence.
     """
     tier = (os.environ.get("CLAUDE_CODE_SIDECAR_TIER") or "").strip().lower()
-    return tier if tier in ("strict", "terse", "none", "fable") else "strict"
+    return tier if tier in ("detailed", "condensed", "minimal", "none") else "detailed"
 
 
 # Guard-text tier (how verbosely a delegate's rails are spelled) -> session tier (which
-# `## strict` bodies it reads). `none` means the launcher already judged the child capable
+# `## detailed` bodies it reads). `none` means the launcher already judged the child capable
 # enough to need no spelled-out rails, so it reads at the top tier.
-_DELEGATE_SESSION_TIER = {"fable": "fable", "none": "fable", "terse": "opus", "strict": "strict"}
+_DELEGATE_SESSION_TIER = {"minimal": "minimal", "none": "minimal", "condensed": "condensed",
+                          "detailed": "detailed"}
 
 TIER_LINE_STRICT = (
-    "[session] Session tier: `strict` — read every `## strict` section you encounter in a "
+    "[session] Session tier: `detailed` — read every `## detailed` section you encounter in a "
     "skill, command or guard file."
 )
-TIER_LINE_OPEN = (
-    "[session] Session tier: `{tier}` — skip `## strict` sections.\n"
-    "- Default to the shortest response that fully answers, with two exemptions: a line up front "
-    "saying what you're about to do, and a closing recap that stands on its own for a reader who "
-    "saw none of the work.\n"
-    "- Voice is word choice inside a sentence you already needed — no aphorism, no rhetorical "
-    "question, no sentence whose job is to sound good."
-)
-TIER_LINE_FABLE_EXTRA = (
-    "\n- Recognizing a name is not knowing its current state — verify before answering, and "
-    "include the name as written in at least one search."
-)
+# Output shape (length, voice) is the output style's, which binds every driving session.
+TIER_LINE_OPEN = "[session] Session tier: `{tier}` — skip `## detailed` sections."
 
 
 def tier_line(tier: str) -> str:
-    """The one tier line (plus its tier-only clauses) every session gets after the effort line."""
-    if tier not in ("opus", "fable"):
+    """The one tier line every session gets after the effort line."""
+    if tier not in ("condensed", "minimal"):
         return TIER_LINE_STRICT
-    text = TIER_LINE_OPEN.format(tier=tier)
-    return text + TIER_LINE_FABLE_EXTRA if tier == "fable" else text
+    return TIER_LINE_OPEN.format(tier=tier)
+
+
+def driver_notes_block(model) -> str:
+    """The registry's per-model corrections for the model DRIVING this session, or "".
+
+    Per-model guidance lives in `driverNotes` on the model's row and its transport's row, each
+    note carrying the evidence that earned it, so a correction reaches only the model that showed
+    the failure (rules/harness_authoring.md, a correction takes the scope of its evidence).
+    """
+    try:
+        import model_registry
+        notes = model_registry.driver_notes(model)
+        row = model_registry.row_for_model(model) if notes else None
+    except Exception:
+        return ""
+    if not notes:
+        return ""
+    lines = [f"[session] Driver notes ({row['id'] if row else model}):"]
+    lines += [f"- {text} ({ref})" for text, ref in notes]
+    return "\n".join(lines)
 
 
 def provider_rails(transport: str, source: str, payload: dict) -> str:
@@ -340,10 +345,14 @@ def main() -> None:
     shape = sidecar_delegate_shape()
     print(effort_line(payload, delegate=bool(shape)))
     if shape:
-        tier = _DELEGATE_SESSION_TIER.get(sidecar_delegate_tier(), "strict")
+        tier = _DELEGATE_SESSION_TIER.get(sidecar_delegate_tier(), "detailed")
     else:
         tier = _model_tier.write_session_tier(payload.get("session_id"), payload.get("model"))
     print(tier_line(tier))
+    if not shape:
+        notes = driver_notes_block(payload.get("model"))
+        if notes:
+            print(notes)
     if shape:
         # DELEGATE, not orchestrator: DEEPSEEK_RAILS opens "You ARE the orchestrator
         # this session", which is actively wrong for a child that cannot even spawn

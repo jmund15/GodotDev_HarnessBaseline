@@ -12,6 +12,7 @@ through all three consumers, so a projection change that is not written here fai
 | shape | kill_guard | harness_growth_guard | digest |
 |---|---|---|---|
 | prompt | text | turn | text |
+| queued_prompt (mid-turn) | text | no turn | text |
 | meta | drop | no turn | drop |
 | meta ARGUMENTS | drop | no turn | label goal |
 | sidechain | drop | no turn | drop |
@@ -49,7 +50,9 @@ before.
 Shapes: `envelope-only` is a runtime envelope (`task-notification`, `local-command-stdout`,
 `cross-session-message`); `injection-prefixed` is owner text after a leading `system-reminder`,
 `user-prompt-submit-hook` or `local-command-caveat` block; `command` rows open with
-`<command-name>` or `<command-message>`.
+`<command-name>` or `<command-message>`; `queued_prompt` is a message the owner sent MID-TURN,
+recorded as an `attachment` of type `queued_command` rather than a user row (see
+`queued_owner_prompt`).
 """
 import hashlib
 import json
@@ -137,10 +140,38 @@ def _identity(entry, raw):
     return hashlib.sha1(raw).hexdigest()[:12]
 
 
+def queued_owner_prompt(entry):
+    """The text of a message the owner sent MID-TURN, or None.
+
+    A message sent while the model was working is recorded only as a `queue-operation` pair
+    (enqueue, then remove with `reason: absorbed_mid_turn`) plus an `attachment` row of type
+    `queued_command` whose `prompt` is the text. None of those is a user-role row with a `message`
+    object, so every mid-turn owner message was invisible to `classify` -- which meant a stop order
+    given mid-turn could never authorize a TaskStop, leaving a hung background task unstoppable
+    (2026-09-18: two hung sidecars survived repeated stop orders for this reason)."""
+    if not isinstance(entry, dict) or entry.get("type") != "attachment":
+        return None
+    attachment = entry.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != "queued_command":
+        return None
+    prompt = attachment.get("prompt")
+    return prompt if isinstance(prompt, str) and prompt.strip() else None
+
+
 def classify(entry, index, raw=None):
     """The typed owner row for one parsed transcript entry, or None when it is not a user row."""
     if not isinstance(entry, dict):
         return None
+    queued = queued_owner_prompt(entry)
+    if queued is not None:
+        # Its own kind, so each consumer declares a cell rather than inheriting the `prompt` one:
+        # a mid-turn message carries owner text (kill_guard, digest) but does NOT start a turn.
+        return OwnerRow(
+            kind="queued_prompt", uuid=_identity(entry, raw), index=index, text=queued.strip(),
+            blocks=(queued,), command_name=None, command_args=None, pairs=None, tool_results=(),
+            injection_prefixed=False, envelope=None,
+            sidechain=bool(entry.get("isSidechain")), meta=False,
+        )
     message = entry.get("message")
     if not isinstance(message, dict):
         return None

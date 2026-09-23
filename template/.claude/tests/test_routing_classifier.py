@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
-from routing_classifier import classify_call  # noqa: E402
+from routing_classifier import classify_call, is_harness_path  # noqa: E402
 
 READ_PATH = (
     "C:/Users/{{USER}}/Documents/ObsidianVault/DevProjects/{{PROJECT_NAME}}/"
@@ -76,6 +76,10 @@ def main():
     c = classify_call("Read", {"file_path": "C:/repo/.claude/Design/rule.md"}, BULK_COPYABLE)
     cases.append(("agent-runtime instructions remain direct-read only",
                   c.severity == "not-routable"))
+    cases.append(("routing shares case-insensitive Windows harness classification",
+                  is_harness_path(r"C:\\repo\\.CLAUDE\\worktrees\\SYNC-PR110\\.CLAUDE\\Hooks\\Rule.md")))
+    cases.append(("routing excludes a worktree project path after dot-segment escape",
+                  not is_harness_path("C:/repo/.claude/worktrees/sync-pr110/./.claude/./hooks/../../Spells/Fire.cs")))
 
     c = classify_call("Read", dict(READ, limit=40), BULK_COPYABLE)
     cases.append(("a bounded verification Read remains direct",

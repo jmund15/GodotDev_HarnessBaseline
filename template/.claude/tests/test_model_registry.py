@@ -43,7 +43,7 @@ LADDER = """## Pick by work shape
 | opus | `executor` - architect & executor | xhigh |
 | sonnet | `fanout` - fan-out, validation | high |
 | haiku | `scout` - read-only locate | low |
-| gpt-5.6-luna (sidecar) | scoped planning + spec-tight execution | max |
+| luna | scoped planning + spec-tight execution | max |
 """
 
 TIERS = mr.parse_role_tiers(LADDER.splitlines(True))
@@ -483,8 +483,14 @@ def _schedule_cases(live):
          lambda: accepts(lambda d: deepseek_row(d)["gate"].update(peakPolicy="refuse"))),
         ("measured evidence without measuredVersion on a versioned row is rejected",
          lambda: rejects(lambda d: set_measured(d, None), "measuredVersion")),
-        ("measured evidence from another version is rejected",
-         lambda: rejects(lambda d: set_measured(d, "DeepSeek-V4-Flash-0731"), "measuredVersion")),
+        ("measured evidence from an unregistered version is rejected",
+         lambda: rejects(lambda d: set_measured(d, "DeepSeek-V3-Flash"), "measuredVersion")),
+        # Owner ruling 2026-09-22: a new version takes over its family's claims until measured, so
+        # evidence measured on a registered SAME-FAMILY row stands (inherited); another family's does not.
+        ("measured evidence inherited from a same-family predecessor validates",
+         lambda: accepts(lambda d: set_measured(d, "DeepSeek-V4-Flash-0731"))),
+        ("measured evidence from another family's version is rejected",
+         lambda: rejects(lambda d: set_measured(d, "gpt-5.6-luna"), "measuredVersion")),
         ("measured evidence matching the version validates",
          lambda: accepts(lambda d: set_measured(d, "DeepSeek-V4.1-Flash"))),
         ("`price-window` CLI prints the window and effective rates",
@@ -496,8 +502,238 @@ def _schedule_cases(live):
          lambda: (lambda d: (d["transports"]["deepseek"].update(effortValues=["low", "high", "max"]),
                              cli(["effort-values", "flash"], d))[1])(planted())
                  == (0, '["low", "high", "max"]')),
-        ("`effort-values` prints [] for a transport that declares none",
-         lambda: cli(["effort-values", "luna"], planted()) == (0, "[]")),
+        ("`effort-values` prints [] for a row and transport that declare none",
+         lambda: cli(["effort-values", "opus"], planted()) == (0, "[]")),
+    ]
+
+    failed = 0
+    for name, fn in cases:
+        try:
+            ok = bool(fn())
+            detail = ""
+        except Exception as exc:
+            ok, detail = False, "  raised %s: %s" % (type(exc).__name__, exc)
+        failed += not ok
+        print("%s %s%s" % ("ok  " if ok else "FAIL", name, detail))
+    return failed, len(cases)
+
+
+def _identity_cases(live):
+    """Model identity (S1): versioned aliases, dated alias history, record resolution, lifecycle.
+
+    Live cases pin the owner's O-alias ruling (bare alias = current version; a superseded version
+    gets a versioned alias). Planted cases carry the arm-record shapes the census found, so a
+    resolver that only ever sees the live roster cannot pass them by accident.
+    """
+    import contextlib
+    import io
+    import json
+    import re
+    import tempfile
+
+    RUNG_FLAG = re.compile(r" -e (none|low|medium|high|xhigh|max|ultra) ")
+
+    def rid(name):
+        return mr.resolve(name, live)["id"]
+
+    def rejects(mutate, needle):
+        d = copy.deepcopy(live)
+        mutate(d)
+        try:
+            mr._validate(d, "fixture")
+        except mr.RegistryError as exc:
+            return needle in str(exc)
+        return False
+
+    def raises_registry(fn):
+        try:
+            fn()
+        except mr.RegistryError:
+            return True
+        return False
+
+    def row(d, alias):
+        return next(m for m in d["models"] if m["alias"] == alias)
+
+    def cli(argv, data=None):
+        old = os.environ.get(mr.ENV_OVERRIDE)
+        if data is not None:
+            tmp = os.path.join(tempfile.mkdtemp(prefix="mreg_"), "external_models.json")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(data, fh)
+            os.environ[mr.ENV_OVERRIDE] = tmp
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = mr.main(argv)
+        finally:
+            if old is None:
+                os.environ.pop(mr.ENV_OVERRIDE, None)
+            else:
+                os.environ[mr.ENV_OVERRIDE] = old
+        return code, out.getvalue()
+
+    def routes_to(model_id):
+        """Every (tier, seat) whose for-role report names model_id in any section."""
+        tiers = mr.role_tiers()
+        hits = []
+        for tier in mr.TIER_ORDER:
+            for seat in live["transports"]:
+                res = mr.for_role(tier, seat, live, tiers)
+                named = [m["id"] for m in res["inTransport"] + res["crossTransport"]]
+                named += [m["id"] for m, _t, _d in res["nearest"]]
+                if model_id in named:
+                    hits.append((tier, seat))
+        return hits
+
+    # Arm-record shapes observed in the 2026-09-22 census of every *.record.json under the six data
+    # roots: a proxied child whose own modelUsage names its client pin, a direct child, a record
+    # with no served id at all, and the served spellings that are not registry ids verbatim.
+    proxied = {"transport": "codex", "servedModel": "gpt-5.4-mini", "attestedModel": "gpt-5.6-luna"}
+    direct = {"transport": "anthropic", "servedModel": "claude-opus-5"}
+    bare = {"transport": "anthropic"}
+    census_ids = ["big-pickle", "claude-fable-5-1", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+                  "claude-opus-5", "claude-sonnet-5", "deepseek-flash", "deepseek-v4-flash",
+                  "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra", "hy3-free", "laguna-s-2.1-free",
+                  "mimo-v2.5-free", "muse-spark-1.2-contributor-free",
+                  "muse-spark-1.3-contributor-free", "nemotron-3-ultra-free",
+                  "nemotron-3.5-lightning-free", "x-preview-f-free"]
+
+    cases = [
+        # ---- O-alias: the bare alias names the CURRENT version on every route ----
+        ("`opus` resolves to claude-opus-5-5", lambda: rid("opus") == "claude-opus-5-5"),
+        ("`opus5` resolves to claude-opus-5", lambda: rid("opus5") == "claude-opus-5"),
+        ("`sol` resolves to gpt-6-sol and `sol56` to gpt-5.6-sol",
+         lambda: rid("sol") == "gpt-6-sol" and rid("sol56") == "gpt-5.6-sol"),
+        ("`luna` resolves to gpt-6-luna and `luna56` to gpt-5.6-luna",
+         lambda: rid("luna") == "gpt-6-luna" and rid("luna56") == "gpt-5.6-luna"),
+        ("`resolve gpt-6-sol` succeeds by exact id", lambda: rid("gpt-6-sol") == "gpt-6-sol"),
+        ("`claude-opus-5-5` resolves by exact id", lambda: rid("claude-opus-5-5") == "claude-opus-5-5"),
+
+        # ---- owner ruling 2026-09-22: a new version takes over its family ----
+        ("the current luna/sol rows carry their family's roles, effort measured on the predecessor",
+         lambda: mr.resolve("luna", live)["roles"] == ["sonnet", "haiku"]
+                 and mr.resolve("sol", live)["roles"] == ["sol", "expansiveArchitecting", "scopedArchitecting", "thinPlanning"]
+                 and all(mr.resolve(a, live)["effort"].get("evidence") == "measured"
+                         and mr.resolve(a, live)["effort"].get("measuredVersion") == "gpt-5.6-" + a
+                         for a in ("sol", "luna"))),
+        ("for-role routes the fanout tier to gpt-6-luna, never to the superseded row",
+         lambda: ("fanout", "codex") in routes_to("gpt-6-luna") and routes_to("gpt-5.6-luna") == []),
+        ("...and the SAME report routes to claude-opus-5-5 (the probe reaches a routed row)",
+         lambda: ("executor", "codex") in routes_to("claude-opus-5-5")),
+        ("the superseded 5.6 rows claim no role and keep their own measured evidence",
+         lambda: all(mr.resolve(a, live)["roles"] == []
+                     and mr.resolve(a, live)["effort"].get("measuredVersion") == mr.resolve(a, live)["version"]
+                     for a in ("sol56", "luna56"))),
+
+        # ---- the dated alias history ----
+        ("resolve_alias_at(opus, 2026-09-10) -> claude-opus-5",
+         lambda: mr.resolve_alias_at("opus", "2026-09-10", live) == "claude-opus-5"),
+        ("resolve_alias_at(opus, 2026-07-20) -> claude-opus-4-8",
+         lambda: mr.resolve_alias_at("opus", "2026-07-20", live) == "claude-opus-4-8"),
+        ("resolve_alias_at(opus, a time after the last boundary) -> claude-opus-5-5",
+         lambda: mr.resolve_alias_at("opus", "2026-09-23T01:00:00Z", live) == "claude-opus-5-5"),
+        ("a date before the first evidenced service is unresolved, never guessed",
+         lambda: mr.resolve_alias_at("opus", "2026-05-01", live) is None),
+        ("fable before its 5.1 boundary -> claude-fable-5",
+         lambda: mr.resolve_alias_at("fable", "2026-08-15", live) == "claude-fable-5"),
+        ("an alias with no history serves its current row", lambda: mr.resolve_alias_at(
+            "laguna", "2026-08-25", live) == "laguna-s-2.1-free"),
+        ("an unknown alias resolves to None", lambda: mr.resolve_alias_at("mythos", "2026-09-10", live) is None),
+        ("every history id is a registered row",
+         lambda: all(mr.row_by_id(e["id"], live) for h in live["aliasHistory"].values() for e in h)),
+
+        # ---- record identity: attested, then version, then direct served, then history ----
+        ("a proxied record labels by attestedModel, not its servedModel",
+         lambda: mr.record_model_id(proxied, "luna", "2026-09-01", live) == "gpt-5.6-luna"
+                 and mr.label(mr.record_model_id(proxied, "luna", "2026-09-01", live), live)
+                 == mr.row_by_id("gpt-5.6-luna", live)["label"]),
+        ("...and a proxied servedModel alone is never identity (codex is not direct)",
+         lambda: not mr.transport_is_direct("codex", live)
+                 and mr.record_model_id({"transport": "codex", "servedModel": "gpt-5.4-mini"},
+                                        "luna", "2026-09-01", live) == "gpt-5.6-luna"),
+        ("a direct record labels by servedModel", lambda: mr.transport_is_direct("anthropic", live)
+         and mr.record_model_id(direct, "opus", "2026-09-23", live) == "claude-opus-5"),
+        ("a record with no served id falls back to the dated alias history",
+         lambda: mr.record_model_id(bare, "opus", "2026-09-10", live) == "claude-opus-5"),
+        ("an unregistered modelVersion is returned raw, never relabelled by the alias history",
+         lambda: mr.record_model_id({"transport": "anthropic", "modelVersion": "claude-opus-6"},
+                                    "opus", "2026-09-23", live) == "claude-opus-6"
+                 and mr.row_by_id("claude-opus-6", live) is None),
+        ("an unknown transport is never direct", lambda: not mr.transport_is_direct(None, live)
+         and not mr.transport_is_direct("anthropic (Workflow)", live)),
+        ("every model id in the census record set resolves to a row",
+         lambda: [i for i in census_ids if mr.row_by_id(i, live) is None] == []),
+        ("row_by_id strips the context suffix", lambda: mr.row_by_id("claude-opus-5-5[1m]", live)["id"]
+         == "claude-opus-5-5"),
+        ("row_by_id is None for an unregistered id, and label falls back to it",
+         lambda: mr.row_by_id("mythos-x", live) is None and mr.label("mythos-x", live) == "mythos-x"),
+
+        # ---- one model table ----
+        ("lifecycle: opus-5-5 current, opus-5 superseded, opus-4-8 retired",
+         lambda: [mr.lifecycle(i, live) for i in ("claude-opus-5-5", "claude-opus-5", "claude-opus-4-8")]
+                 == ["current", "superseded", "retired"]),
+        ("family groups the versions of one line",
+         lambda: mr.family("claude-opus-5-5", live) == mr.family("claude-opus-5", live) == "opus"
+                 and mr.family("gpt-6-sol", live) == mr.family("gpt-5.6-sol", live)),
+        ("rows(lifecycle='current') holds each current row and no superseded one",
+         lambda: {"claude-opus-5-5", "gpt-6-sol", "gpt-6-luna"} <= {m["id"] for m in mr.rows("current", live)}
+                 and not {"claude-opus-5", "gpt-5.6-sol"} & {m["id"] for m in mr.rows("current", live)}),
+        ("anthropic_ids lists the dispatchable Anthropic rows only",
+         lambda: {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5"} <= set(mr.anthropic_ids(live))
+                 and not any(i.startswith("gpt-") for i in mr.anthropic_ids(live))
+                 and "claude-opus-4-8" not in mr.anthropic_ids(live)),
+        ("every row carries label, family, version, lifecycle, order, costRank and prior",
+         lambda: all(all(k in m for k in ("label", "family", "version", "lifecycle", "order",
+                                          "costRank", "prior")) for m in live["models"])),
+        ("codex effort-values come from the row, bounded by the transport's pin vocabulary",
+         lambda: cli(["effort-values", "sol"])[1].strip() == '["low", "medium", "high", "xhigh", "max"]'),
+        ("a row whose own effortValues share no rung with its transport is refused, never all rungs",
+         lambda: raises_registry(lambda: mr.effort_values(
+             dict(mr.resolve("sol", live), effortValues=["ultra"]), live))),
+        ("a row declaring an empty effortValues list is refused, never all rungs",
+         lambda: raises_registry(lambda: mr.effort_values(
+             dict(mr.resolve("sol", live), effortValues=[]), live))),
+        ("`available` names both versions of each moved alias",
+         lambda: all(s in cli(["available"])[1] for s in (
+             "opus     claude-opus-5-5", "opus5    claude-opus-5", "sol      gpt-6-sol",
+             "sol56    gpt-5.6-sol", "luna     gpt-6-luna", "luna56   gpt-5.6-luna"))),
+
+        # ---- A3: for-role picks no effort from ladder prose ----
+        ("an Anthropic hop line carries no -e rung", lambda: not RUNG_FLAG.search(mr._sidecar_line(
+            mr.resolve("opus", live), live))),
+        ("...and points at the ladder cell instead", lambda: "ladder" in mr._sidecar_line(
+            mr.resolve("opus", live), live)),
+        ("an unmeasured row's placeholder rungs never become a printed -e",
+         lambda: not RUNG_FLAG.search(mr._sidecar_line(mr.resolve("terra", live), live))),
+        ("a measured provider row prints no -e either: the ladder cell owns the rung",
+         lambda: not RUNG_FLAG.search(mr._sidecar_line(mr.resolve("flash", live), live))
+                 and not RUNG_FLAG.search(mr._sidecar_line(mr.resolve("luna56", live), live))),
+        ("`for-role scout` and `fanout` print no `-e` on any hop line",
+         lambda: not any(RUNG_FLAG.search(ln + " ") for r in ("scout", "fanout")
+                         for ln in cli(["for-role", r, "--from", "anthropic"])[1].splitlines())),
+        ("`for-role executor --from codex` prints no `-e` on the opus hop",
+         lambda: "-m opus -e" not in cli(["for-role", "executor", "--from", "codex"])[1]),
+
+        # ---- validation of the new fields ----
+        ("aliasHistory naming an unregistered id is rejected",
+         lambda: rejects(lambda d: d["aliasHistory"]["opus"][0].update(id="claude-opus-9"), "aliasHistory")),
+        ("aliasHistory whose last entry is not the alias's current row is rejected",
+         lambda: rejects(lambda d: d["aliasHistory"]["opus"].pop(), "aliasHistory")),
+        ("aliasHistory with non-increasing boundaries is rejected",
+         lambda: rejects(lambda d: d["aliasHistory"]["opus"][1].update(
+             until=d["aliasHistory"]["opus"][0]["until"]), "aliasHistory")),
+        ("an aliasHistory boundary without evidence is rejected",
+         lambda: rejects(lambda d: d["aliasHistory"]["opus"][0].pop("evidence"), "evidence")),
+        ("a lifecycle outside current|superseded|retired is rejected",
+         lambda: rejects(lambda d: row(d, "opus5").update(lifecycle="old"), "lifecycle")),
+        ("two current rows in one family are rejected",
+         lambda: rejects(lambda d: row(d, "opus5").update(lifecycle="current"), "current")),
+        ("a row without a label is rejected", lambda: rejects(lambda d: row(d, "opus").pop("label"), "label")),
+        ("a prior outside frontier|mid|small is rejected",
+         lambda: rejects(lambda d: row(d, "opus").update(prior="huge"), "prior")),
+        ("a duplicate display order is rejected",
+         lambda: rejects(lambda d: row(d, "opus5").update(order=row(d, "opus")["order"]), "order")),
     ]
 
     failed = 0
@@ -640,8 +876,11 @@ def main():
     sched_failed, sched_total = _schedule_cases(live)
     failed += sched_failed
 
+    ident_failed, ident_total = _identity_cases(live)
+    failed += ident_failed
+
     total = len(CASES) + 3 + 3 + len(invalid_limit_cases) + 4
-    total += sched_total
+    total += sched_total + ident_total
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

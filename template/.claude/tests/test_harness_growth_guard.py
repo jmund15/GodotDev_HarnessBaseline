@@ -108,6 +108,16 @@ class GrowthTests(unittest.TestCase):
     def test_excluded_scratch_file_stays_silent(self):
         self.assertEqual("", self.emit(self.root / ".claude/scratch/report.md"))
 
+    def test_generated_dot_cache_mirror_stays_silent(self):
+        mirror = self.root / ".claude/.cache/baseline/CLAUDE.md"
+        mirror.parent.mkdir(parents=True)
+        mirror.write_text(SMALL, encoding="utf-8")
+        live = self.root / ".claude/skills/CLAUDE.md"
+        live.parent.mkdir(parents=True)
+        live.write_text(SMALL, encoding="utf-8")
+        self.assertNotEqual("", self.emit(live), "positive control: the same file outside .cache fires")
+        self.assertEqual("", self.emit(mirror))
+
     def test_second_edit_to_the_same_file_in_one_turn_is_silent(self):
         self.set_turn("growturn", "first user turn")
         self.assertIn("3,002 B", self.emit(self.target, session="growturn"))

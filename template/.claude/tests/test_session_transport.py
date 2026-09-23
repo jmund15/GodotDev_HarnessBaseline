@@ -74,6 +74,8 @@ CASES = [
      {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/v1/messages"}, "opencode", "baseUrl"),
     ("no signal at all is the host transport", {}, "anthropic", "default"),
     ("empty base URL is the host transport", {"ANTHROPIC_BASE_URL": ""}, "anthropic", "default"),
+    ("the literal Anthropic API host is the host transport, despite no baseUrl on its own row",
+     {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}, "anthropic", "baseUrl"),
 
     # --- negatives: each of these MUST fail closed ---
     ("env naming an unregistered transport → unknown",

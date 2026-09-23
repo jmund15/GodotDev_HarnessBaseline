@@ -18,6 +18,7 @@ HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 SKILL = os.path.join(HERE, "..", "skills", "orchestration", "SKILL.md")
 
 ALLOW, DENY = "allow", "deny"
+STATE = tempfile.mkdtemp(prefix="dispatchguard_state_")
 
 # Assembled from fragments for the same reason the hook does it: a literal here would land in
 # the transcript of any session that reads this file and falsely satisfy the guard.
@@ -34,9 +35,29 @@ def checked_run(args, **kwargs):
     return result
 
 
-def run(payload):
+def arm_ladder(session_id):
+    path = os.path.join(STATE, (session_id or "default")[:8] + ".json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except Exception:
+        state = {}
+    state["model_ladder_ready"] = True
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(state, fh)
+
+
+def run(payload, ladder=True, cwd=None, project_dir=None):
+    if (ladder and isinstance(payload, dict)
+            and payload.get("tool_name") in ("Workflow", "Agent")):
+        arm_ladder(payload.get("session_id") or "")
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE)
+    if project_dir:
+        env["CLAUDE_PROJECT_DIR"] = project_dir
+    if cwd and isinstance(payload, dict):
+        payload = dict(payload, cwd=cwd)
     r = checked_run([sys.executable, HOOK], input=json.dumps(payload),
-                    capture_output=True, text=True, timeout=60)
+                    capture_output=True, text=True, timeout=60, env=env, cwd=cwd)
     out = (r.stdout or "").strip()
     if not out or out == "{}":
         return ALLOW, ""
@@ -111,9 +132,11 @@ def main():
         ("Workflow dispatch with no marker is denied",
          dispatch("Workflow", planted), DENY, "Skill(orchestration)"),
         ("Agent dispatch with no marker is denied",
-         dispatch("Agent", planted), DENY, "Re-issue the dispatch"),
-        ("the denial forbids a direct-Agent downgrade when Workflow approval is absent",
-         dispatch("Agent", planted), DENY, "ask the user"),
+         dispatch("Agent", planted), DENY, "re-issue the dispatch"),
+        ("the orchestration denial points at the §0 mechanism choice",
+         dispatch("Agent", planted), DENY, "its §0"),
+        ("the denial forbids a direct-Agent downgrade and cites the standing Workflow authorization",
+         dispatch("Agent", planted), DENY, "needs no user opt-in"),
 
         ("a JSON-escaped em dash defeats the §0 marker — documents why marker 1 is ASCII",
          dispatch("Agent", escaped_0), DENY, "Skill(orchestration)"),
@@ -141,6 +164,9 @@ def main():
         ("a delegate told to run /delegate is denied",
          delegated_brief(loaded_1, "Now run /delegate --jobs .claude/scratch/jobs.json."),
          DENY, "dispatch a fan-out"),
+        ("the nested denial names the lens-brief materializer",
+         delegated_brief(loaded_1, "Now run /delegate --jobs .claude/scratch/jobs.json."),
+         DENY, "tools/lens_briefs.py"),
         ("a delegate told to use /delegate is denied",
          delegated_brief(loaded_1, "Use /delegate for the remaining review lenses."),
          DENY, "dispatch a fan-out"),
@@ -201,6 +227,9 @@ def main():
         ("the pinned-Agent denial names the effort pin the Agent route lacks",
          pinned_agent(loaded_1, "Edit these 33 files.", subagent_type="general-purpose"),
          DENY, "effort"),
+        ("the pinned-Agent denial names the AGENT-EXCEPTION escape",
+         pinned_agent(loaded_1, "Edit these 33 files.", subagent_type="general-purpose"),
+         DENY, "AGENT-EXCEPTION:"),
         ("a pinned Agent with an AGENT-EXCEPTION line is allowed",
          pinned_agent(loaded_1, "Find where the floor is set.\nAGENT-EXCEPTION: exploratory, "
                                 "the job list is unknown until it reports."),
@@ -234,6 +263,46 @@ def main():
         if not ok:
             failures.append(label)
 
+    ladder_denial = run(dispatch("Workflow", loaded_0), ladder=False)
+    ladder_cases = [
+        ("a Workflow without a fresh ladder Read is denied",
+         ladder_denial, DENY, "model_ladder_evidence.md"),
+        ("the ladder denial requires the absolute path",
+         ladder_denial, DENY, "absolute path"),
+        ("the ladder denial says one Read lasts until compaction",
+         ladder_denial, DENY, "until compaction"),
+    ]
+    # A session working inside a worktree: the gate accepts only the primary checkout's ladder,
+    # so the denial must name that file absolutely — a relative path resolves to the worktree copy.
+    primary = tempfile.mkdtemp(prefix="dispatchguard_primary_")
+    worktree = os.path.join(primary, ".claude", "worktrees", "wt1")
+    for base in (primary, worktree):
+        ref = os.path.join(base, ".claude", "reference")
+        os.makedirs(ref, exist_ok=True)
+        with open(os.path.join(ref, "model_ladder_evidence.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Model Ladder\n")
+    primary_ladder = os.path.realpath(
+        os.path.join(primary, ".claude", "reference", "model_ladder_evidence.md"))
+    worktree_ladder = os.path.realpath(
+        os.path.join(worktree, ".claude", "reference", "model_ladder_evidence.md"))
+    wt_session = dict(dispatch("Workflow", loaded_0), session_id="dmgwt001")
+    wt_denial = run(wt_session, ladder=False, cwd=worktree, project_dir=primary)
+    ladder_cases.append(("a worktree-cwd denial names the primary checkout's ladder absolutely",
+                         wt_denial, DENY, primary_ladder))
+    ladder_cases.append(("a worktree-cwd denial never names the worktree's stale copy",
+                         (wt_denial[0], worktree_ladder not in wt_denial[1]), (DENY, True), ""))
+    first = run(dispatch("Workflow", loaded_0))
+    second = run(dispatch("Workflow", loaded_0), ladder=False)
+    ladder_cases.append(("one full ladder Read authorizes later Workflows without a re-read",
+                         (first[0], second[0]), (ALLOW, ALLOW), ""))
+    for label, got, expected, needle in ladder_cases:
+        reason = got[1] if isinstance(got, tuple) and len(got) == 2 and isinstance(got[1], str) else ""
+        actual = got if isinstance(expected, tuple) else got[0]
+        ok = actual == expected and (not needle or needle in reason)
+        print("%-4s %s" % ("ok" if ok else "FAIL", label))
+        if not ok:
+            failures.append("%s expected=%r got=%r reason=%r" % (label, expected, actual, reason[:200]))
+
     for label, payload, expected, needle in cases:
         try:
             got, reason = run(payload)
@@ -254,7 +323,7 @@ def main():
         if not ok:
             failures.append("%s absent from SKILL.md — the guard would deny every dispatch" % label)
 
-    total = len(cases) + len(helper_cases) + 2
+    total = len(cases) + len(helper_cases) + len(ladder_cases) + 2
     print("\n%d/%d cases pass" % (total - len(failures), total))
     for f in failures:
         print("  FAIL " + f)

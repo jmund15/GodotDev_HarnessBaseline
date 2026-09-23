@@ -4,10 +4,11 @@ A sidecar is a separate `claude` child on a transport the calling session is not
 
 ## Procedure
 
-1. **Roster + launcher:** `python3 .claude/tools/model_registry.py available` — prints each alias, its roles, effort rungs, price, and which transport it belongs to, `anthropic` included. Launcher = that transport's `launcher` field in `reference/external_models.json`. Excluded models are out; re-select under the ladder (`reference/model_ladder_evidence.md`) — **a stale route name in a command is not a reason to fall back to the session's own transport.**
-2. **Band:** read the latest `[budget-posture]` line in context. `<launcher> --check -m <alias>` runs every refusal gate a dispatch runs (7 availability, 5 band floor, 8 provider ceiling) and `hooks/sidecar_dispatch_context.py` runs it for you before any launch — a refusal DENIES the Bash call, never surfaces minutes later in a background task's output. Add `-A` only when the spend is a deliberate choice, and say so in the dispatch line.
-3. **Prompt to a file** (never argv — Windows argv caps at ~8K). Schema to a file when you need structured output.
-4. **Dispatch** — one call, backgrounded or not, with `-R`; every field below is required except the bracketed ones:
+1. **Model ladder:** fully `Read` `.claude/reference/model_ladder_evidence.md`. One full Read authorizes every direct launch or enumerated fan-out until the next compaction; a role lookup is not a substitute.
+2. **Roster + launcher:** `python3 .claude/tools/model_registry.py available` — prints each alias, its roles, effort rungs, price, and which transport it belongs to, `anthropic` included. Launcher = that transport's `launcher` field in `reference/external_models.json`. Excluded models are out; re-select under the ladder (`reference/model_ladder_evidence.md`) — **a stale route name in a command is not a reason to fall back to the session's own transport.**
+3. **Live capacity:** `<launcher> --check -m <alias>` reads the current seat's plan band and the target provider's normalized quota/balance before any model request. It distinguishes exhausted quota (10), insufficient balance (6), authentication (3), unverifiable/malformed capacity (8), and a known over-ceiling band (8). `-A` overrides only the known band ceiling or host-band floor. The dispatch hook runs this preflight and denies on any refusal.
+4. **Prompt to a file** (never argv — Windows argv caps at ~8K). Schema to a file when you need structured output.
+5. **Dispatch** — one call, backgrounded or not, with `-R`; every field below is required except the bracketed ones:
 
 ```bash
 bash .claude/scripts/<launcher> -m <alias> -e <effort> -D <bare|pointer|full> -G <survey|review|author|any> -f <prompt.md> [-S <schema.json>] -R <record.json> -l "<label>" -d "<repo-root>" > <capture>.json
@@ -17,9 +18,9 @@ The launcher itself writes `<record>.out` and `<record>.exit` on **every** exit 
 
 **Detached form, for a run that must outlive this session:** add `-X -P <progress.jsonl>` and run the call in the foreground. `-X` must be its own argument (never a cluster like `-AX`) and needs `-R`. The launcher starts a detached job and returns within seconds, printing `DETACHED pid=`, `OUT=`, `ERR=` and `EXIT=`. Arm a Monitor on `EXIT` and the progress file; inspect the process and record before any kill. Each `-R` path takes one launch: a path whose `.out`, `.err`, `.exit` or `.pid` exists refuses with exit 1.
 
-A backgrounded launch is never denied; `hooks/sidecar_dispatch_context.py` adds a one-line pointer at `<record>.exit` instead.
+A backgrounded launch is not denied merely for being backgrounded; ladder, capacity, availability, and pricing gates still apply. When allowed, the hook adds a one-line pointer at `<record>.exit`.
 
-5. **Consume:** result JSON is on **stdout** (`-o` is a FORMAT, never a path). `-R` record holds `costUSD` (truth; `total_cost_usd` in the payload is inflated), `servedModel`, and attestation. Rate the dispatch's effort fit when you read it.
+6. **Consume:** result JSON is on **stdout** (`-o` is a FORMAT, never a path). `-R` record holds `costUSD` (truth; `total_cost_usd` in the payload is inflated), `servedModel`, and attestation. Rate the dispatch's effort fit when you read it.
 
 A fan-out is `tools/sidecar_fanout.py`, which detaches every child with `-X` so killing the fan-out's own process stops none of them; or N backgrounded calls, each with its own `-R`, relying on the same default durable files. Capture bytes do not prove a run ended: a retry waits for that run's `EXIT` file, or for its process to be proven gone, and takes a new `-R` path.
 
@@ -98,12 +99,12 @@ Evidence: `auto-memory/archive/gotcha_harness_killed_notice_is_not_a_dead_sideca
 |---|---|---|
 | 1 | `-X`: record path already used, or the snapshot could not be made | pass a new `-R` path; check `TEMP` |
 | 2 | bad flag / unknown alias / registry unreadable; `-X` without `-R` or inside a flag cluster | `model_registry.py available` |
-| 3 | credential missing | the launcher header names the file |
+| 3 | credential missing or live provider authentication failed | re-login or restore the named credential |
 | 4 | child CLI or proxy missing | `<launcher> --check` |
-| 5 | band below the model's floor | `-A` if deliberate |
-| 6 | balance floor / probe failed | not overridable |
+| 5 | current seat's live plan band is below the model floor | `-A` only for deliberate off-quota spend |
+| 6 | live target balance is below its floor | replenish funds; not overridable |
 | 7 | model marked unavailable | re-select; `-U` only on the user's word |
-| 8 | provider's own quota band over ceiling | `-A` if deliberate |
+| 8 | target capacity unavailable/malformed/unsupported-required, or a known provider band over ceiling | fix evidence; `-A` only overrides the known ceiling |
 | 10 | provider usage limit, or its exhausted marker is live | another provider (§Provider usage limit) |
 | 11 | peak pricing window refused (`gate.peakPolicy: refuse`) | wait for off-peak (`model_registry.py price-window <model>` prints the end); `-W` only on the user's word |
 

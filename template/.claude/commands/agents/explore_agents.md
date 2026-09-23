@@ -36,7 +36,7 @@ Triggers are **rules, not judgment calls** — the caller evaluates them mechani
 | `exp-memory` | **ALWAYS** |
 | `exp-prior-art` | **ALWAYS** |
 | `exp-integration-surface` | topic names an existing type, file, scene, autoload, or BB key |
-| `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula |
+| `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula; Harness/Meta process and tooling topics never trigger `exp-design-source` |
 | `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command |
 | `exp-external-truth` | the topic's correctness depends on engine/library behavior (Godot, GdUnit4, .NET) |
 | `exp-empirical-state` | topic touches Logic-domain code with tests, or authored `.tres` data |
@@ -46,8 +46,9 @@ Triggers are **rules, not judgment calls** — the caller evaluates them mechani
 
 The two floor lenses are **never omitted**. The caller resolves one eligible arm per selected lens through `orchestration` §5b *Budget, Availability & Transport*; provider availability does not add jobs.
 
+**Selector exclusions.** A bespoke lens contained by a selected mandate extends that prompt instead of adding a seat.
 
-**Extending the roster.** These lenses are a floor, not a ceiling (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
+**Extending the roster.** These lenses are a floor: every mandate always runs (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
 
 ---
 

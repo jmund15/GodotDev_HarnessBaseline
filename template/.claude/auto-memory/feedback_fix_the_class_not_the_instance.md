@@ -6,8 +6,6 @@ metadata:
   type: feedback
   originSessionId: a0b867f5-6e84-40a0-a60c-e348977c3fd3
   modified: 2026-08-18T05:54:48.498Z
-retire_when:
-  - review-by: 2027-01-03
 ---
 
 A reported symptom points at one instance. Fixing that instance and stopping ships the rest of

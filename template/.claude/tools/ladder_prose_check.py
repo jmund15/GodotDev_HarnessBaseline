@@ -41,6 +41,14 @@ BANNED = [
      "a board figure; say what it means for a pin instead ('tops the board', 'a tier below')"),
 ]
 
+TOP_LEVEL_BANNED = [
+    ("authoring heading", r"Authoring an entry"),
+    ("ingest edit rule", r"Every ingest rewrites"),
+    ("comparison edit rule", r"comparison earns an edit"),
+    ("version-pooling edit rule", r"Replacing an older cell is a normal edit"),
+    ("candidate promotion rule", r"A claim reaches this file only"),
+]
+
 # The `Pick by work shape` table is EXEMPT by construction: each of its rows IS a task, so the id
 # names the row rather than decorating a claim. Only Role guidance's ± cells are checked.
 
@@ -104,17 +112,25 @@ def main(argv):
         return 2
 
     bad = 0
+    with open(path, encoding="utf-8") as handle:
+        source_lines = handle.readlines()
+    for line_no, source_line in enumerate(source_lines, 1):
+        for name, pat in TOP_LEVEL_BANNED:
+            if re.search(pat, source_line, re.I):
+                bad += 1
+                print("%s:%d  top-level  %s -- move it to `.claude/commands/ladder_ingest.md`"
+                      % (path, line_no, name))
     for line, model, col, cell in rows:
         for name, pat, why in BANNED:
             for m in re.finditer(pat, cell, re.I):
                 bad += 1
                 print("%s:%d  %s  [%s]  %s %r -- %s"
                       % (path, line, model.split("(")[0].strip(), col, name, m.group(0), why))
-    print("\n%d cell(s) checked across %s, %d run-narrative hit(s)"
+    print("\n%d cell(s) checked across %s, %d prose-contract hit(s)"
           % (len(rows), " + ".join(CHECKED_COLUMNS), bad))
     if bad:
         print("These cells state what the model TENDS to do and which rung to pin. Rewrite the "
-              "clause as a tendency, or drop it -- see the file's own 'Authoring an entry' rule.")
+              "clause as a tendency, or drop it -- see `.claude/commands/ladder_ingest.md`.")
     return 1 if bad else 0
 
 

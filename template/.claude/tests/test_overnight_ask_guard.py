@@ -39,6 +39,16 @@ class OvernightTests(unittest.TestCase):
         result = self.call("--arm", goal, sid=sid)
         self.assertEqual(0, result.returncode, result.stderr)
 
+    def close_doc(self, sid="one", q_line=None):
+        path = self.root / "Overnight" / f"2026-09-20-{sid}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = ["## Outcome", "", "- done — proof", "", "## Decisions for you", ""]
+        if q_line:
+            rows.append(q_line)
+        rows.extend(["", "## Left undone", "", "- None.", ""])
+        path.write_text("\n".join(rows), encoding="utf-8")
+        return path
+
     def test_no_marker_allows(self):
         self.assertEqual("allow", self.decision())
 
@@ -60,6 +70,8 @@ class OvernightTests(unittest.TestCase):
         self.arm(goal="first")
         self.arm(sid="two", goal="second")
         self.assertEqual("first", json.loads(self.marker().read_text())["goal"])
+        peer_close = self.close_doc("two")
+        self.assertEqual(0, self.call("--validate-close", str(peer_close), sid="two").returncode)
         self.assertEqual(0, self.call("--disarm", sid="two").returncode)
         self.assertEqual("deny", self.decision())
         self.assertEqual("allow", self.decision(sid="two"))
@@ -109,6 +121,41 @@ class OvernightTests(unittest.TestCase):
         self.assertEqual("one", doc["session_id"])
         self.assertEqual("finish", doc["goal"])
         self.assertFalse(json.loads(self.call("--status", sid="two").stdout)["armed"])
+
+    def test_validate_close_binds_hash_before_disarm(self):
+        self.arm()
+        close = self.close_doc(q_line=(
+            "**Q1 — Remove stale worktree? Options: remove | keep. "
+            "Park: irreversible — removal needs owner confirmation. Recommendation: keep."
+        ))
+        result = self.call("--validate-close", str(close))
+        self.assertEqual(0, result.returncode, result.stderr)
+        state = json.loads(self.marker().read_text(encoding="utf-8"))
+        self.assertEqual(str(close.resolve()), state["validated_close"]["path"])
+        self.assertRegex(state["validated_close"]["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(0, self.call("--disarm").returncode)
+        self.assertFalse(self.marker().exists())
+
+    def test_disarm_refuses_missing_or_stale_close_receipt(self):
+        self.arm()
+        self.assertNotEqual(0, self.call("--disarm").returncode)
+        self.assertTrue(self.marker().exists())
+        close = self.close_doc()
+        self.assertEqual(0, self.call("--validate-close", str(close)).returncode)
+        close.write_text(close.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+        self.assertNotEqual(0, self.call("--disarm").returncode)
+        self.assertTrue(self.marker().exists())
+
+    def test_validate_close_rejects_wrong_identity_headings_and_q_shape(self):
+        self.arm()
+        wrong = self.close_doc("two")
+        self.assertNotEqual(0, self.call("--validate-close", str(wrong)).returncode)
+        bad_heading = self.close_doc()
+        bad_heading.write_text(bad_heading.read_text().replace("## Left undone", "## Timeline"))
+        self.assertNotEqual(0, self.call("--validate-close", str(bad_heading)).returncode)
+        bad_q = self.close_doc(q_line="**Q1 — choose later. Recommendation: A.")
+        self.assertNotEqual(0, self.call("--validate-close", str(bad_q)).returncode)
+        self.assertTrue(self.marker().exists())
 
     def test_malformed_hook_input_fails_open(self):
         result = self.call(payload=["not an object"])

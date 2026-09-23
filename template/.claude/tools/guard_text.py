@@ -28,7 +28,7 @@ import os
 import sys
 
 VALID_SHAPES = ("any", "survey", "review", "author")
-VALID_TIERS = ("strict", "terse", "fable", "none")
+VALID_TIERS = ("detailed", "condensed", "minimal", "none")
 
 _GUARDS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "guards"

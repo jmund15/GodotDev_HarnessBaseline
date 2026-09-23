@@ -3,8 +3,6 @@ name: Doc revision discipline — rewrite in place, don't append revision footer
 description: When correcting a saved doc, rewrite affected sections in the main body. The reasoning trail goes in a Revision History footer at the END — never as a "v1.1 addendum" buried after the wrong recommendation. Top-down readers internalize the headline; buried corrections don't save them.
 type: feedback
 originSessionId: 2026-04-30
-retire_when:
-  - review-by: 2026-10-16
 modified: 2026-09-15T20:25:18.331Z
 ---
 When correcting a saved doc (design doc, plan, retrospective, README, etc.), rewrite the affected sections in the main body. Do NOT use append-mode to add a "v1.1 revision" footer that leaves the wrong recommendation at the top of the doc.

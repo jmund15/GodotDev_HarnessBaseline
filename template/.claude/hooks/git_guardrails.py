@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
@@ -47,15 +48,16 @@ except Exception as _exc:
     read_json_salvage, state_path, DIRS = None, None, None
     _STATE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 try:
-    from harness_tests import tree_entries, STAMP_PATH  # noqa: E402
+    from harness_tests import tree_entries  # noqa: E402
     _HARNESS_IMPORT_ERROR = None
 except Exception as _exc:
-    tree_entries, STAMP_PATH = None, None
+    tree_entries = None
     _HARNESS_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 from _git_commit import (  # noqa: E402
     command_git_env, export_assignments, git_environ,
     segments, git_invocation, cd_target, executable_text, run_git,
     staged_paths, incoming_paths, bypass_declared,
+    resolve_cd, literal_assignments, expand_literal,
 )
 
 BYPASS_VAR = "HARNESS_ALLOW_UNSTAMPED_HARNESS"
@@ -70,11 +72,54 @@ def short_flag_chars(args):
     return chars
 
 
-def verdict(args):
-    """Return a one-line block message, or None if allowed."""
+_SIDE_UNSAFE = (".tscn", ".tres")
+
+
+# Options a path-scoped discard may carry and still be judged by the worktree diff alone. Any other
+# (`--staged`/`-S`, `--worktree`/`-W`, a short `-s <tree>`, `-f`, a bundle) reads as a loss.
+_NO_LOSS_OPTS = {"--theirs", "--ours", "-q", "--quiet"}
+
+
+def _discards_nothing(sub, rest, cwd, git_env=None):
+    """True when a path-scoped checkout/restore loses no edit: every named path is an unmerged
+    path taken with --theirs/--ours (not .tscn/.tres, where one side silently drops Export wiring),
+    or has no difference from its source beyond CR line endings. Any doubt reads as a loss."""
+    if cwd is None or (sub == "checkout" and "--" not in rest):
+        return False
+    split = rest.index("--") if "--" in rest else len(rest)
+    head = rest[:split]
+    paths = rest[split + 1:] if "--" in rest else [a for a in rest if not a.startswith("-")]
+    opts = [a for a in head if a.startswith("-")]
+    refs = [a for a in head if not a.startswith("-")] if sub == "checkout" else []
+    source = [a.split("=", 1)[1] for a in opts if a.startswith("--source=")]
+    if (not paths or len(refs) > 1
+            or any(o not in _NO_LOSS_OPTS and not o.startswith("--source=") for o in opts)
+            or any(p in (".", ":/", "/") or re.search(r"[*?\[\]]", p) for p in paths)):
+        return False
+    side = "--theirs" in opts or "--ours" in opts
+    base = refs[0] if refs else (source[0] if source else None)
+    for path in paths:
+        if side:
+            if path.lower().endswith(_SIDE_UNSAFE):
+                return False
+            unmerged = run_git(["ls-files", "-u", "--", path], cwd, git_env)
+            if not (unmerged or "").strip():
+                return False
+            continue
+        diff = ["diff", "--quiet", "--ignore-cr-at-eol"] + ([base] if base else []) + ["--", path]
+        if run_git(diff, cwd, git_env) is None:
+            return False
+    return True
+
+
+def verdict(args, cwd=None, git_env=None):
+    """Return a one-line block message, or None if allowed. `cwd` is the repo the command
+    targets; without it a checkout/restore discard is judged unsafe."""
     if not args:
         return None
     sub, rest = args[0], args[1:]
+    if sub in ("checkout", "restore") and _discards_nothing(sub, rest, cwd, git_env):
+        return None
 
     if sub == "reset" and "--hard" in rest:
         return ("BLOCKED `git reset --hard` — discards every uncommitted change in the shared worktree "
@@ -93,7 +138,8 @@ def verdict(args):
                 "edit your own change back out in place; ask the user before removing an edit that is not "
                 "yours. Never `git stash`: every session in this checkout shares its list.")
 
-    if sub == "restore" and not ({"--staged", "-S"} & set(rest)):
+    staged_only = ({"--staged", "-S"} & set(rest)) and not ("--worktree" in rest or "W" in short_flag_chars(rest))
+    if sub == "restore" and not staged_only:
         return ("BLOCKED `git restore` without `--staged` — discards uncommitted worktree edits, which may "
                 "be another session's. Copy the file aside (`cp <path> .claude/scratch/`), then edit your "
                 "own change back out in place; `git restore --staged` alone is allowed.")
@@ -144,6 +190,12 @@ def _has_proof(tests_dir, name, git_env=None):
             or glob.glob(os.path.join(tests_dir, "%s_test.*" % name)))
     return any(run_git(["ls-files", "--error-unmatch", "--", h], tests_dir, git_env) is not None
                for h in hits)
+
+
+def _stamp_path(repo_root):
+    """The target repo's stamp, unless the runner explicitly selected another path."""
+    return os.environ.get("HARNESS_TEST_STAMP") or os.path.join(
+        repo_root, ".claude", "logs", "harness_tests_stamp.json")
 
 
 def _stale(stamp, repo_root, touched):
@@ -299,10 +351,14 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         return None
 
     if sub != "commit":
-        # The stamp describes THIS tree; the merged result does not exist yet to be proven.
-        return ("BLOCKED `git %s` — it brings harness changes (%s%s) in unproven. Run it with "
-                "`--no-commit`, run `python3 .claude/scripts/harness_tests.py`, then `git commit`."
-                % (sub, ", ".join(touched[:4]), "…" if len(touched) > 4 else ""))
+        # A merge / cherry-pick / revert only re-commits content that was judged when it was
+        # committed on its source ref; a conflict stops it before any commit, and the commit that
+        # closes the merge is judged below against MERGE_HEAD.
+        return None
+
+    touched = _not_from_merge_head(touched, cwd, git_env)
+    if not touched:
+        return None
 
     if _HARNESS_IMPORT_ERROR:
         return ("BLOCKED harness commit — stamp machinery unavailable (%s). Repair "
@@ -338,33 +394,65 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
     # `harness_tests.py && git commit` chain is denied against the stamp that exists now.
     rerun = ("run `python3 .claude/scripts/harness_tests.py --staged` (proofs bound to the staged files, "
              "seconds) or the full runner as its own call, then commit")
-    stamp = read_json_salvage(STAMP_PATH)
-    if not stamp or not stamp.get("tree_hash"):
-        return "BLOCKED harness commit — no stamp; %s." % rerun
+    stamp = read_json_salvage(_stamp_path(repo_root))
+    reason = "no stamp" if not stamp or not stamp.get("tree_hash") else _stale(stamp, repo_root, touched)
+    if not reason:
+        return None
+    red = _auto_stamp(repo_root, touched)
+    if red is None:
+        stamp = read_json_salvage(_stamp_path(repo_root))
+        if stamp and stamp.get("tree_hash") and not _stale(stamp, repo_root, touched):
+            return None
+    elif red:
+        return "BLOCKED harness commit — a proof bound to the committed files failed:\n%s" % red
+    return "BLOCKED harness commit — %s; %s." % (reason, rerun)
 
-    reason = _stale(stamp, repo_root, touched)
-    if reason:
-        return "BLOCKED harness commit — %s; %s." % (reason, rerun)
 
-    return None
-
-
-_MSYS_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
+# Seconds the guard may spend stamping a stale commit itself. It must stay under the PreToolUse
+# timeout registered for pre_bash_dispatch.py (75 s): a hook the harness kills is a non-blocking
+# error, and the commit would then run unstamped.
+AUTO_STAMP_BUDGET = 55
+_STARTED = time.monotonic()  # the budget covers the whole hook run, shared by every commit segment
 
 
-def _resolve_cd(cwd: str, moved: str) -> str:
-    """`cwd` after a `cd <moved>`, understanding Git Bash's `/c/...` drive form.
+def _auto_stamp(repo_root, touched):
+    """Run the proofs bound to `touched` and refresh their stamp entries. None when they passed;
+    the failing tail when a proof failed; "" when the run was skipped or ran over budget, which
+    leaves today's deny in place."""
+    try:
+        budget = float(os.environ.get("HARNESS_AUTO_STAMP_BUDGET", AUTO_STAMP_BUDGET))
+    except ValueError:
+        budget = 0
+    budget -= time.monotonic() - _STARTED
+    if budget <= 0 or not os.path.exists(_stamp_path(repo_root)):  # a scoped run extends a full one
+        return ""
+    runner =os.path.join(_CLAUDE_DIR, "scripts", "harness_tests.py")
+    env = dict(os.environ, HARNESS_TEST_STAMP=_stamp_path(repo_root))
+    try:
+        r = subprocess.run([sys.executable, runner, "--repo", repo_root, "--for"] + touched,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=budget, cwd=repo_root, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r.returncode == 0:
+        return None
+    lines = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()]
+    return "\n".join(lines[-8:]) or "harness_tests.py exited %d" % r.returncode
 
-    The Bash tool runs Git Bash, so a `cd` operand is routinely MSYS-absolute. `os.path.join` on
-    Windows treats a leading `/` as root-relative to the CURRENT drive and produces
-    `C:\\repo\\c\\Users\\...` — a path that does not exist, so `git rev-parse` there fails and this
-    guard BLOCKS a commit for a repo it simply failed to find. It blocked a real one.
-    """
-    moved = os.path.expanduser(moved)
-    m = _MSYS_DRIVE.match(moved.replace("\\", "/"))
-    if m:
-        moved = "%s:\\%s" % (m.group(1).upper(), moved.replace("\\", "/")[3:].replace("/", os.sep))
-    return moved if os.path.isabs(moved) else os.path.join(cwd, moved)
+
+def _not_from_merge_head(touched, cwd, git_env):
+    """The touched harness paths whose staged blob differs from MERGE_HEAD's, i.e. what THIS commit
+    authors. During a merge the rest arrived from a ref where they were already judged; without a
+    MERGE_HEAD every path is this commit's own."""
+    if run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd, git_env) is None:
+        return touched
+    own = []
+    for norm in touched:
+        staged = run_git(["rev-parse", "-q", "--verify", ":" + norm], cwd, git_env)
+        theirs = run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD:" + norm], cwd, git_env)
+        if staged is None or theirs is None or staged.strip() != theirs.strip():
+            own.append(norm)
+    return own
 
 
 def main() -> None:
@@ -382,11 +470,16 @@ def main() -> None:
 
     cwd = input_data.get("cwd") or "."
     exported = {}
+    assigned_once = literal_assignments(command)
+    born = set()  # repos this same command creates with `git init`: no harness history to stamp
+
+    def expand(token):
+        return expand_literal(token, assigned_once) or token
 
     for segment in segments(command):
         moved = cd_target(segment)
         if moved is not None:
-            cwd = _resolve_cd(cwd, moved)
+            cwd = resolve_cd(cwd, expand(moved))
             continue
         assigned = export_assignments(segment)
         if assigned is not None:
@@ -396,9 +489,19 @@ def main() -> None:
         if parsed is None:
             continue
         args, chdir, inline_env = parsed
-        message = verdict(args)
-        if not message and args and args[0] in ("commit", "merge", "cherry-pick", "revert"):
-            target = os.path.join(cwd, chdir) if chdir else cwd
+        target = resolve_cd(cwd, expand(chdir)) if chdir else cwd
+        key = os.path.normcase(os.path.abspath(target))
+        if args and args[0] == "init":
+            named = [a for a in args[1:] if not a.startswith("-")]
+            made = resolve_cd(target, expand(named[0])) if named else target
+            top = run_git(["rev-parse", "--show-toplevel"], made, command_git_env(exported, inline_env))
+            made_key = os.path.normcase(os.path.abspath(made))
+            if top is None or os.path.normcase(os.path.abspath(top.strip())) != made_key:
+                born.add(made_key)  # a new repo; `git init` on an existing root changes nothing
+            continue
+        message = verdict(args, target, command_git_env(exported, inline_env))
+        if (not message and args and args[0] in ("commit", "merge", "cherry-pick", "revert")
+                and key not in born):
             message = harness_verdict(args[0], args[1:], target, inline_env,
                                       command_git_env(exported, inline_env),
                                       input_data.get("session_id"))

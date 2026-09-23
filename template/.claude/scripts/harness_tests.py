@@ -31,6 +31,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -119,17 +120,51 @@ def _runner_cmd(path):
 _DETAIL_LINES = 20
 
 
+# What `git rev-parse --local-env-vars` printed on git 2.x; used only when git cannot answer.
+_GIT_LOCAL_ENV_FALLBACK = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
+)
+
+
+def git_local_env_vars():
+    """Git's own list of repository-local environment variables (`git rev-parse
+    --local-env-vars`), or `_GIT_LOCAL_ENV_FALLBACK` when git cannot answer."""
+    try:
+        result = subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
+                                env={k: v for k, v in os.environ.items() if k not in _GIT_LOCAL_ENV_FALLBACK})
+        names = tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+        if result.returncode == 0 and names:
+            return names
+    except OSError:
+        pass
+    return _GIT_LOCAL_ENV_FALLBACK
+
+
+GIT_REPO_ENV = git_local_env_vars()
+STAMP_INDEX_ENV = "HARNESS_STAMP_INDEX"
+
+
 def run_proof(path, timeout=None):
     """(status, seconds, detail) — status is "pass", "cannot-run" or "fail".
 
     Exit 2 is unavailable coverage, not a passed or failed assertion. Its reason is
     reported, and a run with unavailable coverage does not issue a passing stamp.
+    Proofs run without the caller's GIT_REPO_ENV: a private commit index must not reach a
+    proof's temp-repo fixture. The stamp's own enumeration (`_git`) still honors it. The
+    caller's GIT_INDEX_FILE reaches the proof as HARNESS_STAMP_INDEX, so a proof that reads
+    the real repo's index passes it back as GIT_INDEX_FILE for that one call.
     """
     if timeout is None:
         timeout = _PROOF_TIMEOUTS.get(os.path.basename(path), _TIMEOUT_SEC)
+    env = {k: v for k, v in os.environ.items() if k not in GIT_REPO_ENV and k != STAMP_INDEX_ENV}
+    if os.environ.get("GIT_INDEX_FILE"):
+        env[STAMP_INDEX_ENV] = os.environ["GIT_INDEX_FILE"]
     start = time.time()
     try:
-        result = subprocess.run(_runner_cmd(path), capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(_runner_cmd(path), capture_output=True, text=True, timeout=timeout, env=env)
         out = (result.stdout or "") + (result.stderr or "")
         if result.returncode == 0:
             status, detail = "pass", ""
@@ -265,18 +300,57 @@ def _norm(rel):
     return rel.replace(os.sep, "/")
 
 
+def _import_re(module):
+    return re.compile(r"^\s*(?:from\s+%s\s+import\b|import\s+(?:[\w.]+\s*,\s*)*%s\b)"
+                      % (re.escape(module), re.escape(module)), re.MULTILINE)
+
+
+def _hook_importers(repo_root, touched):
+    """Basenames of the `.claude/hooks/*.py` that import a touched `_`-prefixed hooks helper,
+    directly or through another helper."""
+    hooks_dir = os.path.join(repo_root, ".claude", "hooks")
+    pending = [os.path.splitext(os.path.basename(t))[0] for t in touched
+               if t.startswith(".claude/hooks/") and t.count("/") == 2
+               and os.path.basename(t).startswith("_") and t.endswith(".py")]
+    if not pending or not os.path.isdir(hooks_dir):
+        return set()
+    sources = {}
+    for name in os.listdir(hooks_dir):
+        if name.endswith(".py"):
+            try:
+                with open(os.path.join(hooks_dir, name), "rb") as fh:
+                    sources[name] = fh.read().decode("utf-8", "replace")
+            except OSError:
+                continue
+    seen, importers = set(pending), set()
+    while pending:
+        pattern = _import_re(pending.pop())
+        for name, text in sources.items():
+            if name in importers or not pattern.search(text):
+                continue
+            importers.add(name)
+            stem = name[:-3]
+            if stem.startswith("_") and stem not in seen:
+                seen.add(stem)
+                pending.append(stem)
+    return importers
+
+
 def select_for(repo_root, touched, include_excluded=False):
     """The proofs bound to `touched` harness files: the touched proofs themselves, `test_<stem>*` /
     `<stem>_test.*` by name, any proof whose source names a touched file's basename, the
-    dir-scanning proofs, and every proof that names `settings.json` when it is touched.
-    Over-selection is harmless; under-selection is what the name and mention rules guard."""
+    dir-scanning proofs, and every proof that names `settings.json` when it is touched. A touched
+    `_`-prefixed hooks helper also binds the proofs of every hook that imports it, directly or
+    through another helper. Over-selection is harmless; under-selection is what the name and
+    mention rules guard."""
     tests_dir = os.path.join(repo_root, ".claude", "tests")
     discovered = discover(tests_dir)
     if not include_excluded:
         discovered = [p for p in discovered if os.path.basename(p) not in EXCLUDED]
     touched = [_norm(t) for t in touched]
-    stems = {os.path.splitext(os.path.basename(t))[0] for t in touched}
-    basenames = {os.path.basename(t) for t in touched}
+    bound = [os.path.basename(t) for t in touched] + sorted(_hook_importers(repo_root, touched))
+    stems = {os.path.splitext(b)[0] for b in bound}
+    basenames = set(bound)
     settings = any(_norm(t) in _SETTINGS_FILES for t in touched)
     selected = []
     for path in discovered:

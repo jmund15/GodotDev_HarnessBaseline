@@ -9,7 +9,7 @@ Type-aware C# navigation, loaded when Claude reads `.cs` files; local only — d
 
 **PREFER LSP for C# symbol operations:** `findReferences` (callers, usages), `hover` (signatures, types), `incomingCalls` (call chains). LSP is semantic — it resolves by type, not text. Use `Grep` only for the legitimate cases below.
 
-**When an LSP call fails or returns empty, do not silently fall through to Grep+Read** — that is the C2-failure shape, where the routing rubric scores PASS by name while the functional outcome equals never reaching for LSP. Re-issue with a corrected `filePath`/position first; fall back to Grep only if the symbol genuinely doesn't resolve.
+**If LSP fails or returns empty, correct the `filePath`/position and retry.** Fall back to Grep only when the symbol does not resolve; silent Grep+Read is the C2 failure shape.
 
 ## Grep-shapes that are LSP-bypass smells on `.cs`
 

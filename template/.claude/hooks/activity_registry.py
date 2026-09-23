@@ -66,9 +66,8 @@ REGISTRY_DIR = os.path.join(tempfile.gettempdir(), "harness-activity")
 PROC_START_TOLERANCE_SEC = 5
 HEARTBEAT_STALE_SEC = 10 * 60
 SUFFIX = (
-    "- contention, not a defect: do not kill it, do not report it as an "
-    "editor problem or a regression; gate INCOMPLETE/CONTENTION verdicts "
-    "while this is live are contention artifacts."
+    "- contention, not a defect: never kill it; INCOMPLETE/CONTENTION "
+    "verdicts meanwhile are not regressions."
 )
 
 
@@ -308,7 +307,7 @@ def format_fragment(rec) -> str:
     expected_sec = rec.get("expectedSec")
     typical = ""
     if isinstance(expected_sec, (int, float)) and expected_sec > 0:
-        typical = f" (~{max(1, round(expected_sec / 60))}min typical)"
+        typical = f" (~{max(1, round(expected_sec / 60))}min)"
     fragment = f"peer {kind} live: {label} on {checkout_base} since {since}{typical}"
     heartbeat_ts = parse_ts(rec.get("heartbeatAt"))
     if heartbeat_ts is not None and (time.time() - heartbeat_ts) > HEARTBEAT_STALE_SEC:

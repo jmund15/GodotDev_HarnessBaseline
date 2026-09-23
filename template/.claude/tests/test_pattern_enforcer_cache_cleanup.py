@@ -26,6 +26,10 @@ sys.path.insert(0, os.path.join(ROOT, "hooks"))
 
 import pattern_enforcer as pe  # noqa: E402
 
+# An absolute path outside this repo on the running platform: `C:/...` is relative on POSIX,
+# where a cache segment under it would be an in-repo cache the rule rightly admits.
+OTHER_CHECKOUT = "C:/any/other/checkout" if os.name == "nt" else "/any/other/checkout"
+
 MUST_PASS = [
     "rm -rf .claude/.search-index",
     "rm -rf .claude/auto-memory/.search-index .claude/hooks/.search-index Tests/.search-index",
@@ -63,17 +67,16 @@ MUST_BLOCK = [
     "rm -rf .search-index Assets",
     # evidence and checkouts are not caches
     "rm -rf .claude/scratch",
-    "rm -rf .claude/scratch/harness-finish-3a",
     "rm -rf .claude/worktrees/audio_system",
     "rm -rf .claude",
     "rm -rf .",
     # chained second delete riding along
     "rm -rf .search-index && rm -rf Assets",
     # absolute targets outside this repo, even with a cache segment (defect 2)
-    "rm -rf C:/any/other/checkout/.search-index",
+    "rm -rf " + OTHER_CHECKOUT + "/.search-index",
     "rm -rf /elsewhere/__pycache__",
     "rm -rf C:/Users/someone/.claude/.cache",
-    'rm -rf "C:/any/other/checkout/.search-index"',
+    'rm -rf "' + OTHER_CHECKOUT + '/.search-index"',
     # quoting must not let a real target, variable or chained delete ride along
     'rm -rf ".search-index" Assets',
     'rm -rf "$HOME/.search-index"',

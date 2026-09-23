@@ -6,7 +6,8 @@ Hook: PreToolUse dispatcher for the read/search tool family.
 One settings entry runs four checks in order:
   1. indexed_reference_guard.process — indexed whole-file Read → block
   2. semantic_search_scope_guard.process — invalid search scope → block
-  3. file_size_preblock.process — large unbounded Read → block
+  3. file_size_preblock.process — large unbounded Read → clamped to a line limit via
+     `updatedInput`, or blocked when its first line alone exceeds the budget
   4. tool_routing_nudge.process — optional hard block or advisory
 
 A dispatched subagent skips only the file-size block because its context is discarded after the
@@ -32,6 +33,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import file_size_preblock
+try:  # project-local (rail battery); absent in projects that sync only the baseline
+    import rail_probe_guard
+except ImportError:
+    rail_probe_guard = None
 import indexed_reference_guard
 import semantic_search_scope_guard
 import tool_routing_nudge
@@ -80,6 +85,17 @@ def main() -> None:
     if subagent:
         _count_exemption(input_data)
 
+    # Rail-battery cell guard: inert (one stat) unless a battery run is armed for this session.
+    try:
+        block_msg = rail_probe_guard.decide(input_data) if rail_probe_guard else None
+        if block_msg:
+            sys.stderr.write(block_msg + "\n")
+            sys.exit(2)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
+
     # 0. Index-served reference block. NOT subagent-exempt: the cost it prevents is per-agent
     # input spend multiplied across a fan-out, which a discarded context does not recover.
     try:
@@ -100,12 +116,15 @@ def main() -> None:
     except Exception:
         pass
 
-    # 1. Large-file block.
+    # 1. Large file: clamp the read to the lines that fit, or block when no line range fits.
+    clamp = None
     if not subagent:
         try:
-            block_msg = file_size_preblock.process(input_data)
-            if block_msg:
-                sys.stderr.write(block_msg + "\n")
+            result = file_size_preblock.process(input_data)
+            if isinstance(result, dict):
+                clamp = result
+            elif result:
+                sys.stderr.write(result + "\n")
                 sys.exit(2)
         except Exception:
             pass
@@ -120,14 +139,14 @@ def main() -> None:
     except Exception:
         pass
 
-    if nudge:
-        payload = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": nudge,
-            }
-        }
-        sys.stdout.write(json.dumps(payload))
+    context = "\n".join(c for c in ((clamp or {}).get("additionalContext"), nudge) if c)
+    if clamp or context:
+        output = {"hookEventName": "PreToolUse"}
+        if clamp:
+            output["updatedInput"] = clamp["updatedInput"]
+        if context:
+            output["additionalContext"] = context
+        sys.stdout.write(json.dumps({"hookSpecificOutput": output}))
 
     sys.exit(0)
 

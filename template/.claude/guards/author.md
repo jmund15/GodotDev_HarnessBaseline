@@ -1,8 +1,8 @@
 # Guard: author — delegates that write production code
 
-Read ONLY the section your dispatch names; if none is named, read `## strict`. `any.md`'s section of the same tier binds you too and arrives with this file. Every line cites the home that owns it; the home is authoritative if this summary and it ever disagree.
+Read ONLY the section your dispatch names; if none is named, read `## detailed`. `any.md`'s section of the same tier binds you too and arrives with this file. Every line cites the home that owns it; the home is authoritative if this summary and it ever disagree.
 
-## strict
+## detailed
 
 - Logic Domain (the Logic subsystems CLAUDE.md §Hybrid TDD names) is strict TDD: NO production code without a failing test. RED (`[TestSuite]` in the Logic suites it names) → VERIFY the specific failure → GREEN minimum → REFACTOR. Includes `.tres` changes that affect Logic behavior. [CLAUDE.md §Hybrid TDD]
 - "The logic is obvious, implement first and test after" is a named rationalization to refuse, not a carve-out. [CLAUDE.md §Rationalizations to Refuse]
@@ -15,12 +15,12 @@ Read ONLY the section your dispatch names; if none is named, read `## strict`. `
 - Do NOT reduce planned scope mid-execution. If the scope looks wrong, stop and report it — the cut is not yours to make. [feedback_dont_unilaterally_reduce_planned_scope.md]
 - Your report, digest or findings file is a judgment-dense artifact YOU author: `Write` it directly. Never route it, a key, or any file over ~60 KB through `mcp__ai-worker__write_doc` / `read_files` — the local worker's context window rejects it and a lane that ends on that error has delivered nothing. [CLAUDE.md §Tool Routing, judgment-dense carve-out; gotcha_sidecar_lane_routes_report_through_write_doc]
 
-## terse
+## condensed
 
 - Logic-domain strict TDD and the `/regression_gate`-before-commit rule per CLAUDE.md §Hybrid TDD + §Build & Test (do not run the gate under the concurrency guard — report it owed).
 - The design litmus before any new configuration surface: `rules/design_litmus.md` (the file states its own item count).
 - Comments default to none, and a `///` is authoritative about its own member only — write obligations (what a caller must honour), never observations about other code; TODO/future notes go in `//`, never `///` (`rules/csharp_patterns.md` §Core Conventions). Planned scope is not yours to cut (`feedback_dont_unilaterally_reduce_planned_scope.md`).
 
-## fable
+## minimal
 
-Read this file's `## terse` section.
+Read this file's `## condensed` section.

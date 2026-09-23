@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Proof for tools/ladder_prose_check.py.
 
-The check exists because the ladder's own "numbers, dates and campaign narrative do not live here"
-rule went unenforced and every comparison appended one more run description. So the load-bearing
-cases are the PLANTED violations: a check that only ever sees a clean table is indistinguishable
-from one whose patterns match nothing.
+The check exists because the ladder-ingest authoring contract went unenforced and every comparison
+appended one more run description. The load-bearing cases are PLANTED violations: a check that only
+ever sees a clean table is indistinguishable from one whose patterns match nothing.
 
 Run: python3 .claude/tests/test_ladder_prose_check.py
 """
@@ -50,7 +49,25 @@ def effort_code(effort_cell):
     return lpc.main([table("+ fine; - also fine", effort_cell)])
 
 
+def top_level_code(text):
+    path = table("+ ordinary tendency")
+    with open(path, "r+", encoding="utf-8", newline="\n") as fh:
+        original = fh.read()
+        fh.seek(0)
+        fh.write("# Model Ladder\n\n" + text + "\n\n" + original)
+        fh.truncate()
+    return lpc.main([path])
+
+
 CASES = [
+    # ---- edit-only contracts belong in /ladder_ingest, never this reader ----
+    ("the authoring heading fails", lambda: top_level_code("## Authoring an entry") == 1),
+    ("an ingest edit rule fails", lambda: top_level_code("Every ingest rewrites an existing clause.") == 1),
+    ("the version-pooling edit rule fails",
+     lambda: top_level_code("Replacing an older cell is a normal edit.") == 1),
+    ("ordinary reader guidance passes",
+     lambda: top_level_code("Availability comes from the registry.") == 0),
+
     # ---- PLANTED violations: each must FAIL -------------------------------
     ("a date in a ± cell fails", lambda: code("+ good at things since 2026-09-08") == 1),
     ("a wall-clock figure fails", lambda: code("+ thorough but takes 91 min per lens") == 1),

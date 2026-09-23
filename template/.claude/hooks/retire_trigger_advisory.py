@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: PostToolUse (Write) — advises when a new memory or rules file lands with no retirement trigger.
+Hook: PostToolUse (Write) — advises when a new memory or rules file declares malformed retirement metadata.
 
-Scope, outside `tools/rule_retirement.SKIP_DIRS`:
-- `.claude/auto-memory/**/*.md` needs a frontmatter `retire_when:` trigger;
-- `.claude/rules/**/*.md` needs a `<!-- retire-when: ... -->` comment, because rules files load by
-  path and `rule_retirement.review_due` reviews them.
-Both forms are `/codify` Step 6 (`commands/codify.md:93`). Commands and skills load on demand and
-are out of scope here.
+A retirement trigger is optional (`/codify` Step 6, `## Step 6 — Write, or queue`): a file with no
+declared trigger is valid and stays silent. Scope, outside `tools/rule_retirement.SKIP_DIRS`:
+- `.claude/auto-memory/**/*.md`: the frontmatter `retire_when:` field;
+- `.claude/rules/**/*.md`: `<!-- retire-when: ... -->` comments.
+Commands and skills load on demand and are out of scope here.
 
 Fires only on a Write that creates a file: the PostToolUse payload's `tool_response.type` is
 `create`. An update Write, or a missing or unknown `tool_response`, is silent, and so is the
 `MEMORY.md` index, which is not a memory file.
 
-Fires once per in-scope create: silent when the file's frontmatter declares a well-formed
-trigger, one line naming the gap when it declares none, and one line naming the malformed
-row when `rule_retirement.frontmatter_triggers` reports one (unclosed frontmatter, or
-`retire_when:` declared with no list items). Never evaluates whether a trigger STRING
-matches a known kind — that judgment belongs to `rule_retirement.evaluate`, run later by
-`/eval_dashboard` §4e and `/autolearn`. Never blocks; fail-open on any error.
+Fires once per in-scope create, and only on declared metadata that is malformed:
+- memory: `rule_retirement.frontmatter_triggers` reports a structural problem (unclosed
+  frontmatter, or `retire_when:` declared with no list items);
+- rules: a declared comment carries no trigger, or `rule_retirement.evaluate` puts its trigger in
+  the `malformed` bucket (no known kind, unparseable version). Evidence the hook cannot see (tool
+  list, client version, census) leaves a trigger `undecidable`, which stays silent.
+Never blocks; fail-open on any error.
 
 Wired in: settings.json PostToolUse "Write|Edit", via post_edit_dispatch.CHAIN.
 """
 
+import datetime
 import json
 import os
 import sys
@@ -66,8 +67,21 @@ def in_rules_scope(claude_rel):
     return not any(seg in rule_retirement.SKIP_DIRS for seg in parts[1:-1])
 
 
+def _rule_comment_problem(content):
+    """First malformed declared retire-when comment as text, or None when all are valid or none exist."""
+    ctx = {"today": datetime.date.today().isoformat(), "tools": None, "client_version": None,
+           "client_version_text": None, "census": None, "census_path": ""}
+    for trigger in rule_retirement.COMMENT.findall(rule_retirement.prose_only(content)):
+        if not trigger:
+            return "retire-when comment carries no trigger"
+        bucket, _kind, reason = rule_retirement.evaluate(trigger, ctx)
+        if bucket == "malformed":
+            return reason
+    return None
+
+
 def process(data):
-    """Dispatcher entry: `{"context": <one line>}` on a missing/malformed trigger, else None."""
+    """Dispatcher entry: `{"context": <one line>}` on malformed declared metadata, else None."""
     if data.get("tool_name") != "Write":
         return None
     response = data.get("tool_response")
@@ -84,21 +98,18 @@ def process(data):
         return None
     claude_rel = rel[len(".claude/"):]
     if in_rules_scope(claude_rel):
-        if rule_retirement.COMMENT.findall(rule_retirement.prose_only(content)):
-            return None
-        return {"context": "[retire-trigger-advisory] %s: no `<!-- retire-when: ... -->` comment declared "
-                           "(codify.md Step 6)." % rel}
+        problem = _rule_comment_problem(content)
+        if problem:
+            return {"context": "[retire-trigger-advisory] %s: %s (codify.md Step 6)." % (rel, problem)}
+        return None
     if not in_memory_scope(claude_rel):
         return None
 
     malformed = []
-    triggers = rule_retirement.frontmatter_triggers(content, claude_rel, malformed)
+    rule_retirement.frontmatter_triggers(content, claude_rel, malformed)
     if malformed:
         return {"context": "[retire-trigger-advisory] %s: %s (codify.md Step 6)."
                            % (rel, malformed[0]["problem"])}
-    if not triggers:
-        return {"context": "[retire-trigger-advisory] %s: no retire_when trigger declared "
-                           "(codify.md Step 6)." % rel}
     return None
 
 

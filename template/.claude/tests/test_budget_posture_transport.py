@@ -40,16 +40,27 @@ def write_capture(tmpdir, session, used_pct=45):
 
 
 def write_band_cache(tmp, entries):
-    """Plant provider band readings so the hook reads THEM, not the machine's real cache.
-
-    Without this the proof is non-hermetic in both directions: it can read a stale repo entry, and
-    on a cold cache it spawns the transport's real quota probe (45s) and writes the repo cache.
-    """
-    p = os.path.join(tmp, "provider_bands.json")
+    """Plant normalized provider-capacity readings; the prompt hook remains cache-only."""
+    p = os.path.join(tmp, "provider_capacity.json")
+    now = time.time()
+    blob = {}
+    for transport, (band, pressure) in entries.items():
+        status = "exhausted" if band == "Exhausted" else "available"
+        blob[transport] = {
+            "schemaVersion": 1, "transport": transport, "costModel": "plan-quota",
+            "sourceKind": "live",
+            "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "status": status, "error": None, "liveFailure": None, "balance": None,
+            "quota": {
+                "windows": [{"name": "seven_day", "usedPercent": 100 if status == "exhausted" else 50,
+                             "resetsAt": now + SEVEN_DAY, "windowDurationMins": 10080,
+                             "pressure": pressure, "band": band}],
+                "dispatchBand": band, "routingBand": band, "bindingWindow": "seven_day",
+                "credits": {"enabled": False, "available": False, "balance": None},
+            },
+        }
     with open(p, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({t: {"at": time.time(),
-                       "reading": {"transport": t, "band": b, "pressure": pr}}
-                   for t, (b, pr) in entries.items()}, fh)
+        json.dump(blob, fh)
     return p
 
 
@@ -59,7 +70,7 @@ def run(transport=None, session="bpt00001", used_pct=45, bands=None):
     tmp = tempfile.mkdtemp(prefix="bpttmp_")
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp,
                PYTHONIOENCODING="utf-8",
-               PROVIDER_BAND_CACHE=write_band_cache(tmp, bands if bands is not None
+               PROVIDER_CAPACITY_CACHE=write_band_cache(tmp, bands if bands is not None
                                                     else {"codex": ("Ahead", 1.31)}))
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
     env.pop("CLAUDE_CODE_TRANSPORT", None)
@@ -76,6 +87,11 @@ def run(transport=None, session="bpt00001", used_pct=45, bands=None):
 HOST = run()
 CODEX = run(transport="codex", session="bpt00002")
 UNKNOWN_SEAT = run(transport="notatransport", session="bpt00003")
+# A2, 2026-09-18: a spent Codex allowance was invisible at boot, and its dispatch then hung.
+# `codex` is the SEAT in CODEX above, so the "other transport" clause is only reachable from a
+# seat that is NOT codex -- the host path is the one that must name it.
+HOST_CODEX_SPENT = run(session="bpt00009", bands={"codex": ("Exhausted", None)})
+HOST_COLD_CACHE = run(session="bpt00010", bands={})
 
 
 def run_no_ratelimits(transport=None, session="bptnorl", bands=None):
@@ -90,7 +106,7 @@ def run_no_ratelimits(transport=None, session="bptnorl", bands=None):
     with open(os.path.join(tmp, "cc-cachestat-%s.json" % session), "w", encoding="utf-8") as fh:
         json.dump({"some_other_field": 1}, fh)
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp, PYTHONIOENCODING="utf-8",
-               PROVIDER_BAND_CACHE=write_band_cache(tmp, bands if bands is not None else {}))
+               PROVIDER_CAPACITY_CACHE=write_band_cache(tmp, bands if bands is not None else {}))
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
     env.pop("CLAUDE_CODE_TRANSPORT", None)
     env.pop("ANTHROPIC_BASE_URL", None)
@@ -137,7 +153,7 @@ def two_prompts(bands1, bands2, transport="codex", session="bptdedupe"):
     for bands in (bands1, bands2):
         env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp,
                    PYTHONIOENCODING="utf-8", CLAUDE_CODE_TRANSPORT=transport,
-                   PROVIDER_BAND_CACHE=write_band_cache(tmp, bands))
+                   PROVIDER_CAPACITY_CACHE=write_band_cache(tmp, bands))
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)
         env.pop("ANTHROPIC_BASE_URL", None)
         r = subprocess.run([sys.executable, HOOK],
@@ -181,7 +197,22 @@ def band_cli(*args):
 # whatever the machine happened to have. `Ahead`/1.31 appears in no other fixture here.
 CODEX_UNREADABLE = run("codex", session="bpt00009", bands={})
 
+def surplus_tier():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("budget_posture_under_test", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.tier_for("Surplus", off_quota_available=True)
+
+
 CASES = [
+    # ---- the spend-band tier clause names the work its effort applies to ---
+    # "tier: executor at low" with no work class read as "pin every executor at low", overriding
+    # effort-by-ambiguity (2026-09-22). The conserving lines already scope themselves to converged
+    # work; the spend line must too.
+    ("the Surplus tier clause scopes its `low` to converged-spec execution and closed lenses",
+     lambda: "converged-spec execution and closed lenses" in surplus_tier()),
+
     # ---- the seat's OWN band is part of the dedupe key ---------------------
     ("a provider band moving Surplus -> Hot re-emits the posture",
      lambda: "Hot" in DEDUPE[1]),
@@ -201,28 +232,42 @@ CASES = [
     ("the PLANTED codex band is what the hook reports -- not the machine's cache",
      lambda: "Ahead" in CODEX and "1.31" in CODEX),
 
-    ("with NO planted reading the hook says unreadable -- so the plant is load-bearing",
-     lambda: "unreadable" in CODEX_UNREADABLE and "Ahead" not in CODEX_UNREADABLE),
+    ("with NO planted reading the hook says cache-cold unknown -- so the plant is load-bearing",
+     lambda: "band unknown" in CODEX_UNREADABLE and "Ahead" not in CODEX_UNREADABLE),
 
     # ---- the host contract is the thing that must not move ------------------
     ("host seat still emits a posture line",
      lambda: HOST.startswith("[budget-posture]")),
 
     ("host line leads with `7d pressure` exactly as before",
-     lambda: "] 7d pressure" in HOST.replace("[budget-posture];", "]")),
+     lambda: HOST.startswith("[budget-posture] 7d pressure")),
+
+    # ---- every spendable plan-quota transport is named (A2, 2026-09-18) -----
+    # The incident: a Codex account at 100% used, invisible on the boot line, dispatched a sidecar
+    # that hung 13 minutes. Naming only the seat and Anthropic is what made it invisible.
+    ("the host line names codex -- another plan-quota transport it can spend",
+     lambda: "codex Ahead band" in HOST),
+
+    ("a SPENT codex allowance reads as Exhausted on the boot line",
+     lambda: "codex Exhausted band" in HOST_CODEX_SPENT),
+
+    # The load-bearing negative: omitting an unknown transport is the failure mode, because an
+    # absent clause reads as "no such currency" -- which is how the spent account stayed hidden.
+    ("a cold codex cache NAMES it as unknown rather than omitting the transport",
+     lambda: "codex band unknown" in HOST_COLD_CACHE),
 
     ("host line names no seat -- byte-identical to the pre-S5 shape",
      lambda: "seat:" not in HOST),
 
-    ("host line still carries the never-delegated floor",
-     lambda: "Never delegated" in HOST),
+    ("host line still points at the never-delegated floor's owner",
+     lambda: "reserved floor + tier policy: orchestration §5/§5b" in HOST),
 
     # ---- a provider seat gets BOTH currencies, each labelled ----------------
     ("codex seat names the seat first",
      lambda: "seat: codex" in CODEX),
 
     ("codex seat says its own quota is what a dispatch here spends",
-     lambda: "own quota is what a Workflow/Agent dispatch here spends" in CODEX),
+     lambda: "Workflow/Agent dispatch spends its own quota" in CODEX),
 
     ("codex seat labels the Anthropic band as the CROSS-HOP currency",
      lambda: "CROSS-HOP currency" in CODEX),
@@ -231,7 +276,7 @@ CASES = [
      lambda: "; 7d pressure" not in CODEX),
 
     ("codex seat still carries the never-delegated floor and the 5h width clause",
-     lambda: "Never delegated" in CODEX and "5h pressure" in CODEX),
+     lambda: "reserved floor + tier policy: orchestration §5/§5b" in CODEX and "5h pressure" in CODEX),
 
     # The anthropic figure must appear ONCE, labelled as the hop's. The seat's own band may be
     # absent (the hook reads cache only -- see below), so counting both is the wrong invariant.
@@ -277,7 +322,7 @@ CASES = [
      lambda: "OWN band is Ahead" in NO_RL_CODEX),
 
     ("...and labels the unreadable one as Anthropic's, not as the quota",
-     lambda: "Anthropic band UNREADABLE" in NO_RL_CODEX),
+     lambda: "Anthropic session telemetry UNREADABLE" in NO_RL_CODEX),
 
     # The load-bearing negative: a cold band cache must not silently read as no-quota-data.
     ("a provider seat with no cached band names the command that reads it",
