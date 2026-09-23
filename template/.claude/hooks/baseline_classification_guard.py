@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Hook: PreToolUse on Bash|PowerShell -- deny a `git commit` that adds a `.claude/` file with
-no `baseline.lock.json` row.
+no `baseline.lock.json` row, or whose committed lock drops a row HEAD holds while that row's
+file still exists (`_dropped_lock_rows`).
 
 Why: `baseline_sync.py`'s `candidates` sweep finds an unclassified addition only after it
 already shipped, so an unreviewed universal-shaped file can sit unclassified and drift from
@@ -74,7 +75,7 @@ def _excluded(relpath: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in baseline_sync.CANDIDATE_EXCLUDE_NAMES)
 
 
-def _added_claude_paths(rest: list, cwd: str):
+def _added_claude_paths(rest: list, cwd: str, env: dict | None = None):
     """`(paths, None) | (None, failing-git-subcommand)` -- staged `.claude/` additions this
     commit will actually publish, minus the engine's own candidate exclusions."""
     _include_dirty, _amend, pathspec = parse_commit_args(rest)
@@ -82,12 +83,12 @@ def _added_claude_paths(rest: list, cwd: str):
     args = ["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=A"]
     if pathspec and not include_flag:
         args = args + ["--"] + pathspec
-    out = run_git(args, cwd)
+    out = run_git(args, cwd, env)
     if out is None:
         return None, " ".join(args)
     added = {ln.strip().replace("\\", "/") for ln in out.splitlines() if ln.strip()}
 
-    committed, failed_cmd = staged_paths(rest, cwd)
+    committed, failed_cmd = staged_paths(rest, cwd, env)
     if committed is None:
         return None, failed_cmd
 
@@ -98,7 +99,42 @@ def _added_claude_paths(rest: list, cwd: str):
     return scoped, None
 
 
-def _judge_commit(rest: list, cwd: str) -> str | None:
+def _dropped_lock_rows(rest: list, cwd: str, root: str, env: dict | None = None):
+    """`(rows, None) | (None, failing-step)` -- rows HEAD's lock holds that the committed lock
+    lacks while their file still exists. A peer's temp-index commit moves HEAD but leaves the
+    shared working-tree lock behind, so committing that lock reverts the peer's rows. The
+    committed copy is the working tree's for `-a` or a pathspec naming the lock, else the
+    index's. A row whose file is gone left with its file, except a declined row (`absent`), which
+    never has one."""
+    committed, failed_cmd = staged_paths(rest, cwd, env)
+    if committed is None:
+        return None, failed_cmd
+    lock = baseline_sync.LOCK_RELPATH
+    if lock not in committed:
+        return [], None
+    head_text = run_git(["show", "HEAD:" + lock], cwd, env)
+    if head_text is None:
+        listed = run_git(["ls-tree", "--name-only", "HEAD", "--", lock], cwd, env)
+        if not (listed or "").strip():
+            return [], None  # no HEAD, or HEAD has no lock: nothing to drop
+        return None, "show HEAD:" + lock
+    include_dirty, _amend, pathspec = parse_commit_args(rest)
+    named = run_git(["diff", "--name-only", "HEAD", "--"] + pathspec, cwd, env) if pathspec else ""
+    if named is None:
+        return None, "diff --name-only HEAD -- " + " ".join(pathspec)
+    if include_dirty or lock in {ln.strip() for ln in named.splitlines()}:
+        new_text = (Path(root) / lock).read_text(encoding="utf-8")
+    else:
+        new_text = run_git(["show", ":" + lock], cwd, env)
+        if new_text is None:
+            return None, "show :" + lock
+    head_rows = json.loads(head_text).get("files") or {}
+    new_rows = json.loads(new_text).get("files") or {}
+    return sorted(p for p, entry in head_rows.items() if p not in new_rows and (
+        (Path(root) / p).exists() or (isinstance(entry, dict) and entry.get("absent")))), None
+
+
+def _judge_commit(rest: list, cwd: str, env: dict | None = None) -> str | None:
     """The deny message for one `git commit` invocation, or `None` to let it through."""
     root = _repo_root_for(cwd)
     if root is None:
@@ -116,7 +152,20 @@ def _judge_commit(rest: list, cwd: str) -> str | None:
             "(%s: %s). Fix the lock before committing." % (type(exc).__name__, exc)
         )
 
-    added, failed_cmd = _added_claude_paths(rest, cwd)
+    dropped, failed_cmd = _dropped_lock_rows(rest, cwd, root, env)
+    if dropped is None:
+        return (
+            "BLOCKED git commit -- `git %s` failed; cannot verify baseline.lock.json keeps HEAD's rows."
+            % failed_cmd
+        )
+    if dropped:
+        lines = ["BLOCKED git commit -- baseline.lock.json drops row(s) HEAD holds while the file exists:"]
+        lines.extend("  " + p for p in dropped)
+        lines.append("A peer likely committed them from a private index. Restore each row from "
+                     "`git show HEAD:.claude/baseline.lock.json`, then commit.")
+        return "\n".join(lines)
+
+    added, failed_cmd = _added_claude_paths(rest, cwd, env)
     if added is None:
         return (
             "BLOCKED git commit -- `git %s` failed; cannot verify .claude/ classification."
@@ -151,7 +200,7 @@ def _run() -> int:
     for invocation in commit_invocations(command, cwd):
         if invocation.sub != "commit":
             continue
-        reason = _judge_commit(invocation.rest, invocation.cwd)
+        reason = _judge_commit(invocation.rest, invocation.cwd, invocation.git_env)
         if reason:
             print(reason, file=sys.stderr)
             return 2

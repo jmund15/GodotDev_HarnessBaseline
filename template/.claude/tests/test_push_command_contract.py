@@ -12,23 +12,15 @@ import json
 import re
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lock_rows import project_owned  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 COMMANDS = [ROOT / ".claude" / "commands" / name for name in ("commit_push.md", "clean_push.md")]
 
 PUSH_STEP = re.compile(r"[Pp]ush (?:all commits )?to the current branch on origin")
 UNKNOWN_ARG = re.compile(r"\s+".join("Any other argument: report it and stop before the first Git command".split()))
 GATE_CALL = "baseline_sync.py check --strict"
-
-
-def project_owned(relpath):
-    """True when this checkout's lock marks `relpath` forked or local: its prose never syncs
-    upstream, and a template checkout has no lock at all."""
-    try:
-        lock = json.loads((ROOT / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    entry = (lock.get("files") or {}).get(relpath) or {}
-    return entry.get("status") in ("forked", "local")
 
 
 def steps(text):
@@ -99,8 +91,8 @@ def main():
     ])
     if project_owned('.claude/commands/session_end.md'):
         session_end = (ROOT / '.claude/commands/session_end.md').read_text(encoding='utf-8')
-        cases.append(('session_end mirrors armed active-branch authority',
-                      'armed `/overnight`' in session_end and 'active branch' in session_end.lower(), ''))
+        cases.append(('session_end is the push authority for the active branch, main included',
+                      'push authority for the active branch, `main` included' in session_end, ''))
 
     passed = failed = 0
     for label, ok, detail in cases:

@@ -2,7 +2,7 @@
 """
 Hook: PreToolUse on Bash|PowerShell|Monitor — deny recursive grep, nudge other unbounded scans.
 
-DENY — recursive grep, whatever its path operand or output bound:
+DENY — recursive grep that walks a tree, whatever its output bound:
 - A recursive grep that reaches a giant single-line or special file buffers without bound, and on
   Git Bash it keeps running after its parent shell, or a downstream `head`, exits. Measured
   2026-09-14: orphaned `grep -rln ProjectSuite .` and `grep -rn noclobber .claude/` reached
@@ -14,6 +14,8 @@ DENY — recursive grep, whatever its path operand or output bound:
   included), as any segment of a pipeline or list, under `xargs`, inside `bash -c`, and every
   grep run by `find -exec` or by `xargs` downstream of `find`. On PowerShell, `Get-ChildItem`
   (`gci`/`ls`/`dir`) `-Recurse` in the same statement as `Select-String` (`sls`).
+- Not denied: a recursive grep whose every path operand is a named file or a one-level file glob
+  (`*.py`), with no operand appended by `xargs`; `-r` then reads those files as plain grep does.
 - The match is on the invocation: heredoc bodies, quoted arguments and comments are data, so
   `echo "grep -r"` and a commit message naming it are allowed.
 - Routes named in the deny: the Grep tool, `rg`, `git grep`. Canon: CLAUDE.md §Tool Routing.
@@ -126,6 +128,34 @@ def grep_is_recursive(args):
     return False
 
 
+def _grep_paths(args):
+    """grep's path operands: every non-flag token, minus the leading pattern unless `-e`/`-f`
+    (`--regexp`/`--file`) supplied it."""
+    pattern_given, operands, i = False, [], 0
+    while i < len(args):
+        tok = args[i]
+        if tok == "--":
+            operands += args[i + 1:]
+            break
+        if tok.startswith("--"):
+            name, eq, _value = tok[2:].partition("=")
+            if _long_name_matches(name, "regexp") or _long_name_matches(name, "file"):
+                pattern_given = True
+            if not eq and any(_long_name_matches(name, full) for full in _GREP_VALUE_LONG):
+                i += 1
+        elif tok.startswith("-") and len(tok) > 1:
+            for j in range(1, len(tok)):
+                if tok[j] in _GREP_VALUE_SHORT:
+                    pattern_given = pattern_given or tok[j] in "ef"
+                    if not tok[j + 1:]:
+                        i += 1
+                    break
+        else:
+            operands.append(tok)
+        i += 1
+    return operands if pattern_given else operands[1:]
+
+
 def _strip_prefixes(tokens):
     """Drop assignments, keywords and transparent wrappers before the command word."""
     i = 0
@@ -175,7 +205,14 @@ def command_runs_recursive_grep(tokens, depth=0, via=None, upstream_find=False):
         return False
     image, rest = _image(tokens[0]), tokens[1:]
     if image in GREP_IMAGES:
-        return grep_is_recursive(rest) or via == "find" or (via == "xargs" and upstream_find)
+        if via == "find" or (via == "xargs" and upstream_find):
+            return True
+        if not grep_is_recursive(rest):
+            return False
+        # Only named files and one-level file globs: -r walks no tree. Under xargs, stdin
+        # appends operands the text cannot show.
+        paths = _grep_paths(rest)
+        return via == "xargs" or not paths or not all(_is_file_operand(path) for path in paths)
     if image == "xargs":
         return command_runs_recursive_grep(_xargs_command(rest), depth + 1, "xargs", upstream_find)
     if image == "find":
@@ -208,6 +245,8 @@ def shell_runs_recursive_grep(text, depth=0):
             continue
         if tok and set(tok) <= set(_PUNCT):
             if ("<" in tok or ">" in tok) and set(tok) <= set("<>&"):
+                if segment and segment[-1].isdigit():
+                    segment.pop()  # `2>`: the fd number is the redirect's, not an argument
                 skip_next = True
                 continue
             if segment and segment[0].startswith("#"):
