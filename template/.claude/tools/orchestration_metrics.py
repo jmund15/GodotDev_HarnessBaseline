@@ -51,6 +51,7 @@ Usage:
   orchestration_metrics.py --session <dir>      report a specific session dir
   orchestration_metrics.py --verdicts v.json    rate + append to the archive
   orchestration_metrics.py --archive-summary    roll up the existing archive
+  orchestration_metrics.py --run <runId>        per-seat usage of one panel run; never archive
   orchestration_metrics.py --manifest-seed seed.json --manifest-out manifest.json
                                                 join exact Workflow/sidecar evidence; never archive
 """
@@ -133,7 +134,10 @@ LEGACY_VERDICTS = {'right-sized': 'clean', 'overshoot': 'clean',
                    'fit': 'clean', 'excellent': 'clean',
                    'fit-high-value': 'clean', 'fit-highest-value': 'clean',
                    'fit-with-one-correction': 'defects', 'misfit-input': 'discarded'}
-SIDECAR_LEDGER = os.path.expanduser('~/.claude/deepseek_spend.jsonl')
+# SIDECAR_LEDGER_PATH is the one override shared by the sidecar writer and metrics reader.
+# Provider capacity is account-wide and deliberately uses its own normalized cache.
+SIDECAR_LEDGER = (os.environ.get('SIDECAR_LEDGER_PATH')
+                   or os.path.expanduser('~/.claude/sidecar_ledger.jsonl'))
 # Derived over-pin candidates (recomputed on every --archive-summary run). The
 # dispatch-time surface (report()) reads it so the pin decision sees the queue.
 CANDIDATES_FILE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_candidates.json')
@@ -429,6 +433,88 @@ def norm_outcome(v):
     return LEGACY_VERDICTS.get(v, v)
 
 
+def apply_verdict(r, ent):
+    """Write one verdict entry onto its row: `outcome`, `[outcome, effort(, "probe")]`, or a dict.
+    A panel seat's dict also carries `tier` and `mandates` ({key: {outcome, unique, duplicate}}),
+    which stay on the archived row for the panel-yield line."""
+    if isinstance(ent, (list, tuple)):
+        r['outcome'] = norm_outcome(ent[0])
+        if len(ent) > 1 and ent[1]:
+            r['requested_effort'] = ent[1]
+            r['effort'] = ent[1]
+        if len(ent) > 2 and ent[2] == 'probe':
+            r['probe'] = True
+    elif ent:
+        r['outcome'] = norm_outcome(ent)
+        if isinstance(ent, dict):
+            if ent.get('effort'):
+                r['requested_effort'] = ent['effort']
+                r['effort'] = ent['effort']
+            for field in ('tier', 'mandates'):
+                if ent.get(field):
+                    r[field] = ent[field]
+    else:
+        r['outcome'] = 'unrated'
+
+
+PANEL_YIELD_WINDOW = 5
+
+
+def panel_yield(rows, window=PANEL_YIELD_WINDOW):
+    """(mandates with zero unique findings across their last `window` reached merged-seat rows,
+    [(mandate, run:label) for every not-reached mandate]) in row order. A merged seat carries 2+
+    mandates; a not-reached mandate is UNCOVERED and never counts as a zero."""
+    reached, uncovered = {}, []
+    for r in rows:
+        mandates = r.get('mandates')
+        if not isinstance(mandates, dict) or len(mandates) < 2:
+            continue
+        for key, m in mandates.items():
+            m = m if isinstance(m, dict) else {}
+            if m.get('outcome') == 'not-reached':
+                uncovered.append((key, '%s:%s' % (r.get('run', '?'), r.get('label', '?'))))
+            else:
+                reached.setdefault(key, []).append(_number(m.get('unique')))
+    zero = sorted(k for k, seen in reached.items()
+                  if len(seen) >= window and not any(seen[-window:]))
+    return zero, uncovered
+
+
+def report_panel_yield(rows):
+    """The re-open trigger for a command's seat map (orchestration §2 *Sizing the width*)."""
+    zero, uncovered = panel_yield(rows)
+    for key, where in uncovered[:10]:
+        w(f'UNCOVERED {key} in {where}: its merged seat did not reach it')
+    if len(uncovered) > 10:
+        w(f'  ... {len(uncovered) - 10} more UNCOVERED mandate(s)')
+    if zero:
+        w(f'Panel yield: zero unique findings in the last {PANEL_YIELD_WINDOW} merged-seat rows for '
+          + ', '.join(zero) + ' -- re-open the seat map that merges it.')
+
+
+def report_run(session, run_id):
+    """Per-seat usage for one Workflow run; the consolidator (phase Merge) on its own row."""
+    rows = run_rows(session, run_id)
+    if not rows:
+        w(f'No Workflow run {run_id} in {session}.')
+        return 1
+    def is_merge(r):
+        return r.get('phase') == 'Merge' or str(r.get('label', '')).endswith(':consolidate')
+    seats = [r for r in rows if not is_merge(r)]
+    merge = [r for r in rows if is_merge(r)]
+    w(f"{'seat':<52} {'req-eff':<7} {'cacheW':>8} {'cacheR':>8} {'out':>7} {'input-eq':>9}")
+    for r in seats:
+        w(f"{r['label'][:52]:<52} {r['effort']:<7} {fmt(r.get('cw')):>8} {fmt(r.get('cr')):>8} "
+          f"{fmt(r.get('out')):>7} {fmt(r.get('cost')):>9}")
+    total, known, unknown = _field_stats(seats, 'cost')
+    w(f"seats: {len(seats)} | input-equivalent {fmt(total)} over {known} known"
+      + (f' ({unknown} unknown)' if unknown else ''))
+    for r in merge:
+        w(f"{r['label'][:40]:<40} consolidator {fmt(r.get('cw')):>8} {fmt(r.get('cr')):>8} "
+          f"{fmt(r.get('out')):>7} {fmt(r.get('cost')):>9}")
+    return 0
+
+
 def outcome_of(r):
     """Archive outcome field, with legacy fallbacks: 'verdict' (pre-2026-08)
     and 'fit' (earliest schema) both carry verdict words."""
@@ -436,9 +522,36 @@ def outcome_of(r):
     return norm_outcome(v)
 
 
+def _candidate_project_dirs(root=None, strict=False):
+    """Project dirs under ~/.claude/projects whose slug matches this cwd -- the same
+    match find_session_dir falls back to when no session id narrows it further.
+    strict=False (find_session_dir's use): every project on the machine when nothing
+    matches -- a wrong-but-recent single-session guess is recoverable.
+    strict=True (collect_all_workflows's sweep): no match returns [] instead -- an
+    all-time report silently pooling every unrelated project is a correctness defect,
+    not a recoverable guess (sa-architecture-sweep F1/F2)."""
+    root = root or os.path.expanduser('~/.claude/projects')
+    if not os.path.isdir(root):
+        return []
+    cwd = os.path.abspath(os.getcwd())
+    # Claude Code's project-dir slug maps '_' to '-' too (observed: this project's own
+    # cwd contains '_' and matched zero dirs without this, silently falling back to
+    # EVERY project on the machine -- sa-architecture-sweep F1, reproduced 2026-09-18).
+    slug = cwd.replace(':', '-').replace(os.sep, '-').replace('/', '-').replace('_', '-')
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return []
+    cands = [os.path.join(root, d) for d in entries
+             if d.lower().lstrip('-') in slug.lower().lstrip('-')
+             or slug.lower().endswith(d.lower())]
+    if not cands and not strict:
+        cands = [os.path.join(root, d) for d in entries]
+    return [c for c in cands if os.path.isdir(c)]
+
+
 def find_session_dir(session_id=None):
     root = os.path.expanduser('~/.claude/projects')
-    cwd = os.path.abspath(os.getcwd())
 
     # Exact identity first. The mtime scan below cannot tell this session's runs from a peer's:
     # concurrent sessions share one machine, and whichever touched its workflows/ dir last wins the
@@ -472,12 +585,7 @@ def find_session_dir(session_id=None):
                     matches.append(path)
         return matches[0] if len(matches) == 1 else None
 
-    slug = cwd.replace(':', '-').replace(os.sep, '-').replace('/', '-')
-    cands = [os.path.join(root, d) for d in os.listdir(root)
-             if d.lower().lstrip('-') in slug.lower().lstrip('-')
-             or slug.lower().endswith(d.lower())] if os.path.isdir(root) else []
-    if not cands:
-        cands = [os.path.join(root, d) for d in os.listdir(root)] if os.path.isdir(root) else []
+    cands = _candidate_project_dirs(root)
     sessions = []
     for c in cands:
         if not os.path.isdir(c):
@@ -716,7 +824,7 @@ def agent_usage(run_dir):
             continue
         aid = fn[len('agent-'):-len('.jsonl')]
         calls, order, recs = {}, [], 0
-        served = set()
+        served, efforts = set(), set()
         first = last = None
         for o in _iter_jsonl_objects(os.path.join(run_dir, fn)):
             ts = o.get('timestamp')
@@ -730,6 +838,8 @@ def agent_usage(run_dir):
             if o.get('type') != 'assistant':
                 continue
             recs += 1
+            if isinstance(o.get('effort'), str) and o['effort']:
+                efforts.add(o['effort'])
             m = o.get('message')
             if not isinstance(m, dict):
                 continue
@@ -762,10 +872,32 @@ def agent_usage(run_dir):
         # The model the transcript reports as served; the requested pin lives on the workflow record.
         # Native-transport rows only: a proxied sidecar child echoes its own pin, so its self-report
         # is not authority (gotcha_self_reported_model_identity_is_not_authority).
-        u['served_model'] = (None if not served else sorted(served)[0] if len(served) == 1
-                             else 'mixed:' + ','.join(sorted(served)))
+        u['served_model'] = _one_or_mixed(served)
+        # The effort the client SENT on each turn (top-level `effort` on assistant records): recorded,
+        # not server-attested. Absent when the model takes no effort parameter.
+        u['served_effort'] = _one_or_mixed(efforts)
         usage[aid] = u
     return usage
+
+
+def _one_or_mixed(values):
+    """None for no values, the value for one, 'mixed:a,b' for several."""
+    return None if not values else sorted(values)[0] if len(values) == 1 else 'mixed:' + ','.join(sorted(values))
+
+
+def transcript_identity(path):
+    """(served model, recorded effort) over one Claude Code transcript's assistant records — the
+    same fields `agent_usage` reads, for a transcript outside a Workflow run dir (a sidecar child)."""
+    models, efforts = set(), set()
+    for o in _iter_jsonl_objects(path):
+        if o.get('type') != 'assistant':
+            continue
+        if isinstance(o.get('effort'), str) and o['effort']:
+            efforts.add(o['effort'])
+        m = o.get('message')
+        if isinstance(m, dict) and isinstance(m.get('model'), str) and m['model']:
+            models.add(m['model'])
+    return _one_or_mixed(models), _one_or_mixed(efforts)
 
 
 def _task_claims():
@@ -820,7 +952,8 @@ MODEL_FAMILIES = ('opus', 'sonnet', 'haiku', 'fable')
 
 
 def model_mismatches(rows):
-    """One line per Workflow row whose served model does not honor its requested pin.
+    """One line per Workflow row whose served model does not honor its requested pin, then one per
+    row whose recorded effort differs from a known requested effort.
 
     A pin naming a family (`sonnet`) is honored by any served id carrying that token
     (`claude-sonnet-5`); a full-id pin must match exactly, after dropping a client
@@ -839,6 +972,13 @@ def model_mismatches(rows):
         if not honored:
             lines.append('MODEL MISMATCH %s:%s requested %s served %s'
                          % (r.get('run', '?'), r.get('label', '?'), pin, served))
+    for r in rows:
+        requested, recorded = r.get('requested_effort'), r.get('served_effort')
+        if r.get('source') == 'sidecar' or not recorded or requested in (None, '', '?'):
+            continue
+        if recorded != requested:
+            lines.append('EFFORT MISMATCH %s:%s requested %s recorded %s'
+                         % (r.get('run', '?'), r.get('label', '?'), requested, recorded))
     return lines
 
 
@@ -857,35 +997,66 @@ def collect(session, diagnostics=None):
     for fn in names:
         if not fn.endswith('.json'):
             continue
-        path = os.path.join(wdir, fn)
-        run = _read_json_object(path, diagnostics, 'workflow')
-        if not run:
+        rows.extend(run_rows(session, fn[:-5], diagnostics, claims))
+    return rows
+
+
+def run_rows(session, run_id, diagnostics=None, claims=None):
+    """One row per agent of one Workflow run: requested pin, served model, recorded effort, usage.
+    `run_id` is the journal's file stem under `<session>/workflows/`."""
+    run = _read_json_object(os.path.join(session, 'workflows', run_id + '.json'), diagnostics, 'workflow')
+    if not run:
+        return []
+    claims = _task_claims() if claims is None else claims
+    rows = []
+    rid = run.get('runId') or run_id
+    eff = efforts_for(run)
+    usage = agent_usage(os.path.join(session, 'subagents', 'workflows', rid))
+    for e in run.get('workflowProgress') or []:
+        if not isinstance(e, dict) or e.get('type') != 'workflow_agent':
             continue
-        rid = run.get('runId') or fn[:-5]
-        eff = efforts_for(run)
-        usage = agent_usage(os.path.join(session, 'subagents', 'workflows', rid))
-        for e in run.get('workflowProgress') or []:
-            if not isinstance(e, dict) or e.get('type') != 'workflow_agent':
-                continue
-            aid, lab = e.get('agentId'), e.get('label') or '(unlabeled)'
-            u = usage.get(aid, dict(inp=None, out=None, cw=None, cr=None, turns=None,
-                                    tools=None, recs=None, secs=None, first_ts=None,
-                                    served_model=None))
-            cost = agent_cost(u)
-            # Run date, most specific source first: this agent's own start, the
-            # workflow record's instant, then the transcript's earliest turn.
-            run_date = (run_date_of(e.get('startedAt')) or run_date_of(e.get('queuedAt'))
-                        or run_date_of(run.get('timestamp')) or run_date_of(run.get('startTime'))
-                        or run_date_of(u.pop('first_ts', None)))
-            u.pop('first_ts', None)
-            requested_effort = eff.get(lab, '?')
-            rows.append(dict(
-                run=rid, workflow=run.get('workflowName') or '?', phase=e.get('phaseTitle') or '',
-                agent_id=aid, label=lab, model=e.get('model') or '?',
-                effort=requested_effort, requested_effort=requested_effort,
-                observed_effort=None, state=e.get('state') or '?',
-                run_date=run_date, task_id=claims.get(('workflow', rid)),
-                cost=cost, qcost=quota_cost(cost, e.get('model') or ''), **u))
+        aid, lab = e.get('agentId'), e.get('label') or '(unlabeled)'
+        u = usage.get(aid, dict(inp=None, out=None, cw=None, cr=None, turns=None,
+                                tools=None, recs=None, secs=None, first_ts=None,
+                                served_model=None, served_effort=None))
+        cost = agent_cost(u)
+        # Run date, most specific source first: this agent's own start, the
+        # workflow record's instant, then the transcript's earliest turn.
+        run_date = (run_date_of(e.get('startedAt')) or run_date_of(e.get('queuedAt'))
+                    or run_date_of(run.get('timestamp')) or run_date_of(run.get('startTime'))
+                    or run_date_of(u.pop('first_ts', None)))
+        u.pop('first_ts', None)
+        requested_effort = eff.get(lab, '?')
+        rows.append(dict(
+            run=rid, workflow=run.get('workflowName') or '?', phase=e.get('phaseTitle') or '',
+            agent_id=aid, label=lab, model=e.get('model') or '?',
+            effort=requested_effort, requested_effort=requested_effort,
+            observed_effort=u.get('served_effort'), state=e.get('state') or '?',
+            run_date=run_date, task_id=claims.get(('workflow', rid)),
+            cost=cost, qcost=quota_cost(cost, e.get('model') or ''), **u))
+    return rows
+
+
+def collect_all_workflows(diagnostics=None):
+    """Workflow rows across every session in this project, not just one -- the Workflow
+    counterpart to collect_sidecar(include_unlabeled=True): both give an unconditional
+    all-time view instead of the one-session default. Project-scoped, unlike the sidecar
+    ledger: that file is one global path across every project on the machine, but Claude
+    Code's per-session storage has no cross-project index safe to sweep from here."""
+    rows = []
+    projects = _candidate_project_dirs(strict=True)
+    if not projects:
+        _input_diagnostic(diagnostics, 'project-directory', os.getcwd(), 'no-match')
+    for project in projects:
+        try:
+            names = sorted(os.listdir(project))
+        except OSError as exc:
+            _input_diagnostic(diagnostics, 'project-directory', project, 'unreadable', exc)
+            continue
+        for name in names:
+            session = os.path.join(project, name)
+            if os.path.isdir(os.path.join(session, 'workflows')):
+                rows.extend(collect(session, diagnostics))
     return rows
 
 
@@ -1055,6 +1226,78 @@ def _strip_redirections(tokens):
 
 def _launcher_calls(command):
     """Actual top-level launcher calls as (kind, launcher arguments)."""
+    return [(kind, args) for kind, _, args in _launcher_calls_named(command)]
+
+
+# lib/sidecar_common.sh SC_OPTSTRING letters that take a value (the `:`-suffixed ones).
+_SIDECAR_VALUE_FLAGS = set("metnodfTRxPSrpLlaGDCZ")
+
+
+def _sidecar_flags(args):
+    """{flag letter: value} for a launcher's argv, read the way getopts reads it: clustered letters,
+    a value glued to its flag or in the next token, and parsing stops at `--` or the first operand."""
+    flags, index = {}, 0
+    while index < len(args):
+        token = args[index]
+        if token == '--' or not token.startswith('-') or token == '-':
+            break
+        for pos, letter in enumerate(token[1:], 1):
+            if letter in _SIDECAR_VALUE_FLAGS:
+                rest = token[pos + 1:]
+                if rest:
+                    flags[letter] = rest
+                elif index + 1 < len(args):
+                    index += 1
+                    flags[letter] = args[index]
+                break
+            flags[letter] = True
+        index += 1
+    return flags
+
+
+def sidecar_launches(command, cwd=None):
+    """[{kind, launcher, label, model, effort, record}] per sidecar job this shell command EXECUTES:
+    a registered `.claude/scripts/*_sidecar.sh` launcher, or each job of a `sidecar_fanout.py` jobs
+    file. [] for a command that only mentions one. Omitted values are None; the reader labels them."""
+    cwd = cwd or _PROJECT_DIR
+    scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
+    out = []
+    for kind, script, args in _launcher_calls_named(command):
+        if kind == 'sidecar':
+            if not os.path.isfile(os.path.join(scripts, script)):
+                continue
+            f = _sidecar_flags(args)
+            record = f.get('R')
+            out.append(dict(kind='sidecar', launcher=script[:-len('_sidecar.sh')],
+                            label=f.get('l') if isinstance(f.get('l'), str) else None,
+                            model=f.get('m') if isinstance(f.get('m'), str) else None,
+                            effort=f.get('e') if isinstance(f.get('e'), str) else None,
+                            record=_resolve_session_path(record, cwd) if isinstance(record, str) else None))
+            continue
+        parsed = _parse_fanout_args(args, cwd)
+        if not parsed:
+            continue
+        jobs_path, out_dir = parsed
+        try:
+            with open(jobs_path, encoding='utf-8') as fh:
+                jobs = json.load(fh)
+        except (OSError, ValueError):
+            jobs = None
+        if not isinstance(jobs, list):
+            out.append(dict(kind='fanout', launcher='sidecar_fanout', label=os.path.basename(jobs_path),
+                            model='unresolved', effort='unresolved', record=None))
+            continue
+        for job in jobs:
+            job = job if isinstance(job, dict) else {}
+            label = job.get('label')
+            out.append(dict(kind='fanout', launcher=str(job.get('transport') or 'sidecar_fanout'),
+                            label=label, model=job.get('alias'), effort=job.get('effort'),
+                            record=os.path.join(out_dir, '%s.record.json' % label) if label else None))
+    return out
+
+
+def _launcher_calls_named(command):
+    """Actual top-level launcher calls as (kind, script basename, launcher arguments)."""
     calls = []
     for raw_segment in _shell_segments(command):
         segment = _strip_redirections(raw_segment)
@@ -1079,9 +1322,9 @@ def _launcher_calls(command):
         script = (os.path.basename(segment[script_index].replace('\\', '/')).lower()
                   if script_index < len(segment) else '')
         if script == 'sidecar_fanout.py':
-            calls.append(('fanout', segment[script_index + 1:]))
+            calls.append(('fanout', script, segment[script_index + 1:]))
         elif script.endswith('_sidecar.sh'):
-            calls.append(('sidecar', segment[script_index + 1:]))
+            calls.append(('sidecar', script, segment[script_index + 1:]))
     return calls
 
 
@@ -1504,6 +1747,7 @@ def report(rows, diagnostics=None):
           "quota column is '?' rather than a guess -- add the model to QUOTA_W (relative to "
           "sonnet = 1.0) once its ratio is known, and re-check the existing weights against "
           "current pricing while you are there.")
+    report_panel_yield(rows)
     report_sidecar(side)
     _report_pending_candidates()
 
@@ -1592,18 +1836,18 @@ def report_sidecar(side):
         rows = by_model[model_id]
         w('')
         w(f'   [{model_id}]  {len(rows)} run(s)')
-        w(f"{'label':<30} {'eff':<6} {'$cost':>8} {'out':>8} {'cacheR':>8} "
+        w(f"{'label':<30} {'eff':<6} {'$cost':>8} {'in':>8} {'out':>8} {'cacheR':>8} "
           f"{'turns':>6} {'sec':>6} {'state':<10}")
-        w('-' * 92)
+        w('-' * 101)
         for r in sorted(rows, key=lambda x: x['run']):
             cu = r.get('cost_usd')
             cell = f"{cu:>8.4f}" if isinstance(cu, (int, float)) else f"{'n/a':>8}"
             secs = (f"{r['secs']:>6.0f}" if _optional_number(r.get('secs')) is not None
                     else f"{'n/a':>6}")
             w(f"{r['label'][:30]:<30} {r['effort']:<6} {cell} "
-              f"{fmt(r.get('out')):>8} {fmt(r.get('cr')):>8} "
+              f"{fmt(r.get('inp')):>8} {fmt(r.get('out')):>8} {fmt(r.get('cr')):>8} "
               f"{fmt(r.get('turns')):>6} {secs} {r['state']:<10}")
-        w('-' * 92)
+        w('-' * 101)
         priced = [r for r in rows if isinstance(r.get('cost_usd'), (int, float))]
         sub = sum(r['cost_usd'] for r in priced)
         mean = f"${sub / len(priced):.4f}/run" if priced else 'n/a'
@@ -1611,8 +1855,8 @@ def report_sidecar(side):
         if len(priced) != len(rows):
             basis = next((r.get('cost_basis') for r in rows if r.get('cost_basis')), 'no dollar price')
             note = f" | {len(rows) - len(priced)} unpriced ({basis}) - excluded from $ figures"
-        w(f"   subtotal ${sub:.4f} | out {_total_text(rows, 'out')} | "
-          f"turns {_total_text(rows, 'turns')} | mean {mean}{note}")
+        w(f"   subtotal ${sub:.4f} | in {_total_text(rows, 'inp')} | out {_total_text(rows, 'out')} | "
+          f"cacheR {_total_text(rows, 'cr')} | turns {_total_text(rows, 'turns')} | mean {mean}{note}")
 
     w('')
     priced_all = [r for r in side if isinstance(r.get('cost_usd'), (int, float))]
@@ -1620,7 +1864,8 @@ def report_sidecar(side):
     w(f"{len(side)} sidecar run(s) across {len(by_model)} model(s) | "
       f"total ${sum(r['cost_usd'] for r in priced_all):.4f} over {len(priced_all)} priced run(s)"
       + (f" ({unpriced_all} unpriced)" if unpriced_all else '') + " | "
-      f"out {_total_text(side, 'out')} | turns {_total_text(side, 'turns')}")
+      f"in {_total_text(side, 'inp')} | out {_total_text(side, 'out')} | "
+      f"cacheR {_total_text(side, 'cr')} | turns {_total_text(side, 'turns')}")
     if len(by_model) > 1:
         w("   (total is a spend figure, not a comparison - per-model subtotals above are the "
           "comparable unit)")
@@ -1726,6 +1971,25 @@ def load_run_ledger(diagnostics=None):
     return {run for run, _ in pairs}, ignored
 
 
+def _finalize_rows(rows, diagnostics):
+    """Common post-collection pipeline shared by --all-time and the default per-session
+    path: effort-evidence backfill, model-mismatch warnings, and the already-archived
+    filter with its skip notice. One copy so the two paths cannot silently diverge again
+    (sa-design-semantics F7/F8 -- --all-time shipped without the skip notice the first time)."""
+    for row in rows:
+        _ensure_effort_evidence(row)
+    for line in model_mismatches(rows):
+        w(line)
+    archived_pairs, ignored = load_record_ledger(diagnostics)
+    skipped_pairs = {(row['run'], row.get('label')) for row in rows
+                     if row['run'] in ignored or (row['run'], row.get('label')) in archived_pairs}
+    rows = [row for row in rows
+            if row['run'] not in ignored and (row['run'], row.get('label')) not in archived_pairs]
+    if skipped_pairs:
+        w(f"(skipping {len(skipped_pairs)} agent record(s) already in the archive ledger)")
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--session')
@@ -1747,11 +2011,24 @@ def main():
                     help='skip session-attributed sidecar records')
     ap.add_argument('--sidecar-all', action='store_true',
                     help='report the global sidecar ledger, including unlabeled history; never archive')
+    ap.add_argument('--all-time', action='store_true',
+                    help='report every session\'s Workflow runs in this project plus the global '
+                         'sidecar ledger, in one call; implies --sidecar-all scope, never archives')
     ap.add_argument('--manifest-seed', help='seed JSON whose exact labels define one non-archiving manifest')
     ap.add_argument('--manifest-out', help='output path for --manifest-seed')
     ap.add_argument('--sidecar-record-dir', help='directory containing per-job *.record.json evidence')
     ap.add_argument('--manifest-verdicts', help='optional outcome JSON for manifest rows')
+    ap.add_argument('--run', metavar='RUN_ID',
+                    help='per-seat cache write/read, output and input-equivalent for one Workflow run; '
+                         'the consolidator on its own row; never archives')
     a = ap.parse_args()
+
+    if a.run:
+        session = find_session_dir(a.session)
+        if not session:
+            w('Could not locate a session directory with workflow runs.')
+            return 1
+        return report_run(session, a.run)
 
     if a.manifest_seed:
         if not a.manifest_out:
@@ -1837,6 +2114,7 @@ def main():
                 sp = [x for x in model_rows if isinstance(x.get('cost_usd'), (int, float))]
                 w(f"{len(model_rows)} archived sidecar runs | total ${sum(x['cost_usd'] for x in sp):.4f}"
                   f" over {len(sp)} priced")
+        report_panel_yield(rows)
         _report_candidates(rows)
         return 0
 
@@ -1872,6 +2150,24 @@ def main():
                   f'are unattributed: ' + ', '.join(uncaptured[:5]))
         return 0
 
+    if a.all_time:
+        # No single session to resolve -- collect_all_workflows sweeps every session this
+        # project has, so an unresolvable "current" session is not a failure here.
+        input_diagnostics = []
+        rows = (collect_all_workflows(input_diagnostics)
+                + ([] if a.no_sidecar else
+                   collect_sidecar(a.sidecar_ledger, include_unlabeled=True,
+                                    diagnostics=input_diagnostics)))
+        rows = _finalize_rows(rows, input_diagnostics)
+        w('Scope: delegated dispatch only (Workflow agents across every session in this '
+          'project, plus the global sidecar ledger). NOT the account\'s global usage page. '
+          'Workflow cost is normalized/plan-quota; sidecar cost is real USD -- never summed.')
+        report(rows, input_diagnostics)
+        if a.verdicts:
+            w('\nREFUSED: --all-time is a global spend report and never archives.')
+            return 1
+        return 0
+
     # An id is resolved to its directory; collect() and pending_report() take a path, and a raw
     # id string there silently reads as a session that dispatched nothing.
     session = find_session_dir(a.session)
@@ -1887,17 +2183,7 @@ def main():
     else:
         sidecar_rows = collect_session_sidecar(session, input_diagnostics)
     rows = collect(session, input_diagnostics) + sidecar_rows
-    for row in rows:
-        _ensure_effort_evidence(row)
-    for line in model_mismatches(rows):
-        w(line)
-    archived_pairs, ignored = load_record_ledger(input_diagnostics)
-    skipped_pairs = {(row['run'], row.get('label')) for row in rows
-                     if row['run'] in ignored or (row['run'], row.get('label')) in archived_pairs}
-    rows = [row for row in rows
-            if row['run'] not in ignored and (row['run'], row.get('label')) not in archived_pairs]
-    if skipped_pairs:
-        w(f"(skipping {len(skipped_pairs)} agent record(s) already in the archive ledger)")
+    rows = _finalize_rows(rows, input_diagnostics)
     if not rows:
         report(rows, input_diagnostics)
         return 0
@@ -1945,20 +2231,7 @@ def main():
                 consumed_pending.setdefault(r['run'], {}).setdefault('root', set()).add(selected_key)
             elif selected_key in pending_legacy:
                 consumed_pending.setdefault(r['run'], {}).setdefault('legacy', set()).add(selected_key)
-            if isinstance(ent, (list, tuple)):
-                r['outcome'] = norm_outcome(ent[0])
-                if len(ent) > 1 and ent[1]:
-                    r['requested_effort'] = ent[1]
-                    r['effort'] = ent[1]
-                if len(ent) > 2 and ent[2] == 'probe':
-                    r['probe'] = True
-            elif ent:
-                r['outcome'] = norm_outcome(ent)
-                if isinstance(ent, dict) and ent.get('effort'):
-                    r['requested_effort'] = ent['effort']
-                    r['effort'] = ent['effort']
-            else:
-                r['outcome'] = 'unrated'
+            apply_verdict(r, ent)
             if r['outcome'] not in OUTCOMES + ('unrated',):
                 # Non-fatal, per the command doc: a malformed verdict leaves ITS row unrated and the
                 # archive proceeds; aborting here threw away every other rated row in the session.

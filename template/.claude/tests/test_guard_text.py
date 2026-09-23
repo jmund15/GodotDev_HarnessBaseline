@@ -16,10 +16,10 @@ import tempfile
 TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "guard_text.py")
 
 PLANTED = {
-    "any.md": "# any\n\n## strict\nANY-STRICT\n\n## terse\nANY-TERSE\n",
-    "review.md": "# review\n\n## strict\nREVIEW-STRICT\n\n## terse\nREVIEW-TERSE\n",
-    "survey.md": "# survey\n\n## strict\nSURVEY-STRICT\n",
-    "author.md": "# author\n\n## strict\nAUTHOR-STRICT\n",
+    "any.md": "# any\n\n## detailed\nANY-DETAILED\n\n## condensed\nANY-CONDENSED\n",
+    "review.md": "# review\n\n## detailed\nREVIEW-DETAILED\n\n## condensed\nREVIEW-CONDENSED\n",
+    "survey.md": "# survey\n\n## detailed\nSURVEY-DETAILED\n",
+    "author.md": "# author\n\n## detailed\nAUTHOR-DETAILED\n",
 }
 
 
@@ -47,29 +47,31 @@ def main():
     with tempfile.TemporaryDirectory(prefix="guard_text_") as tmp:
         tool = planted_tool(tmp)
 
-        rc, out, _ = run(tool, "review", "strict")
+        rc, out, _ = run(tool, "review", "detailed")
         cases.append(("a shape gets the `any` section, then its own, under one header",
-                      rc == 0 and out == "[delegate rails — shape 'review', strict tier; home: .claude/guards/any.md"
-                                        " + .claude/guards/review.md]\nANY-STRICT\n\nREVIEW-STRICT"))
-        rc, out, _ = run(tool, "any", "strict")
+                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/any.md"
+                                        " + .claude/guards/review.md]\nANY-DETAILED\n\nREVIEW-DETAILED"))
+        rc, out, _ = run(tool, "any", "detailed")
         cases.append(("shape `any` gets its section alone",
-                      rc == 0 and out == "[delegate rails — shape 'any', strict tier; home: .claude/guards/any.md]\nANY-STRICT"))
-        rc, out, _ = run(tool, "review", "strict")
-        cases.append(("a section stops at the next heading", "TERSE" not in out))
+                      rc == 0 and out == "[delegate rails — shape 'any', detailed tier; home: .claude/guards/any.md]\nANY-DETAILED"))
+        rc, out, _ = run(tool, "review", "detailed")
+        cases.append(("a section stops at the next heading", "CONDENSED" not in out))
         rc, out, _ = run(tool, "review", "none")
         cases.append(("tier `none` delivers the empty string", rc == 0 and out == ""))
-        rc, out, err = run(tool, "survey", "terse")
-        cases.append(("a missing section exits 2 and names it", rc == 2 and out == "" and "no '## terse' section" in err))
-        rc, _, err = run(tool, "planner", "strict")
+        rc, out, err = run(tool, "survey", "condensed")
+        cases.append(("a missing section exits 2 and names it", rc == 2 and out == "" and "no '## condensed' section" in err))
+        rc, _, err = run(tool, "planner", "detailed")
         cases.append(("an unknown shape exits 2 with the legal set", rc == 2 and "any, survey, review, author" in err))
         rc, _, err = run(tool, "review", "loud")
-        cases.append(("an unknown tier exits 2 with the legal set", rc == 2 and "strict, terse, fable, none" in err))
+        cases.append(("an unknown tier exits 2 with the legal set", rc == 2 and "detailed, condensed, minimal, none" in err))
+        rc, _, err = run(tool, "review", "strict")
+        cases.append(("a retired tier name exits 2", rc == 2))
         rc, _, err = run(tool, "review")
         cases.append(("a wrong argument count exits 2 with usage", rc == 2 and "usage: guard_text.py" in err))
 
     live = []
     for shape in ("any", "survey", "review", "author"):
-        for tier in ("strict", "terse", "fable"):
+        for tier in ("detailed", "condensed", "minimal"):
             rc, out, err = run(TOOL, shape, tier)
             if rc != 0 or not out.startswith("[delegate rails — shape '%s', %s tier;" % (shape, tier)):
                 live.append("%s/%s rc=%d %s" % (shape, tier, rc, err.strip()[:80]))

@@ -116,7 +116,9 @@ def _session_id(value):
 def session_from_output(raw):
     """Read CLI envelope identity, never session-like text inside a model's answer."""
     try:
-        records = [json.loads(raw)]
+        parsed = json.loads(raw)
+        # `-o json` under the user setting `"verbose": true` is an ARRAY of every event.
+        records = parsed if isinstance(parsed, list) else [parsed]
     except (ValueError, TypeError):
         records = []
         for line in (raw or "").splitlines():

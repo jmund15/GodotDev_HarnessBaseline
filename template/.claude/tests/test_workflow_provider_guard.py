@@ -7,7 +7,9 @@ value depends on the live band and is printed, not asserted, unless the band is 
 
     python3 .claude/tests/test_workflow_provider_guard.py
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -217,6 +219,33 @@ def main():
     if not no_model_ok:
         fails.append("empty model registry handoff")
 
+    # Planted live-capacity refusal through the real PreToolUse output channel.
+    capacity_payload = wf(jobs=[{"label": "capacity", "model": "gpt-5.6-luna",
+                                 "promptPath": "x", "effort": "low",
+                                 "agentType": "general-purpose"}])
+    real_refusal = wpg.provider_capacity_guard.refusal
+    real_resolve = wpg._session_transport.resolve
+    real_stdin = sys.stdin
+    capture = io.StringIO()
+    try:
+        wpg.provider_capacity_guard.refusal = lambda _transport: "Provider capacity exhausted for codex"
+        wpg._session_transport.resolve = lambda **_kwargs: ("codex", "test")
+        sys.stdin = io.StringIO(json.dumps(capacity_payload))
+        with contextlib.redirect_stdout(capture):
+            wpg.main()
+    finally:
+        wpg.provider_capacity_guard.refusal = real_refusal
+        wpg._session_transport.resolve = real_resolve
+        sys.stdin = real_stdin
+    capacity_doc = json.loads(capture.getvalue())
+    capacity_hook = capacity_doc.get("hookSpecificOutput") or {}
+    capacity_ok = (capacity_hook.get("permissionDecision") == "deny"
+                   and "exhausted" in capacity_hook.get("permissionDecisionReason", "").lower())
+    print(("ok   " if capacity_ok else "FAIL ")
+          + "native capacity refusal uses the real deny channel")
+    if not capacity_ok:
+        fails.append("native capacity channel")
+
     # Live wiring: the real hook, the real band. Deny only when the live band is conserving.
     payload = wf(jobs=[{"label": "live", "model": "sonnet", "promptPath": "x", "effort": "low", "agentType": "general-purpose"}])
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
@@ -226,7 +255,7 @@ def main():
     print(f"live hook: rc={r.returncode} decision={hook.get('permissionDecision', 'advise' if hook.get('additionalContext') else 'silent')}")
     if r.returncode != 0:
         fails.append("live hook exit")
-    total = len(CASES) + len(RECORD_CASES) + 4
+    total = len(CASES) + len(RECORD_CASES) + 5
     print(f"\n{total - len(set(fails))}/{total} passed")
     return 1 if fails else 0
 

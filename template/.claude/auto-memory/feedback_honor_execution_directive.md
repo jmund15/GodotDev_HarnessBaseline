@@ -6,8 +6,6 @@ metadata:
   type: feedback
   originSessionId: 87e1bba7-8413-4954-838d-6f3956e3c8d6
   modified: 2026-09-15T21:44:25.529Z
-retire_when:
-  - review-by: 2026-10-18
 ---
 
 When the user gives an execution directive ("execute here in this session", "do it now", "go"), treat the decision as final. Do NOT pause partway through to re-offer alternatives you already presented (e.g., "continue here or hand off to a fresh session?") just because the work got deeper or context filled up.

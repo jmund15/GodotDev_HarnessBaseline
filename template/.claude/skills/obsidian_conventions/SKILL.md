@@ -16,7 +16,7 @@ classification, the 4-doc system template, domain routing) is a separate
 concern — see [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md).
 
 ## Tooling — native-first
-The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\` (and `...\Jmodot\`). Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired (owner decision 2026-09-15).
+The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\` (and `...\Jmodot\`). Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired.
 
 | Operation | Tool |
 |---|---|
@@ -30,7 +30,7 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 
 > Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — both land on disk, so the unsaved buffer conflicts regardless of writer. In practice the agent is directed, not hand-editing the same file simultaneously.
 
-## Vault taxonomy — live vs legacy (as of 2026-07-04)
+## Vault taxonomy — live vs legacy
 
 - **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
 - **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.

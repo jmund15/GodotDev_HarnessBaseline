@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse(Workflow): rewrite the `scriptPath` file to LF before the permission handler inlines it.
 
-The handler reads the file at `scriptPath` into a `script` field to render its approval dialog and
-rejects every `\\r` as a "control character that would be hidden in the approval dialog" — so a
-CRLF workflow script fails BEFORE any agent runs, with an error that names `script`, not the file.
-Git is not the writer (`.gitattributes` pins `eol=lf`; a fresh `checkout-index` emits LF — measured
-2026-09-05): CRLF arrives from Windows text-mode writers — Python `write_text()`/`open('w')` without
-`newline="\\n"`, PowerShell `Set-Content`/`Out-File`. Every patch script that touches a `.js` engine
-re-creates the fault, which is why it "kept coming back" across sessions. Healing at the one
-consumer that breaks ends the recurrence regardless of the writer.
-
+The permission handler rejects carriage returns while inlining `scriptPath`; this hook
+normalizes harness scripts to LF before that handler reads them.
 Fail-open: any exception exits 0 with no output; a hook crash must never block a dispatch. Only
-`.claude/**` scripts are rewritten — a path outside the harness is left alone and reported.
-Memory: gotcha_crlf_scriptpath_blocks_workflow_dispatch.
+`.claude/**` scripts are rewritten; paths outside the harness are left alone.
 """
 import json
 import os
 import sys
+
+from _claude_scope import harness_tail
 
 
 def main() -> int:
@@ -29,8 +23,7 @@ def main() -> int:
             path = path[1].upper() + ":" + path[2:]  # MSYS /c/... -> C:/... (Windows Python cannot open the former)
         if not path or not os.path.isfile(path):
             return 0
-        norm = path.replace("\\", "/")
-        if "/.claude/" not in norm and not norm.startswith(".claude/"):
+        if harness_tail(path) is None:
             return 0
         with open(path, "rb") as fh:
             data = fh.read()

@@ -77,23 +77,28 @@ const spillContract = (a) => spills(a) ? [
 // with dispatch.js and hooks/session_model_rails.py; this engine injects a reference, never a copy.
 // MACHINE SAFETY + the output contract stay inline below, because they are this engine's own
 // invariants (it is read-only by construction, it owns FINDINGS_SCHEMA, it knows the agent count) and
-// must hold even at the tier where the doctrine reference is suppressed.
+// hold at every guard tier.
 // Tier is per-agent (instruction_quality §3, "tier rails by the model that RECEIVES them"), so the
 // reference is built per agent below rather than as one shared constant.
-const TIER_OF = { sonnet: 'strict', haiku: 'strict', opus: 'terse', fable: 'fable' }
-// Off-Anthropic the RECEIVING model is deepseek whatever role name was pinned — strict band.
-// Off-Anthropic ids carry no TIER_OF row, so a provider session reads at the strict tier.
-const tierOf = (m) => A.__transport ? 'strict' : (TIER_OF[m] || 'strict')
+// Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
+// hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
+// does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
+const tierOf = (m) => RAILS[m] || 'detailed'
 // MACHINE SAFETY + delivery mechanics, owned by this engine and shipped at EVERY tier (strict,
 // terse, fable). Only DOCTRINE tiers by model — a fable lens that wedges the single-flight GdUnit4 pipe or
 // writes to the tree does the same damage a sonnet lens would, and this engine is read-only by
 // construction, so those bars are not the receiving model's to earn out of.
 const CONCURRENT = agents.length > 1
+// The platform relays the triggering user message to every agent as authoritative; a lens whose
+// mandate looks unrelated can answer that message instead of its brief.
+const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
 const BASE_CONTRACT = (a) => [
   '',
   '=== ENGINE CONTRACT ===',
+  RELAY_LINE,
   readOnlyContract(a),
   CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight); Python and Node proofs under .claude/tests/ are not single-flight, so run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read. If your mandate requires a Godot or C# test or build run, STOP and report that it needs a serialized dispatch.' : null,
   'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`; `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Put every unread or blocked part of the mandate in `gaps`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
@@ -376,7 +381,11 @@ if (consolidate && sourced.length > 1) {
     'INPUT:',
     JSON.stringify(sources.map(viewOf)),
   ].join('\n')
-  const consolidationModel = (A.__transport && A.__transport.default) || 'opus'
+  // Grouping is enumerable work: it never runs above the cheapest tier the caller pinned. A foreign
+  // transport has one legal model set, so it takes that transport's default.
+  const TIER_RANK = ['haiku', 'sonnet', 'opus', 'fable']
+  const consolidationModel = HAS_TRANSPORT ? DEFAULT_MODEL
+    : TIER_RANK[Math.min(...resolved.map(a => TIER_RANK.indexOf(a.model)))]
   const consolidationEffort = VALID_EFFORTS.includes('low') ? 'low' : DEFAULT_EFFORT
   log('PINS ' + JSON.stringify({ 'review:consolidate': consolidationModel + '/' + consolidationEffort + '/general-purpose' }))
   let res = null

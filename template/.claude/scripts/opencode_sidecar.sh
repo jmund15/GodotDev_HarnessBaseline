@@ -323,8 +323,7 @@ if [ "$SC_AUTH_TIER" = "gated" ] && [ "$SC_CREDENTIAL" = "public" ]; then
 fi
 
 sc_gate_band
-sc_gate_provider_band   # no-op on this transport; present so the ladder is uniform
-sc_gate_balance         # no-op while the row stays authTier=open
+sc_gate_capacity       # amount unsupported at zero floor; launcher eligibility remains authoritative
 sc_gate_price_window    # no-op without a registry pricingSchedule; present so the ladder is uniform
 sc_build_disclosure
 sc_validate_effort

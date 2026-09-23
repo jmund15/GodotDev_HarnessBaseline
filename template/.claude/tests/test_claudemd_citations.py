@@ -97,21 +97,60 @@ def unresolved(repo_files, numbers, cores):
     return rows
 
 
-def tracked_files():
-    out = subprocess.run(["git", "-C", REPO, "ls-files", ".claude"], capture_output=True, text=True,
-                         encoding="utf-8").stdout.splitlines()
+def tracked_files(repo=REPO):
+    """Tracked `.claude/` text files, read from the stamp's private index when harness_tests.py
+    passes one as HARNESS_STAMP_INDEX, so a file staged only there is still scanned."""
+    env = dict(os.environ)
+    if os.environ.get("HARNESS_STAMP_INDEX"):
+        env["GIT_INDEX_FILE"] = os.environ["HARNESS_STAMP_INDEX"]
+    out = subprocess.run(["git", "-C", repo, "ls-files", ".claude"], capture_output=True, text=True,
+                         encoding="utf-8", env=env).stdout.splitlines()
     for rel in out:
         if not rel.endswith(SUFFIXES) or rel in SKIP_FILES or rel.startswith(SKIP_PREFIXES):
             continue
-        path = os.path.join(REPO, rel)
+        path = os.path.join(repo, rel)
         if not os.path.isfile(path):
             continue
         with open(path, encoding="utf-8", errors="replace") as handle:
             yield rel, handle.read()
 
 
+def private_index_fixture():
+    """(seen-with-index, seen-without) for `.claude/new.md` staged only in a private index of a
+    temp repo, as a private-index stamp would leave it."""
+    import tempfile
+    root = tempfile.mkdtemp(prefix="claudemd_cit_")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k != "HARNESS_STAMP_INDEX"}
+    env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(root)
+
+    def git(*args, extra=None):
+        subprocess.run(["git", "-C", root] + list(args), check=True, capture_output=True,
+                       env=dict(env, **(extra or {})))
+
+    git("init", "-q")
+    os.makedirs(os.path.join(root, ".claude"))
+    for name in ("old.md", "new.md"):
+        with open(os.path.join(root, ".claude", name), "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("x\n")
+    git("add", ".claude/old.md")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed")
+    private = os.path.join(root, "private.index")
+    git("read-tree", "HEAD", extra={"GIT_INDEX_FILE": private})
+    git("add", ".claude/new.md", extra={"GIT_INDEX_FILE": private})
+    saved = os.environ.get("HARNESS_STAMP_INDEX")
+    try:
+        os.environ["HARNESS_STAMP_INDEX"] = private
+        seen = any(rel == ".claude/new.md" for rel, _ in tracked_files(root))
+        os.environ.pop("HARNESS_STAMP_INDEX")
+        blind = any(rel == ".claude/new.md" for rel, _ in tracked_files(root))
+    finally:
+        if saved is not None:
+            os.environ["HARNESS_STAMP_INDEX"] = saved
+    return seen, blind
+
+
 def main():
-    fixture = "# Guide\n\n## Alpha Beta Gamma\n\n### 2. Delta (Epsilon)\n\n## Zeta\n\n## Philosophy: Eta Theta\n"
+    fixture ="# Guide\n\n## Alpha Beta Gamma\n\n### 2. Delta (Epsilon)\n\n## Zeta\n\n## Philosophy: Eta Theta\n"
     numbers, cores = heading_index(fixture)
     cite = "CLAUDE.md " + SECTION
     samples = [
@@ -137,6 +176,9 @@ def main():
           not list(citations("the worker route in the global " + cite + "Tool routing")))
     check("a backticked file name with a bare section sign is still checked",
           len(list(citations("`CLAUDE.md` " + SECTION + "9"))) == 1)
+    seen, blind = private_index_fixture()
+    check("a .claude file staged only in the stamp's private index is scanned", seen and not blind,
+          "seen=%s without-HARNESS_STAMP_INDEX=%s" % (seen, blind))
 
     with open(CLAUDE_MD, encoding="utf-8") as handle:
         combined = handle.read()

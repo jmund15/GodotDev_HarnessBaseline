@@ -1,6 +1,7 @@
 """Scan codified rules for fired retirement triggers.
 
-Every codified rule carries one retirement trigger (`/codify` Step 6): a
+A codified rule may carry a retirement trigger (`/codify` Step 6); a file
+without one is intentionally unmarked and yields no row. A trigger is a
 `retire_when:` frontmatter field on a memory file, or a
 `<!-- retire-when: ... -->` comment beside a rule that lives in a command,
 skill or rules file. This scanner evaluates those triggers against supplied
@@ -41,7 +42,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 PRINT_LIMIT = 20
-SKIP_DIRS = {".git", "__pycache__", "node_modules", "scratch", "cache",
+SKIP_DIRS = {".git", "__pycache__", "node_modules", "scratch", "cache", ".cache",
              "worktrees", "logs", "retired"}
 DEFAULT_CENSUS = os.path.join("logs", "load_census.json")
 

@@ -178,6 +178,32 @@ class WorkflowResultTests(unittest.TestCase):
             self.assertEqual(archive["counts"]["rejected"], 1)
             self.assertEqual([item["id"] for item in archive["items"]], ["F1", "F2"])
 
+    def test_resumed_attempts_collapse_to_latest_success_per_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "wf_resumed"
+            write_journal(run_dir, [
+                started("one", "review:one", "a-old-one"),
+                started("two", "review:two", "a-old-two"),
+                result("one", {"findings": [finding(1)]}, "a-old-one"),
+                failed("two", "a-old-two"),
+                started("one", "review:one", "a-new-one"),
+                started("two", "review:two", "a-new-two"),
+                result("one", {"findings": [finding(1)]}, "a-new-one"),
+                result("two", {"findings": [finding(2)]}, "a-new-two"),
+            ])
+            archive = digest.build_workflow_result_archive(run_dir, "review")
+            self.assertEqual(archive["status"], "completed")
+            self.assertTrue(archive["delivered"])
+            self.assertEqual([(row["id"], row["lens"], row["finding"]["description"])
+                              for row in archive["items"]],
+                             [("F1", "one", "finding-1"), ("F2", "two", "finding-2")])
+            self.assertEqual([row["agentId"] for row in archive["lenses"]],
+                             ["a-new-one", "a-new-two"])
+            self.assertEqual(archive["counts"]["starts"], 2)
+            self.assertEqual(archive["counts"]["terminals"], 2)
+            self.assertEqual(archive["counts"]["attempts"], 4)
+            self.assertEqual(archive["counts"]["attemptTerminals"], 4)
+
     def test_duplicate_or_orphan_runtime_rows_are_rejected(self):
         cases = [
             [started("one", "review:one"), started("one", "review:one")],

@@ -7,7 +7,17 @@ Reflect on the session's SKILL/memory usage; archive findings for `/eval_dashboa
 ## Step 0: Recover Full Session Context
 
 ### 0a. Session digest
-`/session_end` Phase 0 printed it; standalone, run `python3 .claude/tools/session_digest.py --prompt-tail self_evaluate`. It holds every user prompt verbatim, every friction row and the compaction count, rebuilt from the live transcript — post-compaction memory is not the record, the digest is.
+`/session_end` Phase 0 printed it; standalone, run `python3 .claude/tools/session_digest.py --prompt-tail self_evaluate --handoff`.
+Treat that output as bounded orientation only. Page every prompt and friction row from the saved evidence index
+before claiming whole-session coverage:
+
+```bash
+python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>
+python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page friction --page <N>
+```
+
+It holds every user prompt and friction row in durable evidence, rebuilt from the live transcript. Post-compaction
+memory is not the record.
 
 ### 0b. Timeline (any session with 1+ compaction, redesigns or go-backs)
 From the digest's prompts, in order:

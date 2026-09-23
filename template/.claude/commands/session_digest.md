@@ -1,12 +1,23 @@
 ---
-description: Digest another session's transcript (prompts, friction, files touched, last message; --tools for the per-tool call census incl. subagents) to pick up its work after /clear, a handoff, or to compare how two sessions did one task.
+description: Rebuild a session digest and choose brief, handoff, or offline full presentation.
 ---
 
 # Session Digest
 
 Rebuilds a session from its live transcript (`~/.claude/projects/<project>/<id>.jsonl`, append-only across
-compactions): every real user prompt verbatim, every tool error / denial with the assistant's next move, the
-files it modified, its last message. Tool: `.claude/tools/session_digest.py`.
+compactions). The full JSON and evidence index remain the exact retrieval source. Tool:
+`.claude/tools/session_digest.py`.
+
+Presentation modes are distinct:
+
+- **Default / `--handoff`** — a bounded resume packet for `/clear`, parallel-session pickup and compaction
+  recovery. It keeps the task anchor, latest directive, priority corrections and answers, recent timeline,
+  friction, files, status evidence and retrieval IDs. The 16,384-byte cap includes the active task record.
+- **`--brief`** — a 2,048-byte identity card for locating or comparing sessions. It is not enough to resume
+  non-trivial work.
+- **`--full`** — an offline Markdown projection written atomically to `logs/session_digest_<sid8>.full.md`.
+  Stdout prints only a bounded receipt. It is human-readable evidence, not raw transcript/JSON parity and
+  not model context.
 
 ## Arguments
 
@@ -17,24 +28,29 @@ files it modified, its last message. Tool: `.claude/tools/session_digest.py`.
 - `<id-prefix>` → that session (`--session`). No match → run `--list 8` and pick by first prompt and time.
 - `list [N]` → newest N transcripts (id, time, size, first prompt) and stop.
 
-Default output is the small overview (≤2048 UTF-8 bytes): identity, counts, latest request, last outcome, retrieval route. `--brief` is the same overview. `--full` renders every prompt, friction row, file and the whole outcome. `--tools` appends the explicit tool census outside the overview budget.
+Use `--select` or `--evidence-page` for exact machine evidence. `--tools` adds the tool census to the `--full`
+export only.
 
 ```bash
-python3 .claude/tools/session_digest.py --match-file .claude/scratch/digest_paste.txt --brief
-python3 .claude/tools/session_digest.py --previous --brief
+python3 .claude/tools/session_digest.py --match-file .claude/scratch/digest_paste.txt --handoff
+python3 .claude/tools/session_digest.py --previous --handoff
 python3 .claude/tools/session_digest.py --session <id-prefix> --brief
+python3 .claude/tools/session_digest.py --session <id-prefix> --handoff
+python3 .claude/tools/session_digest.py --session <id-prefix> --full
 python3 .claude/tools/session_digest.py --list 8
 ```
 
 ## Report, then continue
 
-1. **What it was doing** — one line per user prompt; the last one is the live intent.
+1. **What it was doing** — the task anchor, then one line per shown prompt; the latest owner directive is the
+   live intent. Page omitted prompt IDs before claiming the full sequence.
 2. **Where it stopped** — the last message's Done/Left bullets.
 3. **Unfinished** — every job that message left running (background shells, workflows, campaigns), each
    verified on disk or in the process list before it is called hung: a finished job nobody consumed looks the same.
 4. **Friction to avoid** — denials and errors that recur on the same path.
 
-Full record when a prompt was clipped: `logs/session_digest_<sid8>.json`.
+Full record when a prompt was clipped: `logs/session_digest_<sid8>.json`. For complete prompt or friction
+analysis, page the saved evidence index until its `pages` count is exhausted; handoff is intentionally bounded.
 
 ## Caveats
 
@@ -42,3 +58,4 @@ Full record when a prompt was clipped: `logs/session_digest_<sid8>.json`.
   it can name the other live one — confirm with the `--list` first-prompt column, or use `--match-file`
   when you hold any paragraph the target session wrote.
 - `--prompt-tail <text>` (`/session_end`, `/autolearn`) digests the session's OWN transcript; it is not a pickup.
+- Recovered command-argument rows are retained and labeled `unattributed`; they are not used as the first task anchor.

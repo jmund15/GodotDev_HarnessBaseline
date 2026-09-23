@@ -36,7 +36,8 @@ DATA = {
     },
     "models": [
         {"transport": "codex", "id": "gpt-5.6-terra", "alias": "terra"},
-        {"transport": "codex", "id": "gpt-5.6-luna", "alias": "luna"},
+        {"transport": "codex", "id": "gpt-5.6-luna", "alias": "luna",
+         "limits": {"contextTokens": 272000, "maxContextTokens": 872000}},
         {"transport": "deepseek", "id": "deepseek-v4-pro", "alias": "pro"},
         {"transport": "anthropic", "id": "claude-opus-5", "alias": "opus"},
     ],
@@ -92,7 +93,12 @@ CASES = [
     ("anthropic + GPT vendor id → DENY", "anthropic", wf(jobs=[{"label": "a", "model": "gpt-5.6-terra"}]), True),
 
     ("codex + its own id → pass", "codex", wf(jobs=[{"label": "a", "model": "gpt-5.6-terra"}]), False),
-    ("codex + its own alias → pass", "codex", wf(jobs=[{"label": "a", "model": "terra"}]), False),
+    ("codex + long-context suffix → DENY; native endpoint accepts only canonical registry ids", "codex",
+     wf(jobs=[{"label": "a", "model": "gpt-5.6-luna[1m]"}]), True),
+    ("codex + registry alias → DENY; native agent API needs the canonical id", "codex",
+     wf(jobs=[{"label": "a", "model": "terra"}]), True),
+    ("codex + long-context alias → DENY; modifier does not canonicalize the alias", "codex",
+     wf(jobs=[{"label": "a", "model": "luna[1m]"}]), True),
     ("codex + anthropic role name → DENY", "codex", wf(jobs=[{"label": "a", "model": "sonnet"}]), True),
     ("codex + another transport's id → DENY", "codex", wf(jobs=[{"label": "a", "model": "deepseek-v4-pro"}]), True),
 
@@ -128,7 +134,7 @@ CASES = [
     ("inline script: a line-comment pin does NOT fire", "codex",
      wf(script="// the model: 'sonnet' convention is described in the docs"), False),
     ("inline script: a block-comment pin does NOT fire", "codex",
-     wf(script="/* pins look like model: 'opus' */\nagent(p, {model: 'terra'})"), False),
+     wf(script="/* pins look like model: 'opus' */\nagent(p, {model: 'gpt-5.6-terra'})"), False),
     ("inline script: a comment does not mask a real pin below it", "codex",
      wf(script="// model: 'terra' is legal here\nagent(p, {model: 'sonnet'})"), True),
     ("inline script: a URL is not read as a comment", "codex",
@@ -158,6 +164,15 @@ def main():
               % ("ok  " if ok else "FAIL", name,
                  "deny" if want_deny else "pass", "deny" if got_deny else "pass",
                  "" if ok or not got_deny else " | " + (reason or "")[:90]))
+
+    injected = wpg.transport_injection(
+        wf(jobs=[{"label": "a", "model": "gpt-5.6-luna"}]), "codex", DATA)
+    transport = ((injected or {}).get("args") or {}).get("__transport", {})
+    ids = transport.get("ids")
+    ok = ids == ["gpt-5.6-luna", "gpt-5.6-terra"] and transport.get("default") == "gpt-5.6-luna"
+    failed += not ok
+    print("%s transport injection exposes canonical ids and a valid omitted-pin default: %r / %r"
+          % ("ok  " if ok else "FAIL", ids, transport.get("default")))
 
     # scriptPath: the guard must read pins out of a committed workflow file, because
     # orchestration section 9 mandates that shape and it never appears in tool_input.
@@ -258,7 +273,7 @@ def main():
     finally:
         _st._registry = real_registry
 
-    total = len(CASES) + 3 + 3 + 4
+    total = len(CASES) + 3 + 3 + 5
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

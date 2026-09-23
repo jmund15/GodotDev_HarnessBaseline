@@ -129,10 +129,14 @@ def main():
     crash_free("a root searchDir with a repo-relative restrictToDir passes", rc, out, err,
                rc == 0 and err == "")
 
-    # --- file_size_preblock: block for the orchestrator, exempt + counted for a subagent
+    # --- file_size_preblock: clamp for the orchestrator, exempt + counted for a subagent
     rc, out, err = run(call("Read", {"file_path": big}, session="rdbig001"), env)
-    crash_free("file_size_preblock blocks an unbounded large Read with exit 2",
-               rc, out, err, rc == 2 and err.strip() != "")
+    try:
+        clamped = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    except (ValueError, KeyError, TypeError):
+        clamped = {}
+    crash_free("file_size_preblock clamps an unbounded large Read to a line limit on exit 0",
+               rc, out, err, rc == 0 and clamped.get("file_path") == big and clamped.get("limit", 0) > 0)
     rc, out, err = run(call("Read", {"file_path": big}, session="rdbig002", agent_id="agent-7",
                             agent_type="workflow-subagent"), env)
     counted = False

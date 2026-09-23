@@ -3,11 +3,12 @@
 """
 Hook: PostToolUse dispatcher for the read/search tool family.
 
-One settings entry runs four sub-hooks in order:
+One settings entry runs five sub-hooks in order:
   1. tool_routing_post_grep.process — fallback Grep advisory and receipt writer
   2. routing_audit.process — classification log
   3. memory_hits_logger.process — auto-memory hit log
-  4. runaway_scan_reaper.check — throttled orphaned-search reaper, one line per reaped pid
+  4. model_ladder_gate.mark_loaded — compaction-scoped marker after a full exact-path ladder Read
+  5. runaway_scan_reaper.check — throttled orphaned-search reaper, one line per reaped pid
 
 Output contract:
 - Grep advice emits one `hookSpecificOutput.additionalContext` payload and exits 0.
@@ -27,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tool_routing_post_grep
 import routing_audit
 import memory_hits_logger
+import model_ladder_gate
 
 
 def main() -> None:
@@ -57,7 +59,13 @@ def main() -> None:
     except Exception:
         pass
 
-    # 4. Runaway-scan reaper (throttled; replaces its PostToolUse `*` registration for this family).
+    # 4. A successful full Read arms one model-ladder dispatch selection.
+    try:
+        model_ladder_gate.mark_loaded(input_data)
+    except Exception:
+        pass
+
+    # 5. Runaway-scan reaper (throttled; replaces its PostToolUse `*` registration for this family).
     try:
         import runaway_scan_reaper
         lines = runaway_scan_reaper.check(input_data)

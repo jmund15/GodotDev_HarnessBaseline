@@ -68,7 +68,7 @@ NEVER_RESUME = re.compile(
     re.I,
 )
 
-USAGE_LIMIT = re.compile(r"usage[ _-]?limit", re.I)
+USAGE_LIMIT = re.compile(r"(?:usage|weekly)[ _-]?limit", re.I)
 USAGE_LIMIT_REASON = "provider-usage-limit"
 
 

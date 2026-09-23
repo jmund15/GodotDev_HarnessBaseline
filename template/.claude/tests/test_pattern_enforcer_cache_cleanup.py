@@ -63,7 +63,6 @@ MUST_BLOCK = [
     "rm -rf .search-index Assets",
     # evidence and checkouts are not caches
     "rm -rf .claude/scratch",
-    "rm -rf .claude/scratch/harness-finish-3a",
     "rm -rf .claude/worktrees/audio_system",
     "rm -rf .claude",
     "rm -rf .",

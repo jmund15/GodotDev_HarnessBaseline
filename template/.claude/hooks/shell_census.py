@@ -24,7 +24,8 @@ repeats, and re-arms once after a compaction (`transcript_backup.py` calls
 `_hook_state.clear_compaction_keys`), since a compacted session lost the earlier delivery from its
 context.
 
-Rule home: CLAUDE.md §Shell Discipline (never wait on a shell nobody watches); sidecar stalls
+Rule home: CLAUDE.core.md §Shell Discipline ("Watch background jobs through their completion/monitor
+contract"); sidecar stalls
 self-kill via lib/sidecar_common.sh `sc_run_watched` (-Z / SIDECAR_STALL_SEC).
 
 Fail-open: any error exits 0 with no output.

@@ -402,6 +402,30 @@ async function check(name, test) {
     assert.ok(out.error)
     assert.equal(dispatched, false)
   })
+  const mergeModel = async (models, extra = {}) => {
+    let pinned = null
+    const agents = models.map((model, i) => ({
+      key: 'lens' + i, prompt: 'Review fixture.', model, effort: 'medium', agentType: 'general-purpose',
+    }))
+    const replies = {merge: (prompt, opts) => { pinned = opts.model; return {findings: []} }}
+    agents.forEach((a, i) => { replies[a.key] = {findings: [finding('lens ' + i)]} })
+    await run(replies, {agents, consolidate: true, ...extra})
+    return pinned
+  }
+  for (const [name, models, expected] of [
+    ['an all-sonnet panel', ['sonnet', 'sonnet'], 'sonnet'],
+    ['a sonnet panel with one opus lens', ['sonnet', 'sonnet', 'opus'], 'sonnet'],
+    ['an all-opus panel', ['opus', 'opus'], 'opus'],
+    ['an unpinned panel takes the engine default', [undefined, undefined], 'sonnet'],
+  ]) {
+    await check('consolidation follows the caller tier: ' + name + ' merges on ' + expected, async () => {
+      assert.equal(await mergeModel(models), expected)
+    })
+  }
+  await check('consolidation on a foreign transport uses the transport default', async () => {
+    const transport = {name: 'codex', ids: ['gpt-test'], default: 'gpt-test', efforts: ['low', 'medium']}
+    assert.equal(await mergeModel(['gpt-test', 'gpt-test'], {__transport: transport}), 'gpt-test')
+  })
   console.log(`review-fanout lossless: ${passed} passed, ${failed} failed`)
   process.exit(failed ? 1 : 0)
 })().catch(error => { console.error(error); process.exit(1) })

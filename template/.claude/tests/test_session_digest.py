@@ -227,16 +227,16 @@ def main():
         except ValueError:
             pass
         rendered = sd.render(digest, Path("session.jsonl"), "done", sd.SESSION, tools=False)
-        if len(rendered.encode("utf-8")) > sd.OVERVIEW_MAX_BYTES:
-            fails.append(f"current-session digest exceeded byte cap: {len(rendered.encode('utf-8'))}")
+        if len(rendered.encode("utf-8")) > sd.HANDOFF_MAX_BYTES:
+            fails.append(f"current-session handoff exceeded byte cap: {len(rendered.encode('utf-8'))}")
         if "U0" not in rendered or "U199" not in rendered or "F1079" not in rendered:
-            fails.append("bounded digest lost first/last stable evidence ids")
+            fails.append("bounded handoff lost first/last stable evidence ids")
         digest["files_modified_counts"] = {"界" * 50000: 1}
         oversized = sd.render(digest, Path("session.jsonl"), "done", sd.SESSION, tools=False)
-        # Migrated 2026-09-12 (small-overview slice): the 32KB tail-trim marker is retired;
-        # the overview sheds whole preview rows to hold OVERVIEW_MAX_BYTES instead.
-        if len(oversized.encode("utf-8")) > sd.OVERVIEW_MAX_BYTES or "--select" not in oversized:
-            fails.append("unusual path lengths bypassed the overview byte cap or lost retrieval")
+        # Migrated from the retired small-overview SESSION contract: the default handoff sheds
+        # optional rows and keeps the retrieval footer under HANDOFF_MAX_BYTES.
+        if len(oversized.encode("utf-8")) > sd.HANDOFF_MAX_BYTES or "--select" not in oversized:
+            fails.append("unusual path lengths bypassed the handoff byte cap or lost retrieval")
         with tempfile.TemporaryDirectory() as atomic_dir:
             target = Path(atomic_dir) / "digest.json"
             target.write_text("old", encoding="utf-8")

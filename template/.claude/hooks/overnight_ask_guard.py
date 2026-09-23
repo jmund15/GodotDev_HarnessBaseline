@@ -3,19 +3,29 @@
 
 Home: commands/overnight.md, Step 2. State is active-<session-id>.json under
 .claude/scratch/overnight; legacy anonymous active.json is never claimed.
-Expired owned state is removed. Invalid state and hook errors fail open.
+Expired owned state is removed. Disarm requires an unchanged validated Close doc.
+Invalid state and hook errors fail open for AskUserQuestion but fail closed for CLI state changes.
 Proof: tests/test_overnight_ask_guard.py.
 """
+import hashlib
 import json
 import math
 import os
 import re
 import sys
 import time
+from pathlib import Path
 
 from _hook_state import write_json_atomic
 
 TTL_HOURS = 16
+_ALLOWED_HEADINGS = {"Outcome", "Decisions made", "Decisions for you", "Left undone"}
+_REQUIRED_HEADINGS = {"Outcome", "Decisions for you", "Left undone"}
+_Q_ROW = re.compile(
+    r"^\*\*Q(?P<number>\d+) — .+[?.] Options: .+\. "
+    r"Park: (?P<reason>irreversible|out-of-scope|no-recommendation|failed-twice) — .+\. "
+    r"Recommendation: .+\.\s*$"
+)
 
 REASON = (
     "/overnight is armed — no one is here to answer. Decide it if you would have marked "
@@ -58,6 +68,41 @@ def owned_state(root=None, sid=None):
         return None
 
 
+def _file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def validate_close(path, root=None):
+    sid = session_id()
+    state = owned_state(root, sid)
+    if state is None or not armed(root, sid):
+        raise ValueError("--validate-close requires this session's armed marker.")
+    target = Path(path).resolve()
+    if not target.is_file() or not target.name.endswith(f"-{sid}.md"):
+        raise ValueError("Close doc must exist and its filename must end with the current session id.")
+    text = target.read_text(encoding="utf-8")
+    headings = re.findall(r"^## (.+?)\s*$", text, re.MULTILINE)
+    if len(headings) != len(set(headings)) or set(headings) - _ALLOWED_HEADINGS:
+        raise ValueError("Close doc has duplicate or unsupported ## headings.")
+    if not _REQUIRED_HEADINGS.issubset(headings):
+        raise ValueError("Close doc requires Outcome, Decisions for you, and Left undone headings.")
+    q_rows = [line for line in text.splitlines() if line.startswith("**Q")]
+    numbers = []
+    for row in q_rows:
+        match = _Q_ROW.fullmatch(row)
+        if not match:
+            raise ValueError("Each Q row needs Options, a named Park reason/evidence, and Recommendation.")
+        numbers.append(int(match.group("number")))
+    if len(numbers) != len(set(numbers)):
+        raise ValueError("Close doc Q numbers must be unique.")
+    state["validated_close"] = {
+        "path": str(target), "sha256": _file_sha256(target), "validated_at": time.time()
+    }
+    if not write_json_atomic(marker_path(root, sid), state):
+        raise OSError("Could not persist close validation receipt.")
+    print(f"VALIDATED {target}")
+
+
 def arm(goal, root=None):
     sid = session_id()
     path = marker_path(root, sid)
@@ -69,11 +114,21 @@ def arm(goal, root=None):
 
 
 def disarm(root=None, sid=None):
-    if owned_state(root, sid) is not None:
-        os.unlink(marker_path(root, sid))
-        print("DISARMED")
-    else:
+    state = owned_state(root, sid)
+    if state is None:
         print("NOT_ARMED (no valid owned marker)")
+        return
+    receipt = state.get("validated_close")
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("path"), str):
+        raise ValueError("Refusing to disarm: run --validate-close <path> first.")
+    try:
+        current = _file_sha256(receipt["path"])
+    except OSError as exc:
+        raise ValueError("Refusing to disarm: validated Close doc is unavailable.") from exc
+    if current != receipt.get("sha256"):
+        raise ValueError("Refusing to disarm: Close doc changed after validation.")
+    os.unlink(marker_path(root, sid))
+    print("DISARMED")
 
 
 def armed(root=None, sid=None):
@@ -97,6 +152,8 @@ def main(argv):
                 if not goal:
                     raise ValueError("--arm requires a non-empty goal.")
                 arm(goal)
+            elif argv[1] == "--validate-close" and len(argv) == 3:
+                validate_close(argv[2])
             elif argv[1] == "--disarm" and len(argv) == 2:
                 disarm()
             elif argv[1] == "--status" and len(argv) == 2:
@@ -106,7 +163,7 @@ def main(argv):
                                   "marker_path": marker_path(sid=sid),
                                   "goal": (owned_state(sid=sid) or {}).get("goal") if active else None}))
             else:
-                raise ValueError("Use --arm <goal>, --status, or --disarm.")
+                raise ValueError("Use --arm <goal>, --status, --validate-close <path>, or --disarm.")
             return 0
         except (ValueError, OSError) as exc:
             print(str(exc), file=sys.stderr)

@@ -7,15 +7,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _forked_locally(relpath):
-    """True only when this checkout's own baseline.lock.json marks `relpath` a local fork.
+def _project_owned(relpath):
+    """True only when this checkout's own baseline.lock.json marks `relpath` `forked` or `local`.
 
     A published/shared proof file must not assume the checkout it runs in is {{PROJECT_NAME}}'s
     own repo: `baseline.lock.json` itself is never published (it is the publisher's own
-    bookkeeping), so a template checkout has none, and a `forked` row's content (verdict
-    "fork", never "push" -- baseline_publish.py `_collect_commit`) intentionally never syncs
-    upstream. A test asserting a fork's exact prose belongs only to the checkout that owns
-    that fork.
+    bookkeeping), so a template checkout has none. A `forked` row's content (verdict "fork",
+    never "push" -- baseline_publish.py `_collect_commit`) never syncs upstream, and a `local`
+    row never exists upstream. A test asserting either file's prose belongs only to the
+    checkout that owns it.
     """
     lock_path = ROOT / 'baseline.lock.json'
     if not lock_path.is_file():
@@ -25,7 +25,7 @@ def _forked_locally(relpath):
     except (OSError, ValueError):
         return False
     entry = (lock.get('files') or {}).get('.claude/' + relpath)
-    return bool(entry) and entry.get('status') == 'forked'
+    return bool(entry) and entry.get('status') in ('forked', 'local')
 
 
 ORCHESTRATION_CONTRACTS = {
@@ -102,6 +102,56 @@ class PolicyContracts(unittest.TestCase):
         self.assertIn('run_in_background', text)
         self.assertRegex(text.lower(), 'fail|terminal')
 
+    def test_pr_sync_uses_identity_complete_state_and_gate_contracts(self):
+        if not _project_owned('commands/pr_sync.md'):
+            self.skipTest('commands/pr_sync.md is not project-owned here')
+        command = self.read('commands/pr_sync.md')
+        shared = self.read('commands/agents/pr_branch_sync.md')
+        merge = self.read('commands/merge_pr.md')
+        self.assertIn('gh repo view', command)
+        self.assertIn('isCrossRepository', command)
+        self.assertRegex(command, r'state.*OPEN|OPEN.*state')
+        self.assertIn('STALE_WORKTREE_REGISTRATION', command)
+        self.assertIn('pr_sync_<N>_gate.json', command)
+        # regression_gate.ps1 gates the checkout it lives in ($PSScriptRoot), so -WorkingDirectory
+        # cannot retarget it: the sync worktree's own copy must be the -File target.
+        worktree_gate = '-File .claude/worktrees/sync-pr<N>/.claude/scripts/regression_gate.ps1'
+        for text in (command, merge):
+            self.assertIn(worktree_gate, text)
+            self.assertNotIn('-File .claude/scripts/regression_gate.ps1', text)
+        self.assertIn('-Detach', command)
+        self.assertIn('Monitor', command.split('---', 2)[1])
+        self.assertNotIn('godot_bin.sh --headless', command)
+        self.assertIn('resource_conflicts.json', command)
+        self.assertIn('commit-tree', shared)
+        self.assertIn('commit --only Jmodot', shared)
+        self.assertNotRegex(shared, r'(?m)^\s*dotnet build\s*$')
+        self.assertNotIn('git stash --include-untracked', merge)
+        self.assertIn('Monitor', merge.split('---', 2)[1])
+
+    def test_closeout_has_terminal_metrics_prune_and_scope_contracts(self):
+        overnight = self.read('commands/overnight.md')
+        audit = self.read('commands/session_audit.md')
+        self.assertIn('--validate-close', overnight)
+        self.assertIn('Resume: /session_digest', overnight)
+        self.assertNotIn('push to main', overnight.split('## Step 2', 1)[1].split('## Step 3', 1)[0].lower())
+        self.assertRegex(audit, r'>20 `?\.cs`?')
+        if not all(_project_owned(path) for path in (
+                'commands/session_end.md', 'commands/agents/review_agents.md', 'commands/harness_prune.md')):
+            return
+        session_end = self.read('commands/session_end.md')
+        reviews = self.read('commands/agents/review_agents.md')
+        prune = self.read('commands/harness_prune.md')
+        self.assertIn('Run `/orchestration_metrics` unconditionally', session_end)
+        self.assertIn('harness_tests.py --staged', session_end)
+        self.assertIn('armed `/overnight`', reviews)
+        self.assertIn(':(top,glob).claude/plans/*.md', prune)
+        for label in ('STALE', 'BLOCKED', 'CURRENT', 'FUTURE'):
+            self.assertIn(label, prune)
+        self.assertIn('harness_prune_<sid8>.md', prune)
+        self.assertIn('### Plans', prune)
+        self.assertIn('### Worktrees', prune)
+
     def test_self_evaluation_uses_the_bounded_ledger(self):
         command = self.read('commands/self_evaluate.md')
         self.assertIn('self_eval_archive_store.py --upsert', command)
@@ -114,21 +164,26 @@ class PolicyContracts(unittest.TestCase):
         self.assertIn('frozen legacy snapshot', dashboard)
         self.assertIn('bounded JSONL ledger', dashboard)
         self.assertNotIn('| tail', dashboard)
-        if _forked_locally('commands/merge_pr.md'):
+        if _project_owned('commands/merge_pr.md'):
             merge = self.read('commands/merge_pr.md')
-            self.assertIn('self_evaluate_archive.jsonl', merge)
-            self.assertIn('read-only legacy snapshot', merge)
+            # The ledger conflict rules moved to their owner when /pr_sync took over branch
+            # sync (84fcdf26b); this fork defers to that file rather than restating them.
+            self.assertIn('agents/pr_branch_sync.md', merge)
+            syncs = self.read('commands/agents/pr_branch_sync.md')
+            self.assertIn('self_evaluate_archive.jsonl', syncs)
+            self.assertIn('read-only legacy snapshot', syncs)
 
     def test_closeout_keeps_full_phase_set_but_defers_loading(self):
-        if not _forked_locally('commands/session_end.md'):
+        if not _project_owned('commands/session_end.md'):
             self.skipTest('commands/session_end.md is not tracked as a local fork here; '
                            'this checkout has no {{PROJECT_NAME}}-specific phase set to police')
         text = self.read('commands/session_end.md')
-        for phase in ('0', '1', '2', '3', '3.5', '3.6', '4', '5', '5.4', '5.5', '6', '7', '8'):
+        for phase in ('0', '1', '2', '3', '3.5', '3.6', '4', '5', '5.4', '5.5', '5.6', '6', '7', '8'):
             self.assertIn('## Phase ' + phase + ':', text)
+        self.assertIn('/harness_prune', text)
         self.assertIn('--stage precommit', text)
         self.assertIn('--stage final', text)
-        self.assertRegex(text, 'Workflows or.*sidecar|Workflows or has attributable sidecar')
+        self.assertIn('Run `/orchestration_metrics` unconditionally', text)
         self.assertNotIn('every user prompt verbatim, every friction row', text)
         self.assertIn('every user requirement and friction row', text)
         self.assertNotIn('For each plan file in `.claude/plans/`', text)

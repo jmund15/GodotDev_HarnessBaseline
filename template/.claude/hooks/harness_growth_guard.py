@@ -40,8 +40,9 @@ PER_CELL_MAX = 120       # a >=4-cell table row is judged per-cell instead: the 
                          # max(PER_UNIT_MAX, cells * PER_CELL_MAX), so narrow rows keep the flat cap.
 SPLIT_BYTES = 32_000     # detail layers move to supporting files past this
 # plans/ and generated/ are execution/derived docs, not loaded doctrine — density rules don't bind them.
-EXCLUDED = ("auto-memory", "scratch", "tests", "worktrees", "__pycache__", "cache", "benchmark_runs",
-            "plans", "generated")
+# `rubrics`: benchmark judge rubrics are sealed instrument text a judge reads, pinned by sha256.
+EXCLUDED = ("auto-memory", "scratch", "tests", "worktrees", "__pycache__", "cache", ".cache", "benchmark_runs",
+            "plans", "generated", "rubrics")
 UNIT = re.compile(r"^\s*(?:[-*] |\d+\. |\|(?!\s*-)|\*\*[^*]+\*\*)")
 # Verdict-vs-evidence litmus (instruction_quality §5), content-shaped: a unit matching this is
 # very likely inlined measurement narrative rather than a verdict, regardless of its byte count.
@@ -119,6 +120,7 @@ def _starts_turn(row):
     """An owner prompt or a command with arguments; the `_owner_text` table's harness_growth_guard column."""
     return bool(row is not None and not row.meta and not row.sidechain and not row.tool_results
                 and row.text and row.envelope is None
+                and row.kind != "queued_prompt"
                 and not (row.kind == "command" and not row.command_args))
 
 

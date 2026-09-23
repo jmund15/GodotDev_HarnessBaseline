@@ -28,6 +28,7 @@ PHASES = [
     ("5   Regression gate",       "regression_gate",       False),
     ("5.4 Roadmap atlas",         "roadmap_atlas",         True),
     ("5.5 Roadmap drift",         "update_roadmap",        False),
+    ("5.6 Harness prune",         "harness_prune",         True),
     ("6   Worklog sweep",         "worklog",               True),
     ("7   Commit",                "commit_push",           True),
     ("8   Reindex search",        "reindex_search",        False),
@@ -44,12 +45,13 @@ if _TOOLS_DIR not in sys.path:
 from self_eval_archive_store import find_session  # noqa: E402
 
 # Anchored at a path boundary so a fragment embedded in prose or a doc path cannot match, and
-# stems_seen() skips any value that names a nested worktree — a peer checkout under
-# `.claude/worktrees/` opening `commands/worklog.md` is not THIS session's phase.
+# phase_observations() skips any value that names a nested checkout — a peer checkout under
+# `.claude/worktrees/` or `.claude/.cache/<name>-worktrees/` (e.g. baseline-worktrees)
+# opening `commands/worklog.md` is not THIS session's phase.
 _STEM = re.compile(
     r"(?<![A-Za-z0-9_.-])\.claude[\\/](?:commands|tools|scripts)[\\/](?:[A-Za-z0-9_-]+[\\/])*"
     r"([A-Za-z0-9_-]+)\.(?:md|py)(?![A-Za-z0-9_])")
-_WORKTREE = re.compile(r"\.claude[\\/]worktrees[\\/]")
+_WORKTREE = re.compile(r"\.claude[\\/](?:worktrees|\.cache[\\/][\w.-]*worktrees)[\\/]")
 
 
 def project_key(repo):
@@ -151,6 +153,20 @@ def _file_hash(path):
     return digest.hexdigest()
 
 
+def _harness_prune_evidence_ok(receipt):
+    for path in (receipt.get('evidence') or {}):
+        try:
+            with open(path, encoding='utf-8') as stream:
+                text = stream.read()
+        except OSError:
+            continue
+        sections = [re.search(r'^### ' + name + r'\s*$([\s\S]*?)(?=^### |\Z)', text, re.MULTILINE)
+                    for name in ('Plans', 'Worktrees', 'Scratch')]
+        if all(section and section.group(1).strip() for section in sections):
+            return True
+    return False
+
+
 def _receipt_hash(receipt):
     return hashlib.sha256(json.dumps(receipt, sort_keys=True).encode('utf-8')).hexdigest()
 
@@ -199,6 +215,8 @@ def receipt_status(receipt, sid, receipts=None, visiting=None):
                     return 'stale'
             except (OSError, ValueError, TypeError):
                 return 'stale'
+    if phase == 'harness_prune' and status == 'completed' and not _harness_prune_evidence_ok(receipt):
+        return 'unknown'
     deps = receipt.get('dependencies')
     if not isinstance(deps, dict):
         return 'unknown'

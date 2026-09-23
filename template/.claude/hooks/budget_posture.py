@@ -62,8 +62,9 @@ SEVEN_DAY_SECONDS = 7 * 24 * 3600
 FIVE_HOUR_SECONDS = 5 * 3600
 PRESSURE_DELTA = 0.15         # within-band re-emit threshold
 
-NEVER = ("Never delegated: orchestration, ideal-design verdict, gate decisions, "
-         "cross-system seams (orchestration §5)")
+# The reserved floor and the tier policy are constant, so the line points at their owner rather
+# than restating them every prompt.
+POLICY = "reserved floor + tier policy: orchestration §5/§5b"
 
 # Tier-within-quota, emitted beside the band because a band name alone is inert: it says how
 # much room is left, never what to spend it on. That gap is total while the sidecar is out of
@@ -95,28 +96,27 @@ NEVER = ("Never delegated: orchestration, ideal-design verdict, gate decisions, 
 # ("send execution to the sidecar") freezes today's roster into doctrine and silently blocks a
 # future model that is strong somewhere else. Read the roster instead:
 #   .claude/tools/model_registry.py available   ->  roles, effort rungs, price
-_ROSTER = "roster: model_registry.py available (roles/effort/price)"
-TIER_SPEND = "tier: executor at low - spend quota on judgment"
+_ROSTER = "roster: model_registry.py available"
+TIER_SPEND = (
+    "tier: spend - converged-spec execution and closed lenses stay executor-tier at low; "
+    "the rest keep their ladder rung"
+)
 TIER_LEAN = (
-    "tier: conserve - trade the Anthropic tier down first (converged-spec execution and closed "
-    "lenses to the fan-out tier at medium); weigh an off-quota route above its usual bar for any "
-    "dispatch whose ROLE a roster model claims. A plan-quota transport spends no dollars and its "
-    "allowance expires unused too, so compare ITS band with this one; a dollar-billed transport "
-    "is still a spend decision"
+    "tier: conserve - converged-spec execution and closed lenses to fan-out tier at medium; "
+    "favor off-quota for a role a roster model claims; weigh a plan-quota transport's band "
+    "against this one (dollar billing stays a spend decision)"
 )
 TIER_OFFQUOTA_FIRST = (
-    "tier: off-quota FIRST - for every dispatch, if an available model claims that ROLE, route "
-    "there; Anthropic quota is now the expensive currency. Prefer a plan-quota transport whose own "
-    "band is slacker than this one - neither side is dollars, and both allowances expire unused. "
-    "Trade the Anthropic tier down only for roles nothing in the roster claims"
+    "tier: off-quota FIRST - route each role a roster model claims off-quota, preferring the "
+    "slackest plan-quota band; trade the Anthropic tier down only for unclaimed roles"
 )
 TIER_NO_TRANSPORT = (
-    "tier: conserve, no off-quota transport in the roster - converged-spec execution and closed "
-    "lenses to the fan-out tier at medium"
+    "tier: conserve, no off-quota transport - converged-spec execution and closed lenses to "
+    "fan-out tier at medium"
 )
 # Band-independent and stated in both conserving lines because it is the one route that spends
 # NEITHER currency. Legality is COPYABLE-vs-DERIVED, never budget pressure.
-LOCAL = "copyable reads/synthesis/prose to the free local tier (spends neither currency)"
+LOCAL = "copyable I/O to the free local tier"
 
 
 def tier_for(band, off_quota_available=None):
@@ -188,16 +188,14 @@ def telemetry_gap_reason():
     """
     ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "")
     if ep in TELEMETRY_LESS_ENTRYPOINTS:
-        return (f"entrypoint '{ep}' sends no rate_limits in the statusline payload - "
-                "unreadable by construction, not a broken writer")
+        return f"entrypoint '{ep}' sends no rate_limits by design, not a broken writer"
     # A provider seat launches with entrypoint 'cli', so it matched nothing above and the whole
     # posture line went silent -- on the one seat where the Anthropic band is not the governing one
     # anyway. Its own quota IS readable (`provider_bands.py`), so name the gap and hand over the
     # band that actually decides, rather than reporting the absent one.
     seat = seat_transport()
     if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
-        return (f"this session drives {seat}, whose endpoint sends no Anthropic rate_limits - "
-                f"unreadable by construction, and not the band that governs here")
+        return f"{seat} seat sends no Anthropic rate_limits by design; not the governing band here"
     return None
 
 
@@ -228,14 +226,12 @@ def emit_gap_notice(session_id):
         if band:
             own = (f" {seat}'s OWN band is {band}"
                    + (f" (pressure {pressure:.2f})" if isinstance(pressure, (int, float)) else "")
-                   + " - that is the band to route on here.")
+                   + "; route on it.")
         else:
-            own = (f" {seat}'s own band is not cached yet; read it with "
-                   f"`python3 .claude/tools/provider_bands.py list` - it is readable, so record "
-                   f"the number rather than calling the quota unknown.")
-    print(f"[budget-posture] Anthropic band UNREADABLE - {reason}.{own} Not a low band and not a "
-          "defect: pick tier/effort on work shape (orchestration SKILL, Tier-within-quota); "
-          "sidecar band gates will refuse and need -A.")
+            own = (f" {seat}'s band is uncached; read it with "
+                   f"`python3 .claude/tools/provider_bands.py list`, never call it unknown.")
+    print(f"[budget-posture] Anthropic session telemetry UNREADABLE ({reason}).{own} "
+          "Do not infer a band; dispatch preflight checks live capacity.")
     try:
         with open(dpath, "w", encoding="utf-8") as fh:
             json.dump({"gap_notified": True}, fh)
@@ -326,24 +322,55 @@ def seat_transport():
 
 
 def provider_band(transport):
-    """(band, pressure) for a transport's OWN quota from CACHE ONLY, or (None, None).
+    """(band, pressure) from provider_capacity's fresh CACHE ONLY, or (None, None).
 
-    Reads `_cache_read`, not `reading()`: `reading` falls through to `probe()` on a miss, and
-    `probe` spawns a provider CLI with its own 45s timeout while this hook is registered
-    UserPromptSubmit with `"timeout": 5`. The kill would take the ENTIRE posture line with it --
-    band, floor and rating-debt clause -- and write no cache, so the miss repeated every prompt.
-
-    A cold cache therefore reports unknown rather than stalling; `tools/provider_bands.py` and the
-    sidecar's own band gate both call `reading()` and warm it out of band.
+    The UserPromptSubmit hook has a five-second deadline, so it never starts a provider request.
+    Live dispatch preflight owns authority; this advisory names a cold cache as unknown.
     """
     try:
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-        import provider_bands
-        r = provider_bands._cache_read(transport, provider_bands.DEFAULT_TTL_S) or {}
-        return r.get("band"), r.get("pressure")
+        import provider_capacity
+        r = provider_capacity.cached(transport) or {}
+        quota = r.get("quota") or {}
+        band = "Exhausted" if r.get("status") == "exhausted" else quota.get("routingBand")
+        windows = quota.get("windows") or []
+        routing = next((w for w in windows if w.get("name") == "seven_day"), None)
+        binding = next((w for w in windows if w.get("name") == quota.get("bindingWindow")), None)
+        return band, (routing or binding or {}).get("pressure")
     except Exception:
         return None, None
+
+
+QUOTA_CLAUSE_CAP = 4
+
+
+def other_quota_bits(seat):
+    """One clause per OTHER plan-quota transport the roster knows, from cache only.
+
+    A plan-quota transport a session can sidecar to is a currency it may spend, and naming only the
+    seat and anthropic leaves a spent one invisible. Cache only, for the same 5s-budget reason
+    `provider_band` is: this hook must never spawn a probe.
+
+    A cold cache says `unknown` and NAMES the transport rather than omitting the clause — an absent
+    clause reads as "no such currency", which is the failure mode this prevents.
+    """
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import model_registry
+        names = sorted(t for t in model_registry.transports()
+                       if t not in (seat, "anthropic")
+                       and model_registry.cost_model_for(t) == "plan-quota")
+    except Exception:
+        return []
+    out = []
+    for name in names[:QUOTA_CLAUSE_CAP]:
+        band, _p = provider_band(name)
+        out.append(f"{name} {band} band" if band else f"{name} band unknown (cache cold)")
+    if len(names) > QUOTA_CLAUSE_CAP:
+        out.append(f"+{len(names) - QUOTA_CLAUSE_CAP} more plan-quota transports")
+    return out
 
 
 def provider_band_live(transport):
@@ -396,49 +423,34 @@ def currency_bits(seat, p7, band, delegatable, off_quota):
             spend = "marginal dollars"
     except Exception:
         pass
-    bits = [f"seat: {seat} — {spend} is what a Workflow/Agent dispatch here spends"]
+    bits = [f"seat: {seat} (Workflow/Agent dispatch spends {spend})"]
     own_band, own_p = provider_band(seat)
     if own_band:
         # `pressure` is optional in a probe's reading; an unguarded format here raises into
         # main()'s blanket `except`, which deletes the entire posture line rather than one clause.
         shown = f"pressure {own_p:.2f} -> " if isinstance(own_p, (int, float)) else ""
-        bits.append(f"{seat} {shown}{own_band} band (governs dispatch on THIS seat)")
+        bits.append(f"{seat} {shown}{own_band} band (governs THIS seat)")
     else:
-        bits.append(f"{seat} band unreadable — its quotaProbe returned nothing; "
-                    f"treat width and tier as unbudgeted and say so before a wide fan-out")
+        bits.append(f"{seat} band unknown (cache cold; preflight probes before spend)")
     # The Anthropic side is a real currency here too -- it is what `anthropic_sidecar.sh` spends --
     # but it is the HOP's, so it is labelled rather than left to read as this seat's.
     if p7 is not None:
-        hop = f"anthropic pressure {p7:.2f} -> {band} band (the CROSS-HOP currency"
-        hop += f"; sidecar-delegatable: {delegatable})" if off_quota else ")"
+        hop = f"anthropic pressure {p7:.2f} -> {band} band (CROSS-HOP currency"
+        hop += f"; sidecar: {delegatable})" if off_quota else ")"
         bits.append(hop)
     else:
-        # anthropic_quota_probe reads a MACHINE-scoped cc-cachestat file with a 5h staleness guard,
-        # not a live API call. From a provider seat it answers only if an Anthropic session wrote
-        # one recently on this machine. Stated, never guessed and never silently omitted.
-        bits.append("anthropic band unknown — the cross-hop reading comes from a machine-scoped "
-                    "cc-cachestat file (5h staleness guard) and none is fresh; price a hop before "
-                    "taking it")
+        bits.append("anthropic band unknown (cache cold; preflight probes before a cross-hop)")
     return bits, own_band
 
 
 def band_cli():
     """`--band`: print the current ANTHROPIC 7d band name for a caller with no session id.
 
-    `--band --transport <name>` prints that transport's OWN band instead, PROBING on a cache miss
-    (a CLI caller has no hook timeout, and a cold cache is normal on a seat nothing else probes).
-    An unregistered name prints `unregistered` and exits 4; an unreadable reading prints `unknown`
-    and exits 3. Bare `--band` keeps reading the Anthropic band on every seat, because that is the
-    currency `sc_gate_band` gates.
+    `--band --transport <name>` reads that transport through normalized live-first provider
+    capacity. An unregistered name prints `unregistered`/4; an unavailable reading prints
+    `unknown`/3. Bare `--band` keeps the local Anthropic telemetry compatibility contract.
 
-    deepseek_sidecar.sh is a child Bash process — it has no Claude Code session id,
-    and the dedupe record this hook writes is session-keyed AND written only on an
-    emission turn. So the gate cannot read that record. It reads this instead, which
-    reuses find_state()'s glob fallback over the cc-cachestat files statusline writes
-    every turn. Rate limits are account-wide, so any session's snapshot is valid.
-
-    Callers must never re-derive pressure; the one home for the computation is
-    .claude/tools/quota_bands.py, which this module reads Claude's telemetry into.
+    Callers must never re-derive pressure; `.claude/tools/quota_bands.py` owns the formula.
 
     Exit 0 with the band name on stdout; exit 3 printing `unknown` when no state is
     findable. Exit 3 is NOT a band — a gate treats it as not-satisfied, and says the
@@ -546,13 +558,19 @@ def main():
         seat_band = provider_band(seat)[0]
         if dstate.get("seatBand") != seat_band:
             should_emit = True
+    # The OTHER spendable plan-quota transports belong in the key for the same reason seatBand
+    # does: one of them can cross into Exhausted while the Anthropic hop has not moved, and then
+    # nothing would say so -- which is exactly how a fully spent Codex account stayed invisible.
+    quota = other_quota_bits(seat)
+    if dstate.get("quota") != quota:
+        should_emit = True
 
     if should_emit:
         captured = rl.get("captured_at")
         age_min = (now - captured) / 60.0 if isinstance(captured, (int, float)) else None
         age_txt = f"capture {age_min:.0f}m old" if age_min is not None else "capture age unknown"
         if age_min is not None and age_min > 120:
-            age_txt += " - treat as a hint, not a fact"
+            age_txt += " (stale: a hint only)"
         bits = ["[budget-posture]"]
         # The band's delegatable list describes what the SIDECAR takes, so it is dropped when the
         # sidecar is not in the roster. Dropped, not annotated: an option that cannot be chosen costs
@@ -562,7 +580,7 @@ def main():
         # set is worth printing and which conserving move is actually available.
         off_quota = sidecar_available()
         if p7 is not None and off_quota:
-            bits.append(f"7d pressure {p7:.2f} -> {band} band (sidecar-delegatable: {delegatable})")
+            bits.append(f"7d pressure {p7:.2f} -> {band} band (sidecar: {delegatable})")
         elif p7 is not None:
             bits.append(f"7d pressure {p7:.2f} -> {band} band")
         # The tier default rides with the band in BOTH cases. It is the only thing the band
@@ -571,9 +589,14 @@ def main():
         if band is not None:
             bits.append(tier_for(band, off_quota))
         if p5 is not None:
-            bits.append(f"5h pressure {p5:.2f} (governs fan-out width; >1.3 means narrow concurrent dispatches)")
-        # A NON-host seat gets both currencies, each labelled. The host path is untouched:
-        # its output must stay byte-identical, because three consumers parse it.
+            bits.append(f"5h pressure {p5:.2f} (>1.3: narrow fan-out)")
+        # Every OTHER spendable plan-quota transport, on BOTH paths: a host session can sidecar to
+        # Codex just as a Codex session can hop to Anthropic, and the incident was a spent account
+        # no session could see. New information, not a second copy of a figure already printed.
+        bits.extend(quota)
+        # A NON-host seat gets both currencies, each labelled. This branch ADDS the seat's own
+        # currency and re-labels the host's 7d clause; it does not change what the host path
+        # already emitted, and the clause above is the only part both paths share.
         if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
             cur, own_band = currency_bits(seat, p7, band, delegatable, off_quota)
             # Drop the host 7d clause: `currency_bits` already printed that number, labelled as the
@@ -595,19 +618,18 @@ def main():
                     for b in tail]
             bits = ["[budget-posture]"] + cur + tail
         elif seat == _session_transport.UNKNOWN:
-            bits.append("seat UNIDENTIFIED — the band above is the Anthropic one and may not be "
-                        "this session's currency (hooks/_session_transport.py fails closed)")
-        bits.append(NEVER)
+            bits.append("seat UNIDENTIFIED (the 7d band is Anthropic's; it may not be this "
+                        "session's currency)")
+        bits.append(POLICY)
         bits.append(age_txt)
-        print("; ".join(bits))
+        print(bits[0] + " " + "; ".join(bits[1:]))
         # keep `unrated`: the debt clause dedupes on it
-        dstate.update({"band": band, "p7": p7, "seatBand": seat_band})
+        dstate.update({"band": band, "p7": p7, "seatBand": seat_band, "quota": quota})
 
     n = pending_debt_count(session_id)
     if n > 0 and n != dstate.get("unrated"):
-        print(f"[rating-debt] unrated dispatches: {n} — record each verdict in "
-              ".claude/orchestration_verdicts.json when you consume its result "
-              "(/orchestration_metrics §Incremental rating)")
+        print(f"[rating-debt] unrated dispatches: {n} — record verdicts in "
+              ".claude/orchestration_verdicts.json (/orchestration_metrics §Incremental rating)")
         dstate["unrated"] = n
 
     try:

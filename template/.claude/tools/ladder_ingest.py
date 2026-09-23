@@ -22,9 +22,9 @@ Transcript lookup and JSONL row reading reuse `.claude/tools/session_digest.py` 
 file adds no row-shape handling of its own (model lives at `message.model` on assistant
 rows; SessionStart rails lines live in `attachment` rows).
 
-**What lands on the ladder is a TENDENCY, never this run.** `reference/model_ladder_evidence.md`
-§Authoring an entry owns that rule and `tools/ladder_prose_check.py` enforces its mechanical half;
-the judge brief asks for tendencies for the same reason.
+**What lands on the ladder is a TENDENCY, never this run.** `/ladder_ingest` owns that authoring
+contract; `tools/ladder_prose_check.py` enforces its mechanical half, and the judge brief asks for
+tendencies for the same reason.
 """
 import argparse
 import hashlib
@@ -591,24 +591,28 @@ def _record_arm(path: Path) -> dict:
 def _launcher_result(path: Path) -> tuple[str, str]:
     """(final text, first prompt) from a launcher's `.out.json`.
 
-    Two shapes ship: a single result object, and a JSONL stream whose last `result` message
-    carries the text. Both are read, because which one a run produced depends on `-P`.
+    Three shapes ship: a single result object, a JSON array of every event (`-o json` under the
+    user setting `"verbose": true`), and a JSONL stream. In the last two the last `result` event
+    carries the text. All are read, because the shape depends on `-P` and the user's settings.
     """
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "", ""
+    events = None
     try:
         doc = json.loads(raw)
         if isinstance(doc, dict):
             return str(doc.get("result") or ""), str(doc.get("prompt") or "")
+        if isinstance(doc, list):
+            events = doc
     except json.JSONDecodeError:
         pass
     final, prompt = "", ""
-    for line in raw.splitlines():
+    for line in (events if events is not None else raw.splitlines()):
         try:
-            o = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
+            o = line if isinstance(line, dict) else json.loads(line)
+        except (json.JSONDecodeError, ValueError, TypeError):
             continue
         if not isinstance(o, dict):
             continue

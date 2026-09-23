@@ -17,7 +17,7 @@ A hook regex written against a *path* matches every command that merely NAMES th
 `cat`, `wc -l`, `git show`, `sed -i` on its docs. The guard then denies reading the very thing it
 guards, and the denial text talks about a rule the user was not breaking.
 
-Measured 2026-08-20: `GATE_RE = re.compile(r"regression_gate\.ps1")` denied `grep -n` and `wc -l` on
+For example, `GATE_RE = re.compile(r"regression_gate\.ps1")` denied `grep -n` and `wc -l` on
 the gate script. Tightening it to require `pwsh` was not enough either — `pwsh -Command "...names the
 path..."` (a syntax check) still matched. The binding shape is the **invocation**:
 `(pwsh|powershell) ... -File <path>`.
@@ -35,20 +35,22 @@ before assuming one does not exist.
 hand" reads in every later audit as enforcement that exists. Order: write the case, run it, watch it
 fail, then edit the hook. A proof that has only ever passed is untested; a self-report of "RED observed"
 is not the transcript; and a RED rebuilt after the fix from a `git show` copy of the old hook proves
-nothing the proof's negative cases do not and costs 8–15 turns (2026-09-15, session 3259384b: 4 of 4
-new-guidance arms edited first, then rebuilt a RED). If the order was missed, say so in the result and
+nothing the proof's negative cases do not and costs 8–15 turns. If the order was missed, say so in the result and
 stop. Land a case list
 beside it under `.claude/tests/` that feeds real PreToolUse payloads on stdin against a planted
 environment (a planted process table, a planted file, a planted liveness answer) and asserts on the
 emitted channel (`permissionDecision` vs `additionalContext` vs `{}`), and include the **negative**
 cases — the read-only mention, the adjacent tool, the retired flag. Spawn a live process only when
-the mechanism cannot be planted; a proof that fights the OS to stage its fixture is measuring the OS
-(2026-09-15, session 3259384b: 40 turns on one live-process proof, 19 for the planted one, same fix). The ad-hoc
+the mechanism cannot be planted; a proof that fights the OS to stage its fixture is measuring the OS (a live-process proof took twice the turns of its planted twin). The ad-hoc
 harness that missed the defect above had 22 cases and not one of them read the file. A proof
 classifies an exit code outside {0, 2}, or a traceback, as CRASH — never as allow: a hook that cannot
 import passes a proof that only asks "was it denied?". A fixture must reach the guarded condition: a
-case that passes on a path the guard never inspects is untested (2026-09-15: the escape sweep's own-input
-cases passed vacuously because the fixture path never carried the vault marker; three real cells parked).
+case that passes on a path the guard never inspects is untested.
+
+**A commit's proof claim names a TRACKED proof, or it claims nothing.** "Four defects, each proven red
+first" over an unmodified test file describes a scratch suite: nothing tracked would catch a revert, and
+every later audit reads the claim as coverage. Name the file and confirm it is tracked and changed in the
+same commit. Promote the scratch case, or drop the claim.
 
 The commit guard wants a per-file stamp: `python3 .claude/scripts/harness_tests.py --staged` runs the
 proofs bound to the staged files (by name, by mention, plus the dir-scanning proofs) and refreshes

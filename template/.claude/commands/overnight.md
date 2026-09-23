@@ -1,5 +1,5 @@
 ---
-description: Run a goal UNATTENDED to completion — no questions, confident calls made and logged, the rest parked in a dated decisions doc for the user's return.
+description: Run a goal UNATTENDED to completion — no questions, confident calls made and logged, the rest parked in a dated Close doc for the user's return.
 ---
 
 # /overnight — Unattended run to completion
@@ -10,7 +10,7 @@ The user is leaving for hours. Every question you would normally ask has no one 
 
 `/overnight <goal>` — the goal text, verbatim. No argument → run `python3 .claude/hooks/overnight_ask_guard.py --status`; resume its goal only when `armed` is true. Missing or invalid `CLAUDE_CODE_SESSION_ID` → stop with the error, never claim another session's goal. Legacy anonymous `active.json` is not owned state.
 
-Pair it with `/goal <same text>` so the Stop hook blocks an early exit. This command owns the conduct; `/goal` owns the persistence. **The goal is met by an artifact, never by self-report**: a condition phrased as confidence ("when you are fully confident in X") is met only when the mechanical check that owns X is green and its output line is pasted in the Close doc (the instrument's own gate for a benchmark, `/regression_gate` for code, `harness_tests.py` for the harness); a red line or a missing one means the goal stays unmet and the run continues or parks.
+Pair it with `/goal <same text>` so the Stop hook blocks an early exit. This command owns the conduct; the host built-in `/goal` owns the persistence — never search the repository for a goal file. Treat host-goal state as evidence only when the owner invoked or queried `/goal`; otherwise record `HOST_GOAL_UNVERIFIED` and claim no cross-turn persistence. **The goal is met by an artifact, never by self-report**: a condition phrased as confidence ("when you are fully confident in X") is met only when the mechanical check that owns X is green and its output line is pasted in the Close doc (`bench.py gate` for the benchmark, `/regression_gate` for code, `harness_tests.py` for the harness); a red line or a missing one means the goal stays unmet and the run continues or parks.
 
 ## Step 1 — Arm
 
@@ -24,31 +24,36 @@ Writes `.claude/scratch/overnight/active-<session-id>.json` atomically. The hook
 
 Every fork that would have been a question routes here — gate FAIL adjudication (`/regression_gate`), pre-merge `[ ]` items (`/merge_pr`), worklog confirm-prompts, plan-file forks, "A or B?" design calls.
 
-**Decide** when all three hold: you would have marked the option "(Recommended)"; the action is reversible from the branch (a commit, a file edit, a push to a feature branch); it stays inside the goal's stated scope. Record it as `D<n>` in the decisions doc with the one-line reason.
+**Decide** when all three hold: you would have marked the option "(Recommended)"; the action is reversible from the branch (a commit, a file edit, a fast-forward push of the active branch, including `main`, after fresh evidence and ownership checks); it stays inside the goal's stated scope. Record it as `D<n>` in the Close doc with the one-line reason.
 
-**Park** everything else — irreversible actions (merge, push to main, delete, force-push, external publish), scope changes, forks with no confident recommendation, and any step that fails the same way twice. Record it as `Q<n>`: the fork, the options, your recommendation if you have one, and what you finished around it. Then do everything that does not depend on it.
+**Park** everything else — irreversible actions (merge, delete, force-push, publishing another branch, external publish), scope changes, forks with no confident recommendation, and any step that fails the same way twice. Record it as one parseable `Q<n>` row, then do everything that does not depend on it:
 
-**A row that carries "I recommend O1" is a Decide row that was not applied**, unless the one sentence beside it names the Park test it fails (irreversible, out of scope, no recommendation, failed twice). The doc holds at most 5 `Q` rows: writing a sixth means re-reading the five and applying every one that fails no Park test — overflow is the signal the rule is not being run, never a reason for a longer doc.
+`**Q<n> — <fork>. Options: <options>. Park: <irreversible|out-of-scope|no-recommendation|failed-twice> — <evidence>. Recommendation: <option|none>.`
+
+**A `Q` row whose Park evidence does not hold is a Decide row that was not applied.** The doc holds at most 5 `Q` rows: writing a sixth means re-reading the five and applying every one that fails no Park test.
 
 `Known issue` is never an unattended verdict: a red test is fixed (Decide) or parked (Q), never waved through.
 
 ## Step 3 — Run
 
 - Use Bash `run_in_background` for one terminal notification; use `Monitor` for repeated events, including failure states. Follow the live tool's lifetime contract. Detach separately only when required and supported; idle alone is not cancellation evidence.
-- After compaction, run `--status` and read this session's decisions doc before acting; never resume a peer's goal.
+- After compaction, run `--status` and read this session's Close doc before acting; never resume a peer's goal.
 - Same failure twice on one step → park it (Step 2) and move on. Never loop on a nudge or a denial.
 
 ## Step 4 — Close
 
-Decisions doc: `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Overnight/<YYYY-MM-DD>-<session-id>.md` (vault; direct `Write`, findings-shaped). Use the full session id from `--status`; inspect an existing target before updating and never overwrite another session's report. Sections in order: **Outcome** (what is done, verified how), **Decisions made** (`D1…`), **Decisions for you** (`Q1…`, each with options + recommendation), **Left undone** (blocked on which `Q`). Write it even when `Q` is empty — the user reads it before anything else.
+Close doc: `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Overnight/<YYYY-MM-DD>-<session-id>.md` (vault; direct `Write`). Use the full session id from `--status`; inspect an existing target first and never overwrite another session's report. Sections: **Outcome**, optional **Decisions made**, **Decisions for you**, **Left undone**. Omit empty Decisions made; write the other three even when empty.
 
-Then disarm:
+**Close-doc contract.** This is an action index, not a session record. Outcome: one row per deliverable with one proof, plus `Resume: /session_digest <full-session-id>` and `Session digest: logs/session_digest_<sid8>.json`. Decisions made: every applied `D<n>` with its one-line reason. Each `Q`: the Step 2 row. Left undone: `Q`-blocked work only. One sentence per item; no other sections. Delete chronology, discovery/root-cause stories, fixed mistakes, audit coverage, raw logs, full test or commit lists and duplicated evidence; link the owner instead. Delete any row that neither changes the next action nor proves delivery.
+
+Then validate and disarm; a nonzero validate leaves the marker armed, so fix the doc and rerun:
 
 ```bash
+python3 .claude/hooks/overnight_ask_guard.py --validate-close <close-doc-path>
 python3 .claude/hooks/overnight_ask_guard.py --disarm
 ```
 
-Final message = the decisions doc's Outcome and `Q` list, opening with the outcome. Every headline number carries its coverage — *of N pins run; never run: …* — and its spread when reps exist; a table without a coverage column is a claim the reader cannot weigh. A run with open `Q` items is complete when every non-dependent step is done and the doc names each blocker.
+Final message = the Close doc path, its Outcome and `Q` list, opening with the outcome. Every headline number carries its coverage — *of N pins run; never run: …* — and its spread when reps exist; a table without a coverage column is a claim the reader cannot weigh. A run with open `Q` items is complete when every non-dependent step is done and the doc names each blocker.
 
 ## No-op
 

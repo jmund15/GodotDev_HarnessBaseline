@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for hooks/post_read_dispatch.py — the single PostToolUse entry that chains
-three sub-hooks (retroactive grep nudge, routing audit, memory-hits logger).
+"""Re-runnable proof for hooks/post_read_dispatch.py — the PostToolUse reader dispatcher.
 
-Feeds one real PostToolUse payload through the dispatcher by subprocess and asserts on the
-side effects each sub-hook owns: the memory-hits log line (4th), the routing-audit row (3rd),
-and exit 0 with parseable-or-empty stdout (the additionalContext contract). A malformed payload
-must still exit 0 (fail-open dispatcher).
+Feeds real PostToolUse payloads through the dispatcher and checks routing/memory logs plus the
+compaction-scoped model-ladder marker. A malformed payload still exits 0 because advisory readers fail open.
 
     python3 .claude/tests/test_post_read_dispatch.py
 """
@@ -89,7 +86,27 @@ def main():
           any(row.get("session_id") == "prd00003" and row.get("classification") == "cue-exempt"
               and row.get("rule") == "native-read-bulk-copyable" for row in rows), repr(rows)[:300])
 
-    # 3. Malformed payload: the dispatcher fails open.
+    # 3. A successful full ladder Read arms exactly the model-selection marker.
+    ladder = os.path.join(tmp, ".claude", "reference", "model_ladder_evidence.md")
+    os.makedirs(os.path.dirname(ladder), exist_ok=True)
+    with open(ladder, "w", encoding="utf-8") as fh:
+        fh.write("# Model Ladder\n")
+    r = run(json.dumps({"tool_name": "Read", "session_id": "prd00004",
+                        "tool_input": {"file_path": ladder},
+                        "tool_response": {"content": "# Model Ladder"}}), env)
+    marker_path = os.path.join(state_dir, "prd00004.json")
+    marker = json.load(open(marker_path, encoding="utf-8")) if os.path.exists(marker_path) else {}
+    check("full ladder Read arms the compaction-scoped dispatch marker",
+          r.returncode == 0 and marker.get("model_ladder_ready") is True, repr(marker))
+    r = run(json.dumps({"tool_name": "Read", "session_id": "prd00005",
+                        "tool_input": {"file_path": ladder, "limit": 20},
+                        "tool_response": {"content": "# Model Ladder"}}), env)
+    bounded_path = os.path.join(state_dir, "prd00005.json")
+    bounded = json.load(open(bounded_path, encoding="utf-8")) if os.path.exists(bounded_path) else {}
+    check("bounded ladder Read does not arm the marker",
+          r.returncode == 0 and "model_ladder_ready" not in bounded, repr(bounded))
+
+    # 4. Malformed payload: the dispatcher fails open.
     r = run("{not json", env)
     check("malformed payload exits 0 with an empty or valid hook payload",
           r.returncode == 0 and valid_hook_output(r.stdout)

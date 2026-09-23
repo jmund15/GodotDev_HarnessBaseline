@@ -158,7 +158,48 @@ class CloseEvidenceTests(unittest.TestCase):
     def test_precommit_does_not_require_future_phases(self):
         self.assertNotIn('commit_push', check.required_phases('precommit'))
         self.assertNotIn('reindex_search', check.required_phases('precommit'))
+        self.assertIn('harness_prune', check.required_phases('precommit'))
         self.assertIn('commit_push', check.required_phases('final'))
+
+    def test_harness_prune_receipt_requires_both_report_sections(self):
+        source = self.root / 'harness_prune.md'
+        source.write_text('source')
+        report = self.root / 'harness_prune_report.md'
+        report.write_text('### Plans\nplan rows only\n')
+        receipt = check.make_receipt('own-session', 'harness_prune', 'completed',
+                                     [str(source)], [str(report)], 'Prune ran')
+        self.assertNotEqual('completed', check.receipt_status(
+            receipt, 'own-session', {'harness_prune': receipt}))
+        report.write_text('### Plans\n\n### Worktrees\n\n')
+        receipt = check.make_receipt('own-session', 'harness_prune', 'completed',
+                                     [str(source)], [str(report)], 'Prune ran')
+        self.assertNotEqual('completed', check.receipt_status(
+            receipt, 'own-session', {'harness_prune': receipt}))
+        report.write_text('### Plans\nplan rows\n\n### Worktrees\nworktree rows\n\n### Scratch\nbucket table\n')
+        receipt = check.make_receipt('own-session', 'harness_prune', 'completed',
+                                     [str(source)], [str(report)], 'Prune ran')
+        self.assertEqual('completed', check.receipt_status(
+            receipt, 'own-session', {'harness_prune': receipt}))
+
+    def test_harness_prune_receipt_requires_scratch_section(self):
+        source = self.root / 'harness_prune.md'
+        source.write_text('source')
+        report = self.root / 'harness_prune_report.md'
+        report.write_text('### Plans\nplan rows\n\n### Worktrees\nworktree rows\n')
+        receipt = check.make_receipt('own-session', 'harness_prune', 'completed',
+                                     [str(source)], [str(report)], 'Prune ran')
+        self.assertNotEqual('completed', check.receipt_status(
+            receipt, 'own-session', {'harness_prune': receipt}))
+        report.write_text('### Plans\nplan rows\n\n### Worktrees\nworktree rows\n\n### Scratch\n\n')
+        receipt = check.make_receipt('own-session', 'harness_prune', 'completed',
+                                     [str(source)], [str(report)], 'Prune ran')
+        self.assertNotEqual('completed', check.receipt_status(
+            receipt, 'own-session', {'harness_prune': receipt}))
+        report.write_text('### Plans\nplan rows\n\n### Worktrees\nworktree rows\n\n### Scratch\nbucket table\n')
+        receipt = check.make_receipt('own-session', 'harness_prune', 'completed',
+                                     [str(source)], [str(report)], 'Prune ran')
+        self.assertEqual('completed', check.receipt_status(
+            receipt, 'own-session', {'harness_prune': receipt}))
 
     def test_nonterminal_receipt_never_finishes_phase(self):
         receipt = check.make_receipt('own-session', 'session_audit', 'blocked', [], [], 'Permission denied')
@@ -198,9 +239,12 @@ class CloseEvidenceTests(unittest.TestCase):
         }))
         directory = self.root / 'receipts'
         directory.mkdir()
+        prune_report = self.root / 'harness-prune.md'
+        prune_report.write_text('### Plans\nfixture\n\n### Worktrees\nfixture\n\n### Scratch\nfixture\n')
         for stem in check.required_phases('precommit'):
+            phase_evidence = prune_report if stem == 'harness_prune' else evidence
             receipt = check.make_receipt('own-session', stem, 'completed',
-                                         [str(source)], [str(evidence)], 'Fixture phase evidence')
+                                         [str(source)], [str(phase_evidence)], 'Fixture phase evidence')
             (directory / (stem + '.json')).write_text(json.dumps(receipt))
         args = [sys.executable, '-B', check.__file__, '--transcript', str(self.transcript),
                 '--session', 'own-session', '--repo', str(self.root), '--receipts', str(directory), '--archive', str(archive), '--artifacts']

@@ -1,117 +1,74 @@
 #!/usr/bin/env python3
-"""Proof for tools/provider_bands.py's cache seam.
-
-`PROVIDER_BAND_CACHE` exists so a proof can PLANT a band reading. Without it a test either spawns
-the provider's real quota probe (45s, network, and an answer that changes under it) or writes the
-repo's live cache from a test run — both of which make the suite's verdict depend on the machine.
-
-So the load-bearing cases are that the override is honoured, that the TTL still expires a planted
-reading, and that a corrupt cache reads as "no reading" rather than raising into a caller that
-treats an exception as an answer.
-
-Run: python3 .claude/tests/test_provider_bands_cache.py
-"""
+"""Proof that provider_bands is a thin view over live-first provider_capacity."""
 import importlib.util
-import json
 import os
 import sys
-import tempfile
-import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 MOD = os.path.join(HERE, "..", "tools", "provider_bands.py")
 spec = importlib.util.spec_from_file_location("pb", MOD)
 pb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pb)
 
-TMP = tempfile.mkdtemp(prefix="pbands_")
 
-
-def plant(entries):
-    """Point the cache at a temp file holding `entries`, and return its path."""
-    p = os.path.join(TMP, "cache-%d.json" % len(os.listdir(TMP)))
-    with open(p, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(entries, fh)
-    os.environ["PROVIDER_BAND_CACHE"] = p
-    return p
-
-
-def read(transport="codex", ttl=3600):
-    return pb._cache_read(transport, ttl)
-
-
-FRESH = {"codex": {"at": time.time(),
-                   "reading": {"transport": "codex", "band": "Hot", "pressure": 1.71}}}
-STALE = {"codex": {"at": time.time() - 90000,
-                   "reading": {"transport": "codex", "band": "Surplus", "pressure": 0.2}}}
-
-CASES = [
-    ("the override redirects the cache away from the repo file",
-     lambda: (plant(FRESH), pb._cache_path() != os.path.join(
-         pb._repo_root(), ".claude", ".cache", "provider_bands.json"))[1]),
-
-    ("a planted fresh reading is what the reader returns",
-     lambda: (plant(FRESH), (read() or {}).get("band"))[1] == "Hot"),
-
-    # The load-bearing negative: without it, "returns the planted band" is satisfied by a reader
-    # that ignores `at` entirely and would serve a day-old band as current.
-    ("a reading past the TTL is NOT returned",
-     lambda: (plant(STALE), read())[1] is None),
-
-    ("...and the same stale entry IS returned under a TTL wide enough to cover it",
-     lambda: (plant(STALE), (read(ttl=200000) or {}).get("band"))[1] == "Surplus"),
-
-    ("an absent transport reads as no reading, not as an error",
-     lambda: (plant(FRESH), read(transport="opencode"))[1] is None),
-
-    ("a corrupt cache reads as no reading rather than raising",
-     lambda: _corrupt_reads_none()),
-
-    ("a missing cache file reads as no reading",
-     lambda: _missing_reads_none()),
-
-    ("unset, the path falls back to the repo cache",
-     lambda: _unset_falls_back()),
-]
-
-
-def _corrupt_reads_none():
-    p = os.path.join(TMP, "corrupt.json")
-    with open(p, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("{not json")
-    os.environ["PROVIDER_BAND_CACHE"] = p
-    return read() is None
-
-
-def _missing_reads_none():
-    os.environ["PROVIDER_BAND_CACHE"] = os.path.join(TMP, "does-not-exist.json")
-    return read() is None
-
-
-def _unset_falls_back():
-    os.environ.pop("PROVIDER_BAND_CACHE", None)
-    try:
-        return pb._cache_path() == os.path.join(
-            pb._repo_root(), ".claude", ".cache", "provider_bands.json")
-    finally:
-        os.environ["PROVIDER_BAND_CACHE"] = os.path.join(TMP, "does-not-exist.json")
+def capacity(status="available", source="live", routing="On pace"):
+    return {
+        "status": status,
+        "sourceKind": source,
+        "observedAt": "2027-01-15T08:00:00Z",
+        "quota": {
+            "routingBand": routing,
+            "dispatchBand": "Exhausted" if status == "exhausted" else routing,
+            "bindingWindow": "seven_day",
+            "windows": [{"name": "seven_day", "band": routing, "pressure": 1.0}],
+        },
+        "planType": "test",
+    }
 
 
 def main():
-    failed = 0
-    for name, fn in CASES:
-        try:
-            ok, detail = bool(fn()), ""
-        except Exception as exc:
-            ok, detail = False, "  raised %s: %s" % (type(exc).__name__, exc)
-        failed += not ok
-        print("%s %s%s" % ("ok  " if ok else "FAIL", name, detail))
-    os.environ.pop("PROVIDER_BAND_CACHE", None)
-    print("\n%d/%d passed" % (len(CASES) - failed, len(CASES)))
+    calls = []
+    original = pb.provider_capacity.reading
+
+    def fake(transport, data=None):
+        calls.append((transport, data))
+        return capacity()
+
+    cases = []
+    try:
+        pb.provider_capacity.reading = fake
+        got = pb.reading("codex", ttl=999, data={"marker": True})
+        cases.append(("provider capacity is the sole reader", calls == [("codex", {"marker": True})]))
+        cases.append(("routing band and pressure are projected",
+                      got.get("band") == "On pace" and got.get("pressure") == 1.0))
+        cases.append(("source and observation stay visible",
+                      got.get("sourceKind") == "live" and got.get("observedAt")))
+
+        pb.provider_capacity.reading = lambda *_args, **_kwargs: capacity("exhausted", routing="Hot")
+        cases.append(("exhaustion is never reduced to a burn-rate band",
+                      pb.reading("codex").get("band") == "Exhausted"))
+
+        pb.provider_capacity.reading = lambda *_args, **_kwargs: {
+            "status": "unsupported", "sourceKind": "unsupported", "quota": None,
+        }
+        cases.append(("a transport without quota has no provider band",
+                      pb.reading("opencode") is None))
+
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("probe failed")
+        pb.provider_capacity.reading = broken
+        cases.append(("runner failure is unknown, never a permissive band",
+                      pb.reading("codex") is None))
+    finally:
+        pb.provider_capacity.reading = original
+
+    failed = [name for name, ok in cases if not ok]
+    for name, ok in cases:
+        print(("ok   " if ok else "FAIL ") + name)
+    print("\n%d/%d passed" % (len(cases) - len(failed), len(cases)))
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

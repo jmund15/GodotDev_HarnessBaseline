@@ -2,16 +2,6 @@
 """
 Hook: PreToolUse on Write|Edit — Remind to load `instruction_quality` before authoring harness files.
 
-Why:
-- The skill's description already says "ALWAYS load when reviewing, refining, or
-  authoring claude code harness files". The observed failure (2026-07-19) was not
-  mis-triggering but NON-consultation: a "small markdown edit" was pattern-matched
-  straight to Edit, so no skill was ever weighed. A description can't fix that —
-  a trigger you don't consult can't be sharpened into firing. Interception can.
-- Fires at temptation-time (the Write/Edit call itself), which is the only point
-  where the target path is knowable. UserPromptSubmit hooks (prompt_memory_loader)
-  fire too early to see a path; PostToolUse fires too late to inform authoring.
-
 What it does:
 - Gates on the tool's file_path: only .claude/ harness surfaces (see PATH RULES).
 - DENIES the edit (permissionDecision) until `instruction_quality` appears in the
@@ -26,10 +16,11 @@ PATH RULES (in .claude/ only):
 - IN:  **/*.md (CLAUDE.md, skills, commands, rules), hooks/*.py, settings*.json
 - OUT: auto-memory/** — governed by consolidate-memory / memory_audit, not this
        skill (see instruction_quality "Composition with other tools").
-- OUT: scratch/**, tests/**, __pycache__/** — not loaded guidance.
+- OUT: scratch/**, tests/**, __pycache__/**, plans/**, .cache/** — not loaded guidance.
 - IN (carve-out): pending_harness_edits.md — queued CLAUDE.md/MEMORY.md
   content awaiting /apply_harness_edits; it IS loaded guidance in transit, and
   authoring errors there land verbatim in the injected files.
+- Path scope uses `_claude_scope.harness_tail`, which rebases a worktree root before classifying the checkout's own `.claude/`.
 
 Boundaries:
 - The deny path is deterministic (harness file AND skill not loaded). Unexpected
@@ -43,6 +34,7 @@ Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 import json
 import sys
 
+from _claude_scope import harness_tail
 from _hook_state import fire_once_since_compaction, read_json_salvage, state_path
 
 # Key in the per-session routing state file that the other routing hooks share.
@@ -50,7 +42,9 @@ STATE_KEY = "harness_edit_reminder"
 
 INCLUDED_MD_ANY_DEPTH = ".md"
 INCLUDED_EXACT_DIRS = ("hooks",)          # .claude/hooks/*.py
-EXCLUDED_DIRS = ("auto-memory", "scratch", "tests", "__pycache__", "plans")  # plans/: execution docs owned by plan_file_format, not doctrine
+# plans/: execution docs owned by plan_file_format, not doctrine. .cache/: mirrors (baseline-repo);
+# a checkout hosted there is rebased first, so its own .claude/ tail stays gated.
+EXCLUDED_DIRS = ("auto-memory", "scratch", "tests", "__pycache__", "plans", ".cache")
 
 
 def is_harness_file(file_path: str) -> bool:
@@ -58,18 +52,13 @@ def is_harness_file(file_path: str) -> bool:
     True if file_path is a .claude/ surface governed by `instruction_quality`.
     Path separators are normalized — Edit/Write may deliver either on Windows.
     """
-    if not file_path:
+    tail = harness_tail(file_path)
+    if tail is None:
         return False
-    norm = file_path.replace("\\", "/")
-    if "/.claude/" not in norm and not norm.startswith(".claude/"):
-        return False
-
-    tail = norm.split("/.claude/")[-1] if "/.claude/" in norm else norm[len(".claude/"):]
     parts = tail.split("/")
 
     # Queued injected-file content is harness guidance in transit, so the gate
-    # covers it even though it is not under a governed subdirectory. Lived in
-    # scratch/ until 2026-08-16; moved to .claude/ root when scratch was ignored.
+    # covers it even though it is not under a governed subdirectory.
     if tail == "pending_harness_edits.md":
         return True
 
@@ -91,18 +80,11 @@ def is_harness_file(file_path: str) -> bool:
 
 
 def build_reminder(file_path: str) -> str:
-    name = file_path.replace("\\", "/").split("/.claude/")[-1]
+    name = harness_tail(file_path) or file_path
     return (
-        f"Editing harness file `.claude/{name}` — `instruction_quality` is loaded (verified); "
-        "apply it to THIS edit. What triggers it and what does not: CLAUDE.md "
-        "§Core Code Conventions, the *Harness file edits* bullet.\n"
-        "\n"
-        "Gates most often missed:\n"
-        "• §3 SSOT — don't restate a rule that has a canonical home elsewhere; cross-reference it.\n"
-        "• §4 Cross-reference durability — mechanically verify every cited path/anchor/skill resolves.\n"
-        "• §6 Conciseness — cut rationale that doesn't change a runtime decision.\n"
-        "• §7 Description-as-trigger (skills) — logical scope, not a keyword list.\n"
-        "• §13-16 (hooks) — channel validity, registration, bounded state, fail posture."
+        f"Harness edit `.claude/{name}`: apply `instruction_quality`. Most-missed gates: "
+        "§3 SSOT (link, don't restate), §4 verify every cited path resolves, "
+        "§6 cut non-decision rationale, §7 skill triggers, §13-16 for hooks."
     )
 
 
@@ -123,12 +105,10 @@ def process(input_data):
 
     skills_loaded = state.get("skills_loaded")
     if not (isinstance(skills_loaded, list) and "instruction_quality" in skills_loaded):
-        name = file_path.replace("\\", "/").split("/.claude/")[-1]
+        name = harness_tail(file_path) or file_path
         return {"deny": (
-            f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in this "
-            "session's loaded-skill state. Invoke Skill(skill=\"instruction_quality\"), then "
-            "retry this exact edit — only a real Skill invocation clears the gate; prior "
-            "familiarity or a compaction summary does not."
+            f"Harness edit to `.claude/{name}` DENIED: invoke Skill(skill=\"instruction_quality\"), "
+            "then retry this edit. Only a real Skill call clears the gate, not a compaction summary."
         )}
     # Once per session, and again after a compaction dropped it from context.
     if not fire_once_since_compaction(session_id, STATE_KEY):

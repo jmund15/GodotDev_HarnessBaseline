@@ -14,6 +14,7 @@ Run: python3 .claude/tests/test_workflow_provider_guard_ladder.py
 """
 import importlib.util
 import os
+import re
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -77,9 +78,9 @@ NO_HEADING = """## Pick by work shape
 RENAMED_COLUMN = LADDER.replace("| model | role |", "| row | role |")
 
 EXPECTED = [
-    "opus: architect & executor (effort: `xhigh` hardest design)",
-    "sonnet: fan-out, validation (effort: high for depth)",
-    "haiku: scout (effort: low)",
+    "opus: architect & executor, xhigh",
+    "sonnet: fan-out, validation, high",
+    "haiku: scout, low",
 ]
 
 
@@ -142,9 +143,9 @@ def main():
     print("%s live ladder parses to %d role rows (anchor still matches the SSOT)"
           % ("ok  " if ok else "FAIL", len(live)))
 
-    ok = all(": " in l and " (effort: " in l for l in live)
+    ok = all(re.search(r"^[^:]+: .+, (low|medium|high|xhigh|max)$", l) for l in live)
     failed += not ok
-    print("%s every live row carries a role and an effort cell" % ("ok  " if ok else "FAIL"))
+    print("%s every live row is `model: tier, effort`, whole tokens only" % ("ok  " if ok else "FAIL"))
 
     ok = not any("on the sidecar" in l or "T11" in l or "T12" in l for l in live)
     failed += not ok

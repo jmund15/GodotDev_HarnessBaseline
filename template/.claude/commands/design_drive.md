@@ -45,6 +45,10 @@ is refinement-plus-continuation, never ideation. Four intake steps bind before d
    while fan-outs run. Bank them in `decisions.md` as user-stated priors the moment they arrive; they
    are design-shaping, never afterthoughts.
 
+## Dispatch topology receipt
+
+Before every dispatch stage, compose `orchestration` §0, §5, and §11 into one **Dispatch Topology Receipt**. Its pre-dispatch half names independent outputs, risks, fixed seats, contained-job deduplication, width, role floor, effort, and currency. Its post-journal/PINS half compares actual rows, pins, and coverage with that receipt. This call site adds no role or model table.
+
 ## Stance
 
 **The contract is fixed; the process is yours.** Satisfy every clause of [`_brainstorm_shared/design_contract.md`](../skills/_brainstorm_shared/design_contract.md). HOW you get there — what you read, what agents you spawn, exploration order and depth — is your judgment per the `orchestration` skill, **above the `/explore` floor from the entry preconditions.** The floor removes only one option: entering design with no established state at all. Everything above it stays judgment, and the dossier's evidence-backed claims are what contract clause 1 cites for codebase state. A gnarly seam deserves a comparative deep-read of the two subsystems it joins; a wide space deserves fan-out; a constrained space deserves neither. Do NOT reproduce `architecture_brainstorm` Steps 2–4 by rote: that skill's Socratic pacing exists to let a human's taste enter continuously; here taste enters at design-lock, so pace for design quality instead. The live-option litmus (`architecture_brainstorm` Step 4) still governs any options you present at the gate — filler options are enumeration theater in any mode.

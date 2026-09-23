@@ -51,7 +51,17 @@ write its verdict immediately to `.claude/orchestration_verdicts.json`:
 { "review:config-dup": "right-sized", "author:slice-3": ["undershoot", "medium"] }
 ```
 
-Same `{label: outcome | [outcome, effort] | [outcome, effort, "probe"]}` shape as `--verdicts`;
+A review-panel seat records a dict instead, one row per seat (`orchestration` §2 *Sizing the width*):
+
+```json
+{ "review:plc-memory-alignment+plc-evidence-grounding": { "outcome": "clean", "effort": "high", "tier": "Standard", "tokens": 412000,
+  "mandates": { "plc-memory-alignment": { "outcome": "clean", "unique": 0, "duplicate": 1 },
+                "plc-evidence-grounding": { "outcome": "findings", "unique": 3, "duplicate": 0 } } } }
+```
+
+A mandate's `outcome` is `findings`, `clean` or `not-reached`. The archive keeps `tier` and `mandates`, and every report prints the panel-yield line: `UNCOVERED` for each not-reached mandate, and each mandate with zero unique findings across its last 5 reached merged-seat rows. That line is the trigger to re-open the seat map that merges it. `--run <runId>` prints one run's per-seat cache write, cache read, output and input-equivalent, with the consolidator on its own row; it never archives.
+
+Same `{label: outcome | [outcome, effort] | [outcome, effort, "probe"] | {outcome, effort, ...}}` shape as `--verdicts`;
 the collector merges this file automatically, and an explicit `--verdicts` file layers on top for
 anything still unrated. A `null` value is a **debt marker**, not an outcome — it names a dispatch
 awaiting judgment. The third element (`"probe"`) marks a deliberate candidate comparison (see *Over-pin

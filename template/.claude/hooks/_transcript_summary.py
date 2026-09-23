@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _owner_text import classify  # noqa: E402
+from _owner_text import classify, queued_owner_prompt  # noqa: E402
 
 
 # =============================================================================
@@ -612,6 +612,11 @@ class TranscriptSummaryBuilder:
             self._process_user_message(entry, message)
         elif role == 'assistant':
             self._process_assistant_message(entry, message)
+        elif queued_owner_prompt(entry) is not None:
+            # A message the owner sent MID-TURN carries no `message` object, so `role` is empty and
+            # neither branch above runs -- which is how such a message stayed out of every digest
+            # and out of the compaction anchors, however directive it was.
+            self._process_user_message(entry, message)
 
     def _process_user_message(self, entry: dict, message: dict):
         """Record every real user prompt verbatim; route tool_result rows to friction capture."""
@@ -630,6 +635,10 @@ class TranscriptSummaryBuilder:
             message = dict(message, content=raw)
 
         content = extract_content(message) if message else extract_content(entry)
+        if not content and row.kind == 'queued_prompt':
+            # The queued text lives on the attachment, not on `entry['content']`; `classify` already
+            # resolved it, so read it from the row rather than re-deriving the shape here.
+            content = row.text
 
         if COMPACTION_MARKER in content:
             self.compaction_markers.append(entry.get('timestamp'))

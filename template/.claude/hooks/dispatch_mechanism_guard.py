@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse(Workflow|Agent): deny a dispatch when /orchestration has not been loaded this session;
+"""PreToolUse(Workflow|Agent): require /orchestration and a full model-ladder Read since compaction;
 deny a brief that tells its delegate to fan out; deny a pinned non-exploratory Agent (Workflow's job).
 
 WHY THIS EXISTS: the SessionStart rail told the model to invoke Skill(orchestration) before the
@@ -25,6 +25,9 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import model_ladder_gate  # noqa: E402
+
 # Distinctive strings that appear in the session transcript ONLY after Skill(orchestration) is loaded.
 # Assembled from fragments so the full phrases are never literals in THIS file — a session reading this
 # hook for debugging would otherwise inject them into the transcript and falsely satisfy the guard.
@@ -42,16 +45,19 @@ ORCHESTRATION_MARKERS = (
 MAX_READ_BYTES = 16 * 1024 * 1024
 
 REASON = (
-    "First dispatch attempted without /orchestration loaded this session. Load Skill(orchestration) "
-    "first — its §0 owns the dispatch-mechanism decision (single Agent vs Workflow vs sidecar) and "
-    "the fan-out litmus. Re-issue the dispatch with the §0-selected mechanism after loading. If that "
-    "mechanism is a Workflow and user approval is absent, ask the user; do not substitute a direct Agent."
+    "Dispatch denied: load Skill(orchestration), pick the mechanism by its §0, then re-issue the "
+    "dispatch. A Workflow within the size guideline needs no user opt-in; never swap in a direct "
+    "Agent for enumerable jobs."
+)
+
+LADDER_REASON = (
+    "Dispatch denied: Read `{path}` in full, by this absolute path (a worktree copy does not "
+    "count). One full Read covers every dispatch until compaction."
 )
 
 UNVERIFIABLE_REASON = (
-    "Dispatch denied because the guard cannot verify the session transcript. The mandatory "
-    "Skill(orchestration) load needs readable transcript evidence; restore that evidence, load the "
-    "skill, then re-issue the dispatch."
+    "Dispatch denied: the guard cannot verify the session transcript, so the Skill(orchestration) "
+    "load is unproven. Restore readable transcript evidence, load the skill, then re-issue."
 )
 
 
@@ -111,12 +117,10 @@ OVERSIZED_BRIEF = object()
 OVERSIZED_HIT = "brief exceeds the 512 KiB scan cap"
 
 NESTED_REASON = (
-    "This brief tells its delegate to dispatch a fan-out ({hit}). A Workflow agent has neither the "
-    "Workflow tool nor the Agent tool, and an Agent-tool subagent has no Workflow tool, so the inner "
-    "lenses would run unpinned or not at all (orchestration §0 'never for'; "
-    "gotcha_subagents_have_no_workflow_tool). Materialize the lenses as briefs "
-    "(tools/lens_briefs.py) and dispatch them from THIS session through dispatch.js, then a "
-    "consolidator job; delegates execute, they do not delegate."
+    "Dispatch denied: this brief tells its delegate to dispatch a fan-out ({hit}). Delegates have "
+    "no Workflow tool, so those lenses would run unpinned or not at all (orchestration §0). "
+    "Materialize them with tools/lens_briefs.py and dispatch them from this session through "
+    "dispatch.js, plus a consolidator job."
 )
 
 
@@ -222,11 +226,9 @@ EXPLORATORY_TYPES = ("Explore", "Plan", "fork")
 AGENT_EXCEPTION_RE = re.compile(r"(?im)^\s*AGENT-EXCEPTION:\s*\S")
 
 PINNED_AGENT_REASON = (
-    "This Agent carries a model pin ({model}) for a non-exploratory job. A pinned job belongs on "
-    "Workflow (orchestration §0): the Agent route cannot pin effort, so this call would inherit the "
-    "session's effort and log no PINS row for the metrics archive. Re-issue through Workflow with "
-    "model and effort pins, or, for a genuine exploratory fork, add a line `AGENT-EXCEPTION: <why "
-    "the job list is not enumerable yet>` to the prompt."
+    "Dispatch denied: a pinned Agent ({model}) cannot pin effort or log a PINS row (orchestration "
+    "§0). Re-issue through Workflow with model and effort pins, or, for a genuinely exploratory job, "
+    "add the prompt line `AGENT-EXCEPTION: <why the job list is not enumerable yet>`."
 )
 
 
@@ -275,6 +277,9 @@ def main() -> int:
     model = pinned_agent_hit(payload)
     if model:
         _deny(PINNED_AGENT_REASON.format(model=model))
+        return 0
+    if not model_ladder_gate.claim_loaded(payload.get("session_id") or ""):
+        _deny(LADDER_REASON.format(path=model_ladder_gate.expected_path(payload)))
     return 0
 
 

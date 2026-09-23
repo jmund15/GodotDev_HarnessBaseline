@@ -12,10 +12,12 @@ an advisory must never be emitted for a call that is about to be denied.
 
 Order (blocks before advisories; the first block wins and short-circuits):
   1. pattern_enforcer.process            — dangerous content/command → exit 2 + stderr
-  2. harness_edit_skill_reminder.process — harness edit without the skill → deny;
+  2. composed_output_guard.process       — direct edit of a composed file → exit 2 + stderr
+  3. provenance_label_guard.process      — provenance label added to loaded guidance → exit 2
+  4. harness_edit_skill_reminder.process — harness edit without the skill → deny;
                                            otherwise the once-per-session advisory
-  3. readonly_lens_write_guard.process   — off-lens subagent write → stderr note, no block
-  4. running_script_edit_guard.process   — live script instance → advisory
+  5. readonly_lens_write_guard.process   — off-lens subagent write → stderr note, no block
+  6. running_script_edit_guard.process   — live script instance → advisory
 
 Sub-hook contract: `process(payload)` returns one of
   {"block": <message>}   hard block — stderr + exit 2, the tool call is aborted
@@ -37,15 +39,25 @@ Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 """
 
 import importlib
+import importlib.util
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-ENFORCEMENT = frozenset({"pattern_enforcer", "harness_edit_skill_reminder"})
-CHAIN = (
+ENFORCEMENT = frozenset({"pattern_enforcer", "harness_edit_skill_reminder", "composed_output_guard",
+                         "provenance_label_guard"})
+# Project-local (rail battery): chained only where the module exists; blocks only in an armed run.
+try:
+    _HAS_RAIL_GUARD = importlib.util.find_spec("rail_probe_guard") is not None
+except Exception:
+    _HAS_RAIL_GUARD = False
+CHAIN = (("rail_probe_guard", "advisory"),) if _HAS_RAIL_GUARD else ()
+CHAIN += (
     ("pattern_enforcer", "enforcement"),
+    ("composed_output_guard", "enforcement"),
+    ("provenance_label_guard", "enforcement"),
     ("harness_edit_skill_reminder", "enforcement"),
     ("readonly_lens_write_guard", "advisory"),
     ("running_script_edit_guard", "advisory"),

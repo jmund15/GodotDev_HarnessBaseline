@@ -25,7 +25,7 @@ def test_workflow_call_injects_ladder_roles():
     ctx = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
     assert "[role ladder" in ctx
     # a known ladder row must be present with its role prose, not a registry role token
-    assert "gpt-5.6-luna" in ctx
+    assert "luna:" in ctx  # family names: a new version never churns them
     assert "spec-tight execution" in ctx
 
 

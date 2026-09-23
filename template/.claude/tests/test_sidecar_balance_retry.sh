@@ -1,45 +1,88 @@
 #!/usr/bin/env bash
-# Proof for sc_gate_balance in lib/sidecar_common.sh: a transient probe failure retries before it
-# refuses. Measured 2026-09-15: one 15 s curl timeout voided benchmark cell ARM-T7-FLASH-r1 at $0,
-# while the endpoint answered in 0.5 s a minute later.
-#   1. one empty answer, then a balance -> passes on the second try;
-#   2. no answer on any try -> exit 6 after exactly 3 tries;
-#   3. a low balance is an answer, not a failure -> exit 6 after 1 try;
-#   4. a healthy first answer -> passes after 1 try.
-# curl and sleep are planted as functions; every case must produce output.
+# Proof for the live-read retry in tools/provider_capacity.py: a transient probe failure retries
+# before the sidecar refuses. Measured 2026-09-15: one 15 s curl timeout voided benchmark cell
+# ARM-T7-FLASH-r1 at $0, while the endpoint answered in 0.5 s a minute later.
+#   1. one network failure, then a balance -> available on the second try;
+#   2. no live answer on any try -> network-error after exactly 3 tries, no cache to fall back to;
+#   3. an insufficient balance is an answer, not a failure -> one try;
+#   4. a healthy first answer -> available, one try.
+# The gate this once lived in (sc_gate_balance in lib/sidecar_common.sh) was retired for the
+# normalized sc_gate_capacity runner, so the retry is proven at its new home. The probe adapter is
+# injected and time.sleep is planted; every case must produce output.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB="$HERE/../scripts/lib/sidecar_common.sh"
-[ -f "$LIB" ] || { echo "FAIL: lib missing at $LIB"; exit 1; }
-fail=0
-ran=0
-ok()  { ran=$((ran + 1)); echo "OK   $1"; }
-bad() { ran=$((ran + 1)); echo "FAIL $1"; fail=1; }
-expect() { if [ "$2" = "$3" ]; then ok "$1 -> $3"; else bad "$1: expected '$2', got '$3'"; fi; }
+TOOL="$HERE/../tools/provider_capacity.py"
+[ -f "$TOOL" ] || { echo "FAIL: capacity runner missing at $TOOL"; exit 1; }
 
-probe() {  # $1 = space-separated answers per try ("-" = empty); prints "rc=<n> tries=<n>"
-  local answers="$1" calls rc
-  calls="$(mktemp)"
-  ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1
-    SC_AUTH_TIER=gated SC_BALANCE_URL="https://balance.invalid" SC_CREDENTIAL=k SC_MIN_BALANCE=1
-    SC_ALIAS=flash SC_MODEL=deepseek-flash SC_BAND=Hot SC_BAND_P=2 SC_MIN_BAND="On pace" SC_FRESH_RATE=0.3
-    read -r -a SEQ <<< "$answers"
-    curl() { local n; n=$(wc -l < "$calls"); echo x >> "$calls"
-             local a="${SEQ[$n]:--}"; [ "$a" = "-" ] || printf '%s' "$a"; }
-    sleep() { :; }
-    sc_gate_balance >/dev/null 2>&1 )
-  rc=$?
-  printf 'rc=%s tries=%s' "$rc" "$(wc -l < "$calls" | tr -d ' ')"
-  rm -f "$calls"
-}
-GOOD='{"balance_infos":[{"total_balance":"9.57"}]}'
-LOW='{"balance_infos":[{"total_balance":"0.20"}]}'
+python3 - "$TOOL" <<'PY'
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
 
-expect "empty then balance -> pass on try 2" "rc=0 tries=2" "$(probe "- $GOOD")"
-expect "never answers -> exit 6 after 3 tries" "rc=6 tries=3" "$(probe "- - - -")"
-expect "low balance -> exit 6, no retry" "rc=6 tries=1" "$(probe "$LOW")"
-expect "healthy first answer -> pass, 1 try" "rc=0 tries=1" "$(probe "$GOOD")"
+spec = importlib.util.spec_from_file_location("provider_capacity_retry_test", sys.argv[1])
+pc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pc)
 
-[ "$ran" -eq 4 ] || { echo "FAIL expected 4 cases, ran $ran"; fail=1; }
-[ "$fail" = 0 ] && echo "PASS test_sidecar_balance_retry" || echo "FAIL test_sidecar_balance_retry"
-exit "$fail"
+slept = []
+pc.time.sleep = lambda seconds: slept.append(seconds)
+
+DATA = {"transports": {"deepseek": {
+    "costModel": "marginal-usd",
+    "capacityProbe": {"command": "python", "args": ["deepseek.py"], "kind": "balance"},
+}}}
+
+
+def failure():
+    return {"schemaVersion": 1, "transport": "deepseek", "costModel": "marginal-usd",
+            "sourceKind": "live", "observedAt": "2027-01-15T08:00:00Z", "status": "network-error",
+            "error": {"kind": "network", "message": "probe timed out"},
+            "liveFailure": None, "quota": None, "balance": None}
+
+
+def answer(amount):
+    return {"schemaVersion": 1, "transport": "deepseek", "costModel": "marginal-usd",
+            "sourceKind": "live", "observedAt": "2027-01-15T08:00:00Z",
+            "status": "available" if amount > 0 else "insufficient", "error": None,
+            "liveFailure": None, "quota": None, "balance": {"amount": amount, "currency": "USD"}}
+
+
+def probe(answers):
+    """Return (status, tries) for a run whose probe returns `answers` in order."""
+    tries = []
+    cache = Path(tempfile.mkdtemp(prefix="capacity_retry_")) / "capacity.json"
+
+    def runner(_spec, _transport):
+        tries.append(1)
+        return answers[len(tries) - 1]
+
+    got = pc.reading("deepseek", data=DATA, now=1_800_000_000.0, cache_path=str(cache),
+                     runner=runner)
+    return "status=%s tries=%d" % (got.get("status"), len(tries))
+
+
+cases = [
+    ("network failure then a balance -> available on try 2", "status=available tries=2",
+     probe([failure(), answer(9.57)])),
+    ("never answers -> network-error after 3 tries", "status=network-error tries=3",
+     probe([failure(), failure(), failure()])),
+    ("low balance -> insufficient, no retry", "status=insufficient tries=1",
+     probe([answer(0.0)])),
+    ("healthy first answer -> available, 1 try", "status=available tries=1",
+     probe([answer(9.57)])),
+]
+failed = 0
+for name, want, got in cases:
+    if want == got:
+        print("OK   %s -> %s" % (name, got))
+    else:
+        print("FAIL %s: expected '%s', got '%s'" % (name, want, got))
+        failed += 1
+if slept != [pc.RETRY_SLEEP_SECONDS] * 3:
+    print("FAIL retries wait between tries: expected 3 sleeps, got %r" % (slept,))
+    failed += 1
+else:
+    print("OK   each retry waits %ss before the next try" % pc.RETRY_SLEEP_SECONDS)
+print("PASS test_sidecar_balance_retry" if not failed else "FAIL test_sidecar_balance_retry")
+sys.exit(1 if failed else 0)
+PY

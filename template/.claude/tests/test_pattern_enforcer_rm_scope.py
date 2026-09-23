@@ -55,14 +55,39 @@ FALSE_POSITIVES = load_false_positives(_RECOVERED)
 
 # --- arm 2: genuine recursive deletes that MUST stay blocked ---------------------------------
 MUST_BLOCK = [
+    # A command substitution inside double quotes still runs.
+    'echo "$(rm -rf src)"',
+    'echo "x `rm -rf src` y"',
+    # ANSI-C quoting holds an escaped quote; a case arm's `)` does not close its substitution.
+    "echo $'\\'' ; rm -rf src",
+    'echo "$(case x in a) rm -rf src;; esac)"',
     "rm -rf /some/dir",
     "rm -r build/",
     "rm -R build/",
     "rm --recursive build/",
     "rm -f -r dir/",
     "rm foo -r",
-    "cd /tmp && rm -rf junk",
     "echo hi; rm -rf /important",
+    # Resolved-target allow: roots themselves, escapes and unresolvable targets stay blocked.
+    "rm -rf .claude/scratch",
+    "rm -rf .claude/scratch/*",
+    "rm -rf /tmp",
+    "rm -rf /tmp/*",
+    "rm -rf $UNSET/x",
+    "rm -rf ~",
+    "rm -rf .claude/scratch/../../src",
+    "rm -rf .claude/scratch/x src",
+    "cd /tmp && rm -rf ../Users",
+    "rm -rf src/.godot",
+    "mkdir -p src && rm -rf src",
+    # KFM #50: a second delete hidden beside an allowed one disqualifies the whole command.
+    "rm -rf .claude/scratch/x; echo $(rm -rf src)",
+    "rm -rf .claude/scratch/x; echo `rm -rf src`",
+    "rm -rf .claude/scratch/x; sudo rm -rf ~",
+    "rm -rf .claude/scratch/x; ls | xargs rm -rf",
+    "P=.claude/scratch/x; read P; rm -rf $P",
+    "P=.claude/scratch/x; P=src; rm -rf $P",
+    "P=.claude/scratch/x; for P in src; do rm -rf $P; done",
     # A quoted flag is still a flag — the shell sees `rm -r build/`.
     'rm "-r" build/',
     "rm '-rf' build/",
@@ -79,6 +104,8 @@ MUST_BLOCK = [
 
 # --- arm 3: safe deletes that must never have been blocked -----------------------------------
 MUST_PASS = [
+    # Quoting restarts inside $(...): a single-quoted pattern there is data, even inside "...".
+    'echo "a $(grep -c \'"rm -rf src\' f) b"',
     # A heredoc body is data, not execution: authoring a script or a lens brief that MENTIONS a
     # recursive delete blocked the write repeatedly while no delete could run.
     "cat > brief.md <<'EOF'\ntry: find . -exec rm -r {} +\nEOF\necho done",
@@ -90,6 +117,19 @@ MUST_PASS = [
     # Quote-blanking must still exempt a quoted MENTION of a delete — unwrapping is
     # flag-tokens-only, so this stays a search string, not a command.
     'grep "rm -rf" notes.md',
+    # Resolved-target allow: temp paths, named scratch subdirectories and regenerable caches in
+    # any checkout, chained or through a variable assigned once in the same command. These are
+    # the measured denials from the 2026-09 transcript scan.
+    "cd /tmp && rm -rf gt && mkdir gt && cd gt && git init -q",
+    "cd /tmp && rm -rf junk",
+    "rm -rf /tmp/red_check",
+    "rm -rf .claude/scratch/ladder_audit/fanout && echo ok",
+    "P=.claude/scratch/recompact_probe; rm -rf $P/out",
+    'R="."; rm -rf "$R/.claude/scratch/commitmsg"',
+    "rm -rf .claude/worktrees/uid-header-backfill/.godot",
+    "rm -rf .godot && echo reimport",
+    "rm -rf .claude/scratch/fmt_test/*",
+    'Remove-Item -Recurse -Force ".claude/scratch/old_probe" -Confirm:$false',
 ]
 
 fails = 0
@@ -117,6 +157,18 @@ for cmd in MUST_PASS:
         fails += 1
 if not fails:
     print(f"  PASS all {len(MUST_PASS)} safe deletes allowed")
+
+# The deny hint advertises only what the resolver admits: a retired worktree goes alone in its
+# command (`_is_resolved_safe_cleanup` never admits it chained or through a variable).
+hint = pe._CACHE_HINT
+chained = hint.split("Alone in its command", 1)[0]
+if "Alone in its command" not in hint or ".claude/worktrees/<name>" not in hint.split("Alone in its command", 1)[1] \
+        or "retired" in chained:
+    print("  FAIL deny hint offers a retired-worktree delete chained or through a variable")
+    fails += 1
+if len(hint.encode("utf-8")) > 600:
+    print(f"  FAIL deny hint is {len(hint.encode('utf-8'))} B; keep it under 600")
+    fails += 1
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

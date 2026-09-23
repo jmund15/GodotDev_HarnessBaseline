@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: PreToolUse Read — block explicit FULL reads of large files.
+Hook: PreToolUse Read — bound FULL reads of large files.
 
 Why:
 - Reading a large file in full burns context tokens proportional to file size.
-  A 30 KB file is ~10,000 estimated tokens; a bundled
-  `mcp__ai-worker__read_files(paths=[...], question=...)` call reads the file
-  in a worker process and returns a 1-2 KB digest at near-zero context cost.
-- A PreToolUse block is the only mechanism that actually prevents the cost —
-  a post-Read nudge fires after the tokens are already spent.
+  A 30 KB file is ~10,000 estimated tokens. A PreToolUse hook is the only point
+  that prevents the cost; a post-Read nudge fires after the tokens are spent.
 
 What it does:
 - On Read tool calls, stats the target file. If size exceeds the applicable
-  threshold AND the read is unbounded (no offset, no limit), blocks via exit
-  code 2 + stderr message. Thresholds: LARGE_FILE_BYTE_THRESHOLD (40 KB)
+  threshold AND the read is unbounded (no offset, no limit), `process` returns
+  `{updatedInput, additionalContext}`: the same Read limited to the whole lines
+  that fit the threshold, plus how to page on. When the first line alone exceeds
+  the threshold (single-line JSON), no line range fits and it returns a block
+  message instead (exit 2 + stderr). Thresholds: LARGE_FILE_BYTE_THRESHOLD (40 KB)
   generally, LOG_BYTE_THRESHOLD (8 KB) for grep-shaped extensions
   (LOG_EXTENSIONS) — a log is read by pattern, never whole.
 - Exempts:
@@ -41,6 +41,8 @@ Wiring: settings.json hooks.PreToolUse with matcher "Read".
 import json
 import os
 import sys
+
+from _claude_scope import harness_tail
 
 # --- Tunables ------------------------------------------------------------
 
@@ -155,10 +157,9 @@ def _is_exempt_instruction_file(file_path: str) -> bool:
         return False
     if normalized.endswith('/claude.md') or normalized == 'claude.md':
         return True
-    marker = '/.claude/' if '/.claude/' in normalized else ('.claude/' if normalized.startswith('.claude/') else None)
-    if marker is None:
+    tail = harness_tail(normalized)
+    if tail is None:
         return False
-    tail = normalized.split(marker, 1)[1]
     # Instruction dirs only. scratch/, worktrees/, logs/, cache/, generated/ hold artifacts:
     # a 48 KB review doc under scratch/ was read unbounded twice (2026-09-03).
     return tail.split('/', 1)[0] in INSTRUCTION_DIRS
@@ -186,8 +187,8 @@ def _build_block_message(file_path: str, size_bytes: int) -> str:
 
 # --- Dispatch ----------------------------------------------------------
 
-def process(input_data: dict) -> str | None:
-    """Returns the block message or None."""
+def process(input_data: dict) -> dict | str | None:
+    """The clamp {updatedInput, additionalContext}, a block message when no line range fits, or None."""
     tool_name = input_data.get("tool_name") or ""
     if tool_name != "Read":
         return None
@@ -216,6 +217,7 @@ def process(input_data: dict) -> str | None:
     threshold = LOG_BYTE_THRESHOLD if _is_log_file(file_path) else LARGE_FILE_BYTE_THRESHOLD
     if size_bytes <= threshold:
         return None
+    clamp = _clamp(file_path, tool_input, size_bytes, threshold)
 
     # Audit-shape exemption — checked after the size gate so we don't pay the
     # state-file read on every Read call.
@@ -225,7 +227,29 @@ def process(input_data: dict) -> str | None:
     if last_prompt and _is_audit_exempt(last_prompt):
         return None
 
-    return _build_block_message(file_path, size_bytes)
+    return clamp or _build_block_message(file_path, size_bytes)
+
+
+def _clamp(file_path: str, tool_input: dict, size_bytes: int, budget: int) -> dict | None:
+    """The same Read bounded to the whole lines that fit `budget` bytes, plus how to continue.
+    None when the first line alone exceeds the budget: no line range fits, so the read denies."""
+    try:
+        with open(file_path, "rb") as fh:
+            head = fh.read(budget)
+    except OSError:
+        return None
+    lines = head.count(b"\n")
+    if lines == 0:
+        return None
+    total_kb = size_bytes // 1024
+    tail = ("Grep it for the lines you need, or page on with offset=%d." % (lines + 1)
+            if _is_log_file(file_path) else
+            "Page on with offset=%d, or ask mcp__ai-worker__read_files for a digest." % (lines + 1))
+    return {
+        "updatedInput": dict(tool_input, limit=lines),
+        "additionalContext": "[file-size] %s is ~%d KB; this read shows lines 1-%d. %s"
+                             % (os.path.basename(file_path), total_kb, lines, tail),
+    }
 
 
 def main() -> None:
@@ -234,9 +258,11 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    block_msg = process(input_data)
-    if block_msg:
-        sys.stderr.write(block_msg + "\n")
+    result = process(input_data)
+    if isinstance(result, dict):
+        sys.stdout.write(json.dumps({"hookSpecificOutput": dict(result, hookEventName="PreToolUse")}))
+    elif result:
+        sys.stderr.write(result + "\n")
         sys.exit(2)
     sys.exit(0)
 

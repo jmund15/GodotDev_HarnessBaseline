@@ -4,8 +4,8 @@
 Three currencies exist, and two of them expire unused: this session's Anthropic plan quota,
 a provider's plan quota (Codex), and real dollars (DeepSeek). Plan-quota-vs-plan-quota is a
 BAND COMPARISON, not a spend decision -- neither side bills marginally, so the question is
-only which allowance is being wasted faster. That comparison needs every plan-quota
-transport's own band, which only its `quotaProbe` can supply.
+only which allowance is being wasted faster. The normalized quota view comes from
+`provider_capacity.py`; this module projects its routing band for comparison.
 
 Lives here rather than inside workflow_provider_guard.py because the hook is not the only
 caller that needs it: the pre-dispatch checklist asks the same question for a sidecar
@@ -15,100 +15,51 @@ FAIL POSTURE: every failure returns an empty/None reading. A budget advisory tha
 would block a dispatch over a hint, and a probe that spawns a subprocess has many ways to
 fail that have nothing to do with the allowance it was asked about.
 
-CACHE. Probing spawns a provider CLI (`codex app-server` for Codex), which a multi-agent
-dispatch would otherwise re-spawn once per agent. Readings are cached with a TTL in the
-gitignored `.claude/.cache/provider_bands.json`; a band moves on the scale of a quota window,
-never on the scale of one fan-out.
+Provider-capacity execution, cache freshness and fallback live in `provider_capacity.py`; this file
+is only the quota-band projection used by routing comparisons.
 """
 import json
 import os
-import subprocess
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_registry  # noqa: E402
+import provider_capacity  # noqa: E402
 import quota_bands  # noqa: E402
 
-DEFAULT_TTL_S = int(os.environ.get("PROVIDER_BAND_TTL", "600"))
-
-
-def _repo_root():
-    """The registry's own location anchors the repo, not $CLAUDE_PROJECT_DIR.
-
-    That env var can arrive as an MSYS path a native Windows python3 cannot open, and a
-    probe launched with a broken cwd fails in a way that reads as an exhausted allowance.
-    """
-    return os.path.dirname(os.path.dirname(os.path.dirname(model_registry.find_registry())))
-
-
-def _cache_path():
-    """The band cache. `PROVIDER_BAND_CACHE` redirects it so a proof can plant a reading instead of
-    spawning the live 45s quota probe and writing the real repo cache from a test."""
-    override = os.environ.get("PROVIDER_BAND_CACHE")
-    return override or os.path.join(_repo_root(), ".claude", ".cache", "provider_bands.json")
-
-
-def _cache_read(transport, ttl):
-    try:
-        with open(_cache_path(), encoding="utf-8") as fh:
-            entry = json.load(fh).get(transport)
-        if entry and (time.time() - entry.get("at", 0)) < ttl:
-            return entry.get("reading")
-    except Exception:
-        pass
-    return None
-
-
-def _cache_write(transport, reading):
-    path = _cache_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        try:
-            with open(path, encoding="utf-8") as fh:
-                blob = json.load(fh)
-        except Exception:
-            blob = {}
-        blob[transport] = {"at": time.time(), "reading": reading}
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(blob, fh, indent=2)
-    except Exception:
-        pass  # a cache that cannot be written is slow, not wrong
+DEFAULT_TTL_S = 600  # compatibility parameter; provider_capacity owns freshness
 
 
 def probe(transport, data=None):
-    """Run a transport's quotaProbe and return its reading dict, or None."""
+    """Read normalized live-first capacity and return its routing-band view."""
     try:
-        spec = model_registry.quota_probe_for(transport, data)
+        capacity = provider_capacity.reading(transport, data=data)
     except Exception:
         return None
-    if not spec:
+    quota = capacity.get("quota") if isinstance(capacity, dict) else None
+    if not isinstance(quota, dict):
         return None
-    cmd = [spec["command"]] + list(spec.get("args") or [])
-    # The probe's argv holds repo-relative paths, so cwd is load-bearing.
-    if cmd[0] in ("python", "python3"):
-        cmd[0] = sys.executable
-    try:
-        out = subprocess.run(cmd, cwd=_repo_root(), capture_output=True, text=True, timeout=45)
-    except Exception:
+    band = "Exhausted" if capacity.get("status") == "exhausted" else quota.get("routingBand")
+    if not band:
         return None
-    if out.returncode != 0:
-        return None
-    try:
-        reading = json.loads(out.stdout)
-    except Exception:
-        return None
-    return reading if isinstance(reading, dict) else None
+    windows = quota.get("windows") or []
+    routing = next((w for w in windows if w.get("name") == "seven_day"), None)
+    binding = next((w for w in windows if w.get("name") == quota.get("bindingWindow")), None)
+    pressure = (routing or binding or {}).get("pressure")
+    return {
+        "transport": transport,
+        "band": band,
+        "pressure": pressure,
+        "planType": capacity.get("planType"),
+        "sourceKind": capacity.get("sourceKind"),
+        "observedAt": capacity.get("observedAt"),
+    }
 
 
 def reading(transport, ttl=DEFAULT_TTL_S, data=None):
-    cached = _cache_read(transport, ttl)
-    if cached is not None:
-        return cached
-    got = probe(transport, data)
-    if got is not None:
-        _cache_write(transport, got)
-    return got
+    """Compatibility entry point; provider_capacity owns the only cache and freshness policy."""
+    _ = ttl
+    return probe(transport, data)
 
 
 def plan_quota_transports(data=None):

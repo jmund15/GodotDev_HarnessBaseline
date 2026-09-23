@@ -62,7 +62,7 @@ adjectival: something reasons about each problem before seeing the chosen answer
    verbatim constraints both parties stated, premise-check repo facts. The participants' chosen
    answers are REMOVED — the blind brief is the de-biasing mechanism (the `--design_panel`
    blind-attempt structure).
-3. **Dispatch ONE blind job** via dispatch.js — pin `opus` — `medium` for interpersonal/process contention, `high`/`xhigh` when a brief
+3. **Dispatch ONE blind job** via dispatch.js — pin the executor tier — `medium` for interpersonal/process contention, `high`/`xhigh` when a brief
    turns on repo facts the arm must discover — **never the default fan-out tier** (it fabricates on open judgment —
    per the ladder, `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
    per brief with tradeoffs. Record the pin in the run report.

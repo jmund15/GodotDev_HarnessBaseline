@@ -18,7 +18,7 @@ Order (cheapest text scans first, then the file-reading guards):
   5. tres_format_guard.process       — engine resource non-canonical serialization
   6. harness_growth_guard.process    — harness markdown size/density measurement
   7. self_eval_archive_guard.process — self-evaluation archive validity
-  8. retire_trigger_advisory.process — missing/malformed retire_when on a new memory file
+  8. retire_trigger_advisory.process — malformed retire_when metadata on a new memory or rules file
   9. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
 
 Sub-hook contract: `process(payload)` returns `{"context": <text>}` or None; the

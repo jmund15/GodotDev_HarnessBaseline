@@ -114,6 +114,14 @@ class ProbeIdentityTests(unittest.TestCase):
         raw = json.dumps({'type': 'result', 'session_id': MINE, 'result': json.dumps({'session_id': PEER})})
         self.assertEqual(probe.session_from_output(raw), MINE)
 
+    def test_verbose_json_array_output_yields_its_session(self):
+        """`-o json` under the user setting `"verbose": true` is an array of events (live 2026-09-22:
+        the codex sidecar lost its attestation because the array read as one non-dict record)."""
+        raw = json.dumps([{'type': 'system', 'subtype': 'init', 'session_id': MINE},
+                          {'type': 'assistant', 'message': {'content': []}},
+                          {'type': 'result', 'session_id': MINE, 'result': json.dumps({'session_id': PEER})}])
+        self.assertEqual(probe.session_from_output(raw), MINE)
+
     def test_mixed_session_output_is_not_guessed(self):
         raw = '\n'.join(json.dumps({'type': 'result', 'session_id': sid}) for sid in (MINE, PEER))
         self.assertIsNone(probe.session_from_output(raw))

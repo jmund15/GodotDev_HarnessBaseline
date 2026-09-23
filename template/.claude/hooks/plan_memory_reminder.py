@@ -50,6 +50,7 @@ import re
 import sys
 from pathlib import Path
 
+from _claude_scope import harness_tail
 from _hook_state import state_path, update_json_locked
 
 _TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
@@ -212,8 +213,8 @@ _PATH_LIKE_RE = re.compile(
 
 
 def _is_harness_path(path: str) -> bool:
-    lowered = path.lower()
-    return lowered.startswith(".claude/") or "/.claude/" in lowered
+    """Use the shared canonical checkout-relative harness classification."""
+    return harness_tail(path) is not None
 
 
 def _is_explicit_meta_scope(files_section: str) -> bool:
@@ -318,34 +319,13 @@ def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]]) -
             if r not in rules:
                 rules.append(r)
 
-    domains_str = ", ".join(domain_names)
-    memory_query = " / ".join(memory_keys)
-
-    parts = [
-        f"Plan touches: {domains_str}. Before implementing:",
-        "",
-        f"• Search auto-memory (semantic-search over .claude/auto-memory) for: {memory_query}.",
-    ]
-
+    steps = [f"semantic-search .claude/auto-memory for {' / '.join(memory_keys)}"]
     if skills:
-        skills_str = ", ".join(skills)
-        parts.append(f"• Load relevant Skills: {skills_str}.")
-    else:
-        parts.append(
-            "• No Skill explicitly keyed to these domain(s) in CLAUDE.md — "
-            "auto-memory entries are the primary source."
-        )
-
+        steps.append(f"load skills {', '.join(skills)}")
     if rules:
-        parts.append(f"• Read rule(s): {', '.join(rules)}.")
+        steps.append(f"read {', '.join(rules)}")
 
-    parts.append("")
-    parts.append(
-        "Per CLAUDE.md: if an unexpected result contradicts expected domain "
-        "behavior, search Memory before changing approach."
-    )
-
-    return "\n".join(parts)
+    return f"Plan touches {', '.join(domain_names)}. Before implementing: {'; '.join(steps)}."
 
 
 def process(input_data):

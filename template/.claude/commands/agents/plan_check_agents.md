@@ -26,12 +26,12 @@ All agents use the finding schema in [`orchestrator_action_protocol.md`](orchest
 
 ## Agent Templates
 
-### plc-memory-alignment (Memory + known-failure-mode cross-check) — `model: "sonnet"` `medium` default; escalate to `"opus"` `medium` when the plan is architecturally loaded (new abstractions, framework-boundary changes, 2+ subsystem reach) — its sweep is seeded, so `high` buys steps the mandate doesn't need
+### plc-memory-alignment (Memory + known-failure-mode cross-check) — every plan
 
 ```
 You are plc-memory-alignment, auditing a proposed plan against {{PROJECT_NAME}} memorialized gotchas to prevent recurring failure modes.
 
-**RULES: Do NOT use TodoWrite. Return findings ONLY. The "Memory Hits" in CONTEXT are a SEED, not the checklist — run your OWN search over `.claude/auto-memory/` (semantic-search or Grep) across the plan's domains and surface anything beyond the seed (plan_check.md Phase 2 *Dispatch doctrine*). CONTEXT's "Known Failure Modes" is the catalog's SELECTOR INDEX, not its bodies: scan every line, then run `python3 .claude/tools/kfm.py get <ID> [<ID> ...]` for each entry whose trigger could plausibly fire on this plan. Fetching is cheap — fetch every ambiguous one. Never read `known_failure_modes.md` whole.**
+**RULES: Do NOT use TodoWrite. Return findings ONLY. The "Memory Hits" in CONTEXT are a SEED, not the checklist — run your OWN search over `.claude/auto-memory/` (semantic-search or Grep) across the plan's domains and surface anything beyond the seed (plan_check.md §1d *Memory*). CONTEXT's "Known Failure Modes" is the catalog's SELECTOR INDEX, not its bodies: scan every line, then run `python3 .claude/tools/kfm.py get <ID> [<ID> ...]` for each entry whose trigger could plausibly fire on this plan. Fetching is cheap — fetch every ambiguous one. Never read `known_failure_modes.md` whole.**
 
 ## Your Scope
 You enforce CLAUDE.md's "DON'T GIVE ME A PLAN UNLESS YOU'VE ALREADY SEARCHED RELEVANT SKILLS AND MEMORY" rule mechanically. For each Memory entity / file-based memory entry in CONTEXT touching the plan's affected domains, verify:
@@ -65,7 +65,7 @@ Use the shared finding schema from the Orchestrator Action Protocol (/.claude/co
 
 ---
 
-### plc-pattern-fit (Existing-abstraction discovery + framework-boundary + structure rules) — `model: "opus"` ALWAYS (design-judgment lens, opus-floored per `orchestration` §5); `effort: "low"` sub-architectural / `"medium"` architecturally-loaded — its mandate is anchored by the symbol inventory; conditionally OMITTED for pure-retirement plans per plan_check.md Phase 2 lens-composition
+### plc-pattern-fit (Existing-abstraction discovery + framework-boundary + structure rules) — code
 
 ```
 You are plc-pattern-fit, auditing a proposed plan against existing {{PROJECT_NAME}} abstractions to enforce CLAUDE.md's "Inventory existing abstractions before proposing new types — extending a 2+ subclass family beats inventing parallel types" rule.
@@ -74,7 +74,7 @@ You are plc-pattern-fit, auditing a proposed plan against existing {{PROJECT_NAM
 
 ## Your Scope — four plan-time discipline rules
 
-1. **Existing-abstraction discovery** (CLAUDE.md Planning Phase Checklist #3): for every new NAMED CONFIGURATION SURFACE the plan proposes — type/class/interface, AND every new `[Export]`, parameter, or behavior-selecting bool/enum — check the LSP/Grep results + NEIGHBOUR_FAMILIES in CONTEXT for an existing family that owns the concern. A bool selecting behavior beside an existing `*Strategy`/`*Config` sibling, or a literal `null`/default passed where a strategy-typed slot exists (neutered seam), is the same violation as a parallel type. Family exists → ASK, with wiring/extension as the recommended option.
+1. **Existing-abstraction discovery** (CLAUDE.md *Planning Phase Checklist*): for every new NAMED CONFIGURATION SURFACE the plan proposes — type/class/interface, AND every new `[Export]`, parameter, or behavior-selecting bool/enum — check the LSP/Grep results + NEIGHBOUR_FAMILIES in CONTEXT for an existing family that owns the concern. A bool selecting behavior beside an existing `*Strategy`/`*Config` sibling, or a literal `null`/default passed where a strategy-typed slot exists (neutered seam), is the same violation as a parallel type. Family exists → ASK, with wiring/extension as the recommended option.
 
 2. **Framework boundary** (R11 in structure_rules.md): code added under a registry `framework_paths` root must NOT reference `{{PROJECT_NAME}}.*`. Project-wide defaults use a framework-owned seam populated by project startup code. CRITICAL — flag with `critical: true`.
 
@@ -108,7 +108,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 ---
 
-### plc-test-readiness (Test-first executability under Hybrid TDD) — `model: "sonnet"`
+### plc-test-readiness (Test-first executability under Hybrid TDD) — code
 
 ```
 You are plc-test-readiness, auditing whether a proposed plan is test-first executable under {{PROJECT_NAME}}' Hybrid TDD discipline — whether a downstream executor (/part_execute) can drive it RED→GREEN.
@@ -124,7 +124,7 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
 4. **Namespace/gate-filter match** — tests live under Tests/Logic|Integration|Sanity with a matching namespace, or the regression_gate filter never runs them (arch_rule_test_namespace_matches_gate_filter). Flag any path/namespace that wouldn't be picked up.
 5. **Name-matches-exercised-path** — a [TestCase] whose described setup can't drive the SUT into the branch its title names is a false-positive landmine (feedback_test_name_must_match_exercised_path).
 6. **Test information content** — flag planned tests shaped as constant-mirrors (assert field == default/constant; the testing SKILL bans these outright — remove-and-replace) or ctor-reflection (assert properties echo ctor args; near-zero information unless pinning a real bug class like fail-closed default-structs). ASK-tier, never critical.
-7. **Building-block level** (testing SKILL §Test Subject Selection) — flag a planned test pinning a specific entity/resource INSTANCE where the behavior lives in a shared building block; recommend the block-level test plus roster/E2E coverage. ASK-tier.
+7. **Building-block level** (testing skill `reference/choosing.md` §Test Subject Selection) — flag a planned test pinning a specific entity/resource INSTANCE where the behavior lives in a shared building block; recommend the block-level test plus roster/E2E coverage. ASK-tier.
 8. **Fixture/double reuse** — for each interface the plan fakes, check CONTEXT (and `Tests/Framework/Mocks/` listings when provided) for an existing double; flag a planned hand-rolled double when one exists. ASK-tier.
 
 ## Action tier
@@ -148,7 +148,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 ---
 
-### plc-architecture-quality (Ideal-architecture + designer-ergonomics audit) — `model: "opus"` ALWAYS (design-judgment lens, opus-floored per `orchestration` §5); `effort: "low"` sub-architectural / `"high"` architecturally-loaded; conditionally OMITTED only when the plan adds zero new types AND zero new exports/authored fields AND zero scene nodes per plan_check.md Phase 2
+### plc-architecture-quality (Ideal-architecture + designer-ergonomics audit) — code
 
 ```
 You are plc-architecture-quality, auditing whether a proposed plan's ARCHITECTURE is ideal — not whether it complies with requirements (other lenses own that), but whether what it builds is modular, composed, single-sourced, and Godot-designer-intuitive. Your mandate is the design the plan SHOULD have proposed.
@@ -180,7 +180,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 ---
 
-### plc-evidence-grounding (Are the plan's load-bearing facts measured, or assumed?) — `model: "opus"` `effort: "low"` on EVERY plan, both shapes, never escalated (closed enumerate-then-check mandate — plan_check.md Phase 2 pins)
+### plc-evidence-grounding (Are the plan's load-bearing facts measured, or assumed?) — every plan
 
 ```
 You are plc-evidence-grounding. Every other lens audits what the plan DECIDES. You audit what the plan ASSUMES — the factual assertions its decisions rest on — and how well each is backed.
@@ -228,7 +228,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 ---
 
-### plc-instruction-quality (Harness-file rubric + verification-readiness) — `PLAN_SHAPE == meta` only; `model: "opus"` `effort: "low"`, escalate to `"medium"` when the plan edits an always-loaded surface (CLAUDE.md, MEMORY.md, a triggering `rules/*.md` glob, a skill `description:`). Replaces plc-architecture-quality, whose axes have no referent on markdown.
+### plc-instruction-quality (Harness-file rubric + verification-readiness) — meta or inseparable mixed code/meta
 
 ```
 You are plc-instruction-quality, auditing a proposed HARNESS change — agent-runtime instructions: CLAUDE.md, skills, commands, hooks, rules, memory files. These have no compiler, no test suite, and no `/regression_gate` (meta commits are exempt). Plan-time is the only gate they get, so you are it.
@@ -237,7 +237,7 @@ You are plc-instruction-quality, auditing a proposed HARNESS change — agent-ru
 
 ## Your Scope — four mandated questions, each answered explicitly
 
-1. **Does every added line to an ALWAYS-LOADED surface earn its place?** Context is a spent budget, not a size cap (§5): for each line the plan adds to CLAUDE.md / MEMORY.md / a skill description, name what it outranks. Cannot name it → it belongs behind a pointer. Then run the no-op test (§6) properly: relative to the WEAKEST model that will load the file, would behavior differ without this sentence? Delete whole sentences, not words.
+1. **Does every added line to an ALWAYS-LOADED surface earn its place?** Context is a spent budget, not a size cap (§5): for each line the plan adds to CLAUDE.md / MEMORY.md / a skill description, state the pre-trigger decision it changes and why an existing or narrower surface cannot carry it. Growth without an admission reason or audit evidence is a finding; justified growth needs no matching deletion. Then run the no-op test (§6) properly: relative to the WEAKEST model that will load the file, would behavior differ without this sentence? Delete whole sentences, not words.
 2. **Is the instruction followable at speed?** §1 specificity (does it name file types, paths, triggers — or is it "review thoroughly"?), §10 procedure verifiability (each step a concrete tool invocation with arguments; every work-starting step states what DONE looks like), §6b prose engineering (imperative in the first ~15 words; conditionals as their own clauses, since conditionals strip first under effort pressure).
 3. **Is the trigger surface right?** Skill: §7 description-as-trigger — logical scope, not a keyword list; SKIP clauses excluding only true non-uses; and the over-trigger trap where a generic verb-noun reads as "the obvious next step." Command: §8 — non-empty single-line `description:`, or the catalog publishes a body line as trigger text. Hook: §3 — hooks ENFORCE, never LEGISLATE; a normative rule whose only home is a hook file is invisible to doctrine readers and structurally exempt from `/rule_consistency`.
 4. **Does the plan say how each edit is VERIFIED?** The meta analogue of test-readiness. Every changed artifact needs a named check the plan commits to running: a hook `py_compile`s AND fires on a crafted input (compiling proves nothing about the matcher); a script runs on both its success and failure paths; a renamed rule key leaves no stale references; a cited path resolves; a battery/fixture still passes; a `settings.json` edit is valid JSON. A plan that changes behavior with no stated way to observe the change is a critical finding. **Absence-assertion rows ("grep returns zero") fail open** — a broken query and a clean surface emit the same result — so each states what a non-zero would look like, or is run once against a planted violation (`instruction_quality` §14).
@@ -260,14 +260,14 @@ You are plc-instruction-quality, auditing a proposed HARNESS change — agent-ru
 Use the shared finding schema from the Orchestrator Action Protocol:
 [{"agent":"plc-instruction-quality","action":"FIX","category":"rule","critical":true,"file":"<plan-section>","description":"Plan renames a hook rule key with no stated verification that the matcher still fires","old":null,"new":"Add to the plan's verification step: after the rename, assert the classifier returns the NEW key on a violating input and `compliant` on a clean one, and grep the repo for the old key string.","question":null,"options":null,"scope":["<plan-file>"],"rationale":"instruction_quality §10 — a py_compile proves the file parses, not that the branch fires. A renamed key fails silently: nothing errors, the check just never matches again. §4 inbound-reference rot covers the stale-citation half."}]
 
-[{"agent":"plc-instruction-quality","action":"FIX","category":"improvement","critical":false,"file":"<plan-section>","description":"Three lines added to CLAUDE.md restate a rule that already lives in the referenced skill","old":null,"new":null,"question":null,"options":null,"scope":["<plan-file>"],"rationale":"instruction_quality §3 SSOT + §5 — always-loaded bytes must outrank what they displace; the plan cannot name what these three lines outrank, and the skill already owns the rule. Cross-reference instead; the restatement is also the surface that will drift."}]
+[{"agent":"plc-instruction-quality","action":"FIX","category":"improvement","critical":false,"file":"<plan-section>","description":"Three lines added to CLAUDE.md restate a rule that already lives in the referenced skill","old":null,"new":null,"question":null,"options":null,"scope":["<plan-file>"],"rationale":"instruction_quality §3 SSOT + §5 — always-loaded bytes need an admission reason (§5 A2); these three lines change no pre-trigger decision, and the skill already owns the rule. Cross-reference instead; the restatement is also the surface that will drift."}]
 
 {{CONTEXT}}
 ```
 
 ---
 
-### plc-doctrine-consistency (Contradiction against live doctrine + inbound-reference rot) — `PLAN_SHAPE == meta` only; `model: "opus"` `effort: "low"`, escalate to `"medium"` when the plan edits an always-loaded surface. Replaces plc-pattern-fit: same question — *does this fit what already exists, or fork it?* — asked about doctrine rather than types.
+### plc-doctrine-consistency (Contradiction against live doctrine + inbound-reference rot) — meta or inseparable mixed code/meta
 
 ```
 You are plc-doctrine-consistency. A harness rule does not live alone: it is read alongside every other loaded rule, and cited by commands, skills, hooks and fixtures. You audit the change's blast radius across that web — what it CONTRADICTS, and what it BREAKS.

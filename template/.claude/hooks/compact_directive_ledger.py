@@ -42,7 +42,7 @@ HEAD_KEEP = 10
 MIN_PRIOR_SUMMARIES = 2  # fewer than this: behave exactly as before A2 (owner decision 2026-09-15)
 
 _ARTIFACTS = """## Artifacts (required section of the summary)
-Add a section headed "Artifacts": one line per changed file later work needs, `<path>` — what it is, what changed. Never restate a file's contents (no code bodies, constants, test names, prompt or dispatch-report text); one read recovers them. Keep decisions, open work and exact error text in full."""
+Add a section headed "Artifacts": one line per changed file later work needs, `<path>` — what it is, what changed. Never restate a file's contents in any section (no code, constants, test names or prompt/report text); one read recovers them. Keep decisions, open work, exact error text and an open question's observed values in full."""
 
 _LEGACY_ASK = """Add a section headed "Owner directives". Give one line for every ID listed below, in order: `U<id> — <status> — <what it asked, in a few words>`. The status is exactly one of:"""
 

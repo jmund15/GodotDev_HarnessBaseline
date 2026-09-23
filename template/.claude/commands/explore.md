@@ -16,10 +16,10 @@ Use for a named system/change before design, through a drive command or directly
 ## Phase 1: Scope & Seed
 
 ### 1a. State the topic
-Name the capability/files and intended change. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
+Name the capability/files and intended change; a topic naming no system, file or capability gets one clarifying question, not a dispatch. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
 
 ### 1b. Select resources
-Load `orchestration` and read the current currency/band before choosing pins. Use one suitable arm per independently needed lens. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
+Load `orchestration` and read the current currency/band before choosing pins. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate at every tier (`orchestration` §2 *Sizing the width*), because its engine stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
 
 ### 1c. Infer domains
 Use actual scope and `reference/memory_domains.md`; meta work does not need gameplay domains. Search memory by separate relevant facets, not one broad union query.

@@ -72,7 +72,7 @@ _DEFAULT_STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 
 _ONCE_KEY = "fired_once"
 _COMPACTION_KEY = "fired_since_compaction"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen")
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready")
 _LOCK_WAIT_SECONDS = 2.0
 
 

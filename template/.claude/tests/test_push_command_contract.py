@@ -8,6 +8,7 @@ Each rule is also proven to fire on a planted mutant. It does not prove runtime 
     python3 .claude/tests/test_push_command_contract.py
 """
 from pathlib import Path
+import json
 import re
 import sys
 
@@ -17,6 +18,17 @@ COMMANDS = [ROOT / ".claude" / "commands" / name for name in ("commit_push.md", 
 PUSH_STEP = re.compile(r"[Pp]ush (?:all commits )?to the current branch on origin")
 UNKNOWN_ARG = re.compile(r"\s+".join("Any other argument: report it and stop before the first Git command".split()))
 GATE_CALL = "baseline_sync.py check --strict"
+
+
+def project_owned(relpath):
+    """True when this checkout's lock marks `relpath` forked or local: its prose never syncs
+    upstream, and a template checkout has no lock at all."""
+    try:
+        lock = json.loads((ROOT / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    entry = (lock.get("files") or {}).get(relpath) or {}
+    return entry.get("status") in ("forked", "local")
 
 
 def steps(text):
@@ -77,6 +89,18 @@ def main():
         for label, mutant in mutants(text).items():
             new = [p for p in problems(mutant) if p not in real]
             cases.append(("%s: planted mutant detected: %s" % (name, label), mutant != text and bool(new), str(new)))
+
+    overnight = (ROOT / '.claude/commands/overnight.md').read_text(encoding='utf-8')
+    park = overnight.split('## Step 2', 1)[-1].split('## Step 3', 1)[0].lower()
+    cases.extend([
+        ('overnight authorizes active-branch push including main',
+         'active branch' in overnight.lower() and 'including `main`' in overnight.lower(), ''),
+        ('overnight no longer parks main push', 'push to main' not in park, park),
+    ])
+    if project_owned('.claude/commands/session_end.md'):
+        session_end = (ROOT / '.claude/commands/session_end.md').read_text(encoding='utf-8')
+        cases.append(('session_end mirrors armed active-branch authority',
+                      'armed `/overnight`' in session_end and 'active branch' in session_end.lower(), ''))
 
     passed = failed = 0
     for label, ok, detail in cases:

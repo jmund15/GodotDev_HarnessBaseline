@@ -87,8 +87,8 @@ terminal_linger() {
   init_line S-B; work_line S-B
   printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s}}\n' "$RESET"
   retry_line 1 429 S-B; retry_line 2 429 S-B
-  printf '{"type":"assistant","session_id":"S-B","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Request rejected (429) · The usage limit has been reached"}]}}\n'
-  printf '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"session_id":"S-B","num_turns":5,"usage":{"input_tokens":7,"output_tokens":3},"result":"API Error: Request rejected (429) · The usage limit has been reached"}\n'
+  printf '{"type":"assistant","session_id":"S-B","message":{"model":"<synthetic>","content":[{"type":"text","text":"%s"}]}}\n' "You've hit your weekly limit · resets 1pm"
+  printf '{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"session_id":"S-B","num_turns":5,"usage":{"input_tokens":7,"output_tokens":3},"result":"%s"}\n' "You've hit your weekly limit · resets 1pm"
   sleep 60
 }
 reset_run ul-b; rm -rf "$SIDECAR_EXHAUSTED_DIR"
@@ -159,11 +159,11 @@ for _l in anthropic_sidecar.sh codex_proxy_sidecar.sh deepseek_sidecar.sh openco
     && ok "E3 $_l gates the marker on dispatch and on --check" \
     || bad "E3 $_l gates the marker on dispatch and on --check" "gate=$_g run=$_w check=$_c"
 done
-_x=$(grep -n '^  sc_gate_exhausted' "$R/scripts/codex_proxy_sidecar.sh" | head -1 | cut -d: -f1)
-_q=$(grep -n 'codex_quota_probe.py' "$R/scripts/codex_proxy_sidecar.sh" | head -1 | cut -d: -f1)
+_x=$(grep -n '^  sc_gate_availability' "$R/scripts/lib/sidecar_common.sh" | tail -1 | cut -d: -f1)
+_q=$(grep -n '^  sc_gate_capacity' "$R/scripts/lib/sidecar_common.sh" | tail -1 | cut -d: -f1)
 [ -n "$_x" ] && [ -n "$_q" ] && [ "$_x" -lt "$_q" ] \
-  && ok "E4 codex --check refuses on a live marker before its network quota probe" \
-  || bad "E4 codex --check refuses on a live marker before its network quota probe" "marker-gate=$_x probe=$_q"
+  && ok "E4 --check refuses on a live exhausted marker before its live capacity probe" \
+  || bad "E4 --check refuses on a live exhausted marker before its live capacity probe" "availability-gate=$_x capacity-gate=$_q"
 
 echo
 echo "provider usage limit: $PASS passed, $FAIL failed"
