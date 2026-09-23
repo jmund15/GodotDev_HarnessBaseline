@@ -47,8 +47,8 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 
 | Domain | Location | Rule | When |
 |--------|----------|------|------|
-| **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) — `reference/logic_tdd.md` | the Logic subsystems CLAUDE.md's Domain Split names |
-| **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel — `reference/choosing.md` | the Gameplay subsystems CLAUDE.md's Domain Split names |
+| **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) — `reference/logic_tdd.md` | the Logic subsystems CLAUDE.md *Development Philosophy: Hybrid TDD* names |
+| **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel — `reference/choosing.md` | the Gameplay subsystems CLAUDE.md *Development Philosophy: Hybrid TDD* names |
 
 **Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. A new top-level `Tests/<X>/` tree is **silently un-gated** until both the gate filters and `Tests/regression_baseline.json` are extended. Live deliberate example: `Tests/ProcGenSim/` (manual-only, via `/procgen_sim`).
 
