@@ -18,6 +18,7 @@
     ".claude/commands/reference/update_roadmap_resolve.md": "coding",
     ".claude/commands/reference/update_roadmap_validate.md": "coding",
     ".claude/hooks/_claude_scope.py": "pure",
+    ".claude/hooks/_dispatch_pins.py": "pure",
     ".claude/hooks/_owner_text.py": "pure",
     ".claude/hooks/_prompt_provenance.py": "pure",
     ".claude/hooks/_regenerable_clone.py": "godot",
@@ -41,6 +42,7 @@
     ".claude/scripts/anthropic_sidecar.sh": "pure",
     ".claude/scripts/codex_quota_probe.py": "pure",
     ".claude/scripts/deepseek_balance_probe.py": "pure",
+    ".claude/scripts/lib/cli_envelope.py": "pure",
     ".claude/skills/_brainstorm_shared/doc_production.md": "coding",
     ".claude/skills/_brainstorm_shared/existing_doc_check.md": "coding",
     ".claude/skills/_brainstorm_shared/flow_and_frontier.md": "coding",
@@ -75,6 +77,7 @@
     ".claude/tests/test_claude_core_standalone.py": "pure",
     ".claude/tests/test_claude_profile_functions.ps1": "pure",
     ".claude/tests/test_claudemd_citations.py": "pure",
+    ".claude/tests/test_cli_envelope.py": "pure",
     ".claude/tests/test_codex_quota_probe.py": "pure",
     ".claude/tests/test_compact_directive_anchor.py": "pure",
     ".claude/tests/test_compact_directive_ledger.py": "pure",
@@ -84,6 +87,7 @@
     ".claude/tests/test_design_surface_reminder.py": "pure",
     ".claude/tests/test_digest_final_review.py": "pure",
     ".claude/tests/test_digest_identity_and_full_output.py": "pure",
+    ".claude/tests/test_dispatch_pins.py": "pure",
     ".claude/tests/test_dispatch_table.py": "pure",
     ".claude/tests/test_file_lock.py": "pure",
     ".claude/tests/test_full_digest_evidence.py": "pure",
@@ -134,6 +138,7 @@
     ".claude/tests/test_session_digest_bounds.py": "pure",
     ".claude/tests/test_session_digest_question_answers.py": "pure",
     ".claude/tests/test_session_digest_workflow_results.py": "pure",
+    ".claude/tests/test_sidecar_argv.py": "pure",
     ".claude/tests/test_sidecar_balance_retry.sh": "pure",
     ".claude/tests/test_sidecar_capacity_gate.sh": "pure",
     ".claude/tests/test_sidecar_detach.sh": "pure",
@@ -163,6 +168,7 @@
     ".claude/tools/rule_retirement.py": "pure",
     ".claude/tools/self_eval_archive_store.py": "pure",
     ".claude/tools/self_improvement_due.py": "pure",
+    ".claude/tools/sidecar_argv.py": "pure",
     ".claude/tools/task_record.py": "pure"
   }
 }

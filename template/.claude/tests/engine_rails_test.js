@@ -15,7 +15,7 @@ const ENGINES = {
   'review_fanout.js': (extra) => ({ agents: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore' }], ...extra }),
 }
 
-async function prompts(file, args) {
+async function prompts(file, args, logs) {
   const src = fs.readFileSync(path.join(__dirname, '../workflows', file), 'utf8')
     .replace(/^export const meta = \{[\s\S]*?^\}\r?\n/m, '')
   const seen = []
@@ -30,7 +30,7 @@ async function prompts(file, args) {
     return v
   }))
   const result = await new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', src)(
-    args, agent, parallel, pipeline, () => {}, () => {})
+    args, agent, parallel, pipeline, () => {}, (m) => { if (logs) logs.push(m) })
   return { seen, result }
 }
 
@@ -54,6 +54,28 @@ async function prompts(file, args) {
     const src = fs.readFileSync(path.join(__dirname, '../workflows', file), 'utf8')
     check(file + ': no hand-copied TIER_OF table remains', !/\bTIER_OF\b/.test(src))
   }
+  // Inline delivery: the hook supplies `__railsText` for the pairs a call uses; each engine pastes it
+  // after the brief under a standing-rules header, and keeps the pointer only as the fallback.
+  const INLINE_KEY = { 'dispatch.js': 'any/minimal', 'dispatch_chains.js': 'any/minimal',
+    'explore_fanout.js': 'survey/minimal', 'review_fanout.js': 'review/minimal' }
+  for (const [file, build] of Object.entries(ENGINES)) {
+    const logs = []
+    const inline = await prompts(file, build({ __rails: RAILS, __railsText: { [INLINE_KEY[file]]: 'RAILS-BODY-XYZ' } }), logs)
+    const p = inline.seen[0] || ''
+    check(file + ': inline text arrives after the brief under the standing-rules header, no pointer',
+      p.includes('standing rules for how you work') && p.includes('RAILS-BODY-XYZ') && !p.includes('Read .claude/guards')
+        && p.indexOf('RAILS-BODY-XYZ') > p.indexOf('p.md'), inline.result && inline.result.error || p.slice(-300))
+    const emptyLogs = []
+    const empty = await prompts(file, build({ __rails: RAILS, __railsText: { [INLINE_KEY[file]]: '' } }), emptyLogs)
+    check(file + ': an empty entry falls back to the pointer', (empty.seen[0] || '').includes('Read .claude/guards'))
+    const missLogs = []
+    await prompts(file, build({ __rails: RAILS, __railsText: { 'other/detailed': 'x' } }), missLogs)
+    check(file + ': a present map missing the job key logs RAILS-FALLBACK', missLogs.some(l => String(l).includes('RAILS-FALLBACK')),
+      missLogs.join(' | ').slice(0, 300))
+  }
+  const chainsBare = await prompts('dispatch_chains.js', ENGINES['dispatch_chains.js']({}))
+  check('dispatch_chains.js: the fallback pointer names any.md', (chainsBare.seen[0] || '').includes('guards/any.md'),
+    (chainsBare.seen[0] || '').slice(-300))
   // A per-job railTier override wins over the registry map: the rail-tier battery varies the tier
   // with the model held fixed, through the production prompt.
   const withOverride = await prompts('dispatch.js', { jobs: [{ ...JOB, railTier: 'condensed' }], __rails: RAILS })

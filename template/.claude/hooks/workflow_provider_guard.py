@@ -74,6 +74,8 @@ try:
 except Exception:  # no session record → every conserving dispatch states its own currency
     _hook_state = None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _dispatch_pins import (  # noqa: E402
+    REVIEW_FANOUT_DEFAULT_MODEL, _args, _is_review_fanout, dispatch_jobs, script_blobs)
 try:
     import _session_transport
     import provider_capacity_guard
@@ -101,9 +103,6 @@ SCRIPT_PIN_RE = re.compile(
 FANOUT_ENGINES = ("explore_fanout", "review_fanout", "dispatch", "doc_architecture_audit")
 # The floor comparison, not a restated list: quota_bands owns the band order.
 CONSERVING_BANDS = tuple(b for b in quota_bands.BAND_NAMES if quota_bands.band_satisfies(b, "Ahead"))
-REVIEW_FANOUT_DEFAULT_MODEL = "sonnet"   # review_fanout.js DEFAULT_MODEL — an omitted pin lands here
-# DEFAULT_EFFORT of review_fanout.js, dispatch_chains.js and explore_fanout.js on the host transport.
-ENGINE_DEFAULT_EFFORT = "medium"
 MIN_REASON_CHARS = 20
 AGENT_OVERRIDE_RE = re.compile(r"^\s*CURRENCY:\s*anthropic\b.{%d,}" % MIN_REASON_CHARS, re.I | re.M)
 
@@ -161,82 +160,12 @@ def claimed_roles(slackers):
         return None
 
 
-def _args(tool_input):
-    a = tool_input.get("args")
-    if isinstance(a, str):
-        try:
-            a = json.loads(a)
-        except Exception:
-            return {}
-    return a if isinstance(a, dict) else {}
-
-
-def _is_review_fanout(tool_input):
-    return "review_fanout" in os.path.basename(
-        str(tool_input.get("scriptPath") or tool_input.get("name") or "")).replace("-", "_")
-
-
-def dispatch_jobs(payload):
-    """[{label, model, effort, agentType}] per job this call's ARGS declare.
-
-    `model`/`effort` are the caller's literal values, None when omitted, except where the engine
-    fills an omission: a review_fanout model, and the effort of a chain job, an explore lens or a
-    review agent (ENGINE_DEFAULT_EFFORT). dispatch.js requires every pin.
-    """
-    tool = payload.get("tool_name")
-    ti = payload.get("tool_input") or {}
-    if tool == "Agent":
-        return [{"label": str(ti.get("description") or "agent"), "model": ti.get("model") or None,
-                 "effort": None, "agentType": str(ti.get("subagent_type") or "general-purpose")}]
-    a = _args(ti)
-    out = []
-
-    def job(j, label_key, default_label, default_effort=None):
-        return {"label": str(j.get(label_key) or default_label), "model": j.get("model") or None,
-                "effort": j.get("effort") or default_effort, "agentType": j.get("agentType") or None}
-
-    for j in a.get("jobs") or []:
-        out.append(job(j or {}, "label", "job"))
-    for c in a.get("chains") or []:
-        for j in (c or {}).get("jobs") or []:
-            out.append(job(j or {}, "label", "job", ENGINE_DEFAULT_EFFORT))
-    for lens in a.get("lenses") or []:
-        out.append(job(lens or {}, "key", "lens", ENGINE_DEFAULT_EFFORT))
-    review = _is_review_fanout(ti)
-    for ag in a.get("agents") or []:
-        row = job(ag or {}, "key", "agent", ENGINE_DEFAULT_EFFORT if review else None)
-        # An omitted review_fanout pin is the engine's default, not an absent pin.
-        row["model"] = row["model"] or REVIEW_FANOUT_DEFAULT_MODEL
-        out.append(row)
-    return out
-
-
 def pinned_models(payload):
     """[(label, model)] every pin this call will dispatch. An omitted review_fanout pin is the engine's default."""
     # `dispatch.js` requires a pin per job, so an entry without one is malformed input, not a pin.
     # Emitting `(label, "")` denied it as "Pin not serviceable: ''" -- a message naming no model,
     # about a pin the caller never wrote.
     return [(j["label"], str(j["model"])) for j in dispatch_jobs(payload) if j["model"]]
-
-
-# Characters of a `scriptPath` file this hook will read. The committed workflows are all well under
-# it; the cap exists so a caller-supplied path cannot set this hook's cost.
-SCRIPT_READ_CAP = 512 * 1024
-
-_COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:'\"`\\])//[^\n]*", re.S)
-
-
-def _strip_comments(text):
-    """Blank out JS comments before scanning for pins.
-
-    Load-bearing, not tidiness: these scripts DOCUMENT their pin conventions in comments
-    (`dispatch.js` explains its pin vocabulary in prose directly above the code), so a
-    scanner that reads comments denies a script whose executable pins are all legal. A guard that
-    misfires on its own doctrine spends the credibility that makes true positives land
-    (`rules/harness_tooling.md`). The `//` arm refuses to match after `:` or a quote so a URL
-    (`https://…`) is not read as a comment.
-    """
-    return _COMMENT_RE.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def script_pins(payload):
@@ -250,7 +179,7 @@ def script_pins(payload):
     A pin computed at runtime (a variable, a map lookup, a template literal) is not statically
     visible and is NOT returned — that limit is stated in the rails rather than papered over.
     """
-    blobs, incomplete = _script_blobs(payload)
+    blobs, incomplete = script_blobs(payload)
     out = []
     for label, text in blobs:
         for m in SCRIPT_PIN_RE.finditer(text):
@@ -261,47 +190,6 @@ def script_pins(payload):
     for why in incomplete:
         out.append(("scan-incomplete", "<unscanned: %s>" % why))
     return out
-
-
-def _script_blobs(payload):
-    """([(label, comment-stripped text)], [incomplete reasons]) for a Workflow's inline script and
-    the file its `scriptPath` names."""
-    ti = payload.get("tool_input") or {}
-    if payload.get("tool_name") != "Workflow":
-        return [], []
-    incomplete = []
-    blobs = []
-    inline = ti.get("script")
-    if isinstance(inline, str) and inline:
-        blobs.append(("inline-script", inline))
-    path = str(ti.get("scriptPath") or "")
-    if path:
-        try:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            full = path if os.path.isabs(path) else os.path.join(os.path.dirname(root), path)
-            # Bounded: this runs on EVERY Workflow PreToolUse, and `scriptPath` is caller-supplied.
-            # A mispointed path at a multi-MB file would spend the hook's whole budget on a read
-            # whose pins all sit in the first few KB anyway. But a TRUNCATED scan is an incomplete
-            # one: a pin past the cap would be invisible and read to `decide_vocabulary` exactly
-            # like a clean script, so the cap reports itself rather than silently passing.
-            with open(full, encoding="utf-8", errors="replace") as fh:
-                text = fh.read(SCRIPT_READ_CAP + 1)
-            if len(text) > SCRIPT_READ_CAP:
-                incomplete.append("%s exceeds %dKB" % (os.path.basename(path),
-                                                       SCRIPT_READ_CAP // 1024))
-            blobs.append((os.path.basename(path), text[:SCRIPT_READ_CAP]))
-        except Exception:
-            # No claim from THAT FILE -- but pins already collected from the inline blob stand.
-            # Returning [] here made an unreadable path ERASE real evidence, and an empty pin list
-            # reads to decide_vocabulary exactly like a clean script (instruction_quality 14).
-            #
-            # NOT escalated to a deny, unlike truncation: this hook resolves `scriptPath` against
-            # its own root guess, so "I could not open it" often means the runtime can and the
-            # guess was wrong. Denying there would block valid dispatches on a path this hook
-            # merely failed to resolve. Truncation is different -- the file WAS found, and the
-            # part not read could hold a pin.
-            pass
-    return [(label, _strip_comments(text)) for label, text in blobs], incomplete
 
 
 def override_stated(payload):
@@ -399,6 +287,54 @@ def _rails_map(transport, data):
     return out
 
 
+_VALID_SHAPES = ("any", "survey", "review", "author")
+
+
+def _guard_text(shape, tier):
+    """tools/guard_text.guard_text, the one assembly of the guard files; raises on a missing section."""
+    import guard_text  # tools/ is on sys.path; imported late so a broken module costs only the inline text
+    return guard_text.guard_text(shape, tier)
+
+
+def _engine_of(tool_input):
+    """Which fan-out engine a Workflow call runs, from `scriptPath` or `name` (`-` read as `_`), or None."""
+    key = os.path.basename(str(tool_input.get("scriptPath") or tool_input.get("name") or "")).replace("-", "_")
+    for engine in ("dispatch_chains", "explore_fanout", "review_fanout", "dispatch"):
+        if engine in key:
+            return engine
+    return None
+
+
+def _rails_text(payload, rails_map):
+    """{"<shape>/<tier>": guard text} for exactly the pairs this call's jobs resolve to, or {}.
+
+    Mirrors each engine's own resolution: dispatch/dispatch_chains take the job's shape (default
+    `any`), explore_fanout is `survey`, review_fanout is `review`; the tier is the job's `railTier`
+    (dispatch.js only), else the rail map, else `detailed`; `none` gets nothing. A pair whose
+    assembly fails is left out, so that job falls back to the engine's Read pointer.
+    """
+    engine = _engine_of(payload.get("tool_input") or {})
+    if engine is None:
+        return {}
+    out = {}
+    for job in dispatch_jobs(payload):
+        if engine == "explore_fanout":
+            shape = "survey"
+        elif engine == "review_fanout":
+            shape = "review"
+        else:
+            shape = job.get("shape") if job.get("shape") in _VALID_SHAPES else "any"
+        tier = (job.get("railTier") if engine == "dispatch" else None) or rails_map.get(job.get("model")) or "detailed"
+        key = "%s/%s" % (shape, tier)
+        if tier == "none" or key in out:
+            continue
+        try:
+            out[key] = _guard_text(shape, tier)
+        except Exception:
+            continue
+    return out
+
+
 def transport_injection(payload, transport, data=None):
     """`updatedInput` adding `args.__rails` (every known transport) and `args.__transport`
     (provider transports only), or None when there is nothing to inject.
@@ -435,6 +371,10 @@ def transport_injection(payload, transport, data=None):
         return None  # an array payload has nowhere to hang the key
     parsed = dict(parsed)
     parsed["__rails"] = _rails_map(transport, data)
+    # The engines paste this text after the brief; they cannot read the guard files themselves.
+    rails_text = _rails_text({"tool_name": "Workflow", "tool_input": dict(ti, args=parsed)}, parsed["__rails"])
+    if rails_text:
+        parsed["__railsText"] = rails_text
     if transport == _session_transport.HOST_TRANSPORT:
         ti["args"] = json.dumps(parsed) if isinstance(raw, str) else parsed
         return ti

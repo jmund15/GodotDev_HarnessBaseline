@@ -33,22 +33,13 @@ import model_ladder_gate
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
+import sidecar_argv  # noqa: E402
 try:
     import model_registry  # noqa: E402
 except Exception:
     model_registry = None
 
 STATE_KEY = "sidecar_dispatch_context"
-# A launch INVOKES the launcher (`bash <path>`, or the path at a command start) with flags; a
-# mention (grep, sed, ls, `--launcher x_sidecar.sh` as an argument) does not.
-LAUNCH_RE = re.compile(r"(?:^|[;&|(]\s*|\bbash\s+)([\w./\\:-]*_sidecar\.sh)(?=\s|$)")
-ALIAS_RE = re.compile(r"(?:^|\s)-m\s+[\"']?([\w.-]+)")
-AUTHORIZED_RE = re.compile(r"(?:^|\s)-A(?=\s|$)")
-# -W: the user authorized a peak-pricing-window dispatch; -A does not cover it (lib exit 11).
-PEAK_AUTHORIZED_RE = re.compile(r"(?:^|\s)-W(?=\s|$)")
-# -R's value, quoted or bare — mirrors ALIAS_RE's shape but a record path carries slashes, colons
-# and dots that an alias never does, so it cannot reuse ALIAS_RE's narrower char class.
-RECORD_RE = re.compile(r"""(?:^|\s)-R\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
 PREFLIGHT_TIMEOUT = 45   # under pre_bash_dispatch's 75 s; the codex probe is one network call
 EXHAUSTED_EXIT = 10      # lib/sidecar_common.sh: a live provider-exhausted marker; -A cannot lift it
 PEAK_EXIT = 11           # lib/sidecar_common.sh: peak pricing window on a peakPolicy=refuse row; only -W lifts it
@@ -79,15 +70,22 @@ def _git_bash():
     return "bash" if os.name != "nt" else None
 
 
+def sidecar_launch(cmd):
+    """The first executed `*_sidecar.sh` Invocation in `cmd` that is not a `--check` probe, or None.
+    A quoted mention, or the launcher named as another program's argument, is not executed."""
+    inv = next((c for c in sidecar_argv.launcher_invocations(cmd) if c.kind == "sidecar"), None)
+    return None if inv is None or inv.args[:1] == ["--check"] else inv
+
+
 def preflight(cmd, root):
     """Return refusal text unless a trusted launcher's --check completes successfully."""
     if os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0":
         return None
-    m = LAUNCH_RE.search(cmd)
+    inv = next((c for c in sidecar_argv.launcher_invocations(cmd) if c.kind == "sidecar"), None)
     bash = _git_bash()
-    if not m or not bash:
+    if inv is None or not bash:
         return None
-    launcher = m.group(1)
+    launcher = inv.path
     root_path = Path(root).resolve()
     candidate = Path(launcher)
     candidate = candidate if candidate.is_absolute() else root_path / candidate
@@ -99,14 +97,14 @@ def preflight(cmd, root):
     if (candidate.is_symlink() or launcher_path.parent != trusted_dir
             or not launcher_path.is_file() or _path_has_symlink(root_path, launcher_path)):
         return None
-    tail = cmd[m.end():]   # flags belong to THIS launcher, not to another command on the line
+    flags = sidecar_argv.sidecar_flags(inv.args)
     args = [bash, str(launcher_path), "--check"]
-    alias = ALIAS_RE.search(tail)
-    if alias:
-        args += ["-m", alias.group(1)]
-    if AUTHORIZED_RE.search(tail):
+    if isinstance(flags.get("m"), str):
+        args += ["-m", flags["m"]]
+    if flags.get("A") is True:
         args.append("-A")
-    if PEAK_AUTHORIZED_RE.search(tail):
+    # -W: the user authorized a peak-pricing-window dispatch; -A does not cover it (lib exit 11).
+    if flags.get("W") is True:
         args.append("-W")
     try:
         r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT,
@@ -136,25 +134,8 @@ def preflight(cmd, root):
             % (os.path.basename(launcher), r.returncode, text[-1500:]))
 
 
-def _record_path(tail):
-    """-> the -R value in `tail` (the flags after the launcher token), or None when absent."""
-    m = RECORD_RE.search(tail)
-    if not m:
-        return None
-    return next((g for g in m.groups() if g), None)
-
-
-def _is_check(cmd, launch_end):
-    """First token after the launcher is `--check` — §2's shlex parse, not a substring test."""
-    try:
-        tokens = list(shlex.shlex(cmd[launch_end:], posix=True, punctuation_chars=True))
-    except ValueError:
-        return False
-    return bool(tokens) and tokens[0] == "--check"
-
-
 def _backgrounds_lib_launcher(launcher, root):
-    """True when `launcher` (as matched by LAUNCH_RE) is a readable file calling
+    """True when `launcher` (an Invocation.path, as written) is a readable file calling
     `sc_reexec_snapshot "$@"` — the shape D1 gives every detach-capable launcher. A launcher that
     does not, or cannot be read, is not judged (returns False, never raises)."""
     root_path = Path(root).resolve()
@@ -182,10 +163,15 @@ def _inside(path, parent):
 
 
 def _resolve(root, value):
+    """The path as written, made absolute, or None. Never `Path.resolve()`: it follows a link,
+    and the symlink check that runs next would then inspect the link's target, not the link.
+    A `..` segment is refused: lexical normalization and the OS disagree across a link."""
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("path must be a non-empty string")
+        return None
     path = Path(value)
-    return (path if path.is_absolute() else root / path).resolve()
+    if ".." in path.parts:
+        return None
+    return path if path.is_absolute() else root / path
 
 
 def _path_has_symlink(root, path):
@@ -201,7 +187,8 @@ def _path_has_symlink(root, path):
 
 def _regular_project_file(root, value):
     path = _resolve(root, value)
-    return _inside(path, root) and path.is_file() and not _path_has_symlink(root, path)
+    return (path is not None and _inside(path, root) and path.is_file()
+            and not _path_has_symlink(root, path))
 
 
 def _parse_fanout_command(command, root):
@@ -215,7 +202,7 @@ def _parse_fanout_command(command, root):
         return None
     script = _resolve(root, words[1])
     expected = (root / ".claude" / "tools" / "sidecar_fanout.py").resolve()
-    if script != expected or not script.is_file() or _path_has_symlink(root, script):
+    if script is None or script != expected or not script.is_file() or _path_has_symlink(root, script):
         return None
 
     jobs = None
@@ -243,11 +230,11 @@ def _parse_fanout_command(command, root):
         return None
     jobs_path = _resolve(root, jobs)
     scratch = (root / ".claude" / "scratch").resolve()
-    if (not _inside(jobs_path, scratch) or jobs_path.suffix.lower() != ".json"
+    if (jobs_path is None or not _inside(jobs_path, scratch) or jobs_path.suffix.lower() != ".json"
             or not jobs_path.is_file() or _path_has_symlink(root, jobs_path)):
         return None
     output_path = _resolve(root, out_dir) if out_dir else jobs_path.parent / "fanout"
-    if not _inside(output_path, scratch) or _path_has_symlink(root, output_path):
+    if output_path is None or not _inside(output_path, scratch) or _path_has_symlink(root, output_path):
         return None
     return jobs_path
 
@@ -308,14 +295,6 @@ def fanout_allowed(payload):
             and all(_safe_fanout_job(job, root, registry) for job in jobs))
 
 
-def _executes_launcher(cmd):
-    """True when a top-level shell segment runs a `*_sidecar.sh` launcher, per the quote-aware parser
-    orchestration_metrics.sidecar_launches uses. LAUNCH_RE alone also matches a quoted mention."""
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-    import orchestration_metrics
-    return any(kind == "sidecar" for kind, _, _ in orchestration_metrics._launcher_calls_named(cmd))
-
-
 def main():
     data = json.load(sys.stdin)
     if data.get("tool_name") != "Bash":
@@ -323,14 +302,8 @@ def main():
     tool_input = data.get("tool_input") or {}
     cmd = tool_input.get("command") or ""
     run_in_background = bool(tool_input.get("run_in_background"))
-    direct = LAUNCH_RE.search(cmd)
-    if direct and not _executes_launcher(cmd):
-        direct = None  # the launcher is only named: quoted in `python3 -c "…"`, `echo '…'`, a heredoc
+    direct = sidecar_launch(cmd)
     fanout_is_allowed = fanout_allowed(data)
-    # `--check` must be THIS launcher's own first token; the word elsewhere on the line, or past a
-    # `;`/`&&`/`|`, is not a probe (§2's shlex parse replaces a plain substring test).
-    if direct and _is_check(cmd, direct.end()):
-        direct = None
     if not direct and not fanout_is_allowed:
         return
     root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
@@ -339,9 +312,9 @@ def main():
     # own: the lib writes <record>.exit/.out from an EXIT-trap handler on every exit path, so
     # there is nothing left here to deny. When it also carries -R, point at that record instead.
     background_exit_advisory = None
-    if direct and run_in_background and _backgrounds_lib_launcher(direct.group(1), root):
-        record_path = _record_path(cmd[direct.end():])
-        if record_path:
+    if direct and run_in_background and _backgrounds_lib_launcher(direct.path, root):
+        record_path = sidecar_argv.sidecar_flags(direct.args).get("R")
+        if isinstance(record_path, str):
             background_exit_advisory = (
                 "if a killed or stopped notice arrives for this task, the launcher usually "
                 "survives: read %s.exit, and arm a Monitor on it if it is absent." % record_path

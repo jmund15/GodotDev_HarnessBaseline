@@ -39,6 +39,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import session_digest as digest  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "scripts" / "lib"))
+import cli_envelope  # noqa: E402
 
 REVIEW_HINTS = ("review", "compare", "other session", "other response")
 ADJUDICATION_PENDING = "<!-- adjudication pending: dispatch judge_brief.md -->"
@@ -589,38 +591,19 @@ def _record_arm(path: Path) -> dict:
 
 
 def _launcher_result(path: Path) -> tuple[str, str]:
-    """(final text, first prompt) from a launcher's `.out.json`.
-
-    Three shapes ship: a single result object, a JSON array of every event (`-o json` under the
-    user setting `"verbose": true`), and a JSONL stream. In the last two the last `result` event
-    carries the text. All are read, because the shape depends on `-P` and the user's settings.
-    """
+    """(final text, first prompt) from a launcher's `.out.json`, in any CLI envelope shape."""
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "", ""
-    events = None
-    try:
-        doc = json.loads(raw)
-        if isinstance(doc, dict):
-            return str(doc.get("result") or ""), str(doc.get("prompt") or "")
-        if isinstance(doc, list):
-            events = doc
-    except json.JSONDecodeError:
-        pass
-    final, prompt = "", ""
-    for line in (events if events is not None else raw.splitlines()):
-        try:
-            o = line if isinstance(line, dict) else json.loads(line)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            continue
-        if not isinstance(o, dict):
-            continue
-        if o.get("type") == "result" and o.get("result"):
-            final = str(o["result"])
-        if not prompt and o.get("type") == "user":
-            prompt = _user_text(o)
-    return final, prompt
+    evts = cli_envelope.events(raw)
+    final = cli_envelope.result_event(evts) or {}
+    # An empty result or user turn never displaces real text: take the last non-empty result
+    # and the first non-empty user prompt.
+    text = next((str(o["result"]) for o in reversed(evts)
+                 if o.get("type") == "result" and o.get("result")), "") or str(final.get("result") or "")
+    prompt = next((t for t in (_user_text(o) for o in evts if o.get("type") == "user") if t), "")
+    return text, prompt or str(final.get("prompt") or "")
 
 
 def arm_infos(token: str, pdir: Path) -> list[dict]:

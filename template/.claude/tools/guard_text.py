@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """Single home of delegate-guard tier extraction.
 
-`.claude/guards/{any,survey,review,author}.md` is the one home for delegate rails.
-Four transports deliver them and none may re-implement the parse:
+`.claude/guards/{any,survey,review,author}.md` is the one home for delegate rails. Every route
+delivers this module's assembly and none may re-implement the parse:
 
-  * workflows/dispatch.js      — REFERENCES both files (in-process subagents, no SessionStart)
-  * workflows/review_fanout.js — REFERENCES both files
+  * hooks/workflow_provider_guard.py — INLINES, as `args.__railsText`, for the four Workflow
+                                 engines (dispatch, dispatch_chains, explore_fanout, review_fanout);
+                                 each engine keeps a Read pointer only as its fallback
   * hooks/session_model_rails  — INLINES, via guard_text(), for a sidecar `claude` child
   * scripts/lib/sidecar_common.sh — INLINES, via this module's CLI, on the -D bare/pointer
                                  tiers where no project hook fires
-    (the former `codex exec` CLI launcher stub was retired, then deleted (2026-09-14);
-     codex_proxy_sidecar.sh is the codex transport's sole launcher)
 
-The two inlining callers share this parse. A second implementation in awk or JS is the drift
-that dispatch.js:73 already warns against, and it would fail silently: a guard that extracts
-the wrong section still looks like a guard.
+A second implementation in awk or JS would drift and fail silently: a guard that extracts the
+wrong section still looks like a guard.
 
 `any` is CONCATENATED into every other shape rather than chained by reference. Its section
 carries the concurrency bar, the read-only bar, the confidence ladder and the terseness rail —
@@ -25,6 +23,7 @@ CLI:  guard_text.py <shape> <tier>   -> the text on stdout, exit 0
       bad arguments                  -> the legal set on stderr, exit 2
 """
 import os
+import re
 import sys
 
 VALID_SHAPES = ("any", "survey", "review", "author")
@@ -51,6 +50,11 @@ def _section(path: str, tier: str) -> str:
     body = "\n".join(out).strip()
     if not body:
         raise ValueError("no '## %s' section in %s" % (tier, path))
+    # A section whose whole body points at a sibling ("Read this file's `## condensed` section.")
+    # serves a delegate that opens the file; an inline delivery must carry the sibling's text.
+    redirect = re.fullmatch(r"Read this file's `## (\w+)` section\.", body)
+    if redirect and redirect.group(1) != tier:
+        return _section(path, redirect.group(1))
     return body
 
 

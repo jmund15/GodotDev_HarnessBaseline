@@ -78,6 +78,16 @@ def main():
     cases.append(("the real guards deliver every shape at every tier" + ("" if not live else ": " + "; ".join(live)),
                   not live))
 
+    redirected = []
+    for shape in ("survey", "review", "author"):
+        rc, out, _ = run(TOOL, shape, "minimal")
+        _, cond, _ = run(TOOL, shape, "condensed")
+        shape_cond = cond.split("\n\n", 1)[1] if "\n\n" in cond else ""
+        if "Read this file" in out or not shape_cond or shape_cond not in out:
+            redirected.append(shape)
+    cases.append(("a minimal section that points at another section delivers that section's text"
+                  + ("" if not redirected else ": " + ", ".join(redirected)), not redirected))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

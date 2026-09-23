@@ -30,8 +30,8 @@ EVIDENCE for the finish check, strongest first:
                      transport, from the child's own transcript (record sessionId): a proxied child
                      (codex, deepseek, opencode) records its client setting, not what the upstream
                      served. Unreported evidence is never a contradiction.
-Requested pins: workflow_provider_guard.dispatch_jobs; sidecar launches:
-orchestration_metrics.sidecar_launches. Inherited effort: the payload's `effort.level`.
+Requested pins: _dispatch_pins.dispatch_jobs; sidecar launches:
+orchestration_metrics.sidecar_launches (argv read by tools/sidecar_argv.py). Inherited effort: the payload's `effort.level`.
 
 STATE: `dispatch_table_pending` in _hook_state.state_path(sid), written only via update_json_locked.
 Entries leave on completion; older than 24 h they print once as stale and leave. Capped at 50.
@@ -51,6 +51,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(os.path.dirname(HERE), "tools")
 sys.path.insert(0, HERE)
 import _hook_state  # noqa: E402
+from _dispatch_pins import dispatch_jobs, script_blobs  # noqa: E402
 
 STATE_KEY = "dispatch_table_pending"
 STALE_SECONDS = 24 * 3600
@@ -68,6 +69,12 @@ def _om():
     sys.path.insert(0, TOOLS)
     import orchestration_metrics
     return orchestration_metrics
+
+
+def _mr():
+    sys.path.insert(0, TOOLS)
+    import model_registry
+    return model_registry
 
 
 def _session_dir(payload):
@@ -163,20 +170,30 @@ QUIET_SECONDS = 0.75
 PENDING = "pending"      # effort not known until the agent's first response; resolved at the next Stop
 
 
-def _wait_for_agents(run_dir, expected):
-    """Poll the run dir until the started set is complete — `expected` agents, or (count unknown) no
-    new agent for QUIET_SECONDS — and every started agent has responded, or the launch wait runs out."""
+def _wait_for(predicate):
+    """The value of `predicate()` — a (done, value) pair — once done, or when the launch wait runs out."""
     deadline = time.time() + _launch_wait()
-    count, steady_since = -1, time.time()
     while True:
+        done, value = predicate()
+        if done or time.time() >= deadline:
+            return value
+        time.sleep(0.25)
+
+
+def _wait_for_agents(run_dir, expected):
+    """The started agents once the set is complete — `expected` agents, or (count unknown) no new agent
+    for QUIET_SECONDS — and every started agent has responded, or when the launch wait runs out."""
+    seen = {"count": -1, "since": time.time()}
+
+    def settled():
         agents = _live_agents(run_dir)
         now = time.time()
-        if len(agents) != count:
-            count, steady_since = len(agents), now
-        all_in = (len(agents) >= expected) if expected else (agents and now - steady_since >= QUIET_SECONDS)
-        if (all_in and all(a["responded"] for a in agents)) or now >= deadline:
-            return agents
-        time.sleep(0.25)
+        if len(agents) != seen["count"]:
+            seen["count"], seen["since"] = len(agents), now
+        all_in = (len(agents) >= expected) if expected else (agents and now - seen["since"] >= QUIET_SECONDS)
+        return bool(all_in and all(a["responded"] for a in agents)), agents
+
+    return _wait_for(settled)
 
 
 def _job_for(label, jobs):
@@ -187,61 +204,40 @@ def _job_for(label, jobs):
     return None
 
 
+def _row(label, display_model, pin_effort, agent_type, recorded=None, responded=False, model_for_effort=None):
+    """One table row. Effort, first found: `recorded` → `none` once the agent responded without one, or
+    for a model that takes no effort → `pin_effort` (a `?` pin stays `?`) → PENDING."""
+    if recorded:
+        effort = recorded
+    elif responded or not _mr().takes_effort(model_for_effort or display_model):
+        effort = NO_EFFORT
+    else:
+        effort = pin_effort or PENDING
+    return (label, display_model, effort, agent_type)
+
+
 def _agent_row(agent, jobs, declared=None):
     """(row, complete) for a started agent; complete means its first response has arrived.
 
-    Model: the served id, else what the same pin resolved to (`declared["models"]`: another agent
-    of this run that already answered, or the session's own model for the same family), else the pin.
-    Effort, first found: recorded → `none` for a model that takes no effort → the args job's pin →
-    the script's literal pin for this label → the script's only literal effort → PENDING (a script
-    that writes no literal effort anywhere)."""
+    Model: the served id, else what the same pin resolved to for another agent of this run that
+    already answered (`declared["models"]`), else the pin. Effort per `_row`, the pin taken from the
+    args job → the script's literal pin for this label → the script's only literal effort."""
     declared = declared or {}
     job = _job_for(agent["label"], jobs) or {}
     pin = job.get("model") or agent["requested"]
-    model = agent["served"] or (declared.get("models") or {}).get(pin) or pin
-    effort = agent["effort"] or (NO_EFFORT if agent["responded"] or _takes_no_effort(model) else None)
-    for candidate in (job.get("effort"), (declared.get("by_label") or {}).get(agent["label"]), declared.get("only")):
-        if effort:
-            break
-        if candidate not in (None, UNKNOWN):
-            effort = candidate
-    return (agent["label"], short(model), effort or PENDING, agent["type"]), agent["responded"]
-
-
-ANTHROPIC_FAMILIES = ("opus", "sonnet", "haiku", "fable")
-
-
-def _session_model(payload):
-    """The main session's own served model: the last assistant record of its transcript (tail read)."""
-    path = str(payload.get("transcript_path") or "")
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, 2)
-            fh.seek(max(0, fh.tell() - 400_000))
-            tail = fh.read().decode("utf-8", "replace").splitlines()
-    except OSError:
-        return None
-    for line in reversed(tail):
-        if '"assistant"' not in line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        model = (row.get("message") or {}).get("model") if row.get("type") == "assistant" else None
-        if model:
-            return model
-    return None
+    model = agent["served"] or (declared.get("models") or {}).get(pin) or _resolved_id(pin) or pin
+    candidates = (job.get("effort"), (declared.get("by_label") or {}).get(agent["label"]), declared.get("only"))
+    pin_effort = next((c for c in candidates if c not in (None, UNKNOWN)), None)
+    return _row(agent["label"], short(model), pin_effort, agent["type"], recorded=agent["effort"],
+                responded=agent["responded"], model_for_effort=model), agent["responded"]
 
 
 def _declared(payload, agents):
     """What the dispatch declared beyond args: literal efforts in the script, and each model pin's
     resolved id. A pin resolves the same way for every agent of a run, so one answered agent settles
-    it for all; before any answer, an Anthropic alias of the session's own family resolves to the
-    session model (observed: `opus` ran as claude-opus-5-5 under an opus-5-5 session)."""
-    import workflow_provider_guard as guard
+    it for all."""
     try:
-        text = "\n".join(t for _, t in guard._script_blobs(payload)[0])
+        text = "\n".join(t for _, t in script_blobs(payload)[0])
     except Exception:
         text = ""
     by_label = _om().efforts_for({"script": text, "logs": []}) if text else {}
@@ -250,38 +246,32 @@ def _declared(payload, agents):
     for a in agents:
         if a["served"] and a["requested"]:
             models.setdefault(a["requested"], a["served"])
-    session = _session_model(payload)
-    for a in agents:
-        pin = a["requested"]
-        if pin in ANTHROPIC_FAMILIES and pin not in models and session and pin in short(session).split("-"):
-            models[pin] = session
     return {"by_label": by_label, "only": literals.pop() if len(literals) == 1 else None, "models": models}
 
 
-def _takes_no_effort(model):
-    """True when the registry row for `model` (alias or id) declares `effortParam: false`: the model
-    ignores any effort pin, so its effort is `none` from launch, never `pending`."""
-    if not model:
-        return False
+def _resolved_id(pin):
+    """The registry id `pin` (alias or id) names, or None when it names none (`inherit`, `?`, a typo)."""
     try:
-        sys.path.insert(0, TOOLS)
-        import model_registry
-        name = short(model)
-        return any(e.get("effortParam") is False and name in (e.get("alias"), short(e.get("id")))
-                   for e in model_registry.load()["models"])
+        return _mr().resolve(pin)["id"]
     except Exception:
-        return False
+        return None
+
+
+def _shown(pin):
+    """The table's model cell for a pin no agent has answered yet: its registry version, shortened,
+    so every row of a run shows one version per model (`opus` → `opus-5-5`); an unknown pin as written."""
+    return short(_resolved_id(pin) or pin)
 
 
 def _registry_version(alias):
     """The registry's `version` (else id) for a sidecar alias: the model the launcher sends."""
-    try:
-        sys.path.insert(0, TOOLS)
-        import model_registry
-        entry = model_registry.resolve(alias)
-        return entry.get("version") or entry["id"]
-    except Exception:
+    rid = _resolved_id(alias)
+    if not rid:
         return alias
+    try:
+        return (_mr().row_by_id(rid) or {}).get("version") or rid
+    except Exception:
+        return rid
 
 
 # ---------------------------------------------------------------- launch
@@ -295,9 +285,8 @@ def _jobs(payload):
                  "effort": s.get("effort") or DEFAULT, "launcher": s.get("launcher"), "record": s.get("record")}
                 for s in _om().sidecar_launches(str((payload.get("tool_input") or {}).get("command") or ""),
                                                 payload.get("cwd"))]
-    import workflow_provider_guard as guard
     level = _effort_level(payload) or UNKNOWN
-    raw = guard.dispatch_jobs(payload)
+    raw = dispatch_jobs(payload)
     out = []
     for j in raw:
         effort = j.get("effort")
@@ -338,9 +327,8 @@ def launch(payload):
                 reported.append(agent["id"])
         started = {_job_for(a["label"], jobs)["label"] for a in agents if _job_for(a["label"], jobs)}
         # Enumerated jobs not started yet: their pins are exactly what the engine will send.
-        rows += [(j["label"], short(j["model"]), NO_EFFORT if _takes_no_effort(j["model"]) else j["effort"],
-                  j["agentType"]) for j in jobs
-                 if j["label"] not in started and j["effort"] != UNKNOWN]
+        rows += [_row(j["label"], _shown(j["model"]), j["effort"], j["agentType"], model_for_effort=j["model"])
+                 for j in jobs if j["label"] not in started and j["effort"] != UNKNOWN]
         reported += ["label:" + j["label"] for j in jobs]
         total = max(len(jobs), len(agents))
         title = "%s · %d agent%s" % (_workflow_name(payload), total, "" if total == 1 else "s")
@@ -354,15 +342,15 @@ def launch(payload):
         entries = [{"kind": "agent", "id": resp.get("agentId"), "task_id": None, "launched_at": now,
                     "jobs": jobs}] if resp.get("agentId") else []
         transcript = os.path.join(session or "", "subagents", "agent-%s.jsonl" % resp.get("agentId"))
-        deadline = time.time() + _launch_wait()
-        served, effort, responded = _read_transcript(transcript)
-        while not responded and resp.get("agentId") and time.time() < deadline:
-            time.sleep(0.25)
-            served, effort, responded = _read_transcript(transcript)
+
+        def responded_yet():
+            read = _read_transcript(transcript)
+            return read[2] or not resp.get("agentId"), read
+
+        served, effort, responded = _wait_for(responded_yet)
         served = served or resp.get("resolvedModel")
-        rows = [(j["label"], short(served) if served else j["model"],
-                 effort or (NO_EFFORT if responded or _takes_no_effort(served or j["model"]) else j["effort"]),
-                 j["agentType"]) for j in jobs]
+        rows = [_row(j["label"], short(served) if served else _shown(j["model"]), j["effort"], j["agentType"],
+                     recorded=effort, responded=responded, model_for_effort=served or j["model"]) for j in jobs]
     else:
         if not jobs:
             return None
@@ -372,8 +360,8 @@ def launch(payload):
         entries = [{"kind": "sidecar", "id": j.get("record") or j["label"], "record": j.get("record"),
                     "task_id": None, "launched_at": now, "jobs": [j]} for j in jobs
                    if j.get("record") or j["label"] != UNLABELED]
-        rows = [(j["label"], j["model"] if j["model"] == DEFAULT else _registry_version(j["model"]),
-                 NO_EFFORT if _takes_no_effort(j["model"]) else j["effort"], "sidecar") for j in jobs]
+        rows = [_row(j["label"], j["model"] if j["model"] == DEFAULT else short(_registry_version(j["model"])),
+                     j["effort"], "sidecar", model_for_effort=j["model"]) for j in jobs]
     lines = [_table(title, rows) if rows else "▶ %s — agents listed as they start" % title]
     still_pending = []
     for entry in entries:
@@ -401,6 +389,13 @@ def _model_ok(requested, resolved, served):
     strip = lambda m: re.sub(r"\[[^\]]*\]$", "", str(m or ""))
     if resolved and strip(resolved) == strip(served):
         return True
+    requested_id = _resolved_id(requested)
+    if requested_id:
+        try:
+            if (_mr().row_by_id(served) or {}).get("id") == requested_id:
+                return True
+        except Exception:
+            pass
     if str(requested).lower() in re.split(r"[-.:/_]", str(served).lower()):
         return True
     return not _om().model_mismatches([{"model": requested, "served_model": served}])

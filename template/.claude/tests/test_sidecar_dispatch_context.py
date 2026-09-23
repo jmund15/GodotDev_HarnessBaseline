@@ -317,6 +317,49 @@ def main():
                   run(fanout_cmd + " --max-parallel 5", fanout_env, session="sdc00022") == {}))
     cases.append(("shell compounds fall through",
                   run(fanout_cmd + " && git status", fanout_env, session="sdc00020") == {}))
+    # Allow-path negatives: _parse_fanout_command is the validator, not a launch parser, and these
+    # pin it through the sidecar_argv refactor.
+    cases.append(("a $(...) substitution in the fan-out command falls through",
+                  run(fanout_cmd + " --max-parallel $(echo 2)", fanout_env, session="sdc00060") == {}))
+    cases.append(("a backtick in the fan-out command falls through",
+                  run(fanout_cmd + " --max-parallel `echo 2`", fanout_env, session="sdc00061") == {}))
+    cases.append(("a py interpreter falls through",
+                  run("py" + fanout_cmd[len("python3"):], fanout_env, session="sdc00062") == {}))
+    cases.append(("a python3.11 interpreter falls through",
+                  run("python3.11" + fanout_cmd[len("python3"):], fanout_env, session="sdc00063") == {}))
+    outside_jobs = os.path.join(fanout_root, ".claude", "jobs.json")
+    with open(outside_jobs, "w", encoding="utf-8") as fh:
+        json.dump([base_job], fh)
+    cases.append(("a jobs file outside scratch falls through",
+                  run(fanout_cmd.replace(".claude/scratch/jobs.json", ".claude/jobs.json"),
+                      fanout_env, session="sdc00064") == {}))
+    linked_jobs = os.path.join(scratch, "linked.json")
+    linked_cmd = fanout_cmd.replace("jobs.json", "linked.json")
+    try:
+        os.symlink(jobs, linked_jobs)
+    except OSError:
+        linked_jobs = None
+    if linked_jobs:
+        cases.append(("a symlinked jobs file falls through",
+                      run(linked_cmd, fanout_env, session="sdc00065") == {}))
+    else:
+        # No symlink privilege (Windows without developer mode): the link path itself reports
+        # as a symlink. This covers the component walk only; a real link (Linux CI, developer
+        # mode) also proves the validator never resolves through the link to its target.
+        from pathlib import Path as _Path
+        with open(linked_jobs_path := os.path.join(scratch, "linked.json"), "w", encoding="utf-8") as fh:
+            json.dump([base_job], fh)
+        real_is_symlink = _Path.is_symlink
+        with patch.object(_Path, "is_symlink",
+                          lambda p: p.name == "linked.json" or real_is_symlink(p)):
+            linked_allowed = sidecar.fanout_allowed(
+                {"cwd": fanout_root, "tool_input": {"command": linked_cmd}})
+        os.remove(linked_jobs_path)
+        cases.append(("a symlinked jobs file falls through (is_symlink simulated; no symlink privilege)",
+                      linked_allowed is False))
+    cases.append(("a jobs path with a .. segment falls through",
+                  run(fanout_cmd.replace(".claude/scratch/jobs.json", ".claude/scratch/../scratch/jobs.json"),
+                      fanout_env, session="sdc00066") == {}))
 
     # --- background allow (this revision, Design §1/§2): a backgrounded lib launcher is never
     # denied — the lib itself writes <record>.exit/.out on every exit path now. With -R it
