@@ -9,7 +9,7 @@ description: >-
 
 # Debugging Methodology
 
-> **Scope:** Unlike the [testing skill](../testing/SKILL.md)'s Logic-Domain Iron Law (which governs *test-driven development*), this debugging procedure applies to **any bug in any domain** — Logic, Gameplay, framework, build, runtime. The discipline is the same: investigate before fixing.
+> **Scope:** Unlike the project's test-first rule (CLAUDE.md §Development Philosophy: Hybrid TDD, which governs *test-driven development*), this debugging procedure applies to **any bug in any domain** — Logic, Gameplay, framework, build, runtime. The discipline is the same: investigate before fixing.
 
 ## The Iron Law
 
@@ -29,35 +29,26 @@ Spend disproportionate effort here. **Be aggressive. Be creative. Refuse to give
 
 ### Memory seed first
 
-Before designing the loop, search auto-memory for three high-leverage gotcha buckets:
+Before designing the loop, search auto-memory for the high-leverage gotcha buckets: object lifecycle and disposal, pooled-object reset ordering, and orphaned processes or silently skipped tests. `reference/memory_domains.md` supplies the project's seed terms.
 
-- `disposal` — Godot lifecycle / signal-disconnect / `IsInstanceValid` / `SceneTreeTimer` lambdas / disposed `GodotObject` access
-- `pool` — pooled-object reset ordering, sibling-spawn timing, IsContinuous resets, hitbox sync
-- `process` — orphaned Godot processes, named-pipe failures, GdUnit4 silent skips
-
-These three accumulate the most "this bit me before" knowledge. Beyond them, search the **specific** task domain (e.g. `physics`, `HSM`, `disposal`, `affinity`). Recall is semantic-search over `.claude/auto-memory/` — query with an NL paraphrase of the symptom, and search facets separately rather than one mega-query (CLAUDE.md §2 *Memory*).
+These accumulate the most "this bit me before" knowledge. Beyond them, search the **specific** task domain. Recall is semantic-search over `.claude/auto-memory/` — query with an NL paraphrase of the symptom, and search facets separately rather than one mega-query (CLAUDE.md §2 *Memory*).
 
 ### Loop options (ranked roughly by leverage)
 
-1. **Failing GdUnit4 test at the right seam.** Pick the suite that matches the bug class:
-   - **Logic** (`Tests/Logic/`) — pure functions, data, math, parsing, no Godot runtime.
-   - **Sanity** (`Tests/Sanity/`) — fast smoke tests on real scenes, runtime required.
-   - **Integration** (`Tests/Integration/`) — multi-system seams (e.g. Ability + Pool + Collision, BT + BTState + RestartPolicy).
-   - **E2E** — full scene path with input simulation through `ISceneRunner`.
-   - See `testing/SKILL.md` for domain classification rules.
-2. **`ISceneRunner` harness on a fixture scene.** Load a minimal `.tscn` under `Tests/Fixtures/`, simulate input, assert observable outcome. Works headless via `xvfb-run` on cloud sessions.
-3. **`mcp__godot__run_project` + `mcp__godot__get_debug_output`** for manual repro on the real project. Pattern: trigger → poll → assert. **`get_debug_output` returns since-last-call**, so call it after every action you want to observe; don't expect cumulative output.
-4. **Replay a captured `JmoLogger` log dump** via `/analyze_godot_logs`. Real session, deterministic offline. Logs at `%APPDATA%\Godot\app_userdata\{{PROJECT_NAME}}\logs\godot.log` (Windows) or `~/.local/share/godot/app_userdata/{{PROJECT_NAME}}/logs/godot.log` (Linux/cloud).
-5. **Throwaway fixture scene** under `Tests/Fixtures/` exercising the bug code path with one function call. Useful when the production scene is too tangled to isolate the symptom.
-6. **`git bisect run dotnet test --filter <Name>`** if the bug appeared between two known-good states. Automate the verdict so bisection runs unattended. **Verify the good-end FIRST** (run the failing test at the supposed-good commit) before automating a wide window — a bisect presupposes a green→red transition exists. If both endpoints fail with an *identical* failure set, there is no transition: reclassify as "never-green-but-masked" (e.g. a test red since its introduction commit, hidden by a stale baseline) and skip the bisect. Note checking out an old commit also reverts the Jmodot submodule + `.claude/` harness — `git submodule update --init Jmodot` per step, restore on exit.
+1. **Failing test at the right seam.** Pick the suite that matches the bug class: pure logic, cross-system integration seam, or player/user-observable end-to-end behavior. The project's testing skill, where it ships one, names the suites and their classification rules.
+2. **Harness on a minimal fixture** (a fixture scene, app instance or service stub), simulating input and asserting the observable outcome. Prefer one that runs headless.
+3. **Run the real app** for manual repro. Pattern: trigger → poll the runtime output → assert. The engine's path-scoped rules name the run and output tools.
+4. **Replay a captured runtime log.** Real session, deterministic offline. `environment_bootstrap` owns the log locations.
+5. **Throwaway fixture** exercising the bug code path with one function call. Useful when the production scene is too tangled to isolate the symptom.
+6. **`git bisect run <the project's single-test command>`** if the bug appeared between two known-good states. Automate the verdict so bisection runs unattended. **Verify the good-end FIRST** (run the failing test at the supposed-good commit) before automating a wide window — a bisect presupposes a green→red transition exists. If both endpoints fail with an *identical* failure set, there is no transition: reclassify as "never-green-but-masked" (e.g. a test red since its introduction commit, hidden by a stale baseline) and skip the bisect. Note checking out an old commit also reverts submodules and the `.claude/` harness — `git submodule update --init` per step, restore on exit.
 7. **Differential loop** — run the same input through old-version vs new-version (or two configs) and diff outputs. Best for "regression appeared between commit X and Y."
-8. **Property / `JmoRng`-seeded fuzz loop** — run N random seeded inputs and look for the failure mode. Sub-bullet: rare in {{PROJECT_NAME}} today but the right tool for "it sometimes returns wrong output."
-9. **HITL playtest** — last resort. Ask user to playtest while you read logs after. If you go here, capture log files, screen recordings with timestamps, or any artifact that turns the manual repro into a replayable one.
+8. **Property / seeded-RNG fuzz loop** — run N random seeded inputs and look for the failure mode. The right tool for "it sometimes returns wrong output."
+9. **HITL manual test** — last resort. Ask the user to reproduce while you read logs after. If you go here, capture log files, screen recordings with timestamps, or any artifact that turns the manual repro into a replayable one.
 
 ### Cloud vs. local — pick the right loop for the environment
 
-- **Local sessions:** `mcp__godot__run_project` + `mcp__godot__get_debug_output` is fastest for visual bugs.
-- **Cloud sessions** (`CLAUDE_CODE_REMOTE=true`): Godot MCP is unavailable. Force the loop to GdUnit4 + `ISceneRunner` (auto-prefixed with `xvfb-run` by `cloud_test_enforcer.py` hook) or to log-replay. Picking `run_project` on cloud silently fails.
+- **Local sessions:** running the real app is fastest for visual bugs.
+- **Cloud sessions** (`CLAUDE_CODE_REMOTE=true`): interactive run tools are usually unavailable. Force the loop to headless tests or to log-replay; the project's cloud rule names what works there.
 
 ### Iterate on the loop itself
 
@@ -65,7 +56,7 @@ Treat the loop as a product. Once you have *a* loop, ask:
 
 - **Faster?** Cache setup, skip unrelated init, narrow the test scope.
 - **Sharper?** Assert on the specific symptom, not "didn't crash."
-- **More deterministic?** Pin time, seed `JmoRng`, isolate scene tree, freeze inputs.
+- **More deterministic?** Pin time, seed the RNG, isolate shared state, freeze inputs.
 
 A 30-second flaky loop is barely better than no loop. A 2-second deterministic loop is a debugging superpower.
 
@@ -75,7 +66,7 @@ The goal is not a clean repro but a **higher reproduction rate**. Loop the trigg
 
 ### When you genuinely cannot build a loop
 
-Stop and say so explicitly. List what you tried. Ask the user for: (a) access to the environment that reproduces it, (b) a captured artifact (`godot.log` dump, screen recording with timestamps, seeded test scenario), or (c) permission to add temporary `JmoLogger` instrumentation to production code paths. Do **not** proceed to hypothesise without a loop.
+Stop and say so explicitly. List what you tried. Ask the user for: (a) access to the environment that reproduces it, (b) a captured artifact (runtime log dump, screen recording with timestamps, seeded test scenario), or (c) permission to add temporary log instrumentation to production code paths. Do **not** proceed to hypothesise without a loop.
 
 Do not proceed to Phase 2 until you have a loop you believe in.
 
@@ -89,7 +80,7 @@ Run the loop. Watch the bug appear. Then gather evidence around it before formin
 
 - [ ] The loop produces the failure mode the **user** described — not a different failure that happens to be nearby. Wrong bug = wrong fix.
 - [ ] The failure is reproducible across multiple runs (or, for non-deterministic bugs, reproducible at a high enough rate to debug against).
-- [ ] You captured the exact symptom — exact `JmoLogger.Error` message, exact orphan count, exact assertion failure, exact frame timing — so later phases can verify the fix actually addresses *this*.
+- [ ] You captured the exact symptom — exact logged error message, exact orphan count, exact assertion failure, exact frame timing — so later phases can verify the fix actually addresses *this*.
 
 Do not proceed until you reproduce the bug.
 
@@ -98,7 +89,7 @@ Do not proceed until you reproduce the bug.
 *Why:* The error message is the most direct evidence available. Skipping it loses information that costs minutes to recover.
 
 - Stack traces: read from inner-most frame outward.
-- `JmoLogger.Error` lines: trigger test failures. Treat as first-class evidence.
+- Logged errors: treat as first-class evidence, and check whether the project's test runner fails on them.
 - Build errors: cite the exact `file:line:error-code` in your reasoning. Don't paraphrase.
 
 ### Reproduce consistently
@@ -115,35 +106,29 @@ Do not proceed until you reproduce the bug.
 
 ### Gather evidence in multi-component systems
 
-> *"Logs are Truth: You cannot see the runtime. Rely on E2E/Integration Test outputs and `JmoLogger` output via `get_debug_output` for automated comprehensive feedback."* — CLAUDE.md Core Principles
+> *"Logs are Truth: you can't see runtime."* — CLAUDE.md Core Principles
 
 **Rule:** Instrument boundaries between components, run the failing scenario, then read the logs.
 
 **The Instrument → Run → Verify loop:**
 
-1. **Instrument:** Place `JmoLogger.Info()` at every boundary the data crosses. Log STATE CHANGES, not state.
-2. **Run:** `run_project` (automated) or ask the user (manual playtest with concrete repro steps — *don't* tell the user to test while you spin up the game; they're often working on other tasks).
-3. **Verify:** `get_debug_output` while running, OR read post-run `godot.log` from the path above.
+1. **Instrument:** Place an Info-level log at every boundary the data crosses, through the project's logger. Log STATE CHANGES, not state.
+2. **Run:** run the app (automated) or ask the user (manual repro with concrete steps — *don't* tell the user to test while you spin up the app; they're often working on other tasks).
+3. **Verify:** read the runtime output while running, OR read the post-run log.
 
-**Verify scene configuration first.** Before instrumenting, read the entity's `.tscn` to confirm which components/strategies are actually wired. Don't assume an entity uses a particular strategy — a mismatch between code-expected wiring and scene-actual wiring is itself the bug a surprising fraction of the time.
+**Verify authored configuration first.** Before instrumenting, read the entity's authored configuration (scene, config file, container registration) to confirm which components/strategies are actually wired. Don't assume an entity uses a particular strategy — a mismatch between code-expected wiring and scene-actual wiring is itself the bug a surprising fraction of the time.
 
-**Canonical {{PROJECT_NAME}} boundary chain** (when debugging a ability flow):
+**Boundary chain:** write the flow's chain before instrumenting (e.g. `Input → Controller → DomainCore → Behavior → Output`). Each arrow is one `[<scope>] <state-change>` log call. The bug lives at whichever boundary the log message disagrees with the next log message.
 
-```
-Player → AbilityCaster → DomainCore → AbilityBehavior → ProjectileBody
-```
-
-Each arrow is a `JmoLogger.Info("[<scope>] <state-change>", node)` call. The bug lives at whichever boundary the log message disagrees with the next log message.
-
-**Cross-reference:** `archive_jmologger_gotcha.md` (auto-memory cold tier) — the namespace is `Jmodot.Implementation.Shared`, NOT `Jmodot.Logging`. Comment out retained debug logs (don't delete) if they may be useful for future debugging of the same subsystem.
+Comment out retained debug logs (don't delete) if they may be useful for future debugging of the same subsystem.
 
 ### Trace data flow backward
 
 **Rule:** When the visible symptom is N layers downstream of the cause, walk backward one layer at a time. Don't fix at the symptom layer until you've identified the cause.
 
-**Worked example:** `feedback_modulate_dual_tracking.md` — visible symptom was *"player washes white after a hit."* The hit-flash component was correctly setting `Modulate`, but `VisualEffectController._Process` was overwriting it via `ApplyEffects` every frame. The root cause was three layers downstream of the symptom: VEC's transient-effect `ResetVisuals` stomped `Modulate` with a bare base color, wiping persistent tints registered via VisualEffectService. Fix required tracing backward: *wash* → *ResetVisuals* → *ComputeEffectiveColorForNode* → *service layering*. Premature fixes at the symptom layer (re-applying tint after every hit) would have masked, not resolved, the contention.
+**Worked example:** visible symptom *"the player washes white after a hit."* The hit-flash component correctly set the tint, but a per-frame visual controller overwrote it: its transient-effect reset stomped the tint with a bare base color, wiping persistent tints another service had registered. Fix required tracing backward: *wash* → *reset* → *effective-color computation* → *service layering*. Premature fixes at the symptom layer (re-applying tint after every hit) would have masked, not resolved, the contention.
 
-**Cross-reference:** `archive_architectural_symptom_vs_rootcause_preference.md` (auto-memory cold tier) — *"Why is X using Y?"* is a retire-Y signal. Compatibility flags, axis-restricted geometry, and approximations of engine primitives are all symptom-fix tells.
+*"Why is X using Y?"* is a retire-Y signal. Compatibility flags, axis-restricted geometry, and approximations of engine primitives are all symptom-fix tells.
 
 ---
 
@@ -153,15 +138,15 @@ Each arrow is a `JmoLogger.Info("[<scope>] <state-change>", node)` call. The bug
 
 ### Find working examples
 
-- LSP `findReferences` on the type/method to find every consumer (per [`.claude/rules/csharp_lsp.md`](../../rules/csharp_lsp.md) — LSP for C# semantics).
+- LSP `findReferences` on the type/method to find every consumer (per [`.claude/rules/csharp_lsp.md`](../../rules/csharp_lsp.md) for C#, or the project's language server).
 - `Grep` for similar patterns (e.g., other abilities that call the same method without failing).
 - Diff: what does the working call site do that the failing one doesn't?
 
 ### Identify differences
 
 - Code-level: argument order, missing `await`, null vs default.
-- Data-level: `.tres` defaults, missing `[Export]` assignment in `.tscn`, UID drift.
-- Lifecycle-level: caller running in `_EnterTree` vs `_Ready` vs `_Process`.
+- Data-level: authored-data defaults, a missing assignment in authored configuration, ID drift.
+- Lifecycle-level: the caller running in a different lifecycle phase (construction vs ready vs per-frame).
 
 ### Understand dependencies
 
@@ -183,7 +168,7 @@ Each hypothesis must be **falsifiable** — state the prediction it makes:
 
 If you cannot state the prediction, the hypothesis is a vibe — discard or sharpen it.
 
-**Write the ranked list visibly, then proceed.** {{PROJECT_NAME}}'s Auto Mode prefers continuous execution; do NOT block waiting for user approval of the ranking. Surface the list — the user often re-ranks instantly with domain knowledge ("we just changed #3", "we already ruled out #1") and will interject if needed. Cheap checkpoint, big time saver, but no hard pause.
+**Write the ranked list visibly, then proceed.** Auto Mode prefers continuous execution; do NOT block waiting for user approval of the ranking. Surface the list — the user often re-ranks instantly with domain knowledge ("we just changed #3", "we already ruled out #1") and will interject if needed. Cheap checkpoint, big time saver, but no hard pause.
 
 ### Test ONE at a time — anti-stack-tracking
 
@@ -196,31 +181,23 @@ If the top hypothesis is refuted, re-rank the remaining 2–4. Don't generate ne
 ### Tool preference for testing
 
 1. **Test assertions** that distinguish hypotheses. One sharper assertion beats ten logs.
-2. **`JmoLogger.Debug`** at the boundaries that distinguish hypotheses (see tagged-log convention below).
+2. **Debug-level logs** at the boundaries that distinguish hypotheses (see tagged-log convention below).
 3. **Never "log everything and grep"** — that's how Phase 4 turns into a 30-minute log-reading swamp.
 
 ### Tagged-log convention — `[Subsystem][DIAG-<id>]`
 
-Use **`JmoLogger.Debug`** as the diagnostic channel — ephemeral, won't trigger test failure (unlike `Error`), won't pollute `Warning` signal in production. Compose tags as `[Subsystem][DIAG-<4-char-id>]`, e.g.:
+Use the logger's **Debug level** as the diagnostic channel — ephemeral, and it won't pollute the `Warning` or `Error` signal in production. Compose tags as `[Subsystem][DIAG-<4-char-id>]`, e.g. `[Ability][DIAG-a4f2] cast state=<state> target=<target>`.
 
-```csharp
-JmoLogger.Debug(this, $"[Ability][DIAG-a4f2] cast state={state} target={target?.Name ?? "null"}");
-```
+The subsystem prefix keeps the diag log visible to a log analyzer's subsystem filter; the `[DIAG-]` half is unique-to-this-session so Phase 6 cleanup is a single grep. Pick four random hex chars per session. The project's logging rule, where it ships one, owns level rules and the canonical tag list.
 
-The subsystem prefix keeps the diag log visible to `/analyze_godot_logs --target Ability`; the `[DIAG-]` half is unique-to-this-session so Phase 6 cleanup is a single grep. Pick four random hex chars per session.
-
-Full level rules, canonical tag list, composition rule, and producer↔consumer pairing table live in **`logging_methodology` skill** — load it if you're authoring new instrumentation rather than just adding a few diag lines.
-
-### CRITICAL — `JmoLogger.Debug` is opt-in
-
-Messages gated by `JmoLogger.DebugEnabled` (default off). Toggle via **Project Settings → Debug → Jmodot → Debug Logging Enabled** or `JmoLogger.DebugEnabled = true;`.
+### CRITICAL — the Debug level is usually off
 
 **Phase 4 procedure:**
 
-1. Set `DebugEnabled = true`.
+1. Enable the Debug level (the project's logging rule names the switch).
 2. Add `[Subsystem][DIAG-<id>]` instrumentation mapping to a specific Phase 4 prediction.
-3. Run the loop, read via `/analyze_godot_logs --target <Subsystem>` to slice.
-4. Phase 6 cleanup MUST restore `DebugEnabled` and remove all `[DIAG-]` lines (see `archive_diagnostic_log_cleanup_discipline.md` in auto-memory — worklog item required for any `[DIAG-]` log without a same-session removal commit).
+3. Run the loop, then slice the log by subsystem.
+4. Phase 6 cleanup MUST restore the Debug switch and remove all `[DIAG-]` lines; any `[DIAG-]` log without a same-session removal commit needs a worklog item.
 
 If you skip step 1, your instrumentation produces nothing and you'll think the code path didn't execute.
 
@@ -228,7 +205,7 @@ If you skip step 1, your instrumentation produces nothing and you'll think the c
 
 For performance regressions, logs are usually wrong. Instead:
 
-1. Establish a baseline measurement (`Stopwatch`, profiler, `OS.GetTicksMsec()`, frame-time sampling).
+1. Establish a baseline measurement (a monotonic timer, profiler, frame-time sampling).
 2. Bisect the regression (`git bisect run`) against the baseline.
 3. Measure first, fix second.
 
@@ -242,19 +219,19 @@ Adding logs to a perf bug usually changes the timing enough to mask the bug.
 
 ### Write a failing test FIRST
 
-Cross-link to the [testing skill — Logic-Domain Iron Law](../testing/SKILL.md). The test must fail because of the hypothesised cause and pass after the fix. No "I'll add the test once it works" — you will adapt the test to the fix.
+Cross-link to the project's test-first rule (CLAUDE.md §Development Philosophy: Hybrid TDD). The test must fail because of the hypothesised cause and pass after the fix. No "I'll add the test once it works" — you will adapt the test to the fix.
 
 A correct seam is one where the test exercises the **real bug pattern** as it occurs at the call site. If the only available seam is too shallow (single-caller test when the bug needs multiple callers, Logic-domain unit test that can't replicate the engine-lifecycle chain that triggered the bug), a regression test there gives false confidence.
 
-**Cross-reference:** `feedback_strict_tdd_for_integration_regressions.md` — even when the domain classifies as Gameplay, if the bug class IS the integration (hot-loop, race, BB-flag-soup), write the seam-level integration test BEFORE shipping. The Wave-2 hot-loop regression is the canonical case study: a 3-line revert passed 4837 Logic tests but froze the game on grunt spawn — the seam-level integration test would have caught it.
+Even when the domain classifies as Gameplay, if the bug class IS the integration (hot-loop, race, shared-flag soup), write the seam-level integration test BEFORE shipping. Canonical case: a 3-line revert passed thousands of Logic tests but froze the app on first spawn — the seam-level integration test would have caught it.
 
 ### Picking the right suite
 
-Reference `testing/SKILL.md` domain classification:
+Use the project's suite classification (its testing skill, where it ships one):
 
-- **Pure logic / data / math:** `Tests/Logic/` (no Godot runtime).
-- **Cross-system seam** (BT+BTState, Pool+Spawn, HSM+child-state, Ability+Collision+Reaction): `Tests/Integration/` — even if the C# diff looks trivial. Memorialised integration regressions REQUIRE a seam test (see `feedback_strict_tdd_for_integration_regressions.md`).
-- **Player-observable behavior:** `Tests/Sanity/` or E2E with `ISceneRunner` (POB rule from `testing/SKILL.md`).
+- **Pure logic / data / math:** the logic suite (no engine runtime).
+- **Cross-system seam** (state machine + child state, pool + spawn, component + collision + reaction): the integration suite — even if the diff looks trivial. Memorialised integration regressions REQUIRE a seam test.
+- **Player- or user-observable behavior:** the end-to-end or sanity suite.
 
 ### If no correct seam exists, that itself is the finding
 
@@ -279,9 +256,9 @@ Do **not** invent a new slash command in this skill. Do **not** repurpose `/spel
 ### Verify
 
 - The failing test from above now passes.
-- The original symptom is gone (manual repro or post-run `godot.log` check).
-- No `JmoLogger.Error` lines in the run output (errors trigger test failures).
-- Run the broader test suite (`/regression_gate` if appropriate) before claiming the bug is fixed. *"Should work now"* is not evidence.
+- The original symptom is gone (manual repro or post-run log check).
+- No logged errors in the run output.
+- Run the broader test suite (the project's regression gate, which `change_control` §Gate cadence names, when appropriate) before claiming the bug is fixed. *"Should work now"* is not evidence.
 
 ### The 3-fixes-failed gate
 
@@ -304,13 +281,13 @@ Required before declaring done:
 
 - [ ] **Original repro no longer reproduces** — re-run the Phase 1 loop.
 - [ ] **Regression test passes** (or absence of seam is documented in Worklog).
-- [ ] **All `[DIAG-...]` instrumentation removed** — `Grep tool` with pattern `\[DIAG-` across `.cs` files, delete each line. Restore `DebugEnabled = false` if you flipped it.
-- [ ] **Throwaway fixture scenes / harnesses deleted** (or moved to a clearly-marked `Tests/Fixtures/` location with a comment).
+- [ ] **All `[DIAG-...]` instrumentation removed** — `Grep tool` with pattern `\[DIAG-` across source files, delete each line. Restore the Debug switch if you flipped it.
+- [ ] **Throwaway fixtures / harnesses deleted** (or moved to a clearly-marked fixtures location with a comment).
 - [ ] **The hypothesis that turned out correct is stated in the commit / PR message** — so the next debugger learns.
 
 ### Post-mortem to auto-memory (mandatory if non-obvious)
 
-If the correct hypothesis surfaced a non-obvious gotcha that would bite again, save it to auto-memory. **Memory is {{PROJECT_NAME}}'s durable surface; commit messages are not searched.** This aligns with CLAUDE.md "DOCUMENT, MEMORIZE, & CODIFY":
+If the correct hypothesis surfaced a non-obvious gotcha that would bite again, save it to auto-memory. **Memory is the project's durable surface; commit messages are not searched.** This aligns with CLAUDE.md "DOCUMENT, MEMORIZE, & CODIFY":
 
 - ✅ Save: surprising behavior, cross-system races, lifecycle gotchas, "I burned 2 hours because X" stories.
 - ❌ Don't save: API signatures, "fixed null check in MyClass.Method" — those belong in code docs.
@@ -319,7 +296,7 @@ If the correct hypothesis surfaced a non-obvious gotcha that would bite again, s
 Pick the placement per CLAUDE.md §2 *Memory (One Store, Two Tiers)*:
 
 - Surprising / cross-cutting rule worth surfacing every session → new hot topic file (`gotcha_*.md`) + a `MEMORY.md` pointer in the same turn.
-- Bulk domain detail → extend the matching cold bucket under `archive/` (e.g. `archive_godot_disposal_gotchas.md`, `archive_godot_physics_gotchas.md`, `archive_pooling_lifecycle_gotchas.md`, `archive_gdunit4_assertion_gotchas.md`, `archive_entity_ai_architecture.md`, `archive_testing_setup_gotchas.md`) — no index pointer.
+- Bulk domain detail → extend the matching cold bucket under `archive/` (one `archive_<domain>_gotchas.md` per domain) — no index pointer.
 
 ### Architectural recommendation, after the fix
 
@@ -339,7 +316,7 @@ If the architectural smell is "shallow module / leaky abstraction," apply the **
 | "I'll add the test once the fix works" | You will adapt the test to the fix. Write the test from the failing behavior FIRST. |
 | "Let me also fix this other thing while I'm here" | Bundled fixes destroy bisection. One fix per attempt. |
 | "Three fixes failed but the next one will work" | This is the 3-fixes-failed gate. STOP. |
-| "I don't have time to instrument boundaries" | You have time to debug for 90 minutes; you don't have 5 minutes for `JmoLogger.Info`? |
+| "I don't have time to instrument boundaries" | You have time to debug for 90 minutes; you don't have 5 minutes for boundary logs? |
 | "The bug doesn't reproduce, but I know what's wrong" | If it doesn't reproduce, you cannot verify the fix. Reproduction is non-negotiable. |
 | "I can't build a loop, I'll just stare at the code" | Stop and say so explicitly. Ask the user for environment access, captured artifacts, or instrumentation permission. |
 | "Should work now" / "Probably fixed" / "Seems to be passing" | These are documented [refused claims](../../commands/agents/orchestrator_action_protocol.md#claims-to-refuse). Cite evidence (test output, log line, exit code) or use future-tense honestly. |
@@ -361,9 +338,9 @@ If the architectural smell is "shallow module / leaky abstraction," apply the **
 2. REPRO   — confirm it produces the user's symptom; trace data flow backward; check recent changes
 3. PATTERN — LSP findReferences for working examples; identify differences; map dependencies
 4. RANK+TEST — 3–5 falsifiable hypotheses VISIBLY → test ONE at a time
-                JmoLogger.Debug("[DIAG-a4f2] ...") — toggle DebugEnabled = true first!
-5. FIX     — failing test FIRST; pick suite per testing/SKILL.md; no seam = Worklog arch; 3-fail = architecture_brainstorm
-6. CLEAN   — re-run loop, grep [DIAG-, restore DebugEnabled, save gotcha to Memory
+                Debug log "[Subsystem][DIAG-a4f2] ..." — enable the Debug level first!
+5. FIX     — failing test FIRST; pick the suite by bug class; no seam = Worklog arch; 3-fail = architecture_brainstorm
+6. CLEAN   — re-run loop, grep [DIAG-, restore the Debug switch, save gotcha to Memory
 ```
 
 ---
@@ -371,25 +348,18 @@ If the architectural smell is "shallow module / leaky abstraction," apply the **
 ## Cross-references
 
 **auto-memory:**
-- `archive_architectural_symptom_vs_rootcause_preference.md` — symptom-vs-root-cause discipline; *"Why is X using Y?"* as retire-Y signal.
-- `archive_jmologger_gotcha.md` — namespace (`Jmodot.Implementation.Shared` not `Jmodot.Logging`) + comment-vs-delete rule for retained debug logs.
-- `archive_agent_task_gotchas.md` — orphan-Godot-process recovery during repeated repro attempts (`tasklist | findstr Godot`, `taskkill`).
-- `feedback_strict_tdd_for_integration_regressions.md` — strict integration-TDD for memorialised regression classes; Wave-2 case study (3-line revert + 4837 Logic tests passed → game froze on grunt spawn).
-- `feedback_modulate_dual_tracking.md` — VEC/VES dual-tracking case study (Phase 2 worked example).
 - `feedback_recommended_fix_means_implement.md` — inverse rule for *user-recommended* fixes (compose with the 3-fixes-failed gate).
 - `feedback_no_performative_agreement.md` — no *"you're absolutely right!"* / *"let me implement that now"* openers when receiving the user's diagnostic feedback.
 
 **Skills:**
-- [`testing`](../testing/SKILL.md) — Logic-Domain Iron Law for Phase 5 failing-test-first; domain classification (Logic/Sanity/Integration/E2E); GdUnit4 specifics; ISceneRunner usage.
-- [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — Lifecycle & Constructor rules (common cause of init-timing bugs); the Deletion Test for Phase 6 architectural recommendations.
+- The project's testing skill, where it ships one — failing-test-first for Phase 5; suite classification; test-framework specifics.
+- [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Init-Timing & Data-Source Readiness* and *Phased Lifecycle Methods* (common cause of init-timing bugs); the Deletion Test for Phase 6 architectural recommendations.
 - [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) — handoff target for the 3-fixes-failed gate when the architecture itself is the suspect.
 
 **CLAUDE.md sections:**
 - Core Principles "Logs are Truth" — the discipline this skill operationalises.
-- Logging discipline (`JmoLogger.Error` triggers test failure) — why Phase 4 prefers `Debug` over `Error` for instrumentation.
 - [`.claude/rules/csharp_lsp.md`](../../rules/csharp_lsp.md) (path-scoped on `.cs`) — `findReferences` for Phase 3 dependency-mapping.
 
 **Commands:**
-- `/regression_gate` — broader-test verification step in Phase 5 (3-tier evidence: silent-skip sentinel + baseline drift + explicit failures).
-- `/analyze_godot_logs` — structured analysis of post-run `godot.log` for Phase 1 / Phase 2 verification.
+- The project's regression gate (`change_control` §Gate cadence names it) — broader-test verification step in Phase 5.
 - `/test_skill debugging` — adversarial validation that this skill survives rationalisation pressure.

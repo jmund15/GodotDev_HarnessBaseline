@@ -78,8 +78,8 @@ Run the existing COMPLETE recipe (`## Operation: COMPLETE` in `worklog.md`). If 
 1. Read the item's `Where:` files (use `read_files` if 3+; else `Read`).
 2. Make the change. Mechanical class only — if the work expands beyond mechanical (multi-decision, multi-file beyond `Where:` lists), abort do-now and offer fallback dispositions inline (`[c]omplete-after-manual / [f]lag for next session / [s]kip`).
 3. Run verification:
-   - `.cs` changes → `/regression_gate` MANDATORY (per CLAUDE.md Build & Test Commands).
-   - `.tres` / `.tscn` Logic-affecting → relevant Logic test suite.
+   - Code changes → the project's regression gate (`change_control` §Gate cadence names it), MANDATORY.
+   - Logic-affecting data changes → relevant Logic test suite.
    - Doc-only / `.md` → no verification needed.
 4. Run COMPLETE recipe with today's date as ref (or commit hash if a commit lands in this turn).
 5. Resume walk on next item.
@@ -176,7 +176,7 @@ Still over cap. Consider another /worklog triage pass on the lower-signal items.
 - **Race with parallel writes:** triage reads Active once at start. If another agent writes to Active during the walk, mirror rewrite at Step 6 overwrites based on post-triage state — could double-write or drop interleaved items. Solo-dev unlikely; if it surfaces, add a re-read step before mirror rewrite.
 - **Quick-win flag already present on an item:** don't propose `flag` again. Default recommendation falls through to next-priority disposition (likely `skip` or another).
 - **Do-now misclassified (work blows up):** abort do-now mid-execution, offer fallback dispositions inline, continue walk. Do not silently log a partially-done state.
-- **`/regression_gate` failure on a do-now `.cs` change:** stop the walk. The user has a regression to investigate; that's not a triage matter. Item stays `[ ]` (un-completed); the `.cs` change either reverts (user choice) or stays uncommitted for follow-up.
+- **Regression-gate failure on a do-now code change:** stop the walk. The user has a regression to investigate; that's not a triage matter. Item stays `[ ]` (un-completed); the code change either reverts (user choice) or stays uncommitted for follow-up.
 
 ## Operation: PLAN
 
@@ -354,7 +354,7 @@ For the fill-set, produce a ready-to-execute body:
 ### Verification
 
 - <how we'll know this works — test pass, manual repro, log check>
-- <regression sentinel: which test suite must still pass after — usually `/regression_gate` for .cs work>
+- <regression sentinel: which test suite must still pass after — usually the project's regression gate for code work>
 
 ### Worklog completion
 

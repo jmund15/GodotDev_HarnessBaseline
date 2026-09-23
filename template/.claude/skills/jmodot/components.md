@@ -29,7 +29,7 @@ Entity owns BB → components self-publish → components query BB
 1. **Always use `BBDataSig` constants** - Never raw strings for BB keys
 2. **Publish via `Provision`, not a hand-written `bb.Set` in the entity root** - Phase 0 does the wiring
 3. **Resolve in `Initialize`, subscribe in `OnPostInitialize`** - a sibling's events are only safe after the Phase-1 barrier
-4. **Return `false` only for a dependency without which the component serves no purpose** - ENCI logs `Error` and drops it; partial-behavior deps degrade and return `true`. Full policy + `[Export]` carve-outs + the bespoke-path taxonomy: `architecture_philosophy/SKILL.md` §Component Initialization Paths
+4. **Return `false` only for a dependency without which the component serves no purpose** - ENCI logs `Error` and drops it; partial-behavior deps degrade and return `true`. Full policy + `[Export]` carve-outs + the bespoke-path taxonomy: `godot_architecture/SKILL.md` §Component Initialization Paths
 5. **Document required keys** - Add a class summary listing which `BBDataSig` keys your component needs
 
 ## When to Use
@@ -71,5 +71,5 @@ public bool Initialize(IBlackboard bb) {
 - **States** receive BB in their `Init()` method
 - **Combat effects** access target's BB via `ICombatant.Blackboard`
 - **Subscriptions** allow reactive updates when BB values change
-- Path taxonomy, required-dep policy, `[Export]` carve-outs, `[Tool]` warning convention: `architecture_philosophy/SKILL.md` §Component Initialization Paths. Silent no-op diagnostic: `rules/jmodot_utilities.md` §IComponent
+- Path taxonomy, required-dep policy, `[Export]` carve-outs, `[Tool]` warning convention: `godot_architecture/SKILL.md` §Component Initialization Paths. Silent no-op diagnostic: `rules/jmodot_utilities.md` §IComponent
 - Key constants: the two-partial `BBDataSig` split — [SKILL.md](SKILL.md) §BBDataSig Quick Reference

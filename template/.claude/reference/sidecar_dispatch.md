@@ -85,15 +85,11 @@ After auto-compaction the child receives the summary as a user message and, unan
 - What ends a run is the thrash breaker, not a compaction count: context refilled to the limit within 3 turns of a compaction, 3 times running (`terminal_reason: rapid_refill_breaker`). Keep single tool results small: `-D pointer`, `Read` with `limit`, never a whole `.tres` or patch.
 - Force a compaction with `SIDECAR_CONTEXT_TOKENS_OVERRIDE=<tokens>`; under ~80k the harness alone overflows.
 
-Evidence: `auto-memory/archive/gotcha_sidecar_reprompt_rides_with_launcher.md`.
-
 ## Detached runs
 
 - **Live until proven gone.** Any run with `-R` and no `<record>.exit` file is still live — the launcher writes that file on every exit path, so its absence is the signal, not a background task's own status. A detached run also names its pid in `<record>.pid`: live until that pid is absent from the process list (`Get-CimInstance Win32_Process` on Windows, `kill -0` in the same MSYS or POSIX shell). Neither form deletes its files, so a relaunch takes a new `-R` path.
 - **Harness notices.** A low-memory "stopped" notice on a backgrounded (non-detached) launch has so far killed only the harness's outer shell; the launcher kept running and wrote its own `.exit`/`.out` normally. Any kill or stop, that one included, needs process and record evidence before the run is called dead.
 - **Killed Monitor.** A Monitor is a harness task too. Losing one loses only the wake-up: re-arm it on the same `.exit` file (or `EXIT`/progress files for a detached run).
-
-Evidence: `auto-memory/archive/gotcha_harness_killed_notice_is_not_a_dead_sidecar.md`.
 
 ## Exit codes
 

@@ -7,11 +7,9 @@ Audit recent doc-workflow output for write_doc rule violations. Advisory; does N
 
 ## When to use
 
-- After an `idea_brainstorm`/`architecture_brainstorm` run, `/doc_full`, `/doc_architecture`, `/doc_retrospective`, or `/create_obsidian_design_doc` completes — verify the output didn't drift from the system-prompt rules.
+- After `/doc_full`, `/doc_architecture`, `/doc_retrospective`, or any brainstorm or design-doc workflow that writes through `write_doc` completes — verify the output didn't drift from the system-prompt rules.
 - Periodically as a drift watch — combine with `/eval_dashboard` cadence.
 - After a `models.yaml` (ai-worker host) or `write_doc.*.md` change to confirm the change took effect on real output. This audit itself is Grep-only over vault docs — it runs fine with ai-worker offline.
-
-Companion to `/doc_workflow_battery` (standalone scenario tests). This command audits *actual* output; the battery tests *capability* with synthetic scenarios. Run both for full picture.
 
 ## Procedure
 
@@ -73,7 +71,7 @@ After per-doc tables, render an overall verdict:
 |---|---|
 | 0 across all docs | **PASS** — workflow is calibrated; no drift detected. |
 | Only LOW (1–3 total) | **PASS-D** — advisory cleanup at next doc revision; no immediate action. |
-| Any HIGH OR ≥4 MEDIUM | **FLAG** — recommend reviewing the relevant skill/prompt for drift. Common causes: model regression (check `models.yaml` `doc_writer` on the ai-worker host); prompt rule weakened (check `write_doc.{design,architecture,retrospective}.md`); skill bypass (rationale spot-check — `_brainstorm_shared/common.md` §2 — not firing). |
+| Any HIGH OR ≥4 MEDIUM | **FLAG** — recommend reviewing the relevant skill/prompt for drift. Common causes: model regression (check `models.yaml` `doc_writer` on the ai-worker host); prompt rule weakened (check `write_doc.{design,architecture,retrospective}.md`); skill bypass (the calling workflow's rationale spot-check not firing). |
 | Any check throws errors / files unreadable | **INCOMPLETE** — fix tooling before re-running. |
 
 ### Step 5: Surface to worklog if FLAG

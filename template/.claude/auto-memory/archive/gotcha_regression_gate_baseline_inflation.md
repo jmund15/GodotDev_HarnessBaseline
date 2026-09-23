@@ -6,7 +6,7 @@ metadata:
   type: reference
 ---
 
-A `/regression_gate` result of `current.passed < baseline.passed` is NOT always a regression. It can be an **inflated baseline**: when a concurrent session's *uncommitted* test files were present in the shared working tree at the moment a prior gate stamped the baseline, the stamped count includes tests that were never committed to `main`. The next honest run on a clean checkout then reads *fewer* tests and looks like a drop.
+A result from the project's regression gate (`change_control` §Gate cadence names it) of `current.passed < baseline.passed` is NOT always a regression. It can be an **inflated baseline**: when a concurrent session's *uncommitted* test files were present in the shared working tree at the moment a prior gate stamped the baseline, the stamped count includes tests that were never committed to `main`. The next honest run on a clean checkout then reads *fewer* tests and looks like a drop.
 
 **The tell** — inspect the baseline's own history:
 - `git log -p -- Tests/regression_baseline.json | grep -E '"passed"|^commit'` shows a large `passed` jump in a single commit, AND

@@ -1,10 +1,10 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr view:*), Bash(gh pr edit:*), Bash(gh pr merge:*), Bash(gh pr close:*), Bash(gh pr list:*), Bash(gh label:*), Bash(git stash:*), Bash(git checkout:*), Bash(git pull:*), Bash(git rebase:*), Bash(git push:*), Bash(git add:*), Bash(git branch:*), Bash(git -C Jmodot *), Bash(git submodule:*), Bash(dotnet build:*), Bash(gdunit4:*), Glob, Grep, Read, Edit, Task, mcp__obsidian__obsidian_list_notes, mcp__obsidian__obsidian_read_note
+allowed-tools: Bash(gh pr view:*), Bash(gh pr edit:*), Bash(gh pr merge:*), Bash(gh pr close:*), Bash(gh pr list:*), Bash(gh label:*), Bash(git stash:*), Bash(git checkout:*), Bash(git pull:*), Bash(git rebase:*), Bash(git push:*), Bash(git add:*), Bash(git branch:*), Bash(git -C:*), Bash(git submodule:*), Bash(dotnet build:*), Bash(gdunit4:*), Glob, Grep, Read, Edit, Task, mcp__obsidian__obsidian_list_notes, mcp__obsidian__obsidian_read_note
 description: "Build, test, and merge a single PR"
 ---
 
-Build, test, and merge a single PR. Assumes code review has already been done via `/review-pr`.
+Build, test, and merge a single PR. Assumes code review has already been done via `/review_pr`.
 
 ## Arguments
 - `$ARGUMENTS` — PR number (required)
@@ -43,15 +43,15 @@ Verify:
   # Build + test to verify resolution
   git push
   ```
-  > **Why the threshold?** Rebase replays each commit individually — excellent for isolation, but at 50+ commits the same file can conflict repeatedly, causing resolution fatigue and silent errors. Merge resolves each conflict exactly once with full branch context. The conflict resolution rules (interface checks, `.tres` verification, feature spot-checks) apply equally to both strategies.
+  > **Why the threshold?** Rebase replays each commit individually — excellent for isolation, but at 50+ commits the same file can conflict repeatedly, causing resolution fatigue and silent errors. Merge resolves each conflict exactly once with full branch context. The conflict resolution rules (interface checks, data-file verification, feature spot-checks) apply equally to both strategies.
 
   Ask user to confirm before syncing.
-  > **Note (when called from `/review-prs`):** The orchestrator may have already synced this branch preemptively in Phase 3. This mergeability check is a safety net that catches any remaining issues (e.g., conflicts from fix commits applied in Phase 2).
-- If Jmodot submodule pointer changed: warn about merge order. Jmodot branches must merge to master FIRST.
-  - **Find the paired Jmodot branch:** Convention is `jmodot/<worktree-name>` (e.g., {{PROJECT_NAME}} branch `claude/naughty-mayer` → Jmodot branch `jmodot/naughty-mayer`). Verify it exists on the Jmodot remote: `git -C Jmodot ls-remote --heads origin "jmodot/*"`.
-  - If the Jmodot PR has conflicts with Jmodot master: rebase it (`git -C Jmodot rebase origin/master`, resolve conflicts, `git -C Jmodot push --force-with-lease`).
-  - Merge the Jmodot PR via `gh pr merge <jmodot-pr> --repo <jmodot-remote> --merge --delete-branch`.
-  - **CRITICAL — Do NOT update the {{PROJECT_NAME}} branch's submodule pointer after the Jmodot merge.** Leave the {{PROJECT_NAME}} branch pointing at its original Jmodot commit. GitHub resolves submodule pointers at merge time — the commit is reachable via Jmodot master's merge history. Updating the pointer to Jmodot's latest master pulls in commits from OTHER unrelated PRs, introducing API changes the {{PROJECT_NAME}} branch was never designed for. The {{PROJECT_NAME}} submodule pointer gets reconciled naturally when the {{PROJECT_NAME}} PR merges to main.
+  > **Note (when called from `/review_prs`):** The orchestrator may have already synced this branch preemptively in Phase 3. This mergeability check is a safety net that catches any remaining issues (e.g., conflicts from fix commits applied in Phase 2).
+- If a submodule pointer changed: warn about merge order. The paired submodule PR merges to the submodule's primary branch FIRST.
+  - Find the paired submodule branch by the project's pairing convention (the submodule's path-scoped rule names it) and verify it exists: `git -C <submodule> ls-remote --heads origin`.
+  - If the submodule PR conflicts with its primary branch: sync it the same way as Step 1, then push.
+  - Merge the submodule PR via `gh pr merge <sub-pr> --repo <sub-remote> --merge --delete-branch`.
+  - **CRITICAL — Do NOT update this branch's submodule pointer after the submodule merge.** Leave it pointing at its original submodule commit. GitHub resolves submodule pointers at merge time, and the commit stays reachable through the submodule's merge history. Updating the pointer to the submodule's latest primary branch pulls in commits from OTHER unrelated PRs, introducing API changes this branch was never designed for. The pointer reconciles naturally when this PR merges.
 
 ---
 
@@ -70,71 +70,66 @@ If the sync in Step 1 produces merge conflicts (whether from rebase or merge), r
 | Confidence | Action | Example |
 |------------|--------|---------|
 | **Safe to auto-resolve** | Resolve and continue rebase | Additive-only changes to different sections of the same file |
-| **Resolvable with care** | Resolve using category rules below, verify with build + tests | `.tres` ext_resource conflicts, `.csproj` package additions |
+| **Resolvable with care** | Resolve using category rules below, verify with build + tests | Serialized data-file reference conflicts, package-manifest additions |
 | **Ask user** | Present conflict context and wait for direction | Logic disagreements, behavioral changes, ambiguous design intent |
 
 > **Default posture: conservative.** If you aren't confident the resolution preserves correctness, STOP and present the conflict to the user with both versions and your recommendation. **If ever unsure which side to take, ask the user directly — never guess.**
 
 ### Category Resolution Rules
 
-#### C# Logic Files (`.cs` — non-test)
+#### Source Files (non-test)
 
 | Scenario | Resolution | Escalate? |
 |----------|-----------|-----------|
 | Both branches ADD new methods/classes (no overlap) | Keep both | No |
 | Both modify the SAME method body | **Ask user** — behavioral intent matters | **Yes** |
 | One branch renames/moves, other modifies | Apply modifications to the renamed version | No, unless semantics changed |
-| `using` statement conflicts | Union all `using` statements, remove duplicates | No |
-| Registry/Dictionary additions (e.g., `ProjectRegistry`) | Keep ALL entries from both branches | No |
+| Import/`using` statement conflicts | Union all imports, remove duplicates | No |
+| Registry/dictionary additions | Keep ALL entries from both branches | No |
 
-#### C# Test Files (`.cs` in `Tests/`)
+#### Test Files
 
 | Scenario | Resolution | Escalate? |
 |----------|-----------|-----------|
 | Both branches add new test methods | Keep ALL tests from both branches | No |
-| Shared fixture changes (e.g., `AbilityTestFixture`, `ArchetypePaths`) | Union additions — keep all new fixture entries from both | No |
+| Shared fixture changes | Union additions — keep all new fixture entries from both | No |
 | Test modifies assertion on same method | **Ask user** — expected values may reflect different design intent | **Yes** |
-| `[DataPoint]` / `[TestCase]` additions | Keep all data points from both branches | No |
+| Parameterized test-case additions | Keep all cases from both branches | No |
 
-#### Data Files (`.tres` / `.tscn`)
+#### Serialized Data Files
 
-**⚠️ Highest risk category.** Git can auto-merge `.tres` files but produce **semantically broken** results — sub_resources referencing ext_resource IDs that only exist in one branch.
+**⚠️ Highest risk category.** Git can auto-merge serialized data files (scenes, resources, generated configs) into **semantically broken** results — an entry referencing an ID declared only on the other branch — while the build stays green.
 
 | Scenario | Resolution | Escalate? |
 |----------|-----------|-----------|
-| Both branches add attributes to same Dictionary | **Keep ALL entries.** Assign unique `ext_resource` IDs (increment suffix). Update `load_steps` count. Add ALL required `ext_resource` declaration lines at file top. | No, but verify carefully |
-| Both modify the SAME attribute value | **Ask user** — design intent matters | **Yes** |
-| Scene node additions (`.tscn`) | Keep both node trees, verify no name collisions. **Quick triage:** compare node counts via `git show :2:<file> \| grep "^\[node" \| wc -l` vs `:3:` — a large disparity (e.g., 517 vs 37) means one version has major additions; use it as the base. | No |
-| `uid://` reference conflicts | Use `get_uid` MCP tool to verify correct UIDs. Never guess. | No |
+| Both branches add entries to the same collection | **Keep ALL entries.** Give each added declaration a unique ID and keep every declaration the entries reference. | No, but verify carefully |
+| Both modify the SAME value | **Ask user** — design intent matters | **Yes** |
+| Engine-assigned ID conflicts | Fetch the real ID from the engine's tooling. Never guess. | No |
 
-**Post-resolution `.tres` checklist:**
-1. Every `sub_resource` block references only `ext_resource` IDs declared at the file top
-2. `load_steps` count matches actual number of `ext_resource` + `sub_resource` entries + 1
-3. No duplicate `ext_resource` IDs with different paths
+**Post-resolution check:** every reference resolves to a declaration in the same file, no ID is declared twice with different targets, and any declared entry count matches the entries. The path-scoped rule for the file format (it auto-loads on those files) owns format-specific resolution.
 
 #### Metafiles
 
 | File | Resolution |
 |------|-----------|
-| `.csproj` | Union all `<PackageReference>` and `<Compile>` entries. Remove duplicates. |
-| `.import` | Regenerate — delete conflicted `.import` files, run `godot --headless --import --quit` |
-| `.uid` / `uid_cache.bin` | Regenerate via Godot import. Never hand-edit. |
-| `.runsettings` | Take newer version (functional config, not accumulated data) |
+| Package/project manifests | Union all dependency and source entries. Remove duplicates. |
+| Generated metadata and caches | Regenerate with the tool that owns them. Never hand-edit. |
+| Test/run settings | Take newer version (functional config, not accumulated data) |
 
-#### Submodule Pointer (`Jmodot/`)
+#### Submodule Pointers
 
-**Never resolve submodule pointer conflicts by picking a side.** Both branches point to commits that may not exist on Jmodot master yet.
+**Never resolve submodule pointer conflicts by picking a side.** Both branches point to commits that may not exist on the submodule's primary branch yet.
 
 Resolution:
-1. Confirm BOTH Jmodot branches are merged to Jmodot master first (Step 1 submodule check)
-2. After Jmodot merges, update submodule to latest Jmodot master:
+1. Confirm BOTH paired submodule branches are merged to the submodule's primary branch first (Step 1 submodule check)
+2. After they merge, update the submodule to the latest primary branch:
    ```bash
-   git -C Jmodot fetch origin
-   git -C Jmodot checkout master
-   git -C Jmodot pull
-   git add Jmodot
+   git -C <submodule> fetch origin
+   git -C <submodule> checkout <primary>
+   git -C <submodule> pull
+   git add <submodule>
    ```
-3. Continue rebase
+3. Continue the rebase or merge
 
 #### Claude-Specific Files (`.claude/`)
 
@@ -170,8 +165,8 @@ These files are modified by multiple worktree sessions and frequently conflict.
 
 After resolving ALL conflicts in a rebase:
 1. `git rebase --continue` (repeat for each conflicted commit)
-2. `dotnet build` — compilation errors reveal broken resolutions
-3. For `.tres`/`.tscn` changes: open file and verify `ext_resource`/`sub_resource` integrity
+2. Build the project — compilation errors reveal broken resolutions
+3. For serialized data files: run the Step 2 post-resolution check
 4. `git push --force-with-lease` to update the PR branch
 5. Proceed to Step 3
 
@@ -201,9 +196,7 @@ git submodule update --init --recursive
 
 ## Step 5: Build Verification
 
-```bash
-dotnet build
-```
+Run the project's build.
 
 If build fails:
 1. Present compilation errors
@@ -216,33 +209,32 @@ If build fails:
 
 ### 6a. Run the Regression Gate
 
-Invoke `/regression_gate` to run all test suites. See [`regression_gate.md`](regression_gate.md) for the canonical test execution procedure (build, run suites, count validation, silent skip detection, failure handling).
+Run the project's regression gate (`change_control` §Gate cadence names it). The gate owns suite execution, count validation, silent-skip detection and failure handling.
 
 If tests fail and fixes are applied, push fixes to the PR branch and re-run the gate.
 
 ### 6b. Surface the Pre-Merge Checklist
 
-After the regression gate produces its Pre-Commit Checklist (see [`/regression_gate` Step 7b](regression_gate.md)), re-render it here with **PR-specific items appended** for the merge decision. PR merge is a higher-stakes gate than session commit (irreversible, public, paired-submodule entanglement), so the checklist gains additional rows the in-session commit doesn't need:
+After the regression gate produces its pre-commit checklist, re-render it here with **PR-specific items appended** for the merge decision. PR merge is a higher-stakes gate than session commit (irreversible, public, paired-submodule entanglement), so the checklist gains additional rows the in-session commit doesn't need:
 
 ```
 ## Pre-Merge Checklist
 
-(items 1-N from /regression_gate Step 7b — Logic/Integration/Sanity, silent-skip,
- JmoLogger, /session_audit, CLAUDE.md compliance, refactor parity)
+(items 1-N from the regression gate's pre-commit checklist)
 
 [<state>] PR is mergeable per `gh pr view` (no conflicts, all checks passing)
-[<state>] Jmodot submodule pointer compatible (paired Jmodot PR merged FIRST if pointer changed; CLAUDE.md §6)
+[<state>] Submodule pointers compatible (paired submodule PRs merged FIRST if a pointer changed)
 [<state>] PR title and description accurate; labels applied (Step 8 will enforce hygiene)
-[<state>] Manual playtest checklist (Step 7) — N/A on Logic/Data/Meta-only PRs
+[<state>] Manual verification checklist (Step 7) — N/A when Step 3's classification needs none
 
 Verdict: PROCEED TO MERGE | RESOLVE BLOCKERS FIRST
 ```
 
 **PR-specific self-attest rules:**
 - **Mergeable checkbox:** `[x]` if Step 1's `gh pr view` returned `state: open` AND `mergeable: true` AND no failed status checks. `[ ]` if any of those failed. `[—]` never (always applicable to a PR merge).
-- **Jmodot pointer checkbox:** `[—]` if the PR's diff doesn't touch the submodule pointer. `[x]` if pointer changed AND the paired Jmodot PR has merged to master per Step 1's check. `[ ]` if pointer changed and Jmodot PR hasn't merged yet → STOP, do not proceed past Step 7.
+- **Submodule pointer checkbox:** `[—]` if the PR's diff doesn't touch a submodule pointer. `[x]` if a pointer changed AND the paired submodule PR has merged per Step 1's check. `[ ]` if a pointer changed and the submodule PR hasn't merged yet → STOP, do not proceed past Step 7.
 - **PR title/labels checkbox:** `[ ]` initially (verified in Step 8). The orchestrator may render `[—]` here if Step 8 has already run in this session.
-- **Manual playtest checkbox:** `[—]` for pure Logic/Data/Meta PRs (per Step 3 classification). `[x]` if Step 7's checklist is 100% complete or auto-approved (B.1/B.3). `[ ]` if Step 7 returned partial coverage and user chose "Merge anyway" — note partial coverage in commit footer.
+- **Manual verification checkbox:** `[—]` when Step 3's classification needs no manual verification. `[x]` if Step 7's checklist is 100% complete or auto-approved (B.1/B.3). `[ ]` if Step 7 returned partial coverage and user chose "Merge anyway" — note partial coverage in commit footer.
 
 **Decision rule (same shape as `/session_end` Phase 7a):**
 - All items `[x]` or `[—]` → proceed to Step 7 (or Step 8 if Step 7 was N/A).
@@ -252,94 +244,42 @@ This checklist is the gate decision before the actual `gh pr merge` runs in Step
 
 ---
 
-## Step 7: Playtest Quality Gate (Gameplay PRs Only)
+## Step 7: Manual Verification Gate (PRs That Need It)
 
-**Do NOT skip this step** for ANY PRs that directly add or affect gameplay SCRIPTS or SYSTEMS (e.g., Refactors, Features, System/Architecture).
-**Skip this step** for PURELY Logic, Data, or Meta-only PRs.
+**Do NOT skip this step** when Step 3's classification says the PR needs manual verification (in a game, any PR that adds or affects gameplay scripts or systems).
+**Skip this step** for PRs the classification exempts.
 
-**When in doubt, STOP and ask if the user would like to playtest.**
+**When in doubt, STOP and ask if the user would like to verify manually.**
 
-### 7.1 Derive Checklist Filename
+The project's manual-verification checklist command (`change_control` §Gate cadence names it) owns the checklist's location, filename and generation.
 
-Strip the `claude/` prefix from the branch name, replace `/` with `-`. This matches the `/pr_test_checklist` filename convention.
+### 7.1 Evaluate Checklist State
 
-Example: `claude/entity-scurry-materials-bVx4D` → `entity-scurry-materials-bVx4D`
+**Case A — No checklist exists:** generate it with that command, report its path, and wait for the user to verify on their own schedule. Do NOT run the app and tell the user to do something. When the user returns, re-read the checklist and evaluate as Case B.
 
-### 7.2 List the PRTesting Folder
-
-```
-Glob("*", path="{{VAULT_ROOT}}/DevProjects/{{PROJECT_NAME}}/Claude/TODO/PRTesting")
-```
-
-### 7.3 Evaluate Checklist State
-
-Check whether `{filename}.md` exists in the listing.
-
-**Case A — No checklist exists:**
-
-Invoke `/pr_test_checklist` to generate it. Then report:
-
-```
-Playtest checklist generated:
-  📄 DevProjects/{{PROJECT_NAME}}/Claude/TODO/PRTesting/{filename}.md
-
-Open in Obsidian, playtest each item, and check boxes as you go.
-Waiting for your testing results...
-```
-
-**IMPORTANT:** Do NOT run the game and tell user to do something. Wait for user to test on their own schedule (CLAUDE.md: "Invisibility Workflow").
-
-When the user returns, re-read the checklist and evaluate as Case B.
-
-**Case B — Checklist exists:**
-
-Read the checklist:
-```
-obsidian_read_note(filePath: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/PRTesting/{filename}.md")
-```
-
-Count checkboxes:
+**Case B — Checklist exists:** count checkboxes:
 - `checked` = lines matching `- [x]` (case-insensitive)
 - `total` = lines matching `- [x]` + `- [ ]`
 
-**B.1 — 100% complete** (`checked == total`, `total > 0`):
+**B.1 — 100% complete** (`checked == total`, `total > 0`): report `Manual verification: ✅ {checked}/{total} items complete (100%)` and proceed directly to Step 8. No user wait needed.
 
-```
-Playtest checklist: ✅ {checked}/{total} items complete (100%)
-Auto-approved — all playtest items verified.
-```
-
-Proceed directly to Step 8. No user wait needed.
-
-**B.2 — Partially complete or not started** (`checked < total`):
-
-```
-Playtest checklist: {checked}/{total} items complete ({percent}%)
-
-Remaining items:
-  • <first 5 unchecked items summarized>
-  {... and N more}
-```
-
-Ask user with options:
-- **"Continue testing"** — Pause and wait for user to complete remaining items in Obsidian. When they return, re-read and re-evaluate.
-- **"Update checklist"** — Run `/pr_test_checklist` (UPDATE mode) to add any new commit coverage, then re-read and re-evaluate.
-- **"Merge anyway"** — User accepts incomplete testing. Note partial coverage in PR description during Step 8: `"Manual testing: partial (X/N items, Y%)"`. Proceed to Step 8.
+**B.2 — Partially complete or not started** (`checked < total`): report `{checked}/{total} items complete ({percent}%)` with the first 5 unchecked items summarized, then ask the user:
+- **"Continue verifying"** — Pause and wait for the user to complete the remaining items. When they return, re-read and re-evaluate.
+- **"Update checklist"** — Run the checklist command's update mode to add any new commit coverage, then re-read and re-evaluate.
+- **"Merge anyway"** — User accepts incomplete verification. Note partial coverage in the PR description during Step 8: `"Manual verification: partial (X/N items, Y%)"`. Proceed to Step 8.
 - **"Abort"** — Stop the merge workflow.
 
-**B.3 — Zero checkboxes** (`total == 0`, file exists):
+**B.3 — Zero checkboxes** (`total == 0`, file exists): nothing needs manual verification. Auto-approve and proceed to Step 8.
 
-All commits were Logic-domain — nothing to playtest. Auto-approve and proceed to Step 8.
+### 7.2 Feedback Loop
 
-### 7.4 Feedback Loop
-
-If user reports issues after testing:
+If user reports issues after verifying:
 1. Fix them
 2. Rebuild (Step 5)
 3. Re-run regression gate (Step 6)
-4. Run `/pr_test_checklist` in UPDATE mode to capture any new commits from fixes
+4. Run the checklist command's update mode to capture any new commits from fixes
 5. Push fixes to PR branch
-6. Re-evaluate checklist (return to 7.3)
+6. Re-evaluate checklist (return to 7.1)
 
 Loop until user is satisfied or chooses "Merge anyway."
 
@@ -367,25 +307,18 @@ If the PR title is auto-generated or the body is empty:
 gh pr merge <N> --merge --delete-branch
 ```
 
-### Jmodot Branch Cleanup
-After the {{PROJECT_NAME}} merge, clean up the paired Jmodot branch to prevent stale branch accumulation. `--delete-branch` only affects the current repo — paired Jmodot branches live on a different remote.
-
-1. Derive the Jmodot branch name: if {{PROJECT_NAME}} branch is `claude/<worktree-name>`, Jmodot branch is `jmodot/<worktree-name>`
-2. Check if the paired Jmodot branch exists on the remote:
-   ```bash
-   git -C Jmodot ls-remote --heads origin jmodot/<worktree-name>
-   ```
-3. If it exists:
-   - Close the Jmodot PR if one exists: `gh pr list --repo <jmodot-remote> --head jmodot/<worktree-name> --state open --json number -q '.[0].number'` → `gh pr close <jmodot-pr-number> --repo <jmodot-remote>`
-   - Delete the remote branch: `git -C Jmodot push origin --delete jmodot/<worktree-name>`
-   - Delete the local branch if it exists: `git -C Jmodot branch -d jmodot/<worktree-name> 2>/dev/null || true`
+### Submodule Branch Cleanup
+`--delete-branch` only affects the current repo; paired submodule branches live on a different remote. The submodule's path-scoped rule decides whether cleanup is yours or the user's. When it is yours, for each paired branch that still exists (`git -C <submodule> ls-remote --heads origin <branch>`):
+- Close the submodule PR if one is open: `gh pr list --repo <sub-remote> --head <branch> --state open --json number -q '.[0].number'` → `gh pr close <sub-pr-number> --repo <sub-remote>`
+- Delete the remote branch: `git -C <submodule> push origin --delete <branch>`
+- Delete the local branch if it exists: `git -C <submodule> branch -d <branch> 2>/dev/null || true`
 
 Then return to main:
 ```bash
 git checkout main
 git pull
 
-# CRITICAL: Update submodule after pull — the merged PR may have changed the Jmodot pointer
+# CRITICAL: Update submodules after pull — the merged PR may have changed a pointer
 git submodule update --init --recursive
 ```
 
@@ -402,7 +335,7 @@ git stash pop 2>/dev/null || true
 - **Never merge without user confirmation**
 - **Build before test** — compilation errors waste user testing time
 - **Tests before user** — automated tests are cheaper than human time
-- **Respect submodule merge order** — Jmodot branches merge first (Memory: `Git_Submodule_PR_Merge_Strategy`)
-- **Don't run game during user test** — wait for user to test independently (CLAUDE.md: "Invisibility Workflow")
+- **Respect submodule merge order** — paired submodule branches merge first
+- **Don't run the app during user verification** — wait for the user to verify independently
 - **Labels are additive** — see [PR Classification](agents/pr_classification.md)
 - **Never modify code without building + testing after** — every fix must be verified before pushing

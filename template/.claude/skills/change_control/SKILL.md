@@ -3,7 +3,7 @@ name: Change Control
 description: >-
   Load when deciding how a change is classified, gated or reviewed: which gate a commit or
   merge needs, whether a gate is advisory or blocking, and release mechanics. SKIP for running
-  the gate itself and for test mechanics (`testing`).
+  the gate itself and for test mechanics (the project's testing skill).
 ---
 
 # {{PROJECT_NAME}} — Change Control

@@ -121,6 +121,43 @@ def test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean() -> None:
             subprocess.run(["git", "worktree", "prune"], cwd=ROOT, capture_output=True)
 
 
+HOOK_CRASH_MARKERS = ("Traceback (most recent call last)", "ModuleNotFoundError", "can't open file",
+                      "No such file or directory")
+
+
+def _hook_payload(event: str, target: Path) -> str:
+    return json.dumps({
+        "session_id": "bootstrap-smoke", "hook_event_name": event, "cwd": str(target),
+        "transcript_path": str(target / "transcript.jsonl"), "prompt": "smoke",
+        "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {"stdout": ""},
+        "source": "startup",
+    })
+
+
+def _hook_crashes(target: Path) -> list[str]:
+    """Run every hook the composed settings.json registers once, with a minimal payload for its
+    event; name each one that crashes (traceback, missing module or missing script)."""
+    settings = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(target), CLAUDE_CODE_SESSION_ID="bootstrap-smoke")
+    crashes = []
+    for event, groups in sorted(settings.get("hooks", {}).items()):
+        for group in groups:
+            for hook in group.get("hooks", []):
+                command = hook.get("command")
+                if hook.get("type") != "command" or not command:
+                    continue
+                try:
+                    run = subprocess.run([BASH, "-c", command], cwd=target, env=env, input=_hook_payload(event, target),
+                                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+                except subprocess.TimeoutExpired:
+                    crashes.append(f"{event}: {command} (timeout)")
+                    continue
+                marker = next((m for m in HOOK_CRASH_MARKERS if m in run.stderr), None)
+                if marker:
+                    crashes.append(f"{event}: {command} ({marker}: {run.stderr.strip().splitlines()[-1][:160]})")
+    return crashes
+
+
 PREFIXES = ("pure", "pure,coding", "pure,coding,godot")
 
 
@@ -165,6 +202,8 @@ def test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine()
             installed = json.loads((target / ".claude" / "skills" / "project_subsystems" / "adaptation.json")
                                    .read_text(encoding="utf-8"))["memory_domains"]
             assert [d["name"] for d in installed] == domains, f"{layers}: domains {[d['name'] for d in installed]}"
+            crashes = _hook_crashes(target)
+            assert not crashes, f"{layers}: hooks crash in a fresh project: " + "; ".join(crashes[:6])
     finally:
         removed = baseline is None or subprocess.run(
             ["git", "worktree", "remove", "--force", str(baseline)], cwd=ROOT, capture_output=True

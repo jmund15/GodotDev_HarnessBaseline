@@ -12,7 +12,7 @@ Keyed on the `worklog_reference` *Scope* vocabulary — that table is the SSOT; 
 
 | Scope | Default process depth |
 |---|---|
-| 1 | No `/explore` dispatch (tier-1 items are the class `/explore`'s own SKIP litmus already sanctions — see rule 1), no plan file. Verification per the do-now file-type gates in [`worklog_triage.md`](../../commands/reference/worklog_triage.md) §Step 5 → `do-now` (the SSOT: `.cs` → `/regression_gate`; `.tres`/`.tscn` Logic-affecting → Logic suite; doc-only → none). |
+| 1 | No `/explore` dispatch (tier-1 items are the class `/explore`'s own SKIP litmus already sanctions — see rule 1), no plan file. Verification per the do-now gates in [`worklog_triage.md`](../../commands/reference/worklog_triage.md) §Step 5 → `do-now` (the SSOT: a gated change class → its gate; doc-only → none). |
 | 2 | Plan is in-conversation; a plan *file* only when the executor is dispatched cold or `/plan_check` requires it. `/explore` owns its no-op rule and selected lenses. |
 | 3 | Plan file + `/plan_check` (lens set by plan shape) + execute — the `/feature_drive` steps 2–6 shape. Full `/explore` per its trigger table. |
 | 4 | Not drivable. Own design track: `/design_drive` (no design doc) or `/part_drive` (roadmap Part exists). |

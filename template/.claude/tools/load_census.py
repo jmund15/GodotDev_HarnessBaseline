@@ -16,15 +16,14 @@ Sections (all computed on every run, printed always):
                     `~/.claude/output-styles/<name>.md`. A named style with no
                     file is a source error; no style set (or `default`) is not.
   - rules       -- `rules/**/*.md` grouped by exact `paths:` glob-list family, plus
-                    three CONTAINS bundles called out separately since each
-                    loads on every session's first touch of a matching file
-                    regardless of exact-family membership: the `**/*.cs`
-                    bundle (every rule file whose `paths:` list contains that
-                    glob), and the `hsm_bt_patterns.md` / `scene_authoring.md`
-                    bundles (every rule file whose `paths:` list contains ANY
-                    glob from that named rule's own `paths:` list -- empty if
-                    the named rule is absent from the tree, same graceful
-                    degradation as an empty `**/*.cs` bundle).
+                    the profiles' CONTAINS bundles, called out separately since
+                    each loads on every session's first touch of a matching
+                    file regardless of exact-family membership: a `glob`
+                    bundle is every rule file whose `paths:` list contains that
+                    glob; a `rule` bundle is every rule file whose `paths:`
+                    list contains ANY glob from that named rule's own `paths:`
+                    list. A bundle is empty when nothing matches or the named
+                    rule is absent.
   - oversized   -- bodies (`skills/**/*.md` + `commands/**/*.md`) over 24,576 B,
                     each flagged with whether a selector already exists for it
                     (`tools/lens.py` REGISTRIES -> `commands/agents/<file>`, or
@@ -51,11 +50,10 @@ later prompt pays (a fire-once hook like `budget_posture.py` emits only on pass
 1). `prompt_emission_first_bytes` is reported, never budgeted;
 `prompt_emission_bytes` budgets `prompt_emission_steady_bytes`.
 SessionStart emission is an excluded check, not measured and not budgeted:
-`session_context_loader.py` can start a build, so a synthetic run is not
+a SessionStart hook can start a build, so a synthetic run is not
 side-effect free. Re-entry trigger: a SessionStart hook gains a build-free
-dry-run seam. The two
-shared-state hooks that write real machine state resolve every write
-through an env var (`ISOLATED_SHARED_STATE_HOOKS`) and run for real against
+dry-run seam. Shared-state hooks that write real machine state resolve
+every write through an env var (`ISOLATED_SHARED_STATE_HOOKS`) and run for real against
 a throwaway project/home/temp tree instead of being skipped;
 `shell_census.py` additionally reads a live process snapshot, so its bytes
 are reported in their own column and excluded from both sums
@@ -76,6 +74,17 @@ A gated line's candidates are read (traced) but excluded from the sum. Each
 candidate resolves first against the census root (`.claude/`), then against
 the entrypoint's own directory; an unresolvable reference is dropped silently
 (it names something outside `.claude/`, e.g. a `Tests/` path).
+
+Profiles: every `tools/load_census.*.json` under the census root extends the
+pure defaults below, so each layer or project that ships rules, hooks or
+entrypoints declares them itself. Keys: `rule_bundles` (name -> `{"glob": g}`
+or `{"rule": "<file>.md"}`; reported as `<name>_bundle_files/_bytes`),
+`budgets` (key -> `[cap, baseline]`; a bundle's key is
+`<name>_rule_bundle_bytes`), `entrypoints`, `known_oversized_no_selector`,
+`shared_state_hook_skip`, `isolated_shared_state_hooks`, and
+`code_edit_probe` (`{"path": <project-relative file>}`, profiled as the
+`edit-code` case). Lists union, mappings update, and an unreadable profile is
+a source error.
 
 CLI: `python3 .claude/tools/load_census.py [--json <path>] [--profile-hooks] [--budgets]`
 `--budgets` fails closed when a standing file, entrypoint, or rule `paths:` frontmatter is missing or malformed.
@@ -113,19 +122,13 @@ BUDGETS = {
     # descriptions (26 rows, 5,263 B with the 4 `whenToUse` suffixes) joined the listing and the active
     # output style joined standing).
     "listing_bytes": (30_464, 28_870),
-    # Re-based 2026-09-15 (live 32,665 B): the owner restored the Note from Jacob verbatim plus the
-    # ideal-architecture, Logs are Truth, rationalization-table and categorical-commit rules to CLAUDE.md.
-    # Owner-authored text outranks the byte target; the cap still stops growth past live + 5%.
+    # Owner-authored standing text outranks the byte target; the cap still stops growth past live + 5%.
     "standing_bytes": (34_304, 32_665),
     # Steady-state emission of an unchanged later prompt; the first prompt is reported
     # separately and never budgeted (reference/context_attribution_2026-09.md).
     "prompt_emission_bytes": (512, 324),
     # cap = live + 2 (measured 2026-09-14 after the reaper moved in-process and the PostToolUse `*` entry narrowed).
     "edit_hook_chain_subprocesses": (4, 2),
-    # cap = live + 5%, rounded up to the nearest 256 B (measured 2026-09-14, post-J5 rule-bundle cut).
-    "cs_rule_bundle_bytes": (37_120, 35_250),
-    "hsm_bt_rule_bundle_bytes": (15_360, 14_513),
-    "scene_authoring_rule_bundle_bytes": (38_400, 36_484),
 }
 
 OVERSIZED_THRESHOLD = 24_576
@@ -135,17 +138,12 @@ OVERSIZED_THRESHOLD = 24_576
 # does a listed body that grew more than KNOWN_OVERSIZED_GROWTH past its recorded
 # bytes, shrank below the threshold, gained a selector, or whose file is missing: a
 # stale entry would mask its own regrowth, so the dict stays exact.
-KNOWN_OVERSIZED_NO_SELECTOR = {
-    ".claude/skills/project_subsystems/SKILL.md": 31_955,
-}
+KNOWN_OVERSIZED_NO_SELECTOR: dict[str, int] = {}
 KNOWN_OVERSIZED_GROWTH = 0.05
 
 ENTRYPOINTS = [
     "commands/session_end.md",
-    "commands/plan_check.md",
-    "commands/explore.md",
     "commands/worklog.md",
-    "skills/_brainstorm_shared/common.md",
 ]
 
 PHASE_GATE_CUES = (
@@ -162,19 +160,18 @@ MD_REF_RE = re.compile(r"`((?:\.claude/)?(?:[\w.-]+/)+[\w.-]+\.md|skills/[\w-]+)
 # and no env-var seam isolates them (unlike ISOLATED_SHARED_STATE_HOOKS below).
 SHARED_STATE_HOOK_SKIP = {
     "overnight_ask_guard.py",
-    "subagent_dispatch_guard.py", "session_context_loader.py",
-    "tres_script_strip_guard.py", "tres_nullstrip_guard.py",
+    "subagent_dispatch_guard.py",
 }
 
 # UserPromptSubmit hooks that write shared/machine-wide state but were
 # confirmed (by reading them) to resolve every write path through an env var:
 # CLAUDE_PROJECT_DIR (shell_census.py's `.claude/.cache` cache file),
 # HARNESS_HOOK_STATE_DIR (_hook_state.py's per-session state, already redirected
-# for every hook), and HOME/USERPROFILE/TEMP/TMP/TMPDIR (activity_registry.py's
-# REGISTRY_DIR and dedupe_path both resolve through `tempfile.gettempdir()`).
-# Run for real against a throwaway project/home/temp tree instead of being
-# skipped -- see `_isolated_hook_env`.
-ISOLATED_SHARED_STATE_HOOKS = {"shell_census.py", "activity_registry.py"}
+# for every hook), and HOME/USERPROFILE/TEMP/TMP/TMPDIR (a registry that resolves
+# through `tempfile.gettempdir()`). Profiles add their own. Run for real against
+# a throwaway project/home/temp tree instead of being skipped -- see
+# `_isolated_hook_env`.
+ISOLATED_SHARED_STATE_HOOKS = {"shell_census.py"}
 
 # hook name -> reason its emission measures live machine state rather than
 # harness-controlled behavior, so it is reported in its own column and
@@ -187,12 +184,37 @@ LIVE_MACHINE_HOOKS = {
                         "processes; not reproducible from a synthetic payload",
 }
 
-# hook name -> reason it cannot be isolated. Empty in production: both known
-# shared-state UserPromptSubmit hooks resolve through an env-var seam (see
+# hook name -> reason it cannot be isolated. Empty in production: every known
+# shared-state UserPromptSubmit hook resolves through an env-var seam (see
 # ISOLATED_SHARED_STATE_HOOKS). Kept as a live dict, not a constant, so a
 # future hook that genuinely has no seam can be recorded here with its
 # reason rather than silently skipped.
 NON_ISOLATABLE_SHARED_STATE_HOOKS: dict[str, str] = {}
+
+PROFILE_GLOB = "tools/load_census.*.json"
+PROFILE_LISTS = ("entrypoints", "shared_state_hook_skip", "isolated_shared_state_hooks")
+PROFILE_MAPS = ("rule_bundles", "budgets", "known_oversized_no_selector", "code_edit_probe")
+
+
+def load_profile(root: Path) -> dict:
+    """The merged `tools/load_census.*.json` profiles under `root`, in name order, plus a
+    `source_errors` list naming any unreadable one."""
+    merged: dict = {key: [] for key in PROFILE_LISTS}
+    merged.update({key: {} for key in PROFILE_MAPS})
+    merged["source_errors"] = []
+    for path in sorted(root.glob(PROFILE_GLOB)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("top level is not an object")
+        except (OSError, ValueError) as exc:
+            merged["source_errors"].append(f"unreadable census profile: {path}: {exc}")
+            continue
+        for key in PROFILE_LISTS:
+            merged[key].extend(x for x in data.get(key, []) if x not in merged[key])
+        for key in PROFILE_MAPS:
+            merged[key].update(data.get(key, {}))
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -360,33 +382,27 @@ def rules_census(root: Path) -> dict:
          for k, v in families.items()),
         key=lambda r: -r["total_bytes"],
     )
-    cs_bundle = [e for e in entries if "**/*.cs" in e["paths"]]
 
-    def _named_glob_bundle(target_name: str) -> dict:
-        """Every rule entry whose `paths:` list contains ANY glob from
-        `target_name`'s own `paths:` list, same CONTAINS style as the
-        `**/*.cs` bundle above -- a sibling rule can share one glob while its
-        full paths tuple differs. Empty (no error) when `target_name` is not
-        present in this tree, matching an empty `**/*.cs` bundle."""
-        owner = next((e for e in entries if e["name"] == target_name), None)
-        keys = owner["paths"] if owner else []
+    def _bundle(spec: dict) -> dict:
+        """CONTAINS match: a sibling rule can share one glob while its full paths tuple
+        differs. A `rule` bundle keys on every glob of that named rule, and is empty (no
+        error) when the rule is absent from this tree."""
+        if "glob" in spec:
+            keys = [spec["glob"]]
+        else:
+            owner = next((e for e in entries if e["name"] == spec.get("rule")), None)
+            keys = owner["paths"] if owner else []
         matched = [e for e in entries if any(k in e["paths"] for k in keys)]
         return {"files": sorted(e["name"] for e in matched),
                 "bytes": sum(e["bytes"] for e in matched)}
 
-    hsm_bt_bundle = _named_glob_bundle("hsm_bt_patterns.md")
-    scene_authoring_bundle = _named_glob_bundle("scene_authoring.md")
-    return {
-        "entries": entries,
-        "families": family_rows,
-        "cs_bundle_files": [e["name"] for e in cs_bundle],
-        "cs_bundle_bytes": sum(e["bytes"] for e in cs_bundle),
-        "hsm_bt_bundle_files": hsm_bt_bundle["files"],
-        "hsm_bt_bundle_bytes": hsm_bt_bundle["bytes"],
-        "scene_authoring_bundle_files": scene_authoring_bundle["files"],
-        "scene_authoring_bundle_bytes": scene_authoring_bundle["bytes"],
-        "source_errors": source_errors,
-    }
+    report = {"entries": entries, "families": family_rows, "bundles": {}, "source_errors": source_errors}
+    for name, spec in load_profile(root)["rule_bundles"].items():
+        bundle = _bundle(spec)
+        report["bundles"][name] = bundle
+        report[f"{name}_bundle_files"] = bundle["files"]
+        report[f"{name}_bundle_bytes"] = bundle["bytes"]
+    return report
 
 
 def load_selector_registry(root: Path) -> set:
@@ -421,7 +437,7 @@ def load_selector_registry(root: Path) -> set:
 
 def oversized_bodies(root: Path) -> list[dict]:
     selector_covered = load_selector_registry(root)
-    known = dict(KNOWN_OVERSIZED_NO_SELECTOR)
+    known = _known_oversized(root)
     rows = []
     seen = set()
     for p in sorted(list(root.glob("skills/**/*.md")) + list(root.glob("commands/**/*.md"))):
@@ -444,11 +460,15 @@ def oversized_bodies(root: Path) -> list[dict]:
     return sorted(rows, key=lambda r: -r["bytes"])
 
 
+def _known_oversized(root: Path) -> dict:
+    return {**KNOWN_OVERSIZED_NO_SELECTOR, **load_profile(root)["known_oversized_no_selector"]}
+
+
 def stale_known_oversized(root: Path, bodies: list[dict]) -> list[str]:
     """Listed KNOWN_OVERSIZED_NO_SELECTOR entries whose file is missing under `root`, or is no
     longer an oversized body without a selector."""
     current = {b["path"] for b in bodies if not b["has_selector"]}
-    return [rel for rel in KNOWN_OVERSIZED_NO_SELECTOR
+    return [rel for rel in _known_oversized(root)
             if not (root.parent / rel).is_file() or rel not in current]
 
 
@@ -566,18 +586,15 @@ def edit_hook_chain(settings: dict) -> dict:
 
 def build_payloads(root: Path) -> dict:
     sid = "census0001"
-    harness_md = root / "commands" / "explore.md"
-    cs_file = root.parent / "Scripts" / "Spells" / "SpellInstance.cs"
-    return {
+    harness_md = root / "commands" / "session_end.md"
+    payloads = {
         "UserPromptSubmit": [
             ("prompt", {"hook_event_name": "UserPromptSubmit", "session_id": sid,
-                        "prompt": "Fix the null check in SpellInstance.Cast and add a Logic test."}),
+                        "prompt": "Fix the null check in the config loader and add a test."}),
         ],
         "PreToolUse": [
             ("edit-harness-md", {"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Edit",
                                   "tool_input": {"file_path": str(harness_md), "old_string": "a", "new_string": "b"}}),
-            ("edit-cs", {"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Edit",
-                         "tool_input": {"file_path": str(cs_file), "old_string": "a", "new_string": "b"}}),
             ("read-md", {"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Read",
                          "tool_input": {"file_path": str(harness_md)}}),
         ],
@@ -585,13 +602,26 @@ def build_payloads(root: Path) -> dict:
             ("edit-harness-md", {"hook_event_name": "PostToolUse", "session_id": sid, "tool_name": "Edit",
                                   "tool_input": {"file_path": str(harness_md), "old_string": "a", "new_string": "b"},
                                   "tool_response": {"filePath": str(harness_md)}}),
-            ("edit-cs", {"hook_event_name": "PostToolUse", "session_id": sid, "tool_name": "Edit",
-                         "tool_input": {"file_path": str(cs_file), "old_string": "a", "new_string": "b"},
-                         "tool_response": {"filePath": "x"}}),
             ("read-md", {"hook_event_name": "PostToolUse", "session_id": sid, "tool_name": "Read",
                          "tool_input": {"file_path": str(harness_md)}, "tool_response": {"content": "x" * 500}}),
         ],
     }
+    probe = load_profile(root)["code_edit_probe"].get("path")
+    if probe:
+        edit = {"file_path": str(root.parent / probe), "old_string": "a", "new_string": "b"}
+        payloads["PreToolUse"].insert(1, ("edit-code", {"hook_event_name": "PreToolUse", "session_id": sid,
+                                                        "tool_name": "Edit", "tool_input": edit}))
+        payloads["PostToolUse"].insert(1, ("edit-code", {"hook_event_name": "PostToolUse", "session_id": sid,
+                                                         "tool_name": "Edit", "tool_input": edit,
+                                                         "tool_response": {"filePath": "x"}}))
+    return payloads
+
+
+def _hook_sets(root: Path) -> tuple[set, set]:
+    """(skipped, isolated) shared-state hook names: the module defaults plus the profiles'."""
+    profile = load_profile(root)
+    return (SHARED_STATE_HOOK_SKIP | set(profile["shared_state_hook_skip"]),
+            ISOLATED_SHARED_STATE_HOOKS | set(profile["isolated_shared_state_hooks"]))
 
 
 def _isolated_hook_env(base_env: dict, iso_root: Path) -> dict:
@@ -653,6 +683,7 @@ def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]
     iso_root = Path(tempfile.mkdtemp(prefix="load_census_isohook_"))
     try:
         _label, payload = build_payloads(root)["UserPromptSubmit"][0]
+        skipped, isolated = _hook_sets(root)
         base_env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state_dir,
                          CLAUDE_PROJECT_DIR=str(root.parent), PYTHONIOENCODING="utf-8")
         base_env.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -668,7 +699,7 @@ def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]
                        "status_first": "-", "status_steady": "-",
                        "ms_first": 0, "ms_steady": 0,
                        "stdout_bytes_first": 0, "stdout_bytes_steady": 0}
-                if name in SHARED_STATE_HOOK_SKIP:
+                if name in skipped:
                     row["run_note"] = "skipped(shared-state, no env seam confirmed)"
                     rows.append(row)
                     continue
@@ -676,12 +707,12 @@ def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]
                     row["run_note"] = f"skipped(cannot-isolate: {NON_ISOLATABLE_SHARED_STATE_HOOKS[name]})"
                     rows.append(row)
                     continue
-                if name in ISOLATED_SHARED_STATE_HOOKS:
+                if name in isolated:
                     hook_iso_root = iso_root / name
                     hook_iso_root.mkdir(parents=True, exist_ok=True)
                     env = _isolated_hook_env(base_env, hook_iso_root)
                     # A hook that resolves its root from the payload `cwd` or os.getcwd()
-                    # (activity_registry.py) must see the throwaway project, not this checkout.
+                    # must see the throwaway project, not this checkout.
                     hook_cwd = env["CLAUDE_PROJECT_DIR"]
                     hook_payload = dict(payload, cwd=hook_cwd)
                     row["isolated"] = True
@@ -744,6 +775,7 @@ def profile_hooks(root: Path, settings: dict, events: list[str] | None = None) -
     state_dir = tempfile.mkdtemp(prefix="load_census_hookstate_")
     try:
         payloads = build_payloads(root)
+        skipped, isolated = _hook_sets(root)
         env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state_dir, CLAUDE_PROJECT_DIR=str(root.parent),
                    PYTHONIOENCODING="utf-8")
         env.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -758,8 +790,7 @@ def profile_hooks(root: Path, settings: dict, events: list[str] | None = None) -
                     script = cmd.split('"')[1] if '"' in cmd else cmd.split()[-1]
                     script = script.replace("$CLAUDE_PROJECT_DIR", str(root.parent))
                     name = os.path.basename(script)
-                    if (name in SHARED_STATE_HOOK_SKIP or name in ISOLATED_SHARED_STATE_HOOKS
-                            or name in NON_ISOLATABLE_SHARED_STATE_HOOKS):
+                    if name in skipped or name in isolated or name in NON_ISOLATABLE_SHARED_STATE_HOOKS:
                         rows.append({"event": event, "case": "-", "hook": name,
                                      "status": "skipped(shared-state)", "ms": 0,
                                      "stdout_bytes": 0, "stderr_bytes": 0})
@@ -793,11 +824,13 @@ def profile_hooks(root: Path, settings: dict, events: list[str] | None = None) -
 def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks: bool = False,
                  home: Path | None = None) -> dict:
     settings = load_settings(root)
+    profile = load_profile(root)
     standing = standing_census(root, home=home)
     rules = rules_census(root)
     transitive = {}
-    source_errors = list(standing.get("source_errors", [])) + list(rules.get("source_errors", []))
-    for entry in ENTRYPOINTS:
+    source_errors = (list(profile["source_errors"]) + list(standing.get("source_errors", []))
+                     + list(rules.get("source_errors", [])))
+    for entry in ENTRYPOINTS + [e for e in profile["entrypoints"] if e not in ENTRYPOINTS]:
         path = root / entry
         if not path.is_file():
             source_errors.append(f"missing entrypoint: {entry}")
@@ -816,6 +849,7 @@ def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks
         "known_oversized_stale": stale_known_oversized(root, bodies),
         "transitive_load": transitive,
         "hook_chain": edit_hook_chain(settings),
+        "budgets": {**BUDGETS, **{k: tuple(v) for k, v in profile["budgets"].items()}},
         "source_errors": source_errors,
     }
     if profile_hooks_flag:
@@ -837,27 +871,23 @@ def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks
 
 def check_budgets(report: dict) -> list[str]:
     fails = []
+    budgets = report.get("budgets", BUDGETS)
     for source_error in report.get("source_errors", []):
         fails.append(f"source_invalid: {source_error}")
-    cap, _ = BUDGETS["listing_bytes"]
+    cap, _ = budgets["listing_bytes"]
     if report["listing"]["total_bytes"] > cap:
         fails.append(f"listing_bytes {report['listing']['total_bytes']:,} > {cap:,}")
-    cap, _ = BUDGETS["standing_bytes"]
+    cap, _ = budgets["standing_bytes"]
     if report["standing"]["total_bytes"] > cap:
         fails.append(f"standing_bytes {report['standing']['total_bytes']:,} > {cap:,}")
-    cap, _ = BUDGETS["cs_rule_bundle_bytes"]
-    if report["rules"]["cs_bundle_bytes"] > cap:
-        fails.append(f"cs_rule_bundle_bytes {report['rules']['cs_bundle_bytes']:,} > {cap:,}")
-    cap, _ = BUDGETS["hsm_bt_rule_bundle_bytes"]
-    if report["rules"]["hsm_bt_bundle_bytes"] > cap:
-        fails.append(f"hsm_bt_rule_bundle_bytes {report['rules']['hsm_bt_bundle_bytes']:,} > {cap:,}")
-    cap, _ = BUDGETS["scene_authoring_rule_bundle_bytes"]
-    if report["rules"]["scene_authoring_bundle_bytes"] > cap:
-        fails.append(f"scene_authoring_rule_bundle_bytes {report['rules']['scene_authoring_bundle_bytes']:,} > {cap:,}")
-    cap, _ = BUDGETS["edit_hook_chain_subprocesses"]
+    for name, bundle in report["rules"].get("bundles", {}).items():
+        key = f"{name}_rule_bundle_bytes"
+        if key in budgets and bundle["bytes"] > budgets[key][0]:
+            fails.append(f"{key} {bundle['bytes']:,} > {budgets[key][0]:,}")
+    cap, _ = budgets["edit_hook_chain_subprocesses"]
     if report["hook_chain"]["edit_subprocesses"] > cap:
         fails.append(f"edit_hook_chain_subprocesses {report['hook_chain']['edit_subprocesses']} > {cap}")
-    cap, _ = BUDGETS["prompt_emission_bytes"]
+    cap, _ = budgets["prompt_emission_bytes"]
     emission = report.get("prompt_emission_steady_bytes")
     if emission is not None and emission > cap:
         fails.append(f"prompt_emission_bytes (steady) {emission:,} > {cap:,}")
@@ -904,9 +934,8 @@ def print_report(report: dict, profile_hooks_flag: bool) -> None:
     print("\n== rules/**/*.md by paths: family ==")
     for fam in report["rules"]["families"]:
         print(f"  {fam['total_bytes']:6,} B  {fam['paths']}  {fam['files']}")
-    print(f"**/*.cs bundle: {report['rules']['cs_bundle_bytes']:,} B  {report['rules']['cs_bundle_files']}")
-    print(f"hsm_bt_patterns bundle: {report['rules']['hsm_bt_bundle_bytes']:,} B  {report['rules']['hsm_bt_bundle_files']}")
-    print(f"scene_authoring bundle: {report['rules']['scene_authoring_bundle_bytes']:,} B  {report['rules']['scene_authoring_bundle_files']}")
+    for name, bundle in report["rules"].get("bundles", {}).items():
+        print(f"{name} bundle: {bundle['bytes']:,} B  {bundle['files']}")
 
     print(f"\n== Bodies over {OVERSIZED_THRESHOLD:,} B ==")
     for b in report["oversized_bodies"]:
@@ -960,8 +989,8 @@ def print_report(report: dict, profile_hooks_flag: bool) -> None:
 
 def print_budgets(report: dict, failed: list[str]) -> None:
     print("\n== Budgets ==")
-    for key, (cap, baseline) in BUDGETS.items():
-        print(f"  {key}: cap={cap:,}  baseline(2026-09-14)={baseline:,}")
+    for key, (cap, baseline) in report.get("budgets", BUDGETS).items():
+        print(f"  {key}: cap={cap:,}  baseline={baseline:,}")
     if failed:
         print("FAILED:")
         for f in failed:

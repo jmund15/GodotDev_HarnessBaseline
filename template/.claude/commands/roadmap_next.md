@@ -1,10 +1,10 @@
 ---
-description: Scan all roadmaps ({{PROJECT_NAME}} + Jmodot trees) for actionable Parts (deps satisfied), score by Leverage + State-Proximity + Readiness + MVP-Demand, recommend top 3. Optional scope (project-only / jmodot-only); bare invocation excludes idea-pending, user-owned, workshop-pending, prototype-pending.
+description: Scan all roadmaps (project + framework vault trees) for actionable Parts (deps satisfied), score by Leverage + State-Proximity + Readiness + MVP-Demand, recommend top 3. Optional scope (project-only / <tree>-only); bare invocation excludes idea-pending, user-owned, workshop-pending, prototype-pending.
 ---
 
 # /roadmap_next
 
-Surveys every `roadmap.md` under `BrainstormingDesigns/` in **both** the {{PROJECT_NAME}} and Jmodot vault trees, filters Parts to a configurable state set (and optional scope), applies per-state "actionable" predicates (deps satisfied where deps apply), scores survivors on four mechanically-computable criteria, and recommends the top 3 with next-action handoffs.
+Surveys every `roadmap.md` under `BrainstormingDesigns/` in **every** vault tree the project plans in (its own tree plus each framework tree CLAUDE.md §3 names), filters Parts to a configurable state set (and optional scope), applies per-state "actionable" predicates (deps satisfied where deps apply), scores survivors on four mechanically-computable criteria, and recommends the top 3 with next-action handoffs.
 
 **Companion to `/plan_part`** (per-Part briefing) and `/update_roadmap` (Part state transitions). This command answers "**what should I work on next?**" across the full roadmap surface; the others answer "how do I work on Part X?"
 
@@ -30,16 +30,16 @@ User-typed at the start of a planning session, or when:
 
 | Form | Behavior |
 |---|---|
-| `/roadmap_next` | Default: state set `plan-pending`, `arch-pending`, `arch-rework`, `idea-rework`; scope **both** ({{PROJECT_NAME}} + Jmodot). |
+| `/roadmap_next` | Default: state set `plan-pending`, `arch-pending`, `arch-rework`, `idea-rework`; scope **all** (every tree). |
 | `/roadmap_next plan-pending` | Single state filter. |
 | `/roadmap_next plan-pending arch-rework` | Multi-state filter (positional, space-separated). |
-| `/roadmap_next project-only` | Scope filter — recommend only {{PROJECT_NAME}} Parts (`pp` accepted). |
-| `/roadmap_next jmodot-only` | Scope filter — recommend only Jmodot Parts (`jmodot` accepted). |
+| `/roadmap_next project-only` | Scope filter — recommend only {{PROJECT_NAME}} Parts (`project` accepted). |
+| `/roadmap_next <tree>-only` | Scope filter — recommend only one framework tree's Parts (`<tree>` accepted). |
 | `/roadmap_next plan-pending project-only` | Scope + state tokens compose, any order. |
 | `/roadmap_next --all` | Include `idea-pending` + `workshop-pending` + `submap-pending` + `prototype-pending` in the filter. `user-owned` always excluded. |
 | `/roadmap_next --recommend-only` | Skip the full actionable table; show top-3 only. |
 
-**Scope** narrows which Parts are *recommended*, never which are *analyzed* — both vault trees are always discovered + parsed so cross-tree Leverage stays accurate (Phase 1, Anti-patterns). Scope vocabulary: `both` (default) / `pp` / `project-only` / `jmodot` / `jmodot-only`.
+**Scope** narrows which Parts are *recommended*, never which are *analyzed* — every vault tree is always discovered + parsed so cross-tree Leverage stays accurate (Phase 1, Anti-patterns). Scope vocabulary: `all` (default) / `project` / `project-only` / `<tree>` / `<tree>-only`.
 
 **Excluded states (never reported):**
 - `complete` / `abandoned` — no work to do.
@@ -57,7 +57,7 @@ User-typed at the start of a planning session, or when:
 | `idea-rework` | always actionable | `/idea_brainstorm` |
 | `idea-pending` | only with `--all` flag (greenfield = "what to build" not "what's ready") | `/idea_brainstorm` |
 | `workshop-pending` | only with `--all` flag (user decision required) | user-decision-then-route |
-| `prototype-pending` | only with `--all`; all Deps `complete` AND the `prototype/<slug>` branch carries a runnable build | user plays the build → `prototype` capture → re-route |
+| `prototype-pending` | only with `--all`; all Deps `complete` AND the `prototype/<slug>` branch carries a runnable build | user plays the build → prototype capture → re-route |
 | `submap-pending` | only with `--all`; recurse into child roadmap referenced in Source cell | enter child roadmap |
 
 ---
@@ -97,7 +97,7 @@ For `idea-*`:
 
 For `prototype-pending`:
 - `3` — Trigger states the runtime question AND the shape of its answer
-- `1` — question stated, answer shape missing (not yet scoped per the `prototype` skill)
+- `1` — question stated, answer shape missing (not yet scoped as a runtime probe)
 
 ### 4. MVP Demand (0–3) — incomplete-MVP reach
 Counts the **incomplete MVPs** (per `## MVP Checkpoints` §6.11; an MVP is incomplete unless its Status is `✅ Verified`) within the candidate's **one-hop reach** = `{MVPs that list the candidate itself as a Required Part}` ∪ `{MVPs that list any *direct dependent* of the candidate}`. Set-union over distinct MVPs — a Part that both serves MVP-1 and unblocks another MVP-1 Part counts MVP-1 once.
@@ -122,11 +122,11 @@ Counts the **incomplete MVPs** (per `## MVP Checkpoints` §6.11; an MVP is incom
 
 ### Phase 1 — Discover roadmaps + parse args
 
-1. `Glob` for `BrainstormingDesigns/**/roadmap.md` under **both** vault trees, tagging each result with its `tree` (`pp` | `jmodot`):
+1. `Glob` for `BrainstormingDesigns/**/roadmap.md` under **every** vault tree, tagging each result with its `tree` (`project` | the framework tree's name):
    - **{{PROJECT_NAME}}** — `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\BrainstormingDesigns\`
-   - **Jmodot** — `{{VAULT_ROOT}}\DevProjects\Jmodot\Claude\BrainstormingDesigns\`
-2. Parse positional args. Match each token against the **scope set** {`both`, `pp`, `project-only`, `jmodot`, `jmodot-only`} first, then the **state set**. Empty state args → default state set; no scope token → `both`. `--all` flag adds `idea-pending`, `workshop-pending`, `submap-pending`, `prototype-pending`. `--recommend-only` toggles output verbosity.
-3. **Scope filters the candidate pool, NOT discovery.** Always glob + parse BOTH trees regardless of scope, so Phase 3 builds the complete cross-tree dep graph — a `project-only` Part's Leverage must still count Jmodot dependents (e.g. {{PROJECT_NAME}}'s `Graph Engine Core` is depended on by Jmodot procgen Parts; {{PROJECT_NAME}} `hub-world` depends on Jmodot `grab→jmodot`). The scope token is applied in Phase 4 to gate which Parts can be *recommended*.
+   - **each framework tree CLAUDE.md §3 names** — `{{VAULT_ROOT}}\DevProjects\<tree>\Claude\BrainstormingDesigns\`
+2. Parse positional args. Match each token against the **scope set** {`all`, `project`, `project-only`, and `<tree>`, `<tree>-only` per discovered tree} first, then the **state set**. Empty state args → default state set; no scope token → `all`. `--all` flag adds `idea-pending`, `workshop-pending`, `submap-pending`, `prototype-pending`. `--recommend-only` toggles output verbosity.
+3. **Scope filters the candidate pool, NOT discovery.** Always glob + parse EVERY tree regardless of scope, so Phase 3 builds the complete cross-tree dep graph — a `project-only` Part's Leverage must still count framework-tree dependents (e.g. a project graph-engine Part that framework procgen Parts depend on). The scope token is applied in Phase 4 to gate which Parts can be *recommended*.
 4. If a positional token ∉ scope set ∪ known states → emit usage table and exit.
 
 ### Phase 2 — Parse Parts tables (bundled)
@@ -137,7 +137,7 @@ Per CLAUDE.md §9 — 3+ files for synthesis → route through `mcp__ai-worker__
 read_files(
   paths=[<each roadmap.md absolute path>],
   question="For each roadmap, extract every Parts table row as a structured record:
-            {roadmap, tree (pp|jmodot — infer from the path), pos, part_name, state,
+            {roadmap, tree (project | framework tree name — infer from the path), pos, part_name, state,
              deps (parsed to list), trigger (TRUNCATED to first 400 chars),
              source (TRUNCATED to first 200 chars)}.
             Also extract any 'Cross-roadmap references' section listing this roadmap's
@@ -157,19 +157,19 @@ read_files(
 
 **Output-shape verification (MANDATORY post-call):** count the returned entries against the input `paths` list (the worker may return a bare array or `{roadmaps:[...]}` — count whichever). If `len(returned) < len(paths)` (empirically observed 2026-05-19 — worker returned 3 of 4 roadmaps on a long-context bundled call), enumerate which roadmap paths are missing and retry them via individual `Read` calls. Do NOT proceed to Phase 3 with partial data — an incomplete leverage graph silently misranks recommendations (a missing roadmap's cross-roadmap dep edges vanish, leaf-shaped Parts get over-promoted, downstream-blocking Parts get under-promoted). The check is mechanical: 1 if-statement; not a judgment call.
 
-**Output-cap guard:** the `trigger`/`source` truncation above is load-bearing, not cosmetic. A full-verbatim extraction across the now-12-roadmap surface overflows the worker's output token cap (observed 2026-05-29: 116 KB on the 8 {{PROJECT_NAME}} roadmaps *alone*, before Jmodot). The 400/200-char caps preserve all readiness signal (concrete-type names that drive `arch-*` Readiness appear early in a trigger; `plan-pending` API/Test-Pin Readiness is confirmed by reading the design doc in Phase 5, never from the trigger field). If the call *still* overflows, it saves output to a file and returns a path — either re-issue split per-tree batches ({{PROJECT_NAME}} paths, then Jmodot paths) and merge, or parse the saved JSON from disk (e.g. via PowerShell `ConvertFrom-Json`) rather than re-running.
+**Output-cap guard:** the `trigger`/`source` truncation above is load-bearing, not cosmetic. A full-verbatim extraction across the now-12-roadmap surface overflows the worker's output token cap (observed: 116 KB on 8 project roadmaps *alone*, before any framework tree). The 400/200-char caps preserve all readiness signal (concrete-type names that drive `arch-*` Readiness appear early in a trigger; `plan-pending` API/Test-Pin Readiness is confirmed by reading the design doc in Phase 5, never from the trigger field). If the call *still* overflows, it saves output to a file and returns a path — either re-issue split per-tree batches (project paths, then each framework tree's paths) and merge, or parse the saved JSON from disk (e.g. via PowerShell `ConvertFrom-Json`) rather than re-running.
 
 ### Phase 3 — Build dep graph
 
 1. Forward graph: `part → [deps]` (per-Part dep list from Parts table).
 2. Reverse graph: `part → [downstream-parts]` (invert forward graph).
-3. Cross-roadmap edges: parse Source-cell wikilinks (`[[../<roadmap>/...]]`, incl. cross-tree `[[../../<tree>/...]]`) AND "Cross-roadmap references" sections; resolve `deps` entries by Part **name** against the full parsed set (names match across roadmap *and* vault-tree boundaries — e.g. {{PROJECT_NAME}} `hub-world` → Jmodot `grab→jmodot` "Framework contracts…"; Jmodot procgen → {{PROJECT_NAME}} "Graph Engine Core"). Add reverse-graph edges across both boundary kinds.
+3. Cross-roadmap edges: parse Source-cell wikilinks (`[[../<roadmap>/...]]`, incl. cross-tree `[[../../<tree>/...]]`) AND "Cross-roadmap references" sections; resolve `deps` entries by Part **name** against the full parsed set (names match across roadmap *and* vault-tree boundaries — e.g. a project Part depending on a framework-contracts Part, or framework procgen depending on a project graph-engine Part). Add reverse-graph edges across both boundary kinds.
 4. MVP membership index (per roadmap, only if `mvps` non-empty): `part → {incomplete MVP ids that list it as a Required Part}`. Drop MVPs whose Status is `✅ Verified`. This is the *direct*-membership map; one-hop reach (Phase 5) unions it with the membership of each direct dependent.
 
 ### Phase 4 — Apply state filter + actionable predicate
 
 For each Part:
-1. **Scope gate:** if a scope token was given (`scope ≠ both`) and `part.tree ≠ scope` → skip. (Out-of-scope Parts remain in the Phase 3 graph as *dependents*, so in-scope candidates keep accurate Leverage — only their eligibility to be *recommended* is removed.)
+1. **Scope gate:** if a scope token was given (`scope ≠ all`) and `part.tree ≠ scope` → skip. (Out-of-scope Parts remain in the Phase 3 graph as *dependents*, so in-scope candidates keep accurate Leverage — only their eligibility to be *recommended* is removed.)
 2. If `part.state ∉ state_filter` → skip.
 3. Apply state-specific actionable predicate (see table above). If predicate fails → skip.
 4. Survivors enter the candidate pool.
@@ -193,9 +193,9 @@ Format (full version; truncate full actionable table if `--recommend-only`):
 ╔══════════════════════════════════════════════════════╗
 ║   ROADMAP NEXT — <DATE>                              ║
 ╠══════════════════════════════════════════════════════╣
-║ Scope:         <both ({{PROJECT_NAME}} + Jmodot) | project-only | jmodot-only> ║
+║ Scope:         <all | project-only | <tree>-only>        ║
 ║ State filter:  <comma-separated list>                ║
-║ Scanned:       <N> roadmaps (<a> {{PROJECT_NAME}} + <b> Jmodot), <M> Parts║
+║ Scanned:       <N> roadmaps (<a> project + <b> framework), <M> Parts║
 ║ Actionable:    <K> (scope ∧ state ∈ filter ∧ deps ✓) ║
 ╚══════════════════════════════════════════════════════╝
 
@@ -242,7 +242,7 @@ Format (full version; truncate full actionable table if `--recommend-only`):
 | "Read the `## Currently ready to execute` derived view; faster than parsing the full table" | Derived views drift from Parts tables when `/update_roadmap regen` lags Part transitions. Empirically observed 2026-05-19: derived view listed P7 (which was `complete` per Parts table) and omitted P10 (which was actionable per Parts table). Always parse the canonical table. |
 | "Skip the reverse dep graph; score Parts in isolation" | Leverage is the highest-signal component for next-pickup priority. Computing it requires the full graph; skipping it ranks leaves equal to bottlenecks. |
 | "Ignore cross-roadmap deps — surveys one roadmap at a time" | Cross-roadmap fan-out is what distinguishes high-leverage shared-infrastructure Parts (P10 Hub Scaffold, Graph Engine Core) from leaf one-offs. Single-roadmap surveys understate leverage. |
-| "`project-only` should skip the Jmodot tree entirely — it's faster and the user only wants {{PROJECT_NAME}}" | Scope filters the *candidate pool* (Phase 4), not the *dep graph* (Phase 3). Skip Jmodot discovery and cross-tree dep edges vanish — a shared-infra {{PROJECT_NAME}} Part (Graph Engine Core, depended on by Jmodot procgen) loses Leverage and gets under-ranked. Same failure as the single-roadmap-survey row above. Always parse both trees; gate recommendations only. |
+| "`project-only` should skip the framework trees entirely — it's faster and the user only wants the project" | Scope filters the *candidate pool* (Phase 4), not the *dep graph* (Phase 3). Skip framework discovery and cross-tree dep edges vanish — a shared-infra project Part that framework Parts depend on loses Leverage and gets under-ranked. Same failure as the single-roadmap-survey row above. Always parse every tree; gate recommendations only. |
 | "Treat all `arch-pending` and `arch-rework` Parts as equally actionable" | `arch-rework` is closer to ship (design exists, needs revisit) than `arch-pending` (design needs initial brainstorm). State-Proximity rubric reflects this. |
 | "Recommend top 3 by total score only; skip tie-breakers" | Score ties are common with 0–12 range across small candidate pools. Tie-breakers (closes-MVP → proximity → recency → focus) encode the project's "ship next" intuition. |
 | "Treat `user-owned` Parts as recommendable" | `user-owned` is not agent-runnable. Surface them via `/worklog` triage if they're blocking downstream Parts; never in `/roadmap_next` recommendations. |

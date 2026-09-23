@@ -24,7 +24,7 @@ The deep-dives document Jmodot's **generic framework surface**. A consuming proj
 | [`../../rules/jmodot_utilities.md`](../../rules/jmodot_utilities.md) | Auto-loads on `**/*.cs` | Consumers of Jmodot utilities (NodeExts, JmoRng, JmoMath, Map, IRuntimeCopyable, configuration exceptions, IComponent gotcha) |
 | [`../../rules/jmodot_framework_authoring.md`](../../rules/jmodot_framework_authoring.md) | Auto-loads on `Jmodot/**/*.cs` | Framework authors (2D/3D parity, framework boundary, static seam pattern) |
 | [`../../rules/csharp_patterns.md`](../../rules/csharp_patterns.md) | Auto-loads on `**/*.cs` | `[RequiredExport]`, nullability, signals vs events, test helpers |
-| [`../architecture_philosophy/SKILL.md`](../architecture_philosophy/SKILL.md) | Skill (design-time) | Blackboard DI, Resource Strategy Hierarchies, Marker Interface as Capability Query — the design philosophy this framework embodies |
+| [`../godot_architecture/SKILL.md`](../godot_architecture/SKILL.md) | Skill (design-time) | Blackboard DI and the Godot/Jmodot forms of the design philosophy this framework embodies; the language-neutral patterns (Resource Strategy Hierarchies, Marker Interface as Capability Query) live in [`../architecture_philosophy/SKILL.md`](../architecture_philosophy/SKILL.md) |
 
 Subsystem deep-dives (read on demand when designing in a specific area):
 

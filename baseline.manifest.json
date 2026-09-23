@@ -243,7 +243,7 @@
     },
     {
       "path": ".claude/auto-memory/archive/feedback_plan_mode_retired_from_planning_flow.md",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -443,7 +443,7 @@
     },
     {
       "path": ".claude/auto-memory/feedback_dont_compress_socratic_on_rich_prompt.md",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -498,7 +498,7 @@
     },
     {
       "path": ".claude/auto-memory/feedback_move_destination_must_be_read.md",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -533,7 +533,7 @@
     },
     {
       "path": ".claude/auto-memory/feedback_plan_files_are_context_free_execution_docs.md",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -653,7 +653,7 @@
     },
     {
       "path": ".claude/auto-memory/gotcha_author_lane_edit_clips_method_header.md",
-      "layer": "coding",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -823,12 +823,12 @@
     },
     {
       "path": ".claude/auto-memory/gotcha_pure_clr_poco_mirror_payload_type.md",
-      "layer": "coding",
+      "layer": "godot",
       "sync": "auto"
     },
     {
       "path": ".claude/auto-memory/gotcha_relocation_doccomment_cref_boundary.md",
-      "layer": "coding",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -913,7 +913,7 @@
     },
     {
       "path": ".claude/auto-memory/process_rule_plan_high_execute_lower.md",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -1382,22 +1382,12 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/commands/roadmap_audit.md",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/commands/roadmap_next.md",
       "layer": "coding",
       "sync": "auto"
     },
     {
       "path": ".claude/commands/routing_audit.md",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/commands/routing_battery.md",
       "layer": "coding",
       "sync": "auto"
     },
@@ -1468,7 +1458,7 @@
     },
     {
       "path": ".claude/commands/test_compact.md",
-      "layer": "coding",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -2037,6 +2027,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/prototype_registry.md",
+      "layer": "godot",
+      "sync": "seed"
+    },
+    {
       "path": ".claude/reference/claim_confidence.md",
       "layer": "pure",
       "sync": "auto"
@@ -2115,6 +2110,11 @@
       "path": ".claude/reference/source_trust_godot.md",
       "layer": "godot",
       "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/vault_taxonomy.md",
+      "layer": "pure",
+      "sync": "seed"
     },
     {
       "path": ".claude/rules/cloud_dev.md",
@@ -2540,6 +2540,11 @@
       "path": ".claude/skills/game_vision/SKILL.md",
       "layer": "godot",
       "sync": "seed"
+    },
+    {
+      "path": ".claude/skills/godot_architecture/SKILL.md",
+      "layer": "godot",
+      "sync": "auto"
     },
     {
       "path": ".claude/skills/idea_brainstorm/SKILL.md",
@@ -3902,8 +3907,18 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tools/load_census.py",
+      "path": ".claude/tools/load_census.coding.json",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/load_census.godot.json",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/load_census.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -3948,17 +3963,12 @@
     },
     {
       "path": ".claude/tools/reap.py",
-      "layer": "coding",
+      "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tools/rule_retirement.py",
       "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tools/score_routing_battery.py",
-      "layer": "coding",
       "sync": "auto"
     },
     {

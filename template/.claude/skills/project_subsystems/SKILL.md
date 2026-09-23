@@ -8,14 +8,15 @@ description: >-
 # {{PROJECT_NAME}} — Subsystem Registry
 
 <!-- PROJECT-OWNED SEED. Replace placeholders as the project grows. The YAML block is
-     machine-read by /sync_subsystems and /structure_audit; keep its field shape. -->
+     machine-read by the subsystem-sync and structure-audit commands where the project ships them; keep its field shape. -->
 
 ## Registry (machine-readable)
 
 - `id` is stable.
 - `paths` contains project-relative ownership roots.
-- `organization` is `feature`, `layer`, `ui`, or `hybrid` as defined by
-  [`structure_rules.md`](../architecture_philosophy/structure_rules.md).
+- `organization` is `feature` (subfolders are independent content units), `layer` (subfolders are
+  machinery roles), `ui` (subfolders are consuming subsystems), or `hybrid` (a mix documented under
+  *Subsystem Details*). A code project's structure rules own the full placement model.
 - `domain` is the default `logic`, `gameplay`, `data`, `meta`, or `framework` PR/test route; classify
   changed behavior when a subsystem mixes domains.
 - `summary` is one line. Put boundaries and exceptions under *Subsystem Details*.

@@ -263,8 +263,35 @@ def test_secret_scan_flags_a_planted_secret_shape() -> None:
         _remove(tmp)
 
 
+def test_layer_closure_flags_a_pure_file_citing_a_godot_file() -> None:
+    audit = _load_audit()
+    tmp = Path(tempfile.mkdtemp(prefix="audit_baseline_closure_"))
+    try:
+        template = tmp / "template"
+        tools = template / ".claude" / "tools"
+        tools.mkdir(parents=True)
+        shutil.copy(ROOT / "template" / ".claude" / "tools" / "layer_closure.py", tools / "layer_closure.py")
+        (template / ".claude" / "commands").mkdir()
+        (template / ".claude" / "commands" / "doc.md").write_text("Run `/gate`.\n", encoding="utf-8")
+        (template / ".claude" / "commands" / "gate.md").write_text("# gate\n", encoding="utf-8")
+        manifest = {"files": [{"path": ".claude/commands/doc.md", "layer": "pure", "sync": "auto"},
+                              {"path": ".claude/commands/gate.md", "layer": "godot", "sync": "auto"},
+                              {"path": ".claude/tools/layer_closure.py", "layer": "pure", "sync": "auto"}]}
+        findings = audit.Findings()
+        audit.check_layer_closure(findings, manifest, template)
+        hits = [i for i in findings.items if i["check"] == "layer-closure"]
+        assert [(h["severity"], h["path"]) for h in hits] == [("ERROR", ".claude/commands/doc.md")], hits
+        manifest["files"][1]["layer"] = "pure"
+        clean = audit.Findings()
+        audit.check_layer_closure(clean, manifest, template)
+        assert not clean.items, clean.items
+    finally:
+        _remove(tmp)
+
+
 def main() -> int:
     cases = [
+        test_layer_closure_flags_a_pure_file_citing_a_godot_file,
         test_strict_exits_0_from_repo_root,
         test_strict_exits_0_from_another_cwd,
         test_identity_scan_flags_a_planted_leak,

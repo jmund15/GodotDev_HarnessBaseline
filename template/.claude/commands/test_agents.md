@@ -35,7 +35,7 @@ Workflow scripts cannot read files, so assemble everything here and pass it via 
 
 3. **Read the shared resources** and extract only what the in-scope fixtures need:
    - `.claude/commands/agents/review_agents.md` + `.claude/commands/agents/session_audit_agents.md` → for each distinct `agent`, extract its prompt-template code block (under its `### <agent-name>` header) into `agentTemplates[<agent>]`.
-   - `.claude/commands/agents/checklists/code_quality.md` + `test_quality.md` → extract the sections referenced by the fixtures' `checklistSection` values into `checklists` keyed by `C+D+S` / `R+P` / `I` / `full` / `test` (per the section map: `C+D+S`=Compliance→Semantics, `R+P`=Robustness→Performance, `I`=Intuitiveness→EOF, `full`=whole code_quality, `test`=whole test_quality). Only include keys actually used.
+   - `.claude/commands/checklists/code_quality.md` + `test_quality.md` → extract the sections referenced by the fixtures' `checklistSection` values into `checklists` keyed by `C+D+S` / `R+P` / `I` / `full` / `test` (per the section map: `C+D+S`=Compliance→Semantics, `R+P`=Robustness→Performance, `I`=Intuitiveness→EOF, `full`=whole code_quality, `test`=whole test_quality). Only include keys actually used.
    - `.claude/commands/agents/orchestrator_action_protocol.md` → full content into `findingSchema`.
 
 ---

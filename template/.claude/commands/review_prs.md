@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr edit:*), Bash(gh pr merge:*), Bash(gh pr list:*), Bash(gh label:*), Bash(git stash:*), Bash(git checkout:*), Bash(git pull:*), Bash(git rebase:*), Bash(git push:*), Bash(git log:*), Bash(git diff:*), Bash(git branch:*), Bash(dotnet build:*), Bash(gdunit4:*), Glob, Grep, Read, Edit, Task
+allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr edit:*), Bash(gh pr merge:*), Bash(gh pr list:*), Bash(gh label:*), Bash(git stash:*), Bash(git checkout:*), Bash(git pull:*), Bash(git rebase:*), Bash(git push:*), Bash(git log:*), Bash(git diff:*), Bash(git branch:*), Bash(git submodule:*), Bash(dotnet build:*), Bash(gdunit4:*), Glob, Grep, Read, Edit, Task
 description: "Batch review, test, and merge multiple PRs"
 ---
 
@@ -57,10 +57,10 @@ Within each batch, spawn agents **in parallel** using the Task tool in a **singl
 > Build an overlap matrix. For each pair of PRs, flag:
 > - **Direct conflicts:** Same file modified in multiple PRs
 > - **Semantic conflicts:** Different files that reference each other (e.g., registry + statsheet)
-> - **Submodule conflicts:** Multiple PRs changing the Jmodot submodule pointer. Each {{PROJECT_NAME}} branch `claude/<name>` has a paired Jmodot branch `jmodot/<name>`.
+> - **Submodule conflicts:** Multiple PRs changing the same submodule pointer. Each such PR has a paired submodule branch named by the project's pairing convention.
 >
 > Return a structured conflict report and a proposed merge order using these rules:
-> 1. **Jmodot-first rule:** PRs with Jmodot submodule changes merge first (Memory: `Git_Submodule_PR_Merge_Strategy`)
+> 1. **Submodule-first rule:** PRs with submodule changes merge first, after their paired submodule PRs
 > 2. **Conflict-aware ordering:** When PRs overlap on files, the earlier/simpler PR merges first; later PRs rebase after
 > 3. **Chronological** for non-conflicting PRs
 
@@ -88,8 +88,8 @@ Issues: X Critical, Y Important
 ║            CONFLICT DETECTION                  ║
 ╠═══════════════════════════════════════════════╣
 ║ PR #6 ↔ PR #7                                 ║
-║   ⚠️ base_spell_statsheet.tres  (both modify) ║
-║   ⚠️ ProjectRegistry.cs    (both modify) ║
+║   ⚠️ base_config.json      (both modify)      ║
+║   ⚠️ Registry.cs           (both modify)      ║
 ║   → Recommend: merge #6 first, rebase #7      ║
 ╠═══════════════════════════════════════════════╣
 ║ PR #5 ↔ PR #8                                 ║
@@ -174,7 +174,7 @@ git checkout main
 git pull
 git submodule update --init --recursive
 ```
-Then invoke `/regression_gate` to run all test suites. See [`regression_gate.md`](regression_gate.md) for the canonical procedure.
+Then run the project's regression gate (`change_control` §Gate cadence names it) over all test suites.
 
 ### 4b. Generate changelog entry
 Prepend a dated entry to `CHANGELOG.md` at the repo root. Create the file if it doesn't exist.
@@ -226,13 +226,13 @@ Ask user if they want to commit the changelog update.
 
 ## Constraints
 
-- **Not a dynamic `Workflow` (intentional):** Phase 1 is *nested* fan-out — each per-PR agent runs `/review-pr`, which itself spawns 4–7 sub-agents. A `Workflow` `agent()` guard reaches only the top-level fanned agent, not those sub-sub-agents, so the single-flight protections (no `/regression_gate`, no csharp-ls LSP) would silently lapse one level down. Also, per-PR grouping fights the `review_fanout` engine's global `file:line` dedup — cross-PR same-line edits are *conflicts to surface*, not duplicates to collapse. Kept Claude-orchestrated like `/plan_check`; only the batch math + conflict-detection are deterministic, and those are cheap to keep here.
+- **Not a dynamic `Workflow` (intentional):** Phase 1 is *nested* fan-out — each per-PR agent runs `/review-pr`, which itself spawns 4–7 sub-agents. A `Workflow` `agent()` guard reaches only the top-level fanned agent, not those sub-sub-agents, so the single-flight protections (no regression gate, no language server) would silently lapse one level down. Also, per-PR grouping fights the `review_fanout` engine's global `file:line` dedup — cross-PR same-line edits are *conflicts to surface*, not duplicates to collapse. Kept Claude-orchestrated like `/plan_check`; only the batch math + conflict-detection are deterministic, and those are cheap to keep here.
 - **Delegate reviews to `/review-pr`** — this command orchestrates, does not define review criteria
 - **Delegate merges to `/merge-pr`** — this command does not inline merge logic
 - **Never force-push** to PR branches (except `--force-with-lease` for post-rebase pushes)
 - **Never merge without user confirmation** — `/merge-pr` handles this
-- **One branch at a time for testing** — user can only test one branch in Godot at a time
-- **Respect submodule merge order** — Jmodot branches merge first (Memory: `Git_Submodule_PR_Merge_Strategy`)
+- **One branch at a time for testing** — user can only test one branch at a time
+- **Respect submodule merge order** — paired submodule branches merge first
 - **Don't run game during user test** — wait for user to test independently (CLAUDE.md: "Invisibility Workflow")
 - **Changelog at repo root** — `CHANGELOG.md` follows Keep a Changelog format
 - **Labels are additive** — never remove existing labels

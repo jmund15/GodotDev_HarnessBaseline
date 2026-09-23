@@ -7,11 +7,11 @@ Run the full end-of-session pipeline. Execute each phase **sequentially** — co
 
 **Important:** Each phase is a full command. Follow the instructions in each command file completely — do not abbreviate or skip steps.
 
-## Phase 1: Session Audit
+## Phase 1: Session Audit (code projects)
 **Goal:** Review all code changes from this session for code smells, sub-optimal design, and substantive improvements.
 
-Invoke: `/session_audit`
-- Follow ALL steps in the session_audit command exactly
+Run the coding layer's session-audit command where the project ships it; a project without one, or a session with no code changes, skips this phase.
+- Follow ALL steps in that command exactly
 - Present findings to user — this phase is advisory, not a hard gate
 - If user approves any "Fix now" actions, apply them before proceeding
 - If verdict is REVIEW RECOMMENDED, pause for user decision on whether to fix or defer
@@ -33,8 +33,7 @@ Invoke: `/self_evaluate`
 ## Phase 3.5: Routing Audit Aggregation
 **Goal:** Aggregate the continuous routing-audit log produced by `routing_audit.py` (PostToolUse hook) into a stats JSON that `/eval_dashboard` reads. Rotate >30-day-old entries to monthly archive files.
 
-Invoke: `/routing_audit`
-- Equivalent to `python3 .claude/tools/aggregate_routing_audit.py` with default args (30-day active window, rotate older entries).
+Run `python3 .claude/tools/aggregate_routing_audit.py` with default args (30-day active window, rotate older entries).
 - Produces `logs/routing_audit_stats.json` (single source of truth for `/eval_dashboard` Routing Stability section).
 - Prints a session-level summary: silent-miss count, top-3 missed rules, trend vs prior 4-week average.
 - Non-blocking — warn-and-continue if the audit log doesn't exist yet (fresh project, audit hook not yet wired, etc.).
@@ -44,7 +43,7 @@ This phase complements `/self_evaluate` (which captures *agent* introspection) w
 ## Phase 4: Sync Subsystem Registry (conditional)
 **Goal:** Keep the `project_subsystems` SKILL registry in lockstep with the actual top-level folder layout when this session changed subsystem shape.
 
-Invoke: `/sync_subsystems`
+Run the coding layer's subsystem-registry sync command where the project ships it; otherwise skip this phase.
 - Step 0 of the command is a signal gate — if the session produced no subsystem-shape change (new/renamed/removed top-level folder) and no subsystem-density change (≥5 files in one subsystem), the command prints "Skipping." and exits. Phase becomes a no-op.
 - When the gate fires, walk the user through proposed registry adds/removes/renames/refreshes.
 - Non-blocking — registry drift is informational, not a gate; warn-and-continue if anything errors.
@@ -54,13 +53,13 @@ Invoke: `/sync_subsystems`
 ## Phase 5: Regression Gate
 **Goal:** Verify zero regressions before committing.
 
-Invoke: `/regression_gate`
-- Follow ALL steps in the regression_gate command exactly
+Run the project's regression gate (`change_control` §Gate cadence names it). A project whose gate cadence names no gate, or a session with no change the gate covers, records `[—]` and continues.
+- Follow ALL steps in the gate's command exactly
 - If the gate FAILS, fix failures before proceeding
 - Record the pass/fail counts — they go into commit messages in Phase 7
 
 ## Phase 5.5: Roadmap Drift Check (conditional)
-**Goal:** When this session executed against a plan, prompt to update that plan's target Part on the roadmap before commit. Closes the drift gap where Parts ship in code (via `/plan_handoff` execution) without the roadmap reflecting it.
+**Goal:** When this session executed against a plan, prompt to update that plan's target Part on the roadmap before commit. Closes the drift gap where Parts ship in code through plan execution without the roadmap reflecting it.
 
 **Detection (cheap, runs first):** glob `.claude/plans/*.md`. Zero plan files present → skip silently. Phase becomes a no-op.
 
@@ -73,12 +72,12 @@ Invoke: `/regression_gate`
    > `<plan basename> → <roadmap folder> Part <ID> '<Part name>' (status: <X>)`
 
 4. Prompt per candidate: *"Plan execution complete? Mark Part complete on roadmap? (y / n / skip-all / archive-plan)"*
-   - `y` → invoke `/update_roadmap` to transition Part to `complete`. Roadmap edit lands in the Phase 7 commit batch (categorize as `chore(roadmap)` or fold into the relevant feature commit per Phase 7 conventions).
+   - `y` → run the project's roadmap-update command to transition Part to `complete`. Roadmap edit lands in the Phase 7 commit batch (categorize as `chore(roadmap)` or fold into the relevant feature commit per Phase 7 conventions).
    - `n` → plan still in execution / not yet shipped. Skip this candidate.
    - `skip-all` → skip remaining candidates this session.
    - `archive-plan` → plan was abandoned or superseded. Move to `.claude/plans/archive/` and skip Part update.
 
-Non-blocking — drift check is informational, not a gate. Warn-and-continue on parse errors (e.g., plan file missing the `**Roadmap:**` header). Backstop: users can run `/update_roadmap` standalone for sessions that closed without firing this phase, or for Parts shipped without a plan file (manual implementations).
+Non-blocking — drift check is informational, not a gate. Warn-and-continue on parse errors (e.g., plan file missing the `**Roadmap:**` header). Backstop: users can run the roadmap-update command standalone for sessions that closed without firing this phase, or for Parts shipped without a plan file (manual implementations).
 
 **Plan-file convention (load-bearing):** plan files must include a `**Roadmap:**` header line with the roadmap path AND a Part identifier (ID or name, bold-wrapped). Plans authored via Plan Mode follow this convention; plans authored manually must match it for Phase 5.5 to map them.
 
@@ -99,12 +98,12 @@ This phase is the deterministic backstop for the auto-detect-and-confirm rule in
 
 ### 7a. Surface the Pre-Commit Checklist
 
-Re-render the structured Pre-Commit Checklist that Phase 5 (`/regression_gate`) produced — this is the explicit gate decision before commit. The canonical format spec lives in [`/regression_gate` Step 7b](regression_gate.md). Re-render it here populated with current session state, including any `/session_audit` outcomes from Phase 1 and refactor-parity status from Phase 1.5.
+Re-render the structured Pre-Commit Checklist that Phase 5's regression gate produced — this is the explicit gate decision before commit. The gate's own command owns the canonical format. Re-render it here populated with current session state, including any session-audit outcomes from Phase 1 and refactor-parity status from Phase 1.5. With no gate run, build the checklist from the phases that did run.
 
 **Decision rule:**
 - **All items `[x]` or `[—]`:** proceed to 7b silently — verdict is APPROVE.
 - **Any item `[ ]`:** STOP and surface the unchecked items to the user before commit. Use `AskUserQuestion` with these options per unchecked item:
-  - **Resolve now** — re-run the relevant phase (e.g., re-run `/session_audit` if that's the unchecked item) before committing
+  - **Resolve now** — re-run the relevant phase (e.g., re-run the session audit if that's the unchecked item) before committing
   - **Acknowledge and proceed** — accept as APPROVE WITH NOTES; the unchecked-item rationale will be captured in the commit message footer
   - **Abort commit** — return to working state; do not commit
 

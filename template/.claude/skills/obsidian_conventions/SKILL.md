@@ -1,7 +1,7 @@
 ---
 description: >-
   Auto-load when reading, writing, or editing files in the Obsidian vault
-  (DevProjects/{{PROJECT_NAME}} or DevProjects/Jmodot) — design docs, roadmaps, worklog,
+  (DevProjects/{{PROJECT_NAME}} and the sibling folders its vault taxonomy lists) — design docs, roadmaps, worklog,
   brainstorm docs, framework notes, wikilinks, heading-anchor links, or any vault file
   path. SKIP for the /doc_* documentation-folder structure (folder classification, the
   4-doc system template, domain routing) — that lives in agents/documentation_structure.md.
@@ -10,13 +10,13 @@ description: >-
 # Obsidian Vault Conventions
 
 Universal rules for any interaction with the Obsidian vault — every command,
-skill, or ad-hoc edit that touches `DevProjects/{{PROJECT_NAME}}/` or
-`DevProjects/Jmodot/`. The `/doc_*` documentation-folder structure (folder
+skill, or ad-hoc edit that touches `DevProjects/{{PROJECT_NAME}}/` or a sibling folder
+`reference/vault_taxonomy.md` lists. The `/doc_*` documentation-folder structure (folder
 classification, the 4-doc system template, domain routing) is a separate
 concern — see [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md).
 
 ## Tooling — native-first
-The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\` (and `...\Jmodot\`). Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired.
+The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\`. Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired.
 
 | Operation | Tool |
 |---|---|
@@ -32,11 +32,9 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 
 ## Vault taxonomy — live vs legacy
 
-- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`** (Documentation/, BrainstormingDesigns/, Planning/, TODO/, Design/, Meta/, Meetings/, Archived/, …) and `<vault>/Jmodot/Claude/`. All agent reads and writes land here.
-- **Legacy (human-era — root position ≠ canon):** vault-root `Spell Architecture/`, `Planning/`, `Documentation/`, `Spell Details/`, `Brainstorming/`, `TODO/` predate the `Claude/` convention and are unmaintained. `Spell Architecture/`'s formula docs (`Spell Formulas.md`, `Synergy Rules.md`, `Trait Definitions.md`) are **0 bytes** — the CLAUDE.md "do not invent formulas; read from vault" rule therefore resolves to its ask-the-user branch; there is no populated formula doc to read.
-- The current design bible is the repo skill `game_vision`, not a vault doc — vault searches for "vision" find only the deprecated PvP-era doc under `Claude/Archived/`.
-- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (schema + append rules: `_brainstorm_shared/common.md` §8). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.
-- **`Claude/Research/`** — `/research` artifacts, transient by design. Frontmatter carries `expires-with:` (engine/library version); stale the moment that version moves — re-run or delete, never edit in place. Durable findings promote to cold auto-memory or the design doc first.
+- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`.** All agent reads and writes land here. `reference/vault_taxonomy.md` maps its folders, the sibling project folders and any legacy areas.
+- **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (the brainstorm procedure that writes it owns the schema and append rules). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.
+- **`Claude/Research/`** — research-command artifacts, transient by design. Frontmatter carries `expires-with:` (engine/library version); stale the moment that version moves — re-run or delete, never edit in place. Durable findings promote to cold auto-memory or the design doc first.
 
 ## `Edit` — literal line-ending matching
 `Edit` matches the target file's bytes **literally** — it does NOT normalize CRLF↔LF. Vault files can be inconsistent (LF vs CRLF, depending on which tool created or last saved them), so a multi-line `old_string` that works on one file may fail to match on another — no partial match, reads like a text mismatch when it's actually a separator mismatch.
@@ -59,7 +57,7 @@ All cross-doc references **MUST** be wikilinks — never plain text, bold, or in
 **Common verbatim pitfalls** — all three fail SILENTLY (anchor falls through to file-top, no error):
 - `## Section N — Title` headings: keep BOTH the `Section ` prefix AND the ` — ` em-dash. `[[doc#Section 6 — Migration Plan]]` resolves; `[[doc#6 Migration Plan]]` does not.
 - `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — LevelPersistence × StateScope Mapping]]` resolves; `[[doc#1.4 LevelPersistence × StateScope Mapping]]` does not.
-- **Parts in roadmap.md tables are NOT headings.** `[[other-roadmap#Part Name]]` will never resolve regardless of capitalization. Cross-roadmap Part references use file wikilink + prose: `[[../folder/roadmap\|folder]] § "Part Name"` (see `_brainstorm_shared/common.md` §6.8). Intra-roadmap Part references use `[[#Parts\|Part Name]]` (links to the `## Parts` heading, displays the Part name).
+- **Parts in roadmap.md tables are NOT headings.** `[[other-roadmap#Part Name]]` will never resolve regardless of capitalization. Cross-roadmap Part references use file wikilink + prose: `[[../folder/roadmap\|folder]] § "Part Name"`. Intra-roadmap Part references use `[[#Parts\|Part Name]]` (links to the `## Parts` heading, displays the Part name).
 - A single Part / claim that spans 2+ design-doc sections needs 2+ wikilinks joined by ` + ` — fabricating `#A and B` joined anchors never resolves.
 
 ## File Moves and Renames

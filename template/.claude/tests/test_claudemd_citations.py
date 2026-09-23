@@ -55,7 +55,7 @@ def heading_index(text):
         if ": " in name:
             forms.add(name.split(": ", 1)[1])
         for form in forms:
-            words = form.split()
+            words = [word.rstrip(":") for word in form.split()]
             if len(words) == 1:
                 cores.add(words[0])
             for k in range(2, len(words) + 1):
@@ -162,6 +162,7 @@ def main():
         ("a missing heading does not resolve", cite + "Omega Rules", False),
         ("a missing number does not resolve", cite + "7 carve-out", False),
         ("one word of a longer heading does not resolve", cite + "Alpha", False),
+        ("the whole heading across its colon resolves", cite + "Philosophy: Eta Theta", True),
         ("a numbered Core Principles item does not resolve", "CLAUDE.md Core Principles " + SECTION + "4", False),
     ]
     for label, line, expected in samples:

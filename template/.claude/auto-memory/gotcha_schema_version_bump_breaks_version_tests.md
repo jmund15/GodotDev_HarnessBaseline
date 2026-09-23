@@ -19,6 +19,6 @@ version so `Load()` runs no migration.
 
 **Concrete:** `CurrentSchemaVersion` 1→2 (a persistence repository) broke
 `LoadWithNoFile_ReturnsDefaultData` + `SaveLoadRoundTrip_PreservesData` (both asserted
-`==1`); only the full `/regression_gate` Integration run surfaced them. 2026-06-05.
+`==1`); only the full Integration run of the project's regression gate (`change_control` §Gate cadence names it) surfaced them. 2026-06-05.
 
 Related: [[gotcha_save_repository_load_hardening]] (the Load() forward-version guard this interacts with).

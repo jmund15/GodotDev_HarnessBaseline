@@ -2,8 +2,10 @@
 tree, a planted oversized body without a selector fails --budgets, a planted
 oversized description crosses the listing budget, the hook profile skips
 shared-state hooks by name and reports one row per remaining registered hook,
---json mirrors the console numbers, and the transitive-load heuristic counts
-an unconditional markdown reference while ignoring a phase-gated one."""
+--json mirrors the console numbers, the transitive-load heuristic counts
+an unconditional markdown reference while ignoring a phase-gated one, and
+`tools/load_census.*.json` profiles supply rule bundles, budgets, entrypoints,
+hook sets and the code-edit probe."""
 import importlib.util
 import json
 import os
@@ -29,14 +31,23 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+FIXTURE_PROFILE = {"rule_bundles": {"cs": {"glob": "**/*.cs"}, "owner": {"rule": "owner_rule.md"}}}
+
+
+def write_profile(root: Path, name: str, profile: dict) -> None:
+    write(root / "tools" / f"load_census.{name}.json", json.dumps(profile))
+
+
 def make_minimal_root(root: Path) -> None:
     """A small-but-complete `.claude/`-shaped fixture: one command, one skill,
-    standing files, a settings.json with no hooks, no rules."""
+    standing files, a settings.json with no hooks, no rules, and one census
+    profile declaring a glob bundle and a named-rule bundle."""
     write(root / "commands" / "alpha.md", "---\ndescription: a short command.\n---\n\n# Alpha\n")
     write(root / "skills" / "beta" / "SKILL.md", "---\ndescription: a short skill.\n---\n\n# Beta\n")
     write(root / "CLAUDE.md", "project claude md\n")
     write(root / "auto-memory" / "MEMORY.md", "memory index\n")
     write(root / "settings.json", json.dumps({"hooks": {}}))
+    write_profile(root, "fixture", FIXTURE_PROFILE)
 
 
 def make_complete_root(root: Path) -> Path:
@@ -314,30 +325,88 @@ class KnownOversizedStalenessTests(unittest.TestCase):
 
 
 class NamedGlobBundleTests(unittest.TestCase):
-    def test_hsm_bt_bundle_sums_every_rule_sharing_one_glob(self):
+    def test_rule_bundle_sums_every_rule_sharing_one_glob(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / ".claude"
             make_minimal_root(root)
-            write(root / "rules" / "hsm_bt_patterns.md",
+            write(root / "rules" / "owner_rule.md",
                   "---\npaths:\n  - \"**/HSM/**\"\n  - \"**/States/**\"\n---\n\nOwner\n")
             write(root / "rules" / "sibling.md",
                   "---\npaths:\n  - \"**/States/**\"\n  - \"**/Other/**\"\n---\n\nSibling, shares one glob\n")
             write(root / "rules" / "unrelated.md",
                   "---\npaths:\n  - \"**/Other/**\"\n---\n\nUnrelated: no glob shared with the owner itself\n")
             rules = lc.rules_census(root)
-            self.assertEqual(sorted(rules["hsm_bt_bundle_files"]), ["hsm_bt_patterns.md", "sibling.md"])
-            owner_bytes = (root / "rules" / "hsm_bt_patterns.md").stat().st_size
+            self.assertEqual(sorted(rules["owner_bundle_files"]), ["owner_rule.md", "sibling.md"])
+            owner_bytes = (root / "rules" / "owner_rule.md").stat().st_size
             sibling_bytes = (root / "rules" / "sibling.md").stat().st_size
-            self.assertEqual(rules["hsm_bt_bundle_bytes"], owner_bytes + sibling_bytes)
+            self.assertEqual(rules["owner_bundle_bytes"], owner_bytes + sibling_bytes)
 
-    def test_scene_authoring_bundle_empty_when_rule_absent(self):
+    def test_rule_bundle_empty_when_rule_absent(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / ".claude"
             make_minimal_root(root)
-            write(root / "rules" / "fixture.md", "---\npaths:\n  - \"**/*.tscn\"\n---\n\nNo scene_authoring.md owner here\n")
+            write(root / "rules" / "fixture.md", "---\npaths:\n  - \"**/*.tscn\"\n---\n\nNo owner rule here\n")
             rules = lc.rules_census(root)
-            self.assertEqual(rules["scene_authoring_bundle_files"], [])
-            self.assertEqual(rules["scene_authoring_bundle_bytes"], 0)
+            self.assertEqual(rules["owner_bundle_files"], [])
+            self.assertEqual(rules["owner_bundle_bytes"], 0)
+
+    def test_no_profile_means_no_bundles(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            make_minimal_root(root)
+            (root / "tools" / "load_census.fixture.json").unlink()
+            write(root / "rules" / "fixture.md", "---\npaths:\n  - \"**/*.cs\"\n---\n\nRule\n")
+            rules = lc.rules_census(root)
+            self.assertEqual(rules["bundles"], {})
+            self.assertNotIn("cs_bundle_bytes", rules)
+
+
+class ProfileTests(unittest.TestCase):
+    def test_profile_bundle_budget_fails_when_exceeded(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            home = make_complete_root(root)
+            write_profile(root, "zbudget", {"budgets": {"cs_rule_bundle_bytes": [10, 5]}})
+            report = lc.build_report(root, home=home)
+            fails = lc.check_budgets(report)
+            self.assertTrue(any(f.startswith("cs_rule_bundle_bytes") for f in fails), fails)
+
+    def test_profile_entrypoint_missing_fails_budget_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            home = make_complete_root(root)
+            write_profile(root, "extra", {"entrypoints": ["commands/layer_only.md"]})
+            fails = lc.check_budgets(lc.build_report(root, home=home))
+            self.assertTrue(any("missing entrypoint" in f and "commands/layer_only.md" in f for f in fails), fails)
+
+    def test_unreadable_profile_is_a_source_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            home = make_complete_root(root)
+            write(root / "tools" / "load_census.broken.json", "{not json")
+            fails = lc.check_budgets(lc.build_report(root, home=home))
+            self.assertTrue(any("unreadable census profile" in f and "broken" in f for f in fails), fails)
+
+    def test_profile_hook_sets_union_with_defaults(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            make_minimal_root(root)
+            write_profile(root, "hooks", {"shared_state_hook_skip": ["layer_skip.py"],
+                                          "isolated_shared_state_hooks": ["layer_iso.py"]})
+            skipped, isolated = lc._hook_sets(root)
+            self.assertTrue(lc.SHARED_STATE_HOOK_SKIP | {"layer_skip.py"} <= skipped)
+            self.assertTrue(lc.ISOLATED_SHARED_STATE_HOOKS | {"layer_iso.py"} <= isolated)
+
+    def test_code_edit_probe_only_when_a_profile_declares_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            make_minimal_root(root)
+            cases = [label for label, _ in lc.build_payloads(root)["PreToolUse"]]
+            self.assertNotIn("edit-code", cases)
+            write_profile(root, "probe", {"code_edit_probe": {"path": "src/Example.cs"}})
+            payloads = lc.build_payloads(root)
+            edit = dict(payloads["PreToolUse"])["edit-code"]
+            self.assertEqual(Path(edit["tool_input"]["file_path"]), root.parent / "src" / "Example.cs")
 
 
 class HookProfileTests(unittest.TestCase):

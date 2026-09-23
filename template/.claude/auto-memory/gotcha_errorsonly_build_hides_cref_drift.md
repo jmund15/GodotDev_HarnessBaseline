@@ -11,7 +11,7 @@ The project build (`dotnet build -consoleLoggerParameters:ErrorsOnly`, per
 compiler warning**, including **CS1574** (XML-doc `<see cref="X"/>` cannot be
 resolved). Consequence: when a refactor or mid-plan design pivot **removes a
 member** that a sibling `<summary>`/`<see cref>` still references, the build stays
-green, `/regression_gate` stays green, and the **doc comment silently lies** — it
+green, the project's regression gate (`change_control` §Gate cadence names it) stays green, and the **doc comment silently lies** — it
 names a member that no longer exists.
 
 **Why:** Concrete incident — the charge-duration migration (`3d1ca0d5`) added then
