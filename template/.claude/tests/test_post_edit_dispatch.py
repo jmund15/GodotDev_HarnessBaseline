@@ -51,7 +51,7 @@ loosely coupled to spell delivery.
 
 `Spells/Effects/ArcStatusEffect.cs`, `NPCs/AI/CritterBlackboard.cs`,
 `Tests/Logic/Spells/ArcStatusEffectTests.cs`.
-The spell, AI behavior, and status effect are all production game scope.
+The spell, AI behavior, and status effect are all production game scope; the change refactors them.
 """
 
 # load_steps says 9; the file carries 1 ext_resource + 0 sub_resource, so 2 is correct.

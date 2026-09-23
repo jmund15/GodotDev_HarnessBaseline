@@ -1,0 +1,214 @@
+{
+  "memory_domains": [
+    {
+      "name": "HSM/States",
+      "triggers": [
+        "HSM",
+        "transition",
+        "state machine",
+        "compoundstate",
+        "statebase"
+      ],
+      "memory_keywords": [
+        "HSM",
+        "transition"
+      ],
+      "skills": [],
+      "rules": []
+    },
+    {
+      "name": "AI/Critters",
+      "triggers": [
+        "critter",
+        "BT",
+        "perception",
+        "steering",
+        "behavior tree",
+        "blackboard"
+      ],
+      "memory_keywords": [
+        "critter",
+        "steering",
+        "NPC"
+      ],
+      "skills": [],
+      "rules": []
+    },
+    {
+      "name": "VFX",
+      "triggers": [
+        "VFX",
+        "particle",
+        "Modulate",
+        "tint",
+        "sprite3d",
+        "visualeffect"
+      ],
+      "memory_keywords": [
+        "VFX",
+        "Modulate"
+      ],
+      "skills": [
+        "vfx_patterns"
+      ],
+      "rules": []
+    },
+    {
+      "name": "Testing",
+      "triggers": [
+        "GdUnit4",
+        "TestSuite",
+        "ISceneRunner",
+        "[TestCase]",
+        "fixture"
+      ],
+      "memory_keywords": [
+        "testing",
+        "GdUnit4"
+      ],
+      "skills": [
+        "testing"
+      ],
+      "rules": []
+    },
+    {
+      "name": "Physics",
+      "triggers": [
+        "physics",
+        "collision",
+        "hitbox",
+        "Area3D",
+        "CollisionShape",
+        "RigidBody"
+      ],
+      "memory_keywords": [
+        "physics",
+        "collision"
+      ],
+      "skills": [],
+      "rules": []
+    },
+    {
+      "name": "Pooling",
+      "triggers": [
+        "pool",
+        "spawn",
+        "acquire",
+        "return"
+      ],
+      "memory_keywords": [
+        "pool",
+        "spawn"
+      ],
+      "skills": [],
+      "rules": []
+    },
+    {
+      "name": "Status Effects",
+      "triggers": [
+        "status effect",
+        "stun",
+        "freeze",
+        "burn",
+        "DoT",
+        "tickrunner",
+        "tickeffect"
+      ],
+      "memory_keywords": [
+        "status",
+        "status effect"
+      ],
+      "skills": [
+        "jmodot",
+        "status_effect_authoring"
+      ],
+      "rules": []
+    },
+    {
+      "name": "Refactoring",
+      "triggers": [
+        "refactor",
+        "deprecate",
+        "migrate",
+        "rename",
+        "extract",
+        "consolidate"
+      ],
+      "memory_keywords": [
+        "refactor"
+      ],
+      "skills": [
+        "refactor_procedure"
+      ],
+      "rules": []
+    },
+    {
+      "name": "Data Files",
+      "triggers": [
+        ".tres",
+        ".tscn",
+        "UID",
+        "ext_resource",
+        "ScriptClass",
+        "sub_resource"
+      ],
+      "memory_keywords": [
+        "UID",
+        "dead exports",
+        "dual source of truth",
+        "Inspector contract"
+      ],
+      "skills": [
+        "architecture_philosophy"
+      ],
+      "rules": [
+        ".claude/rules/scene_authoring.md"
+      ]
+    },
+    {
+      "name": "Prototyping",
+      "triggers": [
+        "provisional",
+        "probe mode"
+      ],
+      "memory_keywords": [
+        "provisional",
+        "probe mode"
+      ],
+      "skills": [
+        "prototype"
+      ],
+      "rules": []
+    },
+    {
+      "name": "Exports",
+      "triggers": [],
+      "memory_keywords": [
+        "Inspector",
+        "RequiredExport"
+      ],
+      "skills": [],
+      "rules": []
+    },
+    {
+      "name": "MCP Tools",
+      "triggers": [],
+      "memory_keywords": [
+        "MCP",
+        "UID"
+      ],
+      "skills": [],
+      "rules": []
+    },
+    {
+      "name": "Godot Lifecycle",
+      "triggers": [],
+      "memory_keywords": [
+        "disposal",
+        "lifecycle"
+      ],
+      "skills": [],
+      "rules": []
+    }
+  ]
+}

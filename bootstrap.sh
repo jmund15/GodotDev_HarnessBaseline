@@ -85,6 +85,27 @@ for entry in manifest["files"]:
             p.unlink(); removed += 1
 if removed:
     print(f"layers stripped (kept {os.environ['LAYERS']}): {removed} files removed")
+# CLAUDE.md imports the core and each adopted layer's doctrine file, in layer order.
+claude_md = target / ".claude" / "CLAUDE.md"
+if claude_md.exists():
+    overlays = [f"@CLAUDE.{layer}.md" for layer in ("coding", "godot")
+                if (target / ".claude" / f"CLAUDE.{layer}.md").exists()]
+    lines = claude_md.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [line for line in lines if line.strip() not in {"@CLAUDE.coding.md", "@CLAUDE.godot.md"}]
+    at = next((n + 1 for n, line in enumerate(kept) if line.strip() == "@CLAUDE.core.md"), 0)
+    kept[at:at] = [line + "\n" for line in overlays]
+    claude_md.write_text("".join(kept), encoding="utf-8", newline="\n")
+# The seed domain list grows by each adopted layer's starter domains, once, at adoption.
+registry = target / ".claude" / "skills" / "project_subsystems"
+if (registry / "adaptation.json").exists():
+    adaptation = json.loads((registry / "adaptation.json").read_text(encoding="utf-8"))
+    for layer in ("coding", "godot"):
+        starter = registry / f"adaptation.{layer}.json"
+        if starter.exists():
+            adaptation.setdefault("memory_domains", []).extend(
+                json.loads(starter.read_text(encoding="utf-8")).get("memory_domains", []))
+    (registry / "adaptation.json").write_text(json.dumps(adaptation, indent=2) + "\n", encoding="utf-8",
+                                              newline="\n")
 # Prune directories emptied by the strip so the target tree matches its layers.
 for d in sorted((target / ".claude").rglob("*"), reverse=True):
     if d.is_dir() and not any(d.iterdir()):
@@ -127,7 +148,7 @@ cat <<NEXT
 
 Bootstrapped. Next steps in $TARGET:
   1. Fill in the PROJECT section of .claude/CLAUDE.md (domain split, project domains).
-  2. Seed skills/game_vision/SKILL.md and skills/project_subsystems/SKILL.md.
+  2. Seed skills/project_subsystems/SKILL.md, and skills/game_vision/SKILL.md when godot is adopted.
   3. Create the Obsidian dirs: <vault>/DevProjects/$PROJECT_NAME/Claude/TODO/.
   4. Review .claude/settings.json permissions for your machine; run /sync_permissions later.
   5. In the first Claude session: /system_check, then /reindex_search.

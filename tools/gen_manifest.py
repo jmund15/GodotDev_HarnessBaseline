@@ -36,6 +36,7 @@ SEED_PATTERNS = [
     ".claude/skills/game_vision/*",
     ".claude/skills/project_subsystems/*",
     ".claude/commands/checklists/known_failure_modes.md",
+    ".claude/reference/known_failure_modes_entries.md",
     ".claude/reference/project_stack.md",
     ".claude/skills/change_control/*",
     ".claude/skills/environment_bootstrap/*",
