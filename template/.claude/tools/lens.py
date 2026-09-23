@@ -36,6 +36,7 @@ REGISTRIES = {
     "structure_audit": ("structure_audit_agents.md", "stra-"),
 }
 
+TEMPLATES_RE = re.compile(r"^## (Agent|Lens) Templates\b")
 MODEL_RE = re.compile(r'model:\s*"(\w+)"')
 PURPOSE_RE = re.compile(r"^\s*\(([^)]{3,160})\)")
 GATE_MARKERS = (
@@ -86,13 +87,15 @@ def parse(registry: str) -> tuple[str, list[Lens]]:
     path = AGENTS / filename
     if not path.exists():
         sys.exit(f"registry file not found: {path}")
-    head_re = re.compile(rf"^### ({re.escape(prefix)}[\w-]+)\s*(.*)$")
+    head_re = re.compile(rf"^### ({re.escape(prefix)}[a-z0-9][a-z0-9-]*)\s*(.*)$")
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     lenses: list[Lens] = []
     current: Lens | None = None
     first = len(lines)
+    # Lenses start under the templates heading; `###` sections above it belong to the preamble.
+    start = next((n for n, line in enumerate(lines) if TEMPLATES_RE.match(line)), 0)
     for n, line in enumerate(lines):
-        m = head_re.match(line)
+        m = head_re.match(line) if n > start or not start else None
         if m:
             if current is None:
                 first = n

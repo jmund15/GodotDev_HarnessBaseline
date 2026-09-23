@@ -1,0 +1,40 @@
+{
+  "memory_domains": [
+    {
+      "name": "Design Philosophy",
+      "triggers": [
+        "modifier",
+        "stat",
+        "affinity",
+        "design"
+      ],
+      "memory_keywords": [
+        "modifier",
+        "existing abstraction",
+        "composition over inheritance",
+        "strategy family",
+        "orthogonal axis",
+        "architecture",
+        "design"
+      ],
+      "skills": [
+        "architecture_philosophy"
+      ],
+      "rules": [
+        ".claude/rules/design_litmus.md"
+      ]
+    },
+    {
+      "name": "Debugging",
+      "triggers": [],
+      "memory_keywords": [
+        "debugging",
+        "diagnose"
+      ],
+      "skills": [
+        "debugging"
+      ],
+      "rules": []
+    }
+  ]
+}

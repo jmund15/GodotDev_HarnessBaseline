@@ -1787,13 +1787,18 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/reference/known_failure_modes_entries.md",
+      "layer": "pure",
+      "sync": "seed"
+    },
+    {
       "path": ".claude/reference/memory_domains.base.md",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/reference/memory_domains.md",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -1814,6 +1819,16 @@
     {
       "path": ".claude/reference/rules/csharp_lsp_examples.md",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/rules/csharp_patterns_examples.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/reference/rules/jmodot_utilities_examples.md",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -2388,12 +2403,22 @@
     },
     {
       "path": ".claude/skills/project_subsystems/SKILL.md",
+      "layer": "pure",
+      "sync": "seed"
+    },
+    {
+      "path": ".claude/skills/project_subsystems/adaptation.coding.json",
+      "layer": "coding",
+      "sync": "seed"
+    },
+    {
+      "path": ".claude/skills/project_subsystems/adaptation.godot.json",
       "layer": "godot",
       "sync": "seed"
     },
     {
       "path": ".claude/skills/project_subsystems/adaptation.json",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "seed"
     },
     {
@@ -2843,6 +2868,11 @@
     },
     {
       "path": ".claude/tests/test_ladder_prose_check.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_lens.py",
       "layer": "pure",
       "sync": "auto"
     },

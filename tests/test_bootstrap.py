@@ -121,8 +121,62 @@ def test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean() -> None:
             subprocess.run(["git", "worktree", "prune"], cwd=ROOT, capture_output=True)
 
 
+PREFIXES = ("pure", "pure,coding", "pure,coding,godot")
+
+
+def _bootstrap(baseline: Path, snapshot: str, origin: str, target: Path, layers: str) -> None:
+    result = subprocess.run(
+        [BASH, str(baseline / "bootstrap.sh"), "--target", _to_posix(target), "--project-name", "TestGame",
+         "--repo", origin, "--ref", snapshot, "--layers", layers],
+        cwd=baseline, capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, layers + ": " + result.stdout + result.stderr
+
+
+def test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine() -> None:
+    """A consumer adopting a prefix gets exactly that prefix's files, and its CLAUDE.md imports the
+    core plus each adopted layer's doctrine file, in layer order."""
+    origin = _origin()
+    temp_root = Path(tempfile.mkdtemp(prefix="bootstrap_layers_"))
+    baseline = None
+    try:
+        baseline, snapshot = _snapshot_checkout(temp_root)
+        manifest = json.loads((baseline / "baseline.manifest.json").read_text(encoding="utf-8"))["files"]
+        for layers in PREFIXES:
+            adopted = set(layers.split(","))
+            target = temp_root / layers.replace(",", "_")
+            _bootstrap(baseline, snapshot, origin, target, layers)
+            present = {e["path"] for e in manifest if (target / e["path"]).exists()}
+            foreign = sorted(e["path"] for e in manifest if e["layer"] not in adopted and e["path"] in present)
+            assert not foreign, f"{layers}: files of unadopted layers installed: {foreign[:5]}"
+            missing = sorted(e["path"] for e in manifest if e["layer"] in adopted and e["path"] not in present)
+            assert not missing, f"{layers}: adopted files missing: {missing[:5]}"
+            claude = (target / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+            imports = [line.strip() for line in claude.splitlines() if line.startswith("@")]
+            expected = ["@CLAUDE.core.md"] + [f"@CLAUDE.{layer}.md" for layer in ("coding", "godot")
+                                              if layer in adopted and (baseline / "template" / ".claude" / f"CLAUDE.{layer}.md").exists()]
+            assert imports == expected, f"{layers}: imports {imports} != {expected}"
+            registry = baseline / "template" / ".claude" / "skills" / "project_subsystems"
+            domains = [d["name"] for d in json.loads((registry / "adaptation.json").read_text(encoding="utf-8"))["memory_domains"]]
+            for layer in ("coding", "godot"):
+                starter = registry / f"adaptation.{layer}.json"
+                if layer in adopted and starter.exists():
+                    domains += [d["name"] for d in json.loads(starter.read_text(encoding="utf-8"))["memory_domains"]]
+            installed = json.loads((target / ".claude" / "skills" / "project_subsystems" / "adaptation.json")
+                                   .read_text(encoding="utf-8"))["memory_domains"]
+            assert [d["name"] for d in installed] == domains, f"{layers}: domains {[d['name'] for d in installed]}"
+    finally:
+        removed = baseline is None or subprocess.run(
+            ["git", "worktree", "remove", "--force", str(baseline)], cwd=ROOT, capture_output=True
+        ).returncode == 0
+        _rmtree_writable(temp_root)
+        if not removed:
+            subprocess.run(["git", "worktree", "prune"], cwd=ROOT, capture_output=True)
+
+
 def main() -> int:
-    cases = [test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean]
+    cases = [test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean,
+             test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine]
     failures = []
     for case in cases:
         try:
