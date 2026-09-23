@@ -838,6 +838,21 @@ def row_by_id(model_id, data=None):
     return None
 
 
+def takes_effort(name, data=None):
+    """False only when the row `name` names (alias, id, or a served id) declares `effortParam: false`;
+    an unknown or empty name takes an effort."""
+    if not name:
+        return True
+    try:
+        data = data or load()
+        try:
+            row = resolve(name, data)
+        except UnknownModel:
+            row = row_by_id(name, data)
+    except Exception:
+        return True
+    return not (row and row.get("effortParam") is False)
+
 def label(model_id, data=None):
     """Display label for a model id; the id itself when unregistered."""
     row = row_by_id(model_id, data)

@@ -72,14 +72,12 @@ const CONCURRENCY_GUARD = jobs.length > 1 ? [
   'Do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight). Python and Node proofs under .claude/tests/ are not single-flight; run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read instead. If your task file mandates a Godot or C# test or build run, STOP and report that it needs a serialized dispatch.',
 ].join('\n') : ''
 
-// Delegate rails — ONE home (.claude/guards/), four consumers. Two REFERENCE the files because
-// their subagents are in-process and no SessionStart fires (this engine, review_fanout.js); two
-// INLINE them via tools/guard_text.py (hooks/session_model_rails.py for a sidecar `claude` child,
-// scripts/lib/sidecar_common.sh on the -D bare/pointer tiers where no hook fires). Never inline a
-// copy here: two copies is the drift failure the shared file exists to prevent.
-// Both delivery styles carry the SAME two sections — any.md's plus the shape file's. any.md holds
-// the rules binding every delegate, so it is named explicitly rather than chained from inside the
-// shape file: a pointer only works if the delegate chooses to follow it.
+// Delegate rails — ONE home (.claude/guards/), assembled by tools/guard_text.py for every route: the
+// Workflow hook inlines it for all four engines (below), hooks/session_model_rails.py for a sidecar
+// `claude` child, scripts/lib/sidecar_common.sh on the -D bare/pointer tiers. No engine holds a copy.
+// Every route carries the SAME two sections — any.md's plus the shape file's. The Read pointer is
+// only the fallback: delegates followed it in about half of measured cells
+// (gotcha_delegate_rails_pointer_followed_half_the_time).
 // Shape decides which rule families are reachable; the job's own `model` decides how much is spelled
 // out (instruction_quality §3, "tier rails by the model that RECEIVES them").
 // Unlike model/effort, a missing or unrecognized shape is NOT a caller bug — it means the
@@ -98,10 +96,24 @@ if (badTier.length > 0) {
   return { error: 'railTier must be one of [' + VALID_RAIL_TIERS.join('|') + '] when set.', badJobs: badTier.map(j => j.label) }
 }
 const tierOf = (j) => j.railTier || RAILS[j.model] || 'detailed'
+// Rails text per (shape, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
+// `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
+// inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
+// none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
+const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
+const inlineRails = (label, shape, tier) => {
+  const text = RAILS_TEXT[shape + '/' + tier]
+  if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
+  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + shape + '/' + tier)
+  return null
+}
 const guardRef = (j) => {
   const tier = tierOf(j)
   if (tier === 'none') return ''
   const shape = shapeOf(j)
+  const inline = inlineRails(j.label, shape, tier)
+  if (inline) return inline
   const files = shape === 'any'
     ? '.claude/guards/any.md'
     : '.claude/guards/any.md and .claude/guards/' + shape + '.md'

@@ -641,7 +641,7 @@
       "id": "claude-opus-5-5",
       "railTier": "condensed",
       "railTierEvidence": {"evidence": "unmeasured"},
-      "_railTierComment": "Carried from the claude-opus-5 row: before this row existed a claude-opus-5-5 session read that row by id prefix, so condensed is the tier Opus 5.5 sessions already ran on.",
+      "_railTierComment": "Carried from the claude-opus-5 row: before this row existed a claude-opus-5-5 session read that row by id prefix, so condensed is the tier Opus 5.5 sessions already ran on. Phase A (dispatch.js, low) was NO-POWER: without rails it still broke only P5 (6/6 capped a review list; 0/6 with detailed rails) and kept P1, P6, P7 and P8. Report: .claude/scripts/rail_battery/reports/opus-A-2026-09-22-2520307f/report.json",
       "alias": "opus",
       "transport": "anthropic",
       "label": "Opus 5.5", "family": "opus", "version": "claude-opus-5-5", "lifecycle": "current", "order": 20, "costRank": 2, "prior": "frontier",
