@@ -117,6 +117,12 @@
     ".claude/tools/rule_retirement.py": "pure",
     ".claude/tools/self_eval_archive_store.py": "pure",
     ".claude/tools/self_improvement_due.py": "pure",
-    ".claude/tools/task_record.py": "pure"
+    ".claude/tools/task_record.py": "pure",
+    ".claude/reference/project_stack.md": "pure",
+    ".claude/skills/change_control/SKILL.md": "pure",
+    ".claude/skills/environment_bootstrap/SKILL.md": "pure",
+    ".claude/tests/test_claude_core_standalone.py": "pure",
+    ".claude/tests/test_reap.py": "coding",
+    ".claude/tools/reap.py": "coding"
   }
 }

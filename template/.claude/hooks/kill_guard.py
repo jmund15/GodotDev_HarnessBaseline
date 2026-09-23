@@ -8,8 +8,9 @@ different label-shaped task, or a later keep-running instruction, blocks. A mech
 applies to future dispatches and never justifies discarding work already spent.
 
 One exception needs no owner wording (owner decision 2026-09-15): a background Bash/PowerShell shell
-THIS session launched (not a subagent's) whose command, and the readable text of the local scripts it
-runs (MAX_SCRIPT_DEPTH levels), matches nothing in PROTECTED. A script it cannot read, at the top level
+or a Monitor THIS session launched (not a subagent's) whose command, and the readable text of the
+local scripts it runs (MAX_SCRIPT_DEPTH levels), matches nothing in PROTECTED. A Monitor is a poll
+loop by construction; a superseded one keeps re-emitting stale lines until it is stopped. A script it cannot read, at the top level
 or built from a variable, fails the exception closed. That is a waiter, monitor or poll loop; stopping it discards no paid
 work, and demanding consent for it leaves superseded jobs running.
 
@@ -70,7 +71,15 @@ TASKSTOP_DIRECTIVE_RE = re.compile(
     r"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?" + STOP_VERB + r"\b"
     r"|\bi\s+(?:want|need|asked)\s+you\s+to\s+" + STOP_VERB + r"\b"
     r"|\byou\s+(?:should|must)\s+" + STOP_VERB + r"\b"
-    r"|\bgo\s+ahead\s+and\s+" + STOP_VERB + r"\b",
+    r"|\bgo\s+ahead\s+and\s+" + STOP_VERB + r"\b"
+    # A second stop order appended to another instruction -- "Also stop the two hung shells", "and
+    # then stop it". Without this branch the verb never matched, so the order read as a non-stop
+    # (2026-09-18: two hung sidecars survived an owner message that said "also stop").
+    r"|(?:^|[.!?;,]|\band\b|\bbut\b|\bso\b)\s*(?:also|then|now|just|please)\s+" + STOP_VERB + r"\b"
+    # An imperative appended to an earlier instruction: "also stop the codex shells". Without this
+    # branch the verb matched no pattern at all and the directive was never seen, so the phrase
+    # after it was never examined either.
+    r"|(?:^|[;,]|\band\b|\bbut\b)\s*(?:also|then|now|please|just)\s+" + STOP_VERB + r"\b",
     re.I,
 )
 NEGATED_STOP_RE = re.compile(
@@ -89,13 +98,55 @@ GENERIC_OBJECT_RE = re.compile(
 BARE_TAIL_RE = re.compile(r"(?:\s*,?\s*(?:now|please|everything|all))*\s*", re.I)
 LABEL_TOKEN_RE = re.compile(r"(?<![\w-])[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+(?![\w-])")
 KEEP_WORDS_RE = re.compile(r"\b(?:running|run|finish|continue|alive|going)\b", re.I)
+# An owner describes a task by what it is doing, not by its id: "stop the two hung codex shells"
+# names no task_id, label, generic noun or bare tail, so every earlier branch rejected it and a
+# clearly-addressed stop was refused. Match the description against the task's own launch text.
+# Only a word shared with that launch counts, so a phrase naming some OTHER thing still misses.
+# Split on EVERY non-alphanumeric, underscore included: a launch command carries its words inside
+# filenames (`codex_proxy_sidecar.sh`), and keeping `_` whole would tokenize that as one word so an
+# owner's natural "the codex shells" shares nothing with it for no good reason.
+DESCRIPTION_TOKEN_RE = re.compile(r"[A-Za-z0-9]{4,}")
+# Function words and state adjectives an owner adds freely; they carry no identity of their own.
+DESCRIPTION_STOPWORDS = frozenset((
+    "that", "this", "these", "those", "them", "they", "their", "there", "then", "than",
+    "with", "from", "into", "over", "under", "about", "just", "only", "also", "still",
+    "stop", "cancel", "terminate", "abort", "please", "hung", "stuck", "idle", "dead",
+    "running", "background", "existing", "current", "shell", "shells", "task", "tasks",
+))
+
+
+def _descriptive_tokens(text):
+    """Identity-bearing words of a phrase: long enough, and not a free-floating function word."""
+    return {token for token in DESCRIPTION_TOKEN_RE.findall((text or "").lower())
+            if token not in DESCRIPTION_STOPWORDS}
+
+
+def _launch_text(launch):
+    """What the task actually runs, for matching how an owner would describe it."""
+    if not launch:
+        return ""
+    tool_input = launch[1] if isinstance(launch, tuple) and len(launch) > 1 else {}
+    if not isinstance(tool_input, dict):
+        return ""
+    return " ".join(str(tool_input.get(key) or "")
+                    for key in ("command", "task_id", "label", "description"))
+
+
+def _describes_launch(phrase, launch):
+    """True when the owner's object phrase shares a distinctive word with this task's launch."""
+    return bool(_descriptive_tokens(phrase) & _descriptive_tokens(_launch_text(launch)))
 # AskUserQuestion answers are picked options, not prose: the question names the task, the label
 # carries the stance. A negation or wait word wins over a stop verb, so "Don't stop it" never counts.
 STOP_LABEL_RE = re.compile(r"\b" + STOP_VERB + r"\b", re.I)
 KEEP_LABEL_RE = re.compile(r"\b(?:no|not|don't|dont|leave|keep|let|wait|finish)\b", re.I)
-# A neutral follow-up ("Try now", "ok") after a consent keeps it; more than this many means the
-# consent is stale and the latest message decides.
-MAX_NEUTRAL_SKIP = 2
+# Neutral follow-ups ("Try now", "ok", a question about something else) between an owner's stop
+# order and the TaskStop that acts on it. Kept deliberately wide: a consent window of 2 made an
+# owner's clear stop expire while the target was STILL RUNNING, so re-issuing TaskStop was refused
+# and two hung sidecars could not be stopped at all (2026-09-18). Staleness is also redundant here
+# -- `taskstop_authorized` compares the LAST positive stop against the LAST keep, so a later "keep
+# it running" revokes regardless of how far back the stop was found, and `_target_patterns` pins
+# the match to this task so an old consent cannot leak onto a different one.
+MAX_NEUTRAL_SKIP = 20
 # Runtime text injected anywhere in an owner row. It is never owner consent, and its hyphenated tag
 # name would otherwise read as another task's label.
 INJECTION_BLOCK_RE = re.compile(
@@ -162,22 +213,42 @@ def _object_phrase(message, start):
     return re.split(r"[,;:]|\s(?:and|but|then|so|because|since|while)\s", sentence, maxsplit=1)[0]
 
 
-def _refers_to_task(message, start, patterns, *, keep=False):
-    """True when the phrase after a stop (or keep) word is this task by name, a generic reference
-    ("it", "that agent"), or, for a stop, nothing at all. A phrase naming another label-shaped task
-    refers to that task instead."""
+def _refers_to_task(message, start, patterns, *, keep=False, launch=None):
+    """True when the phrase after a stop (or keep) word is this task by name, by a distinctive word
+    shared with what this task actually runs, a generic reference ("it", "that agent"), or, for a
+    stop, nothing at all. A phrase naming another label-shaped task refers to that task instead."""
     if _names_target(message, start, patterns, keep=keep):
         return True
     phrase = _object_phrase(message, start)
     if LABEL_TOKEN_RE.search(phrase):
         return False
+    if _describes_launch(phrase, launch):
+        return True
     generic = GENERIC_OBJECT_RE.match(phrase)
     if keep:
         return bool(generic and KEEP_WORDS_RE.search(phrase))
     return bool(generic or BARE_TAIL_RE.fullmatch(phrase))
 
 
-def taskstop_authorized(message, tool_input):
+def _engages_task(message, tool_input, launch=None):
+    """True when this owner message carries a stop or keep directive ABOUT THIS TASK.
+
+    A message that merely CONTAINS a stop-ish word while talking about something else -- "let it
+    finish" about a workflow, or a quoted error block -- must not decide this task's consent. The
+    walk treats a decisive row as final, so without this an unrelated keep ended the search before
+    the owner's actual stop order was reached (2026-09-18: two hung sidecars stayed unstoppable
+    through repeated stop orders)."""
+    targets = _target_patterns(tool_input)
+    if not targets:
+        return False
+    for pattern, keep in ((TASKSTOP_DIRECTIVE_RE, False), (NEGATED_STOP_RE, False), (KEEP_RE, True)):
+        for match in pattern.finditer(message):
+            if _refers_to_task(message, match.end(), targets, keep=keep, launch=launch):
+                return True
+    return False
+
+
+def taskstop_authorized(message, tool_input, launch=None):
     if not message:
         return False
     targets = _target_patterns(tool_input)
@@ -186,17 +257,17 @@ def taskstop_authorized(message, tool_input):
     positive = [
         match.start()
         for match in TASKSTOP_DIRECTIVE_RE.finditer(message)
-        if _refers_to_task(message, match.end(), targets)
+        if _refers_to_task(message, match.end(), targets, launch=launch)
     ]
     revoked = [
         match.start()
         for match in NEGATED_STOP_RE.finditer(message)
-        if _refers_to_task(message, match.end(), targets)
+        if _refers_to_task(message, match.end(), targets, launch=launch)
     ]
     revoked.extend(
         match.start()
         for match in KEEP_RE.finditer(message)
-        if _refers_to_task(message, match.end(), targets, keep=True)
+        if _refers_to_task(message, match.end(), targets, keep=True, launch=launch)
     )
     return bool(positive) and max(positive) > max(revoked, default=-1)
 
@@ -265,8 +336,8 @@ NOT_NAMED = ("BLOCKED TaskStop — the owner's latest message or question answer
 def _launch_of(transcript_path, task_id):
     """(tool name, tool input) of the main-session call that launched background task `task_id`, else None.
 
-    The launch is the tool_result row whose `toolUseResult.backgroundTaskId` is the id; its tool_use_id
-    names the assistant tool_use. Either row on a sidechain (a subagent) is not this session's launch."""
+    The launch is the tool_result row whose `toolUseResult.backgroundTaskId` (Bash/PowerShell) or
+    `toolUseResult.taskId` (Monitor) is the id; its tool_use_id names the assistant tool_use. Either row on a sidechain (a subagent) is not this session's launch."""
     if not transcript_path or not task_id:
         return None
     try:
@@ -279,13 +350,14 @@ def _launch_of(transcript_path, task_id):
         return None
     use_id = None
     for line in lines:
-        if task_id not in line or "backgroundTaskId" not in line:
+        if task_id not in line or ("backgroundTaskId" not in line and "taskId" not in line):
             continue
         try:
             row = json.loads(line)
         except ValueError:
             continue
-        if row.get("isSidechain") or (row.get("toolUseResult") or {}).get("backgroundTaskId") != task_id:
+        result = row.get("toolUseResult") or {}
+        if row.get("isSidechain") or task_id not in (result.get("backgroundTaskId"), result.get("taskId")):
             continue
         for item in (row.get("message") or {}).get("content") or []:
             if isinstance(item, dict) and item.get("type") == "tool_result":
@@ -353,8 +425,12 @@ def quiet_shell_blocker(transcript_path, tool_input, cwd=None):
     otherwise the reason the quiet-shell exception does not apply."""
     task_id = (tool_input or {}).get("task_id") if isinstance(tool_input, dict) else None
     launch = _launch_of(transcript_path, task_id)
-    if not launch or launch[0] not in ("Bash", "PowerShell") or not launch[1].get("run_in_background"):
-        return "not a background shell this session launched"
+    if not launch:
+        return "not a background shell or monitor this session launched"
+    own_shell = launch[0] in ("Bash", "PowerShell") and launch[1].get("run_in_background")
+    own_monitor = launch[0] == "Monitor" and launch[1].get("command")
+    if not (own_shell or own_monitor):
+        return "not a background shell or monitor this session launched"
     texts, unreadable = _work_texts(str(launch[1].get("command") or ""), cwd)
     for text in texts:
         for pat, why in PROTECTED:
@@ -383,13 +459,17 @@ def taskstop_verdict(transcript_path, tool_input, cwd=None):
     inputs = _owner_inputs(transcript_path)
     if not inputs:
         return CANNOT_VERIFY + note
+    task_id = (tool_input or {}).get("task_id") if isinstance(tool_input, dict) else None
+    launch = _launch_of(transcript_path, task_id)
     skipped = 0
     for kind, value in reversed(inputs):
         if kind == "text":
-            if _is_neutral(value) and skipped < MAX_NEUTRAL_SKIP:
+            # A row decides only when it actually engages THIS task; anything else is walked past,
+            # so an unrelated "let it finish" cannot end the search short of the owner's real order.
+            if not _engages_task(value, tool_input, launch) and skipped < MAX_NEUTRAL_SKIP:
                 skipped += 1
                 continue
-            return None if taskstop_authorized(value, tool_input) else NOT_NAMED + note
+            return None if taskstop_authorized(value, tool_input, launch) else NOT_NAMED + note
         verdict = _answer_verdict(value, tool_input)
         if verdict is None:
             if skipped < MAX_NEUTRAL_SKIP:

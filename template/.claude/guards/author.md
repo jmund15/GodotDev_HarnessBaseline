@@ -4,9 +4,9 @@ Read ONLY the section your dispatch names; if none is named, read `## strict`. `
 
 ## strict
 
-- Logic Domain (DomainCore, Combinations, Jmodot.Core, Inventory, Math/Parsing, Data Structures) is strict TDD: NO production code without a failing test. RED (`[TestSuite]` in `Tests/Logic/`) → VERIFY the specific failure → GREEN minimum → REFACTOR. Includes `.tres` changes that affect Logic behavior. [CLAUDE.md §Hybrid TDD]
+- Logic Domain (the Logic subsystems CLAUDE.md §Hybrid TDD names) is strict TDD: NO production code without a failing test. RED (`[TestSuite]` in the Logic suites it names) → VERIFY the specific failure → GREEN minimum → REFACTOR. Includes `.tres` changes that affect Logic behavior. [CLAUDE.md §Hybrid TDD]
 - "The logic is obvious, implement first and test after" is a named rationalization to refuse, not a carve-out. [CLAUDE.md §Rationalizations to Refuse]
-- Gameplay Domain (Player, enemy BT, ability lifecycle, VFX, UI, physics feel): automate the deterministic via ISceneRunner; leave subjective feel to manual playtest. [CLAUDE.md §Hybrid TDD]
+- Gameplay Domain (the Gameplay subsystems CLAUDE.md §Hybrid TDD names): automate the deterministic via ISceneRunner; leave subjective feel to manual playtest. [CLAUDE.md §Hybrid TDD]
 - `.cs` changes require `/regression_gate` before commit, no carve-outs. Under the concurrency guard you must NOT run it — finish the work and report that the gate is owed. [CLAUDE.md §Build & Test]
 - If you do run tests: never omit `--filter`/`--settings .runsettings`, never pass `--no-build`, always give the Bash call `timeout=600000`. [CLAUDE.md §Build & Test]
 - Before ANY new named configuration surface (type, `[Export]`, parameter, behavior-selecting bool/enum, helper): name the family that already owns the concern, or record "none exists". A behavior-selecting bool sitting beside a `*Strategy` sibling is a strategy slot in disguise; a literal `null` into a strategy slot is a neutered seam. [rules/design_litmus.md #1]

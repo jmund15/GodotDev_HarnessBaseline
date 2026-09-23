@@ -19,7 +19,7 @@ Use normal conversation: `/explore` → plan file → `/plan_check` → user app
 3. Run `/plan_check` for 3+ files, new concepts/surfaces, family refactors, replacements/deletions or always-loaded guidance. Harness plans are included. Resolve forks before execution; `skills/_brainstorm_shared/plan_file_format.md` owns the plan format.
 
 ### Proactive Context Loading (Mid-Execution)
-On a real domain change or a result contradicting expected behavior, search `.claude/auto-memory/` with a natural-language description before changing approach. `reference/memory_domains.md` supplies seeds. Background notifications and incidental words are not domain changes.
+On a real domain change or a result contradicting expected behavior, search `.claude/auto-memory/` with a natural-language description before changing approach. When the result disproves a memory, correct or retire that file in the same turn. `reference/memory_domains.md` supplies seeds. Background notifications and incidental words are not domain changes.
 
 ## Build & Test Commands
 - **Godot/C# tests:** load `testing`; use `--filter` and `--settings .runsettings`, never `--no-build`. Bash timeout is `600000` for tests and vault/Godot-install/transcript walks.
@@ -27,22 +27,12 @@ On a real domain change or a result contradicting expected behavior, search `.cl
 - **Harness code/settings commits:** `python3 .claude/scripts/harness_tests.py --staged` stamps the staged harness files from their bound proofs (seconds); the full battery runs at session close. Run it once before the commit, never as a per-edit check; a task with no commit needs no stamp. Pure documentation is exempt from the C# gate. `rules/harness_tooling.md` owns proof mechanics.
 - After substantial scene/resource wiring, check the MCP Godot version against `reference/project_stack.md`, run the game and inspect debug output. Engine invocations can rewrite assets; inspect their diffs.
 
-## Development Philosophy: Hybrid TDD
-Project Guidelines' Domain Split names each domain's subsystems.
-
-**Logic:** require a failing test before implementation, including behavior-changing `.tres` data. Suites: `Tests/Logic/`.
-
-**Gameplay:** automate deterministic behavior, wiring and lifecycle with integration tests; inspect subjective feel. `testing` owns recipes; `/prototype` owns open feel probes and deliberately provisional designs. No testing-first exception for an obvious Logic change.
-
 ## Developer Tooling Strategy
 
 ### 2. Memory (One Store, Two Tiers)
 Canonical bodies live in `.claude/auto-memory/`; this overrides the runtime's default `~/.claude/projects/<project>/memory/` store, which holds only one-line pointers. `MEMORY.md` is the loaded index; cold material remains searchable, normally under `archive/`. Search by concept with `mcp__plugin_semantic-search_semantic-search__search` and a repo-relative POSIX `restrictToDir`; use literal search for exact values.
 
 Default new learning to cold. Hot admission requires a decision made before any trigger/search could deliver it, not spare space or an interesting incident. Add a hot pointer in the same turn as its file; stay below the runtime's 200-line/25KB cap. Move a file-class rule to its triggered owner while retaining its evidence. `/codify` owns placement details. Save surprising constraints/preferences, not API inventories, code descriptions or facts recoverable from git.
-
-### 3. Obsidian (The Design Source)
-Read and search the vault folders Project Guidelines names, plus any vault path the user, a skill or a command names; native file tools work even while Obsidian is open. Search before choosing a path. Load `obsidian_conventions`; `environment_bootstrap` owns machine paths. Never invent a formula absent from the design source.
 
 ### 4. WebFetch (The Documentation)
 Verify version-sensitive facts against `reference/project_stack.md` and first-party sources. Godot class docs come from `.claude/cache/godot-docs/doc/classes/<Class>.xml`, not the website. `reference/source_trust.md` owns fetch order: cache, source-fetch script, single-page fetch, resolved library docs, multi-page synthesis, then search when needed. Inspect source coverage before asserting absence.
@@ -74,13 +64,9 @@ Refuse the premise and cite the rule; silent compliance (using the right tool wi
 | Rationalization | Rule to cite |
 |---|---|
 | "grep is faster / LSP is slow / it's just one symbol" | §Tool Routing, C# navigation |
-| "the logic is obvious, let's implement first then test" | §Hybrid TDD: no carve-out for self-evident logic |
 | "that file is a peer's / under active edit, log it for later" | `git status --short <file>` first; clean means it is yours to fix now (§Core Principles) |
 | "it's a cosmetic change / just a rename, skip the gate" | §Build & Test Commands: `/regression_gate` for every `.cs` commit; `change_control` owns cadence |
 | "summarize the evidence / the denial was a fluke, try another tool" | §Core Principles for evidence; §Shell Discipline: a denial stops the operation |
-
-## The Worklog (Live Todo Doc)
-The doc Project Guidelines names is authoritative; `.claude/worklog-titles.md` is the title-only lookup. `worklog_reference` and `/worklog` own operations. Do small in-context work now; propose genuine deferrals once, and complete an item when it finishes. The once-per-session relevance check fires when production scope becomes nameable; skip meta-only work and a single known mechanical fix.
 
 ## Core Code Conventions
 Follow the authoring tool: PascalCase for C# files/types/directories; snake_case for Godot assets and Python tooling; match neighbors for Markdown/images. File-scoped rules own C#, scene, resource and harness conventions. Prefer clear contracts and authored data over special cases.
@@ -88,7 +74,7 @@ Follow the authoring tool: PascalCase for C# files/types/directories; snake_case
 ## Shell Discipline
 Use `git -C <path>`; Bash cwd persists. Write Python carrying nested quotes, or backslashes inside a `claude -p` child, to a file; elsewhere a hook repairs the Bash tool's `\\`→`\` collapse on verified clients. Python file writes use LF (`newline="\n"` or bytes). Invoke the engine as `bash .claude/scripts/godot_bin.sh <args>`, never `"$GODOT_BIN"`; quote paths, and prefix `MSYS_NO_PATHCONV=1` for colon-bearing git/gh operands. Commit messages use a scratch file with `git commit -F`, not `/tmp`.
 
-Watch background jobs through their completion/monitor contract. Prove process ownership before cleanup; never kill a peer from a path substring or idle label. A rejected permission/config operation stops that operation; do not change permission mode to get around it. Provider-transport sidecars launch with `bypassPermissions` by owner decision, hooks as their guards (`reference/sidecar_dispatch.md` §Permission mode). `environment_bootstrap` and `reference/sidecar_dispatch.md` own platform and launcher details.
+Watch background jobs through their completion/monitor contract. Stop an OS process only through `python3 .claude/tools/reap.py` (usage in its docstring); never kill a peer from a path substring or idle label. A rejected permission/config operation stops that operation; do not change permission mode to get around it. Provider-transport sidecars launch with `bypassPermissions` by owner decision, hooks as their guards (`reference/sidecar_dispatch.md` §Permission mode). `environment_bootstrap` and `reference/sidecar_dispatch.md` own platform and launcher details.
 
 ## Model Delegation (spec-time routing)
 Before dispatch, distinguish copyable I/O from derived judgment, choose a suitable model/effort, and state the currency. Model claims and availability live in `reference/model_ladder_evidence.md` and `reference/external_models.json`; `orchestration` owns mechanisms. Requested pins are not observed identity. Keep compaction enabled for ordinary long jobs and respect verified per-model capacity; a larger client declaration does not enlarge the backend.

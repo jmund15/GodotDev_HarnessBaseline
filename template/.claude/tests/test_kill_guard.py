@@ -363,10 +363,12 @@ def c_taskstop_answer_then_revoke():
     return "does not name" in (taskstop(rows=rows, task_id="bhunx053s") or "")
 
 
-@case("AskUserQuestion: consent goes stale after more neutral follow-ups than the skip limit")
+@case("the walk is bounded: consent is abandoned past MAX_NEUTRAL_SKIP neutral rows")
 def c_taskstop_answer_stale():
-    rows = [_answer_row(PROBE_QUESTION, "Yes, stop all 3 (Recommended)"),
-            _text_row("ok"), _text_row("Continue"), _text_row("Try now")]
+    # Driven from the constant, not a hardcoded count: the bound is a runaway guard against an
+    # unbounded walk through a giant transcript, so it must hold at whatever the limit is.
+    rows = [_answer_row(PROBE_QUESTION, "Yes, stop all 3 (Recommended)")]
+    rows += [_text_row("ok")] * (kg.MAX_NEUTRAL_SKIP + 1)
     return "does not name" in (taskstop(rows=rows, task_id="bhunx053s") or "")
 
 
@@ -392,7 +394,11 @@ def _launch_rows(task_id, command, *, name="Bash", background=True, sidechain=Fa
     if background:
         tool_input["run_in_background"] = True
     result = {"stdout": "", "stderr": "", "interrupted": False}
-    if background:
+    if name == "Monitor":
+        # A Monitor launch records its id as toolUseResult.taskId, never backgroundTaskId.
+        tool_input = {"command": command, "description": "probe", "timeout_ms": 300000}
+        result = {"taskId": task_id, "timeoutMs": 300000, "persistent": False}
+    elif background:
         result["backgroundTaskId"] = task_id
     return [
         _text_row(owner),
@@ -420,6 +426,18 @@ def c_taskstop_own_quiet_loop():
     return taskstop(rows=rows, task_id="bgpoll1") is None
 
 
+@case("own Monitor poll loop: TaskStop allowed with no owner stop wording")
+def c_taskstop_own_monitor_loop():
+    rows = _launch_rows("mon1", "while true; do grep -E '^VERDICT=' gate.out && break; sleep 10; done", name="Monitor")
+    return taskstop(rows=rows, task_id="mon1") is None
+
+
+@case("own Monitor that runs a protected job is still blocked")
+def c_taskstop_own_monitor_protected():
+    rows = _launch_rows("mon2", "pwsh -File .claude/scripts/regression_gate.ps1 -Detach", name="Monitor")
+    return taskstop(rows=rows, task_id="mon2") is not None
+
+
 @case("own background script whose text runs nothing protected: allowed")
 def c_taskstop_own_quiet_script():
     path = _script("#!/usr/bin/env bash\nwhile :; do python3 bench.py preflight c s; sleep 300; done\n")
@@ -433,6 +451,27 @@ def c_taskstop_own_quiet_script():
 def c_taskstop_own_sidecar_blocked():
     rows = _launch_rows("bgside1", "bash .claude/scripts/deepseek_sidecar.sh -m flash -f brief.txt")
     return "does not name" in (taskstop(rows=rows, task_id="bgside1") or "")
+
+
+@case("an owner's DESCRIPTIVE stop that names the launch authorizes TaskStop")
+def c_taskstop_descriptive_names_launch():
+    rows = _launch_rows("bgside3", "bash .claude/scripts/codex_proxy_sidecar.sh -m luna -e max -f brief.txt")
+    rows = rows + [_text_row("stop the two hung codex shells")]
+    return taskstop(rows=rows, task_id="bgside3") is None
+
+
+@case("...and an 'also stop <that>' directive form authorizes it too")
+def c_taskstop_also_stop_directive():
+    rows = _launch_rows("bgside4", "bash .claude/scripts/codex_proxy_sidecar.sh -m luna -e max -f brief.txt")
+    rows = rows + [_text_row("Fix this now. Also stop the codex sidecar shells.")]
+    return taskstop(rows=rows, task_id="bgside4") is None
+
+
+@case("NEGATIVE: a descriptive stop naming a DIFFERENT job grants nothing")
+def c_taskstop_descriptive_wrong_job():
+    rows = _launch_rows("bgside5", "bash .claude/scripts/codex_proxy_sidecar.sh -m luna -e max -f brief.txt")
+    rows = rows + [_text_row("stop the benchmark grid")]
+    return "does not name" in (taskstop(rows=rows, task_id="bgside5") or "")
 
 
 @case("own background script that CALLS a sidecar still needs owner consent")

@@ -2,7 +2,7 @@
 
 Read before writing or changing Logic-Domain production code; named from `SKILL.md` §Recipe index.
 
-**Scope:** Logic Domain only (CLAUDE.md Project Guidelines' Domain Split names its subsystems). Gameplay has its own rubric — `reference/choosing.md` §Gameplay Domain flow, and CLAUDE.md *Development Philosophy: Hybrid TDD* owns the split.
+**Scope:** Logic Domain only (CLAUDE.md *Development Philosophy: Hybrid TDD* names its subsystems). Gameplay has its own rubric — `reference/choosing.md` §Gameplay Domain flow, and CLAUDE.md *Development Philosophy: Hybrid TDD* owns the split.
 
 ## Logic Domain flow
 
