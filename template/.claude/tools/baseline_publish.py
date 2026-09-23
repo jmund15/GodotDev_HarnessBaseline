@@ -568,17 +568,41 @@ CHECKS_POLL_S = 5.0
 _NO_CHECKS_YET = "no checks reported"
 
 
+CHECKS_WATCH_RETRIES = 5
+_PENDING_CHECK_STATES = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"}
+
+
+def _checks_pending(worktree: Path, pr_url: str) -> bool:
+    """True when a check has no verdict yet, or when the answer itself is unreadable."""
+    listed = _gh(worktree, ["pr", "checks", pr_url, "--json", "name,state"])
+    if listed.returncode != 0:
+        return True
+    try:
+        checks = json.loads(_lf(listed.stdout).decode("utf-8", errors="replace") or "[]")
+    except json.JSONDecodeError:
+        return True
+    return any(str(check.get("state") or "").upper() in _PENDING_CHECK_STATES for check in checks)
+
+
 def _watch_checks(worktree: Path, pr_url: str) -> subprocess.CompletedProcess[bytes]:
+    """`--watch` exits non-zero on a lost connection as on a red check, so a non-zero watch
+    that leaves a check pending has no verdict: watch again, up to CHECKS_WATCH_RETRIES times."""
     deadline = time.monotonic() + CHECKS_REGISTER_WAIT_S
+    rewatches = 0
     while True:
         checks = _gh(worktree, ["pr", "checks", pr_url, "--watch", "--fail-fast"])
-        text = _lf(checks.stdout + checks.stderr).decode("utf-8", errors="replace")
-        if checks.returncode == 0 or _NO_CHECKS_YET not in text:
+        if checks.returncode == 0:
             return checks
-        if time.monotonic() >= deadline:
-            raise PublishError(
-                f"no CI checks registered on {pr_url} within {int(CHECKS_REGISTER_WAIT_S)} s"
-            )
+        text = _lf(checks.stdout + checks.stderr).decode("utf-8", errors="replace")
+        if _NO_CHECKS_YET in text:
+            if time.monotonic() >= deadline:
+                raise PublishError(
+                    f"no CI checks registered on {pr_url} within {int(CHECKS_REGISTER_WAIT_S)} s"
+                )
+        elif rewatches < CHECKS_WATCH_RETRIES and _checks_pending(worktree, pr_url):
+            rewatches += 1
+        else:
+            return checks
         time.sleep(CHECKS_POLL_S)
 
 
@@ -923,7 +947,7 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
     _write_json_atomic(journal_path, journal)
 
 
-def _resume(root: Path, resume_id: str, accept_hits: list[str]) -> dict:
+def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = False) -> dict:
     journal_path = _journal_path(root, resume_id)
     journal = _load_journal_file(journal_path)
     if journal is None:
@@ -951,15 +975,35 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str]) -> dict:
     baseline_before = journal["baseline_sha_before"]
 
     was_dry_run = bool(journal.get("dry_run"))
-    if was_dry_run:
+    # The owner confirms a GREEN dry run: a dry-run journal red in steps 1-5 is redone as a dry
+    # run (`--resume <id> --dry-run`) and shown again before any plain resume may publish it.
+    dry_green = all(step.get("status") == "green" for step in journal["steps"][:5])
+    if dry_run and not was_dry_run:
+        raise PublishError(f"--dry-run resumes only a dry-run journal; {resume_id} is not one")
+    if was_dry_run and not dry_green and not dry_run:
+        raise PublishError(
+            f"dry-run journal {resume_id} is not green through step 5; run "
+            f"`publish --resume {resume_id} --dry-run` and confirm its evidence first")
+    if was_dry_run and not dry_run:
         journal["dry_run"] = False
         journal["owner_confirmed_at"] = _now()
+        _write_json_atomic(journal_path, journal)
+
+    steps = journal["steps"]
+    if steps[0].get("status") != "green":
+        raise PublishError(f"journal {resume_id} stopped at collect; run a fresh publish")
+    # A fresh run with the same inputs refuses in favor of --resume, so a journal that stopped
+    # at classify resumes here: re-run the gate, then make the worktree record step 3 needs.
+    if steps[1].get("status") != "green":
+        _step(journal, journal_path, 1, lambda: _classify(source, lock))
+    if not (journal.get("worktree") or {}).get("path"):
+        journal["worktree"] = {"path": str(_journal_dir(root) / (journal["id"] + "-worktree")),
+                               "branch": "publish/" + journal["id"], "head": None, "committed": False}
         _write_json_atomic(journal_path, journal)
 
     worktree = Path(journal["worktree"]["path"])
     branch = journal["worktree"]["branch"]
     recorded_head = journal["worktree"].get("head")
-    steps = journal["steps"]
 
     worktree_ok = worktree.exists()
     if worktree_ok:
@@ -982,7 +1026,7 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str]) -> dict:
 
     _steps_from_index(journal, journal_path, root, lock, source, records, worktree, branch,
                        baseline_cache, baseline_before, accept_hits,
-                       bool(journal.get("no_ci")), False, start)
+                       bool(journal.get("no_ci")), bool(dry_run), start)
     return journal
 
 
@@ -1041,7 +1085,7 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
     except sync.BaselineError as exc:
         raise PublishError(str(exc)) from exc
     if resume_id:
-        return _resume(root, resume_id, accept_hits)
+        return _resume(root, resume_id, accept_hits, bool(dry_run))
     if source is None:
         raise PublishError("a source commit or worktree is required")
     source = _resolve_source(root, source)

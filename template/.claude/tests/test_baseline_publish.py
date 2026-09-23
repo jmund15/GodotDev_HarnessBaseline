@@ -220,6 +220,8 @@ specific failure shapes a real GitHub PR lifecycle can produce:
     GH_FAKE_FAIL_STEP=create|checks|merge   that gh subcommand exits 1 immediately (`pr checks --json` reports FAILURE)
     GH_FAKE_MAIN_MOVE_ON_CHECKS=1           `pr checks` pushes a peer commit to main first
     GH_FAKE_NO_CHECKS_CALLS=N               the first N `pr checks` calls report no checks yet (exit 1)
+    GH_FAKE_WATCH_DROPS=N                   the first N `pr checks --watch` calls lose the connection
+                                            (exit 1) while `--json` still reports the check PENDING
     GH_FAKE_FAIL_AFTER_MERGE=1              `pr merge` performs the real merge, then exits 1
 """
 import importlib.util
@@ -317,7 +319,11 @@ def main(argv):
         if "--json" in argv:
             # Real gh shape (read from a live PR): one object per check, `link` is the job URL.
             failed = os.environ.get("GH_FAKE_FAIL_STEP") == "checks"
-            print(json.dumps([{"name": "baseline", "state": "FAILURE" if failed else "SUCCESS", "workflow": "baseline",
+            drops = int(os.environ.get("GH_FAKE_WATCH_DROPS", "0") or 0)
+            dropped = drops and state.get("watch_calls", 0) <= drops
+            print(json.dumps([{"name": "baseline",
+                               "state": "PENDING" if dropped else ("FAILURE" if failed else "SUCCESS"),
+                               "workflow": "baseline",
                                "link": "https://example.invalid/actions/runs/77/job/1"}]))
             return 0
         pending = int(os.environ.get("GH_FAKE_NO_CHECKS_CALLS", "0") or 0)
@@ -326,6 +332,12 @@ def main(argv):
         if state["checks_calls"] <= pending:
             # Real gh right after `pr create`: the workflow run is not registered yet.
             print("no checks reported on the '%s' branch" % _current_branch(cwd), file=sys.stderr)
+            return 1
+        drops = int(os.environ.get("GH_FAKE_WATCH_DROPS", "0") or 0)
+        state["watch_calls"] = state.get("watch_calls", 0) + 1
+        _save_state(state)
+        if state["watch_calls"] <= drops:
+            print('Post "https://api.github.com/graphql": read tcp: connection timed out', file=sys.stderr)
             return 1
         if os.environ.get("GH_FAKE_FAIL_STEP") == "checks":
             print("fake gh: injected checks failure", file=sys.stderr)
@@ -757,6 +769,90 @@ def test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed()
         assert _git(remote, "show", "main:template/" + rel)
 
 
+def test_a_red_dry_run_is_redone_as_a_dry_run_before_the_owner_confirms() -> None:
+    """The owner confirms a GREEN dry run. A dry-run journal red at steps 1-5 must not publish
+    on `--resume`: plain resume refuses it, and `--resume --dry-run` redoes steps 1-5 and stops,
+    still a dry run with no confirmation recorded. The next plain resume publishes."""
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        before_main = _remote_main_sha(remote)
+        env = _install_fake_gh(path)
+        publish = _load_publish()
+
+        def _boom(*_a, **_k):
+            raise publish.PublishError("injected scrub failure")
+
+        publish._scrub = _boom
+        with _patched_env(env):
+            try:
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], True, True, None)
+            except publish.PublishError:
+                pass
+        journal_id = sorted((root / ".claude" / ".cache" / "baseline-publish").glob("*.json"))[-1].stem
+
+        publish = _load_publish()
+        with _patched_env(env):
+            try:
+                publish.run(root, None, None, [], False, False, journal_id)
+            except publish.PublishError as exc:
+                assert "--dry-run" in str(exc), exc
+            else:
+                raise AssertionError("a red dry-run journal published on plain --resume")
+        assert _remote_main_sha(remote) == before_main
+
+        with _patched_env(env):
+            redone = _load_publish().run(root, None, None, [], True, False, journal_id)
+        assert all(s["status"] == "green" for s in redone["steps"][:5]), redone["steps"]
+        assert all(s["status"] == "pending" for s in redone["steps"][5:]), redone["steps"]
+        assert redone["dry_run"] is True and redone["owner_confirmed_at"] is None
+        assert _remote_main_sha(remote) == before_main
+
+        with _patched_env(env):
+            published = _load_publish().run(root, None, None, [], False, False, journal_id)
+        assert all(s["status"] == "green" for s in published["steps"]), published["steps"]
+        assert published["owner_confirmed_at"] is not None
+
+
+def test_a_journal_red_at_classify_resumes_through_classify() -> None:
+    """A fresh run with the same inputs refuses and names `--resume`, so a journal that stopped
+    at step 2 (classify: an unrowed candidate) must resume. Resume re-runs the failed classify
+    gate and makes the worktree step 3 needs; it never skips the gate."""
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        env = _install_fake_gh(path)
+        def _red(module):
+            def _red_classify(*_a, **_k):
+                raise module.PublishError("source has candidates: injected")
+            module._classify = _red_classify
+            return module
+
+        publish = _red(_load_publish())
+        with _patched_env(env):
+            try:
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], True, True, None)
+            except publish.PublishError:
+                pass
+        journal_id = sorted((root / ".claude" / ".cache" / "baseline-publish").glob("*.json"))[-1].stem
+
+        still_red = _red(_load_publish())
+        with _patched_env(env):
+            try:
+                still_red.run(root, None, None, [], True, False, journal_id)
+            except still_red.PublishError:
+                pass
+            else:
+                raise AssertionError("resume skipped a red classify gate")
+
+        with _patched_env(env):
+            redone = _load_publish().run(root, None, None, [], True, False, journal_id)
+        assert all(s["status"] == "green" for s in redone["steps"][:5]), redone["steps"]
+        assert redone["dry_run"] is True
+
+
 def test_abbreviated_commit_source_resumes_instead_of_deadlocking() -> None:
     """A source given a short SHA -- the form the CLI is actually typed with -- must resume.
 
@@ -973,6 +1069,26 @@ def test_ci_checks_not_yet_registered_are_waited_for() -> None:
         assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
         state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
         assert state.get("checks_calls") == 3, state.get("checks_calls")
+
+
+def test_a_dropped_ci_watch_is_watched_again_while_checks_are_pending() -> None:
+    # `gh pr checks --watch` exits 1 on a lost connection exactly as on a red check; the first
+    # CI-on B publication went red on a graphql timeout while CI was still running. A watch that
+    # ends while `--json` still reports a pending check has no verdict, so step 6 watches again.
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        publish.CHECKS_POLL_S = 0.05
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_WATCH_DROPS"] = "2"
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                                  [rel], [], False, False, None)
+        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+        state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
+        assert state.get("watch_calls") == 3, state.get("watch_calls")
 
 
 def test_ci_on_publish_records_the_ci_run_url() -> None:
@@ -1604,6 +1720,8 @@ def main() -> int:
         test_no_ci_refuses_when_workflow_exists,
         test_step_failures_1_through_5_leave_fixture_main_unchanged,
         test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed,
+        test_a_red_dry_run_is_redone_as_a_dry_run_before_the_owner_confirms,
+        test_a_journal_red_at_classify_resumes_through_classify,
         test_abbreviated_commit_source_resumes_instead_of_deadlocking,
         test_repeat_publish_prints_already_published,
         test_repeat_incomplete_same_baseline_refuses_naming_resume,
@@ -1611,6 +1729,7 @@ def main() -> int:
         test_resume_finds_and_reuses_pr_after_crash_before_pr_url_written,
         test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes,
         test_ci_checks_not_yet_registered_are_waited_for,
+        test_a_dropped_ci_watch_is_watched_again_while_checks_are_pending,
         test_ci_on_publish_records_the_ci_run_url,
         test_ci_red_checks_record_the_ci_run_url,
         test_ci_checks_that_never_register_fail_step_six_after_the_wait,
