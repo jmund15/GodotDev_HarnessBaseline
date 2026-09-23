@@ -14,7 +14,7 @@ source of truth; a timeout, output-file presence, or empty search does not prove
 
 - `<transcriptDir-or-run-receipt>` is the exact Workflow transcript directory or the engine run receipt.
 - `<lens-key>` is the selected lens/job key from the run's started row.
-- `--kind` is optional only when the run receipt identifies exactly one of `explore`, `review`, or `dispatch`.
+- `--kind` is optional only when the run receipt identifies exactly one workflow kind.
 - `--spill-dir <path>` is required with a bare transcript directory; omit it only when the run receipt carries
   the engine's `spillDir` or per-lens `spillMetadata`.
 
@@ -25,7 +25,7 @@ path from the run receipt plus validated journal; the journal alone does not car
 
 ## Procedure
 
-1. **Validate the run receipt.** For `explore` or `review`, build the journal manifest with:
+1. **Validate the run receipt.** For the exploration or review kind, build the journal manifest with:
 
    ```bash
    python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir>" --workflow-kind <explore|review> --workflow-manifest
@@ -35,14 +35,12 @@ path from the run receipt plus validated journal; the journal alone does not car
    its SHA-256, and validates the `launched`, selected `started`, and terminal rows; never call the unsupported
    `--workflow-kind dispatch`. Use the selected started row's `agentId` to read the exact
    `agent-<agentId>.jsonl`; never search every transcript and treat an empty Grep as absence. Bind the exact
-   spill path from the run receipt or `--spill-dir` plus the engine-reported sanitizer. A missing/unknown
-   workflow kind, lens key, receipt, spill metadata, or malformed journal is an input error.
+   spill path from the run receipt or `--spill-dir` plus the engine-reported sanitizer.
 2. **Prove terminal state.** Require the engine's terminal row for the selected key. If no terminal row exists,
-   report **still running** and wait for the harness notification. A timeout is wake-only; it never proves
-   death. For a sidecar, also require its `.exit`/record and process-state answer. For a manual Agent,
+   report **still running** and wait for the harness notification. For a sidecar, also require its `.exit`/record and process-state answer. For a manual Agent,
    require the harness task's terminal notification.
 3. **Recover a completed payload.** Prefer the exact engine-reported spill path, then the final payload in the
-   transcript. Validate against the resolved schema: `explore` uses `claims`, `review` uses `findings`, and
+   transcript. Validate against the resolved schema: the exploration kind uses `claims`, `review` uses `findings`, and
    `dispatch` uses its free-form job result. Write a recovered result only to the engine-reported
    `<spillDir>/<sanitized-key>.salvaged.md` path, with the run ID, journal hash, source path, and lens key.
    A spill or payload is **recovered**, not verified; recheck every empirical claim first-party before using it.
@@ -62,13 +60,13 @@ path from the run receipt plus validated journal; the journal alone does not car
 
 ## Engine-specific receipts
 
-- **Workflow `explore`:** use the manifest's claims schema, per-lens journal row, and engine-reported spill
+- **Exploration workflow (the coding layer's engine):** use the manifest's claims schema, per-lens journal row, and engine-reported spill
   sanitizer. Do not infer a result from a missing structured return.
 - **Workflow `review`:** use the findings schema and preserve every source finding; consolidation never turns
   a missing lens into a clean panel.
 - **Workflow `dispatch`:** use the job's free-form result and its exact spill/digest metadata; honor the
   engine's PINS and terminal row.
-- **Sidecar or manual Agent/session:** a documented real session ID may resume. Native Workflow child IDs are not SendMessage sessions; they cannot be resumed through `SendMessage`.
+- **Sidecar or manual Agent/session:** a documented real session ID may resume.
 
 ## Output contract
 

@@ -40,7 +40,7 @@ Read each step's reference file when you reach that step; none of them auto-load
 6. **Compose the revision log entry** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 6 — Compose revision log entry. One transition, one line, ≤25 words.
 7. **Present the batch diff** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 7 — Present batch diff for the nine items the diff must cover.
 8. **Apply** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 8 — Apply, including the empty-diff no-op path.
-9. **Regenerate the atlas** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 9 — Regenerate the atlas. Runs on every invocation that reaches Step 8, empty diff included; non-blocking.
+9. **Regenerate the cross-roadmap index** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 9 — Regenerate the cross-roadmap index. Runs on every invocation that reaches Step 8, empty diff included; non-blocking; skipped when the project has no index.
 
 ---
 
@@ -56,7 +56,7 @@ Read each step's reference file when you reach that step; none of them auto-load
 | `/update_roadmap promote <part> to <pos>` | Move from un-sequenced to sequenced at given Pos. |
 | `/update_roadmap demote <part>` | Move from sequenced to un-sequenced (Pos → `—`). |
 
-All standalone ops route through Steps 3-9 (validate, regen, present diff, apply, regenerate atlas).
+All standalone ops route through Steps 3-9 (validate, regen, present diff, apply, regenerate the cross-roadmap index).
 
 ### Standalone error handling
 
@@ -83,5 +83,4 @@ All standalone ops route through Steps 3-9 (validate, regen, present diff, apply
 - [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) — roadmap.md schema (source of truth). §6 is the schema; §6.10 is canonical for the Step 3 Trigger validators; §6.4 + §6.5 specify the heading anchors Step 4 / Step 5 replace; §6.8 governs cross-folder dep resolution; §5.1 is the spawn-placement convention informing Step 7's Spawned sub-brainstorms updates; §1.2 is stale-roadmap remediation (the caller re-runs arch Step 5 before handing the Part list here).
 - [`architecture_brainstorm/SKILL.md`](../skills/architecture_brainstorm/SKILL.md) — invokes this command as its final step
 - [`idea_brainstorm/SKILL.md`](../skills/idea_brainstorm/SKILL.md) — invokes this command as its final step
-- [`/roadmap_atlas`](roadmap_atlas.md) — the generated cross-roadmap dashboard Step 9 regenerates (`common.md` §6.13)
 - `obsidian_conventions` skill — Obsidian wikilink/anchor conventions for `Source`-column links

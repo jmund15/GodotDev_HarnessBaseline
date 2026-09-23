@@ -44,7 +44,11 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+import _optional_hooks
 from _claude_scope import harness_tail
+
+# Version-pinned documentation sources a WebFetch should not bypass, one module per adopted layer.
+SOURCE_PINS = tuple(m for m in (_optional_hooks.load("godot_source_pins"),) if m)
 
 
 # === Cue-word constants =====================================================
@@ -501,37 +505,15 @@ def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classificatio
 
 def _classify_webfetch(tool_input: dict, last_prompt: str) -> Classification:
     """A single-URL WebFetch is the direct, correct call — the only per-call
-    violation is aiming it at a URL a better source already answers. Two such
-    shapes on docs.godotengine.org, both about VERSION rather than reachability
-    (the host is only intermittently Cloudflare-gated, so it is not blanket-
-    banned): a class page is generated from XML the cache holds at the exact
-    engine pin, and `/en/stable/` is a moving alias that cannot be pinned at all.
-    A version-pinned non-class URL (`/en/4.7/...`) is fine. Multi-call patterns
-    are outside this per-call classifier."""
+    violation is aiming it at a URL a version-pinned source already answers.
+    Each adopted source-pin module (SOURCE_PINS) names its URLs and returns
+    `(rule, reason)` for one. Multi-call patterns are outside this per-call
+    classifier."""
     url = str(tool_input.get("url") or "")
-    low = url.lower()
-    if "docs.godotengine.org" in low:
-        if "class_" in low:
-            return Classification(
-                severity="nudge-warranted",
-                rule="webfetch-godot-class-page-not-pinned",
-                reason=(
-                    "a rendered class page cannot be pinned to the engine — read the "
-                    "version-pinned XML it is generated from under .claude/cache/godot-docs "
-                    "(build: .claude/scripts/godot_docs_cache.sh)"
-                ),
-                tool="WebFetch",
-            )
-        if "/en/stable/" in low:
-            return Classification(
-                severity="nudge-warranted",
-                rule="webfetch-godot-stable-alias-unpinnable",
-                reason=(
-                    "/en/stable/ is a moving alias and cannot satisfy the version-pin rule — "
-                    "use context7 /websites/godotengine_en_4_7, or a /en/4.7/ URL"
-                ),
-                tool="WebFetch",
-            )
+    for pins in SOURCE_PINS:
+        hit = pins.classify_webfetch(url)
+        if hit:
+            return Classification("nudge-warranted", hit[0], hit[1], "WebFetch")
     return Classification("compliant", None, None, "WebFetch")
 
 

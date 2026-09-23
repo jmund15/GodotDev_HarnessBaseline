@@ -26,9 +26,7 @@ transport labelling live in `configuration_and_transport.md`.
 
 ## Absent, degenerate and off-axis outcomes
 
-The most repeated defect across every generation: **a runtime or configuration limit misread as a
-property of the model** — an overflow pin, a clamped context window, a killed run recorded as a spill,
-an output cap truncating prose.
+**Keep runtime and configuration limits separate from model outcomes** — overflow, clamped context, killed runs, and output truncation are not model failures.
 
 - Mark unasked cells with a distinct outcome (`OVERFLOW_SKIP`) and report them separately from failures.
   **The rule binds the REDUCERS, not just the scorer** — every walker, percentage, roll-up and console

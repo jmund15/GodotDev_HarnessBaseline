@@ -69,7 +69,7 @@ Optional, and ONLY for **scope-framing** — constraints the pool should respect
 
 **Litmus:** *"Does answering this rule out specific candidate IDEAS, or just architectural COMBINATIONS of them?"* Ideas → scope-framing, ask now. Combinations → architecture-narrowing, defer.
 
-**Multi-topic scope.** A topic splitting into independent subsystems (roguelike meta-game = currency + per-run events + almanack) defaults to **one brainstorm with multiple top-level clusters**; separate invocations duplicate the Step 1 check, re-load context, and lose cross-pollination (Step 4 hybrids surface only when clusters are visible to one pass). Split ONLY when (a) the user asks, or (b) cross-pollination would mislead.
+**Multi-topic scope.** A topic splitting into independent subsystems defaults to **one brainstorm with multiple top-level clusters**; separate invocations duplicate the Step 1 check, re-load context, and lose cross-pollination (Step 4 hybrids surface only when clusters are visible to one pass). Split ONLY when (a) the user asks, or (b) cross-pollination would mislead.
 
 ### Step 3: Generation & Curation (per cluster)
 
@@ -224,7 +224,7 @@ After the user approves the idea-bank doc:
 - Bump `status` to `ideation-complete` + mirror in the Revision History footer (same edit; `common.md §5`).
 - Invoke `/update_roadmap` with: the saved `ideas.md` path (identifies the topic folder); the Step 5 per-cluster Routing actions (its Step 2 translates them to Part States); the recommended starting cluster (becomes Pos=1).
 
-It runs batch-propose — one approval applies all `roadmap.md` edits (Parts table, Mermaid block, derived views, revision log). With no roadmap in the folder, it proposes creating one from `common.md §6` schema; confirm and proceed.
+It runs batch-propose — one approval applies all `roadmap.md` edits (Parts table, Mermaid block, derived views, revision log). With no roadmap in the folder, it creates one from the `common.md §6` schema.
 
 **Never hand-edit OR `write_doc` `roadmap.md` from this skill** — the prohibition covers direct `Edit`/`Write` and worker-delegated `write_doc` equally (Step 5 *Roadmap.md is NOT saved here*).
 
@@ -263,4 +263,4 @@ It runs batch-propose — one approval applies all `roadmap.md` edits (Parts tab
 - `feedback_no_unilateral_condensation.md` — Step 3 Diverge verbatim-port discipline
 - `feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
 - `feedback_session_start_hook_does_not_override_skill_procedure.md` — session-start hooks don't excuse skipping Step 2 / Step 3 gates
-- CLAUDE.md §Tool Routing Tool Routing — §1 read_files routing (synthesis bundling)
+- CLAUDE.md §Tool Routing — §1 read_files routing (synthesis bundling)

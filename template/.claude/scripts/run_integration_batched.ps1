@@ -65,7 +65,8 @@ param(
     # many tiny-test segments into one oversized batch. Bins honor BOTH axes.
     [int] $MaxBatchTests = 380,
     [int] $MaxBatchTimeoutMs = 300000,
-    [int] $TotalBudgetMs = 690000,   # fits 6 batches at ~100-106s honest wall (~636s) + slack; bounded by the wrapper ceiling (the gate child survives the ~10-min kill), not the Bash tool's 600s
+    [int] $BudgetFloorMs = 690000,   # the run's budget is derived from its plan (Get-TotalBudgetMs) and never falls below this
+    [double] $BudgetMargin = 1.25,   # slow-machine headroom over the measured reservations; a run slower than this is reported, not absorbed
     [switch] $RetryOnly,             # rerun only non-green batches from the last state file
     [switch] $DryRun,                # print the batch plan and exit without running
     [string[]] $Only,                # filter Integration units to the named domains' segments (mid-chain targeted runs). A domain resolves to its Tests/Integration/<D> folder segment(s) from the disk enumeration; unknown domains resolve to zero and emit COMPLETENESS=TARGETED batches=0
@@ -239,6 +240,15 @@ function Get-BatchReservationMs {
     [math]::Max([int]($ExpectedSec * 1000), [int]($lastWall * 1000))
 }
 
+# The budget follows the work this run will do, so it grows with the suite instead of eroding:
+# the batches' reservations times a slow-machine margin, never below the floor. Hangs are the
+# per-batch timeout's job; this catches a run uniformly slower than its measurements.
+function Get-TotalBudgetMs {
+    param([int[]] $ReservationsMs, [double] $Margin, [int] $FloorMs)
+    $sum = [double](($ReservationsMs | Measure-Object -Sum).Sum)
+    [math]::Max($FloorMs, [int]($sum * $Margin))
+}
+
 # ---------------------------------------------------------------- bin-pack (first-fit decreasing)
 $weighted = $unitSegs | ForEach-Object {
     [pscustomobject]@{ seg = $_; sec = $(if ($manifest.ContainsKey($_)) { $manifest[$_] } else { 3.0 }); tests = $(if ($unitTests.ContainsKey($_)) { $unitTests[$_] } else { 1 }) }
@@ -295,6 +305,9 @@ if ($RetryOnly -and (Test-Path $statePath)) {
     }
 }
 
+$TotalBudgetMs = Get-TotalBudgetMs -ReservationsMs @($plan | Where-Object { $_.status -ne 'GREEN' } |
+    ForEach-Object { Get-BatchReservationMs -Label $_.label -ExpectedSec $_.expectedSec }) -Margin $BudgetMargin -FloorMs $BudgetFloorMs
+
 function Save-State {
     New-Item -ItemType Directory -Force -Path (Split-Path $statePath) | Out-Null
     [pscustomobject]@{
@@ -322,7 +335,7 @@ $lastText = @{}
 $allTrxParsed = $true
 $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 $lockWaitAccumMs = 0
-Write-Output "PLAN batches=$($plan.Count) units=$($unitSegs.Count) target=${TargetBatchSec}s"
+Write-Output "PLAN batches=$($plan.Count) units=$($unitSegs.Count) target=${TargetBatchSec}s budget=$([math]::Round($TotalBudgetMs/1000))s"
 
 $batchIdx = 0
 foreach ($p in $plan) {

@@ -71,8 +71,6 @@ Prefer behavioral tests over implementation checks for game mechanics:
 - ❌ `AssertThat(blueprint.ActiveTraits.Count == 0).IsTrue()` — tests check logic
 - ✅ `AssertSpellCount(runner, 0)` — tests observable outcome
 
-A unit test on internal logic can pass while gameplay is broken. Test what the player would observe.
-
 ## Anti-pattern: Documentation-only tests
 
 *Litmus: does every assertion consume a value produced by production code?* An assertion whose operands all derive from locally-constructed literals is documentation-only regardless of syntax, even inside a suite with real setup.
@@ -86,7 +84,7 @@ public void Test_Feature_Documentation() {
 
 ## Anti-pattern: Constant-mirroring tests
 
-Asserting a field equals its default breaks on intentional value changes and can never catch a real bug. Test the behavioral consequence instead ("with default config, attraction scoring is disabled" tests the scoring path, not the field). **Refusal stance:** remove and replace, never augment. A code comment may document the value but does not justify keeping the mirror test beside a behavioral one. Offering the comment as a sidecar to the bad test — **STOP**.
+Asserting a field equals its default breaks on intentional value changes and can never catch a real bug. Test the behavioral consequence instead ("with default config, attraction scoring is disabled" tests the scoring path, not the field). **Refusal stance:** remove and replace, never augment. A code comment may document the value but does not justify keeping the mirror test beside a behavioral one.
 
 ## Anti-pattern: Compiler-guaranteed and storage-only tests
 

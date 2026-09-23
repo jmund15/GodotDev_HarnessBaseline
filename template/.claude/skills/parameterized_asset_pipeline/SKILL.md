@@ -11,7 +11,7 @@ disable-model-invocation: true
 
 # Parameterized Asset Pipeline — cross-project methodology
 
-Extracted from the reference project after both 2D tracks shipped end-to-end (design: `GeneralGameDev/Research/Parameterized-Asset-Pipeline/arch-2d-extraction.md`). The originating project remains the **reference implementation** — when a recipe here feels ambiguous, read the corresponding reference-project file; its test suites are the living verification of these templates.
+Extracted from the reference project (design: `GeneralGameDev/Research/Parameterized-Asset-Pipeline/arch-2d-extraction.md`). The originating project remains the **reference implementation** — when a recipe here feels ambiguous, read the corresponding reference-project file; its test suites are the living verification of these templates.
 
 ## 0. The style-spec-first rule
 
@@ -43,7 +43,7 @@ Creature/entity generator code is genre- and style-shaped — author it per-proj
 
 1. **Chrome** — instantiate `templates/theme_gen.py`: spec roles → 9-patch tiles → `theme_manifest.json` with resolved hexes. Variant axes (element/faction/rarity chrome) are loops over spec maps producing extra tiles + type-variation entries — same geometry, different ramps.
 2. **Runtime split** — instantiate `templates/ThemeManifest.cs` + `templates/ThemeBuilder.cs` (engine-pure; replace `{{PROJECT_NAME}}`). Python owns pixels + manifest; C# consumes verbatim. Game-domain color accessors (element/rarity/faction) are manifest lookups — no hex literal ever lives in engine code (the single-source recipe; the reference project's `ThemeService.ElementColor` is the worked example).
-3. **Icons** — instantiate `templates/icons.py`: 16-grid glyph DSL, integer-scaled tiers, per-icon sourcing dial with a **bake-enforced CREDITS ledger** for external sources. Compose the manifest `icons` section from theme_gen (single-writer manifests — two writers on one manifest is an anti-pattern).
+3. **Icons** — instantiate `templates/icons.py`: 16-grid glyph DSL, integer-scaled tiers, per-icon sourcing dial with a **bake-enforced CREDITS ledger** for external sources. Compose the manifest `icons` section from theme_gen.
 4. **Motion** — classify each juice primitive framework-general vs project-specific before writing it (hover/press/slide/ticker/pulse/fade are framework-shaped; game-semantic composites stay project-side). Fire-and-forget statics with node-meta kill-safe re-entry; explicit opt-in wiring, no global scanning. (Jmodot projects: `Jmodot.Implementation.UI.Motion.UiMotion` already ships this.)
 
 ## 4. External-asset conform (shared)

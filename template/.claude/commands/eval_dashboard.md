@@ -2,8 +2,6 @@
 description: Generate the Self-Evaluation Performance Dashboard from the session archive.
 ---
 
-Generate a Self-Evaluation Performance Dashboard from the session archive.
-
 ## Fast Path (preferred — use the analysis script)
 
 A canonical analysis script lives at `.claude/tools/analyze_eval_archive.py`. It merges the frozen legacy snapshot with the bounded JSONL ledger, keeps the newest row per `session_id`, computes deterministic statistics, and writes `/tmp/eval_out/stats.json`.
@@ -17,7 +15,7 @@ A canonical analysis script lives at `.claude/tools/analyze_eval_archive.py`. It
 
 The script is the only full-archive reader. If it fails, fix and rerun it; do not model-read or rewrite the archive as a fallback.
 
-`Superseded-row rate` measures normal ledger revisions. The newest row per session wins; no cleanup pass is required.
+`Superseded-row rate` measures normal ledger revisions; no cleanup pass is required.
 
 ## Data Source
 The script reads both storage layers:
@@ -110,11 +108,11 @@ The per-skill mirror of Section 4. For each skill that appeared in `skills_used[
 
 **Trend column:** compare the most recent ≤10 sessions' clean rate for that skill against the prior window of the same size. ↑ if recent > prior + 10pp, ↓ if recent < prior − 10pp, → otherwise. With small N this is noisy — flag the trend column with `(low N)` when fewer than 6 recent sessions touched the skill.
 
-**Predicted-vs-measured (optional, gated on data):** if a skill's frontmatter declares `expected_clean_rate: 0.NN`, render a `Predicted` column and flag (⚠) when measured falls outside ±10pp of predicted. Skip the column entirely if no skill declares the field — don't render an empty column. The field is opt-in; new skills get a calibration period; mature skills can declare a target after 1–2 dashboard runs reveal a stable baseline.
+**Predicted-vs-measured (optional, gated on data):** if a skill's frontmatter declares `expected_clean_rate: 0.NN`, render a `Predicted` column and flag (⚠) when measured falls outside ±10pp of predicted. Skip the column entirely if no skill declares the field. The field is opt-in; new skills get a calibration period; mature skills can declare a target after 1–2 dashboard runs reveal a stable baseline.
 
 ### Section 4c: Routing Stability
 
-**Data source:** `logs/routing_audit_stats.json` (produced by `/routing_audit aggregate`, also auto-run by `/session_end` Phase 3.5). If the file doesn't exist, render the section with a "(no audit data — `/routing_audit` hasn't been run yet)" placeholder rather than omitting — visible absence is a signal that the audit hook may not be wired.
+**Data source:** `logs/routing_audit_stats.json` (produced by the routing audit's aggregate step where the project installs it, also auto-run by `/session_end` Phase 3.5). If the file doesn't exist, render the section with a "(no audit data — the routing audit has not run)" placeholder rather than omitting — visible absence is a signal that the audit hook may not be wired.
 
 This section answers the question Sections 4 and 4b can't: *are the routing hooks reaching the agent?* Section 4b measures whether skills carry their declared compliance, but routing decisions happen below the skill layer (per-call PostToolUse classification against §9 rules). Drift here surfaces *before* it manifests as Pattern A discipline failures in Section 4b.
 
@@ -138,7 +136,7 @@ This section answers the question Sections 4 and 4b can't: *are the routing hook
 - `flat` — steady-state; nothing to act on.
 - `new` — rule didn't fire at all in prior window; first appearance is the diagnostic signal.
 
-**Cross-link:** trend deltas here should triangulate with the most recent `/routing_battery` results. If continuous-audit silent-miss spikes but the last battery still passes, the doctrine is intact and the spike is task-specific (a sprint of unfamiliar code-discovery). If both the audit AND battery show the same rule degrading, doctrine drift is real and the rule needs a CLAUDE.md negative-framing addition or skill update.
+**Cross-link:** trend deltas here should triangulate with the most recent synthetic routing-battery results, where the project runs one. If continuous-audit silent-miss spikes but the last battery still passes, the doctrine is intact and the spike is task-specific (a sprint of unfamiliar code-discovery). If both the audit AND battery show the same rule degrading, doctrine drift is real and the rule needs a CLAUDE.md negative-framing addition or skill update.
 
 Label these counts as classifier observations, not measurements of routing quality. **No-data state:** if `silent_misses == 0` and `cue_exempt_overrides == 0`, either (a) all routing is compliant (excellent), (b) no routing-classifiable calls happened in window (fresh project, recent rotation), or (c) audit hook isn't firing. Disambiguate via `total_entries` field — if zero entries, suspect (c) and check `settings.json` for `routing_audit.py` wire-up.
 
@@ -223,6 +221,6 @@ Based on all data, characterize what task types, scales, and scopes the agent ex
   - Entries like "#8-#19 ARCHIVED" count as individual clean sessions (12 sessions)
   - Entries with "USER CORRECTION" or "CRITICAL" = correction/failure
   - Entries with "Zero corrections" or "Clean" = clean
-  - Use judgment for ambiguous entries — explain classification in a footnote if needed
+  - Use judgment for ambiguous entries
 - **Structured data enriches Sections 4 & 6:** `domains[]`, `skills_used[]`, `memory_hits[]`, and `tests{}` fields enable precise Domain Performance and Most Valuable Rules analysis. Legacy entries require inference for these sections.
-- Obsidian callout style per user preference: `> [!type]- Descriptive Title` (NOT generic "Details")
+- Obsidian callout style: `> [!type]- Descriptive Title` (NOT generic "Details")

@@ -8,7 +8,7 @@ paths:
 
 # Scene Authoring (`.tscn`) and Scene-vs-Programmatic Construction
 
-**Context:** Godot scenes are the designer's primary canvas. When code creates nodes that *could* have been authored in the `.tscn`, designer tuning moves out of the Inspector into source — and `ClearSlots`-style teardown logic produces silent footguns. This rule codifies the scene-authoring preference, the programmatic carve-outs, and the UI-specific failure modes. Auto-loads on `.tscn` reads, `project.godot` reads, and edits under `UI/`.
+**Context:** Godot scenes are the designer's primary canvas. When code creates nodes that *could* have been authored in the `.tscn`, designer tuning moves out of the Inspector into source — and `ClearSlots`-style teardown logic produces silent footguns.
 
 ## Scene philosophy
 
@@ -23,7 +23,7 @@ The Inspector and scene tree are an API surface: exports and node structure carr
 1. **Role-pure nodes.** Every node has one nameable role — if stating its job needs "and", split it. *Litmus:* can you state the node's job in one clause? *Exception (verified, not hypothesized):* two roles that never ship separately — checked against the actual roster — may share a component.
 2. **Structure authored, behavior coded.** The scene owns what exists and where; code owns what happens. Wiring split: anything with an automatic/procedural resolution (signal connections, component lookup) lives in code and stays invisible to the designer; the hand-authored remainder IS the designer surface — keep it minimal, obvious, and validated.
 3. **One authored value, one home.** A second surface derives the value (computed property, stat resolution, lookup over the owning collection) — it never re-authors it. *Litmus:* if a designer changed this in one place and shipped, what still reads the old value? Any answer but "nothing" → derive. *Anti-shapes:* a sensor radius authored beside the stat that governs it; a parallel identity→asset dictionary beside the identity's own asset field; the same node block repeated across N sibling scenes.
-4. **Every visible export is read.** An export inert in any context an author can reach is a defect, not clutter (canon incident: `arch_rule_shared_config_resource_no_dead_exports` in auto-memory). *Litmus:* for every export reachable from this scene/`.tres`, name the code that reads it in THIS context; can't → delete it or narrow the type per context.
+4. **Every visible export is read.** An export inert in any context an author can reach is a defect, not clutter. *Litmus:* for every export reachable from this scene/`.tres`, name the code that reads it in THIS context; can't → delete it or narrow the type per context.
 5. **Required dependency fails loud — three rungs.** (1) Authoring time: `_GetConfigurationWarnings` on every component with required deps/config (yellow triangle in the scene dock). (2) Load/initialize time: throw or `Error` once. (3) Lint time, where machine-checkable. A per-use WARNING is never the mechanism — it converts one config error into N noise lines indistinguishable from N failures. *Corollary:* any `X.Instance`-style system decides its ownership seam (scene node / autoload / lazily created) at design time and records it.
 6. **Shared wiring lives in one scene.** At the second copy, extract to a template/inherited or instanced sub-scene — the forget-to-update failure arrives with the first divergent edit. Instancing constraint: instanced children are NOT configurable from the host scene (editable-children is not an accepted answer), so a shared scene puts every designer knob on its ROOT (forwarding exports or one config Resource); genuinely per-nested-node configuration → scene INHERITANCE, which overrides nested nodes in place. On inherited scenes, configure by overriding the template node — adding a sibling with the same role is a duplicate-provider defect, not a customization.
 7. **The visual is a promise; the collider must keep it.** Whatever the art communicates about reach, timing, and growth is the contract the player plays against. If the visual changes size or position over its lifetime, the volume is driven over the same lifetime (shared curve/duration) — or the art is re-authored honest to the fixed volume. *Litmus:* at frame 1 and at the last frame, does the collider match what a player would predict from the art?
@@ -45,7 +45,7 @@ The Inspector and scene tree are an API surface: exports and node structure carr
 - Shape/collision clones from already-resolved runtime data (e.g., copying a spell's hitbox shape to a force area)
 - Runners that need internal Node features (Timers, Tweens) attached to ephemeral runtime entities (status effect runners)
 
-**Anti-pattern:** programmatic construction of designer-tunable fixed-per-parent infrastructure (e.g., a detection `Area3D` with hardcoded radius on a component's parent). Moves designer tuning out of Inspector into code edits. Breaks `ValidateRequiredExports` gating (code-constructed children skip `_Ready()` validation contracts). Invisible to Inspector → breaks data-first iteration.
+**Anti-pattern:** programmatic construction of designer-tunable fixed-per-parent infrastructure (e.g., a detection `Area3D` with hardcoded radius on a component's parent).
 
 **Scene-tree authoring wins:**
 - Visible hierarchy in editor (designer sees what's there)
@@ -63,13 +63,13 @@ This rule bites hardest in UI because the `Control` tree IS the designer's prima
 - Buttons, labels, progress bars, prompt displays with **known slots** (e.g., "4 glyphs: select/confirm/undo/cancel") — authored.
 - Persistent HUD widgets (health bar, instability bar, prompt rows) — authored or instanced from a scene-authored `PackedScene`, **not** spawned by a C# installer that the designer can't see or inspect.
 - Programmatic creation is reserved for **truly variable-count** content: inventory slot ring where N depends on session state, per-enemy health floaters, runtime toast notifications, per-selection icons.
-- **Design-time-known `Control`s are authored, full stop.** Programmatic children are invisible to the designer, collapse under container sizing, and fall off teardown whitelists into `ObjectDisposedException` (`feedback_scene_compose_over_programmatic_ui`).
+- **Design-time-known `Control`s are authored, full stop.** Programmatic children are invisible to the designer, collapse under container sizing, and fall off teardown whitelists into `ObjectDisposedException`.
 
 **PackedScene middle ground:** when a widget needs to appear N times (N runtime-known) or be reusable across scenes, author it as its own `.tscn` and instance via `[Export] PackedScene` — designer still tunes the template, code owns the replication count.
 
 ## Teardown-whitelist anti-pattern (UI diagnostic)
 
-If a container has a `ClearSlots()`-style method that iterates children and frees non-whitelisted ones, every new **programmatic persistent child** is a footgun — it falls through to `child.Free()` on every Close→Open cycle and the next access throws `ObjectDisposedException` (`archive_ui_teardown_incidents`). **The fix is NOT extending the whitelist** — that just defers the problem to the 6th child. The correct fixes are:
+If a container has a `ClearSlots()`-style method that iterates children and frees non-whitelisted ones, every new **programmatic persistent child** is a footgun — it falls through to `child.Free()` on every Close→Open cycle and the next access throws `ObjectDisposedException`. **The fix is NOT extending the whitelist** — that just defers the problem to the 6th child. The correct fixes are:
 
 1. **Scene-author the persistent child** (its `Owner` points at the scene root, naturally distinguishing it from transient children).
 2. **Filter by Owner**: `foreach (var child in GetChildren()) if (child.Owner == null) child.Free();` — scene-authored = `Owner` set by scene loader; programmatic = `Owner` null unless explicitly set. No whitelist to maintain.
@@ -83,7 +83,7 @@ Before `AddChild(new Control ...)` / `AddChild(new Label ...)` / similar, ask:
 
 If all three are "no" (truly variable-count, purely internal, purely transient), programmatic is correct.
 
-**Scene-authored ≠ no code.** Code still wires runtime behavior: `BindToProfile`, event subscriptions, tween animations, press-feedback, dynamic label overrides. **The scene owns structure; code owns behavior.** Scripts should *find* nodes (via `[Export]` refs or `NodeExts`), not *create* them when they're design-time-known. Per-slot scene-authored exports (like `[Export] string StaticLabelOverride`) push even more configuration into the Inspector, further reducing runtime wiring code.
+**Scene-authored ≠ no code.** Code still wires runtime behavior: `BindToProfile`, event subscriptions, tween animations, press-feedback, dynamic label overrides. Scripts should *find* nodes (via `[Export]` refs or `NodeExts`), not *create* them when they're design-time-known. Per-slot scene-authored exports (like `[Export] string StaticLabelOverride`) push even more configuration into the Inspector, further reducing runtime wiring code.
 
 ## Project Settings (`project.godot`)
 
@@ -92,8 +92,6 @@ If all three are "no" (truly variable-count, purely internal, purely transient),
 - **Autoloads:** Define under `[autoload]`. Ensure the C# class has `partial class` and `[GlobalClass]` if relevant, though Autoloads are usually scene-based or pure C# statics in this architecture. **An autoload scene references a content graph (dungeon/floor/encounter definitions — anything with scripted sub-resources) only as a `PropertyHint.File` path loaded at runtime, never as an `ext_resource`.** The editor instantiates autoloads at boot, before its C# registry is healthy, so every resource reachable from one deserializes bind-failed and the next flush writes it back stripped — the sole load root of the encounter-config strip. Exemplar: `AppLifecycleManager.DungeonPath`; shallow leaf resources (input profiles, audio defaults) stay allowed. Pinned by `AutoloadIsolationTests`.
 
 ## Touchpoints
-
-Incident narratives: `archive_ui_teardown_incidents`.
 
 - Companion: [`architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) covers the *logical* design patterns (Resource Strategy Hierarchies, Composable Configuration Resources) that drive the data-first preference.
 

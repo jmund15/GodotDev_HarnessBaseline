@@ -30,10 +30,10 @@ def check(name, got, want_in=(), want_not_in=()):
 print("_command_text.executable_text — heredoc body scrubbing")
 
 # 1. The real shape that was denied: a script written via heredoc that MENTIONS a gate.
-cmd1 = "cat > run.ps1 <<'EOF'\n# gate: final\n& pwsh regression_gate.ps1\nEOF\necho written"
+cmd1 = "cat > run.ps1 <<'EOF'\n# gate: final\n& pwsh gate_chain.ps1\nEOF\necho written"
 check("heredoc body dropped", executable_text(cmd1),
       want_in=["cat > run.ps1", "echo written", "EOF"],
-      want_not_in=["# gate: final", "regression_gate.ps1"])
+      want_not_in=["# gate: final", "gate_chain.ps1"])
 
 # 2. Quoted and unquoted delimiters, and the <<- variant.
 for delim in ("<<EOF", "<<'EOF'", '<<"EOF"', "<<-EOF"):
@@ -42,12 +42,12 @@ for delim in ("<<EOF", "<<'EOF'", '<<"EOF"', "<<-EOF"):
           want_in=["cat > f", "ls"], want_not_in=["secret_token_xyz"])
 
 # 3. NEGATIVE CONTROL: a violation on a real command line must survive.
-cmd3 = "cat > f <<'EOF'\nharmless\nEOF\npwsh regression_gate.ps1"
+cmd3 = "cat > f <<'EOF'\nharmless\nEOF\npwsh gate_chain.ps1"
 check("violation outside heredoc survives", executable_text(cmd3),
-      want_in=["regression_gate.ps1"], want_not_in=["harmless"])
+      want_in=["gate_chain.ps1"], want_not_in=["harmless"])
 
 # 4. No heredoc at all -> unchanged.
-cmd4 = "pwsh regression_gate.ps1 -StaticOnly"
+cmd4 = "pwsh gate_chain.ps1 -StaticOnly"
 check("no heredoc is a passthrough", executable_text(cmd4), want_in=[cmd4])
 
 # 5. Two heredocs in one command.
@@ -56,9 +56,9 @@ check("two heredocs", executable_text(cmd5),
       want_in=["cat > a", "cat > b", "done_marker"], want_not_in=["body_a", "body_b"])
 
 # 6. Unterminated heredoc: body still must not be judged as executing.
-cmd6 = "cat > f <<'EOF'\npwsh regression_gate.ps1\n"
+cmd6 = "cat > f <<'EOF'\npwsh gate_chain.ps1\n"
 check("unterminated heredoc drops its body", executable_text(cmd6),
-      want_in=["cat > f"], want_not_in=["regression_gate.ps1"])
+      want_in=["cat > f"], want_not_in=["gate_chain.ps1"])
 
 # 7. FALSE-STRIP GUARD. A quoted MENTION of a heredoc opener is not an opener. Stripping here
 # would hide the real delete from every matcher — a false allow, worse than a false block.

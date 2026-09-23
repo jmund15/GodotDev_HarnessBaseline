@@ -9,6 +9,10 @@ lives whole in one of the two files, so:
 - the core never names the project file's own sections ("Project Guidelines");
 - every `.claude/` file, skill and command the core cites exists in this tree.
 
+The layer overlays `CLAUDE.coding.md` and `CLAUDE.godot.md` follow the same rules, and each may
+also cite sections of the layers below it; CLAUDE.md imports each present layer file, core first.
+`tests/test_layer_closure.py` proves each file cites only files its layer ships.
+
 Planted cases prove each check fails on a violation.
 
     python3 .claude/tests/test_claude_core_standalone.py
@@ -22,6 +26,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 PROJECT_SECTIONS = ("Project Guidelines",)
+LAYER_FILES = ("core", "coding", "godot")  # baseline layer order; CLAUDE.md imports each present one
 NOT_FILES = {"offset", "limit", "write_doc"}  # a Read parameter pair and an MCP tool, not skills
 BOOTSTRAP_STATE = {"baseline.lock.json"}  # written at bootstrap, absent from the template tree
 PATH_TOKEN = re.compile(r"^[\w.-]+(/[\w.<>-]+)*/?$")
@@ -80,25 +85,46 @@ def cited_paths(text):
 
 
 def problems(core, overlay, root):
+    return layered_problems([("core", core)], overlay, root)
+
+
+def layered_problems(layers, overlay, root):
+    """`layers` is [(name, text)] in layer order (core first). Each file cites only sections it
+    or a lower layer holds; no heading repeats across any two files."""
     found = []
-    core_names = headings(core)
-    for name in sorted(core_names & headings(overlay)):
-        found.append(f"heading in both files: {name}")
-    for cite in section_cites(core):
-        if not resolves(cite, core_names):
-            found.append(f"core cites a section it does not hold: §{cite}")
-    for phrase in PROJECT_SECTIONS:
-        if phrase in core:
-            found.append(f"core names a project section: {phrase}")
-    for token, candidates in cited_paths(core):
-        if not _exists(root, *candidates):
-            found.append(f"core cites a missing file: {token}")
+    seen = {}
+    for name, text in layers + [("CLAUDE.md", overlay)]:
+        for heading in sorted(headings(text)):
+            if heading in seen:
+                found.append(f"heading in both files: {heading} ({seen[heading]}, {name})")
+            seen.setdefault(heading, name)
+    lower = set()
+    for name, text in layers:
+        lower |= headings(text)
+        for cite in section_cites(text):
+            if not resolves(cite, lower):
+                found.append(f"{name} cites a section it does not hold: §{cite}")
+        for phrase in PROJECT_SECTIONS:
+            if phrase in text:
+                found.append(f"{name} names a project section: {phrase}")
+        for token, candidates in cited_paths(text):
+            if not _exists(root, *candidates):
+                found.append(f"{name} cites a missing file: {token}")
     return found
 
 
 def read(rel):
     with open(os.path.join(REPO, rel), encoding="utf-8") as handle:
         return handle.read()
+
+
+def planted_layers(layers, files=()):
+    with tempfile.TemporaryDirectory() as root:
+        for rel in files:
+            path = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+        return layered_problems(layers, "", root)
 
 
 def planted(core, overlay, files=()):
@@ -129,8 +155,26 @@ def main():
     check("a missing slash command fails",
           any("missing file: /nowhere" in p for p in planted(clean_core + "Run `/nowhere`.\n", "", clean_files)))
 
-    live = problems(read(".claude/CLAUDE.core.md"), read(".claude/CLAUDE.md"), REPO)
-    check("the live core stands alone", live == [], "; ".join(live))
+    check("an overlay may cite a core section",
+          planted_layers([("core", clean_core), ("coding", "## Gamma\nPer §Alpha Rules.\n")], clean_files) == [])
+    check("the core citing an overlay section fails",
+          any("core cites a section" in p for p in planted_layers(
+              [("core", clean_core + "Per §Gamma.\n"), ("coding", "## Gamma\n")], clean_files)))
+    check("a heading in two overlays fails",
+          any("heading in both" in p for p in planted_layers(
+              [("core", clean_core), ("coding", "## Gamma\n"), ("godot", "## Gamma\n")], clean_files)))
+
+    layers = [(name, read(f".claude/CLAUDE.{name}.md")) for name in LAYER_FILES
+              if os.path.exists(os.path.join(REPO, ".claude", f"CLAUDE.{name}.md"))]
+    live = layered_problems(layers, read(".claude/CLAUDE.md"), REPO)
+    check("the live core and layer overlays stand alone", live == [], "; ".join(live))
+    imports = [line.strip() for line in read(".claude/CLAUDE.md").splitlines() if line.startswith("@")]
+    if os.path.exists(os.path.join(REPO, ".claude", "baseline.lock.json")):
+        check("CLAUDE.md imports every present layer file, core first",
+              imports[:len(layers)] == [f"@CLAUDE.{name}.md" for name, _ in layers], str(imports))
+    else:
+        check("the template seed imports the core; bootstrap writes each adopted layer's import",
+              imports == ["@CLAUDE.core.md"], str(imports))
 
     print()
     print("all ok" if not FAILURES else "%d failure(s)" % len(FAILURES))

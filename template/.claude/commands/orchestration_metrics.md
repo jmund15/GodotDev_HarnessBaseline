@@ -6,7 +6,7 @@ Empirical counterpart to `/self_evaluate`: that captures *what the agent thinks*
 
 Collect native Workflow records and labeled sidecar records through the existing collector. Keep served model, transport, native currency, cost basis and requested/effective settings separate. The sidecar ledger has a legacy filename; it is not evidence that every row belongs to one provider. Unlabeled legacy rows surface only under `--sidecar-all`, which is a spend report and never archives.
 
-Group descriptive totals by compatible model/currency/basis and report missingness. Render one sidecar table per `servedModel` — never a blended average, and never merged into the Anthropic tables. Do not treat heterogeneous task totals as causal routing evidence. Rows carry `costBasis` naming the model that priced them; rows without it predate per-model pricing and are approximate (`auto-memory/gotcha_sidecar_cost_read_truth.md`). Do not copy old vendor price ratios into current recommendations.
+Group descriptive totals by compatible model/currency/basis and report missingness. Render one sidecar table per `servedModel` — never a blended average, and never merged into the Anthropic tables. Do not treat heterogeneous task totals as causal routing evidence. Rows carry `costBasis` naming the model that priced them; rows without it predate per-model pricing and are approximate. Do not copy old vendor price ratios into current recommendations.
 
 ## Arguments
 
@@ -16,7 +16,7 @@ Group descriptive totals by compatible model/currency/basis and report missingne
 | `summary` | Roll up the existing archive across sessions. Skips collection. |
 | anything else | Unrecognized — name the ignored argument and run the default. Never silently skip the archive. |
 
-Archiving is the point — an unarchived run is measured and then thrown away, and the aggregate is the only surface that can justify a ladder edit. **Invoking the command IS the decision to archive**; do not ask for confirmation before appending. Halt only on the stop-gate below.
+Archiving is the point — an unarchived run is measured and then thrown away, and the aggregate is the only surface that can justify a ladder edit. **Invoking the command IS the decision to archive**; do not ask for confirmation before appending.
 
 ## No-op gate
 
@@ -68,8 +68,7 @@ awaiting judgment. The third element (`"probe"`) marks a deliberate candidate co
 candidates*).
 
 The per-turn backstop is `budget_posture.py`'s `[rating-debt]` clause: it names the live unrated
-count on any turn it changes, so a debt that survives a compaction is never silent for long. Rate
-at consumption.
+count on any turn it changes, so a debt that survives a compaction is never silent for long.
 
 ## Over-pin candidates — advisory, not a new default
 
@@ -131,7 +130,7 @@ Outcomes merge before the table prints, so the roll-up you read is what gets wri
 
 Unlisted labels archive as `unrated`.
 
-**4. Report.** Print the per-effort roll-up and name any `defects`/`rework`/`discarded` agent with its cost. Overshoot is not a rated outcome — it is derived (see *Over-pin candidates*). Do **not** propose edits to the ladder's `effort` column (`reference/model_ladder_evidence.md`) from one session — n is 3–5 for a typical session, and per-session conclusions are noise. Tuning happens from the aggregate.
+**4. Report.** Print the per-effort roll-up and name any `defects`/`rework`/`discarded` agent with its cost. Do **not** propose edits to the ladder's `effort` column (`reference/model_ladder_evidence.md`) from one session — n is 3–5 for a typical session, and per-session conclusions are noise.
 
 ## Cross-session roll-up
 

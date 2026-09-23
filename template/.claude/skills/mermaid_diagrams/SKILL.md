@@ -15,7 +15,7 @@ Canonical house style for every mermaid diagram in the project — Obsidian-vaul
 
 | Mode | What it is | What governs it |
 |---|---|---|
-| **Generated** | A command renders the diagram deterministically from structured data and never hand-edits it (`/update_roadmap` from the Parts table, `/memory_graph` from the knowledge graph, `/eval_dashboard` from the archive). | Determinism outranks source readability. Short slug IDs (`P1`, `P2a`) are fine — no human maintains the source. The generator owns node/edge derivation; this skill owns the palette, direction, and renderer rules it must emit. |
+| **Generated** | A command renders the diagram deterministically from structured data and never hand-edits it (`/memory_graph` from the knowledge graph, `/eval_dashboard` from the archive). | Determinism outranks source readability. Short slug IDs (`P1`, `P2a`) are fine — no human maintains the source. The generator owns node/edge derivation; this skill owns the palette, direction, and renderer rules it must emit. |
 | **Hand-authored** | An agent writes the diagram inline while producing a doc — architecture system diagram, NPC behavior flow, retrospective decision tree. | The full *House style* checklist below applies: self-explanatory node IDs, subgraph discipline, spacing config. |
 
 ## Renderer constraints — Obsidian + GitHub
@@ -25,7 +25,7 @@ Hard rules for both renderers:
 - **Never emit `click ... href` directives.** Obsidian ignores them entirely. For navigation, place a heading + wikilink *outside* the diagram. The `class NodeID internal-link` node-class trick works in Obsidian only — use sparingly, never in a diagram that also targets GitHub.
 - **Color via `classDef`, not theme directives.** Obsidian strips/overrides `%%{init}%%` theming inconsistently. `classDef` is the portable styling channel.
 - **In-block frontmatter config** (`layout`, `nodeSpacing`, `rankSpacing`) is honored by both Obsidian and GitHub — safe to emit and to rely on for legibility.
-- **Never start a node label with `N. ` / `N) ` / `- ` / `* ` / `# ` / `> `.** Mermaid v10+ runs labels through a CommonMark parser; leading list-markers and ATX-headings render as "Unsupported markdown: list" / "Unsupported markdown: heading" warnings and the label falls back to raw text. Position/numbering is encoded by graph rank (`graph TD` topology), not by prefixing the label. If a Pos must appear in-label, use `N: Name` or `[N] Name` or `Pos N — Name` (em-dash-separated). Generated diagrams (e.g. `/update_roadmap` Mermaid regen) are particularly prone to this when porting a Pos column straight into the label slot.
+- **Never start a node label with `N. ` / `N) ` / `- ` / `* ` / `# ` / `> `.** Mermaid v10+ runs labels through a CommonMark parser; leading list-markers and ATX-headings render as "Unsupported markdown: list" / "Unsupported markdown: heading" warnings and the label falls back to raw text. Position/numbering is encoded by graph rank (`graph TD` topology), not by prefixing the label. If a Pos must appear in-label, use `N: Name` or `[N] Name` or `Pos N — Name` (em-dash-separated). Generated diagrams are particularly prone to this when porting a Pos column straight into the label slot.
 - Heading anchors elsewhere in the doc use literal heading text, never kebab-slugs — see the `obsidian_conventions` skill.
 
 ## Diagram-type selection
@@ -89,11 +89,9 @@ Light fills + dark strokes stay legible in both Obsidian themes. If a fill ever 
 | "A `gantt` chart will make the status table look richer" | `gantt` encodes *time*. Status is not time. Wrong type = misleading diagram. |
 | "Big diagram, but splitting it is effort" | >25 nodes is unreadable regardless of effort saved. Split by boundary. |
 | "I'll style each node a different color for variety" | Color is semantic, not decorative. ≤7 classes, each meaning something. |
-| "I'll prefix node labels with `1. Foo`, `2. Bar` to mirror the Parts table" | The CommonMark parser sees `1. ` as an ordered-list item and emits "Unsupported markdown: list". Position is in the graph rank already. If a Pos must appear in-label, use `N: Name` / `[N] Name` / `Pos N — Name`. |
 
 ## Cross-references
 
 - `obsidian_conventions` skill — Obsidian vault rules; cites this skill for mermaid specifics.
-- `_brainstorm_shared/common.md §6.4` — roadmap mermaid schema; emits the roadmap domain mapping above.
 - `instruction_quality` skill §3 — the single-source-of-truth principle this skill operationalizes for diagrams.
 - `ai-worker prompts/modifier.mermaid.md` — worker-side output-affecting subset, auto-applied to vault `write_doc` calls. Lives with the ai-worker server (separate host, not in this repo — provenance/availability: `environment_bootstrap` skill); sync when either changes *and* the server is reachable.

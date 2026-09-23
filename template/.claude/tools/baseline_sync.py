@@ -719,6 +719,19 @@ def residual_placeholders(root: Path, lock: dict) -> list[tuple[str, list[str]]]
     return sorted(hits)
 
 
+LAYER_FILES = ("CLAUDE.core.md", "CLAUDE.coding.md", "CLAUDE.godot.md")
+
+
+def unimported_layer_files(root: Path) -> list[str]:
+    """Layer doctrine files present in `.claude/` that the project's CLAUDE.md never `@`-imports.
+    A pull can deliver a new layer file; nothing loads it until CLAUDE.md names it."""
+    claude = root / ".claude" / "CLAUDE.md"
+    text = claude.read_text(encoding="utf-8") if claude.exists() else ""
+    imported = {line.strip()[1:] for line in text.splitlines() if line.strip().startswith("@")}
+    return [f".claude/{name}" for name in LAYER_FILES
+            if (root / ".claude" / name).exists() and name not in imported]
+
+
 def cmd_check(root: Path, lock: dict, baseline: BaselineSource, as_json: bool,
               layers: list[str]) -> None:
     results = {}
@@ -1246,14 +1259,19 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
               layers: list[str], strict: bool) -> int:
     results, outside = _check_results(root, lock, source, layers)
     residual = residual_placeholders(root, lock)
+    unimported = unimported_layer_files(root)
     findings =_strict_findings(root, source, lock, results) if strict or not as_json else []
+    findings = list(findings) + [(rel, "unimported-layer-file") for rel in unimported]
     if as_json:
-        print(json.dumps({
+        payload = {
             "baseline_commit": baseline_commit(source),
             "results": results,
             "residual_placeholders": dict(residual),
             "profile": {"layers": layers, "files_outside": outside},
-        }, indent=2, ensure_ascii=False))
+        }
+        if unimported:
+            payload["unimported_layer_files"] = unimported
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         buckets: dict[str, list[str]] = {}
         for relpath, state in results.items():
@@ -1271,6 +1289,10 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             print("unsubstituted-placeholder (install did not expand these tokens):")
             for relpath, keys in residual:
                 print(f"  {relpath}  [{', '.join(keys)}]")
+        if unimported:
+            print("unimported-layer-file (CLAUDE.md never loads it; add an `@` line under `@CLAUDE.core.md`):")
+            for relpath in unimported:
+                print("  " + relpath)
         print("\nclean" if not residual and not findings else "\nfindings")
         if set(layers) != set(FULL_LAYERS):
             print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")

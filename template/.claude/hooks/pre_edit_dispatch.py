@@ -45,6 +45,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _optional_hooks  # noqa: E402
 
 ENFORCEMENT = frozenset({"pattern_enforcer", "harness_edit_skill_reminder", "composed_output_guard",
                          "provenance_label_guard"})
@@ -62,6 +63,7 @@ CHAIN += (
     ("readonly_lens_write_guard", "advisory"),
     ("running_script_edit_guard", "advisory"),
 )
+CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
 
 
 def _payload(**fields):

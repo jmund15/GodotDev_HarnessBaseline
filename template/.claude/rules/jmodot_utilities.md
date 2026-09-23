@@ -65,7 +65,6 @@ Seam examples, crash mechanics, seed derivation, the lifetime rationale and the 
 
 ## Touchpoints
 
-- [`reference/rules/jmodot_utilities_examples.md`](../reference/rules/jmodot_utilities_examples.md) — the snippets and member inventories this rule cites.
 - [`csharp_patterns.md`](csharp_patterns.md) — `[RequiredExport]` mechanics, nullability, test helpers, signals vs events, comment discipline. The `<summary>` citations above point at **signatures**, a member's own contract and citable under the trust radius; a doc comment is never citable for an observation about other code.
 - [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) — Component Initialization Paths, Resource Strategy Hierarchies, Marker Interface as Capability Query.
 

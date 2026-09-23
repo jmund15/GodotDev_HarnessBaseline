@@ -24,4 +24,4 @@ The owner rejected the shape: *"the fixer shouldn't just be finding based on you
 - `orchestration` §11 (*"if you cannot enumerate the files, scope it further before dispatching"*) sizes a CONVERGED execution job, where the finding ledger IS the spec. An audit is the opposite case: not being able to enumerate is the reason it exists. Do not apply §11 to a discovery job.
 - A dispatch whose value is coverage requires a coverage report — which searches ran, over which roots — not just a findings list. A findings list alone cannot distinguish a clean tree from a narrow sweep.
 
-Owner: `skills/orchestration/SKILL.md` §4 Agent Prompt Structure. Related: [[feedback_remove_the_ordering_rather_than_document_it]] (the smell being fixed), [[archive_debugging_discipline]] (absence of evidence is not evidence of absence).
+Owner: `skills/orchestration/SKILL.md` §4 Agent Prompt Structure.

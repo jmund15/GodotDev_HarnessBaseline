@@ -131,6 +131,8 @@ def main():
     for path, body in ((ok, OK_LAUNCHER), (refusing, REFUSING_LAUNCHER)):
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(body)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "add", ".claude/scripts"], cwd=project, check=True)
     launch = "bash %s -p prompt.md -m flash" % ok
     outside = os.path.join(tmp, "outside_sidecar.sh").replace("\\", "/")
     outside_marker = os.path.join(tmp, "outside-ran").replace("\\", "/")
@@ -190,6 +192,37 @@ def main():
     cases.append(("a direct dispatch without a fresh ladder Read is denied",
                   no_ladder.get("permissionDecision") == "deny"
                   and "model_ladder_evidence.md" in no_ladder.get("permissionDecisionReason", "")))
+    approved_launch = "bash .claude/scripts/ok_sidecar.sh -G survey -m fake"
+    approved = run(approved_launch, env, session="sdc01001")
+    cases.append(("a tracked canonical direct launch with preflight and ladder is allowed",
+                  approved.get("permissionDecision") == "allow"
+                  and "canonical sidecar launch" in approved.get("permissionDecisionReason", "")))
+    preflight_state, preflight_refusal = sidecar.run_preflight(approved_launch, project)
+    cases.append(("run_preflight reports passed only after the fake check succeeds",
+                  preflight_state == "passed" and preflight_refusal is None))
+    with patch.dict(os.environ, HARNESS_SIDECAR_PREFLIGHT="0"):
+        skipped_state, skipped_refusal = sidecar.run_preflight(approved_launch, project)
+    cases.append(("run_preflight reports skipped when preflight is disabled",
+                  skipped_state == "skipped" and skipped_refusal is None))
+    refusing_state, refusing_text = sidecar.run_preflight(
+        "bash .claude/scripts/hot_sidecar.sh -m fake -f brief.md -P run.jsonl", project)
+    cases.append(("run_preflight reports refused with the launcher refusal",
+                  refusing_state == "refused" and "REFUSING fake" in (refusing_text or "")))
+    for label, command in (
+        ("a command-substitution carrier gets no decision", approved_launch + " $(echo x)"),
+        ("a sudo-prefixed launch gets no decision", "sudo " + approved_launch),
+        ("an unsuspend flag gets no decision", "bash %s -U -G survey" % ok),
+    ):
+        hso = run(command, env, session="sdc01002")
+        cases.append((label, hso.get("permissionDecision") is None))
+    subdir = os.path.join(project, ".claude", "scripts")
+    cases.append(("a canonical launch whose shell cwd is not the project root gets no decision",
+                  run(approved_launch, env, session="sdc01004", cwd=subdir).get("permissionDecision") is None))
+    cases.append(("the same launch with the shell cwd at the project root is still allowed",
+                  run(approved_launch, env, session="sdc01005", cwd=project).get("permissionDecision") == "allow"))
+    no_preflight = dict(env, HARNESS_SIDECAR_PREFLIGHT="0")
+    cases.append(("a canonical launch with preflight disabled gets no decision",
+                  run(approved_launch, no_preflight, session="sdc01003").get("permissionDecision") is None))
     # A session working inside a worktree: the gate accepts only the primary checkout's ladder
     # (CLAUDE_PROJECT_DIR), so the denial must name that file absolutely.
     worktree = os.path.join(project, ".claude", "worktrees", "wt1")
@@ -214,7 +247,7 @@ def main():
         "run",
         side_effect=subprocess.TimeoutExpired(["bash", ok, "--check"], 45),
     ):
-        timeout_refusal = sidecar.preflight(launch, project)
+        timeout_refusal = sidecar.run_preflight(launch, project)[1]
     cases.append(("E7: a timed-out preflight is refused instead of treated as success",
                   bool(timeout_refusal) and "timed out" in timeout_refusal.lower()))
     outside_result = run("bash %s -m fake -f brief.md" % outside, env, session="sdc00027")
@@ -230,6 +263,22 @@ def main():
     )
     cases.append(("a missing registry does not crash unrelated Bash hooks",
                   missing_registry.returncode == 0 and not missing_registry.stderr.strip()))
+    failed_helpers = subprocess.run(
+        [sys.executable, "-c", "import runpy,sys; sys.modules['approving_gates']=None; "
+         "runpy.run_path(sys.argv[1], run_name='__main__')", HOOK],
+        input=json.dumps({"tool_name": "Bash", "session_id": "sdc01005", "cwd": project,
+                          "tool_input": {"command": approved_launch}}),
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    try:
+        helper_hso = json.loads(failed_helpers.stdout).get("hookSpecificOutput", {})
+    except ValueError:
+        helper_hso = {}
+    cases.append(("a broken shared path-helper import refuses direct dispatch without allowing it",
+                  failed_helpers.returncode == 0
+                  and helper_hso.get("permissionDecision") == "deny"
+                  and "safe launcher path checks are unavailable" in helper_hso.get(
+                      "permissionDecisionReason", "")))
     for label, payload in (
         ("a non-object payload does not crash the hook", []),
         ("a non-object tool_input does not crash the hook",
@@ -277,6 +326,10 @@ def main():
     cases.append(("the existing sidecar gate approves a validated fan-out wrapper",
                   fanout.get("permissionDecision") == "allow"
                   and "budget and quota gates" in fanout.get("permissionDecisionReason", "")))
+    fanout_subdir = os.path.join(fanout_root, ".claude")
+    cases.append(("a validated fan-out whose shell cwd is not the project root gets no decision",
+                  run(fanout_cmd, fanout_env, session="sdc00016",
+                      cwd=fanout_subdir).get("permissionDecision") is None))
     cases.append(("a relative interpreter path falls through",
                   run("./python3" + fanout_cmd[len("python3"):], fanout_env,
                       session="sdc00025") == {}))
@@ -307,6 +360,18 @@ def main():
     write_jobs(contextFiles=[outside])
     cases.append(("inputs outside the project fall through",
                   run(fanout_cmd, fanout_env, session="sdc00018") == {}))
+    peer_prompt = os.path.join(fanout_root, ".claude", "worktrees", "peer", "prompt.md")
+    os.makedirs(os.path.dirname(peer_prompt), exist_ok=True)
+    with open(peer_prompt, "w", encoding="utf-8") as fh:
+        fh.write("peer prompt\n")
+    cases.append(("sidecar dispatch imports the shared path resolver",
+                  sidecar._resolve is sidecar.approving_gates._resolve
+                  and sidecar._path_has_symlink is sidecar.approving_gates._path_has_symlink))
+    cases.append(("the shared project-file helper excludes peer worktree files",
+                  not sidecar._regular_project_file(fanout_root, peer_prompt)))
+    write_jobs(promptFile=peer_prompt)
+    cases.append(("a fan-out prompt in a peer worktree falls through",
+                  run(fanout_cmd, fanout_env, session="sdc01004") == {}))
     write_jobs()
     cases.append(("outputs outside scratch fall through",
                   run(fanout_cmd.replace(".claude/scratch/results", "results"),

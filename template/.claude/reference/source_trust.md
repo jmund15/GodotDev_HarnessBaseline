@@ -1,6 +1,6 @@
 # Source Trust Tiers
 
-Doctrine for any claim about behavior **outside this repo** — engine, library, runtime, spec, tooling. Loaded by reference, not by path: `/research` and `/explore`'s `exp-external-truth` lens both point here, and neither carries a copy.
+Doctrine for any claim about behavior **outside this repo** — engine, library, runtime, spec, tooling. Loaded by reference, not by path: every research or external-truth lens points here, and none carries a copy. A stack layer may add its own trusted sources and fetch mechanisms in a sibling file; its always-loaded layer doctrine names that file.
 
 Claims about behavior **inside** this repo take the other axis — inference distance, not source authority: `claim_confidence.md`.
 
@@ -10,25 +10,7 @@ Claims about behavior **inside** this repo take the other axis — inference dis
 
 **P1 — citable alone.** First-party and authoritative: the thing itself, not an account of it.
 
-- Godot class reference — `.claude/cache/godot-docs/doc/classes/<Class>.xml`, version-pinned to the
-  engine (populate or refresh with `.claude/scripts/godot_docs_cache.sh`, ~5s). This XML is the
-  first-party source the HTML reference is *generated from*, tagged to the exact pin, so it outranks
-  the rendered page on both authority and version-exactness. Read it directly — no fetch, no model,
-  no truncation. Discovery ("which class does X?") goes to `.claude/reference/godot_class_index.md`.
-- Godot tutorials/guides, or a class the cache cannot answer —
-  `mcp__plugin_context7_context7__query-docs` against `/websites/godotengine_en_4_7`.
-  **`docs.godotengine.org` is not the source of record for a class.** Two independent reasons, one
-  permanent and one intermittent. Permanent: `/en/stable/` is a moving alias, so it cannot satisfy
-  rule 3, and the rendered page costs ~1.6 MB to answer what the cache answers in ~1 KB. Intermittent:
-  the host is Cloudflare bot-gated under load — measured 2026-08-09, HTTP 429 to `curl` and
-  `WebFetch` host-wide in one window, then 200 with the full page hours later to `curl` and `httpx`
-  alike, while a browser saw the verification interstitial. Treat it as unreliable, not unusable: a
-  200 from it is legitimate P1 **for a version-pinned URL**, and a failure from it is never evidence
-  about content — record a gap and go to the cache or context7.
-- GdUnit4 README — `https://raw.githubusercontent.com/godot-gdunit-labs/gdUnit4Net/master/README.md`
-- GdUnit4 examples — `https://github.com/godot-gdunit-labs/gdUnit4NetExamples/tree/master` (browse URL; no raw form)
-- GdUnit4 CMD runner — `https://godot-gdunit-labs.github.io/gdUnit4/latest/advanced_testing/cmd/`
-- C# / .NET 9 — `https://learn.microsoft.com/en-us/dotnet/csharp/`
+- A version-pinned local docs cache of the thing itself, where the project keeps one. Read it directly — no fetch, no model, no truncation.
 - `mcp__plugin_context7_context7__query-docs` against a resolved library id
 - First-party source read from `raw.githubusercontent.com`, official changelogs, release notes, and spec text
 
@@ -38,10 +20,10 @@ Claims about behavior **inside** this repo take the other axis — inference dis
 
 ## Rules
 
-1. **Never answer from memory.** This harness has no reliable built-in knowledge of Godot 4.7.1, GdUnit4, or .NET 9. Fetch it. Could not fetch it → gap, not inference.
+1. **Never answer from memory.** This harness has no reliable built-in knowledge of the pinned versions in `reference/project_stack.md`. Fetch it. Could not fetch it → gap, not inference.
 2. **Escalate every P3 to its owner.** Chase the P3 hit to the P1/P2 source that owns the behavior and cite that instead. No owning source exists → the absence IS the finding: emit `polarity: "unclear"` with a gap naming what would settle it, never `exists`.
-3. **Pin the version in the claim text.** Use the engine and runtime versions pinned in `reference/project_stack.md`. A doc page for another major version answers a different question — measured: `Node.reparent` gained a `physics_interpolation` warning between 4.4 and 4.7.1, and this project runs Jolt. **GdUnit4 is the exception that must be stated, never assumed:** its P1 URLs above are `master`/`latest` while this repo may run a patched fork (check the `GdUnit4` package version in `{{PROJECT_NAME}}.csproj`). A GdUnit4 claim names the fork and that the cited page is unversioned upstream, or it is P3.
-4. **A partial reader cannot prove absence.** A digest layer that drops part of a page reports the gap as silence, and silence reads as absence. `read_web` now declares what it saw — its preflight block carries `mode=` and `raw=Nc, seen=Nc` per URL, plus a flag when retention is low, an interstitial was withheld, or extraction came back empty. **Read that ratio before recording any negative**, and treat a flagged URL as unread rather than empty. (It once destroyed content silently: it ran an HTML boilerplate-remover over non-HTML, keeping 70.5% of the Godot `Node.xml` and 46.0% of a markdown README. Fixed 2026-08-09 by content-type routing — non-HTML now passes through verbatim.) Confirm true absence only against bytes you fetched whole; the same rule binds any digest layer between you and the page.
+3. **Pin the version in the claim text.** Use the engine and runtime versions pinned in `reference/project_stack.md`. A doc page for another major version answers a different question. A P1 URL that tracks `master`/`latest` is unversioned: the claim names the version the project actually runs and that the cited page is unversioned upstream, or it is P3.
+4. **A partial reader cannot prove absence.** A digest layer that drops part of a page reports the gap as silence, and silence reads as absence. `read_web` now declares what it saw — its preflight block carries `mode=` and `raw=Nc, seen=Nc` per URL, plus a flag when retention is low, an interstitial was withheld, or extraction came back empty. **Read that ratio before recording any negative**, and treat a flagged URL as unread rather than empty. Confirm true absence only against bytes you fetched whole; the same rule binds any digest layer between you and the page.
 5. **Citation-as-audit — check the quote against bytes, not against another summary.** Before consuming a returned claim set, verify two or three `evidence` quotes yourself by matching them against the fetched artifact. Re-fetching through the same digest layer that produced the claim audits nothing. Land on a summary of the thing rather than the thing, and the run failed at its one job — re-dispatch rather than report.
 6. **Stopping criterion.** A run ends when every listed question is P1/P2-answered or recorded as a gap. Not sooner, not later; "went deeper than asked" and "missed the one detail that mattered" are the same defect.
 
@@ -49,8 +31,8 @@ Claims about behavior **inside** this repo take the other axis — inference dis
 
 The claims schema carries no `tier` field, so tier rides in the fields it already has:
 
-- `file` — the source cited: the URL fetched, or the local path when the source IS local (the
-  version-pinned Godot cache).
+- `file` — the source cited: the URL fetched, or the local path when the source IS local (a
+  version-pinned docs cache).
 - `artifact` — the local bytes the quote was taken from, when any exist. This is what makes the
   quote checkable (`.claude/tools/verify_claims.py`); `fetch_source.sh`'s TSV manifest carries the
   URL→artifact mapping that joins the two. A local artifact is *stronger* evidence than a URL, never
@@ -64,9 +46,9 @@ The claims schema carries no `tier` field, so tier rides in the fields it alread
 
 ## Fetch order
 
-The one-line order and its NEVER live in `CLAUDE.md` §4; this section holds each tier's mechanism.
+`CLAUDE.core.md` §4 points here; this section owns the order and each tier's mechanism.
 
-1. **Godot class docs — the version-pinned cache only.** `.claude/cache/godot-docs/doc/classes/<Class>.xml` is the first-party XML the HTML is generated from; `scripts/godot_docs_cache.sh` rebuilds it in ~5s; index at `reference/godot_class_index.md`. docs.godotengine.org `/en/stable/` is an unpinnable moving alias and the host is intermittently Cloudflare-gated.
+1. **A version-pinned local docs cache**, where the project keeps one.
 2. **`scripts/fetch_source.sh`** — bytes to disk, free, quotable. Landed bytes are what make a quote checkable: `tools/verify_claims.py` grades them advisory-only and never rewrites a claim into a gap. GitHub file reads use raw.githubusercontent.com — browse/tree URLs have no raw form.
 3. **`WebFetch`** — one URL.
 4. **context7** — a resolved library id; needs the context7 plugin enabled.

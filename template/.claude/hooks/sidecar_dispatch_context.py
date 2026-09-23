@@ -22,7 +22,6 @@ Wired in: settings.json hooks.PreToolUse matcher "Bash" (via pre_bash_dispatch.p
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +33,16 @@ import model_ladder_gate
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 import sidecar_argv  # noqa: E402
+try:
+    import approving_gates  # noqa: E402
+    _APPROVING_GATES_IMPORT_ERROR = None
+    _resolve = approving_gates._resolve
+    _inside = approving_gates._inside
+    _path_has_symlink = approving_gates._path_has_symlink
+    _regular_project_file = approving_gates._regular_project_file
+except Exception as exc:
+    approving_gates = None
+    _APPROVING_GATES_IMPORT_ERROR = "%s: %s" % (type(exc).__name__, exc)
 try:
     import model_registry  # noqa: E402
 except Exception:
@@ -58,7 +67,6 @@ SAFE_SHAPES = frozenset({"any", "survey", "review", "author"})
 SAFE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 SAFE_DISCLOSURES = frozenset({"bare", "pointer", "full"})
 LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-SHELL_META_RE = re.compile(r"[\n\r;&|<>`$(){}]")
 
 
 def _git_bash():
@@ -77,14 +85,18 @@ def sidecar_launch(cmd):
     return None if inv is None or inv.args[:1] == ["--check"] else inv
 
 
-def preflight(cmd, root):
-    """Return refusal text unless a trusted launcher's --check completes successfully."""
+def run_preflight(cmd, root):
+    """Return (state, refusal): passed, refused, or skipped when no check ran."""
     if os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0":
-        return None
+        return "skipped", None
     inv = next((c for c in sidecar_argv.launcher_invocations(cmd) if c.kind == "sidecar"), None)
     bash = _git_bash()
     if inv is None or not bash:
-        return None
+        return "skipped", None
+    if approving_gates is None:
+        return "refused", ("REFUSED at preflight (%s) — safe launcher path checks are unavailable (%s). "
+                            "Repair hooks/approving_gates.py before dispatch."
+                            % (os.path.basename(inv.path), _APPROVING_GATES_IMPORT_ERROR))
     launcher = inv.path
     root_path = Path(root).resolve()
     candidate = Path(launcher)
@@ -93,10 +105,10 @@ def preflight(cmd, root):
         launcher_path = candidate.resolve(strict=True)
         trusted_dir = (root_path / ".claude" / "scripts").resolve(strict=True)
     except OSError:
-        return None
+        return "skipped", None
     if (candidate.is_symlink() or launcher_path.parent != trusted_dir
             or not launcher_path.is_file() or _path_has_symlink(root_path, launcher_path)):
-        return None
+        return "skipped", None
     flags = sidecar_argv.sidecar_flags(inv.args)
     args = [bash, str(launcher_path), "--check"]
     if isinstance(flags.get("m"), str):
@@ -110,26 +122,26 @@ def preflight(cmd, root):
         r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT,
                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     except subprocess.TimeoutExpired:
-        return ("REFUSED at preflight (%s --check timed out after %d s) — availability and budget "
+        return "refused", ("REFUSED at preflight (%s --check timed out after %d s) — availability and budget "
                 "were not verified. Retry after checking the launcher."
                 % (os.path.basename(launcher), PREFLIGHT_TIMEOUT))
     except Exception as exc:
-        return ("REFUSED at preflight (%s --check could not run: %s: %s) — availability and budget "
+        return "refused", ("REFUSED at preflight (%s --check could not run: %s: %s) — availability and budget "
                 "were not verified. Repair the launcher check before dispatch."
                 % (os.path.basename(launcher), type(exc).__name__, exc))
     if r.returncode == 0:
-        return None
+        return "passed", None
     text = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
     if r.returncode == EXHAUSTED_EXIT:
-        return ("REFUSED at preflight (%s --check exit %d) — the provider is exhausted:\n%s\n"
+        return "refused", ("REFUSED at preflight (%s --check exit %d) — the provider is exhausted:\n%s\n"
                 "-A does not lift an exhausted provider; route the work to another provider."
                 % (os.path.basename(launcher), r.returncode, text[-1500:]))
     if r.returncode == PEAK_EXIT:
-        return ("REFUSED at preflight (%s --check exit %d) — a peak pricing window is open:\n%s\n"
+        return "refused", ("REFUSED at preflight (%s --check exit %d) — a peak pricing window is open:\n%s\n"
                 "-A does not lift it. Pass -W only when the user explicitly authorized peak pricing in this "
                 "conversation; otherwise wait for off-peak or route the work to another provider."
                 % (os.path.basename(launcher), r.returncode, text[-1500:]))
-    return ("REFUSED at preflight (%s --check exit %d) — the dispatch would have died the same way in the "
+    return "refused", ("REFUSED at preflight (%s --check exit %d) — the dispatch would have died the same way in the "
             "background:\n%s\nRe-select under the ladder, or pass -A and state the spend."
             % (os.path.basename(launcher), r.returncode, text[-1500:]))
 
@@ -154,53 +166,11 @@ def _backgrounds_lib_launcher(launcher, root):
     return bool(REEXEC_RE.search(text))
 
 
-def _inside(path, parent):
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
-def _resolve(root, value):
-    """The path as written, made absolute, or None. Never `Path.resolve()`: it follows a link,
-    and the symlink check that runs next would then inspect the link's target, not the link.
-    A `..` segment is refused: lexical normalization and the OS disagree across a link."""
-    if not isinstance(value, str) or not value.strip():
-        return None
-    path = Path(value)
-    if ".." in path.parts:
-        return None
-    return path if path.is_absolute() else root / path
-
-
-def _path_has_symlink(root, path):
-    """True when any component below `root` is a symlink or a Windows directory junction, which
-    `is_symlink()` does not report."""
-    if not _inside(path, root):
-        return True
-    current = root
-    for part in path.relative_to(root).parts:
-        current = current / part
-        if current.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(current)):
-            return True
-    return False
-
-
-def _regular_project_file(root, value):
-    path = _resolve(root, value)
-    return (path is not None and _inside(path, root) and path.is_file()
-            and not _path_has_symlink(root, path))
-
-
 def _parse_fanout_command(command, root):
-    if not isinstance(command, str) or SHELL_META_RE.search(command):
+    if approving_gates is None:
         return None
-    try:
-        words = shlex.split(command, posix=True)
-    except ValueError:
-        return None
-    if len(words) < 3 or words[0] not in {"python", "python3"}:
+    words, _why = approving_gates.simple_argv(command)
+    if words is None or len(words) < 3 or words[0] not in {"python", "python3"}:
         return None
     script = _resolve(root, words[1])
     expected = (root / ".claude" / "tools" / "sidecar_fanout.py").resolve()
@@ -276,12 +246,11 @@ def _safe_fanout_job(job, root, registry):
 
 
 def fanout_allowed(payload):
-    if model_registry is None:
+    if model_registry is None or approving_gates is None:
         return False
-    root_value = payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR")
-    if not isinstance(root_value, str):
+    root = approving_gates.trusted_root(payload)
+    if root is None:
         return False
-    root = Path(root_value).resolve()
     jobs_path = _parse_fanout_command((payload.get("tool_input") or {}).get("command"), root)
     if jobs_path is None:
         return False
@@ -322,8 +291,9 @@ def main():
                 "survives: read %s.exit, and arm a Monitor on it if it is absent." % record_path
             )
 
+    preflight_state = "skipped"
     if direct:
-        refusal = preflight(cmd, root)
+        preflight_state, refusal = run_preflight(cmd, root)
         if refusal:
             sys.stdout.write(json.dumps({
                 "hookSpecificOutput": {
@@ -356,6 +326,12 @@ def main():
             "Auto-approved: the sidecar fan-out is structurally safe; "
             "its launchers retain their budget and quota gates"
         )
+    approval_root = approving_gates.trusted_root(data) if approving_gates is not None else None
+    if direct and preflight_state == "passed" and approval_root is not None:
+        ok, _why = approving_gates.sidecar_launch_shape(cmd, approval_root)
+        if ok:
+            output.update(approving_gates.allow(
+                "canonical sidecar launch; preflight passed; ladder read"))
 
     ref = os.path.join(root, ".claude", "reference", "sidecar_dispatch.md")
     try:

@@ -27,5 +27,4 @@ Measured in one session, three times:
 **How to apply:** when a fix lands, state the cause in one sentence, then grep for the cause rather
 than the symptom — the old predicate, the sibling call site, the same-provenance constant, the other
 members of the config — and either fix or explicitly record each hit. "The reported case is fixed"
-is not a completion claim; "every site sharing this cause is fixed or listed" is. Related:
-[[feedback_symmetric_guards_across_siblings]], [[gotcha_behavior_selecting_export_default_ships_inert]].
+is not a completion claim; "every site sharing this cause is fixed or listed" is.

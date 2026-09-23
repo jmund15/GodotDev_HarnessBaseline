@@ -34,7 +34,7 @@ FAKE = {
     "9001": "grep -rl claude-gpt /c/Users/<user>/|grep.exe",
     "9002": "node C:/Users/<user>/AppData/.../semantic-search/server.js|node.exe",
     "9003": "claude.exe --resume|claude.exe",
-    "9004": "pwsh -File .claude/scripts/regression_gate.ps1|pwsh.exe",
+    "9004": "pwsh -File .claude/scripts/gate_chain.ps1|pwsh.exe",
     "9005": "",
 }
 
@@ -434,7 +434,7 @@ def c_taskstop_own_monitor_loop():
 
 @case("own Monitor that runs a protected job is still blocked")
 def c_taskstop_own_monitor_protected():
-    rows = _launch_rows("mon2", "pwsh -File .claude/scripts/regression_gate.ps1 -Detach", name="Monitor")
+    rows = _launch_rows("mon2", "pwsh -File .claude/scripts/gate_chain.ps1 -Detach", name="Monitor")
     return taskstop(rows=rows, task_id="mon2") is not None
 
 

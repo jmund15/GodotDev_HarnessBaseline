@@ -11,16 +11,18 @@ A sidecar is a separate `claude` child on a transport the calling session is not
 5. **Dispatch** — one call, backgrounded or not, with `-R`; every field below is required except the bracketed ones:
 
 ```bash
-bash .claude/scripts/<launcher> -m <alias> -e <effort> -D <bare|pointer|full> -G <survey|review|author|any> -f <prompt.md> [-S <schema.json>] -R <record.json> -l "<label>" -d "<repo-root>" > <capture>.json
+bash .claude/scripts/<launcher> -m <alias> -e <effort> -D <bare|pointer|full> -G <survey|review|author|any> -f <prompt.md> [-S <schema.json>] -R <record.json> -l "<label>" -d "<repo-root>"
 ```
 
 The launcher itself writes `<record>.out` and `<record>.exit` on **every** exit path — a clean finish, a gate refusal, a kill — so the result lands there even if the harness task that carried the call dies. Backgrounding is a routine call shape, not a special one.
+
+Run it as that one command, backgrounded with `run_in_background` when it should not block: no `cd`, `export`, env prefix, redirection or chaining. After a passing preflight and the ladder Read, a `survey`, `review` or `any` launch in that shape is auto-approved (`hooks/approving_gates.py`); any other shape goes to the auto-mode classifier.
 
 **Detached form, for a run that must outlive this session:** add `-X -P <progress.jsonl>` and run the call in the foreground. `-X` must be its own argument (never a cluster like `-AX`) and needs `-R`. The launcher starts a detached job and returns within seconds, printing `DETACHED pid=`, `OUT=`, `ERR=` and `EXIT=`. Arm a Monitor on `EXIT` and the progress file; inspect the process and record before any kill. Each `-R` path takes one launch: a path whose `.out`, `.err`, `.exit` or `.pid` exists refuses with exit 1.
 
 A backgrounded launch is not denied merely for being backgrounded; ladder, capacity, availability, and pricing gates still apply. When allowed, the hook adds a one-line pointer at `<record>.exit`.
 
-6. **Consume:** result JSON is on **stdout** (`-o` is a FORMAT, never a path). `-R` record holds `costUSD` (truth; `total_cost_usd` in the payload is inflated), `servedModel`, and attestation. Rate the dispatch's effort fit when you read it.
+6. **Consume:** result JSON is in `<record>.out`, the launcher's copy of stdout (`-o` is a FORMAT, never a path); with `-P` that file is the event stream and its last `result` event carries the answer. `-R` record holds `costUSD` (truth; `total_cost_usd` in the payload is inflated), `servedModel`, and attestation. Rate the dispatch's effort fit when you read it.
 
 A fan-out is `tools/sidecar_fanout.py`, which detaches every child with `-X` so killing the fan-out's own process stops none of them; or N backgrounded calls, each with its own `-R`, relying on the same default durable files. Capture bytes do not prove a run ended: a retry waits for that run's `EXIT` file, or for its process to be proven gone, and takes a new `-R` path.
 

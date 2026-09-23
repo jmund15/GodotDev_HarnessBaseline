@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Re-runnable proof for scripts/run_integration_batched.ps1's `adaptation.json`
-  `test_quarantine_filter` seam (Design Doc §8).
+  `test_quarantine_filter` seam (Design Doc §8) and its plan-derived wall-clock budget.
 
   Three shapes: adaptation.json absent -> the default (empty string, so `$quarantine` adds no
   filter); present with a valid string -> that value is read; a wrong-typed value (not a
@@ -13,6 +13,10 @@
   run as a real child process per case, so this proof reads the actual stderr stream a
   consumer would see -- not `-ErrorVariable`, which also collects the engine's own internal
   (and already-caught) exception records alongside the function's one intentional message.
+
+  Budget: Get-TotalBudgetMs (also extracted verbatim) returns the sum of the reservations of the
+  batches a run will execute times a slow-machine margin, never below the floor; the script
+  always assigns its budget from it over the non-green plan, and -BudgetFloorMs only sets the floor.
 
     pwsh -NoProfile -File .claude/tests/test_run_integration_batched_adaptation.ps1
 #>
@@ -109,6 +113,40 @@ try {
         if (Test-Path $r) { Remove-Item -Recurse -Force $r -Confirm:$false }
     }
 }
+
+# --- budget: Get-TotalBudgetMs, extracted verbatim ----------------------------------------
+$budgetMatch = [regex]::Match($src, '(?s)function Get-TotalBudgetMs \{.*?\n\}\r?\n')
+function Invoke-Budget {
+    param([int[]] $ReservationsMs, [double] $Margin, [int] $FloorMs)
+    $wrapper = Join-Path ([System.IO.Path]::GetTempPath()) ("ribb_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8) + ".ps1")
+    $list = if ($ReservationsMs.Count -gt 0) { '@(' + ($ReservationsMs -join ',') + ')' } else { '@()' }
+    Set-Content -Path $wrapper -Encoding utf8 -Value @"
+$($budgetMatch.Value)
+Write-Output (Get-TotalBudgetMs -ReservationsMs $list -Margin $Margin -FloorMs $FloorMs)
+"@
+    try { return [int]((& pwsh -NoProfile -File $wrapper) -join '').Trim() }
+    finally { Remove-Item -Force $wrapper -ErrorAction SilentlyContinue }
+}
+
+$cases += @{ label = 'budget: Get-TotalBudgetMs is extractable from the real script'; ok = $budgetMatch.Success }
+if ($budgetMatch.Success) {
+    # A 10-batch plan summing to 664.1 s, so sum x 1.25 clears the 690 s floor.
+    $today = @(119100, 70100, 37400, 85100, 89800, 92400, 47500, 53700, 38900, 30100)
+    $cases += @{ label = 'budget: a grown suite gets sum x margin, above the floor'
+                 ok = ((Invoke-Budget -ReservationsMs $today -Margin 1.25 -FloorMs 690000) -eq 830125) }
+    $cases += @{ label = 'budget: grows with the reservations'
+                 ok = ((Invoke-Budget -ReservationsMs ($today + @(100000)) -Margin 1.25 -FloorMs 690000) -eq 955125) }
+    $cases += @{ label = 'budget: a single remaining batch (-RetryOnly) keeps the floor'
+                 ok = ((Invoke-Budget -ReservationsMs @(92400) -Margin 1.25 -FloorMs 690000) -eq 690000) }
+    $cases += @{ label = 'budget: the margin scales the sum'
+                 ok = ((Invoke-Budget -ReservationsMs @(600000, 400000) -Margin 1.5 -FloorMs 690000) -eq 1500000) }
+    $cases += @{ label = 'budget: an empty plan keeps the floor'
+                 ok = ((Invoke-Budget -ReservationsMs @() -Margin 1.25 -FloorMs 690000) -eq 690000) }
+}
+$cases += @{ label = 'budget: the script derives it from Get-TotalBudgetMs over the non-green plan'
+             ok = ($src -match '(?s)\$TotalBudgetMs = Get-TotalBudgetMs -ReservationsMs .*?status -ne ''GREEN''') }
+$cases += @{ label = 'budget: -BudgetFloorMs is only the floor; no parameter overrides the derivation'
+             ok = ($src -match [regex]::Escape('-FloorMs $BudgetFloorMs') -and $src -notmatch 'PSBoundParameters\.ContainsKey\(''TotalBudgetMs''\)' -and $src -notmatch '\[int\] \$TotalBudgetMs') }
 
 $failures = @()
 foreach ($c in $cases) {

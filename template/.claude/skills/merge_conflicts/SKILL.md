@@ -11,7 +11,7 @@ description: >-
 
 ## Arguments
 
-`/merge_conflicts` resolves the current in-progress integration. `/merge_conflicts <worktree> --resource-receipt <path>` resumes a `/pr_sync` authored-resource stop in that worktree and updates only the named receipt. Any other flag stops before mutation.
+`/merge_conflicts` resolves the current in-progress integration. `/merge_conflicts <worktree> --resource-receipt <path>` resumes a sync that stopped on a conflicted authored resource in that worktree and updates only the named receipt. Any other flag stops before mutation.
 
 1. **See the current state.** Run `git status` for the unmerged files and `git log --merge -p <file>` to see what both sides changed on each conflict hunk. Confirm the merge target (`MERGE_HEAD`/`ORIG_HEAD`) and the branch being merged in.
 
@@ -19,7 +19,7 @@ description: >-
 
 3. **Abort only on a user decision to abandon.** `git merge --abort` mid-merge discards the resolution state you have built — it is not a "start over" escape hatch. Abort only when the user explicitly decides the merge should not happen; otherwise keep resolving in place.
 
-4. **Gate before concluding.** If the merge touched `.cs` files, run `/regression_gate` before the merge commit is finalized — a merge is not a carve-out from the mandatory gate. A gate failure is not automatically "the merge introduced it": run the failing test on the merge TARGET's live tree first (throwaway `git worktree add --detach <target>`), per `feedback_verify_merge_failures_against_target_not_baseline.md` — the target's green baseline can mask pre-existing reds.
+4. **Gate before concluding.** If the merge touched `.cs` files, run `/regression_gate` before the merge commit is finalized — a merge is not a carve-out from the mandatory gate. A gate failure is not automatically "the merge introduced it": run the failing test on the merge TARGET's live tree first (throwaway `git worktree add --detach <target>`) — the target's green baseline can mask pre-existing reds.
 
 5. **Godot resource conflicts use the external authored-reapplication receipt.** Never hand-merge or leave a Git side selection as the final resource. For `--resource-receipt`, verify its head/blob hashes, install one coherent blob through the editor/MCP, reapply the other intent there, save/load the resource, and record each saved path/hash. Set `status=authored` only when every receipt row is saved and no unmerged row remains; head drift or unverifiable intent stays blocked.
 

@@ -107,13 +107,15 @@ const CONCURRENT = agents.length > 1
 // mandate looks unrelated can answer that message instead of its brief.
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
-// .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock).
+// .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock),
+// which arms for any engine carrying the next line.
+// READONLY-FANOUT-ENGINE
 const BASE_CONTRACT = (a) => [
   '',
   '=== ENGINE CONTRACT ===',
   RELAY_LINE,
   readOnlyContract(a),
-  CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run Godot or C# tests, builds, scripts/verify.ps1 or /regression_gate (the GdUnit4 named pipe and the engine are machine-wide single-flight); Python and Node proofs under .claude/tests/ are not single-flight, so run them. Do NOT use the csharp-ls LSP (single-flight wrapper) — use Grep/Read. If your mandate requires a Godot or C# test or build run, STOP and report that it needs a serialized dispatch.' : null,
+  CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run a machine-wide single-flight tool (a test runner, build, engine or language server that allows one process per machine; your delegate rails name this project\'s) — use Grep/Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight, so run them. If your mandate requires a single-flight run, STOP and report that it needs a serialized dispatch.' : null,
   'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`; `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Put every unread or blocked part of the mandate in `gaps`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
   'OUTPUT: return ONLY the JSON object `{"findings": [...], "checked": {...}, "gaps": [...]}` per the schema — no prose around it.',
   spillContract(a) || null,
@@ -126,7 +128,7 @@ const guardRef = (a) => {
   return BASE_CONTRACT(a) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
-    'Read .claude/guards/review.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md. Read ONLY those sections — the other tiers are for other models.',
+    'Read .claude/guards/review.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
   ].join('\n')
 }
 

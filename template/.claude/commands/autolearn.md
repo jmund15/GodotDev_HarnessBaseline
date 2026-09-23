@@ -115,9 +115,9 @@ The concrete details still have value as **evidence** — keep them in the `Sign
 2. Could a reader from another project apply this rule without that name?
 3. If the answer is "no, only {{PROJECT_NAME}}'s `<thing>`" — rewrite or skip.
 
-**Worked example.** A correction "don't run `/regression_gate` after touching `burn_effect.tres`" is overfit (`burn_effect.tres` is one file). Rewrite as "treat `.tres` files that affect Logic Domain behavior as code for the regression gate" — applies to every future `.tres`, and the original `burn_effect.tres` incident becomes the `Signal:` evidence line.
+**Worked example.** A correction "don't run the regression gate after touching `burn_effect.tres`" is overfit (`burn_effect.tres` is one file). Rewrite as "treat `.tres` files that affect Logic Domain behavior as code for the regression gate" — applies to every future `.tres`, and the original `burn_effect.tres` incident becomes the `Signal:` evidence line.
 
-**Why this matters here.** The `MEMORY.md` index auto-loads into every session and is capped (~200 lines). Special-case rules accumulate faster than they age out, and each one that names a specific thing instead of a class of things is a future search miss — a semantic-search for "data file" or "Logic Domain" should surface the rule; a title that only says `burn_effect.tres` won't.
+**Why this matters here.** Special-case rules accumulate faster than they age out, and each one that names a specific thing instead of a class of things is a future search miss — a semantic-search for "data file" or "Logic Domain" should surface the rule; a title that only says `burn_effect.tres` won't.
 
 This same gate is applied retroactively to existing entries by `/memory_audit`'s overfit lens (lens 2).
 
@@ -212,7 +212,7 @@ at write time. (Retroactive cleanup: `/memory_audit` lens 5.)
 - Wikilinks improve discoverability — they connect a found memory to its neighbors.
 
 **Step 3: Catalog the failure mode (if applicable)**
-When the new entity codifies a **recurring failure pattern** (regression class, bug shape, mistake-shape with detection signal), propose a corresponding entry in [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md). The catalog is the **detection-pattern layer** that critic agents (`/plan_check`'s `plc-memory-alignment`, `/explore`'s `exp-memory`) fetch per entry on demand. Append the entry to `.claude/reference/known_failure_modes_entries.md` with an ID from `python3 .claude/tools/kfm.py next-id`; that is the whole maintenance job — the selector index is generated, never stored.
+When the new entity codifies a **recurring failure pattern** (regression class, bug shape, mistake-shape with detection signal), propose a corresponding entry in [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md). The catalog is the **detection-pattern layer** that critic agents fetch per entry on demand, such as the coding layer's plan-review `plc-memory-alignment` and explore `exp-memory` lenses. Append the entry to `.claude/reference/known_failure_modes_entries.md` with an ID from `python3 .claude/tools/kfm.py next-id`; that is the whole maintenance job — the selector index is generated, never stored.
 
 Trigger: the new entity describes a *bug class* (not a *preference* or *fact*). Litmus — would another future occurrence of this class be catchable by a grep regex, LSP query, or structural pattern? If yes, the catalog entry adds value.
 
@@ -247,8 +247,6 @@ Detected [N] durable preferences from this session to update auto-memory.
 
 Apply high confidence changes? [y/n/selective]
 ```
-
-Wait for explicit approval before updating memory.
 
 ## Mapping signals to Skills
 

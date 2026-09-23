@@ -44,6 +44,7 @@ import sys
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _optional_hooks  # noqa: E402
 
 CHAIN = (
     ("check_logger_tag_prefix", "advisory"),
@@ -56,6 +57,7 @@ CHAIN = (
     ("retire_trigger_advisory", "advisory"),
     ("runaway_scan_reaper", "reaper"),
 )
+CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
 SUBHOOK_TIMEOUT = 5.0
 MAX_CONTEXT_CHARS = 8_000
 

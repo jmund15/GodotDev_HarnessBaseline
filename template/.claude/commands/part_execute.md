@@ -13,7 +13,7 @@ The serial grind that runs AFTER a plan is approved. Plan approval (in the plann
 
 ## The single gate (upstream, already passed)
 
-By the time you run this, the plan has been authored, `/plan_check`'d, audited to satisfaction, and **approved by the user**. That approval is the execution directive. Per `feedback_honor_execution_directive`: do **not** re-ask "continue or hand off?" mid-stream. The halt valves below are the only legitimate pauses — and they fire on *new information the plan didn't anticipate*, never on "am I still allowed to proceed?"
+By the time you run this, the plan has been authored, `/plan_check`'d, audited to satisfaction, and **approved by the user**. That approval is the execution directive. Per `feedback_honor_execution_directive`: do **not** re-ask "continue or hand off?" mid-stream.
 
 ## Procedure
 
@@ -36,7 +36,7 @@ Read the plan's ordered steps/slices. Create one tracked task per slice (`TaskCr
 For each slice:
 
 1. **Classify the domain** (per CLAUDE.md *Hybrid TDD*): Logic vs Gameplay. The plan usually states it; if not, infer from the touched subsystem.
-2. **Logic domain — strict TDD:** RED (write the failing `[TestSuite]` test first) → **VERIFY the specific expected failure** (per `feedback_test_name_must_match_exercised_path` — confirm the setup drives the SUT into the branch the title names) → GREEN (minimum production code to pass) → assess REFACTOR (refactor when it adds value; skip when it doesn't). One focused test per stated behavior, sized like the neighbouring suite in `Tests/<domain>/`.
+2. **Logic domain — strict TDD:** RED (write the failing `[TestSuite]` test first) → **VERIFY the specific expected failure** (confirm the setup drives the SUT into the branch the title names) → GREEN (minimum production code to pass) → assess REFACTOR (refactor when it adds value; skip when it doesn't). One focused test per stated behavior, sized like the neighbouring suite in `Tests/<domain>/`.
 3. **Gameplay domain — automate deterministic, flag subjective:** drive input→outcome / state-transition / signal-wiring / scene-structure expectations through ISceneRunner integration tests. Work that is genuinely subjective ("feels responsive?", juice, timing) cannot be test-gated → **halt valve (c)**: implement the mechanism, then flag the specific behaviors for manual playtest rather than asserting them green.
 4. **A green test proves the slice WORKS — not that it's done.** `JmoLogger.Error` triggers test failure — treat any error log surfaced by the run as a real failure, not noise.
 5. **Per-slice spec verifier** — when a slice touches 3+ files or introduces a configuration surface beyond the plan's Authored-surfaces section, run one `dispatch.js` job (`shape: review`, read-only, `executor·low`, `general-purpose`) whose prompt file carries the slice's plan section verbatim, the diff, and the single question "does the diff satisfy this section, and what does it do beyond it?" Spec conformance only, never code quality; the input is plan + diff, never the executor transcript. Pass `agentType: "general-purpose"` with the resolved `model` and `effort`.
@@ -50,23 +50,23 @@ For each slice:
 After all slices are green, verify **by chain position** (`change_control` §Gate cadence):
 
 - **Mid-chain Part** — run a **union `-Filter` over this Part's accumulated blast zone** (plain tests; `-StaticOnly` optional for the static guards). Do **not** run the gate and do **not** commit: the work accumulates to the drive close, whose full gate backs every commit in the drive. A red union run is **halt valve (d)**.
-- **Chain-final Part, or a standalone Part with no chain** — run the FULL **`/regression_gate`** (mandatory for any `.cs` change, no carve-outs), marked `# gate: final`. It is the separate single-flight serial gate — do **not** fan it out, do **not** run it concurrently with anything. A gate failure that isn't a trivial in-scope fix is **halt valve (d)**; re-verify a fix at its blast-radius width (`-RetryOnly` / `verify.ps1 -Scope <domains>`), never a reflex full re-run.
+- **Chain-final Part, or a standalone Part with no chain** — run the project's FULL **regression gate** (§Gate cadence names it), marked `# gate: final`. It is the separate single-flight serial gate — do **not** fan it out, do **not** run it concurrently with anything. A gate failure that isn't a trivial in-scope fix is **halt valve (d)**; re-verify a fix at its blast-radius width (`-RetryOnly` / `verify.ps1 -Scope <domains>`), never a reflex full re-run.
 
 ### Step 5 — Readiness battery (static, read-only) — *feature branches only*
 
-**Skip on `main`.** `/pr_ready` is a pre-PR/pre-merge battery; a direct-to-`main` commit has no branch diff to gate against, so run it ONLY when `git branch --show-current` is not the default branch (`main`). On `main`, go straight to Step 6 — `/regression_gate` (Step 4) remains the gate, and `/pr_ready`'s lenses re-run at PR time on whatever branch the work eventually merges through.
+**Skip on `main`.** `/pr_ready` is a pre-PR/pre-merge battery; a direct-to-`main` commit has no branch diff to gate against, so run it ONLY when `git branch --show-current` is not the default branch (`main`). On `main`, go straight to Step 6 — the Step 4 regression gate remains the gate, and `/pr_ready`'s lenses re-run at PR time on whatever branch the work eventually merges through.
 
-On a feature branch: with the gate green, run [`/pr_ready`](pr_ready.md) over the Part's diff — the parity / consume-new-APIs / worklog-roadmap / doc-coverage lenses that each catch a "done but not actually done" class regression. Any **BLOCKER** is **halt valve (d)**: stop and surface, do not commit over it. WARN/INFO are reported, not blocking. An **empty / timed-out / partial** battery result is NOT a pass — re-run once; if still inconclusive, halt (valve d). A clean battery must be a *positive* "all lenses returned, 0 BLOCKERs," never "nothing came back" (`gotcha_workflow_fanout_search_false_absence`).
+On a feature branch: with the gate green, run [`/pr_ready`](pr_ready.md) over the Part's diff — the parity / consume-new-APIs / worklog-roadmap / doc-coverage lenses that each catch a "done but not actually done" class regression. Any **BLOCKER** is **halt valve (d)**: stop and surface, do not commit over it. WARN/INFO are reported, not blocking. A clean battery must be a *positive* "all lenses returned, 0 BLOCKERs," never "nothing came back" (`gotcha_workflow_fanout_search_false_absence`).
 
 ### Step 5.5 — Close-out design review
 
-One design-review pass over the FULL working diff: dispatch one executor-tier agent via `dispatch.js` (`executor·medium`; mandate: composition-vs-inheritance, authored-surface coherence against `rules/design_litmus.md`, existing-family reuse, designer ergonomics, plus `checklists/code_quality.md` Design items). Every finding is explicitly dispositioned — fix now / worklog with reason / refuse with evidence — in the final report. Not auto-blocking; **undispositioned findings are**. **SKIP the dispatched pass** when ALL hold: (a) pure refactor/parity-gated Part with zero new authored surfaces (no new consumer-facing types, exports, scene nodes, or Jmodot code), (b) `/plan_check` ran with the architecture lenses, (c) the per-slice diff review is clean. Record the skip + basis in the final report. Parts that author new surfaces always run it.
+One design-review pass over the FULL working diff: dispatch one architect-tier agent via `dispatch.js` (`architect·medium`; mandate: composition-vs-inheritance, authored-surface coherence against `rules/design_litmus.md`, existing-family reuse, designer ergonomics, plus `checklists/code_quality.md` Design items). Every finding is explicitly dispositioned — fix now / worklog with reason / refuse with evidence — in the final report. Not auto-blocking; **undispositioned findings are**. **SKIP the dispatched pass** when ALL hold: (a) pure refactor/parity-gated Part with zero new authored surfaces (no new consumer-facing types, exports, scene nodes, or Jmodot code), (b) `/plan_check` ran with the architecture lenses, (c) the per-slice diff review is clean. Record the skip + basis in the final report. Parts that author new surfaces always run it.
 
 ### Step 6 — Close out
 
 When gate + battery are clean:
 1. Apply `/update_roadmap mark complete <part>` (the roadmap flip is the write-back; surface its batch diff in the final report).
-2. Land the categorical commits — split by `feat`/`fix`/`refactor`/`chore` per CLAUDE.md Git policy. **Concurrent-session index hygiene** (`gotcha_concurrent_session_hazards`): a staged entry you didn't stage is foreign — preserve it and coordinate an isolated commit, per `part_drive.md` Step 6's rule, never unstage it. Do not push.
+2. Land the categorical commits — split by `feat`/`fix`/`refactor`/`chore` per CLAUDE.md Git policy. **Concurrent-session index hygiene:** a staged entry you didn't stage is foreign — preserve it and coordinate an isolated commit, per `part_drive.md` Step 6's rule, never unstage it. Do not push.
 
 The plan approval authorizes every step its Definition of Done named; ask the user only for a step it did not.
 
@@ -79,17 +79,16 @@ These are the *only* pauses **once the loop begins**. (The Step-1 `plan_handoff`
 | **(a) Plan wrong** | A referenced file/type/symbol doesn't exist as described — **or a depended-on prior-Part deliverable is present but incomplete / behaviorally-absent** (it compiles but behaves wrong); a needed decision isn't in the plan's Decision record; an integration step yields results the plan didn't anticipate. | STOP, quote the mismatch (plan says X / reality is Y), ask. A half-built dependency is (a), not (b) — diagnose it as a plan-fact change, don't spend valve (b)'s attempt budget thrashing on it. |
 | **(b) Stuck** | Attempts on a slice have stopped producing new diagnostic information. | Halt — do not thrash. Report what was tried and the failure, ask. |
 | **(c) Subjective gameplay** | Feel/juice/timing work that no automated test can assert. | Implement the mechanism, flag the specific behaviors for manual playtest, continue to the next testable slice. |
-| **(d) Gate/battery blocker or inconclusive** | `/regression_gate` failure (not a trivial in-scope fix), any `/pr_ready` BLOCKER, **or an empty / timed-out / partial gate-or-battery result** — a fanned lens that returns nothing is the `gotcha_workflow_fanout_search_false_absence` class, NOT a pass. | STOP before any commit; surface the finding. For an inconclusive result, re-run once, then surface — never read an absent result as green. |
+| **(d) Gate/battery blocker or inconclusive** | Regression-gate failure (not a trivial in-scope fix), any `/pr_ready` BLOCKER, **or an empty / timed-out / partial gate-or-battery result** — a fanned lens that returns nothing is the `gotcha_workflow_fanout_search_false_absence` class, NOT a pass. | STOP before any commit; surface the finding. For an inconclusive result, re-run once, then surface — never read an absent result as green. |
 
 ## Autonomy discipline
 
 - **Don't reduce planned scope** (per `feedback_dont_unilaterally_reduce_planned_scope`). The plan is the contract; cutting a slice needs explicit re-authorization, which means a halt — not a silent drop.
 - **Don't compress the TDD/Socratic gates** because the plan is rich (per `feedback_session_start_hook_does_not_override_skill_procedure` + `feedback_dont_compress_socratic_on_rich_prompt`). A detailed plan is *starter material*, not a license to skip RED-before-GREEN.
-- **Don't open a gate with an advisory verdict.** `/pr_ready`'s WARN/INFO are advisory; its **BLOCKER tier is gating** (valve d) and is never silently auto-passed. (Reserve "advisory" for `/plan_check`'s fully-non-blocking sense — a `/pr_ready` BLOCKER blocks.)
+- **Don't open a gate with an advisory verdict.** (Reserve "advisory" for `/plan_check`'s fully-non-blocking sense — a `/pr_ready` BLOCKER blocks.)
 
 ## Anti-patterns
 
 | Rationalization | Reality |
 |---|---|
 | "Run the slices as a `Workflow` to parallelize." | Slices that share a seam or a file serialize; independent lanes may run as `dispatch_chains.js` chains (`orchestration` §7). `Workflow` carries no execution state — state lives in the plan file. |
-| "Gate + battery green, I'll push to save a round-trip." | Land the categorical commits (Step 6); never push without instruction. |

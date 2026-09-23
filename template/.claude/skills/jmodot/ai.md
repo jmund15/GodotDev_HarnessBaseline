@@ -40,8 +40,6 @@ public override bool Check(Node agent, IBlackboard bb) {
 ```
 Deferred side effects (e.g. consuming a one-shot flag) belong in `OnTransitionCommitted(agent, bb)` — fires only after the transition fully commits. See `rules/hsm_bt_patterns.md`.
 
-**Mutable transitions** - Transitions are shared across instances. Don't store runtime data in them.
-
 ---
 
 ## Behavior Trees

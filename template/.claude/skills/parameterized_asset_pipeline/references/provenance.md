@@ -54,8 +54,7 @@ example.
 ## Verified sources
 
 Endpoints below were fetched live and confirmed **2026-08-12**; counts are from those responses.
-Re-verify before treating a count or a filter as current — this table is a snapshot, and its
-predecessor's Poly Haven figure had already drifted 788 → 847 when checked.
+Re-verify before treating a count or a filter as current — this table is a snapshot.
 
 | Source | Endpoint | License posture | Verified |
 |---|---|---|---|

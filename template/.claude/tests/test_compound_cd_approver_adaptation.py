@@ -81,6 +81,30 @@ def main():
         out, err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && dotnet build")
         cases.append(("shape regex: an entry with a space/uppercase is rejected",
                       not is_allowed(out) and "read_only_commands" in err))
+        # --- carriers: an allow covers the whole command, so none may ride it -------------
+        for label, command in (
+            ("`$(…)` falls through", "cd . && git log $(python3 evil.py)"),
+            ("backticks fall through", "cd . && git log `python3 evil.py`"),
+            ("a write redirection falls through", "cd . && echo x > .claude/settings.json"),
+            ("a lone `&` falls through", "cd . && ls & rm -rf x"),
+            ("a newline falls through", "cd . && ls\nrm -rf x"),
+            ("`git commit` falls through", "cd . && git commit -am x"),
+            ("`git push` falls through", "cd . && git push --force origin main"),
+            ("`git -c` falls through", "cd . && git -c alias.x=!sh x"),
+            ("`git diff --output` falls through", "cd . && git diff --output=.claude/settings.json"),
+            ("`find -delete` falls through", "cd . && find . -delete"),
+            ("`find -exec` falls through", "cd . && find . -exec rm {} +"),
+            ("`sort -o` falls through", "cd . && sort -o .claude/settings.json x"),
+        ):
+            out, _err, _rc = run_hook(REAL_HOOK, command)
+            cases.append((label, not is_allowed(out)))
+        for label, command in (
+            ("read-only git still auto-approves", "cd /repo && git log --oneline -5"),
+            ("a read-only pipe still auto-approves", "cd /repo && git status --short | head -5"),
+            ("quoted grep still auto-approves", "cd /repo && grep -n 'a b' x.py"),
+        ):
+            out, _err, _rc = run_hook(REAL_HOOK, command)
+            cases.append((label, is_allowed(out)))
     finally:
         for tmp in scratches:
             fx.rm(tmp)

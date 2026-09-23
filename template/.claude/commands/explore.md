@@ -5,7 +5,7 @@ description: Establish current owners, constraints and consumers before designin
 
 # Explore
 
-Establish what exists before proposing a design. Return evidence-backed claims, not approval or recommendations. The project planning path is defined in CLAUDE.md; no Plan Mode transition is needed.
+Establish what exists before proposing a design. Return evidence-backed claims, not approval or recommendations.
 
 ## When to invoke
 
@@ -36,13 +36,13 @@ Invoking `/explore` is this fan-out's Workflow authorization (`orchestration` §
 
 Lenses read only source and write only their declared evidence artifact when their profile permits it. Do not promise Write from a read-only profile. Keep completed evidence recoverable before the final response. Tests/builds/shared LSP operations stay serialized by the parent; cheap independent searches remain part of each lens's work.
 
-Every claim has a subject, polarity, bearing, source/quote and verification status. An absence needs a proving command and scope; empty Glob/Grep alone is not proof. Missing output is uncovered, not a valid empty result. Return a short decision digest and artifact handles; do not reject full evidence to satisfy a presentation cap.
+Every claim has a subject, polarity, bearing, source/quote and verification status. An absence needs a proving command and scope; empty Glob/Grep alone is not proof. Return a short decision digest and artifact handles; do not reject full evidence to satisfy a presentation cap.
 
 The engine returns a bounded preview of the claims. Capture `transcriptDir` from the Workflow result — the salvage path needs it — and retrieve the full claim set with `python3 .claude/tools/session_digest.py --workflow-dir <transcriptDir> --workflow-kind explore --workflow-manifest`, then `--workflow-select <ID>`, `--workflow-page {items,lenses,reports,gaps,merges} --page <N> --page-size <N>` or `--workflow-full`, each with `--expect-journal-sha256 <hash from the manifest>`. A dossier built from the preview alone is an undercount, not a short run.
 
 ## Phase 3: Consolidate & Report
 
-- Account for every required lens. Recover a failed result from its artifact/transcript before considering a fresh dispatch. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; recover from `<spillDir>/<key>.spill.md` first.
+- Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; recover from `<spillDir>/<key>.spill.md` first.
 - Verify premise contradictions first-party. Reconcile conflicting claims against evidence, never sort order or vote count.
 - Preserve every material claim/provenance when grouping. Report uncovered scope before any clean-sounding summary.
 
@@ -60,4 +60,4 @@ Carry constraints into the plan, existing-owner claims into its family inventory
 
 ## Constraints
 
-Read-only status is a contract, not proof of sandbox enforcement. Cite what was actually verified. Keep ownership and permission boundaries, declared coverage, explicit pins and recovery. No verdict, no hidden provider multiplication, no duplicated survey because a task returned late.
+Read-only status is a contract, not proof of sandbox enforcement. Cite what was actually verified. Keep declared coverage, explicit pins and recovery. No verdict, no duplicated survey because a task returned late.

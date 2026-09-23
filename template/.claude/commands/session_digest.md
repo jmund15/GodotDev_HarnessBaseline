@@ -23,7 +23,6 @@ Presentation modes are distinct:
 
 - **The prompt quotes a session's message** → write the quote to `.claude/scratch/digest_paste.txt` (quoted
   heredoc) and run `--match-file`: word overlap over assistant messages, prints `MATCH <id>=<score> ...`.
-  Not `--previous`: with concurrent sessions, write time does not order them.
 - none and nothing quoted → `--previous`: the transcript written just before this one.
 - `<id-prefix>` → that session (`--session`). No match → run `--list 8` and pick by first prompt and time.
 - `list [N]` → newest N transcripts (id, time, size, first prompt) and stop.

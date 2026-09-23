@@ -9,7 +9,7 @@ Type-aware C# navigation, loaded when Claude reads `.cs` files; local only — d
 
 **PREFER LSP for C# symbol operations:** `findReferences` (callers, usages), `hover` (signatures, types), `incomingCalls` (call chains). LSP is semantic — it resolves by type, not text. Use `Grep` only for the legitimate cases below.
 
-**If LSP fails or returns empty, correct the `filePath`/position and retry.** Fall back to Grep only when the symbol does not resolve; silent Grep+Read is the C2 failure shape.
+**If LSP fails or returns empty, correct the `filePath`/position and retry.** Fall back to Grep only when the symbol does not resolve.
 
 ## Grep-shapes that are LSP-bypass smells on `.cs`
 
@@ -17,7 +17,7 @@ Type-aware C# navigation, loaded when Claude reads `.cs` files; local only — d
 - `Grep(": IFoo")` / `Grep(": .*IFoo,")` to enumerate implementers → use `LSP findReferences` on the interface declaration site, which catches both `: IFoo` declarations AND consumers holding `IFoo` references.
 - `Grep("MethodName(")` to find callers → use `LSP findReferences` or `incomingCalls` on the method declaration.
 - `Grep("BareSymbolName")` (a single PascalCase identifier with no regex meta) → anchor first; `workspaceSymbol` cannot search by name.
-- When the symbol's exact name isn't known yet, fall through to semantic search (CLAUDE.md §8) BEFORE Grep — memory holds rules, semantic search holds code, Grep is for literal text patterns.
+- When the symbol's exact name isn't known yet, fall through to semantic search (CLAUDE.coding.md §Semantic Search MCP) BEFORE Grep — memory holds rules, semantic search holds code, Grep is for literal text patterns.
 
 ## Schema quirks
 
@@ -28,7 +28,7 @@ The LSP tool requires `filePath`, `line` and `character` on EVERY operation, and
 
 ## Anchor-then-navigate workflow
 
-1. **Declaration file:** semantic search when the name is fuzzy; otherwise `Grep("(class|interface|struct|record|enum) FooBar\b", glob="*.cs")`. This Grep is a legitimate anchor, not a bypass, because LSP cannot search by name.
+1. **Declaration file:** semantic search when the name is fuzzy; otherwise `Grep("(class|interface|struct|record|enum) FooBar\b", glob="*.cs")`.
 2. **Line:** `LSP documentSymbol` on that file, corrected per the trap below.
 3. **Navigate** from a position inside the identifier: `findReferences` for callers, `hover` for the signature, `incomingCalls` for the call hierarchy, `goToDefinition` from a usage. A position on whitespace returns nothing.
 
@@ -39,7 +39,7 @@ Call shapes for each step: `reference/rules/csharp_lsp_examples.md` §Anchor-the
 `documentSymbol` reports a symbol's `range.start`, which begins at its leading trivia (blank, `///` and `[Attribute]` lines), so the identifier can sit 5–20 lines below the reported line.
 
 - **Empty result:** `findReferences` answering "No references found" on a symbol with obvious callers, confirmed by `hover` answering "the cursor is not on a symbol", means the position is on whitespace.
-- **Wrong symbol:** the valid identifier window is about 14 columns wide, and an adjacent token (return type, parameter type, `(`, `{`) can return another symbol's references in an identical output shape. Suspect a column offset before trusting a suspiciously large or topology-wrong caller list.
+- **Wrong symbol:** an adjacent token (return type, parameter type, `(`, `{`) can return another symbol's references in an identical output shape. Suspect a column offset before trusting a suspiciously large or topology-wrong caller list.
 - **Fix:** find the exact identifier line and column with a single-file signature Grep, then call `findReferences` there. That Grep is legitimate because the LSP call follows it. Grep and call shape, and the probe results: `reference/rules/csharp_lsp_examples.md` §Line-precision anchor and §Coordinate-trap probe results.
 
 ## Legitimate Grep on `.cs`

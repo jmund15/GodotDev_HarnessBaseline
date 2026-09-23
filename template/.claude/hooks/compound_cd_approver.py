@@ -9,8 +9,9 @@ repeated permission prompts for safe commands.
 IMPORTANT semantics: a PreToolUse `permissionDecision: allow` approves the
 ENTIRE command string — the segments after && are NOT individually
 re-checked by the permission system. So this hook only auto-approves when
-EVERY segment after the leading `cd <path>` starts with an allowlisted
-read-only/VCS command. Interpreters (python/node/npx) are deliberately
+EVERY segment after the leading `cd <path>` runs an allowlisted command in a
+read-only shape (`git` read subcommands only; no expansion, redirection,
+background or newline anywhere in the command). Interpreters (python/node/npx) are deliberately
 excluded — auto-approving them would approve arbitrary inline code.
 Anything else falls through to the normal permission flow (print "{}",
 exit 0) — a prompt, not a block.
@@ -22,6 +23,7 @@ cd commands entirely (use absolute paths, git -C, etc.) per CLAUDE.md rules.
 import json
 import os
 import re
+import shlex
 import sys
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -59,6 +61,17 @@ _READ_ONLY_COMMAND_RE = re.compile(r"^[a-z0-9_.-]+$")
 
 # Segment separators: &&, ||, ;, | (pipe last so || is consumed first).
 _SEGMENT_SPLIT = re.compile(r'&&|\|\||;|\|')
+_CARRIER_RE = re.compile(r"[$`<>()\n\r]")
+_LONE_AMP_RE = re.compile(r"(?<!&)&(?!&)")
+
+# `git` is allowlisted for its read-only subcommands only; `find` and `sort` lose the
+# arguments that delete, execute or write.
+READ_ONLY_GIT = frozenset({
+    "log", "show", "diff", "status", "grep", "ls-files", "rev-parse", "blame",
+    "branch", "describe", "shortlog", "cat-file", "ls-tree", "merge-base",
+})
+FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete",
+                          "-fprint", "-fprint0", "-fprintf", "-fls"})
 
 
 def _effective_safe_commands() -> frozenset:
@@ -86,13 +99,37 @@ def _effective_safe_commands() -> frozenset:
     return frozenset(accepted)
 
 
+def _segment_safe(words, safe_commands: frozenset) -> bool:
+    """True when the segment runs an allowlisted command in a shape that cannot write."""
+    head = words[0].lower()
+    if head not in safe_commands:
+        return False
+    args = words[1:]
+    if head == "git":
+        while args[:1] == ["-C"] and len(args) > 1:
+            args = args[2:]
+        if not args or args[0] not in READ_ONLY_GIT:
+            return False
+        return not any(a.startswith(("--output", "-O", "--open-files-in-pager")) for a in args)
+    if head == "find":
+        return not any(a in FIND_ACTIONS for a in args)
+    if head == "sort":
+        return not any(a.startswith(("-o", "--output")) for a in args)
+    return True
+
+
 def _all_segments_safe(command: str, safe_commands: frozenset) -> bool:
-    """True when every segment's first word is allowlisted."""
+    """True when every segment is an allowlisted command in a non-writing shape. Expansion,
+    redirection, background and newline characters fall through: they carry commands or
+    writes the segment split cannot see."""
+    if _CARRIER_RE.search(command) or _LONE_AMP_RE.search(command):
+        return False
     for segment in _SEGMENT_SPLIT.split(command):
-        words = segment.strip().split()
-        if not words:
-            continue
-        if words[0].lower() not in safe_commands:
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            return False
+        if words and not _segment_safe(words, safe_commands):
             return False
     return True
 
@@ -120,7 +157,7 @@ def main():
                 "permissionDecision": "allow",
                 "permissionDecisionReason": (
                     "Auto-approved: cd compound command — every segment starts "
-                    "with an allowlisted read-only/VCS command"
+                    "with an allowlisted command in a read-only shape"
                 ),
             }
         }

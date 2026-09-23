@@ -284,7 +284,10 @@ function Invoke-ClaudeGpt {
     }
     $subagentId = if ($LongContext) { "$($subagentBaseId)[1m]" } else { $subagentBaseId }
 
-    $ccp = $env:CCP_BIN
+    # The user-scope value wins: a shell opened before the owner moved CCP_BIN still holds the old one.
+    # CCP_BIN_SCOPE=process uses this shell's value as given.
+    $ccp = if ($env:CCP_BIN_SCOPE -ne 'process') { [Environment]::GetEnvironmentVariable('CCP_BIN', 'User') }
+    if (-not $ccp) { $ccp = $env:CCP_BIN }
     if (-not $ccp -or -not (Test-Path $ccp)) { $ccp = "$HOME\AppData\Local\claude-code-proxy\claude-code-proxy.exe" }
     if (-not (Test-Path $ccp)) {
         $onPath = Get-Command claude-code-proxy -ErrorAction SilentlyContinue

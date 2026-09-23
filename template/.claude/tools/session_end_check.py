@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 
 # (phase, command stem, mandatory) — mirrors commands/session_end.md, which owns the phase list.
@@ -250,7 +251,18 @@ def load_receipts(directory, sid):
     return receipts
 
 
-def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit'):
+def unpushed_commits(repo):
+    """Commits on HEAD that its upstream lacks: an int, or None when the count cannot be read
+    (no repo, no upstream). Phase 7 runs /commit_push, and pushing is part of it."""
+    try:
+        r = subprocess.run(['git', '-C', repo, 'rev-list', '--count', '@{u}..HEAD'],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return int(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip().isdigit() else None
+
+
+def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit', repo=None):
     """Print observation and receipt status separately; every phase needs a disposition."""
     observations, receipts = phase_observations(path), receipts or {}
     print('session_end evidence — ' + sid)
@@ -265,9 +277,13 @@ def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit')
             status = 'invalid-skip'
         if artifacts and stem == 'self_evaluate' and status == 'completed' and not phase3_artifact_ok(archive_path, sid):
             status = 'artifact-missing'
+        # A commit receipt is complete only when the push landed; an unreadable count is not a push.
+        if stem == 'commit_push' and status == 'completed' and repo and unpushed_commits(repo) != 0:
+            status = 'unpushed'
         seen = observations[stem]
         print(f'  [{status}] {label} ({stem}) — accessed={seen["accessed"]}, invoked={seen["invoked"]}')
-        if status not in ('completed', 'skipped'):
+        # A non-mandatory phase (Phase 8) may end blocked without failing the close.
+        if status not in ('completed', 'skipped') and not (status == 'blocked' and not mandatory):
             missing.append(label.strip())
             resume_label = resume_label or label
     return missing, resume_label
@@ -323,7 +339,7 @@ def main():
             return 2
         print('Recorded ' + a.record + ': ' + a.status)
         return 0
-    missing, resume_label = render(path, sid, a.archive, a.resume or a.artifacts, receipts, a.stage)
+    missing, resume_label = render(path, sid, a.archive, a.resume or a.artifacts, receipts, a.stage, a.repo)
 
     print()
     if a.resume:

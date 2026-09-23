@@ -982,8 +982,8 @@ LADDER_RELPATH = Path(".claude") / "reference" / "model_ladder_evidence.md"
 HOST_ROLE_SOURCE = "anthropic"
 
 # Ordered strongest-first. `validation` is deliberately absent: it is the `fanout` row at a lower
-# effort pin, not a row of its own, and minting a fifth tier would imply otherwise.
-TIER_ORDER = ("orchestrator", "executor", "fanout", "scout")
+# effort pin, not a row of its own, and minting another tier would imply otherwise.
+TIER_ORDER = ("orchestrator", "architect", "executor", "fanout", "scout")
 _TIER_ALIASES = {"validation": "fanout"}
 
 _LADDER_HEADING = "## Role guidance"
@@ -1028,19 +1028,67 @@ def parse_ladder_rows(raw_lines, columns, heading=None):
     return rows
 
 
-def parse_role_tiers(raw_lines):
-    """{tier: [ladder model name]} from the tier token each Anthropic role cell opens with.
+def leading_tier_tokens(role_cell):
+    """Every tier token a ladder `role` cell opens with, in order: "`architect` `executor` — x"
+    gives ["architect", "executor"]. The run ends at the first token that is not a tier, so prose
+    after the tokens never mints one. Lenient by design -- the provider guard prints what it can
+    read and never crashes a dispatch; `role_cell_problem` is the strict reading `--check` runs."""
+    tokens = []
+    rest = role_cell.strip()
+    while rest.startswith("`"):
+        token, _, rest = rest[1:].partition("`")
+        if token not in TIER_ORDER:
+            break
+        tokens.append(token)
+        rest = rest.lstrip()
+    return tokens
 
-    The ladder owns role SEMANTICS and the Anthropic-transport mapping (registry `_comment`), so the
-    tokens are read from there and never mirrored into the registry.
+
+def role_cell_problem(role_cell):
+    """Why a role cell's leading backticked run is malformed, else None.
+
+    A cell may open only with tier tokens. A misspelled or unknown one (`excutor`, `validation`)
+    would otherwise end `leading_tier_tokens`' run silently and narrow the row's claim.
+    """
+    rest = role_cell.strip()
+    while rest.startswith("`"):
+        token, sep, rest = rest[1:].partition("`")
+        if not sep:
+            return f"unclosed backtick in role cell {role_cell!r}"
+        if token not in TIER_ORDER:
+            return (f"unknown tier token `{token}` in role cell {role_cell!r}; "
+                    f"legal: {', '.join(TIER_ORDER)}")
+        rest = rest.lstrip()
+    return None
+
+
+def check_ladder(path=None, start=None):
+    """Raise RegistryError naming every malformed role cell, or a ladder that leaves a tier
+    unclaimed (an empty table included). `--check` runs it."""
+    path = path or ladder_path(start)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError as err:
+        raise RegistryError(f"cannot read the role ladder at {path}: {err}")
+    problems = [f"ladder row {row['model']!r}: {why}"
+                for row in parse_ladder_rows(lines, _LADDER_COLUMNS)
+                for why in [role_cell_problem(row["role"])] if why]
+    if problems:
+        raise RegistryError(f"{path}: " + "; ".join(problems))
+    role_tiers(path)
+
+
+def parse_role_tiers(raw_lines):
+    """{tier: [ladder model name]} from the tier tokens each Anthropic role cell opens with.
+
+    A row claiming two tiers is listed under both. The ladder owns role SEMANTICS and the
+    Anthropic-transport mapping (registry `_comment`), so the tokens are read from there and never
+    mirrored into the registry.
     """
     tiers = {}
     for row in parse_ladder_rows(raw_lines, _LADDER_COLUMNS):
-        role = row["role"]
-        if not role.startswith("`"):
-            continue                                # a row with no tier token claims no tier
-        token = role[1:].split("`", 1)[0]
-        if token in TIER_ORDER:
+        for token in leading_tier_tokens(row["role"]):
             tiers.setdefault(token, []).append(row["model"].strip())
     return tiers
 
@@ -1074,14 +1122,35 @@ def canonical_tier(name):
     return tier
 
 
+def entry_tiers(entry, tiers):
+    """Every tier a registry row serves, in TIER_ORDER. The one predicate `rows_for_tier` and the
+    provider guard's ladder line share; `rows_for_tier` says how a row comes to serve a tier."""
+    names = {entry.get("alias")} | set(entry.get("roles") or [])
+    return [t for t in TIER_ORDER if names & (set(tiers.get(t) or []) | {t})]
+
+
+def row_tier_claims(model, role_cell, tiers, data=None):
+    """Every tier a ladder row claims, from either source, in TIER_ORDER: the tokens its role cell
+    opens with, plus the tiers its registry row serves. A name the registry does not hold
+    (`qwen-local`) reads the role cell alone."""
+    claimed = set(leading_tier_tokens(role_cell))
+    try:
+        claimed |= set(entry_tiers(resolve(model, data), tiers))
+    except UnknownModel:
+        pass
+    return [t for t in TIER_ORDER if t in claimed]
+
+
 def rows_for_tier(tier, data=None, tiers=None, seat=None):
     """Every row `seat` may DISPATCH to that serves `tier`, on any transport.
 
-    Two ways to serve one: BE the ladder row for the tier (the Anthropic alias itself), or claim
-    that alias in `roles`. The second is the whole agnostic mechanism -- a row claiming `sonnet` IS
-    the off-quota route for the fanout tier, whatever the roster holds today. `roles` values stay
-    Anthropic aliases: workflow_provider_guard.claimed_roles keys its currency-deny dict by them,
-    so a row claiming a TIER name instead would silently stop matching an Anthropic pin.
+    Three ways to serve one: BE the ladder row for the tier (the Anthropic alias itself), claim
+    that alias in `roles`, or name the tier itself in `roles`. Claiming an alias is the agnostic
+    route -- a row claiming `sonnet` IS the off-quota route for the fanout tier, whatever the roster
+    holds today -- but it takes every tier that alias's row claims. A tier name claims that tier
+    alone, for a row that does one of those tiers' work but not the other. It is added BESIDE any alias
+    claim, never instead of one: workflow_provider_guard.claimed_roles keys its currency-deny dict by
+    the aliases, so dropping one would silently stop matching an Anthropic pin.
 
     Availability is asked SEAT-AWARE, through the same `dispatchable` predicate the provider guard
     uses. `available_models` is seat-blind, so a `status.scope: sidecar` row -- excluded for the hop
@@ -1091,14 +1160,9 @@ def rows_for_tier(tier, data=None, tiers=None, seat=None):
     """
     data = data or load()
     tiers = tiers if tiers is not None else role_tiers()
-    wanted = set(tiers.get(tier) or [])
     pool = available_models(data) if seat is None else [
         m for m in data["models"] if dispatchable(m, seat, data)]
-    hits = []
-    for m in pool:
-        if m.get("alias") in wanted or (set(m.get("roles") or []) & wanted):
-            hits.append(m)
-    return hits
+    return [m for m in pool if tier in entry_tiers(m, tiers)]
 
 
 def _sidecar_line(m, data):
@@ -1378,6 +1442,7 @@ def _cmd_check(argv):
     rail_errors, rail_stale = rail_evidence_problems(data, Path(__file__).resolve().parents[2])
     if rail_errors:
         raise RegistryError("; ".join(rail_errors))
+    check_ladder()
     for line in rail_stale:
         print(f"STALE railTierEvidence {line}", file=sys.stderr)
     warnings = stale_prices(data)
@@ -1420,7 +1485,8 @@ def _cmd_for_role(argv):
     # RegistryError, so the caller got a traceback instead of the usage line.
     seat = None
     argv = list(argv)
-    if "--from" in argv:
+    seat_given = "--from" in argv
+    if seat_given:
         i = argv.index("--from")
         if i + 1 >= len(argv):
             print("--from needs a transport name", file=sys.stderr)
@@ -1445,7 +1511,7 @@ def _cmd_for_role(argv):
     res = for_role(args[0], seat, data)
     tiers = role_tiers()
     print(f"role `{res['tier']}` -- ladder row(s): {', '.join(tiers[res['tier']])}")
-    print(f"seat: {seat}" + ("  (resolved from this session)" if "--from" not in argv else ""))
+    print(f"seat: {seat}" + ("" if seat_given else "  (resolved from this session)"))
     if res["note"]:
         print(f"note: {res['note']}")
 
@@ -1462,7 +1528,7 @@ def _cmd_for_role(argv):
         claims = ",".join(m.get("roles") or []) or "-"
         return f"  {m['alias']:8s} {m['id']:22s} {m['transport']:10s} effort {rungs}; {cost}; claims {claims}"
 
-    print("\nIN-TRANSPORT (Workflow/Agent pin, no hop):")
+    print("\nIN-TRANSPORT (no hop; a Workflow/Agent pin takes the first column, the alias, not the id):")
     if res["inTransport"]:
         for m in res["inTransport"]:
             print(describe(m))

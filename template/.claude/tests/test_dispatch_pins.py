@@ -36,8 +36,8 @@ def test_chain_job_defaults_effort():
     assert jobs["c1"]["effort"] == pins().ENGINE_DEFAULT_EFFORT == "medium", jobs
 
 
-def test_explore_lens_defaults_effort():
-    jobs = by_label(pins().dispatch_jobs(wf(".claude/workflows/explore_fanout.js",
+def test_lens_defaults_effort():
+    jobs = by_label(pins().dispatch_jobs(wf(".claude/workflows/any_lens_engine.js",
                                             {"lenses": [{"key": "l1", "model": "sonnet"}]})))
     assert jobs["l1"]["effort"] == "medium", jobs
 

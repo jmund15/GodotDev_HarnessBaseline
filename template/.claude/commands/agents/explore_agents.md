@@ -35,11 +35,11 @@ Triggers are **rules, not judgment calls** — the caller evaluates them mechani
 |---|---|
 | `exp-memory` | **ALWAYS** |
 | `exp-prior-art` | **ALWAYS** |
-| `exp-integration-surface` | topic names an existing type, file, scene, autoload, or BB key |
+| `exp-integration-surface` | topic names an existing type, file, scene, global singleton, or blackboard key |
 | `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula; Harness/Meta process and tooling topics never trigger `exp-design-source` |
 | `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command |
-| `exp-external-truth` | the topic's correctness depends on engine/library behavior (Godot, GdUnit4, .NET) |
-| `exp-empirical-state` | topic touches Logic-domain code with tests, or authored `.tres` data |
+| `exp-external-truth` | the topic's correctness depends on engine/library behavior (engine, library, test framework, runtime) |
+| `exp-empirical-state` | topic touches Logic-domain code with tests, or authored data files |
 | `exp-change-ease` | `/explore --make-this-easy "<change>"` was invoked |
 
 `exp-change-ease` runs only in that mode and is additive to whatever the trigger table already selected — the friction survey is worthless without the prior-art and blast-radius claims it reads against.
@@ -85,18 +85,18 @@ You are exp-memory. You establish which memorialized failure modes and cross-cut
 ### exp-prior-art (does an existing family, type, or doc already own this concern?) — floor lens
 
 ```
-You are exp-prior-art. You establish whether the concern the topic describes is ALREADY owned somewhere in {{PROJECT_NAME}} or Jmodot — before a plan proposes building it.
+You are exp-prior-art. You establish whether the concern the topic describes is ALREADY owned somewhere in the project or a registry `framework_paths` root (the `project_subsystems` registry lists them) — before a plan proposes building it.
 
 **RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Search by CONCEPT as well as by name — a live equivalent under a different name is the finding that matters most, and a name search alone will miss it.**
 
 ## Your Scope
 Enumerate every capability, type, configuration surface, or authored value the topic implies, then for each one:
 
-1. **By concept** — `semantic-search` for what it DOES ("resolve a spawn position from a marker", "scale damage by distance"), not what the topic calls it. Search {{PROJECT_NAME}} AND `Jmodot/`.
-2. **By name** — anchor with `Grep("class X\b"|"interface X\b" -g "*.cs")`. Under the concurrency guard the csharp-ls LSP is banned; anchor with Grep and Read, and report LSP-dependent questions as gaps rather than guessing.
+1. **By concept** — `semantic-search` for what it DOES ("resolve a spawn position from a marker", "scale damage by distance"), not what the topic calls it. Search the project and each registry `framework_paths` root.
+2. **By name** — Grep the declaration in the project's source files to anchor it. Under the concurrency guard the language server is banned; anchor with Grep and Read, and report LSP-dependent questions as gaps rather than guessing.
 3. **Family size** — when a candidate owner exists, count its siblings in the same namespace/folder. Two or more is the load-bearing number: CLAUDE.md's rule is that extending a 2+ family beats a parallel surface, so the count is what makes the claim actionable.
-4. **Authored surfaces, not just types** — an existing `[Export]`, parameter, or `.tres` field already carrying the value is the same finding as an existing class. Grep the `.tres` corpus for a field already authoring it.
-5. **Name collision** — two `[GlobalClass]` Resources sharing a simple name collide regardless of namespace. Check the simple name repo-wide.
+4. **Authored surfaces, not just types** — an existing authored field (an export, config key or schema field), parameter, or authored data file field already carrying the value is the same finding as an existing class. Grep the authored data files for a field already authoring it.
+5. **Name collision** — types registered globally by simple name (e.g. Godot `[GlobalClass]` Resources) collide regardless of namespace. Check the simple name repo-wide.
 
 ## What each finding becomes
 - An existing family/type/field that owns the concern → `bearing: "reuse-candidate"`, evidence = the declaration line plus the sibling list.
@@ -118,15 +118,15 @@ Enumerate every capability, type, configuration surface, or authored value the t
 ```
 You are exp-integration-surface. You establish the blast radius: what already depends on the code, scenes, and data the topic would touch. Prior art asks "does this exist?"; you ask "who breaks?"
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. The csharp-ls LSP is banned under the concurrency guard — anchor with Grep and Read. Every blast-radius claim states its evidence rung, and an LSP-exhaustive enumeration is a reported GAP rather than an estimate — the `survey` guard's ladder governs, and it is injected into this dispatch.**
+**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. The language server is banned under the concurrency guard — anchor with Grep and Read. Every blast-radius claim states its evidence rung, and an LSP-exhaustive enumeration is a reported GAP rather than an estimate — the `survey` guard's ladder governs, and it is injected into this dispatch.**
 
 ## Your Scope
 For each existing symbol, file, scene, or data key the topic names:
-1. **C# consumers** — Grep the symbol as a literal across `*.cs`; separate declaration from use sites. Verified-unique names give the same set as the LSP; a common-verb name (Apply/Update/Get/Set) does not — say which case you are in.
-2. **Scene and resource references** — Grep `*.tscn`/`*.tres` for the type name, the script path, and the UID. A `.tscn` reference is invisible to a C#-only search and is the reference class that breaks silently at load.
-3. **Blackboard keys / signals / events** — Grep the `BBDataSig` key or signal name; a Blackboard contract has no compiler check, so its consumers are only findable this way.
-4. **Test coverage of the touched surface** — which suites under `Tests/` exercise it. This tells the planner whether a change is gated.
-5. **Autoload and singleton reach** — any `X.Instance` access to the touched system.
+1. **Source consumers** — Grep the symbol as a literal in the project's source files; separate declaration from use sites. Verified-unique names give the same set as the LSP; a common-verb name (Apply/Update/Get/Set) does not — say which case you are in.
+2. **Scene, asset and data references** — Grep the scene or asset files and authored data files for the type name, the script or module path, and any asset ID. Such a reference is invisible to a source-only search and is the reference class that breaks silently at load.
+3. **Blackboard keys / signals / events** — Grep the string key, event or signal name; a string-keyed contract has no compiler check, so its consumers are only findable this way.
+4. **Test coverage of the touched surface** — which of the project's test suites exercise it. This tells the planner whether a change is gated.
+5. **Global and singleton reach** — any global or singleton access (e.g. `X.Instance`) to the touched system.
 
 ## What each finding becomes
 - A consumer a change would break → `bearing: "blast-radius"`, `file` = `path:line`, evidence = the matched line verbatim.
@@ -148,11 +148,11 @@ For each existing symbol, file, scene, or data key the topic names:
 ```
 You are exp-design-source. You establish what the Obsidian vault — the source of truth for design, lore, and formulas — already says about this topic, so a plan does not re-invent a decision that is already recorded.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. DO NOT INVENT FORMULAS — read them from the vault verbatim or report their absence. Read only within `DevProjects/{{PROJECT_NAME}}` and `DevProjects/Jmodot`.**
+**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. DO NOT INVENT FORMULAS — read them from the vault verbatim or report their absence. Read only within the project's design vault folders.**
 
 ## Your Scope
 1. **Existing design doc** — search the vault for a doc covering this topic. Grep the WHOLE doc, not just the section that names your topic: sibling sections carry prescriptions that bind it (`gotcha_design_doc_cross_section_prescriptions`).
-2. **Roadmap state** — is there a Part covering this? What state is it in, and are its dependencies satisfied? A Part may already be SHIPPED while reading as pending (`gotcha_plan_pending_part_already_shipped`) — check the code, not just the roadmap row.
+2. **Roadmap state** — is there a Part covering this? What state is it in, and are its dependencies satisfied? A Part may already be SHIPPED while reading as pending — check the code, not just the roadmap row.
 3. **Formulas and constants** — quote any numeric rule verbatim with its source doc and heading.
 4. **Open questions** — any `## Open Questions` item in a covering doc is a fork the plan must resolve rather than silently pick.
 
@@ -183,7 +183,7 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 ## Your Scope
 1. **Governing procedure** — is there a SKILL, command, or `rules/*.md` that owns this class of work? Check `.claude/skills/`, `.claude/commands/`, `.claude/rules/`.
 2. **Existing executor** — is there already a command or workflow script that DOES this? A near-miss counts: name it and say what it does not cover.
-3. **Gates** — which gate applies (`/regression_gate` for `.cs`, `/plan_check` above its litmus, `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
+3. **Gates** — which gate applies (the project's regression gate for code, which `change_control` §Gate cadence names; `/plan_check` above its litmus; `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
 4. **Baseline tracking** — is any file the topic would edit listed in `.claude/baseline.lock.json`? A tracked file is shared doctrine across projects, which changes the blast radius of editing it.
 5. **Hook coverage** — does a hook already enforce or nudge this? A hook that fires on the same trigger is either the answer or a conflict.
 
@@ -205,13 +205,13 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 ### exp-external-truth (what does the engine/library actually do?) — triggered
 
 ```
-You are exp-external-truth. You establish the real behavior of the external APIs the topic depends on — Godot, GdUnit4, .NET — because this harness has no reliable built-in knowledge of them and a guessed API is a plan built on fiction.
+You are exp-external-truth. You establish the real behavior of the external APIs the topic depends on — engine, framework, runtime — because this harness has no reliable built-in knowledge of the project's pinned versions and a guessed API is a plan built on fiction.
 
 **RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/reference/source_trust.md` FIRST and follow it — it owns the trust tiers, the cite-or-gap rule, P3 escalation, and the claim shape (the cited URL in `file`, the local path the quote was taken from in `artifact` when one exists, verbatim quote in `evidence`, tier tag plus version at the end of `claim`).**
 
 ## Your Scope
 1. Identify each external API, engine feature, or library behavior the topic's correctness rests on. Only those — this lens serves the topic about to be planned, not a general survey.
-2. Fetch the P1 source for each: Godot classes from `.claude/cache/godot-docs/doc/classes/<Class>.xml` — the version-pinned XML the HTML reference is generated from, since docs.godotengine.org is Cloudflare-gated and unusable (build it with `.claude/scripts/godot_docs_cache.sh`); `mcp__plugin_context7_context7__query-docs` for a resolved library id; otherwise `.claude/scripts/fetch_source.sh <url>...` against the URLs in `source_trust.md`, which lands the bytes a quote is checked against. `WebFetch` for a single page it cannot reach; `read_web` only when the answer needs synthesis across pages.
+2. Fetch the P1 source for each in `source_trust.md` §Fetch order: the version-pinned local docs cache first, at the path and with the builder its stack sibling file names; `mcp__plugin_context7_context7__query-docs` for a resolved library id; otherwise `.claude/scripts/fetch_source.sh <url>...` against the P1 URLs in `source_trust.md` and its stack sibling, which lands the bytes a quote is checked against. `WebFetch` for a single page it cannot reach; `read_web` only when the answer needs synthesis across pages.
 3. Pin the VERSION your answer is true for. The engine version is pinned in `.claude/reference/project_stack.md`; a doc page for another major version is a different answer.
 4. Note deprecations and behavior changes that affect the topic.
 
@@ -235,17 +235,17 @@ You are exp-external-truth. You establish the real behavior of the external APIs
 ```
 You are exp-empirical-state. You establish the observable state of tests and authored data for the topic's surface — the dimension that reading source code cannot give.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Do NOT run tests or builds — the GdUnit4 named pipe is machine-wide single-flight and you are one of several concurrent lenses. Read test SOURCES, existing result artifacts, and data files.**
+**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Do NOT run tests or builds — test runners and the language server can be machine-wide single-flight, and you are one of several concurrent lenses. Read test SOURCES, existing result artifacts, and data files.**
 
 ## Your Scope
-1. **Coverage** — which suites under `Tests/Logic|Integration|Sanity` exercise the topic's surface, and what do they actually assert? A suite whose name matches the topic but whose asserts do not reach the branch is not coverage (`feedback_test_name_must_match_exercised_path`).
-2. **Known-failing or skipped** — any test already failing, skipped, or `[Ignore]`d on this surface. A pre-existing failure the planner does not know about becomes a false regression signal later.
-3. **Gate reachability** — do the relevant suites sit under a namespace the `/regression_gate` filter picks up? A test outside the filter never runs.
-4. **Authored data corpus** — for a topic touching `.tres` data, what values are actually authored today? Grep the corpus for the field and report the real range, not the type default. A `.tres` that omits a field carries the type default, not the exemplar's value (`gotcha_cloned_tres_omissions_are_type_defaults`).
-5. **Existing fixtures and doubles** — which shared fixture or mock in `Tests/Framework/` already covers the interfaces involved.
+1. **Coverage** — which of the suites the regression gate's filter runs exercise the topic's surface, and what do they actually assert? A suite whose name matches the topic but whose asserts do not reach the branch is not coverage.
+2. **Known-failing or skipped** — any test already failing, skipped, or disabled on this surface. A pre-existing failure the planner does not know about becomes a false regression signal later.
+3. **Gate reachability** — do the relevant suites sit under a namespace the project's regression gate filter picks up (`change_control` §Gate cadence names the gate)? A test outside the filter never runs.
+4. **Authored data corpus** — for a topic touching authored data files, what values are actually authored today? Grep the corpus for the field and report the real range, not the type default. An authored data file that omits a field carries the type default, not the exemplar's value (`gotcha_cloned_tres_omissions_are_type_defaults`).
+5. **Existing fixtures and doubles** — which of the project's shared fixtures and test doubles already covers the interfaces involved.
 
 ## What each finding becomes
-- Existing coverage → `bearing: "constraint"` (it pins behavior the plan must not break), evidence = the `[TestCase]` name plus its key assert line.
+- Existing coverage → `bearing: "constraint"` (it pins behavior the plan must not break), evidence = the test method name plus its key assert line.
 - Uncovered surface the topic would change → `polarity: "absent"` with `verification` = the directory listing or filter expression proving no suite reaches it.
 - Authored data contradicting the topic's assumption about it → `bearing: "premise-contradiction"`.
 
@@ -269,7 +269,7 @@ You are exp-change-ease. The CONTEXT names ONE upcoming change. You establish wh
 1. **Bound the surface.** List the files, scenes, and data the named change would touch. Rank them by recent churn (`git log --since=<3 months> --name-only --pretty=format:` over those folders) and read the hot ones first — a deepening in code nobody touches is a refactor nobody cashes in.
 2. **Friction, with file:line evidence.** For each surface: what would the change have to fight? Duplicated authoring of the same value across N sites; a switch on type that a new case must be added to in M places; a seam the change needs that is typed but wired to a literal; a knob that must be set in two homes to take effect; topology-coupled call sites. Quote the line.
 3. **Seams that already carry it.** An existing strategy slot, config Resource, or base-class hook the change could ride instead of adding a surface. This is the same finding shape as `exp-prior-art`'s reuse-candidate — use the same `subject` string so the engine merges them.
-4. **What must NOT move.** Read `.claude/skills/architecture_contract/SKILL.md` (invariants index) and `.claude/skills/failure_archaeology/SKILL.md` (settled battles) and claim every invariant or settled decision the change's surface sits on. A friction point that a settled decision deliberately created is not friction — it is a constraint, and reporting it as friction re-litigates a closed call.
+4. **What must NOT move.** Load the project's invariants-index and settled-battles skills, when it has them (their catalog descriptions name the invariant index and the chronicle of settled decisions), and claim every invariant or settled decision the change's surface sits on. A friction point that a settled decision deliberately created is not friction — it is a constraint, and reporting it as friction re-litigates a closed call.
 
 ## Admission filter — the deletion test
 Before claiming a structure as friction, ask: would deleting it CONCENTRATE complexity, or merely move it somewhere else? Concentrates → claim it. Moves it → drop the claim. This is what separates a real friction point from generic cleanup.

@@ -180,7 +180,7 @@ Delegate commands create/update files that inline fixes may depend on.
 
 **`/doc_full` (S1 findings):**
 - Invoke `/doc_full {SystemName}` for each system needing template completion
-- Execute **sequentially** — each `/doc_full` spawns 3 subagents and is context-heavy
+- Execute **sequentially**
 - **Cap at 3 systems per invocation.** If more than 3 need `/doc_full`, process 3 and report: "Fixed 3/{N} systems. Run `/doc_audit_fix` again for the remaining {N-3}."
 
 **`/doc_usage` or `/doc_architecture` (S2/S3 findings):**
@@ -357,7 +357,7 @@ Present the session summary:
 
 Generate a folder reorganization plan so the user can align the physical folder structure with the domain groupings in Start Here.
 
-**Why user-action, not automated:** Obsidian's auto-link-update only triggers when files are moved through its UI (drag-drop or right-click → Move). Programmatic moves (Bash `mv`, native file read/write/delete) are seen as "delete + create" and do NOT update wikilinks. This was empirically tested and confirmed.
+**Why user-action, not automated:** Obsidian's auto-link-update only triggers when files are moved through its UI (drag-drop or right-click → Move). Programmatic moves (Bash `mv`, native file read/write/delete) are seen as "delete + create" and do NOT update wikilinks.
 
 ### 8a. Read Domain Mapping
 
@@ -461,7 +461,7 @@ After the hierarchy plan, audit system folder names for consistency. The naming 
 **Action:** Rename in Obsidian (right-click → Rename). Obsidian auto-updates wikilinks on rename.
 ```
 
-**Important:** Renames MUST be done through Obsidian's UI (right-click → Rename) for the same reason as moves — auto-link-update only triggers through the UI. Programmatic renames do not update wikilinks.
+**Important:** Renames MUST be done through Obsidian's UI (right-click → Rename) for the same reason as moves — auto-link-update only triggers through the UI.
 
 ### 8g. No-Op Exit
 
@@ -472,12 +472,5 @@ If all domains are fully aligned AND all names are consistent (no misaligned sys
 
 ## Constraints
 
-- **Vault tooling**: this command uses native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path throughout (Phase 1a). See `obsidian_conventions`.
 - **Idempotent**: Before each inline fix, read the target file and check if the fix is already applied. Skip silently if present.
-- **Sequential `/doc_full`**: Never run multiple `/doc_full` invocations in parallel (each spawns 3 subagents and is context-heavy).
-- **Cap at 3 delegates**: If >3 systems need `/doc_full` or `/doc_architecture` or `/doc_usage`, process 3 and report "run again for remaining." This prevents context exhaustion.
-- **Backward compatible**: Supports both old schema (derive action/handler from check code via routing table) and new schema (read `action`/`handler`/`options` fields directly from the finding).
-- **Freshness-aware**: Warn if audit report is >7 days old.
-- **No subagents**: This command runs inline as an orchestrator. It delegates to existing commands via `/doc_full`, `/doc_start_here_update`, etc. — those commands handle their own subagent orchestration.
-- **Single-report writes**: Always overwrite the full report in one `Write` call — never patch line by line.
-- **Preserve report structure**: When updating findings, preserve the prose report content (statistics, domain analysis tables, cross-agent patterns) and regenerate the `## Machine Findings` JSON block with updated `status`/counts. The prose RESOLVED/DEFERRED markers and the JSON `status` must always agree.
+- **Preserve report structure**: When updating findings, preserve the prose report content (statistics, domain analysis tables, cross-agent patterns) and regenerate the `## Machine Findings` JSON block with updated `status`/counts.

@@ -33,7 +33,7 @@ pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
 
 Every position runs the same full gate; there are no tiers to choose. Between drive start and drive close the expected gate count is **zero** — commits batch to the close gate, and slice/Part verification is `verify.ps1 -Scope <domains>`, which the hook never blocks. Cadence canon: `change_control` §Gate cadence.
 
-**`-Detach` is mandatory from an agent session; `run_in_background: true` is not durable.** Claude Code reaps a backgrounded Bash task once the session goes idle and the whole process tree dies with it — a full gate survives only while the session keeps issuing tool calls. `-Detach` returns in ~1s with `OUT=<path>`; watch that file until a line begins `VERDICT=`, which is the only completion signal. A killed poller loses the wake-up, never the run. **The watch streams progress; a silent `until grep VERDICT` loop is forbidden** — the user must see each stage line (`GUARDS`, `BUILD`, `SUITE ...`, `VERDICT`) as it lands, or a ten-minute Integration batch is indistinguishable from a hang. Integration prints ONE `SUITE` line when all batches are done; its per-batch progress lives in `.claude/scratch/test_runs/integration_batches.json` (`label`, `status` GREEN/RED/PENDING, `passed`, `failed`, `elapsed`), so the watch also emits each batch as its status leaves PENDING — without that the Integration phase is a 10-minute silence. Canonical Monitor script (emits each new stage line and each finished batch, exits on the verdict):
+**`-Detach` is mandatory from an agent session; `run_in_background: true` is not durable.** Claude Code reaps a backgrounded Bash task once the session goes idle and the whole process tree dies with it — a full gate survives only while the session keeps issuing tool calls. `-Detach` returns in ~1s with `OUT=<path>`; watch that file until a line begins `VERDICT=`, which is the only completion signal. A killed poller loses the wake-up, never the run. **The watch streams progress; a silent `until grep VERDICT` loop is forbidden** — the user must see each stage line (`GUARDS`, `BUILD`, `SUITE ...`, `VERDICT`) as it lands, or a ten-minute Integration batch is indistinguishable from a hang. Integration prints ONE `SUITE` line when all batches are done; its per-batch progress lives in `.claude/scratch/test_runs/integration_batches.json` (`label`, `status` GREEN/RED/PENDING, `passed`, `failed`, `elapsed`), so the watch also emits each batch as its status leaves PENDING. Canonical Monitor script (emits each new stage line and each finished batch, exits on the verdict):
 
 ```bash
 F="<OUT path>"; J=".claude/scratch/test_runs/integration_batches.json"; S=$(mktemp); P="^(REAP|PEERS|QUEUE_WAIT|ENGINE|GUARDS|BUILD|DOCS|SUITE|IMPORT_GATE|BASELINE|TREE_CHANGED|VERDICT)"
@@ -104,9 +104,9 @@ VERDICT=PASS
 | 8 | `CONTENTION` | A suite killed or died with no `Passed!/Failed!` line AND no `STATUS=LOCK_TIMEOUT`/`LOCKED` (those route to `LOCKED` → exit 7) WHILE a live peer gate/suite record overlapped the window — a peer's run, not a regression. Auto-requeued on the queued path; re-run once inline. Never adjudicate a CONTENTION artifact as FAIL. |
 | 124 | `HANG` | A suite wedged and was tree-killed after retry. Re-run once. |
 
-Exits 0, 1, 3 and `STATIC_PASS` may be returned **via REUSE**; a reused exit 1 still runs the adjudication below. Exit **5 is the Integration runner's internal code** (`BUDGET_EXCEEDED` or a LOCKED-only completion) — the gate converts it to the automatic `-RetryOnly` pass, the queue handoff, or exit 6; never a final gate exit.
+Exits 0, 1, 3 and `STATIC_PASS` may be returned **via REUSE**. Exit **5 is the Integration runner's internal code** (`BUDGET_EXCEEDED` or a LOCKED-only completion) — the gate converts it to the automatic `-RetryOnly` pass, the queue handoff, or exit 6; never a final gate exit.
 
-**On `HANG` or `INVALID`, load [testing `reference/running.md`](/.claude/skills/testing/reference/running.md)** — it owns GdUnit4 runtime troubleshooting (wedged-wrapper `taskkill` by parent chain, named-pipe exhaustion, when reboot is the terminal fix). Not on the happy path; the script encodes the mechanics the gate needs.
+**On `HANG` or `INVALID`, load [testing `reference/running.md`](/.claude/skills/testing/reference/running.md)** — it owns GdUnit4 runtime troubleshooting (wedged-wrapper `taskkill` by parent chain, named-pipe exhaustion, when reboot is the terminal fix).
 
 **A second `HANG`, or counts that DROP across retries, means machine state is exhausted — stop retrying.**
 
@@ -145,7 +145,7 @@ Then ask via `AskUserQuestion`:
 
 **A mid-chain Part close does not gate and does not commit** — it verifies by `verify.ps1 -Scope` over its accumulated blast zone, and its work batches to the drive close, whose full gate backs every commit in the drive (`change_control` §Gate cadence). Every gate run is a full gate, so its trailer is a plain `Verified: Logic N/0 + Integration M/0 + Sanity K/0`; there is no qualified mid-chain trailer, since there is no narrowed gate to write one for. Post-failure re-verification after a fix (integration-local → `-RetryOnly`; domain-spanning → `verify -Scope <domains>`; shared-state → whole-tier re-run) is owned by `change_control` §Gate cadence.
 
-> **Sub-suite filtered runs have no count sentinel.** Hand-run a narrower filter than a whole suite and an executor-connect failure reports `Passed!` with only the non-runtime subset, in ms-scale time. Sanity-check count magnitude and duration; the TRX testName list is the arbiter. See `gotcha_unit_filtered_test_run_fake_green.md`.
+> **Sub-suite filtered runs have no count sentinel.** Hand-run a narrower filter than a whole suite and an executor-connect failure reports `Passed!` with only the non-runtime subset, in ms-scale time. Sanity-check count magnitude and duration; the TRX testName list is the arbiter.
 
 ## Baseline
 
@@ -187,7 +187,7 @@ Example deltas: `[+12]`, `[unchanged]`, `[-3 — drop acknowledged]`.
 Verdict: APPROVE | APPROVE WITH NOTES | REQUEST CHANGES
 ```
 
-**Checkbox states:** `[x]` verified true this session · `[ ]` applicable but NOT yet verified (user must run or override) · `[—]` not applicable this session. A suite item satisfied **via REUSE** marks `[x]`, reported as `PASS (reused from <id>, digest-match)`.
+**Checkbox states:** `[x]` verified true this session · `[ ]` applicable but NOT yet verified (user must run or override) · `[—]` not applicable this session. A suite item satisfied **via REUSE** marks `[x]`.
 
 **Self-attest sources:**
 - **`/session_audit`:** `[x]` if it ran this session returning APPROVE or APPROVE WITH NOTES; `[ ]` if it didn't run, or returned unresolved REQUEST CHANGES; `[—]` only on pure-meta commits.

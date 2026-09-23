@@ -17,7 +17,7 @@ description: Autonomously drive a design topic to an approved design doc + roadm
 | A well-trodden shape on an existing Part (plan → ship) | `/part_drive` — add `--plan-only` to stop at an approved plan |
 | A large or novel design run autonomously, taste batched to one gate | **this command** |
 
-**Preflight (before any exploration):** load `architecture_philosophy` — plus `jmodot` and/or `project_subsystems` when the topic touches those surfaces. Contract clause 1 makes the doctrine a citable grounding source, and an unloaded skill cannot be cited. Do not treat the auto-loaded `rules/design_litmus.md` as the doctrine; it is the pointer to it. Read `Claude/Meta/Development-Focus.md`; name any misalignment between the topic and the current focus in the preflight summary — advisory, never a gate.
+**Preflight (before any exploration):** load `architecture_philosophy` — plus `project_subsystems` and any framework skill the project ships when the topic touches those surfaces. Contract clause 1 makes the doctrine a citable grounding source, and an unloaded skill cannot be cited. Do not treat the auto-loaded `rules/design_litmus.md` as the doctrine; it is the pointer to it. Read `Claude/Meta/Development-Focus.md`; name any misalignment between the topic and the current focus in the preflight summary — advisory, never a gate.
 
 **Entry preconditions (halt, don't improvise):**
 
@@ -35,7 +35,7 @@ is refinement-plus-continuation, never ideation. Four intake steps bind before d
    surface). A user doc's sections are constraints to CONFIRM, not specifications to trust.
 2. **Establish implementation status before drafting** — a user doc rarely states what already shipped.
    The `/explore` floor's claims carry this; additionally run the worklog-relevance check (session-once)
-   — prior drive/audit artifacts (e.g. session-audit findings files) are the refinement branch's PRIMARY
+   — prior drive/audit artifacts are the refinement branch's PRIMARY
    input, not optional context.
 3. **Verify every doc premise against code** — user docs carry premise divergences as a rule: 2D
    framing for a 3D entity, authoring conventions already superseded by shipped data, values the doc
@@ -57,7 +57,7 @@ Socratic questions the human-in-the-loop flow would ask the user are answered fr
 
 This command authorizes `Workflow` for any stage shape — adversarial panel, exploration fan-out, competing design drafts + judge panel, or anything else `orchestration` judgment calls for (per-call `model` + `effort` pins per the ladder in `reference/model_ladder_evidence.md` + `orchestration` §5).
 
-Where the contract binds process anyway (clause 5): Part authoring runs the sub-procedure chain in `skills/architecture_brainstorm/reference/part_authoring.md` §*Step 5 — sub-procedure run order*, the doc self-review runs `skills/architecture_brainstorm/reference/doc_and_review.md` §*Step 7 — self-review checklist*, and roadmaps route through `/update_roadmap`. Those are artifact gates, not exploration.
+Where the contract binds process anyway (clause 5): Part authoring runs the sub-procedure chain of `architecture_brainstorm` Step 5, the doc self-review runs its Step 7 self-review checklist, and roadmaps route through `/update_roadmap`. Those are artifact gates, not exploration.
 
 ## Halt valves
 
@@ -73,9 +73,9 @@ Accumulating N batched taste-forks is a SUCCESS state, not a valve (appetite inv
 
 **The answered batch IS the approval.** Once the user has answered every batched taste-fork, the design is approved — reconcile the doc to the answers and proceed directly. Do NOT ask a separate approve-the-design question, and do NOT re-gate the `/update_roadmap` batch (present its diff informationally and apply; the user redirects after the fact). A follow-up approval question is warranted ONLY when reconciliation introduces design content that is not a direct consequence of a batch answer, or when answers conflict and force a redesign.
 
-1. Invoke `/update_roadmap` (clause 5 — single executor; multi-roadmap child-subfolder case per `architecture_brainstorm` Step 8's two-invocation sequence). If the Step 5 *MVP recommendation* conditions hold (`skills/architecture_brainstorm/reference/part_authoring.md` §*MVP recommendation — the three firing conditions*), surface that recommendation at design-lock — same message as the brainstorm skill, including the REQUIRED Playtest plan (common.md §6.11) — rather than silently skipping it. The user decides at the gate whether to run `/mvp_plan` now or defer.
-2. Without `--through-implementation`: report the recommended starting Part and stop.
-3. With it: for each `plan-pending` Part in dependency order, run `/part_drive <part>`. Its valve set applies unchanged — taste-forks now halt IMMEDIATELY, not batch: reversibility drops at the implementation boundary and no batching point exists there. Chain mode pins `/part_drive` step 2's draft-delegation rule: plan DRAFTS dispatch to an executor-tier arm — over a chain the orchestrator's context is the binding constraint. A halt in any Part stops the chain; report Parts completed vs. remaining. After each `/part_drive`'s `/update_roadmap` run, if any MVP's Status flipped to `🧪 Ready for playtest`, surface it with its Playtest plan (common.md §6.11) — the drive ends at a playtestable state, and the user should playtest before `/mvp_plan verify`. If a flipped MVP has no Playtest plan, name the gap explicitly (the `/update_roadmap` Step 5 warning fires it) rather than reporting the chain clean.
+1. Invoke `/update_roadmap` (clause 5 — single executor; multi-roadmap child-subfolder case per `architecture_brainstorm` Step 8's two-invocation sequence). If the Step 5 *MVP recommendation* conditions hold (`architecture_brainstorm` Step 5), surface that recommendation at design-lock — same message as the brainstorm skill, including the REQUIRED Playtest plan (common.md §6.11) — rather than silently skipping it. The user decides at the gate whether to run `/mvp_plan` now or defer.
+2. With `--design-only`: report the recommended starting Part and stop.
+3. Otherwise: for each `plan-pending` Part in dependency order, run `/part_drive <part>`. Its valve set applies unchanged — taste-forks now halt IMMEDIATELY, not batch: reversibility drops at the implementation boundary and no batching point exists there. Chain mode pins `/part_drive` step 2's draft-delegation rule: plan DRAFTS dispatch to an architect-tier arm — over a chain the orchestrator's context is the binding constraint. A halt in any Part stops the chain; report Parts completed vs. remaining. After each `/part_drive`'s `/update_roadmap` run, if any MVP's Status flipped to `🧪 Ready for playtest`, surface it with its Playtest plan (common.md §6.11) — the drive ends at a playtestable state, and the user should playtest before `/mvp_plan verify`. If a flipped MVP has no Playtest plan, name the gap explicitly (the `/update_roadmap` Step 5 warning fires it) rather than reporting the chain clean.
 
 ## Anti-patterns
 

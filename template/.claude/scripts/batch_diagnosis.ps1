@@ -10,7 +10,7 @@
                          or the batch was budget-skipped while upstream consumed the global
                          budget). The reservation/budget was wrong, not a wedge. Action names
                          the exact change: raise expectedSec, move a dominant segment to a
-                         lighter batch, or raise TotalBudgetMs.
+                         lighter batch, or find what slowed the run before raising BudgetMargin.
   TEST_CLASS             The batch died before its honest time AND the captured output names a
                          last test. Action: run that test standalone — passes-alone-vs-suite-only
                          separates a wedge from batch composition (AttachedDeathFling lesson).
@@ -68,7 +68,7 @@ function Get-BatchDiagnosis {
         return [pscustomobject]@{
             verdict  = 'BUDGET_CLASS'
             evidence = "skipped before running (global budget exhausted upstream); last_wall=${WorkWallSec}s reservation=${ReservationSec}s"
-            action   = 'raise TotalBudgetMs (690s) in run_integration_batched.ps1 or shift units into lighter batches — the batch itself never got to run'
+            action   = 'the run was slower than its measured reservations x BudgetMargin (run_integration_batched.ps1): find what slowed the run before raising BudgetMargin — the batch itself never got to run'
         }
     }
 
@@ -177,7 +177,7 @@ if ($SelfTest) {
     Test-Expect 'INSUFFICIENT_EVIDENCE without test lines' ($d6.verdict -eq 'INSUFFICIENT_EVIDENCE' -and $d6.action -match 'Verbosity') "got $($d6.verdict) / $($d6.action)"
 
     $d7 = Get-BatchDiagnosis -Batch $skip1 -ReservationSec 60 -WorkWallSec 12.5 -LastOutput '' -UnitSecs $unitSecs -UnitTests $unitTests
-    Test-Expect 'SKIPPED_BUDGET classifies BUDGET_CLASS' ($d7.verdict -eq 'BUDGET_CLASS' -and $d7.action -match 'TotalBudgetMs') "got $($d7.verdict)"
+    Test-Expect 'SKIPPED_BUDGET classifies BUDGET_CLASS' ($d7.verdict -eq 'BUDGET_CLASS' -and $d7.action -match 'BudgetMargin') "got $($d7.verdict)"
 
     $lines | ForEach-Object { Write-Output $_ }
     if ($lines.Count -eq 0) { Write-Output 'SELFTEST_ERROR no cases executed — a zero-case self-test is a no-op, not a pass'; exit 1 }

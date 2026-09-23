@@ -5,7 +5,7 @@ argument-hint: <task> | --jobs <path>
 
 # Delegate
 
-Use this for ordinary ad hoc jobs. `/explore` and `/plan_check` keep their coverage contracts and use the same engines.
+Use this for ordinary ad hoc jobs. Commands with their own coverage contract, such as the coding layer's exploration and plan-review commands, keep it and use the same engines.
 
 ## Arguments
 
@@ -24,7 +24,7 @@ Namespace labels `<runKey>-<label>` and reject duplicates. State model, effort, 
 Return one state:
 - `PROCEED`: scope, inputs, route, eligibility, pins and currency are established.
 - `HOLD`: a required fact or owner decision is missing.
-- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to `/explore`, a plan-draft command or `/plan_check`.
+- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to a command with its own coverage contract: exploration, plan drafting or plan review.
 
 Do not silently change a pin, role, provider or currency to get past a failure.
 
@@ -61,4 +61,4 @@ Keep full evidence in a run-specific `.claude/scratch/` artifact and return a bo
 python3 .claude/tools/orchestration_metrics.py --manifest-seed <seed.json> --manifest-out <manifest.json> --session <session-dir> --sidecar-record-dir <record-dir> --manifest-verdicts .claude/orchestration_verdicts.json
 ```
 
-Verify one evidence join per declared label, requested/effective fields kept separate, distinct `workflow`/`sidecar` sources, status `completed` and all required outputs accounted for. Report result, verification, artifact and unmet scope briefly. Codex quota is not Claude Code's estimated Anthropic-dollar cost.
+Verify one evidence join per declared label, requested/effective fields kept separate, distinct `workflow`/`sidecar` sources, status `completed` and all required outputs accounted for. Report result, verification, artifact and unmet scope briefly; do not equate tool quota with provider cost.

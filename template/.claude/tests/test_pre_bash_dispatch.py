@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS_DIR = os.path.normpath(os.path.join(HERE, "..", "hooks"))
@@ -100,6 +101,54 @@ def main():
           repr(names))
     check("its import did not fall back to the stub",
           getattr(pre_bash_dispatch, "_BASELINE_GUARD_IMPORT_ERROR", "unset") is None)
+    names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
+    check("approving_gates is directly after sidecar dispatch and before backslash fidelity",
+          "sidecar_dispatch_context.py" in names and "approving_gates.py" in names
+          and "bash_backslash_fidelity.py" in names
+          and names.index("approving_gates.py") == names.index("sidecar_dispatch_context.py") + 1
+          and names.index("approving_gates.py") < names.index("bash_backslash_fidelity.py"), repr(names))
+    check("approving_gates import did not fall back to its stub",
+          getattr(pre_bash_dispatch, "_APPROVING_GATES_IMPORT_ERROR", "unset") is None)
+    stub_cls = getattr(pre_bash_dispatch, "_ApprovingGatesImportStub", None)
+    stub_code, stub_out, stub_err = (pre_bash_dispatch.run_hook(stub_cls("ImportError: planted"), (), "{}")
+                                     if stub_cls else (None, "", ""))
+    check("a failed approver import reports on user stderr and approves nothing",
+          stub_code == 1 and stub_out == "" and "approving_gates" in stub_err and "planted" in stub_err,
+          repr((stub_code, stub_out, stub_err)))
+
+    def planted_deny_main():
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "planted deny wins"}}))
+
+    planted_deny = SimpleNamespace(__name__="planted_deny", __file__="planted_deny.py",
+                                   main=planted_deny_main)
+    digest_payload = payload(
+        "Bash", "python3 .claude/tools/session_digest.py --session abc123 --brief")
+    approver_at = [m for m, _ in pre_bash_dispatch.HOOKS].index(pre_bash_dispatch.approving_gates)
+    planted_chain = (*pre_bash_dispatch.HOOKS[:approver_at], (planted_deny, ()),
+                     *pre_bash_dispatch.HOOKS[approver_at:])
+    project_before = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = REPO
+    try:
+        control = pre_bash_dispatch.dispatch(digest_payload)
+        planted = pre_bash_dispatch.dispatch(digest_payload, hooks=planted_chain)
+    finally:
+        if project_before is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = project_before
+
+    def decision_of(result):
+        try:
+            return json.loads(result[1]).get("hookSpecificOutput", {}) if result[1] else {}
+        except ValueError:
+            return {}
+    check("control: the same chain without the plant approves the digest",
+          control[0] == 0 and decision_of(control).get("permissionDecision") == "allow", control[2])
+    check("a planted deny just ahead of the approver beats its digest approval",
+          planted[0] == 0 and decision_of(planted).get("permissionDecision") == "deny"
+          and decision_of(planted).get("permissionDecisionReason") == "planted deny wins", planted[2])
 
     cases = [
         ("Bash", "git status --short | head -3"),

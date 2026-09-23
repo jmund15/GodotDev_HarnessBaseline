@@ -28,7 +28,7 @@ Operands mix freely. `--out` is always required. With no arm the tool prints its
 
 Lead with the routing verdict. State capability in the instrument's terms, never relative to another row; rows retire.
 
-- **Write a model tendency, never this run:** *"exhaustive over a diff, slow"*, not *"on the 5-lens audit it found 26 defects"*.
+- **Write a model tendency, never this run:** *"exhaustive over a diff, slow"*, not *"this run found N defects"*.
 - **Rewrite an existing clause or add none.** Appending one observation per ingest turns a routing table into a changelog.
 - No score, task id, date, arm count, wall-clock figure, multiplier, run description or per-run link in `±` or `effort`; `ladder_prose_check.py` enforces this mechanical half.
 - An observation that would not recur belongs nowhere. Say so in `doesNotShow` and stop.

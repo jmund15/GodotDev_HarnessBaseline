@@ -57,8 +57,9 @@ EXCLUDED = {}
 
 _PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "*.sh", "*.ps1")
 _TIMEOUT_SEC = 120
-# The publish suite builds 24 git fixtures: 61 s alone, past 120 s beside a second battery.
-_BUILTIN_PROOF_TIMEOUTS = {"test_baseline_publish.py": 300}
+# Git-fixture suites. Alone on 2026-09-23: publish 191 s, sync 132 s; both passed their caps
+# beside a loaded machine only with about 2x headroom.
+_BUILTIN_PROOF_TIMEOUTS = {"test_baseline_publish.py": 480, "test_baseline_sync.py": 300}
 _PROOF_TIMEOUTS = dict(_BUILTIN_PROOF_TIMEOUTS)
 
 

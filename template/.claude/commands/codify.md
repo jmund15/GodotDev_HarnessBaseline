@@ -15,9 +15,9 @@ Take ONE just-issued correction ("never let this happen again") or ONE procedure
 
 ## Step 0 — Does it already exist?
 
-Semantic-search `.claude/` for the rule before writing anything.
+Semantic-search `.claude/` for the rule before writing anything. Then read the target file itself for the same obligation in other words. A hit there is the one place you edit: strengthen or correct it, and delete any restatement you find (`instruction_quality` §3). A rule CLAUDE.md or the system prompt already carries, or a hook already enforces, lands no new prose; a violation of it is a reachability or enforcement fix below.
 
-**Done: the search query and its top hits (`path:section`) appear in your report.** A claim that it ran is not the done-condition — a skipped Step 0 produces a clean-looking new rule, and nothing flags the duplicate until `/rule_consistency` runs much later.
+**Done: the search query and its top hits (`path:section`) appear in your report.** A skipped Step 0 produces a clean-looking duplicate that nothing flags until `/rule_consistency` runs.
 
 | Finding | Fix | Wrong fix |
 |---|---|---|
@@ -44,7 +44,7 @@ Three gates, all required:
 
 - **`/autolearn` *Anti-pattern: Overfit-to-Specific*** — strip the file / PR / spell / SHA out of the principle; it demotes to the `Signal:` evidence line.
 - **Model scope** — a failure one model showed on clear text lands in that model's channel, not in universal doctrine (`rules/harness_authoring.md` *A correction takes the scope of its evidence*).
-- **`feedback_dont_codify_never_from_single_fix.md`** — check whether the correction over-bans a *mechanism*. Litmus: *am I writing never/only/always about a mechanism when the incident was one instance of it?* Overfit-to-Specific does not catch this, and a false `never` blocks legitimate design space.
+- **No permanent never from a single fix** — check whether the correction over-bans a *mechanism*. Litmus: *am I writing never/only/always about a mechanism when the incident was one instance of it?* Overfit-to-Specific does not catch this, and a false `never` blocks legitimate design space.
 
 **Done: the rule reads in class-of-things terms, its model scope matches its evidence, and any never/only/always in it is named and justified.**
 
@@ -52,8 +52,8 @@ Three gates, all required:
 
 Two mechanization surfaces, checked in order:
 
-- **A tool boundary.** Can a `PreToolUse`/`PostToolUse` matcher *decide* it from a command shape, file path, or tool name? Then it routes to a hook **plus a documented home** — `instruction_quality` §3: a rule whose only home is a hook file is invisible to doctrine, unfollowable when the matcher misses, and structurally exempt from `/rule_consistency`.
-- **A gate over an artifact.** Can a script or a read-only lens *decide* it from a diff, a plan file, a PR body, or the repo state at gate time? Then it routes to the gate that already runs there — a lint under `/regression_gate` 1c, a Claude-side grep or lens in `/pr_ready`, a lens in `/plan_check`, or a registry template in `agents/*_agents.md` (via `tools/lens.py`) — and the command that runs the gate is its documented home.
+- **A tool boundary.** Can a `PreToolUse`/`PostToolUse` matcher *decide* it from a command shape, file path, or tool name? Then it routes to a hook **plus one documented home** (`instruction_quality` §3). A rule whose only home is a hook file is invisible to doctrine and exempt from `/rule_consistency`; a rule restated beyond that one home adds hesitation.
+- **A gate over an artifact.** Can a script or a read-only lens *decide* it from a diff, a plan file, a PR body, or the repo state at gate time? Then it routes to the gate that already runs there — a lint in the project's regression gate (`change_control` §Gate cadence names it), a Claude-side grep or lens in the coding layer's pre-PR battery or plan-review panel, or a registry template in `agents/*_agents.md` (via `tools/lens.py`) — and the command that runs the gate is its documented home.
 
 **Done: the matcher condition or the gate predicate is written out, or one line says why the rule needs judgment neither can supply.**
 
@@ -85,7 +85,7 @@ The admission standard is `instruction_quality` §5 A1–A5. Run these checks in
 
 1. **Admission.** State the pre-trigger decision the line changes and why an existing or narrower surface cannot carry it. A true, useful line still dilutes its neighbours; "the cluster already exists" is not a reason. For MEMORY.md, also state why the decision fires before a search would run. No admission reason → re-route behind a pointer or to a triggered surface (back to Step 4, land cold) and stop here.
 2. **Measure** `wc -c` before and after. Growth needs no matching deletion.
-3. **Audit** every changed section with the focused `instruction_quality` pass. It preserves every condition, exception, owner boundary and reachability requirement, and removes only redundant, stale, duplicated, narrative or unreachable text.
+3. **Audit** every changed section with the focused `instruction_quality` pass. It preserves every condition, exception, owner boundary and reachability requirement, and removes only redundant, stale, duplicated, narrative, unreachable, obvious-negation, friction or overfit text.
 4. **Caps.** A §5 threshold crossing records its reason and hard-cap response. A hard-cap crossing (CLAUDE.md per `/claudemd_compact`, MEMORY.md per CLAUDE.md §2) routes to split, re-home or an evidence-backed rebase, never to deleting a load-bearing rule.
 
 **Done: admission reason, byte delta, hard-cap status and audit result are recorded, or the item is re-routed.**
@@ -94,7 +94,9 @@ The admission standard is `instruction_quality` §5 A1–A5. Run these checks in
 
 Direct `Edit` for skills, rules, commands, hooks, cold memory.
 
-**Write the verdict, not the incident.** The landed text is the rule, its trigger, and the one clause that makes it non-obvious — no date, no "observed/measured" narrative, no session story; that evidence goes to `auto-memory/archive/` or Obsidian and is cited by name (`instruction_quality` §5 *Size proportional to load mode*). Every landing is a byte delta: state it and run the focused audit. Write its ledger to `.claude/scratch/codify_audits/<sid8>-<target-slug>.json`, one row per changed rule unit: target/section, admission reason, bytes before/after, hard-cap status, before/after unit hashes, preserved obligations, and each removed span classed redundant | stale | duplicated | narrative | unreachable. `harness_growth_guard.py` reports growth after the edit; that is a measurement, not proof of concision or completeness. If the target grew by >1.5KB or >10%, report the reason and the audit findings, and cut only what the audit classifies as unnecessary.
+**Write the verdict, not the incident.** The landed text is the rule, its trigger, and the one clause that makes it non-obvious. A clause that only answers the triggering complaint, rather than the class it belongs to, is overfit: generalize it or leave it out. Its evidence goes to `auto-memory/archive/` or Obsidian, cited by name (`instruction_quality` §5).
+
+Every landing is a byte delta: state it and run the focused audit. Write the ledger to `.claude/scratch/codify_audits/<sid8>-<target-slug>.json`, one row per changed rule unit: target/section, admission reason, bytes before/after, hard-cap status, before/after unit hashes, preserved obligations, and each removed span classed redundant | stale | duplicated | narrative | unreachable | obvious-negation | friction | overfit. Growth over 1.5KB or 10% reports its reason and audit findings; cut only what the audit classes unnecessary.
 
 **Record a retirement trigger only when the rule can become wrong for a named reason.** With no known invalidating condition, write no marker, omit the report row, and write no permanence label; never invent a generic "architecture/model changes" trigger. A trigger goes in `retire_when:` in the memory file's frontmatter, or a `<!-- retire-when: ... -->` comment on the line below a rule landing in a command, skill or `rules/` file. Name the condition that would make the rule wrong, in this order:
 
@@ -108,7 +110,7 @@ Direct `Edit` for skills, rules, commands, hooks, cold memory.
 
 CLAUDE.md and a `rules/` file may carry one file-level `review-by` comment covering every rule in the file; per-rule comments there would grow the always-loaded bundles.
 
-**Queue non-load-bearing CLAUDE.md edits** under `/apply_harness_edits` and its load-mode contract. Append to `.claude/pending_harness_edits.md`, quoting each `old` string verbatim and anchoring by heading, never by line number. Applying a disk edit does not evict the loaded text. A `MEMORY.md` pointer lands with its topic file (CLAUDE.md §2).
+**Queue non-load-bearing CLAUDE.md edits** under `/apply_harness_edits` and its load-mode contract. Append to `.claude/pending_harness_edits.md`, quoting each `old` string verbatim and anchoring by heading, never by line number.
 
 Target listed in `baseline.lock.json` → it is shared doctrine (CLAUDE.md §10). Flag for `/sync_baseline` classification, and check whether a companion new file must upstream in the same operation — a cite pushed without its target dangles in every consuming project.
 
@@ -116,9 +118,7 @@ Target listed in `baseline.lock.json` → it is shared doctrine (CLAUDE.md §10)
 
 ## Step 7 — Prove it fires
 
-Run the Step-4 proof for the chosen surface and report the result. A cold-memory or `rules/` proof searches the index, so run `/reindex_search` first — a file written this session is not in it, and the proof fails for the wrong reason.
-
-`instruction_quality` §14: registration proves wiring, not matching. A rule never seen firing is a hope, and it reads in every audit as enforcement that does not exist.
+Run the Step-4 proof for the chosen surface and report the result. A cold-memory or `rules/` proof searches the index, so run `/reindex_search` first — a file written this session is not in it, and the proof fails for the wrong reason. Registration proves wiring, not matching (`instruction_quality` §14).
 
 ## Report
 

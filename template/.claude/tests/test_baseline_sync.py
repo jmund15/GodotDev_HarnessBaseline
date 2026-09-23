@@ -1417,6 +1417,23 @@ def test_v2_pull_keeps_placeholder_ok_files_verbatim() -> None:
         assert results[engine] == "in-sync" and results[user] == "in-sync", results
 
 
+def test_unimported_layer_files_names_each_overlay_claude_md_never_loads() -> None:
+    engine = _load_engine()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".claude").mkdir()
+        for name in ("CLAUDE.core.md", "CLAUDE.coding.md", "CLAUDE.godot.md"):
+            (root / ".claude" / name).write_text("## x\n", encoding="utf-8")
+        claude = root / ".claude" / "CLAUDE.md"
+        claude.write_text("@CLAUDE.core.md\n\n# Project\n", encoding="utf-8")
+        assert engine.unimported_layer_files(root) == [".claude/CLAUDE.coding.md", ".claude/CLAUDE.godot.md"]
+        claude.write_text("@CLAUDE.core.md\n@CLAUDE.coding.md\n@CLAUDE.godot.md\n", encoding="utf-8")
+        assert engine.unimported_layer_files(root) == []
+        (root / ".claude" / "CLAUDE.godot.md").unlink()
+        claude.write_text("@CLAUDE.core.md\n@CLAUDE.coding.md\n", encoding="utf-8")
+        assert engine.unimported_layer_files(root) == []
+
+
 def test_placeholder_ok_files_skip_both_substitution_directions() -> None:
     engine = _load_engine()
     name_token = "{{" + "PROJECT_NAME" + "}}"
@@ -1505,6 +1522,7 @@ def test_env_strips_every_git_local_env_var() -> None:
 
 def main() -> int:
     cases = [
+        test_unimported_layer_files_names_each_overlay_claude_md_never_loads,
         test_env_strips_every_git_local_env_var,
         test_sub_unset_removes_a_substitution,
         test_sub_adds_a_substitution_to_an_existing_lock,

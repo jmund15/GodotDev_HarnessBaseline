@@ -24,9 +24,9 @@ def test_workflow_call_injects_ladder_roles():
     assert stdout, "Workflow call must emit additionalContext"
     ctx = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
     assert "[role ladder" in ctx
-    # a known ladder row must be present with its role prose, not a registry role token
+    # a known ladder row must be present with its claimed tiers and its role prose
     assert "luna:" in ctx  # family names: a new version never churns them
-    assert "spec-tight execution" in ctx
+    assert "luna: fanout/scout (test authoring" in ctx, ctx
 
 
 def test_non_workflow_tool_emits_nothing():

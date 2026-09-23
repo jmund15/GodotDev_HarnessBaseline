@@ -21,6 +21,6 @@ retire_when:
 
 **Concrete:** during the 2026-05-31 MCP→file memory migration, two probes with an absolute `restrictToDir` returned 0 results and nearly produced a false "auto-memory isn't indexed" conclusion that would have derailed the whole approach; an unrestricted query proved the dir was indexed at bm25=1.00.
 
-Related: [[project_memory_single_store_two_tier]], [[feedback_tool_routing_discipline]].
+Related: [[project_memory_single_store_two_tier]].
 
 **Verified:** 2026-09-04 memory-claim audit — per-dir `.search-index/` directories exist at `.claude/`, `.claude/auto-memory/`, `.claude/hooks/` beside the repo-root one (`git ls-files --others --ignored`), so a subdir `searchDir` does build a separate index.

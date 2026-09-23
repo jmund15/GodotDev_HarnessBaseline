@@ -16,8 +16,7 @@ Check them here, before classification turns them into staged work.
 **Check premise-shaped claims only.** A premise-shaped claim asserts what exists, what is missing,
 what remains to be built, or what something will cost: *"we only have one X"*, *"we'd need to build
 Y"*, *"Z doesn't exist yet"*, *"that's months of work"*. Design opinions, preferences, and priority
-statements carry no premise — skip them. Expect a handful per transcript, not dozens.
-
+statements carry no premise — skip them. Expect a handful per transcript, not dozens. 
 **A build proposal carries an unstated premise.** Any candidate proposing to build, add, or create
 something asserts that it does not already exist, whether or not the transcript ever says so. Check
 that assertion too — an unspoken premise sets scope exactly as hard as a spoken one, and reaches
@@ -62,7 +61,7 @@ adjectival: something reasons about each problem before seeing the chosen answer
    verbatim constraints both parties stated, premise-check repo facts. The participants' chosen
    answers are REMOVED — the blind brief is the de-biasing mechanism (the `--design_panel`
    blind-attempt structure).
-3. **Dispatch ONE blind job** via dispatch.js — pin the executor tier — `medium` for interpersonal/process contention, `high`/`xhigh` when a brief
+3. **Dispatch ONE blind job** via dispatch.js — pin the architect tier — `medium` for interpersonal/process contention, `high` when a brief
    turns on repo facts the arm must discover — **never the default fan-out tier** (it fabricates on open judgment —
    per the ladder, `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
    per brief with tradeoffs. Record the pin in the run report.

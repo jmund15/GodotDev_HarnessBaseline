@@ -40,7 +40,7 @@ LADDER = """## Pick by work shape
 | model | role | effort |
 |---|---|---|
 | fable | `orchestrator` - ideal design | high |
-| opus | `executor` - architect & executor | xhigh |
+| opus | `architect` `executor` - design & execution | xhigh |
 | sonnet | `fanout` - fan-out, validation | high |
 | haiku | `scout` - read-only locate | low |
 | luna | scoped planning + spec-tight execution | max |
@@ -105,11 +105,40 @@ def _fresh_registry_copy():
     return tmp
 
 
-def _only_tiers(keep):
-    """DATA where the codex seat serves only `keep` -- so `executor` has no in-transport row and the
-    nearest search has a genuine tie to break."""
+def _with_sol():
+    """DATA plus a codex row that claims the architect tier by name in `roles`."""
     d = copy.deepcopy(DATA)
-    role_for = {"orchestrator": "fable", "executor": "opus", "fanout": "sonnet", "scout": "haiku"}
+    d["models"].append({"transport": "codex", "id": "gpt-6-sol", "alias": "sol",
+                        "roles": ["sol", "architect"]})
+    return d
+
+
+_WELL_FORMED_ROWS = ["| fable | `orchestrator` - x |", "| opus | `architect` `executor` - x |",
+                     "| sonnet | `fanout` - x |", "| haiku | `scout` - x |", "| luna | prose |"]
+
+
+def _ladder_check_error(planted):
+    """check_ladder over a temp ladder: the well-formed rows plus `planted` ('' adds nothing; None
+    writes an empty table). Returns the error text, '' when the check passes."""
+    import tempfile
+    rows = [] if planted is None else _WELL_FORMED_ROWS + ([planted] if planted else [])
+    text = "\n".join(["## Role guidance", "", "| model | role |", "|---|---|"] + rows) + "\n"
+    path = os.path.join(tempfile.mkdtemp(prefix="mladder_"), "ladder.md")
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    try:
+        mr.check_ladder(path)
+    except mr.RegistryError as exc:
+        return str(exc)
+    return ""
+
+
+def _only_tiers(keep):
+    """DATA where the codex seat serves only `keep` -- so a tier between two kept ones has no
+    in-transport row and the nearest search has a genuine tie to break."""
+    d = copy.deepcopy(DATA)
+    role_for = {"orchestrator": "fable", "architect": "opus", "executor": "opus", "fanout": "sonnet",
+                "scout": "haiku"}
     for m in d["models"]:
         if m["transport"] == "codex":
             m.pop("status", None)
@@ -152,9 +181,69 @@ def _capture_context(argv, limits):
 
 CASES = [
     # ---- the ladder reader -------------------------------------------------
-    ("ladder tier tokens parse to the four Anthropic rows",
-     lambda: TIERS == {"orchestrator": ["fable"], "executor": ["opus"],
+    ("ladder tier tokens parse to the Anthropic rows, a two-token row under BOTH tiers",
+     lambda: TIERS == {"orchestrator": ["fable"], "architect": ["opus"], "executor": ["opus"],
                        "fanout": ["sonnet"], "scout": ["haiku"]}),
+
+    # A role cell opens with every tier it claims. Reading only the first token dropped the second
+    # claim, so a design-and-execution row vanished from one of its two tiers.
+    ("for-role architect lists the two-token row",
+     lambda: aliases(res("architect", "anthropic")["inTransport"]) == ["opus"]),
+
+    ("...and for-role executor lists the same row",
+     lambda: aliases(res("executor", "anthropic")["inTransport"]) == ["opus"]),
+
+    ("a leading token that is not a tier ends the claim list; it never mints a tier",
+     lambda: mr.parse_role_tiers(["## Role guidance\n", "| model | role |\n", "|---|---|\n",
+                                  "| m | `executor` `bogus` `fanout` x |\n"])
+             == {"executor": ["m"]}),
+
+    # A non-Anthropic row claims a tier by naming it in registry `roles`, beside the alias route.
+    ("a registry row naming a tier in `roles` serves that tier",
+     lambda: aliases(mr.for_role("architect", "codex", _with_sol(), TIERS)["inTransport"]) == ["sol"]),
+
+    ("...and only that tier: the architect claim does not make it an executor",
+     lambda: "sol" not in aliases(
+         mr.for_role("executor", "codex", _with_sol(), TIERS)["inTransport"])),
+
+    # An architect-only claimant is the nearest in-transport row for executor work on its seat. The
+    # offer names its tier and direction, so the dispatcher weighs its `±` cell before taking it.
+    ("codex seat with an architect claimant, executor: it is offered as nearest, ONE tier ABOVE",
+     lambda: [(m["alias"], t, d) for m, t, d in mr.for_role("executor", "codex", _with_sol(),
+                                                             TIERS)["nearest"]]
+             == [("sol", "architect", -1)]),
+
+    # ---- one predicate for every tier a registry row serves -----------------
+    ("entry_tiers reads a tier named in `roles`, an alias claim, and the row's own alias",
+     lambda: mr.entry_tiers({"alias": "sol", "roles": ["sol", "architect"]}, TIERS) == ["architect"]
+             and mr.entry_tiers({"alias": "luna", "roles": ["sonnet", "haiku"]}, TIERS)
+             == ["fanout", "scout"]
+             and mr.entry_tiers({"alias": "opus", "roles": []}, TIERS) == ["architect", "executor"]),
+
+    ("row_tier_claims joins the role cell's tokens with the registry's claims, in tier order",
+     lambda: mr.row_tier_claims("sol", "fresh architecting", TIERS, _with_sol()) == ["architect"]
+             and mr.row_tier_claims("opus", "`architect` `executor` - x", TIERS, DATA)
+             == ["architect", "executor"]),
+
+    ("row_tier_claims on a name the registry does not hold reads the role cell alone",
+     lambda: mr.row_tier_claims("qwen-local", "I/O worker", TIERS, DATA) == []),
+
+    # ---- a malformed role cell fails `--check`, naming the row ----------------
+    ("an unknown backticked token after a tier token fails the ladder check and names the row",
+     lambda: "opus" in _ladder_check_error("| opus | `architect` `excutor` - x |")
+             and "excutor" in _ladder_check_error("| opus | `architect` `excutor` - x |")),
+
+    ("an unknown backticked token opening the cell fails the ladder check",
+     lambda: "validaton" in _ladder_check_error("| sonnet | `validaton` - x |")),
+
+    ("an unclosed backtick in the leading run fails the ladder check",
+     lambda: "unclosed" in _ladder_check_error("| opus | `architect - x |")),
+
+    ("an empty Role guidance table fails the ladder check",
+     lambda: "no ladder row claiming" in _ladder_check_error(None)),
+
+    ("a well-formed ladder passes the ladder check",
+     lambda: _ladder_check_error("") == ""),
 
     ("a work-shape row never contributes a tier",
      lambda: not any("deep review" in v for vs in TIERS.values() for v in vs)),
@@ -176,9 +265,9 @@ CASES = [
      lambda: [(m["alias"], t, d) for m, t, d in res("executor", "codex")["nearest"]]
              == [("luna", "fanout", 1)]),
 
-    ("codex seat, orchestrator: nearest states TWO tiers below",
+    ("codex seat, orchestrator: nearest states THREE tiers below",
      lambda: [(m["alias"], t, d) for m, t, d in res("orchestrator", "codex")["nearest"]]
-             == [("luna", "fanout", 2)]),
+             == [("luna", "fanout", 3)]),
 
     ("nearest is EMPTY when in-transport already serves the tier",
      lambda: res("fanout", "codex")["nearest"] == []),
@@ -236,17 +325,17 @@ CASES = [
          "executor", _astra_sidecar_scoped(), TIERS))),
 
     # ---- an equidistant tie resolves toward the STRONGER tier -------------
-    # `fanout` is one rung below `executor` and `orchestrator` one above, so both are distance 1.
+    # `scout` is one rung below `fanout` and `executor` one above, so both are distance 1.
     # Sorting on abs(distance) alone let list position decide, which could offer the weaker row --
     # a silent downgrade, the exact failure for_role exists to make visible.
     ("an equidistant nearest tie offers the STRONGER tier, not list order",
      lambda: set(t for _, t, _ in mr.for_role(
-         "executor", "codex", _only_tiers(("orchestrator", "fanout")), TIERS)["nearest"])
-         == {"orchestrator"}),
+         "fanout", "codex", _only_tiers(("executor", "scout")), TIERS)["nearest"])
+         == {"executor"}),
 
     ("...and the weaker side is genuinely available, so the tie was real",
      lambda: any(m["transport"] == "codex" for m in mr.rows_for_tier(
-         "fanout", _only_tiers(("orchestrator", "fanout")), TIERS, seat="codex"))),
+         "scout", _only_tiers(("executor", "scout")), TIERS, seat="codex"))),
 
     # ---- a status flip is a ONE-LINE diff ---------------------------------
     # Windows text mode turns every \n into CRLF, so a one-field flip rewrote all ~700 lines and the
@@ -623,7 +712,7 @@ def _identity_cases(live):
         # ---- owner ruling 2026-09-22: a new version takes over its family ----
         ("the current luna/sol rows carry their family's roles, effort measured on the predecessor",
          lambda: mr.resolve("luna", live)["roles"] == ["sonnet", "haiku"]
-                 and mr.resolve("sol", live)["roles"] == ["sol", "expansiveArchitecting", "scopedArchitecting", "thinPlanning"]
+                 and mr.resolve("sol", live)["roles"] == ["sol", "architect"]
                  and all(mr.resolve(a, live)["effort"].get("evidence") == "measured"
                          and mr.resolve(a, live)["effort"].get("measuredVersion") == "gpt-5.6-" + a
                          for a in ("sol", "luna"))),
@@ -724,6 +813,20 @@ def _identity_cases(live):
                          for ln in cli(["for-role", r, "--from", "anthropic"])[1].splitlines())),
         ("`for-role executor --from codex` prints no `-e` on the opus hop",
          lambda: "-m opus -e" not in cli(["for-role", "executor", "--from", "codex"])[1]),
+        ("`for-role architect` on the live ladder lists opus in-transport and sol across the hop",
+         lambda: (lambda r: r[0] == 0 and "claude-opus-5-5" in r[1] and "gpt-6-sol" in r[1])(
+             cli(["for-role", "architect", "--from", "anthropic"]))),
+        ("`for-role executor --from codex` offers sol as nearest with its tier and direction",
+         lambda: (lambda r: r[0] == 0 and any(
+             "gpt-6-sol" in ln and "[`architect`, 1 tier above]" in ln
+             for ln in r[1].splitlines()))(cli(["for-role", "executor", "--from", "codex"]))),
+        ("`--from` never reports the seat as resolved from this session",
+         lambda: "resolved from this session" not in cli(["for-role", "executor", "--from", "codex"])[1]),
+        ("`--check` runs the ladder check: the live ladder passes it",
+         lambda: mr.check_ladder() is None),
+        ("`for-role executor` on the live ladder still lists opus",
+         lambda: (lambda r: r[0] == 0 and "claude-opus-5-5" in r[1])(
+             cli(["for-role", "executor", "--from", "anthropic"]))),
 
         # ---- validation of the new fields ----
         ("aliasHistory naming an unregistered id is rejected",
@@ -880,6 +983,17 @@ def main():
     failed += not ok
     print("%s a well-formed for-role still exits 0" % ("ok  " if ok else "FAIL"))
 
+    # The native engines accept only the alias; a header that says "pin" beside a row printing the
+    # full model id first sent the id to review_fanout.js, which rejected it.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mr._cmd_for_role(["executor", "--from", "anthropic"])
+    header = next((l for l in buf.getvalue().splitlines() if l.startswith("IN-TRANSPORT")), "")
+    ok = "alias" in header and "not the id" in header
+    failed += not ok
+    print("%s the in-transport header names the alias column as the pin, not the id (%r)"
+          % ("ok  " if ok else "FAIL", header))
+
     # ---- time-of-day pricing, peak gate policy, version-bound evidence, effort vocabulary ----
     # Fixture = the SHIPPED registry with a schedule planted on the deepseek transport, for the same
     # reason as the scope cases: transport-level rules fire first on a hand-built dict.
@@ -889,7 +1003,7 @@ def main():
     ident_failed, ident_total = _identity_cases(live)
     failed += ident_failed
 
-    total = len(CASES) + 3 + 3 + len(invalid_limit_cases) + 4
+    total = len(CASES) + 3 + 3 + len(invalid_limit_cases) + 5
     total += sched_total + ident_total
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0

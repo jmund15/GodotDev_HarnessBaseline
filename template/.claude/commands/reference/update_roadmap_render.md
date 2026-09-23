@@ -12,7 +12,7 @@ Generate deterministically from the Parts table:
 
 - **Node ID:** Part name slugified (`Foundation+Refactor` → `Foundation_Refactor`).
 - **Node label:** Part name **verbatim, NO `Pos N. ` prefix.** Mermaid's CommonMark parser interprets leading `N. ` (also `- `, `* `, `# `, `> `) as markdown list/heading syntax and emits "Unsupported markdown: list" warnings — one per offending node. Pos is encoded by graph rank, not in the label. If the renderer must surface Pos in-label, use `N: Name` / `[N] Name` / `Pos N — Name` (em-dash-separated) — never `N. Name`. Full constraint: [`mermaid_diagrams` skill](../../skills/mermaid_diagrams/SKILL.md) → *Renderer constraints* + [`common.md`](../../skills/_brainstorm_shared/common.md) §6.4 → *Node label rule*.
-- **Class:** one of `plan | arch | idea | rework | workshop | complete | abandoned | user | submap` (rework states map to `rework` class which is dashed-stroke; `user-owned` maps to `user`; `submap-pending` maps to `submap` which is long-dashed teal; `prototype-pending` maps to `workshop` — both terminate in a human verdict, and common.md §6.4's classDef block defines no `prototype` class).
+- **Class:** one of `plan | arch | idea | rework | workshop | complete | abandoned | user | submap` (rework states map to `rework` class which is dashed-stroke; `user-owned` maps to `user`; `submap-pending` maps to `submap` which is long-dashed teal; `prototype-pending` maps to `workshop` — both terminate in a human verdict, and common.md §6.4's classDef block defines no class of its own for that state).
 - **Edges:** `<dep> --> <part>` for each Deps entry where `<dep>` is a local Part.
 - **Cross-folder edges:** dashed line with the cross-folder path as edge label.
 

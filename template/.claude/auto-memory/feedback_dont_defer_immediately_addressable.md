@@ -1,41 +1,21 @@
 ---
 name: don-t-defer-immediately-addressable-work-to-the-worklog
-description: "If you can do it now with no bad consequences, DO IT NOW. The worklog is for unavoidable rabbit-trails and git-topology-gated items, not a deferral bin."
+description: "Evidence behind worklog_reference's Do-now gate: surfaced work is done now, inline or dispatched; the worklog holds only items with a named defer reason."
 metadata:
   node_type: memory
   type: feedback
   originSessionId: 84adc6c1-1ab3-4b4c-ade9-5bed49091669
-  modified: 2026-07-28T20:37:36.083Z
+  modified: 2026-09-23T16:00:25.850Z
 ---
 
-When you notice a small change you could make right now without derailing the main session, **do it now**. Don't propose a worklog add as a substitute. This applies doubly to scope-1 items — they are trivial *by definition*, so the propose→confirm→write-Obsidian→write-mirror→read-next-session→eventually-do cost dwarfs just doing the fix now.
+The rule lives in `skills/worklog_reference/SKILL.md` §Do-now gate: relevant work surfaced mid-session is done now, inline or dispatched through `orchestration`, and a deferral names one of five reasons (owner judgment, external block, design first, owner deferral, collision). This file keeps the evidence.
 
-**Why:** The worklog exists for unavoidable rabbit-trail items that would derail main work if executed inline. Spurious adds clog the mirror, accumulate cognitive overhead, and create a false sense of progress (item-logged-not-done feels like progress, isn't). The recurring failure this prevents: treating "I noticed this" as automatically equivalent to "I should defer this."
+**Why:** a logged item feels like progress and is not. The propose → confirm → write vault → write mirror → read next session → eventually do loop costs more than doing the work, and spurious adds clog the ready pool. With background dispatch, "it needs an agent" or "it spans files" is not a reason to wait.
 
-**Do-it-now examples** (never propose-to-log these): untracked files referenced as authoritative doctrine (`git add` inline), one-line typo fixes, simple terminology sweeps, stale doc references, obvious missing comments.
+**Rulings:**
+- 2026-07-28: scope ≤2 in session context → fix now; "it needs an agent" is not a defer reason.
+- 2026-09-23: the owner found agents still too hesitant given the dispatch system, and set do-now as the default for all relevant, applicable work, with deferral only for a named reason. The skill's old gate had drifted stricter than the 2026-07-28 ruling: it fired only on scope-1 mechanical wording, asked "do now (y) or log (a)?", and made logging the default route. This file's old "worklog is appropriate for >1 file / >30 min" list contradicted orchestration.
 
-**How to apply:** Before any worklog-add proposal, ask: (a) Can I do this now without derailing main work? (b) Are there any bad consequences? If `yes / no` → do it now.
-
-**Threshold (2026-07-28 ruling):** scope ≤2 AND in-session-context → fix now; orchestrate a slice/agent if needed — "it needs an agent" is not a defer reason. Worklog only for large-scope or out-of-context items.
-
-**A defect you NAME in a report is disposed of, not merely mentioned.** Prose acknowledgment is
-not a disposition. "This is a genuine bug worth its own investigation" reads as a finding and
-functions as a dismissal: nothing tracks it, nobody owns it, and it looks handled *precisely
-because* it was said out loud. The rule above is framed around worklog-add proposals, so it cannot
-catch this shape — here the sentence IS the deferral, and there is no proposal to intercept.
-
-*Litmus:* after naming a defect, exactly one of these must be true — fixed now / worklog item
-created / explicitly declined **with a reason and an offer**. If none is, you deferred it
-invisibly. (Measured 2026-08-20: a live test-pollution bug was diagnosed, written into a status
-report as worth investigating, and left — while a second finding in the same report was declined
-correctly, naming the corruption risk and offering to do it anyway. Same session, same report; the
-difference is the disposition, not the severity.)
-
-**When the worklog IS appropriate:**
-- Items requiring user judgment.
-- Items whose scope would derail (>1 file / >30 min / multi-decision).
-- Items needing later-phase information.
-- Items the user explicitly asks to log.
-- **Git-topology-gated items** — the one case a scope-1 item legitimately waits: when the answer to *"can I just do this now in the current branch / worktree?"* is "no, because of git topology." Examples: "bump submodule pointer on main after this PR merges" (gated on merge order); "cherry-pick this fix to release/2.x" (branch-specific); anything requiring a worktree context the current session lacks. Put the specific git-topology reason in the proposal text.
-
-Companion: [[feedback_audit_in_plan_mode]].
+**Invisible deferral is the same failure.** A defect named in a report and left without a disposition is deferred with nothing tracking it.
+- 2026-08-20: a live test-pollution bug was diagnosed, written up as "worth investigating", and left.
+- 2026-09-23: a memory admission guard for launches was written into a design doc as "tracked apart" with no worklog item or dispatch.

@@ -65,7 +65,13 @@ CCP_PORT=""
 
 # The proxy ships as a plain exe extracted from a GitHub release — there is no brew on this
 # machine and no npm shim, so the install path is the primary lookup and PATH the fallback.
+# The owner's user-scope CCP_BIN wins over this process's copy: a session launched before the owner moved it
+# (and every hook it spawns) still holds the old value. CCP_BIN_SCOPE=process uses the process value as given.
 ccp_bin() {
+  local scoped
+  if [ "${CCP_BIN_SCOPE:-}" != process ] && scoped="$(python3 "$CCP_PROBE" user-scope-bin 2>/dev/null)" && [ -n "$scoped" ]; then
+    printf '%s' "$scoped"; return 0
+  fi
   if [ -n "${CCP_BIN:-}" ]; then printf '%s' "$CCP_BIN"; return 0; fi
   local installed="$HOME/AppData/Local/claude-code-proxy/claude-code-proxy.exe"
   [ -x "$installed" ] && { printf '%s' "$installed"; return 0; }
@@ -79,6 +85,8 @@ ccp_bin() {
 ccp_start() {
   local ccp
   ccp="$(ccp_bin)" || { echo "claude-code-proxy not found (set CCP_BIN)" >&2; return 4; }
+  local served
+  served="$(python3 "$CCP_PROBE" serves "$ccp" "$SC_MODEL")" || { echo "[proxy-sidecar] $served" >&2; return 4; }
   CCP_PORT="$(python3 "$CCP_PROBE" freeport)"
   mkdir -p "$(dirname "$CCP_LOG")"
   # WebSocket continuation and native compaction are enabled only on tested builds.
@@ -152,6 +160,10 @@ except Exception:
     echo "UNAVAILABLE (excluded from the roster; see model_registry.py available)"
     exit 7
   fi
+  # The model list is compiled into each proxy build: a registry remap needs a build that serves the new id.
+  _check_serves="$(python3 "$CCP_PROBE" serves "$(ccp_bin)" "${_check_reg%%|*}")" || {
+    [ $? -eq 1 ] && { echo "UNAVAILABLE ($_check_serves)"; exit 4; }
+    echo "UNAVAILABLE ($_check_serves)"; exit 8; }
   sc_check_gates
   echo "OK (model=${_check_reg%%|*} plan-quota band=${SC_PROVIDER_BAND:-unknown} proxy=per-dispatch)"
   exit 0

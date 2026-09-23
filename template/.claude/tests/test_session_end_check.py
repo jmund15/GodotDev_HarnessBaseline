@@ -321,6 +321,59 @@ def main():
         check("cold replay ignores an unrelated archive append",
               rc == 0 and "RESUME AT: none" in out, detail=out[-500:])
 
+        # --- final stage: a completed commit_push with the branch still ahead of its upstream -------
+        # Phase 7 invokes /commit_push, which pushes. A receipt recorded after local commits alone
+        # passed the close (2026-09-23, session e33ca9f0: 35 commits sat unpushed).
+        git = lambda cwd, *a: subprocess.run(["git", "-C", cwd, *a], capture_output=True, text=True,
+                                             env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                                                      GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+        bare, repo = os.path.join(tmp, "up.git"), os.path.join(tmp, "work")
+        git(tmp, "init", "-q", "--bare", bare)
+        git(tmp, "clone", "-q", bare, repo)
+        Path(repo, "a.txt").write_text("1")
+        git(repo, "add", "a.txt"); git(repo, "commit", "-q", "-m", "one"); git(repo, "push", "-q", "-u", "origin", "HEAD")
+        Path(repo, "a.txt").write_text("2")
+        git(repo, "commit", "-q", "-am", "two")
+        final_sid = SID + "-final"
+        final_path = write_transcript(tmp, ALL_MANDATORY_LINES, sid=final_sid)
+        receipts_dir = Path(tmp) / (final_sid + '.receipts')
+        receipts_dir.mkdir(exist_ok=True)
+        ev = Path(tmp) / 'final-evidence.json'
+        ev.write_text('{}')
+        prune = Path(tmp) / 'final-harness-prune.md'
+        prune.write_text('### Plans\nfixture\n\n### Worktrees\nfixture\n\n### Scratch\nfixture\n')
+        for stem in checker.required_phases('final'):
+            receipt = checker.make_receipt(final_sid, stem, 'completed', [str(ev)],
+                                           [str(prune if stem == 'harness_prune' else ev)], 'Synthetic phase proof')
+            (receipts_dir / (stem + '.json')).write_text(json.dumps(receipt))
+
+        def run_final():
+            r = subprocess.run([sys.executable, '-B', "-X", "utf8", TOOL, "--transcript", final_path,
+                                "--session", final_sid, "--receipts", str(receipts_dir), "--repo", repo,
+                                "--artifacts", "--archive", archive_hit, "--stage", "final"],
+                               capture_output=True, text=True, encoding="utf-8", timeout=60)
+            return r.returncode, r.stdout
+        # archive_hit holds OTHER_SID, not final_sid; point Phase 3 at a row for this sid.
+        archive_hit = write_archive(tmp, [final_sid], name="archive_final.json")
+        rc, out = run_final()
+        check("final stage fails a completed commit_push while the branch is ahead of its upstream",
+              rc == 1 and "[unpushed]" in line_with(out, "commit_push"), detail=out[-500:])
+        git(repo, "push", "-q")
+        rc, out = run_final()
+        check("...and passes once the branch is pushed",
+              rc == 0 and "[completed]" in line_with(out, "commit_push"), detail=out[-500:])
+        # Phase 8 is hygiene: a concurrent session's lock on the index blocks it, never the close.
+        blocked = checker.make_receipt(final_sid, "reindex_search", "blocked", [str(ev)], [str(ev)],
+                                       "EBUSY: another session holds search.db")
+        (receipts_dir / "reindex_search.json").write_text(json.dumps(blocked))
+        rc, out = run_final()
+        check("a blocked reindex does not fail the final close",
+              rc == 0 and "[blocked]" in line_with(out, "reindex_search"), detail=out[-500:])
+        mandatory_blocked = checker.make_receipt(final_sid, "worklog", "blocked", [str(ev)], [str(ev)], "x")
+        (receipts_dir / "worklog.json").write_text(json.dumps(mandatory_blocked))
+        rc, out = run_final()
+        check("...while a blocked mandatory phase still does", rc == 1, detail=out[-500:])
+
     print()
     n_checks = check.calls
     print("%d/%d cases pass" % (n_checks - len(failures), n_checks))

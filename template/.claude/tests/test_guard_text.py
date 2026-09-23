@@ -23,6 +23,12 @@ PLANTED = {
 }
 
 
+OVERLAYS = {
+    "any.coding.md": "# any coding\n\n## detailed\nANY-CODING-DETAILED\n",
+    "review.godot.md": "# review godot\n\n## detailed\nREVIEW-GODOT-DETAILED\n",
+}
+
+
 def planted_tool(tmp):
     tools = os.path.join(tmp, ".claude", "tools")
     guards = os.path.join(tmp, ".claude", "guards")
@@ -69,6 +75,22 @@ def main():
         rc, _, err = run(tool, "review")
         cases.append(("a wrong argument count exits 2 with usage", rc == 2 and "usage: guard_text.py" in err))
 
+    with tempfile.TemporaryDirectory(prefix="guard_text_overlay_") as tmp:
+        tool = planted_tool(tmp)
+        for name, text in OVERLAYS.items():
+            with open(os.path.join(tmp, ".claude", "guards", name), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        rc, out, _ = run(tool, "review", "detailed")
+        cases.append(("each present layer overlay follows its base section, listed in the header",
+                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/any.md"
+                                        " + .claude/guards/any.coding.md + .claude/guards/review.md"
+                                        " + .claude/guards/review.godot.md]\nANY-DETAILED\n\nANY-CODING-DETAILED"
+                                        "\n\nREVIEW-DETAILED\n\nREVIEW-GODOT-DETAILED"))
+        rc, out, _ = run(tool, "review", "condensed")
+        cases.append(("an overlay without the tier adds nothing",
+                      rc == 0 and out == "[delegate rails — shape 'review', condensed tier; home: .claude/guards/any.md"
+                                        " + .claude/guards/review.md]\nANY-CONDENSED\n\nREVIEW-CONDENSED"))
+
     live = []
     for shape in ("any", "survey", "review", "author"):
         for tier in ("detailed", "condensed", "minimal"):
@@ -78,13 +100,21 @@ def main():
     cases.append(("the real guards deliver every shape at every tier" + ("" if not live else ": " + "; ".join(live)),
                   not live))
 
+    sys.path.insert(0, os.path.dirname(TOOL))
+    import guard_text
     redirected = []
-    for shape in ("survey", "review", "author"):
+    guards = os.path.join(os.path.dirname(os.path.dirname(TOOL)), "guards")
+    for name in sorted(os.listdir(guards)):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(guards, name)
+        with open(path, encoding="utf-8") as fh:
+            if "Read this file's `## condensed` section." not in fh.read():
+                continue
+        shape = name.split(".")[0]
         rc, out, _ = run(TOOL, shape, "minimal")
-        _, cond, _ = run(TOOL, shape, "condensed")
-        shape_cond = cond.split("\n\n", 1)[1] if "\n\n" in cond else ""
-        if "Read this file" in out or not shape_cond or shape_cond not in out:
-            redirected.append(shape)
+        if "Read this file" in out or guard_text._section(path, "condensed") not in out:
+            redirected.append(name)
     cases.append(("a minimal section that points at another section delivers that section's text"
                   + ("" if not redirected else ": " + ", ".join(redirected)), not redirected))
 

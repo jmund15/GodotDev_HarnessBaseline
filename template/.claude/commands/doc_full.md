@@ -6,7 +6,7 @@ disable-model-invocation: true
 Generate the full documentation suite for a system (usage + architecture + retrospective).
 
 ## Arguments
-- `$ARGUMENTS` — The system/feature name to document (e.g., "DynamicMeshTrailSystem"). If omitted, infer from this session's development history.
+- `$ARGUMENTS` — The system/feature name to document. If omitted, infer from this session's development history.
 
 ## Workflow Overview
 
@@ -36,11 +36,11 @@ Read `agents/documentation_structure.md` (folder structure) and the `obsidian_co
 
 Dispatch all 3 agents in one `dispatch.js` run (`orchestration` §0 — every fan-out is a Workflow): write each brief to `.claude/scratch/doc_full/prompt_<label>.md` and pass `jobs: [{ label, promptPath, model: "<executor>", effort: "medium", agentType: "general-purpose" }, …]`. The executor tier for creative and technical depth; `medium` because the folder structure is supplied and the prose is not. Results return together when the run completes; never poll.
 
-**`write_doc` availability:** check it live — `ToolSearch("select:mcp__ai-worker__write_doc")` returns no match ⇒ offline (the SessionStart `[ai-worker]` line prints `Ollama OK` when it is up). When offline, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
+**`write_doc` availability:** Check it live. If unavailable, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
 
 ### Usage Agent
 
-> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} Godot/C# project (engine per `.claude/reference/project_stack.md`).
+> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_usage.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -48,11 +48,11 @@ Dispatch all 3 agents in one `dispatch.js` run (`orchestration` §0 — every fa
 > **Doc folder:** `{resolved doc folder path from Phase 1b}`
 > **Folder exists:** {yes/no}
 >
-> You have full access to the codebase, the Obsidian vault, and the ai-worker `write_doc` tool (per your command file, doc prose is generated via `write_doc`, not typed by hand). Explore the source files independently — focus on `[Export]` properties, configuration points, `.tres` resources, and editor-facing interfaces relevant to this system.
+> You have full access to the codebase, the Obsidian vault, and the ai-worker `write_doc` tool (per your command file, doc prose is generated via `write_doc`, not typed by hand). Explore the source files independently — focus on exported/configurable properties, configuration points, authored data resources, and editor-facing interfaces relevant to this system.
 
 ### Architecture Agent
 
-> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} Godot/C# project (engine per `.claude/reference/project_stack.md`).
+> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_architecture.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -64,7 +64,7 @@ Dispatch all 3 agents in one `dispatch.js` run (`orchestration` §0 — every fa
 
 ### Retrospective Agent
 
-> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} Godot/C# project (engine per `.claude/reference/project_stack.md`).
+> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_retrospective.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -165,7 +165,7 @@ For each system `B` listed in this system's (`A`) Related Systems:
 2. Check if `B`'s Related Systems callout already mentions `A`
 3. If not, use `Edit` to append a return link entry to `B`'s Related Systems callout
 
-This prevents the most common audit finding (X1: unidirectional links). All cross-references must be bidirectional.
+All cross-references must be bidirectional.
 
 ---
 
@@ -185,7 +185,6 @@ If the system was already in Start Here with up-to-date links, the command will 
 - **Delegate docs to subagents** — this command orchestrates, does not define document structure or templates
 - **Each agent reads its own command file** — template updates propagate automatically without changing this orchestrator
 - **Quick Reference is the only doc written directly (NOT via `write_doc`)** — it needs cross-doc synthesis the subagents lack, and it is a structured landing page (tables + wikilinks + a 3–5 sentence overview), not free prose. This is the documented carve-out to the Documentation Delegation Rule; the three suite docs all route through `write_doc`
-- **Retrospective may abort** — Tier 3 (no history) is expected behavior, not failure
 
 ## Formatting & Writing Rules
 All formatting, wikilink, and vault-tooling rules are in the `obsidian_conventions` skill.

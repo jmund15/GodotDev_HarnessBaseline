@@ -46,25 +46,25 @@ Keep coupled debugging, one shared design decision, overlapping writes and consi
 
 ### Sizing the width
 
-Choose width from independent coverage, resource limits and integration work. Preserve caller-declared exclusions and budgets. A command's coverage contract cannot be silently reduced to save time.
+Choose width from independent coverage, resource limits and integration work. Preserve caller-declared exclusions and budgets.
 
-A fixed review panel has three settings. **Coverage** is the command's mandates, and every mandate runs. **Width** is the seat count: a seat carries one or more mandates, as the command's seat map assigns them per tier. **Depth** is effort per seat; `/plan_check` takes it from its ladder tier row, and every other panel keeps its own effort rule.
+A fixed review panel has three settings. **Coverage** is the command's mandates. **Width** is the seat count: a seat carries one or more mandates, as the command's seat map assigns them per tier. **Depth** is effort per seat, and it follows how deep defects can hide in the subject, never the seat count: architecture-review panels (plan and design reviews) pin the architect tier at its review rung (ladder §Role guidance), and every other panel keeps its own effort rule.
 
 The caller picks the tier from facts about the subject and reports the fact that set it. A fact the caller cannot establish counts toward Wide. The first matching row wins.
 
 | Tier | Litmus | Width |
 |---|---|---|
-| Wide | The subject (a) performs an operation git cannot undo: it deletes or rewrites untracked files, vault notes or user data, or publishes externally; (b) crosses the Jmodot/game boundary or changes 3+ top-level subsystems; (c) replaces a contract whose callers sit in 2+ subsystems; or (d) adds or changes a rule in an always-loaded surface | one seat per mandate |
+| Wide | The subject (a) performs an operation git cannot undo: it deletes or rewrites untracked files, vault notes or user data, or publishes externally; (b) crosses a framework/consumer boundary (a submodule or shared library and the project using it) or changes 3+ top-level subsystems; (c) replaces a contract whose callers sit in 2+ subsystems; or (d) adds or changes a rule in an always-loaded surface | one seat per mandate |
 | Small | Every change edits an existing file; nothing adds a type, file, export, node, command or concept; nothing is deleted; ≤5 files | one seat for all mandates |
 | Standard | Everything else | the command's Standard seat map |
 
-Tier facts come from the plan for `/plan_check` (its 1b), from `git diff --stat` plus the added and deleted paths for a diff, and from the planned files and named subsystems for a red-team design. A command without a seat map runs one seat per mandate at every tier. A tier never lowers a command's own trigger threshold.
+Tier facts come from the plan for a plan review, from `git diff --stat` plus the added and deleted paths for a diff, and from the planned files and named subsystems for a red-team design. A command without a seat map runs one seat per mandate at every tier. A tier never lowers a command's own trigger threshold.
 
 A merged seat keeps per-mandate coverage. Its `checked.basis` names every mandate it carried with that mandate's outcome: findings, clean with the evidence checked, or not reached. Each finding carries the mandate key that produced it. The caller reports a not-reached mandate as UNCOVERED. A re-dispatch (a second round, a recovery) sends the seat only its changed or uncovered mandates. The caller records one verdict row per seat with its `mandates` block (`/orchestration_metrics` *Incremental rating*); the panel-yield line in that report is the trigger to re-open a seat map.
 
 ## 3. The Dispatch Procedure (manual `Agent`, legacy fallback)
 
-Prefer `/delegate` and pinned Workflow engines. The Agent exception does not expose an effort pin: record the inheritance trade rather than pretend it was pinned. Wait for completion notifications; do not poll a result the runtime will deliver.
+Prefer `/delegate` and pinned Workflow engines. The Agent exception does not expose an effort pin: record the inheritance trade rather than pretend it was pinned.
 
 Message another session or agent only when it changes their next action: ownership transfer, dependency ready, verified conflict or a blocker needing a decision. Send the evidence path and requested action, not routine progress. A message may resume a finished agent; do not reopen a completed audit or review files still being edited.
 
@@ -72,25 +72,26 @@ Preserve original findings and provenance when integrating. Location is not defe
 
 ## 4. Agent Prompt Structure
 
-A brief names context, purpose, exact task, allowed write set, exclusions, output artifact and done-condition. Every Workflow brief states its own task first. Engines tell agents that the relayed user message is context, but a lens whose mandate looks unrelated can still answer that message instead. Supply relevant evidence/paths, not every skill or the whole transcript. Check inherited claims against source and local inputs; preserve known values even when an inference fails. Keep provenance, uncertainty and runtime overrides explicit. Delegates and `write_doc` inherit nothing from the conversation; an exclusion not written in the brief is lost.
+A brief names context, purpose, exact task, allowed write set, exclusions, output artifact and done-condition. Every Workflow brief states its own task first. Engines tell agents that the relayed user message is context, but a lens whose mandate looks unrelated can still answer that message instead. Supply relevant evidence/paths, not every skill or the whole transcript. Check inherited claims against source and local inputs; preserve known values even when an inference fails. Keep provenance, uncertainty and runtime overrides explicit. A delegate quotes source verbatim and keeps its own inference in a separately labeled section. Delegates and `write_doc` inherit nothing from the conversation; an exclusion not written in the brief is lost.
 
 **Scope a brief by the defect class, never by the candidate list you happened to find.** When the reason for delegating is that your own sweep was thin, handing over that sweep's output makes your exploration the delegate's ceiling and reproduces the gap at higher cost. Give the class, the discovery obligation and the searches to run; pass any candidates as "already seen, not the boundary", and require a coverage report naming what was searched. §11's enumerate-before-dispatch rule sizes a CONVERGED job; it never licenses capping an audit at what you already knew.
 <!-- retire-when: review-by: 2027-09-17 -->
 
-Keep full results on disk and a short actionable digest in the parent. A profile without Write cannot promise a spill. A subagent is told to return findings as text rather than write report files, so it declines a named report path: brief for the full result as its final message or through the engine's `spillDir`. Long investigations preserve completed evidence before their last message. `couldNotSatisfy` names actual blockers; no outside-scope edits or alternative-tool retry after denial.
+Keep full results on disk and a short actionable digest in the parent. A profile without Write cannot promise a spill. A subagent is told to return findings as text rather than write report files, so it declines a named report path: brief for the full result as its final message or through the engine's `spillDir`. Long investigations preserve completed evidence before their last message. `couldNotSatisfy` names actual blockers; no outside-scope edits. A delegate reports a rail/brief conflict in its deliverable and never resolves it silently.
 
 Debugging lanes need discriminating evidence before fixes, especially after a prior fix failed. Hand verification results back with the patch, not a claim that tests probably ran. Foreground owned tests may run only where the job's resource scope permits them.
 
 ## 5. Model & Effort Selection
 
-Commands name a tier, never a model; resolve it on your own seat through `model_registry.py for-role <tier>` and `reference/model_ladder_evidence.md`. Inspect only the fields needed for the choice; do not repeatedly dump the full roster. Explicit owner overrides remain labeled overrides, not capability promotions.
+Commands name a tier, never a model; resolve it on your own seat through `model_registry.py for-role <tier>` and `reference/model_ladder_evidence.md`. Pick among the rows that meet the task's requirement by the ladder's *Delegate selection* line. Inspect only the fields needed for the choice; do not repeatedly dump the full roster. Explicit owner overrides remain labeled overrides, not capability promotions.
 
 - Keep orchestration, unscoped cross-system decisions and the final design verdict with the qualified parent/owner.
-- Use a qualified executor for scoped design, difficult debugging and consequential review.
+- Use the architect tier for solution design at any scope, planning, and design or plan review.
+- Use the executor tier for implementation under a scope, root-cause debugging, fix authorship and red-team of a concrete artifact.
 - Use the fan-out/validation tier for anchored checks and tight execution; a scout only for verifiable locate/enumerate/extract work.
 - Copyable bulk I/O can use the local worker. Derived judgment needs a model capable of the inference.
 
-Pin effort by residual ambiguity, not importance or file count; respect the model's measured behavior and legal transport values. Fixed review panels follow their ladder tier row where one exists (`/plan_check`). Unknown effective effort stays unknown. Requested pins, runtime model identity and capability evidence are different facts. A single result cannot promote or demote a model globally.
+Pin effort by residual ambiguity, not importance or file count; respect the model's measured behavior and legal transport values. A fixed review panel resolves its tier with `for-role` and reads the rung its command names from that row's effort cell. Unknown effective effort stays unknown. Requested pins, runtime model identity and capability evidence are different facts. A single result cannot promote or demote a model globally.
 
 ### Per-dispatch harness cost
 
@@ -98,7 +99,7 @@ Choose the smallest profile that carries the required tools and doctrine. Read-o
 
 ### Effort
 
-Every dispatched agent pins both model and effort. The deliberate inherit case is a measurement of the session model itself. Raise a lens above its default cell only per-lens, with `args.justification` naming the ambiguity the raise resolves; never a blanket panel bump. If an API cannot express a required setting, use a supported route and state the trade; do not invent an option. Check `.claude/orchestration_candidates.json` only as advisory evidence, not automatic routing authority. Unsure between `low` and `medium` → `medium`. When a lens under-resolves, raise its effort before raising its tier: effort buys turns. §5b owns cost-driven descent. A sharp mandate substitutes for effort only on sub-architectural inputs; on an architecturally-loaded plan, executor-tier `high` finds what `medium` misses.
+Every dispatched agent pins both model and effort. The deliberate inherit case is a measurement of the session model itself. Raise a lens above its default cell only per-lens, with `args.justification` naming the ambiguity the raise resolves; never a blanket panel bump. If an API cannot express a required setting, use a supported route and state the trade; do not invent an option. Check `.claude/orchestration_candidates.json` only as advisory evidence, not automatic routing authority. Unsure between `low` and `medium` → `medium`. When a lens under-resolves, raise its effort before raising its tier: effort buys turns. §5b owns cost-driven descent. A sharp mandate substitutes for effort only on sub-architectural inputs; on a subject deep enough for defects to hide (the architect tier's review rung), a rung above `medium` finds what `medium` misses.
 
 ## 5b. Budget, Availability & Transport
 
@@ -106,23 +107,23 @@ Read the current band's actual currency before dispatch. The native route spends
 
 Availability comes from the registry; budget bands from `quota_bands.py`. Preserve their guards. An unreadable band is unknown, not Surplus or Hot. Under a pressured band `hooks/workflow_provider_guard.py` denies a pinned dispatch until the call states its currency: `args.currency` plus `args.currencyReason`, or an Agent prompt line `CURRENCY: anthropic — <why>`. State it once per band, then hold it on the session record. A deliberate budget override is stated before use, never chosen silently after a failed job. Do not substitute a model/provider merely to get a green exit.
 
-Keep quality floors while controlling cost: first remove redundant work, then adjust eligible effort/tier on evidence. Pressure moves the tier, ambiguity moves the effort: under pressure, enumerable checks and converged execution drop to the fan-out tier, while planning, architecting, architectural plan review, red-team and open-judgment review hold the executor tier as the reserved floor. Record the accepted result and repair work. Do not infer a cheaper counterfactual from one clean run or compare mismatched cohorts.
+Keep quality floors while controlling cost: first remove redundant work, then adjust eligible effort/tier on evidence. Pressure moves the tier, ambiguity moves the effort: under pressure, enumerable checks and converged execution drop to the fan-out tier, while planning, architecting, and review or red-team of a design or plan hold the architect tier, and red-team or open-judgment review of a concrete artifact (code, a patch) holds the executor tier, as the reserved floor. Record the accepted result and repair work. Do not infer a cheaper counterfactual from one clean run or compare mismatched cohorts.
 
 Native engines accept this transport's declared IDs/efforts. Off-transport jobs use its registered launcher through the sidecar owner. Literal pins and short args avoid hidden provider translation; large briefs stay in files.
 
 ## 6. The 15-Agent Cap (manual `Agent` dispatch only)
 
-Manual batches stay within 15 total agents, including nested work. Workflow concurrency follows the live runtime; do not encode a stale platform count as policy. Nested delegation is not a substitute for parent-owned coverage.
+Manual batches stay within 15 total agents, including nested work. Workflow concurrency follows the live runtime; do not encode a stale platform count as policy.
 
 ## 7. Worktree Caveat
 
 Shared-checkout writers partition or serialize ownership. Genuine isolation is the per-agent `isolation: "worktree"` option, for write-parallel work only; it costs setup time and disk per agent, and its submodule must be initialized before relevant builds. Read-only comparisons use frozen inputs. Neither idle state nor a repo-path substring proves a process/file belongs to this job.
 
-GdUnit4 and shared csharp-ls operations are single-flight. Main owns broad verification; isolated non-runtime proofs may run within a scoped job. A RED needs an executed assertion failure, not a zero-match exit code.
+Main owns broad verification; isolated non-runtime proofs may run within a scoped job. A RED needs an executed assertion failure, not a zero-match exit code.
 
 ## 8. Verification After Integration
 
-Read the delivered artifact, verify decisive claims and original-source coverage, then run the applicable checks. A delegate's architecting or planning deliverable clears the citation floor before you consume it, whatever model wrote it (`skills/_brainstorm_shared/design_contract.md` *Citations resolve BEFORE dispatch*). Reconcile conflicting evidence directly. Failed/null/malformed output is uncovered; never filter it into “zero findings.” Check each fan-out's journal model column against the currency you intended.
+Read the delivered artifact, verify decisive claims and original-source coverage, then run the applicable checks. A reviewer reports every finding regardless of severity and checks a symbol's call sites, not only its public surface; the parent reads every returned finding before acting on any. A delegate's architecting or planning deliverable has every cited symbol and path resolved before you consume it, whatever model wrote it. Reconcile conflicting evidence directly. Failed/null/malformed output is uncovered; never filter it into “zero findings.” Check each fan-out's journal model column against the currency you intended.
 
 Recover before another paid call: artifact, then transcript/`/salvage_fanout`. Confirm a job is terminal before considering a replacement; no-result and still-running are different states. Record outcome on consumption and build the existing manifest with one exact evidence join per label. Keep process status separate from acceptance.
 
@@ -148,4 +149,4 @@ Count complete-task cost: preparation, cold starts, model work, repair, verifica
 
 ## Cross-references
 
-`commands/delegate.md` · `reference/sidecar_dispatch.md` · `reference/model_ladder_evidence.md` · `commands/agents/orchestrator_action_protocol.md` · `commands/agents/review_agents.md` (spawn rules) · `commands/salvage_fanout.md`
+`commands/delegate.md` · `reference/sidecar_dispatch.md` · `reference/model_ladder_evidence.md` · `commands/agents/orchestrator_action_protocol.md` · `commands/salvage_fanout.md`

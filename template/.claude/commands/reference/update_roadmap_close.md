@@ -14,7 +14,7 @@ Read at Steps 6 through 9 of [`update_roadmap.md`](../update_roadmap.md). Not au
 
 **Cut (derivable elsewhere — never in the log):** test/gate counts (`Logic X / Integration Y`), file-by-file shipped manifests, plan divergences/deviations, `session_audit` findings, auto-memory pins, "Mermaid reclassed `:::complete`" (mechanical — always happens), unblock-cascade narration ("now Currently-ready" — the derived views already show readiness), multi-sentence design rationale (belongs in the arch doc).
 
-**Format:** `- YYYY-MM-DD — <Part>: <old-state> → <new-state> (<commit-ref OR ≤6-word why>).` — the parenthetical is ONE slot; pick the ref or the why, not both.
+**Format:** `- YYYY-MM-DD — <Part>: <old-state> → <new-state> (<commit-ref OR ≤6-word why>).`
 
 **Idiomatic forms:**
 - `- 2026-05-13 — Initial roadmap from arch.md. 7 Parts sequenced (Pos 1–7), 12 un-sequenced.`
@@ -30,7 +30,7 @@ Append to the `## Revision Log` section.
 |---|---|
 | "Skip the revision log this time — nothing important changed" | Revision log is the audit trail. Every State transition deserves a line; the reader uses it to reconstruct WHY the roadmap is in its current state. |
 | "Combine multiple Part transitions into one revision log line" | One transition = one line. Aggregating loses the timestamped audit trail. Exception: a single brainstorm session legitimately produces N transitions; those can share a date but each gets its own line. |
-| "This completion was a big effort — the log should capture all of it (tests shipped, files touched, audit findings, deviations)" | The log is a navigational trail, not a postmortem. Cap each entry at one ≤25-word statement: the transition + one qualifier (commit ref OR ≤6-word why, not both). Ship-detail is derivable from git, the commit message, and the plan/arch doc — duplicating it here is the exact bloat that makes logs eat half the doc. |
+| "This completion was a big effort — the log should capture all of it (tests shipped, files touched, audit findings, deviations)" | The log is a navigational trail, not a postmortem. Ship-detail is derivable from git, the commit message, and the plan/arch doc — duplicating it here is the exact bloat that makes logs eat half the doc. |
 
 ## Step 7 — Present batch diff
 
@@ -53,17 +53,15 @@ If the batch diff (Step 7) is empty — proposed edits reduce to no changes — 
 
 Otherwise: `Edit` (or `Write` if creating) `roadmap.md` with the approved diff. Bump `last_revised: YYYY-MM-DD` in frontmatter to today.
 
-## Step 9 — Regenerate the atlas
+## Step 9 — Regenerate the cross-roadmap index
 
-```bash
-python .claude/scripts/roadmap_atlas.py --render
-```
+When the project generates a cross-roadmap index (`_brainstorm_shared/roadmap_triggers_mvp.md` §6.13), run its generator in render mode; the project's own roadmap-index command names it. No index → skip this step.
 
-Runs on **every invocation that reaches Step 8, the empty-diff path included** — the atlas can be stale
+Runs on **every invocation that reaches Step 8, the empty-diff path included** — the index can be stale
 from roadmap edits made outside this command, so the no-op case is exactly the one a "only when Step 8
 applied" gate would wrongly skip.
 
 **Non-blocking.** A generator failure warns with its named error and never rolls back the roadmap edit;
-the atlas is a derived vault document, and the next `/session_end` or `/roadmap_atlas` rebuilds it.
+the index is a derived vault document that its next run rebuilds.
 Generated docs live outside the git checkout and are never committed. Report any Health finding the
 generator surfaces for the roadmap just edited.

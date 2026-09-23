@@ -30,17 +30,14 @@ description: >-
     *   Search `.tres` and `.tscn` files for references to the old pattern
     *   Ensure legacy `[Export]` fields still function (not just present in code)
     *   Test with existing data files to catch silent breaking changes
-    *   *Example:* `MultiTargetEffect.ChildModifiers` was kept as a property but wasn't being applied after refactor.
 7.  **Build:** `dotnet build`.
 8.  **Regression gate:** `/regression_gate` is mandatory for `.cs` changes — see CLAUDE.md *Build & Test Commands*.
 
 ## Cross-references
 
 - [`testing`](../testing/SKILL.md) — `/regression_gate` step 8; legacy-data tests for step 6.
-- [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — Deletion Test before refactoring; *Consume new APIs or migration is incomplete* (`feedback_consume_new_apis_or_migration_is_incomplete.md`).
+- [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — Deletion Test before refactoring; *Consume new APIs or migration is incomplete*.
 - `.claude/rules/scene_authoring.md` (auto-loads on `**/*.tscn`, `project.godot`, `UI/**/*.cs`) — scene-vs-programmatic construction, teardown anti-patterns.
 - `.claude/rules/csharp_lsp.md` (auto-loads on `**/*.cs`) — LSP-first call-site enumeration for step 1.
-- `feedback_refactor_parity_audit.md` — line-by-line behavior diff before merge.
-- `feedback_consume_new_apis_or_migration_is_incomplete.md` — audit motivating call sites after introducing a new API.
 - `feedback_dont_defer_existing_framework_abstractions.md` — grep BBDataSig + Jmodot.Core before saying "X varies per project".
 - `.claude/rules/godot_files.md` (auto-loads on `**/*.tscn`/`**/*.tres`/`**/*.godot`) — `.tres`/`.tscn` format + editor-resave hazards; commit manual edits before opening the editor.

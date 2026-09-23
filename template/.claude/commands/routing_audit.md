@@ -5,7 +5,7 @@ disable-model-invocation: true
 
 Inspect and aggregate the continuous routing-audit log.
 
-> Surfaces silent-misses against CLAUDE.md §Tool Routing routing rules. Complements `/routing_battery` (synthetic, periodic) with continuous, real-traffic data.
+> Surfaces silent-misses against CLAUDE.md §Tool Routing routing rules. Complements a synthetic routing battery, where the project keeps one, with continuous real-traffic data.
 
 ## Quick reference
 
@@ -31,7 +31,7 @@ Compliant calls and tools without §Tool Routing rules (Bash, Edit, Write, Read,
 ## How to read the output
 
 The headline number is **`silent_miss`** count. Three things drive it up:
-1. Doctrine drift in the agent — re-run `/routing_battery` to check if a doctrine-level fix is needed (negative-framing bullet in CLAUDE.md, etc.).
+1. Doctrine drift in the agent — re-run the project's synthetic routing battery, where it keeps one, to check if a doctrine-level fix is needed (negative-framing bullet in CLAUDE.md, etc.).
 2. New code-discovery patterns the classifier doesn't recognize as compliant — extend `routing_classifier.py`.
 3. The nudge channel breaking — verify `tool_routing_post_grep.py` still wires in `settings.json` and the per-session state file path is reachable.
 
@@ -128,10 +128,10 @@ python3 .claude/tools/aggregate_routing_audit.py 2>/dev/null | sed -n '/Top sile
 The dashboard's "Routing Stability" section reads `logs/routing_audit_stats.json` produced by this command. Renders:
 - 4-week trend line of `silent_miss` count.
 - Top-5 silent-miss rules with `current_week / prior_4wk_avg / trend` columns.
-- Cross-link to the most recent `/routing_battery` results for triangulation (synthetic vs. real-traffic).
+- Cross-link to the most recent synthetic routing-battery results, where the project keeps one, for triangulation (synthetic vs. real-traffic).
 
 ## Troubleshooting
 
-- **"no entries in logs/routing_audit.jsonl"** — either the audit hook isn't wired in `settings.json`, or no routing-relevant tool calls happened yet (a fresh session before any Grep/Obsidian/Memory call). Trigger a known-warrant call (e.g. `Grep("FireballBehavior", glob="*.cs")`) to confirm the hook fires.
-- **Silent-miss count seems too high after a CLAUDE.md change** — re-run `/routing_battery` to triangulate. Continuous-audit silent-miss can spike for normal reasons (a sprint with lots of unfamiliar code-discovery tasks); the battery is the synthetic baseline.
+- **"no entries in logs/routing_audit.jsonl"** — either the audit hook isn't wired in `settings.json`, or no routing-relevant tool calls happened yet (a fresh session before any Grep/Obsidian/Memory call). Trigger a known-warrant call to confirm the hook fires.
+- **Silent-miss count seems too high after a CLAUDE.md change** — re-run the synthetic routing battery, where the project keeps one, to triangulate. Continuous-audit silent-miss can spike for normal reasons (a sprint with lots of unfamiliar code-discovery tasks); the battery is the synthetic baseline.
 - **Stats JSON has empty `top_5_silent_miss_rules`** — log is healthy but no `nudge-warranted` entries in the active window (good outcome). Verify by checking `silent_misses` count in the JSON.
