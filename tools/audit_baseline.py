@@ -103,6 +103,10 @@ CORE_DOMAIN_ALLOWLIST = {
     ".claude/commands/agents/orchestrator_action_protocol.md",
     ".claude/commands/autolearn.md",
     ".claude/commands/reindex_search.md",
+    # Universal hooks whose Godot resource suffixes are inert where no such files exist:
+    # git_guardrails refuses a one-sided checkout of .tscn/.tres during a merge.
+    ".claude/hooks/git_guardrails.py",
+    ".claude/tests/test_git_guardrails_advice.py",
     # Two-shape lens set (harness/doctrine AND code plans): classified pure per
     # the archetype-home rule, but its plan-check targets are code/engine nouns.
     ".claude/commands/plan_check.md",
