@@ -20,7 +20,7 @@ are `sync: seed` — 4 counted in `pure`, 2 in `godot`):
 A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
 
 **Seed files** (`sync: seed` in the manifest) are copied once at bootstrap and then
-project-owned: `CLAUDE.md` (PROJECT section + `BASELINE:core` region), `settings.json`,
+project-owned: `CLAUDE.md` (imports `CLAUDE.core.md` and each adopted layer file; the project writes the rest), `settings.project.json` (composed with `settings.base.json` into `settings.json`), `environment_bootstrap`,
 `game_vision` + `project_subsystems` skill skeletons, `known_failure_modes` catalog,
 `worklog-titles.md`.
 
@@ -59,6 +59,13 @@ create the vault `Claude/TODO/` folders, `/system_check`, `/reindex_search`), an
 walk the **Known adaptation points** below.
 
 ## Keeping projects and baseline in sync
+
+A project still on a schema-1 lock (its `CLAUDE.md` has a `BASELINE:core` region) upgrades in one
+run of this checkout's engine, then clears the remaining judgment rows with `/sync_baseline`:
+
+```bash
+python3 template/.claude/tools/baseline_sync.py upgrade --project /path/to/Game --baseline-dir .
+```
 
 The contract: **the baseline never changes for project-specific edits; every
 universal improvement flows back here, and every arrival at `main` goes through
