@@ -9,7 +9,11 @@ checkout, so the shorter root also matches the path and would check the wrong co
     python .claude/tests/test_worker_rate_provenance.py
 """
 
+import atexit
+import os
 import pathlib
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,6 +37,16 @@ def git(cwd, *args):
 
 
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="worker-rate-provenance-"))
+
+
+def _remove_tree(path):
+    def writable(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+    shutil.rmtree(path, onerror=writable)
+
+
+atexit.register(_remove_tree, tmp)
 main = tmp / "main"
 main.mkdir()
 git(main, "init", "-q", "-b", "main")
@@ -62,6 +76,10 @@ check(wr.dirty_sources({"git_shas": {}, "source_blobs": {wt_file: "0" * 40}}) ==
       "a source outside every recorded repo is skipped, not flagged")
 
 check(wr.dirty_sources({"git_sha": "abc"}) == [], "a pre-provenance artifact shows nothing")
+
+unrecorded = wr.dirty_sources({"git_shas": {str(wt): None}, "source_blobs": {wt_file: "0" * 40}})
+check(len(unrecorded) == 1 and "commit unrecorded" in unrecorded[0] and "no such file" not in unrecorded[0],
+      f"a repo whose HEAD the server could not read is 'unrecorded', not dirty: {unrecorded}")
 
 # A ts printed to the second collides (16 ledger seconds hold two calls), so a prefix naming
 # two rows is refused rather than resolved to whichever comes first.

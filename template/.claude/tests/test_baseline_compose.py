@@ -431,6 +431,23 @@ def main() -> int:
                           json.dumps(merged["permissions"])))
     _rmtree_writable(root)
 
+    # Non-list permission keys (defaultMode, additionalDirectories) survive derive and compose.
+    root, hooks_dir = make_tree()
+    base = {"permissions": {"allow": ["A"]}}
+    full = {"permissions": {"allow": ["A"], "defaultMode": "acceptEdits", "additionalDirectories": ["../x"]}}
+    project = bc.derive_project_settings(base, full, set())
+    merged = bc.compose_settings(base, project, hooks_dir, ["pure"])
+    failures.append(case("derive+compose: non-list permission keys survive",
+                          merged["permissions"].get("defaultMode") == "acceptEdits"
+                          and merged["permissions"].get("additionalDirectories") == ["../x"],
+                          json.dumps(merged["permissions"])))
+    adopted = bc.base_only_entries({"env": {"K": "1"}, "permissions": {"allow": ["A", "B"]},
+                                    "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x"}]}]}},
+                                   {"permissions": {"allow": ["A"]}})
+    failures.append(case("base_only_entries names what compose adds that full lacked",
+                          adopted == ["permissions.allow B", "hook Stop: x", "env K"], repr(adopted)))
+    _rmtree_writable(root)
+
     total = len(failures)
     failures = [f for f in failures if f]
     print("\n%d/%d cases pass" % (total - len(failures), total))

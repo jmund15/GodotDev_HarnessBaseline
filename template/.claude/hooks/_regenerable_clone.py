@@ -104,6 +104,15 @@ def _regenerable_ignored(entry: str) -> bool:
             or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(parts, parts[1:])))
 
 
+def _holds_no_file(path: Path) -> bool:
+    if path.is_symlink() or not path.is_dir():
+        return False
+    try:
+        return not any(p.is_file() or p.is_symlink() for p in path.rglob("*"))
+    except OSError:
+        return False
+
+
 def _pushed(repo: Path) -> bool:
     out = _git(["rev-list", "HEAD", "--not", "--remotes"], repo)
     return out is not None and not out.strip()
@@ -130,8 +139,8 @@ def is_retired_worktree(token: str, cwd: str, project_root: str) -> bool:
     `git worktree remove` refuses every worktree carrying a submodule, so a retired one can only go
     by a recursive delete followed by `git worktree prune`. The worktree must be registered and
     unlocked; its status may hold only untracked Godot `.import` files and ignored regenerable caches
-    (`_REGENERABLE_IGNORED_SEGMENTS`, `_REGENERABLE_IGNORED_PAIRS`), so ignored scratch evidence or
-    local config blocks the delete; its HEAD and every populated
+    (`_REGENERABLE_IGNORED_SEGMENTS`, `_REGENERABLE_IGNORED_PAIRS`) or ignored directories holding no
+    file, so ignored scratch evidence or local config blocks the delete; its HEAD and every populated
     submodule's HEAD must be reachable from a remote-tracking ref, and each submodule must be clean.
     """
     if not token or _UNSAFE_PATH_CHARS.search(token):
@@ -160,7 +169,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str) -> bool:
         entry = line[3:].rstrip("/")
         if line.startswith("?? ") and entry.endswith(_GENERATED_UNTRACKED_SUFFIXES):
             continue
-        if line.startswith("!! ") and _regenerable_ignored(entry):
+        if line.startswith("!! ") and (_regenerable_ignored(entry) or _holds_no_file(target / entry)):
             continue
         return False
     if not _pushed(target):

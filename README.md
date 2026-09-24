@@ -7,26 +7,28 @@ upstream** that keeps that shared core in sync as it evolves across projects.
 
 ## What's in it
 
-`template/.claude/` mirrors a consumer project's `.claude/` directory: 555 files
-in three archetypes (see `baseline.manifest.json` for the per-file map; 6 of these
-are `sync: seed` — 4 counted in `pure`, 2 in `godot`):
+`template/.claude/` mirrors a consumer project's `.claude/` directory in three archetypes
+(`baseline.manifest.json` holds the per-file map, the layer counts and each file's `sync` kind: `auto`, `seed` or `offer`):
 
-| Layer | Files | Contents |
-|---|---|---|
-| `pure` | 295 | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), memory system + curated process/discipline auto-memory seed (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `rules/model_delegation.md`, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
-| `coding` | 96 | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
-| `godot` | 164 | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and `/workstation_setup` |
+| Layer | Contents |
+|---|---|
+| `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `rules/model_delegation.md`, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
+| `coding` | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
+| `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and `/workstation_setup` |
 
 A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
 
-**Seed files** (`sync: seed` in the manifest) are copied once at bootstrap and then
-project-owned: `CLAUDE.md` (imports `CLAUDE.core.md` and each adopted layer file; the project writes the rest), `settings.project.json` (composed with `settings.base.json` into `settings.json`), `environment_bootstrap`,
-`game_vision` + `project_subsystems` skill skeletons, `known_failure_modes` catalog,
-`worklog-titles.md`.
+**Seed files** (the manifest's `sync: seed` rows) are copied once and then project-owned; `pull`
+writes one only when it is absent. Two shape the rest: `CLAUDE.md` imports `CLAUDE.core.md` and each
+adopted layer file, and `settings.project.json` composes with `settings.base.json` into `settings.json`.
+
+**Offer files** (`sync: offer`: every `.claude/auto-memory/` file except the `MEMORY.md` seed) are
+copied at bootstrap and tracked from then on. A memory added upstream later reports `offered`: a bare
+`pull` never takes it, `pull <relpath>` adopts it, and `ignore <relpath>` declines it.
 
 **Deliberately excluded** (stays per-project): game-content skills/commands
 (ability/entity authoring, content audits), project subsystem registries, game-design
-docs, project memory (beyond the curated pure/coding/godot seed), benchmark corpora and
+docs, project memory (beyond the offered pure/coding/godot memory), benchmark corpora and
 campaign tooling, and all session state (`self_evaluate_archive.json`, plans, scratch,
 logs, caches).
 
@@ -60,11 +62,11 @@ walk the **Known adaptation points** below.
 
 ## Keeping projects and baseline in sync
 
-A project still on a schema-1 lock (its `CLAUDE.md` has a `BASELINE:core` region) upgrades in one
+A project still on a schema-1 lock (its `.claude/baseline.lock.json` has `"schema": 1`) upgrades in one
 run of this checkout's engine, then clears the remaining judgment rows with `/sync_baseline`:
 
 ```bash
-python3 template/.claude/tools/baseline_sync.py upgrade --project /path/to/Game --baseline-dir .
+python3 template/.claude/tools/baseline_sync.py upgrade --project /path/to/Game --baseline-dir . --layers pure,coding,godot
 ```
 
 The contract: **the baseline never changes for project-specific edits; every
@@ -136,13 +138,14 @@ Typical lifecycles:
   that worktree → `publish --from-worktree <path>` → `pull` in the consumer.
 - *Hot memory demoted to `archive/` in a project* → the template mirrors the move
   (delete the hot copy, add the archive copy); `forget` the old row, `classify`
-  the new one.
+  the new one. A consumer that tracked the hot copy sees it `removed-upstream` and the
+  archive copy `offered`: `forget` the old row, then `pull <archive relpath>`.
 
 ## Maintaining this repo
 
 - `python3 tools/gen_manifest.py` after any add/remove/move under `template/` —
   the manifest drives bootstrap layer-filtering and consumer lock generation.
-  Layer/seed assignment is pattern-based at the top of that script; extend the
+  Layer and sync-kind (seed/offer/auto) assignment is pattern-based at the top of that script; extend the
   pattern lists when adding files of a new kind. **Layer assignment has NO
   fallback**; `gen_manifest.py` fails loudly listing any unclassified file, so
   every new file must be added to exactly one layer pattern list.

@@ -289,8 +289,22 @@ def test_layer_closure_flags_a_pure_file_citing_a_godot_file() -> None:
         _remove(tmp)
 
 
+def test_staleness_accepts_an_offer_memory_row() -> None:
+    audit = _load_audit()
+    rel = next(r for _, r in audit.iter_template_files()
+               if r.startswith(".claude/auto-memory/") and r != ".claude/auto-memory/MEMORY.md")
+    layer = audit.gm.classify(rel)
+    offer = audit.Findings()
+    audit.check_manifest_staleness(offer, {"files": [{"path": rel, "layer": layer, "sync": "offer"}]})
+    assert not [i for i in offer.items if i["check"] == "manifest-staleness"], offer.items
+    stale = audit.Findings()
+    audit.check_manifest_staleness(stale, {"files": [{"path": rel, "layer": layer, "sync": "auto"}]})
+    assert [i["path"] for i in stale.items if i["check"] == "manifest-staleness"] == [rel], stale.items
+
+
 def main() -> int:
     cases = [
+        test_staleness_accepts_an_offer_memory_row,
         test_layer_closure_flags_a_pure_file_citing_a_godot_file,
         test_strict_exits_0_from_repo_root,
         test_strict_exits_0_from_another_cwd,

@@ -9,6 +9,7 @@ Each manifest entry: {"path": <relpath under template/>, "layer": ..., "sync": .
   layer "godot"     : Godot 4.x + C# projects (absorbs the former jmodot layer)
   sync  "auto"      : hash-tracked by baseline_sync.py in consumer projects
   sync  "seed"      : copied at bootstrap, thereafter project-owned (watch-only)
+  sync  "offer"     : copied at bootstrap; later new files are offered, never taken by a bare pull
 
 A consumer subscribes to a layer *prefix* of pure -> coding -> godot
 (bootstrap --layers). Layer assignment has NO fallback: every template file must
@@ -42,6 +43,11 @@ SEED_PATTERNS = [
     ".claude/reference/vault_taxonomy.md",
     ".claude/skills/change_control/*",
     ".claude/skills/environment_bootstrap/*",
+    ".claude/auto-memory/MEMORY.md",
+]
+
+OFFER_PATTERNS = [
+    ".claude/auto-memory/*",
 ]
 
 GODOT_PATTERNS = [
@@ -657,6 +663,15 @@ def match(relpath: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(relpath, p) for p in patterns)
 
 
+def sync_kind(relpath: str) -> str:
+    """Seed, then offer, then auto. Shared with audit_baseline.py, like `classify`."""
+    if match(relpath, SEED_PATTERNS):
+        return "seed"
+    if match(relpath, OFFER_PATTERNS):
+        return "offer"
+    return "auto"
+
+
 def classify(relpath: str) -> str | None:
     """Return the layer for a template-relative path, or None if unclassified.
 
@@ -699,7 +714,7 @@ def main() -> int:
         if layer is None:
             unclassified.append(rel)
             continue
-        sync = "seed" if match(rel, SEED_PATTERNS) else "auto"
+        sync = sync_kind(rel)
         files.append({"path": rel, "layer": layer, "sync": sync})
     if unclassified:
         # No fallback layer, by design: the old default-to-universal fallthrough

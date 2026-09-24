@@ -1612,7 +1612,8 @@ _REGION = (
 )
 
 
-def _v1_consumer(path: Path, *, region: bool = True):
+def _v1_consumer(path: Path, *, region: bool = True, extra_permissions: dict | None = None,
+                 skill: bytes | None = None, settings_text: bytes | None = None):
     base_settings = {
         "env": {"PYTHONUTF8": "1"},
         "permissions": {"allow": ["Bash(git:*)"]},
@@ -1624,15 +1625,18 @@ def _v1_consumer(path: Path, *, region: bool = True):
         "permissions": {"allow": ["Bash(git:*)", "Bash(mytool:*)"]},
         "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
             {"type": "command", "command": "python .claude/hooks/absorbed.py"},
+            {"type": "command", "command": "python .claude/hooks/optin.py"},
             {"type": "command", "command": "python .claude/hooks/mine.py"}]}]},
     }
+    old_settings["permissions"].update(extra_permissions or {})
     rows = {
         ".claude/CLAUDE.md": {"status": "watch", "sync": "seed",
                               "local": (_REGION if region else "# CLAUDE.md\nproject only\n").encode()},
         ".claude/settings.json": {"status": "watch", "manifest": False,
                                   "local": (json.dumps(old_settings, indent=2) + "\n").encode()},
-        ".claude/hooks/dispatch.py": {"row": False, "local": None},
+        ".claude/hooks/dispatch.py": {"row": False, "local": None, "upstream": b"import absorbed\n"},
         ".claude/hooks/absorbed.py": {"status": "tracked"},
+        ".claude/hooks/optin.py": {"status": "tracked"},
         ".claude/hooks/mine.py": {"status": "local", "manifest": False, "local": b"# mine\n"},
         ".claude/CLAUDE.core.md": {"row": False, "local": None},
         ".claude/CLAUDE.coding.md": {"row": False, "local": None, "layer": "coding"},
@@ -1641,9 +1645,14 @@ def _v1_consumer(path: Path, *, region: bool = True):
                                        "upstream": (json.dumps(base_settings, indent=2) + "\n").encode()},
         ".claude/settings.project.json": {"row": False, "local": None, "sync": "seed",
                                           "upstream": b"{}\n"},
-        ".claude/auto-memory/foreign_memory.md": {"row": False, "local": None},
+        ".claude/auto-memory/foreign_memory.md": {"row": False, "local": None, "sync": "offer"},
+        ".claude/offered/elsewhere.md": {"row": False, "local": None, "sync": "offer"},
     }
+    if settings_text is not None:
+        rows[".claude/settings.json"]["local"] = settings_text
     root, baseline, _remote, _commit_sha = _v2_fixture(path, rows)
+    if skill is not None:
+        _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", skill)
     _downgrade_to_v1(root)
     _commit(root, "v1 consumer")
     return root, baseline
@@ -1683,6 +1692,10 @@ def test_upgrade_v1_fixture_leaves_only_judgment_rows() -> None:
         assert any("dispatch.py" in c for c in commands), commands
         assert any("mine.py" in c for c in commands), commands
         assert not any("absorbed.py" in c for c in commands), commands
+        assert any("optin.py" in c for c in commands), commands
+        assert "adopted from settings.base.json" in output, output
+        assert "hook PreToolUse" in output and "dispatch.py" in output, output
+        assert "Bash(git:*)" not in output, output
         assert "Bash(mytool:*)" in settings["permissions"]["allow"], settings
         assert settings["env"]["MY_VAR"] == "x" and settings["env"]["PYTHONUTF8"] == "1", settings
         text = (root / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
@@ -1691,8 +1704,12 @@ def test_upgrade_v1_fixture_leaves_only_judgment_rows() -> None:
         assert not (root / ".claude" / "auto-memory" / "foreign_memory.md").exists(), output
         check = _run_baseline(root, baseline, "check", "--json")
         states = _json_output(check)["results"]
-        assert "missing-local" not in states.values(), states
-        assert states[".claude/auto-memory/foreign_memory.md"] == "new-upstream", states
+        assert set(states.values()) <= {"in-sync", "local", "composed", "offered"}, states
+        assert states[".claude/auto-memory/foreign_memory.md"] == "offered", states
+        assert states[".claude/offered/elsewhere.md"] == "offered", states
+        assert not (root / ".claude" / "offered" / "elsewhere.md").exists(), output
+        assert result.returncode == 0, output
+        assert "env PYTHONUTF8" in output, output
 
 
 def test_upgrade_refuses_v2_lock() -> None:
@@ -1716,8 +1733,146 @@ def test_upgrade_refuses_dirty_claude_md() -> None:
         assert _load_lock(root)["schema"] == 1
 
 
+def test_upgrade_records_abbreviations() -> None:
+    with _fixture() as path:
+        root, baseline = _v1_consumer(path)
+        result = _run(root.parent, "upgrade", "--project", str(root), "--baseline-dir", str(baseline),
+                      "--abbrev", "ZZ")
+        assert _load_lock(root)["identity"]["abbreviations"] == ["ZZ"], _out(result)
+
+
+def test_upgrade_refuses_dirty_lock() -> None:
+    with _fixture() as path:
+        root, baseline = _v1_consumer(path)
+        lock = root / ".claude" / "baseline.lock.json"
+        lock.write_text(lock.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        result = _run(root.parent, "upgrade", "--project", str(root), "--baseline-dir", str(baseline))
+        assert result.returncode != 0 and "baseline.lock.json" in _out(result), _out(result)
+        assert _load_lock(root)["schema"] == 1
+
+
+def test_migrate_refuses_dirty_claude_md() -> None:
+    with _fixture() as path:
+        root, baseline = _v1_consumer(path)
+        claude = root / ".claude" / "CLAUDE.md"
+        before = claude.read_text(encoding="utf-8") + "uncommitted\n"
+        claude.write_text(before, encoding="utf-8")
+        result = _run_baseline(root, baseline, "migrate")
+        assert result.returncode != 0 and "uncommitted" in _out(result), _out(result)
+        assert claude.read_text(encoding="utf-8") == before
+        assert _load_lock(root)["schema"] == 1
+
+
+def test_upgrade_refuses_bad_subsystems_before_writing() -> None:
+    with _fixture() as path:
+        root, baseline = _v1_consumer(path, skill=b"# project_subsystems\nno registry here\n")
+        claude_before = (root / ".claude" / "CLAUDE.md").read_bytes()
+        result = _run(root.parent, "upgrade", "--project", str(root), "--baseline-dir", str(baseline))
+        assert result.returncode != 0 and "subsystems" in _out(result), _out(result)
+        assert _load_lock(root)["schema"] == 1
+        assert (root / ".claude" / "CLAUDE.md").read_bytes() == claude_before
+
+
+def test_upgrade_names_unparseable_settings() -> None:
+    with _fixture() as path:
+        root, baseline = _v1_consumer(path, settings_text=b"{ not json\n")
+        result = _run(root.parent, "upgrade", "--project", str(root), "--baseline-dir", str(baseline))
+        output = _out(result)
+        assert result.returncode == 1, output
+        assert "Traceback" not in output and "settings.json" in output, output
+        assert _load_lock(root)["schema"] == 1
+
+
+def test_pull_seed_project_settings_makes_composed_row() -> None:
+    base = (json.dumps({"permissions": {"allow": ["A"]}}, indent=2) + "\n").encode()
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            ".claude/settings.base.json": {"row": False, "local": None, "upstream": base},
+            ".claude/settings.project.json": {"row": False, "local": None, "sync": "seed",
+                                              "upstream": b"{}\n"},
+        })
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        files = _load_lock(root)["files"]
+        assert files[".claude/settings.json"]["status"] == "composed", files
+        assert files[".claude/settings.project.json"]["status"] == "local", files
+
+
+def test_pull_keeps_existing_seed_file_says_kept() -> None:
+    seed = ".claude/skills/seeded/SKILL.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            seed: {"sync": "seed", "row": False, "local": b"project text\n", "upstream": b"seed text\n"},
+        })
+        pull = _run_baseline(root, baseline, "pull")
+        assert f"kept (seed, local row added): {seed}" in _out(pull), _out(pull)
+        assert f"pulled: {seed}" not in _out(pull), _out(pull)
+
+
+OFFER = ".claude/auto-memory/foreign_memory.md"
+
+
+def test_bare_pull_skips_unrowed_offer_and_counts_it() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            OFFER: {"sync": "offer", "row": False, "local": None},
+        })
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert not (root / OFFER).exists(), _out(pull)
+        assert OFFER not in _load_lock(root)["files"], _out(pull)
+        assert "offered: 1 file(s)" in _out(pull), _out(pull)
+
+
+def test_named_pull_adopts_offer_as_tracked() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            OFFER: {"sync": "offer", "row": False, "local": None, "upstream": b"memory\n"},
+        })
+        pull = _run_baseline(root, baseline, "pull", OFFER)
+        assert pull.returncode == 0, _out(pull)
+        assert (root / OFFER).read_bytes() == b"memory\n"
+        assert _load_lock(root)["files"][OFFER]["status"] == "tracked"
+
+
+def test_bare_pull_updates_rowed_offer() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            OFFER: {"sync": "offer", "local": b"old\n", "hash": _sha(b"old\n"), "upstream": b"new\n"},
+        })
+        before = _json_output(_run_baseline(root, baseline, "check", "--json"))["results"]
+        assert before[OFFER] == "upstream-updated", before
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert (root / OFFER).read_bytes() == b"new\n"
+
+
+def test_check_reports_offered_and_strict_passes() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            OFFER: {"sync": "offer", "row": False, "local": None},
+        })
+        check = _run_baseline(root, baseline, "check")
+        assert "offered: 1 file(s)" in _out(check), _out(check)
+        assert OFFER not in _out(check), _out(check)
+        states = _json_output(_run_baseline(root, baseline, "check", "--json"))["results"]
+        assert states[OFFER] == "offered", states
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert strict.returncode == 0, _out(strict)
+
+
 def main() -> int:
     cases = [
+        test_bare_pull_skips_unrowed_offer_and_counts_it,
+        test_named_pull_adopts_offer_as_tracked,
+        test_bare_pull_updates_rowed_offer,
+        test_check_reports_offered_and_strict_passes,
         test_unimported_layer_files_names_each_overlay_claude_md_never_loads,
         test_env_strips_every_git_local_env_var,
         test_sub_unset_removes_a_substitution,
@@ -1772,6 +1927,13 @@ def main() -> int:
         test_upgrade_v1_fixture_leaves_only_judgment_rows,
         test_upgrade_refuses_v2_lock,
         test_upgrade_refuses_dirty_claude_md,
+        test_upgrade_records_abbreviations,
+        test_upgrade_refuses_dirty_lock,
+        test_migrate_refuses_dirty_claude_md,
+        test_upgrade_refuses_bad_subsystems_before_writing,
+        test_upgrade_names_unparseable_settings,
+        test_pull_seed_project_settings_makes_composed_row,
+        test_pull_keeps_existing_seed_file_says_kept,
     ]
     failures = []
     for case in cases:

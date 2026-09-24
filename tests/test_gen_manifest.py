@@ -125,6 +125,26 @@ def test_invalid_layer_entry_exits_1_naming_the_path() -> None:
     _with_layer_entries({rel: "universal"}, action)
 
 
+def test_sync_kind_offers_memory_and_seeds_its_index() -> None:
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import gen_manifest as gm
+        assert gm.sync_kind(".claude/auto-memory/x.md") == "offer"
+        assert gm.sync_kind(".claude/auto-memory/archive/y.md") == "offer"
+        assert gm.sync_kind(".claude/auto-memory/MEMORY.md") == "seed"
+        assert gm.sync_kind(".claude/CLAUDE.md") == "seed"
+        assert gm.sync_kind(".claude/tools/baseline_identity.py") == "auto"
+        original = list(gm.SEED_PATTERNS)
+        gm.SEED_PATTERNS.append(".claude/auto-memory/seeded_*.md")
+        try:
+            assert gm.sync_kind(".claude/auto-memory/seeded_one.md") == "seed"
+        finally:
+            gm.SEED_PATTERNS[:] = original
+    finally:
+        sys.path.remove(str(ROOT / "tools"))
+        sys.modules.pop("gen_manifest", None)
+
+
 def main() -> int:
     cases = [
         test_check_passes_on_the_committed_tree,
@@ -132,6 +152,7 @@ def main() -> int:
         test_classify_returns_none_for_an_unknown_path,
         test_exact_layer_entry_classifies_a_path_no_pattern_matches,
         test_invalid_layer_entry_exits_1_naming_the_path,
+        test_sync_kind_offers_memory_and_seeds_its_index,
     ]
     failures = []
     for case in cases:

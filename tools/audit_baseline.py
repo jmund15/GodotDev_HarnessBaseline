@@ -181,7 +181,7 @@ def check_manifest_staleness(f: Findings, manifest: dict) -> None:
             f.add("ERROR", "manifest-staleness", rel,
                   "unclassified by layer patterns -- add to a pattern list")
             continue
-        sync = "seed" if gm.match(rel, gm.SEED_PATTERNS) else "auto"
+        sync = gm.sync_kind(rel)
         if on_disk[rel] != (layer, sync):
             f.add("ERROR", "manifest-staleness", rel,
                   f"manifest says {on_disk[rel]}, patterns say {(layer, sync)} "
