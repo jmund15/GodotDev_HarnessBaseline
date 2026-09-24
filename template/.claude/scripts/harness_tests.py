@@ -8,6 +8,7 @@ compute a digest two different ways.
     python3 .claude/scripts/harness_tests.py [--repo PATH] [--all] [--hash] [--verbose]
         [--allow-cannot-run FILE]
     python3 .claude/scripts/harness_tests.py --staged | --for PATH [PATH ...]   # scoped run
+    python3 .claude/scripts/harness_tests.py --proofs-for PATH [PATH ...]     # no-stamp scoped run
 
 A scoped run (`--staged`, `--for`) runs only the proofs bound to the given harness files and
 refreshes only those files' entries on top of the last full-run stamp; the commit guard judges
@@ -558,6 +559,8 @@ def main(argv=None):
                       help="scoped: run only the proofs bound to the staged harness files and refresh their stamp entries")
     mode.add_argument("--for", dest="for_paths", nargs="+", metavar="PATH",
                       help="scoped: run only the proofs bound to these harness files and refresh their stamp entries")
+    mode.add_argument("--proofs-for", dest="proofs_for_paths", nargs="+", metavar="PATH",
+                      help="run only proofs bound to these paths without reading or writing a stamp")
     parser.add_argument("--verbose", action="store_true", help="print every proof result, not only failures and summary")
     parser.add_argument(
         "--allow-cannot-run",
@@ -568,6 +571,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.hash:
         print(tree_hash(args.repo))
+        return 0
+    if args.proofs_for_paths:
+        selected = select_for(args.repo, args.proofs_for_paths)
+        if not selected:
+            print("harness_tests: no proof selected for %s" % ", ".join(args.proofs_for_paths))
+            return 1
+        passed, failed, indeterminate, elapsed_total = _run_selected(selected, verbose=True)
+        print("harness_tests: scoped: %d run, %d pass, %d fail, %d cannot-run, %.1fs"
+              % (len(selected), passed, failed, len(indeterminate), elapsed_total))
+        if failed:
+            return 1
+        if indeterminate:
+            print("cannot-run (exit 2: the proof could not bind its target; the scoped run is incomplete):")
+            for proof in indeterminate:
+                print("    - %s" % proof)
+            return 2
         return 0
     if args.staged or args.for_paths:
         touched = args.for_paths or staged_harness_paths(args.repo)

@@ -3132,6 +3132,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_harness_tests_proofs_for.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_heredoc_escape_guard.py",
       "layer": "pure",
       "sync": "auto"

@@ -210,6 +210,7 @@
     ".claude/tests/test_harness_growth_guard.py": "pure",
     ".claude/tests/test_harness_policy_contracts.py": "godot",
     ".claude/tests/test_harness_tests_integrity.py": "pure",
+    ".claude/tests/test_harness_tests_proofs_for.py": "pure",
     ".claude/tests/test_indexed_reference_guard.py": "coding",
     ".claude/tests/test_layer_closure.py": "pure",
     ".claude/tests/test_lens.py": "pure",
