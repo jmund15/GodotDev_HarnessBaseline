@@ -2,7 +2,8 @@
 """
 baseline_compose.py — the merge rules for every `composed` lock row (§9).
 
-`baseline_sync.py`'s `compose` operation is the only caller. It holds the lock mutex, reads
+`baseline_sync.py`'s `compose` operation is the only caller of the merge functions; `migrate` calls
+`derive_project_settings`, their inverse, once per schema-1 upgrade. `compose` holds the lock mutex, reads
 each `composed` row's `inputs`, dispatches to one function here per row shape, writes the
 result with LF bytes, and records `hash`/`inputs` in one mutex-held lock write. This module
 never touches the lock or the mutex, and never does its own I/O beyond what its parameters
@@ -235,6 +236,62 @@ def compose_settings(base: dict, project: dict, hooks_dir: Path, layers: list[st
         merged["permissions"]["allow"] = _prune_allow(merged["permissions"]["allow"], hooks_dir.parent, layers)
 
     return merged
+
+
+def _value_diff(base, full):
+    """`full` minus what `base` already supplies, recursing into dicts; `None` when nothing is left."""
+    if isinstance(base, dict) and isinstance(full, dict):
+        kept = {}
+        for key, value in full.items():
+            if key not in base:
+                kept[key] = value
+                continue
+            rest = _value_diff(base[key], value)
+            if rest is not None:
+                kept[key] = rest
+        return kept or None
+    return None if base == full else full
+
+
+def derive_project_settings(base: dict, full: dict, base_owned_hook_files: set[str]) -> dict:
+    """The inverse of `compose_settings` for a monolithic settings.json: the project input that,
+    composed over `base`, keeps every entry `full` adds. A hook is base's when base registers its
+    exact command for the same event, or when its `.claude/hooks/<file>` is in
+    `base_owned_hook_files` (the manifest's hook files, which covers a module base now runs
+    inside a dispatcher and so never registers by name)."""
+    project: dict = {}
+    base_permissions = base.get("permissions", {})
+    permissions = {}
+    for list_key, entries in full.get("permissions", {}).items():
+        extra = [e for e in entries if e not in base_permissions.get(list_key, [])]
+        if extra:
+            permissions[list_key] = extra
+    if permissions:
+        project["permissions"] = permissions
+
+    hooks = {}
+    for event, groups in full.get("hooks", {}).items():
+        base_commands = set(_flatten_hook_commands({event: base.get("hooks", {}).get(event, [])}))
+        kept_groups = []
+        for group in groups:
+            kept = []
+            for hook in group.get("hooks", []):
+                command = hook.get("command", "")
+                match = _HOOK_COMMAND_PATH_PATTERN.search(command)
+                if command in base_commands or (match and match.group(1) in base_owned_hook_files):
+                    continue
+                kept.append(hook)
+            if kept:
+                kept_groups.append(dict(group, hooks=kept))
+        if kept_groups:
+            hooks[event] = kept_groups
+    if hooks:
+        project["hooks"] = hooks
+
+    rest_base = {k: v for k, v in base.items() if k not in ("permissions", "hooks")}
+    rest_full = {k: v for k, v in full.items() if k not in ("permissions", "hooks")}
+    project.update(_value_diff(rest_base, rest_full) or {})
+    return project
 
 
 def _hook_entry_key(entry: dict) -> str:

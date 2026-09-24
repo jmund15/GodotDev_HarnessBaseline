@@ -3762,6 +3762,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_worker_rate_provenance.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_workflow_provider_guard.py",
       "layer": "pure",
       "sync": "auto"

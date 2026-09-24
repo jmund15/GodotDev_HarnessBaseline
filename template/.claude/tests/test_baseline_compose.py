@@ -390,6 +390,47 @@ def main() -> int:
     failures.append(case("settings_equivalent: a changed env value is not equivalent",
                           not ok and diffs, repr(diffs)))
 
+    # derive_project_settings is compose's inverse for a monolithic v1 settings.json: what base
+    # already provides is dropped, including a hook base now runs inside a dispatcher.
+    root, hooks_dir = make_tree(hooks=["dispatch.py", "absorbed.py", "mine.py"])
+    dispatch = "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch.py\""
+    base = {
+        "env": {"PYTHONUTF8": "1", "SHARED": "same"},
+        "permissions": {"allow": ["A", "B"], "deny": ["D1"]},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": dispatch}]}]},
+    }
+    full = {
+        "env": {"SHARED": "same", "MINE": "x"},
+        "permissions": {"allow": ["A", "C"], "deny": ["D1", "D2"]},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": dispatch},
+            {"type": "command", "command": "python .claude/hooks/absorbed.py"},
+            {"type": "command", "command": "python .claude/hooks/mine.py"}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "python .claude/hooks/mine.py --stop"}]}]},
+        "enabledPlugins": {"p": True},
+    }
+    owned = {"dispatch.py", "absorbed.py"}
+    project = bc.derive_project_settings(base, full, owned)
+    merged = bc.compose_settings(base, project, hooks_dir, ["pure", "coding", "godot"])
+    commands = [h["command"] for groups in merged["hooks"].values() for g in groups for h in g["hooks"]]
+    failures.append(case("derive: project keeps only what base lacks",
+                          project.get("env") == {"MINE": "x"}
+                          and project["permissions"] == {"allow": ["C"], "deny": ["D2"]}
+                          and project.get("enabledPlugins") == {"p": True},
+                          json.dumps(project, sort_keys=True)))
+    failures.append(case("derive: a dispatcher-owned hook is dropped, a project hook kept",
+                          not any("absorbed.py" in c for c in commands)
+                          and "python .claude/hooks/mine.py" in commands
+                          and "python .claude/hooks/mine.py --stop" in commands,
+                          repr(commands)))
+    failures.append(case("derive then compose: no base hook appears twice",
+                          commands.count(dispatch) == 1, repr(commands)))
+    failures.append(case("derive then compose: every project permission survives",
+                          all(p in merged["permissions"]["allow"] for p in ["A", "B", "C"])
+                          and merged["permissions"]["deny"] == ["D1", "D2"],
+                          json.dumps(merged["permissions"])))
+    _rmtree_writable(root)
+
     total = len(failures)
     failures = [f for f in failures if f]
     print("\n%d/%d cases pass" % (total - len(failures), total))

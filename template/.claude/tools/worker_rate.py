@@ -47,6 +47,7 @@ import collections
 import json
 import os
 import pathlib
+import subprocess
 import sys
 
 # Env overrides let subprocess tests use an isolated store. Module-level reassignment cannot
@@ -98,9 +99,11 @@ def breadth_of(row):
     Unknown groups SEPARATELY rather than defaulting into a band. Same discipline the kv
     column already uses here: a row that predates capture has an unrecoverable coordinate,
     and assuming one would silently move a call into a cell it was never measured in.
+    A looped call has no prompt_tokens (its stream never delivered usage), so it reads the
+    server's window estimate, which runs about 10% high by design.
     """
     files = row.get("paths_requested")
-    toks = row.get("prompt_tokens")
+    toks = row.get("prompt_tokens") or row.get("prompt_tokens_est")
     if not files and not toks:
         return "?"
     if (files or 0) >= BREADTH_FILES or (toks or 0) >= BREADTH_TOKENS:
@@ -149,6 +152,20 @@ def load_joined(since=None):
     return rows
 
 
+def find_row(rows, ts):
+    """The one row whose ts starts with `ts`, or None after printing why: no match, or a prefix
+    naming several calls (two calls can share a second, so a seconds-only prefix is ambiguous)."""
+    hits = [r for r in rows if (r.get("ts") or "").startswith(ts)]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        print(f"no ledger row at {ts}", file=sys.stderr)
+    else:
+        print(f"{ts} matches {len(hits)} calls; give more of the ts:\n  "
+              + "\n  ".join(f"{r.get('ts')}  {r.get('tool')}" for r in hits), file=sys.stderr)
+    return None
+
+
 def cmd_rate(args):
     if args.outcome in FIDELITY and not args.anchor:
         print(f"'{args.outcome}' is a fidelity verdict and needs --anchor: the claim you "
@@ -179,7 +196,9 @@ def cmd_rate(args):
         return 2
 
     if args.ts:
-        target = next((r for r in rows if (r.get("ts") or "").startswith(args.ts)), None)
+        target = find_row(rows, args.ts)
+        if target is None:
+            return 2
     else:
         # Newest call, optionally of one tool. Rating happens right after consuming a result,
         # so "the last one" is the overwhelmingly common case and is worth not having to name.
@@ -317,16 +336,34 @@ def print_grid(rows):
               f"Rate into an empty cell next — `unrated --breadth wide` finds candidates.")
 
 
+def dirty_sources(art):
+    """Sources whose bytes at call time are not the blob their repo's recorded commit holds.
+
+    Such a file had uncommitted edits when the worker read it, so `git show <sha>:<path>` is
+    NOT what it saw: verify against the working copy if unchanged since, or rate nothing.
+    """
+    out = []
+    shas = art.get("git_shas") or {}
+    for path, blob in (art.get("source_blobs") or {}).items():
+        resolved = pathlib.Path(path).resolve()
+        roots = [r for r in shas if resolved.is_relative_to(pathlib.Path(r))]
+        if not roots:
+            continue
+        root = max(roots, key=len)
+        rel = resolved.relative_to(pathlib.Path(root)).as_posix()
+        r = subprocess.run(["git", "-C", root, "rev-parse", f"{shas[root]}:{rel}"],
+                           capture_output=True, text=True, timeout=30)
+        committed = r.stdout.strip() if r.returncode == 0 else None
+        if committed != blob:
+            out.append(f"{path}  (read {blob[:10]}, commit has {committed[:10] if committed else 'no such file'})")
+    return out
+
+
 def cmd_show(args):
     """The audit surface: what was asked, of which files, at which commit, and what came back."""
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    hit = None
-    for row in load_joined():
-        if (row.get("ts") or "").startswith(args.ts):
-            hit = row
-            break
+    hit = find_row(load_joined(), args.ts)
     if hit is None:
-        print(f"no ledger row at {args.ts}", file=sys.stderr)
         return 2
 
     print(f"ts        {hit.get('ts')}")
@@ -368,6 +405,12 @@ def cmd_show(args):
     art = json.loads(path.read_text(encoding="utf-8"))
     print(f"\ncwd       {art.get('cwd')}")
     print(f"git_sha   {art.get('git_sha')}   <-- check the sources AT THIS COMMIT")
+    shas = art.get("git_shas") or {}
+    if len(shas) > 1 or (shas and art.get("git_sha") is None):
+        for root, sha in shas.items():
+            print(f"  {sha}  {root}")
+    for line in dirty_sources(art):
+        print(f"  DIRTY  {line}")
     print(f"\nQUESTION\n{art.get('question')}")
     print(f"\nPATHS ({len(art.get('paths') or [])})")
     for p in art.get("paths") or []:
@@ -400,7 +443,7 @@ def cmd_unrated(args):
         flags = ",".join(flag_parts) or "-"
         err = "ERR" if r.get("error") else "-"
         art = "" if r.get("artifact") else "  NO-ARTIFACT"
-        print(f"{r.get('ts','?')[:19]}  {str(r.get('tool')):14s} "
+        print(f"{r.get('ts','?')[:26]}  {str(r.get('tool')):14s} "
               f"{r['breadth']:<7s} files={str(r.get('paths_requested') or '-'):>3s} "
               f"chars={str(r.get('chars')):>6s}  flags={flags:<14s} {err}{art}")
     print(f"\n{len(rows)} unrated")

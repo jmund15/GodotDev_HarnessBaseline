@@ -151,6 +151,7 @@ Bootstrapped. Next steps in $TARGET:
   2. Seed skills/project_subsystems/SKILL.md, and skills/game_vision/SKILL.md when godot is adopted.
   3. Create the Obsidian dirs: <vault>/DevProjects/$PROJECT_NAME/Claude/TODO/.
   4. Review .claude/settings.json permissions for your machine; run /sync_permissions later.
-  5. In the first Claude session: /system_check, then /reindex_search.
+  5. In the first Claude session: /system_check, then /reindex_search. On a new machine with
+     the godot layer, /workstation_setup provisions the toolchain and does both.
   6. Commit .claude/ including baseline.lock.json.
 NEXT

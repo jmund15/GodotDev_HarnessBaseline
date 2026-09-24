@@ -571,6 +571,7 @@ PURE_PATTERNS = [
     ".claude/tests/test_void_check_engagement.py",
     ".claude/tests/test_worker_rate_difficulty.py",
     ".claude/tests/test_worker_rate_mutations.py",
+    ".claude/tests/test_worker_rate_provenance.py",
     ".claude/tests/test_workflow_provider_guard.py",
     ".claude/tests/test_workflow_provider_guard_effort.py",
     ".claude/tests/test_workflow_provider_guard_ladder.py",
