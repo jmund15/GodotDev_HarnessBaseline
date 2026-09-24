@@ -22,7 +22,8 @@ FAILURES = []
 def run_hook(command, repo):
     payload = {"tool_name": "Bash", "session_id": "s1", "cwd": repo, "tool_input": {"command": command}}
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                       text=True, encoding="utf-8", timeout=30, cwd=repo)
+                       text=True, encoding="utf-8", timeout=30, cwd=repo,
+                       env=dict(os.environ, PYTHONUTF8="1"))
     crashed = r.returncode not in (0, 2) or "Traceback" in r.stderr
     return r.returncode, r.stderr + r.stdout, crashed
 

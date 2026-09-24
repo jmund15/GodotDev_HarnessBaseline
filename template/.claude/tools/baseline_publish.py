@@ -116,7 +116,7 @@ def _rows_sha(rows: list[str]) -> str:
 
 
 def _new_journal(source: dict, rows: list[str], row_meta: dict[str, dict],
-                  dry_run: bool, no_ci: bool, baseline_before: str,
+                  dry_run: bool, no_ci: bool, full_battery: bool, baseline_before: str,
                   journal_id: str, supersedes: str | None) -> dict:
     return {
         "id": journal_id,
@@ -126,6 +126,7 @@ def _new_journal(source: dict, rows: list[str], row_meta: dict[str, dict],
         "baseline_sha_after": None,
         "dry_run": dry_run,
         "no_ci": no_ci,
+        "full_battery": full_battery,
         "supersedes": supersedes,
         "owner_confirmed_at": None,
         "ci_wait_s": 0,
@@ -465,21 +466,82 @@ def _run_python_args(worktree: Path, args: list[str], label: str) -> str:
     return out
 
 
-def _validate(worktree: Path) -> str:
-    outputs = [_run_python_args(worktree, ["tools/gen_manifest.py", "--check"], "gen_manifest.py --check")]
-    outputs.append(_run_python_args(worktree, ["tools/audit_baseline.py", "--strict"],
-                                     "audit_baseline.py --strict"))
-    tests_root = worktree / "tests"
-    if tests_root.is_dir():
-        for test_path in sorted(tests_root.glob("test_*.py")):
-            relpath = str(test_path.relative_to(worktree))
-            outputs.append(_run_python_args(worktree, [relpath], f"tests/{test_path.name}"))
-    harness_script = worktree / "template" / ".claude" / "scripts" / "harness_tests.py"
+def _battery_mode(records: list[dict], full_battery: bool) -> tuple[str, str]:
+    if full_battery:
+        return "full", "flag"
+    for record in records:
+        relpath = record["relpath"].replace("\\", "/")
+        if record["kind"] == "root":
+            return "full", relpath
+        if relpath.startswith((".claude/hooks/", ".claude/scripts/")):
+            return "full", relpath
+        if relpath.startswith(".claude/settings") and relpath.endswith(".json"):
+            return "full", relpath
+        if relpath in {".claude/tools/adaptation.py", ".claude/tools/_lock_rows.py",
+                       ".claude/tools/layer_closure.py"} or (
+                relpath.startswith(".claude/tools/baseline_") and relpath.endswith(".py")
+        ):
+            return "full", relpath
+        if relpath.startswith(".claude/tests/") and record["op"] == "D":
+            return "full", relpath
+    return "scoped", "published rows"
+
+
+def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
+    mode, reason = _battery_mode(records, full_battery)
+    checks_start = time.monotonic()
+    outputs = []
+    try:
+        outputs.append(_run_python_args(worktree, ["tools/gen_manifest.py", "--check"], "gen_manifest.py --check"))
+        outputs.append(_run_python_args(worktree, ["tools/audit_baseline.py", "--strict"],
+                                         "audit_baseline.py --strict"))
+        tests_root = worktree / "tests"
+        if tests_root.is_dir():
+            for test_path in sorted(tests_root.glob("test_*.py")):
+                relpath = str(test_path.relative_to(worktree))
+                outputs.append(_run_python_args(worktree, [relpath], f"tests/{test_path.name}"))
+        harness_script = worktree / "template" / ".claude" / "scripts" / "harness_tests.py"
+        if harness_script.is_file():
+            _battery_counts_match(worktree)
+    except Exception as exc:
+        checks_elapsed = time.monotonic() - checks_start
+        raise PublishError(
+            f"mode={mode}; reason={reason}; checks={checks_elapsed:.3f}s; battery=0.000s; {exc}"
+        ) from exc
+    checks_elapsed = time.monotonic() - checks_start
+    battery_elapsed = 0.0
+    battery_output = "no harness runner"
     if harness_script.is_file():
-        _battery_counts_match(worktree)
-        relpath = str(harness_script.relative_to(worktree))
-        outputs.append(_run_python_args(worktree, [relpath], "harness_tests.py"))
-    return "; ".join(o for o in outputs if o) or "validate passed"
+        if mode == "full":
+            args = ["template/.claude/scripts/harness_tests.py"]
+            label = "harness_tests.py"
+        else:
+            rows = [r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"]
+            args = [".claude/scripts/harness_tests.py", "--proofs-for", *rows]
+            label = "harness_tests.py --proofs-for"
+        battery_start = time.monotonic()
+        try:
+            if mode == "full":
+                battery_output = _run_python_args(worktree, args, label)
+            else:
+                battery_output = _run_python_args(worktree / "template", args, label)
+        except Exception as exc:
+            battery_elapsed = time.monotonic() - battery_start
+            selected = [line.strip() for line in str(exc).splitlines()
+                        if line.startswith(("OK ", "FAIL ", "CANNOT-RUN "))]
+            proofs = ", ".join(selected) or ("full battery" if mode == "full" else "none selected")
+            raise PublishError(
+                f"mode={mode}; reason={reason}; proofs={proofs}; checks={checks_elapsed:.3f}s; "
+                f"battery={battery_elapsed:.3f}s; {exc}"
+            ) from exc
+        battery_elapsed = time.monotonic() - battery_start
+    selected = []
+    if mode == "scoped":
+        selected = [line.strip() for line in battery_output.splitlines()
+                    if line.startswith(("OK ", "FAIL ", "CANNOT-RUN "))]
+    return (f"mode={mode}; reason={reason}; proofs={', '.join(selected) or 'full battery'}; "
+            f"checks={checks_elapsed:.3f}s; battery={battery_elapsed:.3f}s; "
+            + "; ".join(o for o in outputs if o))
 
 
 # ---------------------------------------------------------------------------
@@ -939,7 +1001,7 @@ def _current_source_commit(source: dict) -> str:
 def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
                        source: dict, records: list[dict], worktree: Path, branch: str,
                        baseline_cache: Path, baseline_before: str, accept_hits: list[str],
-                       no_ci: bool, dry_run: bool, start: int) -> None:
+                       no_ci: bool, full_battery: bool, dry_run: bool, start: int) -> None:
     if start <= 2:
         materialized_head = _step(journal, journal_path, 2, lambda: _materialize(
             root, source, records, lock, baseline_cache, baseline_before, worktree, branch
@@ -952,7 +1014,7 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
             root, worktree, records, lock, accept_hits, baseline_cache
         ))
     if start <= 4:
-        _step(journal, journal_path, 4, lambda: _validate(worktree))
+        _step(journal, journal_path, 4, lambda: _validate(worktree, records, full_battery))
 
     if dry_run:
         return
@@ -969,11 +1031,22 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
     _write_json_atomic(journal_path, journal)
 
 
-def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = False) -> dict:
+def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = False,
+            full_battery: bool = False) -> dict:
     journal_path = _journal_path(root, resume_id)
     journal = _load_journal_file(journal_path)
     if journal is None:
         raise PublishError(f"unreadable publication journal {resume_id}")
+    upgraded = bool(full_battery and not journal.get("full_battery"))
+    if upgraded and (_journal_complete(journal) or journal["steps"][5].get("status") == "green"):
+        raise PublishError(f"{resume_id} is already published; --full-battery upgrades only an "
+                           "unpublished journal -- run a fresh `publish --full-battery`")
+    if upgraded:
+        journal["full_battery"] = True
+        for index in range(4, len(journal["steps"])):
+            step = journal["steps"][index]
+            step.update(status="pending", started_at=None, finished_at=None, evidence="")
+        _write_json_atomic(journal_path, journal)
     if _journal_complete(journal):
         print("complete")
         return journal
@@ -1002,7 +1075,7 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
     dry_green = all(step.get("status") == "green" for step in journal["steps"][:5])
     if dry_run and not was_dry_run:
         raise PublishError(f"--dry-run resumes only a dry-run journal; {resume_id} is not one")
-    if was_dry_run and not dry_green and not dry_run:
+    if was_dry_run and not dry_green and not dry_run and not upgraded:
         raise PublishError(
             f"dry-run journal {resume_id} is not green through step 5; run "
             f"`publish --resume {resume_id} --dry-run` and confirm its evidence first")
@@ -1048,7 +1121,8 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
 
     _steps_from_index(journal, journal_path, root, lock, source, records, worktree, branch,
                        baseline_cache, baseline_before, accept_hits,
-                       bool(journal.get("no_ci")), bool(dry_run), start)
+                       bool(journal.get("no_ci")), bool(journal.get("full_battery")),
+                       bool(dry_run), start)
     return journal
 
 
@@ -1097,7 +1171,7 @@ def _delete_journal(journal_path: Path) -> None:
 
 
 def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str],
-        dry_run, no_ci, resume_id):
+        dry_run, no_ci, resume_id, full_battery=False):
     root = Path(root).resolve()
     # Design §8: refuse a missing/malformed `project_subsystems` adaptation contract before
     # step 1 on a fresh run, and before touching an existing journal on `--resume` -- so a
@@ -1107,7 +1181,7 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
     except sync.BaselineError as exc:
         raise PublishError(str(exc)) from exc
     if resume_id:
-        return _resume(root, resume_id, accept_hits, bool(dry_run))
+        return _resume(root, resume_id, accept_hits, bool(dry_run), bool(full_battery))
     if source is None:
         raise PublishError("a source commit or worktree is required")
     source = _resolve_source(root, source)
@@ -1125,7 +1199,7 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
 
     journal_id = _make_journal_id(root, source["commit"])
     journal_path = _journal_path(root, journal_id)
-    journal = _new_journal(source, [], {}, bool(dry_run), bool(no_ci), baseline_before,
+    journal = _new_journal(source, [], {}, bool(dry_run), bool(no_ci), bool(full_battery), baseline_before,
                             journal_id, None)
     _write_json_atomic(journal_path, journal)
 
@@ -1174,7 +1248,8 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
     _write_json_atomic(journal_path, journal)
 
     _steps_from_index(journal, journal_path, root, lock, source, records, worktree, branch,
-                       baseline_cache, baseline_before, accept_hits, bool(no_ci), bool(dry_run), 2)
+                       baseline_cache, baseline_before, accept_hits, bool(no_ci), bool(full_battery),
+                       bool(dry_run), 2)
     return journal
 
 
@@ -1190,6 +1265,7 @@ def main(argv=None) -> int:
     parser.add_argument("--accept-hit", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-ci", action="store_true")
+    parser.add_argument("--full-battery", action="store_true")
     parser.add_argument("--resume")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
@@ -1216,7 +1292,8 @@ def main(argv=None) -> int:
         if len(set(selected)) != len(selected):
             parser.error("rows file must be a JSON list of unique relpath strings")
     try:
-        journal = run(root, source, selected, args.accept_hit, args.dry_run, args.no_ci, args.resume)
+        journal = run(root, source, selected, args.accept_hit, args.dry_run, args.no_ci,
+                      args.resume, args.full_battery)
     except PublishError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

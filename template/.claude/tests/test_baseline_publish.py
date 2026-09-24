@@ -744,7 +744,7 @@ def test_step_failures_1_through_5_leave_fixture_main_unchanged() -> None:
 
 
 def test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed() -> None:
-    rel = ".claude/tools/fixture.py"
+    rel = ".claude/commands/fixture.md"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
         commit = _git(root, "rev-parse", "HEAD").decode().strip()
@@ -762,11 +762,39 @@ def test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed()
 
         publish2 = _load_publish()
         with _patched_env(env):
-            resumed = publish2.run(root, None, None, [], False, False, journal["id"])
+            resumed = publish2.run(root, None, None, [], False, False, journal["id"], True)
         assert all(s["status"] == "green" for s in resumed["steps"]), resumed["steps"]
+        assert resumed["full_battery"] is True
+        assert "mode=full" in resumed["steps"][4]["evidence"]
+        assert "reason=flag" in resumed["steps"][4]["evidence"]
         assert resumed["dry_run"] is False
         assert resumed["owner_confirmed_at"] is not None
         assert _git(remote, "show", "main:template/" + rel)
+
+
+def test_full_battery_upgrade_refuses_a_published_journal() -> None:
+    """`--resume <id> --full-battery` resets step 5 onward, so on a journal that already
+    published it would push, merge and move the lock a second time. It refuses instead."""
+    rel = ".claude/commands/fixture.md"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                                   [rel], [], True, True, None)
+            published = publish.run(root, None, None, [], False, False, journal["id"])
+        assert published["full_battery"] is False
+        assert all(s["status"] == "green" for s in published["steps"]), published["steps"]
+        publish2 = _load_publish()
+        with _patched_env(env):
+            try:
+                publish2.run(root, None, None, [], False, False, journal["id"], True)
+            except publish2.PublishError as exc:
+                assert "already published" in str(exc), exc
+            else:
+                raise AssertionError("--full-battery must not reopen a published journal")
 
 
 def test_a_red_dry_run_is_redone_as_a_dry_run_before_the_owner_confirms() -> None:
@@ -1733,8 +1761,57 @@ def test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_workt
         assert not worktree.exists(), "the refusal must come before the worktree exists"
 
 
+def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = path / "worktree"
+        _write(worktree / "tools/gen_manifest.py", STUB_GEN_MANIFEST)
+        _write(worktree / "tools/audit_baseline.py", STUB_AUDIT_BASELINE)
+        template = worktree / "template"
+        _write(template / ".claude/scripts/harness_tests.py", PUBLISH.parents[1].joinpath("scripts/harness_tests.py").read_bytes())
+        hooks = PUBLISH.parents[1] / "hooks/_hook_state.py"
+        _write(template / ".claude/hooks/_hook_state.py", hooks.read_bytes())
+        adaptation = PUBLISH.with_name("adaptation.py")
+        _write(template / ".claude/tools/adaptation.py", adaptation.read_bytes())
+        _write(template / ".claude/skills/project_subsystems/adaptation.json", b"{}\n")
+        proof = template / ".claude/tests/test_bound.py"
+        _write(proof, b"# fixture.md\nraise SystemExit(1)\n")
+        row = ".claude/commands/fixture.md"
+        _write(template / row, b"# fixture\n")
+        _init_repo(worktree)
+        _commit(worktree, "fixture")
+        record = {"kind": "lock", "op": "M", "relpath": row}
+        try:
+            publish._validate(worktree, [record], False)
+        except publish.PublishError as exc:
+            assert "test_bound.py" in str(exc), str(exc)
+        else:
+            raise AssertionError("failing scoped proof passed step 5")
+        proof.write_bytes(b"# fixture.md\nraise SystemExit(0)\n")
+        evidence = publish._validate(worktree, [record], False)
+        assert "scoped" in evidence and "test_bound.py" in evidence, evidence
+        assert not (template / ".claude/logs/harness_tests_stamp.json").exists()
+
+
+def test_battery_mode_triggers() -> None:
+    publish = _load_publish()
+    full_paths = [
+        (".claude/hooks/tool.py", "lock", "M"),
+        (".claude/tools/adaptation.py", "lock", "M"),
+        ("tools/a.py", "root", "M"),
+        (".claude/settings.base.json", "lock", "M"),
+        (".claude/tests/test_gone.py", "lock", "D"),
+    ]
+    for relpath, kind, op in full_paths:
+        assert publish._battery_mode([{"relpath": relpath, "kind": kind, "op": op}], False)[0] == "full", relpath
+    assert publish._battery_mode([{"relpath": ".claude/commands/doc.md", "kind": "lock", "op": "M"}], False)[0] == "scoped"
+    assert publish._battery_mode([], True) == ("full", "flag")
+
+
 def main() -> int:
     cases = [
+        test_scoped_validate_runs_bound_proof_and_records_evidence,
+        test_battery_mode_triggers,
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,
@@ -1777,6 +1854,7 @@ def main() -> int:
         test_publish_resume_refuses_malformed_adaptation_contract,
         test_published_forked_row_records_tracked_not_forked,
         test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
+        test_full_battery_upgrade_refuses_a_published_journal,
     ]
     failures = []
     for case in cases:

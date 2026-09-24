@@ -21,6 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8")
+
 _TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 _TEMPLATE_CLAUDE = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _TEMPLATE_CLAUDE.parents[1]  # .../template/.claude -> .../template -> repo root
