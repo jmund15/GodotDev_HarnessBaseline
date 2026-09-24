@@ -7,7 +7,8 @@
     "explanatory-output-style@claude-plugins-official": true
   },
   "env": {
-    "CLAUDE_CODE_GLOB_NO_IGNORE": "false"
+    "CLAUDE_CODE_GLOB_NO_IGNORE": "false",
+    "PYTHONUTF8": "1"
   },
   "hooks": {
     "InstructionsLoaded": [
