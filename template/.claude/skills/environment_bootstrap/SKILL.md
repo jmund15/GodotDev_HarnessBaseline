@@ -3,8 +3,8 @@ name: Environment Bootstrap
 description: >-
   Machine and environment ground truth: engine binary, vault root, log locations, platform
   shell differences and launcher details. Load for "tool not found" or locating logs and
-  binaries. SKIP for provisioning a new machine (the project's setup command) and test
-  mechanics (the project's testing skill).
+  binaries. SKIP for provisioning (a setup command, if any) and test mechanics
+  (the project's testing skill).
 ---
 
 # {{PROJECT_NAME}} — Environment Bootstrap

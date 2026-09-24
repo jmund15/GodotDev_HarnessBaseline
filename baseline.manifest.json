@@ -24,907 +24,907 @@
     {
       "path": ".claude/auto-memory/Blackboard_NullStorage_Asymmetry.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/MEMORY.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "seed"
     },
     {
       "path": ".claude/auto-memory/arch_rule_absent_input_needs_its_own_outcome_value.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_atomic_rename_tmp_is_durable.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_autonomous_loop_positive_liveness.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_closed_set_switch.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_convention_binds_only_authored_artifacts.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_event_not_magnitude_gates_behavior.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_frozen_upstream_needs_informed_ordering.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_greedy_commit_honor_declared_choice.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_invulnerability_via_health_flags.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_latch_after_the_operation_it_guards.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_packedscene_resource_inline_copy.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_resource_config_runtime_split.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_rule_state_scope_via_context.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_test_namespace_matches_gate_filter.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_windowed_history_component_condition_split.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/arch_rule_world_space_constant_hides_geometry_assumption.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_absent_input_needs_its_own_outcome_value.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_autoload_line_earns_its_place.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_autonomous_loop_positive_liveness.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_bb_flag_cross_system.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_constraint_scope_match_input_axis.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_hysteresis_for_analog_hsm_boundaries.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_onexit_must_not_clobber_consumer_onenter.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_pragmatic_narrowing_at_boundary.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/arch_rule_transition_condition_stateless.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/archive_claude_code_permissions_location.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/archive_hook_gotchas.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_brief_the_defect_class_not_your_candidate_list.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_briefing_context_gates_not_flow.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_command_descriptions_one_line.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_dont_batch_dependent_call_with_its_inputs.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_dont_defer_existing_framework_abstractions.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_enforce_not_promise.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_fix_self_introduced_regression_immediately.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_harness_rules_are_agent_actionable.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_lsp_default_for_csharp.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_memory_file_refs_no_markdown_links.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_memory_md_is_auto_managed.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_model_agnostic_core_scoped_overlays.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_nullable_return_naming.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_orchestration_skill_model_agnostic.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_pin_derivations_across_parameter_sweep.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_plan_mode_retired_from_planning_flow.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_plan_pending_requires_impl_arch_not_seam.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_prefer_data_params_over_injected_delegates.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_prescribe_verification_not_cognition.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_session_end_full_scope.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_session_start_hook_does_not_override_skill_procedure.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_skill_vs_command_frontmatter_convention.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_tool_routing_discipline.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/feedback_typed_state_over_bb_flag_soup.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_baseline_forked_file_drifts_behind.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_baseline_wrong_repo_url_silent_fallback.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_bash_windows_path_separator_mixing.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_editing_shell_script_corrupts_running_instances.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_global_vs_project_claude_dir.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_godot_resource_cache_stateful_tres_test_isolation.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_long_context_gpt_sessions_cost_by_context_size.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_model_availability_probe_error_is_generic.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_native_workflow_agent_compaction.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_prove_a_guard_by_making_it_fire.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_registry_prose_asserts_world_state.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_regression_gate_baseline_inflation.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_schedulewakeup_is_loop_only.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_sidecar_lane_routes_report_through_write_doc.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_simulateframes_no_physics_tick.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_workflow_args_generation_fidelity.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_workflow_fanout_search_false_absence.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_workflow_single_flight_concurrency.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/gotcha_write_doc_callout_embedded_table_missing_prefix.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/powershell_emit_pollutes_return_value.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/powershell_statement_paren_gotcha.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/archive/precedent_is_evidence_not_authority.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/diagnose_specific_objection_before_pivot.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_absence_is_not_a_defect_until_dated.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_completion_is_not_engagement.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_considerations_consume_perception_not_queries.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_control_run_before_bisecting_a_runtime_failure.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_controlled_contrast_or_it_proves_nothing.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_design_workflow_model_mix.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_dispatch_transport_is_session_bound.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_doc_revision_in_place.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_dont_compress_socratic_on_rich_prompt.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_dont_defer_immediately_addressable.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_dont_unilaterally_reduce_planned_scope.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_excluded_and_broken_look_identical.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_fix_the_class_not_the_instance.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_found_defect_is_fixed_now_peer_owned_is_a_git_fact.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_gate_invalid_targeted_verification.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_godot_signal_test_via_emitsignal.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_honor_execution_directive.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_inspect_existing_abstractions_first.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_invoke_named_skill_not_manual_equivalent.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_move_destination_must_be_read.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_no_performative_agreement.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_no_unilateral_condensation.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_one_observation_licenses_a_hypothesis_never_a_scope_decision.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_orchestrate_loads_orchestration_skill.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_pathspec_commit_stage_infra_deps.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_plan_check_auto_surface_on_exit.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_plan_files_are_context_free_execution_docs.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_plan_mode_is_claude_code_built_in.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_plan_worklog_items_from_source_not_mirror.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_prefer_typed_shapes_over_empty_markers.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_price_the_tradeoff_before_recommending_it.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_read_files_enumerate_first.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_read_files_multifile_completeness_directive.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_read_files_output_volume_governs_spill.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_recommended_fix_means_implement.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_reconcile_structure_against_existing_subsystems.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_refactor_parity_audit.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_resolve_questions_in_plan_not_execution.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_review_cannot_see_a_wrong_altitude_seam.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_separate_preexisting_changes_before_commit.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_session_end_command_over_passive_nudge.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_single_gate_no_secondary_approval.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_slash_command_naming.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_spec_strength_sets_agent_tier.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_test_fixture_must_match_production_topology.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_user_distress_lexicon.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_verbatim_content_to_review_agents.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_verify_explore_agent_empirical_claims.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_verify_plan_integration_target_is_live.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/feedback_verify_type_contract_before_design_lock.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_author_lane_edit_clips_method_header.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_authoring_validator_needs_static_resolvable_reference.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_auto_mode_classifier_fail_closed.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_baseline_clone_push_workflow.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_blackboard_stringname_variant_boxing.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_blackboard_valuetype_subscriber_gets_variant.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_cascade_gate_vacuous_without_godot_bin.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_component_caches_bb_dependency_post_init_injection_noop.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_config_exception_node_bound_not_static.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_cross_project_memory_index_autoload.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_default_interface_method_for_base_member.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_design_doc_cross_section_prescriptions.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_editor_resave_drops_unloadable_ext_resource.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_editor_reserialize_value_export_null_strip.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_empty_tween_never_fires_finished.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_errorsonly_build_hides_cref_drift.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_explicit_dim_orphans_on_base_interface_removal.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_export_enum_out_of_range_silent_false.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_gdunit4_filter_uses_test_class_name.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_gdunit4_simulateframes_is_process_frames.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_gitignore_build_glob_swallows_production_dirs.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_godot4_uid_only_refs_break_orphan_detection.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_godot_editor_plugin_pair_conflict.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_godot_resourcesaver_extension_dispatch.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_godot_typed_dictionary.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_godot_variant_int64_fold.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_grep_brace_glob_silent_zero.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_guard_can_be_an_algebraic_identity.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_inherited_scene_empty_resource_slot.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_inherited_scene_override_replaces_never_merges.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_merge_silently_drops_one_sided_add.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_namespace_rename_breaks_relative_using.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_program_spawned_shell_is_not_your_shell.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_pure_clr_poco_mirror_payload_type.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_relocation_doccomment_cref_boundary.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_schema_version_bump_breaks_version_tests.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_self_reported_model_identity_is_not_authority.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_semantic_search_restricttodir_posix.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_session_start_submodule_autofix_detaches_head.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_sprite3d_typed_ref_excludes_animatedsprite3d.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_subscribe_before_synchronous_fire_bind.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_survey_absence_feature_lives_on_unmerged_branch.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_synthetic_fixture_hides_real_input_failure.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_tscn_csharp_node_exports_need_node_paths.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_type_name_equals_namespace_leaf.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_unhandled_ready_exception_invisible_in_log.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/gotcha_workflow_args_permission_control_chars.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/ground_in_system_purpose_before_subpart_plan.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/jmodot_2d_movement_architecture.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/jmodot_combat_factory_defaults_seam.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/jmodot_framework_boundary_rule.md",
       "layer": "godot",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/process_rule_plan_high_execute_lower.md",
       "layer": "coding",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/process_rule_spec_doc_coverage.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/auto-memory/user_feedback_is_speech_to_text.md",
       "layer": "pure",
-      "sync": "auto"
+      "sync": "offer"
     },
     {
       "path": ".claude/cloud-install.sh",

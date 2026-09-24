@@ -186,6 +186,10 @@ def retired_worktree_cases():
     write(os.path.join(evidence, ".claude", "scratch", "gate.out"), "VERDICT=PASS\n")
     expect_wt("ignored .claude/scratch evidence", evidence, False, proj)
 
+    emptied = add_wt("emptied")
+    os.makedirs(os.path.join(emptied, ".claude", "scratch", "moved_out"))
+    expect_wt("ignored .claude/scratch holding only empty directories", emptied, True, proj)
+
     untracked = add_wt("untracked")
     write(os.path.join(untracked, "notes.md"), "n\n")
     expect_wt("untracked authored file", untracked, False, proj)

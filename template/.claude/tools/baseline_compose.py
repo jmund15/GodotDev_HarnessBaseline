@@ -229,6 +229,9 @@ def compose_settings(base: dict, project: dict, hooks_dir: Path, layers: list[st
         list_key: _ordered_union(base_permissions.get(list_key, []), project_permissions.get(list_key, []))
         for list_key in permission_keys
     }
+    for key in list(base_permissions) + list(project_permissions):
+        if key not in ("allow", "deny", "ask"):
+            merged["permissions"][key] = project_permissions.get(key, base_permissions.get(key))
     merged["hooks"] = _merge_hooks(base_hooks, project_hooks)
 
     _prune_hooks(merged["hooks"], hooks_dir)
@@ -254,18 +257,22 @@ def _value_diff(base, full):
 
 
 def derive_project_settings(base: dict, full: dict, base_owned_hook_files: set[str]) -> dict:
-    """The inverse of `compose_settings` for a monolithic settings.json: the project input that,
-    composed over `base`, keeps every entry `full` adds. A hook is base's when base registers its
-    exact command for the same event, or when its `.claude/hooks/<file>` is in
-    `base_owned_hook_files` (the manifest's hook files, which covers a module base now runs
-    inside a dispatcher and so never registers by name)."""
+    """The project input for a monolithic settings.json: composed over `base`, it keeps every entry
+    `full` adds. Base entries `full` lacked are adopted, not removed; `base_only_entries` names them.
+    A hook is base's when base registers its exact command for the same event, or when its
+    `.claude/hooks/<file>` is in `base_owned_hook_files` (the hooks base registers or its
+    dispatchers run)."""
     project: dict = {}
     base_permissions = base.get("permissions", {})
     permissions = {}
-    for list_key, entries in full.get("permissions", {}).items():
-        extra = [e for e in entries if e not in base_permissions.get(list_key, [])]
+    for key, entries in full.get("permissions", {}).items():
+        if not isinstance(entries, list):
+            if base_permissions.get(key) != entries:
+                permissions[key] = entries
+            continue
+        extra = [e for e in entries if e not in base_permissions.get(key, [])]
         if extra:
-            permissions[list_key] = extra
+            permissions[key] = extra
     if permissions:
         project["permissions"] = permissions
 
@@ -292,6 +299,21 @@ def derive_project_settings(base: dict, full: dict, base_owned_hook_files: set[s
     rest_full = {k: v for k, v in full.items() if k not in ("permissions", "hooks")}
     project.update(_value_diff(rest_base, rest_full) or {})
     return project
+
+
+def base_only_entries(base: dict, full: dict) -> list[str]:
+    """What composing over `base` adds that `full` lacked: permission entries, hook commands per
+    event and `env` keys, one line each."""
+    adopted = []
+    full_permissions = full.get("permissions", {})
+    for key, entries in base.get("permissions", {}).items():
+        if isinstance(entries, list):
+            adopted += [f"permissions.{key} {e}" for e in entries if e not in full_permissions.get(key, [])]
+    for event, groups in base.get("hooks", {}).items():
+        have = set(_flatten_hook_commands({event: full.get("hooks", {}).get(event, [])}))
+        adopted += [f"hook {event}: {c}" for c in _flatten_hook_commands({event: groups}) if c not in have]
+    adopted += [f"env {k}" for k in base.get("env", {}) if k not in full.get("env", {})]
+    return adopted
 
 
 def _hook_entry_key(entry: dict) -> str:

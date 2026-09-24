@@ -603,7 +603,7 @@ def local_text(root: Path, relpath: str) -> str | None:
 ADAPTATION_JSON_RELPATH = ".claude/skills/project_subsystems/adaptation.json"
 
 
-def check_adaptation_contract(root: Path) -> None:
+def check_adaptation_contract(root: Path, *, missing_ok: bool = False) -> None:
     """Design §8: `classify`, `compose` and `publish` exit 1 -- naming the file, or the
     file and key -- when the consumer lock exists and the `project_subsystems` adaptation
     contract is missing or malformed:
@@ -623,6 +623,8 @@ def check_adaptation_contract(root: Path) -> None:
         return
 
     adaptation_text = local_text(root, ADAPTATION_JSON_RELPATH)
+    if adaptation_text is None and missing_ok:
+        adaptation_text = "{}"
     if adaptation_text is None:
         raise BaselineError(f"adaptation contract: {ADAPTATION_JSON_RELPATH} is missing")
     try:
@@ -645,6 +647,8 @@ def check_adaptation_contract(root: Path) -> None:
 
     skill_relpath = baseline_identity.DEFAULT_SUBSYSTEMS_PATH
     skill_text = local_text(root, skill_relpath)
+    if skill_text is None and missing_ok:
+        return
     if skill_text is None:
         raise BaselineError(f"adaptation contract: {skill_relpath} is missing")
     if not baseline_identity.parse_subsystems_yaml(skill_text):
@@ -719,7 +723,8 @@ def residual_placeholders(root: Path, lock: dict) -> list[tuple[str, list[str]]]
     return sorted(hits)
 
 
-LAYER_FILES = ("CLAUDE.core.md", "CLAUDE.coding.md", "CLAUDE.godot.md")
+LAYER_FILE_BY_LAYER = {"pure": "CLAUDE.core.md", "coding": "CLAUDE.coding.md", "godot": "CLAUDE.godot.md"}
+LAYER_FILES = tuple(LAYER_FILE_BY_LAYER.values())
 
 
 def unimported_layer_files(root: Path) -> list[str]:
@@ -1254,8 +1259,9 @@ def _check_results(root: Path, lock: dict, source: BaselineSource,
             outside += 1
             continue
         results[relpath] = _v2_state(root, source, lock, relpath, entry)
+    items = _manifest_items_v2(source)
     for relpath in sorted(_manifest_paths_v2(source, root, layers) - set(lock.get("files", {}))):
-        results[relpath] = "new-upstream"
+        results[relpath] = "offered" if items[relpath].get("sync") == "offer" else "new-upstream"
     return results, outside
 
 
@@ -1300,7 +1306,7 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
         buckets: dict[str, list[str]] = {}
         for relpath, state in results.items():
             buckets.setdefault(state, []).append(relpath)
-        quiet = {"in-sync", "watch", "forked", "local"}
+        quiet = {"in-sync", "watch", "forked", "local", "offered"}
         for state in sorted(buckets, key=lambda value: (value in quiet, value)):
             paths = buckets[state]
             if state in quiet:
@@ -1719,13 +1725,14 @@ def v2_track(root: Path, relpaths: list[str], source: BaselineSource) -> int:
     return 0
 
 
-def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
-            exclude_prefixes: tuple[str, ...] = ()) -> int:
+def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool) -> int:
     _validate_relpaths(relpaths)
     manifest_items = _manifest_items_v2(source)
     manifest_layers = {relpath: item.get("layer") for relpath, item in manifest_items.items()}
     skipped = 0
     unrowed_differs: list[str] = []
+    kept_seeds: list[str] = []
+    offered: list[str] = []
 
     def apply(lock: dict):
         nonlocal skipped
@@ -1747,11 +1754,12 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 state = _v2_state(root, source, lock, path, entry)
                 if state in ("upstream-updated", "new-upstream"):
                     targets.append(path)
-            targets.extend(sorted(
+            unrowed = sorted(
                 path for path, layer in manifest_layers.items()
                 if path not in files and (not layer or layer in layers)
-                and not path.startswith(exclude_prefixes)
-            ))
+            )
+            offered[:] = [path for path in unrowed if manifest_items[path].get("sync") == "offer"]
+            targets.extend(path for path in unrowed if path not in offered)
         targets = list(dict.fromkeys(targets))
         plans = []
         for relpath in targets:
@@ -1796,6 +1804,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
             if action == "seed":
                 if upstream is not None:
                     _write_lf(root / relpath, upstream)
+                else:
+                    kept_seeds.append(relpath)
                 seeds.append(relpath)
                 changed.append(relpath)
                 continue
@@ -1837,9 +1847,11 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         print("no change")
     else:
         for relpath in result:
-            print(f"pulled: {relpath}")
+            print(f"kept (seed, local row added): {relpath}" if relpath in kept_seeds else f"pulled: {relpath}")
     for relpath in dict.fromkeys(unrowed_differs):
         print(f"skipped (local file differs, no lock row): {relpath}")
+    if offered:
+        print(f"offered: {len(offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
     if skipped:
         print(f"profile: {','.join(layers)} — {skipped} row(s) skipped")
     return 0
@@ -1969,38 +1981,70 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
 
 _CORE_REGION = re.compile(
     r"<!-- ===== BASELINE:core BEGIN.*?BASELINE:core END ===== -->\n?", re.DOTALL)
-_LAYER_FILE_BY_LAYER = dict(zip(FULL_LAYERS, LAYER_FILES))
 
 
 def _migrate_core_region(root: Path, layers: list[str]) -> str | None:
     """A schema-1 `CLAUDE.md` carried shared doctrine inline between BASELINE:core markers; schema 2
     carries it in the layer files. Replace the region with their imports; `None` when absent."""
     path = root / ".claude" / "CLAUDE.md"
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    try:
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except UnicodeDecodeError as exc:
+        raise BaselineError(f"CLAUDE.md is not UTF-8 ({exc}); convert it before migrating") from exc
     match = _CORE_REGION.search(text)
     if match is None:
         return None
-    imports = "".join(f"@{_LAYER_FILE_BY_LAYER[layer]}\n" for layer in FULL_LAYERS if layer in layers)
+    imports = "".join(f"@{LAYER_FILE_BY_LAYER[layer]}\n" for layer in FULL_LAYERS if layer in layers)
     _write_lf(path, text[:match.start()] + imports + text[match.end():])
     return f"CLAUDE.md: BASELINE:core region ({match.group(0).count(chr(10))} lines) replaced by imports"
 
 
-def _migrate_monolithic_settings(root: Path, source: BaselineSource, lock: dict, files: dict) -> str | None:
-    """A schema-1 `settings.json` is one hand-kept file. Split it: base arrives with the pull, and
-    `settings.project.json` keeps only what base does not already provide."""
+def _base_owned_hook_files(source: BaselineSource, base_text: str, subs: dict) -> set[str]:
+    """Hook files base runs: those settings.base.json registers, plus manifest hooks a registered
+    dispatcher names in its source. A shipped hook base neither registers nor runs is opt-in."""
+    registered = set(baseline_compose._HOOK_COMMAND_PATH_PATTERN.findall(base_text))
+    dispatcher_text = "\n".join(upstream_text(source, ".claude/hooks/" + name, subs) or "" for name in registered)
+    named = {Path(relpath).name for relpath in _manifest_items_v2(source)
+             if relpath.startswith(".claude/hooks/")
+             and re.search(rf"\b{re.escape(Path(relpath).stem)}\b", dispatcher_text)}
+    return registered | named
+
+
+def _migrate_monolithic_settings(root: Path, source: BaselineSource, lock: dict, files: dict) -> list[str]:
+    """A schema-1 `settings.json` is one hand-kept file. Write `settings.project.json` with only what
+    base does not already provide and drop the settings.json row: `pull` delivers settings.base.json
+    and records both rows through `_seed_rows`, and `compose` rebuilds settings.json."""
     composed, base_input, project_input = ".claude/settings.json", *WATCH_COMPOSED_INPUTS[".claude/settings.json"]
+    subs = lock.get("substitutions", {})
     full_text = local_text(root, composed)
-    base_text = upstream_text(source, base_input, lock.get("substitutions", {}))
-    if full_text is None or base_text is None or (root / project_input).exists():
-        return None
-    owned = {Path(relpath).name for relpath in _manifest_items_v2(source) if relpath.startswith(".claude/hooks/")}
-    project = baseline_compose.derive_project_settings(json.loads(base_text), json.loads(full_text), owned)
+    base_text = upstream_text(source, base_input, subs)
+    if full_text is None or base_text is None:
+        return []
+    if (root / project_input).exists():
+        status = files.get(composed, {}).get("status")
+        if status == "composed":
+            return []
+        return [f"settings.json: NOT split, {project_input} already exists; settings.json stays {status} for triage"]
+    try:
+        base, full = json.loads(base_text), json.loads(full_text)
+    except json.JSONDecodeError as exc:
+        raise BaselineError(f"settings split: {composed} or upstream {base_input} is unparseable JSON ({exc})") from exc
+    project = baseline_compose.derive_project_settings(base, full, _base_owned_hook_files(source, base_text, subs))
     _write_lf(root / project_input, json.dumps(project, indent=2, ensure_ascii=False) + "\n")
-    files[project_input] = {"status": "local", "layer": files.get(composed, {}).get("layer"),
-                            "judged": _decision(root, project_input, "keep-local")}
-    files[composed] = {"status": "composed", "layer": files.get(composed, {}).get("layer"),
-                       "hash": None, "inputs": [base_input, project_input], "judged": None}
-    return "settings.json: split into settings.base.json (pulled) + settings.project.json (derived)"
+    files.pop(composed, None)
+    adopted = baseline_compose.base_only_entries(base, full)
+    return (["settings.json: split into settings.base.json (pulled) + settings.project.json (derived)"]
+            + ([f"settings.json: {len(adopted)} entries adopted from settings.base.json:"] if adopted else [])
+            + [f"  {line}" for line in adopted])
+
+
+MIGRATE_REWRITES = (".claude/CLAUDE.md", ".claude/settings.json", ".claude/settings.project.json")
+
+
+def _refuse_uncommitted(root: Path, relpaths) -> None:
+    dirty = [rel for rel in relpaths if (root / rel).exists() and not _git_clean_path(root, rel)]
+    if dirty:
+        raise BaselineError("uncommitted changes in " + ", ".join(dirty) + ": commit or discard them first")
 
 
 def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviations: list[str]) -> int:
@@ -2008,6 +2052,7 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
     if current.get("schema") == 2:
         print("no change (already v2)")
         return 0
+    _refuse_uncommitted(root, MIGRATE_REWRITES)
     manifest_layers = _manifest_layers_v2(source, root)
     notes: list[str | None] = []
 
@@ -2030,7 +2075,7 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
                 "judged": None,
             }
         if ".claude/settings.json" in files:
-            notes.append(_migrate_monolithic_settings(root, source, lock, files))
+            notes.extend(_migrate_monolithic_settings(root, source, lock, files))
         notes.append(_migrate_core_region(root, layers))
         lock["schema"] = 2
         lock["profile"] = ",".join(layers)
@@ -2419,12 +2464,11 @@ def _force_lf_stream(stream) -> None:
         stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
 
 
-UPGRADE_HOLD_PREFIXES = (".claude/auto-memory/",)
-
-
-def v2_upgrade(project: str, baseline_dir: str | None, layers_arg: str | None) -> int:
+def v2_upgrade(project: str, baseline_dir: str | None, layers_arg: str | None,
+               abbreviations: list[str]) -> int:
     """Bring a schema-1 consumer to schema 2 in one run from a baseline checkout's engine: migrate,
-    pull (holding other projects' auto-memory for judgment), compose, then report `check --strict`.
+    pull (a manifest `sync: offer` path, such as another project's memory, stays offered), compose,
+    then report `check --strict`.
     Rows that need a verdict are reported, never forced; `/sync_baseline` triage clears them."""
     root = Path(project).resolve()
     if not (root / ".claude").is_dir():
@@ -2432,17 +2476,17 @@ def v2_upgrade(project: str, baseline_dir: str | None, layers_arg: str | None) -
     lock = load_lock(root)
     if lock.get("schema") == 2:
         raise BaselineError("already schema 2: use /sync_baseline")
-    dirty = [rel for rel in (".claude/CLAUDE.md", ".claude/settings.json")
-             if (root / rel).exists() and not _git_clean_path(root, rel)]
-    if dirty:
-        raise BaselineError("uncommitted changes in " + ", ".join(dirty) + ": commit or discard them first")
+    _refuse_uncommitted(root, MIGRATE_REWRITES + (LOCK_RELPATH,))
+    # compose enforces the adaptation contract after migrate and pull have written; a file the
+    # project already has must pass it before the first write, or a failure strands the upgrade.
+    check_adaptation_contract(root, missing_ok=True)
     layers = resolve_layers_v2({}, layers_arg)
     source = ensure_baseline(lock, root, baseline_dir)
     try:
-        v2_migrate(root, source, layers, [])
-        v2_pull(root, source, [], layers, False, exclude_prefixes=UPGRADE_HOLD_PREFIXES)
-        v2_compose(root, load_lock(root), layers, False)
-        return v2_check(root, load_lock(root), source, False, layers, True)
+        v2_migrate(root, source, layers, abbreviations)
+        v2_pull(root, source, [], layers, force=False)
+        v2_compose(root, load_lock(root), layers, check=False)
+        return v2_check(root, load_lock(root), source, as_json=False, layers=layers, strict=True)
     finally:
         source.close()
 
@@ -2507,7 +2551,7 @@ def main(argv=None) -> int:
         if args.op == "upgrade":
             if not args.project or args.relpaths:
                 raise UsageError("upgrade takes --project <path> and no relpaths")
-            return v2_upgrade(args.project, args.baseline_dir, args.layers)
+            return v2_upgrade(args.project, args.baseline_dir, args.layers, args.abbrev)
         root = project_root()
         if args.op == "init":
             if not args.baseline_dir or not args.repo or not args.sub:

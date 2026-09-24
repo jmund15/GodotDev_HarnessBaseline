@@ -112,7 +112,7 @@ CLAUDE.md and a `rules/` file may carry one file-level `review-by` comment cover
 
 **Queue non-load-bearing CLAUDE.md edits** under `/apply_harness_edits` and its load-mode contract. Append to `.claude/pending_harness_edits.md`, quoting each `old` string verbatim and anchoring by heading, never by line number.
 
-Target listed in `baseline.lock.json` → it is shared doctrine (CLAUDE.md §10). Flag for `/sync_baseline` classification, and check whether a companion new file must upstream in the same operation — a cite pushed without its target dangles in every consuming project.
+Target listed in `baseline.lock.json` → it is shared doctrine (CLAUDE.md §10). Flag for `/sync_baseline` classification, and check whether a companion new file must upstream in the same operation — a cite pushed without its target dangles in every consuming project. A memory cite is exempt: it is an evidence pointer, consumers adopt memories only by offer, and the citing rule states its load-bearing sentence itself.
 
 **Done: the diff is applied or the queue entry written, any justified retirement trigger is recorded (or the lifecycle row omitted when none is justified), and the baseline status of every touched path is stated.**
 

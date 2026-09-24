@@ -58,9 +58,9 @@ EXCLUDED = {}
 
 _PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "*.sh", "*.ps1")
 _TIMEOUT_SEC = 120
-# Git-fixture suites. Alone on 2026-09-23: publish 191 s, sync 132 s; both passed their caps
-# beside a loaded machine only with about 2x headroom.
-_BUILTIN_PROOF_TIMEOUTS = {"test_baseline_publish.py": 480, "test_baseline_sync.py": 300}
+# Git-fixture suites. Alone: publish 191-248 s, sync 132 s. With 2-3 peer suites running the
+# publish proof passed 480 s three times on 2026-09-24, so the caps hold 3x headroom.
+_BUILTIN_PROOF_TIMEOUTS = {"test_baseline_publish.py": 720, "test_baseline_sync.py": 450}
 _PROOF_TIMEOUTS = dict(_BUILTIN_PROOF_TIMEOUTS)
 
 

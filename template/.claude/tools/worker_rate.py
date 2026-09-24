@@ -350,6 +350,9 @@ def dirty_sources(art):
         if not roots:
             continue
         root = max(roots, key=len)
+        if not shas[root]:
+            out.append(f"{path}  (read {blob[:10]}, repo commit unrecorded)")
+            continue
         rel = resolved.relative_to(pathlib.Path(root)).as_posix()
         r = subprocess.run(["git", "-C", root, "rev-parse", f"{shas[root]}:{rel}"],
                            capture_output=True, text=True, timeout=30)
