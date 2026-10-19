@@ -111,8 +111,12 @@ Spell status review completed by the delegated agent.
          and state3.get("last_prompt") == second),
         ("last_prompt keeps the full user request beyond 4,000 characters",
          r_long.returncode == 0 and long_state.get("last_prompt") == long_prompt),
+        # HOME is redirected here, so this machine reads as having no registered ai-worker and the
+        # arm names the bounded-Read route. The case is about the 4,000-character window, so it
+        # asserts the advisory fired and named a route, not one machine's wording.
         ("routing checks can see bulk-copyable cues past character 4,000",
-         r_nudge.returncode == 0 and "read_files" in r_nudge.stdout),
+         r_nudge.returncode == 0
+         and ("read_files" in r_nudge.stdout or "bounded Read" in r_nudge.stdout)),
         ("valid non-object JSON payloads are advisory no-ops",
          all(r.returncode == 0 and not r.stdout.strip() and not r.stderr.strip()
              for r in non_object_results)),

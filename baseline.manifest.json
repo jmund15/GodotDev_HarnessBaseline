@@ -3122,11 +3122,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_harness_tests_allow_cannot_run.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_harness_tests_integrity.py",
       "layer": "pure",
       "sync": "auto"
