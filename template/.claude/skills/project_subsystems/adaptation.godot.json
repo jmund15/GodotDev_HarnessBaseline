@@ -1,4 +1,9 @@
 {
+  "lens_preloads": {
+    "plc-architecture-quality": [
+      "rules/scene_authoring.md"
+    ]
+  },
   "memory_domains": [
     {
       "name": "HSM/States",

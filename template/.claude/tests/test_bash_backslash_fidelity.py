@@ -25,7 +25,7 @@ Cases:
 - a probe run without `--client-version` exits 2;
 - the reaper's PostToolUse matcher equals the anchored string exactly;
 - non-Bash and backslash-free commands emit nothing;
-- a pattern_enforcer deny still wins through the registered dispatcher, which is registered last.
+- a dangerous_shell_guard deny still wins through the registered dispatcher, which is registered last.
 
     python3 .claude/tests/test_bash_backslash_fidelity.py
 """
@@ -352,7 +352,7 @@ def main():
     write_record(record, True, False)
     deny_cmd = "rm -rf build" + PAIR + "out"
     p, hso, crashed = run(DISPATCH, payload(deny_cmd, transcript), base_env)
-    check("pattern_enforcer deny still wins through the dispatcher (exit 2, no updatedInput)",
+    check("dangerous_shell_guard deny still wins through the dispatcher (exit 2, no updatedInput)",
           p.returncode == 2 and "updatedInput" not in p.stdout, "rc=%s %s %s" % (p.returncode, p.stdout, p.stderr))
     p, hso, crashed = run(DISPATCH, payload(QUOTE_STRINGS[0], transcript), base_env)
     upd = (hso.get("updatedInput") or {}).get("command", "")

@@ -13,9 +13,6 @@ Three things live here and nothing else does:
   stamp       hashes the inputs `commands/workstation_setup.md` declares in its `stamp-inputs:`
               frontmatter, so the list sits beside the procedure that consumes it and a change to
               either one shows up as drift at the next session start.
-  fingerprint maintains the `SETUP_FINGERPRINT="<sha>"` line of `cloud-setup.sh`. The script
-              writes that value to `<prefix>/.cloud-setup.fingerprint`, so a cloud snapshot
-              built from an older pasted script can tell that its copy is not the repo's.
 
 Profile: `~/.claude/workstation_profile.json` — never under a redirected Documents folder, and
 overridable with WORKSTATION_PROFILE_PATH so a proof can plant one. Writes are whole-file atomic.
@@ -28,7 +25,6 @@ CLI:
   workstation_profile.py record [--ai-worker present|absent]
   workstation_profile.py stamp [--root DIR] [--degraded NAME]...
   workstation_profile.py status [--root DIR]
-  workstation_profile.py fingerprint --check|--write PATH
 """
 
 import argparse
@@ -44,12 +40,10 @@ import time
 import xml.etree.ElementTree
 
 __all__ = [
-    "AI_WORKER_VALUES", "DEFAULT_PROFILE", "FULL_MIN_MIB", "MARKER_DIRS", "MARKER_NAME",
-    "PROFILE_ENV", "SCHEMA", "SMALL_MIN_MIB", "TIERS", "ai_worker", "check_fingerprint",
-    "cloud_setup_current", "declared_fingerprint", "fingerprint", "gpu_tier", "input_hashes",
-    "local_nuget_feeds", "local_tier", "main_checkout_root", "preflight", "profile_key",
-    "profile_path", "read_gpu", "read_profile", "record", "setup_status", "stamp", "stamp_inputs",
-    "update_profile", "write_fingerprint", "write_profile",
+    "AI_WORKER_VALUES", "DEFAULT_PROFILE", "FULL_MIN_MIB", "PROFILE_ENV", "SCHEMA", "SMALL_MIN_MIB",
+    "TIERS", "ai_worker", "godot_project", "gpu_tier", "input_hashes", "local_nuget_feeds",
+    "local_tier", "main_checkout_root", "preflight", "profile_key", "profile_path", "read_gpu",
+    "read_profile", "record", "setup_status", "stamp", "stamp_inputs", "update_profile", "write_profile",
 ]
 
 SCHEMA = 1
@@ -69,11 +63,6 @@ PROFILE_ENV = "WORKSTATION_PROFILE_PATH"
 DEFAULT_PROFILE = "~/.claude/workstation_profile.json"
 STAMP_INPUTS_KEY = "stamp-inputs:"
 SETUP_DOC = os.path.join(".claude", "commands", "workstation_setup.md")
-
-MARKER_NAME = ".cloud-setup.fingerprint"
-# The prefixes `cloud-setup.sh` installs into: /opt as root (or with passwordless sudo), else
-# $HOME/.local. A snapshot normally has one of the two.
-MARKER_DIRS = ("/opt", "~/.local")
 
 GPU_QUERY = ("nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader")
 
@@ -301,7 +290,10 @@ def profile_key(root):
 
 def setup_status(root):
     """`"OK"`, `"STALE (changed: <paths>; run /workstation_setup)"` or `"UNAUDITED (run
-    /workstation_setup)"` for the checkout `root` is in."""
+    /workstation_setup)"` for the checkout `root` is in, or None when the checkout ships no
+    `/workstation_setup` command: there is nothing to run, so the status is not applicable."""
+    if not os.path.isfile(os.path.join(str(root), SETUP_DOC)):
+        return None
     declared = stamp_inputs(root)
     if not declared:
         return "UNAUDITED (run /workstation_setup)"
@@ -335,20 +327,27 @@ def local_nuget_feeds(root):
     return feeds
 
 
+def godot_project(root):
+    """True when `root` holds a Godot project (`project.godot`); the Godot toolchain checks apply only then."""
+    return os.path.isfile(os.path.join(str(root), "project.godot"))
+
+
 def preflight(root):
     """The cheap checks `stamp` re-runs before it records anything. A non-empty list refuses.
 
     These are the stamp's own observations, never a count handed in by the caller: a stamp
-    certifying a machine whose toolchain is absent is worse than no stamp at all.
+    certifying a machine whose toolchain is absent is worse than no stamp at all. The .NET SDK and
+    `GODOT_BIN` checks apply to a Godot project only; elsewhere they are not applicable and add nothing.
     """
     failures = []
-    if not _cmd_exists("dotnet"):
-        failures.append(".NET SDK not on PATH")
-    godot = os.environ.get("GODOT_BIN")
-    if not godot:
-        failures.append("GODOT_BIN is not set")
-    elif not os.path.isfile(godot):
-        failures.append("GODOT_BIN does not resolve to a file: %s" % godot)
+    if godot_project(root):
+        if not _cmd_exists("dotnet"):
+            failures.append(".NET SDK not on PATH")
+        godot = os.environ.get("GODOT_BIN")
+        if not godot:
+            failures.append("GODOT_BIN is not set")
+        elif not os.path.isfile(godot):
+            failures.append("GODOT_BIN does not resolve to a file: %s" % godot)
     for feed in local_nuget_feeds(root):
         if not os.path.isdir(feed):
             failures.append("nuget.config local feed folder is missing: %s" % feed)
@@ -412,106 +411,6 @@ def stamp(root, preflight_failures=None, degraded=()):
     return True, "stamped %d input(s) for %s" % (len(declared), key)
 
 
-# ------------------------------------------------------------------ the cloud fingerprint
-
-_FINGERPRINT_LINE = re.compile(rb'(?m)^SETUP_FINGERPRINT="[^"]*"')
-_FINGERPRINT_VALUE = re.compile(rb'(?m)^SETUP_FINGERPRINT="([^"]*)"')
-
-
-def fingerprint(path):
-    """sha256 of `path` with the `SETUP_FINGERPRINT="..."` value blanked, or None.
-
-    Blanking the value makes the digest a fixed point: `--write` can store what `--check` will
-    then agree with, and the value itself is not part of what it certifies. A file without the
-    line has no fingerprint, which reads as "not this script" everywhere below.
-    """
-    try:
-        with open(path, "rb") as handle:
-            raw = handle.read()
-    except OSError:
-        return None
-    blanked, count = _FINGERPRINT_LINE.subn(b'SETUP_FINGERPRINT=""', raw)
-    if count != 1:
-        return None
-    return hashlib.sha256(blanked).hexdigest()
-
-
-def declared_fingerprint(path):
-    """The value written in the file's own `SETUP_FINGERPRINT` line, or None."""
-    try:
-        with open(path, "rb") as handle:
-            raw = handle.read()
-    except OSError:
-        return None
-    match = _FINGERPRINT_VALUE.search(raw)
-    return match.group(1).decode("ascii", "replace") if match else None
-
-
-def write_fingerprint(path):
-    """Store the file's own digest in its `SETUP_FINGERPRINT` line. (ok, message)."""
-    digest = fingerprint(path)
-    if digest is None:
-        return False, "no single SETUP_FINGERPRINT=\"\" line in %s; add one first" % path
-    try:
-        with open(path, "rb") as handle:
-            raw = handle.read()
-    except OSError as exc:
-        return False, "cannot read %s (%s)" % (path, exc)
-    updated, count = _FINGERPRINT_LINE.subn(b'SETUP_FINGERPRINT="%s"' % digest.encode("ascii"), raw)
-    if count != 1:
-        return False, "no single SETUP_FINGERPRINT line in %s" % path
-    directory = os.path.dirname(os.path.abspath(path)) or "."
-    temp = None
-    try:
-        handle, temp = tempfile.mkstemp(prefix=".fingerprint_", suffix=".sh", dir=directory)
-        with os.fdopen(handle, "wb") as fh:
-            fh.write(updated)
-        os.replace(temp, path)
-    except OSError as exc:
-        if temp:
-            try:
-                os.unlink(temp)
-            except OSError:
-                pass
-        return False, "cannot write %s (%s)" % (path, exc)
-    return True, "SETUP_FINGERPRINT=%s" % digest
-
-
-def check_fingerprint(path):
-    """(ok, message): is the file's declared value its own digest?"""
-    computed = fingerprint(path)
-    if computed is None:
-        return False, "%s has no SETUP_FINGERPRINT=\"\" line" % path
-    declared = declared_fingerprint(path)
-    if declared == computed:
-        return True, "current (%s)" % computed
-    return False, "stale: declared %s, computed %s (run: workstation_profile.py fingerprint --write %s)" % (
-        declared, computed, path)
-
-
-def cloud_setup_current(root, marker_dirs=None):
-    """True when a marker records the repo `cloud-setup.sh`'s fingerprint.
-
-    `cloud-setup.sh` writes its own `SETUP_FINGERPRINT` value to `<prefix>/<MARKER_NAME>`. No
-    marker (an older pasted script) and a mismatched one both mean the toolchain came from a
-    different script than the repo's, so SessionStart re-runs the repo copy.
-    """
-    script = os.path.join(str(root), ".claude", "cloud-setup.sh")
-    expected = fingerprint(script)
-    if not expected:
-        return False
-    for directory in (MARKER_DIRS if marker_dirs is None else marker_dirs):
-        try:
-            with open(os.path.join(os.path.expanduser(directory), MARKER_NAME), encoding="utf-8",
-                      errors="replace") as handle:
-                recorded = handle.read().strip()
-        except OSError:
-            continue
-        if recorded and recorded == expected:
-            return True
-    return False
-
-
 # ------------------------------------------------------------------ CLI
 
 def _repo_root():
@@ -534,11 +433,6 @@ def main(argv=None):
     sta = commands.add_parser("status", help="print this checkout's setup status")
     sta.add_argument("--root", default=None, help="the checkout to check (default: this repo)")
 
-    fin = commands.add_parser("fingerprint", help="the cloud-setup.sh setup fingerprint")
-    fin.add_argument("--check", action="store_true", help="exit 1 when the stored value is stale")
-    fin.add_argument("--write", action="store_true", help="store the current digest")
-    fin.add_argument("path")
-
     args = parser.parse_args(argv)
 
     if args.command == "record":
@@ -551,13 +445,7 @@ def main(argv=None):
         return 0 if ok else 1
     if args.command == "status":
         print(setup_status(args.root or _repo_root()))
-        return 0
-    if args.write:
-        ok, message = write_fingerprint(args.path)
-    else:
-        ok, message = check_fingerprint(args.path)
-    print(message)
-    return 0 if ok else 1
+    return 0
 
 
 if __name__ == "__main__":

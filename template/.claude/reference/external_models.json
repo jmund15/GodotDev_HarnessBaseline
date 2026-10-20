@@ -714,8 +714,8 @@
       "roles": ["orchestrator", "architect", "executor"],
       "_rolesComment": "Orchestrator: owner ruling 2026-10-08; Opus 5.5 does orchestration well.",
       "effort": {
-        "avoid": ["max"],
-        "avoidRef": "`max` is confirmed wasteful on this row's family; the ladder's effort cell cites the evidence.",
+        "avoid": ["low", "max"],
+        "avoidRef": "`max` is confirmed wasteful on this row's family, and the ladder's effort cell cites the evidence; `low` has no pick: the cell starts every shape at `medium`, and checked low-thought work goes to haiku at `medium` for less.",
         "evidence": "see-ladder"
       },
       "price": {
@@ -781,8 +781,8 @@
       "roles": ["architect", "executor", "fanout"],
       "_rolesComment": "fanout carries the family's claim; executor and architect are an owner-directed real-world trial (2026-09-28: 'For any further dispatches, use sonnet 5.5 as I would like some real world use'; 'Make sonnet review tier too (want to test that)') resting on the vendor's release evidence (https://www.anthropic.com/claude-sonnet-5-5). The vendor ranks it below Opus 5.5 on complex, open-ended judgment, so read each architect-tier return with that in mind. Re-judge all three from the trial's ratings and our battery cells.",
       "effort": {
-        "avoid": ["max"],
-        "avoidRef": "`max` is confirmed wasteful on this row's family; the ladder's effort cell cites the evidence.",
+        "avoid": ["low", "max"],
+        "avoidRef": "`max` is confirmed wasteful on this row's family; `low` has no pick haiku at `medium` does not take for less (validation, parity refactor, checked low-thought work); the ladder's effort cell cites the evidence.",
         "evidence": "see-ladder"
       },
       "price": {

@@ -218,6 +218,84 @@ def main():
     check("a script executing a higher-layer file fails",
           kinds(got) == [(sh, "needs-godot", ".claude/hooks/tres_guard.py")], kinds(got))
 
+    registry = ".claude/tools/lens_registry.py"
+    agents = ".claude/commands/agents/scene_agents.md"
+    got = planted({registry: 'REGISTRIES = {"structure": ("scene_agents.md", "stra-")}\n', agents: "# a\n"},
+                  {registry: "pure", agents: "godot"})
+    check("a python string literal naming a higher-layer .md by basename fails",
+          kinds(got) == [(registry, "needs-godot", agents)], kinds(got))
+
+    got = planted({registry: 'ROOT = "commands/agents/scene_agents.md"\n', agents: "# a\n"},
+                  {registry: "pure", agents: "godot"})
+    check("a python string literal naming a higher-layer .md by path fails",
+          kinds(got) == [(registry, "needs-godot", agents)], kinds(got))
+
+    seed = ".claude/skills/project_subsystems/adaptation.godot.json"
+    got = planted({registry: 'SEED = "adaptation.godot.json"\n', seed: "{}\n"},
+                  {registry: "pure", seed: "godot"})
+    check("a python string literal naming a higher-layer .json fails",
+          kinds(got) == [(registry, "needs-godot", seed)], kinds(got))
+
+    got = planted({registry: 'REGISTRIES = {"structure": ("scene_agents.md", "stra-")}\n', agents: "# a\n"},
+                  {registry: "godot", agents: "godot"})
+    check("a .md string literal whose target is in the same layer closes", got == [], kinds(got))
+
+    got = planted({registry: 'DOC = "scene_agents.md"\n', agents: "# a\n"}, {registry: "godot", agents: "pure"})
+    check("a .md string literal whose target is a lower layer closes", got == [], kinds(got))
+
+    got = planted({registry: '"""Reads scene_agents.md and adaptation.godot.json."""\nMSG = "see scene_agents.md for the lens list"\n',
+                   agents: "# a\n", seed: "{}\n"},
+                  {registry: "pure", agents: "godot", seed: "godot"})
+    check("a docstring mention and a sentence holding a file name are prose, not dependencies",
+          got == [], kinds(got))
+
+    got = planted({registry: 'OUT = ("results.json", "notes.md")\n'}, {registry: "pure"})
+    check("a .md/.json string naming no file anywhere is not a dependency", got == [], kinds(got))
+
+    got = planted({registry: 'REGISTRIES = ("scene_agents.md",)\n'}, {registry: "pure"}, extra=(agents,))
+    check("a .md string naming a file no layer ships fails as local-only",
+          kinds(got) == [(registry, "local-only", "scene_agents.md")], kinds(got))
+
+    got = planted({test_py: 'PLAN = "scene_agents.md"\nROW = "commands/agents/scene_agents.md"\nGONE = "rules/absent.md"\n',
+                   agents: "# a\n"}, {test_py: "pure", agents: "godot"})
+    check("a test's .md literal is fixture data, not a dependency", got == [], kinds(got))
+
+    optional = ".claude/tools/lens.py"
+    got = planted({optional: 'REGISTRIES = ("scene_agents.md",)\n', agents: "# a\n"},
+                  {optional: "pure", agents: "godot"})
+    check("a source the OPTIONAL_DATA table lists tolerates its named files absent", got == [], kinds(got))
+
+    other = ".claude/tools/lens_briefs.py"
+    got = planted({other: 'REGISTRIES = ("scene_agents.md",)\n', agents: "# a\n"}, {other: "pure", agents: "godot"})
+    check("a source OPTIONAL_DATA names for other files still fails on this one",
+          kinds(got) == [(other, "needs-godot", agents)], kinds(got))
+
+    got = planted({registry: 'HOME = ".claude/plugins/installed_plugins.json"\nFIX = ".claude/__selftest__/a.md"\n'},
+                  {registry: "pure"})
+    check("a home-plugin registry path and a dunder-directory fixture path are not dependencies",
+          got == [], kinds(got))
+
+    scene_rule = ".claude/rules/scene_authoring.md"
+    lens_doc = ".claude/commands/agents/plan_agents.md"
+    header = "### plc-x (audit) — code\n\nmandates: plc-x\n\npreload: rules/scene_authoring.md\npreload: reference/rules/design_litmus.md\n\n```\nbody\n```\n"
+    litmus = ".claude/reference/rules/design_litmus.md"
+    got = planted({lens_doc: header, scene_rule: "# r\n", litmus: "# l\n"},
+                  {lens_doc: "coding", scene_rule: "godot", litmus: "coding"})
+    check("a markdown preload line naming a higher-layer file fails, one naming a same-layer file closes",
+          kinds(got) == [(lens_doc, "needs-godot", scene_rule)], kinds(got))
+
+    got = planted({lens_doc: header, scene_rule: "# r\n", litmus: "# l\n"},
+                  {lens_doc: "godot", scene_rule: "godot", litmus: "coding"})
+    check("the same preload closes from a godot file", got == [], kinds(got))
+
+    got = planted({lens_doc: "preload: rules/nowhere.md\n"}, {lens_doc: "coding"})
+    check("a preload line naming a file nothing holds fails as missing",
+          kinds(got) == [(lens_doc, "missing", "rules/nowhere.md")], kinds(got))
+
+    got = planted({lens_doc: "A prose sentence about a preload: rules/scene_authoring.md in passing.\n",
+                   scene_rule: "# r\n"}, {lens_doc: "coding", scene_rule: "godot"})
+    check("a preload mention mid-sentence is prose, not a header line", got == [], kinds(got))
+
     got = lc.consumer_layers({"files": {doc: {"status": "tracked", "layer": "coding"}}},
                              {"files": [{"path": doc, "layer": "pure"}, {"path": skill, "layer": "pure"}]})
     check("a seed the manifest ships counts, and a lock layer overrides the pinned one",

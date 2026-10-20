@@ -1121,8 +1121,60 @@ def retargeted_merge_cases():
     return failures
 
 
+def baseline_owned_cases():
+    """A hook committed exactly as the baseline lock records it was authored (and owes its proof) upstream."""
+    import hashlib
+    failures = []
+    synced = "x = 1\n"
+
+    def lock_repo(status="tracked", content=synced):
+        repo = make_repo()
+        row = {"status": status, "layer": "pure", "hash": hashlib.sha256(synced.encode()).hexdigest()}
+        write(repo, ".claude/baseline.lock.json",
+              json.dumps({"schema": 2, "files": {".claude/hooks/synced_hook.py": row}}))
+        write(repo, ".claude/hooks/synced_hook.py", content)
+        git(repo, ["add", "-A"])
+        return repo
+
+    failures.append(case(
+        "B1 adopting a hook byte-equal to its tracked lock row, no proof -> allow",
+        run_hook("git commit -F msg", lock_repo()), ALLOW))
+    failures.append(case(
+        "B2 block arm: the hook differs from its lock row -> deny",
+        run_hook("git commit -F msg", lock_repo(content="x = 2\n")), DENY, "synced_hook.py"))
+    failures.append(case(
+        "B3 block arm: a local (project-owned) row exempts nothing -> deny",
+        run_hook("git commit -F msg", lock_repo(status="local")), DENY, "synced_hook.py"))
+    repo = lock_repo()
+    write(repo, ".claude/hooks/synced_hook.py", "x = 2\n")
+    failures.append(case(
+        "B4 block arm: -a publishes a working copy that differs from the lock row -> deny",
+        run_hook("git commit -a -F msg", repo), DENY, "synced_hook.py"))
+
+    dense_md = "# guide\n\n**A packed rule.** " + ("padding words " * 40) + "\n"
+
+    def dense_repo(content):
+        repo = make_repo()
+        row = {"status": "tracked", "layer": "pure", "hash": hashlib.sha256(dense_md.encode()).hexdigest()}
+        write(repo, ".claude/baseline.lock.json",
+              json.dumps({"schema": 2, "files": {".claude/hooks/guide.md": row}}))
+        write(repo, ".claude/hooks/guide.md", content)
+        git(repo, ["add", "-A"])
+        return repo
+
+    verdict, text = run_hook("git commit -F msg", dense_repo(dense_md))
+    failures.append(case("B5 a dense .md byte-equal to its tracked lock row draws no density advisory",
+                         (verdict, text), ALLOW) or ("" if "audit trigger" not in text
+                         else "B5: density advisory printed for an unchanged baseline .md"))
+    failures.append(case("B6 block arm: the same dense .md differing from its lock row still advises",
+                         run_hook("git commit -F msg", dense_repo(dense_md + "extra\n")), ALLOW,
+                         ("audit trigger", ".claude/hooks/guide.md")))
+    return failures
+
+
 GROUPS = (string_constants_cases, commit_proof_cases, inline_cases, index_cases, push_base_cases,
-          same_command_write_cases, staged_blob_cases, must_allow_proof, retargeted_merge_cases)
+          same_command_write_cases, staged_blob_cases, must_allow_proof, retargeted_merge_cases,
+          baseline_owned_cases)
 
 
 def main():

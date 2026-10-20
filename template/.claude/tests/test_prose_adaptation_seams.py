@@ -18,17 +18,22 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE_DIR = os.path.join(HERE, "..")
 
-# file (relative to CLAUDE_DIR) -> the adaptation.json key its prose sentence must name
+# file (relative to CLAUDE_DIR) -> (the adaptation.json key its prose sentence must name, the layer
+# that ships the file). A consumer that did not adopt the layer holds no `CLAUDE.<layer>.md` and no file.
 SEAMS = {
-    "commands/clean_pull.md": "paired_repos",
-    "commands/clean_push.md": "paired_repos",
-    "commands/commit_push.md": "paired_repos",
-    "commands/create_pr.md": "paired_repos",
-    "commands/doc_start_here_update.md": "content_domains",
-    "commands/agents/pr_test_checklist_conventions.md": "content_scopes",
-    "skills/architecture_philosophy/structure_rules.md": "structure_exceptions",
-    "commands/agents/pr_classification.md": "pr_domains",
+    "commands/clean_pull.md": ("paired_repos", "pure"),
+    "commands/clean_push.md": ("paired_repos", "pure"),
+    "commands/commit_push.md": ("paired_repos", "pure"),
+    "commands/create_pr.md": ("paired_repos", "pure"),
+    "commands/doc_start_here_update.md": ("content_domains", "pure"),
+    "commands/agents/pr_test_checklist_conventions.md": ("content_scopes", "godot"),
+    "skills/architecture_philosophy/structure_rules.md": ("structure_exceptions", "coding"),
+    "commands/agents/pr_classification.md": ("pr_domains", "coding"),
 }
+
+
+def _layer_adopted(layer):
+    return layer == "pure" or os.path.exists(os.path.join(CLAUDE_DIR, f"CLAUDE.{layer}.md"))
 
 
 def _fragment_join(*parts):
@@ -88,8 +93,14 @@ def main():
         with open(fixture_path, encoding="utf-8") as fh:
             read_back = json.load(fh)
 
-        for rel, key in SEAMS.items():
+        for rel, (key, layer) in SEAMS.items():
+            if not _layer_adopted(layer):
+                print(f"skip {rel}: the {layer} layer is not adopted here")
+                continue
             path = os.path.join(CLAUDE_DIR, *rel.split("/"))
+            if not os.path.exists(path):
+                cases.append((f"{rel}: exists in an adopted {layer} layer", False))
+                continue
             text = open(path, encoding="utf-8").read()
 
             cases.append((f"{rel}: names adaptation.json", "adaptation.json" in text))

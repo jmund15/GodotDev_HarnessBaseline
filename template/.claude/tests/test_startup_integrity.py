@@ -12,6 +12,10 @@ spec = importlib.util.spec_from_file_location('startup_integrity', os.environ.ge
     ROOT / '.claude/hooks/session_context_loader.py'))
 loader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(loader)
+godot_spec = importlib.util.spec_from_file_location('startup_integrity_godot',
+    Path(spec.origin).with_name('session_context_loader_godot.py'))
+godot = importlib.util.module_from_spec(godot_spec)
+godot_spec.loader.exec_module(godot)
 
 
 class StartupIntegrityTests(unittest.TestCase):
@@ -26,22 +30,22 @@ class StartupIntegrityTests(unittest.TestCase):
             imported.mkdir(parents=True)
             (imported / 'one-resource').write_text('partial')
             return SimpleNamespace(returncode=1, stdout='', stderr='fixture failure')
-        with mock.patch.object(loader, 'get_godot_bin', return_value='mock-engine'), \
-             mock.patch.object(loader.subprocess, 'run', side_effect=partial):
-            self.assertTrue(loader.setup_import_cache(self.root).startswith('FAILED'))
+        with mock.patch.object(godot, 'get_godot_bin', return_value='mock-engine'), \
+             mock.patch.object(godot.subprocess, 'run', side_effect=partial):
+            self.assertTrue(godot.setup_import_cache(self.root).startswith('FAILED'))
 
     def test_existing_cache_presence_is_not_current_import_validation(self):
         imported = self.root / '.godot/imported'
         imported.mkdir(parents=True)
         (imported / 'resource').write_text('present')
-        with mock.patch.object(loader.subprocess, 'run') as run:
-            result = loader.setup_import_cache(self.root)
+        with mock.patch.object(godot.subprocess, 'run') as run:
+            result = godot.setup_import_cache(self.root)
         run.assert_not_called()
         self.assertTrue(result.startswith('PRESENT'))
 
     def test_unreadable_import_cache_is_unknown_not_hook_crash(self):
         with mock.patch.object(Path, 'exists', side_effect=OSError('fixture unreadable')):
-            result = loader.setup_import_cache(self.root)
+            result = godot.setup_import_cache(self.root)
         self.assertTrue(result.startswith(('UNKNOWN', 'FAILED')))
 
     def test_registry_failure_never_selects_legacy_fallback_launchers(self):

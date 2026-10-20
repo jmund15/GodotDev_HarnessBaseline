@@ -181,12 +181,9 @@ class StraySearchIndexSweepTests(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 values = {
                     "get_project_root": root, "is_worktree": False, "is_cloud": False,
-                    "setup_submodule": "OK", "verify_lsp_plugin": "UNAVAILABLE",
+                    "setup_submodule": "OK",
                     "sidecar_launchers": [], "get_git_branch": "main", "get_uncommitted_count": 0,
-                    "get_recent_commits": [], "get_jmodot_commits": [], "get_godot_bin": "",
-                    "godot_docs_cache_issue": None, "roster_health": "UNKNOWN (no logs dir)",
-                    "build_status": "SKIPPED (submodule not ready)",
-                    "setup_import_cache": "SKIPPED (submodule not ready)",
+                    "get_recent_commits": [], "roster_health": "UNKNOWN (no logs dir)",
                 }
                 for name, value in values.items():
                     stack.enter_context(patch.object(scl, name, return_value=value))

@@ -22,8 +22,8 @@ Fail posture per sub-hook: an exception or a non-2 non-zero exit is reported on 
 `additionalContext`, naming the lost check and repair; the next hook runs. Floor metadata is
 available before member imports; import faults use independent stubs. A floor member's fault
 blocks the call. Bootstrap import faults deny every Bash/PowerShell call and stay silent for
-other tools. pattern_enforcer is floor only for Bash/PowerShell here; its edit/style faults
-remain advisory in pre_edit_dispatch.
+other tools. dangerous_shell_guard is the one destructive-command check and a floor member in every
+profile, loaded outside `_optional_hooks`; its import fault denies through `_floor_stub`.
 
 The chain runs inside `_git_commit.memoized()`: every sub-hook reads the same repo state, so a
 read-only git query they repeat spawns git once per tool call.
@@ -120,12 +120,11 @@ def _import_error(exc):
     return "%s: %s" % (type(exc).__name__, exc)
 
 
-# Metadata must survive a member's failed import. pattern_enforcer's floor applies only
-# to this Bash/PowerShell chain, not its advisory Write/Edit consumer.
+# Metadata must survive a member's failed import.
 _FLOOR_MEMBERS = {
     'git_guardrails': (_runs_git, 'git call'),
     'baseline_classification_guard': (_commits, 'git commit'),
-    'pattern_enforcer': (lambda _command, _cwd: True, 'destructive-command check'),
+    'dangerous_shell_guard': (lambda _command, _cwd: True, 'destructive-command check'),
     'editor_live_build_guard': (lambda command, _cwd: 'dotnet' in command or '-ignoreeditor' in command.lower(),
                                 'build into a checkout'),
 }
@@ -156,9 +155,10 @@ editor_live_build_guard = _optional_hooks.load('editor_live_build_guard', on_err
 rail_probe_guard = _optional_hooks.load('rail_probe_guard', on_error=_failed_import)
 sidecar_dispatch_context = _load('sidecar_dispatch_context')
 hand_pricing_advisory = _optional_hooks.load('hand_pricing_advisory', on_error=_failed_import)
-(cloud_test_enforcer, gate_cadence_guard, pattern_enforcer, prototype_containment_guard,
+dangerous_shell_guard = _load('dangerous_shell_guard')
+(cloud_test_enforcer, gate_cadence_guard, prototype_containment_guard,
  provisional_totality_guard, tres_nullstrip_guard, tres_script_strip_guard) = _optional_hooks.load(
-    'cloud_test_enforcer', 'gate_cadence_guard', 'pattern_enforcer', 'prototype_containment_guard',
+    'cloud_test_enforcer', 'gate_cadence_guard', 'prototype_containment_guard',
     'provisional_totality_guard', 'tres_nullstrip_guard', 'tres_script_strip_guard', on_error=_failed_import)
 approving_gates = _load('approving_gates')
 unbounded_scan_guard = _load('unbounded_scan_guard')
@@ -184,7 +184,7 @@ HOOKS += (
     (foreground_wait_guard, ()),
     (wide_test_guard, ()),
     (baseline_classification_guard, ()),
-    (pattern_enforcer, ()),
+    (dangerous_shell_guard, ()),
     (git_guardrails, ()),
     (editor_live_build_guard, ()),
     (tres_script_strip_guard, ("--hook",)),

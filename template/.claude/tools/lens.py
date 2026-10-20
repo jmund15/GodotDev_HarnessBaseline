@@ -202,6 +202,11 @@ def doctrine(lenses: list[Lens]) -> str:
     return "\n".join(preload_block(rel) for rel in rels)
 
 
+def shipped() -> list[str]:
+    """The registries whose file this project holds; a layer it did not adopt ships none of its registries."""
+    return [reg for reg, (filename, _prefix) in REGISTRIES.items() if (AGENTS / filename).exists()]
+
+
 def parse(registry: str, agents: Path | None = None) -> tuple[str, list[Lens]]:
     filename, prefix = REGISTRIES[registry]
     path = (agents or AGENTS) / filename
@@ -292,14 +297,19 @@ def cmd_shared(reg: str) -> None:
     sys.stdout.write(preamble)
 
 
-def cmd_get(keys: list[str], with_shared: bool) -> None:
-    found: dict[str, Lens] = {}
+def catalog() -> tuple[dict[str, str], dict[str, Lens]]:
+    """Every shipped registry's preamble by registry name, and every lens by key."""
     preambles: dict[str, str] = {}
-    for reg in REGISTRIES:
-        preamble, lenses = parse(reg)
-        preambles[reg] = preamble
+    found: dict[str, Lens] = {}
+    for reg in shipped():
+        preambles[reg], lenses = parse(reg)
         for l in lenses:
             found[l.key] = l
+    return preambles, found
+
+
+def cmd_get(keys: list[str], with_shared: bool) -> None:
+    preambles, found = catalog()
 
     want = [found[k] for k in keys if k in found]
     missing = [k for k in keys if k not in found]
@@ -338,7 +348,7 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.cmd == "index":
-        cmd_index([args.registry] if args.registry else sorted(REGISTRIES))
+        cmd_index([args.registry] if args.registry else sorted(shipped()))
     elif args.cmd == "shared":
         cmd_shared(args.registry)
     else:

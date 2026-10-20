@@ -34,6 +34,7 @@ Wired in: settings.json hooks.PreToolUse with matcher "Bash|PowerShell".
 """
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -531,6 +532,31 @@ def _behavior_unchanged(repo_root, norm, git_env=None, *, ignore_strings=False):
             == _code_ast(work, ignore_strings=ignore_strings))
 
 
+def _baseline_unchanged(repo_root, norm, git_env=None):
+    """True when the staged and working copies equal the `tracked` row of the staged baseline lock:
+    adopted or pulled baseline content, authored and owed its proof upstream.
+
+    The hash is the lock's: sha256 of the LF-normalized bytes (`tools/baseline_sync.py` `sha`). A missing
+    or unparseable lock, a row that is not `tracked`, or a differing copy reads as authored here.
+    """
+    lock = run_git(["show", ":.claude/baseline.lock.json"], repo_root, git_env)
+    try:
+        row = json.loads(lock)["files"][norm] if lock else None
+    except (ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(row, dict) or row.get("status") != "tracked" or not row.get("hash"):
+        return False
+    staged = run_git(["show", ":" + norm], repo_root, git_env)
+    try:
+        with open(os.path.join(repo_root, norm), "rb") as fh:
+            work = fh.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    except OSError:
+        return False
+    return (staged is not None
+            and hashlib.sha256(staged.encode("utf-8")).hexdigest() == row["hash"]
+            == hashlib.sha256(work).hexdigest())
+
+
 def _skill_verdict(session_id, touched):
     """Advise a harness commit from a session that never loaded `instruction_quality`.
 
@@ -768,11 +794,12 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
     if skill:
         ADVISORIES.append(skill)
 
-    dense = _md_density_verdict(repo_root, touched, git_env)
+    changed = [p for p in touched if not _baseline_unchanged(repo_root, p, git_env)]
+    dense = _md_density_verdict(repo_root, changed, git_env)
     if dense:
         ADVISORIES.append(dense)
 
-    reattach = _reattach_cap_verdict(repo_root, touched)
+    reattach = _reattach_cap_verdict(repo_root, changed)
     if reattach:
         ADVISORIES.append(reattach)
 
@@ -784,7 +811,8 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
                 name = os.path.basename(norm)[:-3]
                 if (not name.startswith("_") and not _has_proof(tests_dir, name, git_env)
                         and not _removed(repo_root, norm, git_env)
-                        and not _behavior_unchanged(repo_root, norm, git_env)):
+                        and not _behavior_unchanged(repo_root, norm, git_env)
+                        and not _baseline_unchanged(repo_root, norm, git_env)):
                     if _behavior_unchanged(repo_root, norm, git_env, ignore_strings=True):
                         ADVISORIES.append("[harness commit] no proof for %s: if a changed string is a pattern "
                                           "it matches or a value it decides on, add the proof "
@@ -799,17 +827,17 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
             lines.append("  %s -> expected .claude/tests/test_%s*.py" % (norm, name))
         return "\n".join(lines)
 
-    if touched:
+    if changed:
         if _HARNESS_IMPORT_ERROR:
             ADVISORIES.append("[harness commit] bound proofs could not run: runner import error: %s; "
                               "unproven, not passed, and the close cannot prove it until the runner imports."
                               % _HARNESS_IMPORT_ERROR)
         else:
             try:
-                ADVISORIES.extend(commit_advisories(repo_root, touched, git_environ(git_env)))
+                ADVISORIES.extend(commit_advisories(repo_root, changed, git_environ(git_env)))
             except Exception as exc:
                 ADVISORIES.append("[harness commit] bound proofs could not run: %s: %s; %s"
-                                  % (type(exc).__name__, exc, unproven_note(touched)))
+                                  % (type(exc).__name__, exc, unproven_note(changed)))
     return None
 
 

@@ -159,6 +159,33 @@ def registry_checks():
         lens.REGISTRIES = saved
 
 
+def unshipped_registry_checks():
+    """A registry whose file a layer-stripped consumer never received is skipped, not fatal, by every all-registry walk."""
+    text = "# Review agents\n\n## Agent Templates\n\n### code-reviewer -- `model: \"opus\"`\nbody\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "review_agents.md").write_text(text, encoding="utf-8")
+        saved = lens.AGENTS, lens.REGISTRIES
+        lens.AGENTS = Path(tmp)
+        lens.REGISTRIES = {"review": ("review_agents.md", ""), "structure_audit": ("structure_audit_agents.md", "stra-")}
+        try:
+            names = getattr(lens, "shipped", lambda: "no shipped()")()
+            check("shipped() names only registries whose file exists", names == ["review"], names)
+            code, out, err = run_cli(lens.cmd_get, ["code-reviewer"], False)
+            check("get resolves a lens while another registry's file is absent",
+                  code == 0 and "code-reviewer" in out, (code, err))
+            saved_argv, sys.argv = sys.argv, ["lens.py", "index"]
+            try:
+                code, out, err = run_cli(lens.main)
+            finally:
+                sys.argv = saved_argv
+            check("a bare index lists the shipped registries while another registry's file is absent",
+                  code == 0 and "code-reviewer" in out, (code, err))
+            code, _, err = run_cli(lens.parse, "structure_audit")
+            check("parsing the absent registry by name still fails loudly", code != 0 and "not found" in err, (code, err))
+        finally:
+            lens.AGENTS, lens.REGISTRIES = saved
+
+
 def rule_hash_checks():
     """review_ledger.rule_hash is the catalog's one hash, and lens carries no second name for it."""
     import review_ledger
@@ -208,6 +235,7 @@ def main():
     preload_checks()
     mandate_checks()
     registry_checks()
+    unshipped_registry_checks()
     rule_hash_checks()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")

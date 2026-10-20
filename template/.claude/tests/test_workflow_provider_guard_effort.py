@@ -36,6 +36,10 @@ def _planted_registry():
     pin = _PINS["fanout"]
     row = next(m for m in data["models"] if m["transport"] == HOST and pin in (m["id"], m.get("alias")))
     row.setdefault("effort", {}).update(nonThinking=["low"], nonThinkingRef="planted by this proof")
+    # The registry's avoid rule would deny a pinned `low` before RULE 0 is reached.
+    for m in data["models"]:
+        if m["transport"] == HOST and "avoid" in m.get("effort", {}):
+            m["effort"]["avoid"] = [r for r in m["effort"]["avoid"] if r != "low"]
     path = os.path.join(tempfile.mkdtemp(prefix="effort-proof-"), "external_models.json")
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(data, fh)
