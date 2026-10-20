@@ -116,8 +116,8 @@ MONITOR_REASON = (
     "wake, so a longer request is a watch that dies silently. To wait on a detached job's end, use its own waiter "
     "with Bash run_in_background and timeout 7200000: the `WAIT-CMD` its launch printed, "
     "or `python3 .claude/tools/watch_records.py --session --wake`; each checks in at %d minutes, "
-    "inside the one-hour prompt cache. Keep a Monitor for intermediate events, with timeout_ms at most %d "
-    "(CLAUDE.core.md §Shell Discipline)."
+    "inside the one-hour prompt cache. Keep a Monitor for intermediate events "
+    "(CLAUDE.core.md §Shell Discipline), with timeout_ms at most %d."
 )
 POLL_REASON_MAIN = (
     "BLOCKED repeated status poll: this is the %d%s consecutive run of the same status check, and each "

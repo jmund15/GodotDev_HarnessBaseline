@@ -8,7 +8,7 @@ The plugin stores its index under `searchDir` (`<searchDir>/.search-index/search
 `.gitignore` from that directory down. A subdirectory `searchDir` misses the repo-root `.gitignore`
 (which excludes `.claude/worktrees/` and `.claude/scratch/`) and indexes every ignored checkout; a
 root outside the project needs explicit authorization. Valid roots are the project, a submodule or
-worktree inside it, and the project's `doc_roots` (`reference/semantic_search.md`).
+worktree inside it, and the project's `doc_roots` (`adaptation.json`).
 `restrictToDir` is a prefix filter over stored
 repo-relative POSIX paths, so an absolute, backslash or `.`/`..`/empty-segment value matches
 nothing and reads as a false "not indexed". Owner: `reference/semantic_search.md`; evidence:
