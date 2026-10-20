@@ -805,9 +805,12 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
         relpath = record["relpath"]
         if record["op"] == "D":
             entry = lock.get("files", {}).get(relpath)
-            if entry is None:
+            if entry is None or from_worktree:
+                # A `--from-worktree` deletion leaves the row for the consumer's own `pull`,
+                # which retires an unmodified file and keeps a modified one as `local`.
                 continue
-            # The consumer's file outlives the upstream copy: it becomes this project's own.
+            # --from-commit: the consumer already removed its own copy, so a surviving file is
+            # this project's own and becomes `local`.
             if (root / relpath).exists():
                 if sync._entry_status(entry) != "local":
                     entry["status"] = "local"

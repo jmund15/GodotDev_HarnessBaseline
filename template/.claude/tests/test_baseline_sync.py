@@ -250,11 +250,15 @@ def test_missing_upstream_exits_nonzero() -> None:
         remote, commit, _ = _baseline_one(path, ".claude/tools/other.py", b"other = 1\n")
         checkout = _clone(remote, path / "checkout")
         root = _consumer(path, remote, commit, rel, b"missing = 1\n")
-        for operation in (("pull", rel), ("diff", rel), ("update-lock",), ("update-lock", rel)):
+        for operation in (("diff", rel), ("update-lock",), ("update-lock", rel)):
             result = _run(root, *operation, "--baseline-dir", str(checkout))
             output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
             assert result.returncode == 1, " ".join(operation) + ": " + output
             assert rel in output, " ".join(operation) + ": " + output
+        # An unmodified tracked row whose upstream file is gone is retired by pull, not refused.
+        pull = _run(root, "pull", rel, "--baseline-dir", str(checkout))
+        assert pull.returncode == 0, _out(pull)
+        assert not (root / rel).exists() and rel not in _load_lock(root)["files"]
 
 
 def test_interrupted_lock_write_keeps_old_lock() -> None:
@@ -1936,8 +1940,53 @@ def test_check_reports_layer_closure_and_strict_fails() -> None:
         assert strict.returncode == 0, _out(strict)
 
 
+def _delete_upstream(baseline: Path, relpath: str) -> None:
+    (baseline / "template" / relpath).unlink()
+    _commit(baseline, "upstream deletes " + relpath)
+
+
+def test_pull_retires_unmodified_file_removed_upstream() -> None:
+    gone = ".claude/tools/gone_unmodified.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {gone: {"upstream": b"old\n"}})
+        _delete_upstream(baseline, gone)
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert not (root / gone).exists()
+        assert gone not in _load_lock(root)["files"]
+        assert f"retired: {gone}" in _out(pull), _out(pull)
+
+
+def test_explicit_pull_keeps_modified_file_removed_upstream_as_local() -> None:
+    gone = ".claude/tools/gone_modified.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {gone: {"upstream": b"old\n"}})
+        _delete_upstream(baseline, gone)
+        _write(root / gone, b"project edit\n")
+        pull = _run_baseline(root, baseline, "pull", gone)
+        assert pull.returncode == 0, _out(pull)
+        assert (root / gone).read_bytes() == b"project edit\n"
+        entry = _load_lock(root)["files"][gone]
+        assert entry["status"] == "local" and "hash" not in entry, entry
+        assert f"kept local (modified, removed upstream): {gone}" in _out(pull), _out(pull)
+
+
+def test_pull_drops_row_of_file_removed_upstream_and_missing_locally() -> None:
+    gone = ".claude/tools/gone_missing.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {gone: {"upstream": b"old\n", "local": None}})
+        _delete_upstream(baseline, gone)
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert gone not in _load_lock(root)["files"]
+        assert f"retired: {gone}" in _out(pull), _out(pull)
+
+
 def main() -> int:
     cases = [
+        test_pull_retires_unmodified_file_removed_upstream,
+        test_explicit_pull_keeps_modified_file_removed_upstream_as_local,
+        test_pull_drops_row_of_file_removed_upstream_and_missing_locally,
         test_check_reports_layer_closure_and_strict_fails,
         test_bare_pull_skips_unrowed_offer_and_counts_it,
         test_named_pull_adopts_offer_as_tracked,

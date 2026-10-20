@@ -48,7 +48,7 @@ A change to a tracked file is **universal** (→ upstream it) when it would impr
    - judged `push`: **Publish**;
    - `forked-upstream-moved`, `forked-base-unknown`: read `diff <relpath>`, then keep the fork (`fork <relpath>` records the new base) or un-fork (`pull --force <relpath>`, then `track <relpath>`);
    - `composed-drift`: `compose`;
-   - `removed-upstream`: `forget <relpath>` when the project agrees, else republish the file;
+   - `removed-upstream`: a tracked row is retired by `pull` (an unmodified file is deleted with its row, a modified one is kept as `local`); for a forked row, `forget <relpath>` when the project agrees, else republish the file;
    - a row whose local file is gone: `gc` lists it; `gc --apply` drops `local` and `forked` rows, and `forget <relpath>` removes a `keep-tracked` row;
    - `unimported-layer-file`: add its `@CLAUDE.<layer>.md` line under `@CLAUDE.core.md` in `CLAUDE.md`;
    - `layer-closure`: fix each finding at its source by the options in **Candidates** *Universal-shaped*, before any **Publish**.

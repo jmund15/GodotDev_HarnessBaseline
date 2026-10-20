@@ -1789,6 +1789,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     skipped = 0
     unrowed_differs: list[str] = []
     kept_seeds: list[str] = []
+    retired: list[str] = []
+    kept_local: list[str] = []
     offered: list[str] = []
 
     def apply(lock: dict):
@@ -1809,7 +1811,9 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 if not in_profile(entry, layers):
                     continue
                 state = _v2_state(root, source, lock, path, entry)
-                if state in ("upstream-updated", "new-upstream"):
+                if state in ("upstream-updated", "new-upstream") or (
+                    state == "removed-upstream" and _entry_status(entry) == "tracked"
+                ):
                     targets.append(path)
             unrowed = sorted(
                 path for path, layer in manifest_layers.items()
@@ -1820,10 +1824,17 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         targets = list(dict.fromkeys(targets))
         plans = []
         for relpath in targets:
+            entry = files.get(relpath)
+            # A tracked row whose upstream file is gone: the upstream deletion reaches the
+            # consumer here, never as a refusal (retire an unmodified copy, keep a modified one).
+            if entry is not None and _entry_status(entry) == "tracked" and (
+                upstream_text(source, relpath, lock.get("substitutions", {})) is None
+            ):
+                plans.append((relpath, "retire", None))
+                continue
             upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
             if upstream is None:
                 raise _missing_error(relpath)
-            entry = files.get(relpath)
             if entry is None:
                 local = local_text(root, relpath)
                 if manifest_items.get(relpath, {}).get("sync") == "seed":
@@ -1866,6 +1877,20 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 seeds.append(relpath)
                 changed.append(relpath)
                 continue
+            if action == "retire":
+                local = local_text(root, relpath)
+                if local is None or sha(local.encode("utf-8")) == files[relpath].get("hash"):
+                    if local is not None:
+                        (root / relpath).unlink()
+                    del files[relpath]
+                    retired.append(relpath)
+                else:
+                    files[relpath]["status"] = "local"
+                    files[relpath].pop("hash", None)
+                    files[relpath].pop("base", None)
+                    kept_local.append(relpath)
+                changed.append(relpath)
+                continue
             destination = root / relpath
             _write_lf(destination, upstream)
             upstream_hash = sha(upstream.encode("utf-8"))
@@ -1904,7 +1929,14 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         print("no change")
     else:
         for relpath in result:
-            print(f"kept (seed, local row added): {relpath}" if relpath in kept_seeds else f"pulled: {relpath}")
+            if relpath in retired:
+                print(f"retired: {relpath}")
+            elif relpath in kept_local:
+                print(f"kept local (modified, removed upstream): {relpath}")
+            elif relpath in kept_seeds:
+                print(f"kept (seed, local row added): {relpath}")
+            else:
+                print(f"pulled: {relpath}")
     for relpath in dict.fromkeys(unrowed_differs):
         print(f"skipped (local file differs, no lock row): {relpath}")
     if offered:
