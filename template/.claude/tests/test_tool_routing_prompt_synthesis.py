@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 import _settings_probe
 
@@ -22,12 +23,24 @@ def registered_hook():
     raise AssertionError(f"{BASENAME} is not registered for UserPromptSubmit")
 
 
+def plant_env():
+    """The hook narrows its advice when ai-worker is not registered on the machine: plant it registered."""
+    root = tempfile.mkdtemp(prefix="trps_")
+    cfg = os.path.join(root, "cfg")
+    os.makedirs(os.path.join(cfg, "plugins"))
+    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": {"ai-worker": {"command": "python"}}}, fh)
+    return dict(os.environ, PYTHONIOENCODING="utf-8", CLAUDE_CONFIG_DIR=cfg,
+                SC_WORKDIR=os.path.join(root, "nowhere"),
+                WORKSTATION_PROFILE_PATH=os.path.join(root, "workstation_profile.json"))
+
+
 def run(hook, prompt):
     payload = {"hook_event_name": "UserPromptSubmit", "session_id": "trps0001",
                "permission_mode": "default", "prompt": prompt}
     result = subprocess.run([sys.executable, hook], input=json.dumps(payload),
                             capture_output=True, text=True, timeout=30,
-                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                            env=plant_env())
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout.strip()
@@ -35,7 +48,7 @@ def run(hook, prompt):
 
 def run_raw(hook, raw):
     return subprocess.run([sys.executable, hook], input=raw, capture_output=True, text=True,
-                          timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                          timeout=30, env=plant_env())
 
 
 SYNTHESIS = """Compare the existing hook files and summarize how routing decisions flow across

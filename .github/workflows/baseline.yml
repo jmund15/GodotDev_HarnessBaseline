@@ -26,6 +26,10 @@ jobs:
       - name: verify pwsh is on PATH
         run: pwsh -NoProfile -Command 'exit 0'
 
+      # The runner executes pytest-style proofs with `python -m pytest`.
+      - name: install pytest
+        run: python3 -m pip install pytest
+
       - name: gen_manifest --check
         run: python3 tools/gen_manifest.py --check
 
