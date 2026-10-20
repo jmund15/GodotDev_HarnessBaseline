@@ -1,6 +1,7 @@
 ---
 description: Audit the documentation landscape and produce a prioritized report in Obsidian.
 disable-model-invocation: true
+allowed-tools: Bash(python3 .claude/tools/model_registry.py:*), Workflow
 ---
 
 Audit the documentation landscape — produces a prioritized report in Obsidian.
@@ -59,10 +60,13 @@ Build a single CONTEXT string: the full System Manifest (JSON — including each
 
 > **Ordering gate — do NOT batch this with Phase 1.** The `args.context` here is built FROM the Phase-1 inventory results (manifest + Start Here). That makes this call **dependent**, not independent: it must run in a *separate turn*, after the Phase-1 reads have returned and you have SEEN the real folder structure. Batching the `Workflow(...)` launch in the same tool block as the inventory `Glob`/`find`/`Read` forces you to pass a guessed manifest — the workflow then audits systems that don't exist. The harness's "parallelize independent calls" guidance does not apply to a call whose arguments are another call's output. See `feedback_dont_batch_dependent_call_with_its_inputs` in auto-memory.
 
+Resolve the three audit lenses' `fanout` work shape with `python3 .claude/tools/model_registry.py for-role fanout` and the effort cell in `reference/model_ladder_evidence.md`. Pick a native model ID for this session; the workflow validates it against the provider guard's injected vocabulary before starting a lens. Do not copy a literal pin from an earlier session.
+
 ```
 Workflow({
   scriptPath: ".claude/workflows/doc_architecture_audit.js",
-  args: { context: "<the CONTEXT block from 1d>", docRoot: "<absolute path to .../Claude/Documentation>" }
+  args: { context: "<the CONTEXT block from 1d>", docRoot: "<absolute path to .../Claude/Documentation>",
+          model: "<native model ID>", effort: "<legal ladder rung>", tier: "fanout" }
 })
 ```
 
@@ -79,6 +83,8 @@ It returns:
 ```
 
 (No single-flight exposure — agents read only vault `.md`; no GdUnit4, no LSP.)
+
+Consume the checked findings per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5 before `/doc_audit_fix` reads the report.
 
 ---
 
@@ -121,166 +127,11 @@ Then write the report to Obsidian with a single overwrite:
 
 ### Report Template
 
-```markdown
-# Documentation Architecture Audit
-
-> [!abstract] Audit Summary
-> **Date:** YYYY-MM-DD
-> **Health Rating:** HEALTHY | MINOR DRIFT | MODERATE DEBT | NEEDS OVERHAUL
-> **Systems Audited:** N
-> **Findings:** X critical, Y warning, Z info
-> **Cross-Agent Patterns:** N systems flagged by multiple agents
-
-## Statistics
-
-| Metric | Value | Target |
-|--------|-------|--------|
-| Template Compliance (4-doc suite present) | X/Y (Z%) | 100% |
-| Link Integrity (bidirectional) | X/Y edges (Z%) | 100% |
-| Start Here Coverage | X/Y systems (Z%) | 100% |
-| Naming Consistency (Designer Usage) | X/Y usage docs (Z%) | 100% |
-| Domain Cohesion (no mixed-purpose domains) | X/Y domains cohesive (Z%) | 100% |
-
-## Critical Findings
-
-> [!danger]- C1: {description} ({system})
-> **Check:** {check code} | **Agent:** {agent} | **Action:** {FIX|ASK}
-> **Handler:** {handler or "User decision"}
-> **Recommendation:** {recommendation}
-> **Options:** {ranked options if ASK, null if FIX}
-> **Scope:** {scope list}
-
-(Repeat for each critical finding. Omit section if none.)
-
-## Invalidated Findings
-
-> [!success]- {id} (INVALIDATED): {what the lens claimed} ({system})
-> **Check:** {check code} | **Agent:** {agent} | **Reported severity:** {severity} | **Verified verdict:** NOT A DEFECT | DUPLICATE
-> **Claim:** {the assertion, quoted}
-> **Verification:** {the command run and what it returned}
-> **Action:** none.
-
-(Findings killed by the Phase-4a gate. Omit section if none. These do NOT count toward the Findings totals.)
-
-## Warning Findings
-
-> [!warning]- W1: {description} ({system})
-> **Check:** {check code} | **Agent:** {agent} | **Action:** {FIX|ASK}
-> **Handler:** {handler or "User decision"}
-> **Recommendation:** {recommendation}
-> **Options:** {ranked options if ASK, null if FIX}
-> **Scope:** {scope list}
-
-(Repeat for each warning. Omit section if none.)
-
-## Info Findings
-
-> [!info]- I1: {description} ({system})
-> **Check:** {check code} | **Agent:** {agent} | **Action:** {FIX|ASK}
-> **Handler:** {handler or "User decision"}
-> **Recommendation:** {recommendation}
-> **Options:** {ranked options if ASK, null if FIX}
-> **Scope:** {scope list}
-
-(Repeat for each info finding. Omit section if none.)
-
-## Cross-Agent Patterns
-
-| System | Agents | Findings | Summary |
-|--------|--------|----------|---------|
-| {SystemName} | da-structural, da-crossref | S2, X1 | {one-line summary} |
-
-(Omit section if no cross-agent patterns. The **Summary** cell is Claude-synthesized — join the descriptions of that system's findings into one line; the workflow's `crossAgentPatterns` objects carry only `{system, agents, checks}`, no summary field.)
-
-## Domain Analysis
-
-### {Domain Name}
-| System | Template | QR | Arch | Usage | Retro | Start Here | Links |
-|--------|----------|----|------|-------|-------|------------|-------|
-| {Name} | 4-doc ✓ | ✓  | ✓    | ✓     | ✓     | ✓          | ✓     |
-
-(One table per domain — group systems by their manifest `domain` field. **Links** column: read `linkGraph.unidirectionalBySystem[systemName]` — `✓` if absent or 0; `⚠ N→` if N>0; `—` when `linkGraph` is unavailable. The workflow emits this per-system map, so do not hand-parse finding descriptions, and do not fabricate `N/N ↔` bidirectional ratios. As a guard, the per-system `N→` values should sum to `linkGraph.unidirectional`.)
-
-## Domain Hub Recommendations
-
-> [!tip]- Hub: {Domain Name}
-> **Systems:** {list}
-> **Rationale:** {why these form a pipeline/chain}
-> **Suggested scope:** {what the hub doc should cover}
-
-(Omit section if no hub recommendations.)
-
-## Domain Reorganization Recommendations
-
-> [!warning]- Promote: {New Domain Name} (from {Current Domain})
-> **Systems to move:** {list}
-> **Remaining in {Current Domain}:** {list}
-> **Rationale:** {why these systems are functionally distinct from the parent domain}
-> **Proposed structure:**
-> ```
-> Documentation/
->   {New Domain Name}/
->     _Hub.md
->     {System1}/
->     {System2}/
-> ```
-> **Migration impact:** {wikilinks to update, Start Here changes needed}
-
-(Omit section if no reorganization recommendations.)
-
-## Domain Merge Recommendations
-
-> [!warning]- Merge: {Domain A} + {Domain B}
-> **Combined systems:** {count} ({list})
-> **Shared cross-references:** {what links the two domains}
-> **Rationale:** {why neither has a strong standalone identity}
-> **Options:** {ranked merge options from the D7 finding's `options` field}
-
-(Consumes D7 merge-candidate findings. Omit section if none.)
-
-## Recommended Action Plan
-
-1. **[CRITICAL]** {action description}
-   → `Run: /doc_full {SystemName}` or specific manual fix
-2. **[WARNING]** {action description}
-   → `Run: /doc_start_here_update` or specific manual fix
-3. **[INFO]** {action description}
-   → Suggestion for future session
-
-## Changelog
-
-| Date | Health | Critical | Warning | Info | Notes |
-|------|--------|----------|---------|------|-------|
-| YYYY-MM-DD | RATING | X | Y | Z | First audit / Delta from previous |
-```
+Write the report in the shape of [`doc_architecture_audit_report.md`](reference/doc_architecture_audit_report.md) §Report Template.
 
 ### Machine Findings Block
 
-After the Changelog, append a `## Machine Findings` section whose body is a single fenced `json` block carrying the workflow's structured return. This is the **machine contract** consumed by `/doc_audit_fix` — the prose callouts above are the human view; this block is the source of truth. The literal heading must be `## Machine Findings` so the fix command can locate it. Shape:
-
-```json
-{
-  "schemaVersion": 1,
-  "date": "YYYY-MM-DD",
-  "healthRating": "HEALTHY | MINOR DRIFT | MODERATE DEBT | NEEDS OVERHAUL",
-  "lensesCompleted": 3,
-  "failedLenses": [],
-  "counts": { "critical": 0, "warning": 0, "info": 0 },
-  "linkGraph": { "edges": 0, "bidirectional": 0, "unidirectional": 0, "unidirectionalBySystem": { "SystemName": 0 } },
-  "crossAgentPatterns": [ { "system": "Name", "agents": ["da-structural", "da-crossref"], "checks": ["S2", "X1"] } ],
-  "findings": [
-    { "id": "C1", "status": "open", "agent": "da-structural", "check": "S1", "severity": "critical",
-      "action": "FIX", "system": "Name or null", "description": "...", "recommendation": "...",
-      "handler": "delegate:/doc_full | inline:rename | ... | null", "options": null, "scope": ["..."] }
-  ]
-}
-```
-
-Rules for the block:
-- Every finding's `id` MUST match the ID used in its prose callout (C1 / W3 / I7) — the two views share IDs.
-- `status` is `open` on a fresh audit; `/doc_audit_fix` flips it to `resolved` / `deferred` and regenerates the block.
-- Copy each finding **verbatim** from the workflow return (`agent/check/severity/action/system/description/recommendation/handler/options/scope`) and add only `id` + `status` — never re-summarize.
-- `schemaVersion` is `1`; bump only if this block's shape changes.
+After the Changelog, append the `## Machine Findings` section that `/doc_audit_fix` parses. [`doc_architecture_audit_report.md`](reference/doc_architecture_audit_report.md) §Machine Findings Block owns its shape and rules.
 
 ### Report Rules
 - **Partial-audit banner:** if the workflow return reports `lensesCompleted < 3`, prepend a `> [!danger] PARTIAL AUDIT — only N/3 lenses completed ({failed lens names})` banner above the Audit Summary. A 2-of-3-lens run must never be presented as complete.

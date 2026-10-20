@@ -77,15 +77,17 @@ def main():
     os.makedirs(os.path.dirname(record), exist_ok=True)
     with open(record, "w", encoding="utf-8") as fh:
         json.dump({"keep|me": {"collapses": False, "observed": "2026-01-01"}}, fh)
-    p, crashed = run([ONE, QTWO, "--client-version=" + VERSION], env)
+    p, crashed = run([ONE, QTWO, "--client-version", VERSION], env)
     rec = load(record) or {}
-    check("--client-version=<v> form exits 0", not crashed and p.returncode == 0, p.stdout + p.stderr)
+    check("final --client-version <v> form exits 0", not crashed and p.returncode == 0, p.stdout + p.stderr)
     check("an existing key in the record is preserved", (rec.get("keep|me") or {}).get("observed") == "2026-01-01", rec)
     leftovers = [n for n in os.listdir(os.path.dirname(record)) if n != os.path.basename(record) and not n.endswith(".lock")]
     check("the write leaves no temp file behind", not leftovers, leftovers)
 
     before = load(record)
     for label, args in (
+        ("leading --client-version", ["--client-version", VERSION, ONE, QTWO]),
+        ("equals --client-version", [ONE, QTWO, "--client-version=" + VERSION]),
         ("no --client-version", [ONE, QTWO]),
         ("--client-version without a value", [ONE, QTWO, "--client-version"]),
         ("the retired one-argument form", [ONE, "--client-version", VERSION]),
@@ -99,7 +101,9 @@ def main():
         ("empty client version", [ONE, QTWO, "--client-version", ""]),
     ):
         p, crashed = run(args, env)
-        check("%s exits 2" % label, not crashed and p.returncode == 2, "rc=%s %s" % (p.returncode, p.stderr))
+        check("%s exits 2" % label, not crashed and p.returncode == 2 and "usage:" in p.stderr,
+              "rc=%s %s" % (p.returncode, p.stderr))
+        check("%s writes nothing" % label, load(record) == before, load(record))
     check("rejected invocations leave the record unchanged", load(record) == before, load(record))
 
     p, crashed = run(["--help"], env)

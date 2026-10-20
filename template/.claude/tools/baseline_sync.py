@@ -35,6 +35,7 @@ if str(_TOOLS_DIR) not in sys.path:
 import baseline_identity  # noqa: E402
 import baseline_compose  # noqa: E402
 import adaptation  # noqa: E402
+import layer_closure  # noqa: E402
 
 LOCK_RELPATH = ".claude/baseline.lock.json"
 CACHE_CLONE = ".claude/.cache/baseline-repo"
@@ -491,12 +492,20 @@ def lock_mutex(root: Path):
             _release_os_lock(handle)
 
 
+def require_v2_lock(lock: dict) -> None:
+    """Refuse nonmigration writes before creating outputs, caches or journals."""
+    if lock.get("schema") != 2:
+        raise BaselineError("v1 lock is read-only; run migrate first")
+
+
 def mutate_lock(root: Path, mutator, *, allow_v1: bool = False):
     """Apply a mutation to a fresh lock snapshot under the lock mutex."""
+    if not allow_v1:
+        require_v2_lock(load_lock(root))
     with lock_mutex(root):
         lock = load_lock(root)
-        if lock.get("schema") != 2 and not allow_v1:
-            raise BaselineError("v1 lock is read-only; run migrate first")
+        if not allow_v1:
+            require_v2_lock(lock)
         result = mutator(lock)
         if result is not NO_CHANGE:
             save_lock(root, lock)
@@ -1285,13 +1294,22 @@ def _strict_findings(root: Path, source: BaselineSource, lock: dict,
     return findings
 
 
+def layer_closure_findings(root: Path, lock: dict, source: BaselineSource | Path) -> list[str]:
+    """Each tracked row's citation of a file its consumers lack: the fetched manifest overlaid by this
+    project's shipped rows, the view publish's `audit_baseline.py` closure step refuses."""
+    manifest = {"files": list(_manifest_items_v2(source).values())}
+    return [f.render() for f in layer_closure.lock_findings(root, lock, manifest)]
+
+
 def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
               layers: list[str], strict: bool) -> int:
     results, outside = _check_results(root, lock, source, layers)
     residual = residual_placeholders(root, lock)
     unimported = unimported_layer_files(root)
+    closure = layer_closure_findings(root, lock, source)
     findings =_strict_findings(root, source, lock, results) if strict or not as_json else []
     findings = list(findings) + [(rel, "unimported-layer-file") for rel in unimported]
+    findings += [(line, "layer-closure") for line in closure]
     if as_json:
         payload = {
             "baseline_commit": baseline_commit(source),
@@ -1301,6 +1319,8 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
         }
         if unimported:
             payload["unimported_layer_files"] = unimported
+        if closure:
+            payload["layer_closure"] = closure
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         buckets: dict[str, list[str]] = {}
@@ -1323,6 +1343,10 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             print("unimported-layer-file (CLAUDE.md never loads it; add an `@` line under `@CLAUDE.core.md`):")
             for relpath in unimported:
                 print("  " + relpath)
+        if closure:
+            print("layer-closure (a tracked row cites a file its consumers lack; publish refuses it):")
+            for line in closure:
+                print("  " + line)
         print("\nclean" if not residual and not findings else "\nfindings")
         if set(layers) != set(FULL_LAYERS):
             print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")
@@ -2189,6 +2213,9 @@ def _compose_row_output(root: Path, relpath: str, inputs: list[str], layers: lis
 
 
 def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
+    if not check:
+        require_v2_lock(lock)
+        require_v2_lock(load_lock(root))
     check_adaptation_contract(root)
     rows = _composed_rows(lock)
     outputs: dict[str, bytes] = {}
@@ -2363,6 +2390,8 @@ AUTHOR_WORKTREES_RELPATH = ".claude/.cache/baseline-worktrees"
 
 def cmd_author_start(root: Path) -> int:
     """§5/§7 `author start`: create or reuse this session's baseline author worktree."""
+    lock = load_lock(root)
+    require_v2_lock(lock)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if len(session) < 8:
         print("error: CLAUDE_CODE_SESSION_ID is unset or shorter than 8 characters",
@@ -2511,7 +2540,11 @@ def main(argv=None) -> int:
         if raw_argv[1:2] != ["start"]:
             print("error: author requires a subcommand: start", file=sys.stderr)
             return 2
-        return cmd_author_start(project_root())
+        try:
+            return cmd_author_start(project_root())
+        except BaselineError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if raw_argv[:1] == ["materialize"]:
         print("error: materialize is retired; use publish --dry-run", file=sys.stderr)
         return 2
@@ -2554,6 +2587,8 @@ def main(argv=None) -> int:
             return v2_upgrade(args.project, args.baseline_dir, args.layers, args.abbrev)
         root = project_root()
         if args.op == "init":
+            if (root / LOCK_RELPATH).exists():
+                require_v2_lock(load_lock(root))
             if not args.baseline_dir or not args.repo or not args.sub:
                 raise UsageError("init requires --baseline-dir, --repo and at least one --sub")
             try:
@@ -2578,6 +2613,13 @@ def main(argv=None) -> int:
                 source.close()
 
         lock = load_lock(root)
+        writes = args.op in {
+            "pull", "update-lock", "classify", "judge", "forget", "fork", "track", "ignore",
+        } or (args.op == "gc" and args.apply) or (
+            args.op == "compose" and not args.check
+        ) or (args.op == "sub" and bool(args.sub or args.unset))
+        if writes:
+            require_v2_lock(lock)
         layers = resolve_layers_v2(lock, args.layers)
         if args.op == "paths":
             return v2_paths(lock, args.status, args.verdict, args.judged_since, args.json)

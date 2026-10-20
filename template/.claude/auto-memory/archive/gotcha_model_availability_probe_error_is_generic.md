@@ -33,8 +33,8 @@ state: in the client table, rejected by the backend — known-but-unentitled.
 ACCEPTED it, positive and negative controls both behaving. The 0.148.0 sweep could only ever have
 returned a rejection. A stale client does not weaken an availability negative — it voids it.
 
-**Two mechanical traps.** `codex exec` **exits 0 on a model rejection** — branch on the stdout
-message, never `$?`. And the CLI prints `Model metadata for X not found` for any id outside its own
+**Two mechanical traps.** `codex exec` prints the rejection on stdout; read that message, and do not infer anything about
+existence from the exit code. And the CLI prints `Model metadata for X not found` for any id outside its own
 table, which is client-side and says nothing about the server.
 
 **How to apply.**

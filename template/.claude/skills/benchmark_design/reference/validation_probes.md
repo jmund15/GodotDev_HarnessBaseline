@@ -25,9 +25,17 @@ needs, and the sub-floor ordering claim, live in `controls_and_subfloor.md`.
 **Probes prove satisfiability; only real answers reveal brittleness** — every probe can pass while the
 rule is satisfiable *only by bad writing* (§7). Budget a review of real responses before trusting a grid.
 
-## A universal miss is a key defect
+## A universal miss is an audit trigger, not a verdict
 
-Detect it mechanically: any item missed by every graded arm is excluded from the conclusions until
-re-derived — and it is never a denominator. A "reachable ceiling" built from what arms have found
-rescales the instrument by the field it measures and moves every time a cell runs; the scale stays the
-ideal result, and the misses are an audit queue (KEEP / REWRITE / REMOVE per item).
+Detect it mechanically: an item missed by every graded arm goes to the project's reachability
+audit workflow. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before using a ruling to change an instrument. The workflow rules each item:
+- **KEEP** — the fact is in the arm's reach (its input, brief, repo or auto-loaded memory) and a correct
+  answer earns the item as worded. It is hard, not broken, and stays in the denominator: a stronger arm
+  may be the first to find it. A FLOOR label the audit falsifies still comes off.
+- **REWRITE** — reachable, but the wording lets a correct answer miss (a compound another valid design
+  resolves differently, an over-specific phrasing).
+- **REMOVE** — the fact is outside the arm's reach, or the item is not a decision every valid design makes.
+
+Conclusions resting on an unaudited item are provisional. Never rescale to a "reachable ceiling" built
+from what arms have found: it rescales the instrument by the field it measures and moves every time a cell
+runs. The scale stays the ideal result.

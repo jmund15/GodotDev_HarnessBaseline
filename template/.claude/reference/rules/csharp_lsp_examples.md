@@ -61,6 +61,6 @@ Push-mode diagnostics are dropped at the adapter level (re-disabled 2026-05-07).
 
 ## Adapter and setup
 
-- **Stack:** `csharp-ls` v0.24.0 behind a Node.js adapter.
+- **Stack:** `csharp-ls` at the version `.config/dotnet-tools.json` pins, behind a Node.js adapter.
 - **Adapter:** `.claude/tools/csharp-ls-adapter.js` is canonical. It fixes `workspace/configuration` and `file://` URI normalization and carries a per-request timeout watchdog (`LSP_REQUEST_TIMEOUT_MS`, default 60s — it synthesizes an error response on hang). Set `LSP_ADAPTER_DEBUG=1` for debug logging.
 - **Setup:** `.claude/tools/setup-csharp-ls.sh` provisions a new workstation. Local only — disabled on cloud via `settings.local.json`.

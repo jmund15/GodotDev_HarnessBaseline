@@ -51,7 +51,7 @@ SC_REGISTRY_CLI="$REGISTRY"
 SC_RECORD_PARSER="claude"
 SC_LABEL="same-label"
 sc_scrub_env
-env "${SC_SCRUB[@]}" python3 -c 'import os; assert "SIDECAR_LAUNCH_ID" not in os.environ'
+LAUNCH="$SC_LAUNCH_ID" env "${SC_SCRUB[@]}" python3 -c 'import os; v = os.environ.get("SIDECAR_LAUNCH_ID"); assert v == (os.environ["LAUNCH"] or None) and os.environ.get("SIDECAR_SEAT_LAUNCH_ID") == v'
 RAW="$RAW_JSON"
 sc_write_record "$RAW" "$RC"
 cp "$SC_RECORD" "$FIXTURE/first.json"
@@ -226,6 +226,7 @@ sc_write_record "$RAW" "$RC"
             home=Path(temp); script=home/'direct.sh'
             script.write_text('''set -euo pipefail
 source "$COMMON"
+sc_check_launch_memory() { :; }
 SC_RECORD="$FIXTURE/job.record.json"
 SC_LABEL="job"
 SC_STALL_SEC=0
@@ -264,6 +265,7 @@ printf '%s' "$SC_LAUNCH_ID" > "$FIXTURE/id.txt"
                 script = home / 'refused.sh'
                 script.write_text('''set -euo pipefail
 source "$COMMON"
+sc_check_launch_memory() { :; }
 SC_RECORD="$RECORD"
 SC_LABEL="fixture"
 SC_STALL_SEC=0

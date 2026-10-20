@@ -1,0 +1,21 @@
+{
+ "schemaVersion": 1,
+ "fanoutId": "f93acb84-24fd-4333-b641-992660dbf2f6",
+ "parentSessionId": "30b7e19d-8945-4de9-ab38-4b02699ef340",
+ "fanoutProcess": "2026-10-18T17:37:28Z winpid=62488 pid=62488",
+ "afterSeats": false,
+ "jobs": [
+  {
+   "label": "codify-exec-watch",
+   "launchId": "cbe967c6-17de-4103-b021-5d34c2970422",
+   "recordPath": "C:\\Users\\dev\\proj\\.claude\\scratch\\codify_30b7e19d_exec\\codify-exec-watch.record.json",
+   "workdir": "C:\\Users\\dev\\proj"
+  },
+  {
+   "label": "codify-exec-floor",
+   "launchId": "f77c3b58-07a8-4af4-bf72-a6ca42f3fe3f",
+   "recordPath": "C:\\Users\\dev\\proj\\.claude\\scratch\\codify_30b7e19d_exec\\codify-exec-floor.record.json",
+   "workdir": "C:\\Users\\dev\\proj"
+  }
+ ]
+}

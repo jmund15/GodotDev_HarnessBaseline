@@ -110,6 +110,33 @@ Considerations score directions → Modifiers apply personality → sum scores �
 
 ---
 
+## Movement Steps — MoveAction & Goals
+
+### Why This Exists
+One BT action carries both halves of movement: a goal that owns WHERE the agent goes and WHEN the step ends, and the style terms that bend HOW it gets there.
+
+### Mental Model
+```
+MoveAction
+├── Goal (MovementGoal3D)       → destination + completion; registers as one steering term
+└── Style terms (considerations) → how it gets there
+```
+
+### Key Concepts
+
+- **Goal families**: `MovementGoal3D` → `TargetedMovementGoal3D` (typed target) → `SteeredGoal3D` (weighted scoring). Built-ins: `OrbitGoal3D`, `ApproachGoal3D`, `HoldRangeGoal3D`, `RetreatGoal3D`, `FleeGoal3D`.
+- **Typed targets** (`Jmodot/Implementation/AI/Navigation/Targets/`): `TrackedTarget3D` follows a BB memory key (default `PrimaryTargetMemory`); `CategoryTarget3D` picks by category through a `TargetPolicy3D` (`NearestMemberPolicy3D`, `AllMembersPolicy3D`). An empty `Target` slot follows `PrimaryTargetMemory`.
+- **Adapter-keyed runtime**: the action wraps the goal in a `GoalSteeringTerm` and resolves it through `AISteeringProcessor3D.GetOrCreateRuntime(adapter)`, so per-actor goal state never lives on the shared `Resource`.
+
+### Rules
+
+1. **A goal owns destination and completion; considerations are style only** - a consideration that decides when the step ends belongs in the goal.
+2. **A new goal subtype implements `Advance` and, when it steers, `ScoreSample`** - subclass `SteeredGoal3D` for a steering goal or `MovementGoal3D` for a step that only completes.
+3. **`ControlMode` other than `Full` claims the steering processor and releases it on exit** - `NavigationOnly` silences non-ambient style terms, so keep only ambient terms on that step.
+4. **An unusable band or a set target on a single-member goal warns in the Inspector and throws at `Init`** - `Weight` 0 keeps the goal registered but pulls nothing, which the host also warns about.
+
+---
+
 ## Utility AI - Composite Considerations
 
 ### Why This Exists

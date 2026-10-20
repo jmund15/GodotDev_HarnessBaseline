@@ -1,5 +1,5 @@
 ---
-description: Rebuild a session digest and choose brief, handoff, or offline full presentation.
+description: Recover session context for resume, handoff or inspection
 ---
 
 # Session Digest
@@ -12,9 +12,10 @@ Presentation modes are distinct:
 
 - **Default / `--handoff`** — a bounded resume packet for `/clear`, parallel-session pickup and compaction
   recovery. It keeps the task anchor, latest directive, priority corrections and answers, recent timeline,
-  friction, files, status evidence and retrieval IDs. The 16,384-byte cap includes the active task record.
-- **`--brief`** — a 2,048-byte identity card for locating or comparing sessions. It is not enough to resume
-  non-trivial work.
+  friction, files, status evidence and retrieval IDs. `.claude/tools/session_digest.py` owns the byte cap,
+  which includes the active task record.
+- **`--brief`** — a bounded identity card for locating or comparing sessions; `.claude/tools/session_digest.py`
+  owns the cap. It is not enough to resume non-trivial work.
 - **`--full`** — an offline Markdown projection written atomically to `logs/session_digest_<sid8>.full.md`.
   Stdout prints only a bounded receipt. It is human-readable evidence, not raw transcript/JSON parity and
   not model context.
@@ -24,7 +25,8 @@ Presentation modes are distinct:
 - **The prompt quotes a session's message** → write the quote to `.claude/scratch/digest_paste.txt` (quoted
   heredoc) and run `--match-file`: word overlap over assistant messages, prints `MATCH <id>=<score> ...`.
 - none and nothing quoted → `--previous`: the transcript written just before this one.
-- `<id-prefix>` → that session (`--session`). No match → run `--list 8` and pick by first prompt and time.
+- `<id-prefix>` → that session (`--session`). No match → `--list <N>` recent transcripts and pick by first
+  prompt and time; widen N until the target is identifiable.
 - `list [N]` → newest N transcripts (id, time, size, first prompt) and stop.
 
 Use `--select` or `--evidence-page` for exact machine evidence. `--tools` adds the tool census to the `--full`

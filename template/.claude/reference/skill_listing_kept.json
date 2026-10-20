@@ -1,0 +1,10 @@
+{
+  "_comment": "Skill-listing entries no file under .claude/ authors that we keep listed, with why each applies here. tools/skill_listing_review.py reports any other outside entry at session start.",
+  "kept": {
+    "semantic-search:search": "the harness's natural-language search (CLAUDE.coding.md §Semantic Search MCP)",
+    "workflow-authoring": "the Workflow tool's reference; load it before writing a workflow script",
+    "code-review": "/code-review ultra is the owner's multi-agent cloud review",
+    "loop": "/loop drives self-paced recurring work (ScheduleWakeup)",
+    "schedule": "cloud routines on a cron schedule"
+  }
+}

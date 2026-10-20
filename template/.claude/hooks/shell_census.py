@@ -13,20 +13,20 @@ decision (`auto-memory/gotcha_concurrent_session_hazards.md`). Each selected roo
 chain to the nearest `claude.exe`/`node.exe` ancestor and comparing that pid to this session's
 root: "own" when they match, "other" when both resolve and differ, "owner unknown" when either
 cannot be resolved (a missing table entry or the walk-limit). Unresolved ancestry never defaults
-to "own" or to "other" — see `session_root_pid`. This session's shells and unknown-owner shells
-render in full; other sessions' shells collapse to one summary line, because detail about a shell
-this session cannot kill or explain is not actionable, only costly.
+to "own" or to "other" — see `session_root_pid`. Only this session's shells render in full. Unknown-owner shells get a count;
+other sessions' shells and watchers emit nothing.
 
 EMISSION. Printing the same content every prompt after the model has already decided what to do
-about it burns context for no new information. A key (own/unknown pids with their STALE flag and
-owner label, plus the other-session count) is stored per session via `_hook_state`; the hook is silent when the key
+about it burns context for no new information. A key (own pids with their STALE flag, plus the
+unknown-owner count) is stored per session via `_hook_state`; the hook is silent when the key
 repeats, and re-arms once after a compaction (`transcript_backup.py` calls
 `_hook_state.clear_compaction_keys`), since a compacted session lost the earlier delivery from its
 context.
 
 Rule home: CLAUDE.core.md §Shell Discipline ("Watch background jobs through their completion/monitor
-contract"); sidecar stalls
-self-kill via lib/sidecar_common.sh `sc_run_watched` (-Z / SIDECAR_STALL_SEC).
+contract"); a sidecar silent for `SIDECAR_STALL_SEC` writes `<record>.stall` from
+lib/sidecar_common.sh `sc_run_watched` and keeps running, so a stall is a `STALLED` wake from the
+session watcher, never a kill.
 
 Fail-open: any error exits 0 with no output.
 
@@ -46,7 +46,9 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
 from _hook_state import (  # noqa: E402
     fire_once_since_compaction,
     read_json_salvage,
@@ -114,6 +116,51 @@ def build_table(procs):
     return table
 
 
+def _int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def child_map(procs):
+    """{ppid: [child pid]} from the snapshot; a row whose pid or ppid does not parse is skipped."""
+    children = {}
+    for p in procs:
+        parent, pid = _int(p.get("ppid")), _int(p.get("pid"))
+        if parent is not None and pid is not None:
+            children.setdefault(parent, []).append(pid)
+    return children
+
+
+def subtree_pids(children, pid):
+    """`pid` and every process under it, from `child_map`'s ppid links."""
+    seen, stack = set(), [pid]
+    while stack:
+        cur = stack.pop()
+        seen.add(cur)
+        stack.extend(child for child in children.get(cur, []) if child not in seen)
+    return seen
+
+
+def watcher_pids(session_id):
+    """This session's live watcher process ids, read from `sidecar_watchers`.
+
+    The liveness rule is the watcher's own (`watch_records._process_line_gone`): a PID that was
+    recycled after the stamp is not a live watcher."""
+    import watch_records
+    state = read_json_salvage(state_path(session_id)) if session_id else {}
+    pids = []
+    for watcher in state.get("sidecar_watchers") or []:
+        identity = watcher.get("process")
+        if watch_records._process_line_gone(identity) is not False:
+            continue
+        found = re.search(r"pid=(\d+)", str(identity))
+        if found:
+            pids.append(int(found.group(1)))
+    return pids
+
+
 def session_root_pid(table, pid, limit=_WALK_LIMIT):
     """Walk `table`'s ppid chain from `pid` to the nearest claude.exe/node.exe ancestor.
 
@@ -164,25 +211,31 @@ def resolve_own_root(session_id, procs, own_pid, fresh):
     return root
 
 
-def select(procs, own_pid=None, age_min=AGE_MIN, now=None, own_root=None):
+def select(procs, own_pid=None, age_min=AGE_MIN, now=None, own_root=None, watcher_pids=()):
     """Long-running roots: claude-spawned shells and sidecar launchers older than age_min whose
     parent is not itself selected (a `bash -c` chain shows 2-3 pids for one shell), each labeled
     with an "owner" of "own" / "other" / "unknown" relative to this session's Claude Code root:
-    `own_root` when the caller already resolved it, else the walk from `own_pid`."""
+    `own_root` when the caller already resolved it, else the walk from `own_pid`.
+
+    `watcher_pids` are this session's live watcher processes. A root whose own process tree contains
+    one is marked `watcher`: it is the wake route, not a shell to decide about or stop."""
     table = build_table(procs)
     if own_root is None and own_pid is not None:
         own_root = session_root_pid(table, own_pid)
+    watchers = set(watcher_pids)
 
+    children = child_map(procs)
     cand = {}
     for p in procs:
         cmd = p.get("cmd")
         if cmd is None:
             continue
-        if int(p.get("age") or 0) < age_min:
+        pid, age = _int(p.get("pid")), _int(p.get("age") or 0)
+        if pid is None or age is None or age < age_min:
             continue
         if "shell-snapshots" in cmd or "_sidecar.sh" in cmd:
-            cand[int(p["pid"])] = p
-    roots = [p for pid, p in cand.items() if int(p.get("ppid") or 0) not in cand]
+            cand[pid] = p
+    roots = [p for pid, p in cand.items() if (_int(p.get("ppid") or 0) or 0) not in cand]
     rows = []
     for p in sorted(roots, key=lambda x: -int(x.get("age") or 0)):
         pid = int(p["pid"])
@@ -194,7 +247,8 @@ def select(procs, own_pid=None, age_min=AGE_MIN, now=None, own_root=None):
             owner = "own"
         else:
             owner = "other"
-        row = {"pid": pid, "age": int(p.get("age") or 0), "tail": _tail(cmd), "stream": None, "owner": owner}
+        row = {"pid": pid, "age": int(p.get("age") or 0), "tail": _tail(cmd), "stream": None,
+               "owner": owner, "watcher": bool(watchers & subtree_pids(children, pid))}
         m = re.search(r"-P\s+\"?([^\s\"]+\.jsonl)", cmd)
         if m:
             path = m.group(1)
@@ -210,12 +264,10 @@ def select(procs, own_pid=None, age_min=AGE_MIN, now=None, own_root=None):
 
 
 def render(rows):
-    """Render this session's rows and owner-unknown rows in full; collapse other sessions' rows
-    to one line."""
-    full = [r for r in rows if r.get("owner") != "other"]
-    other = [r for r in rows if r.get("owner") == "other"]
-    if not full and not other:
-        return ""
+    """Own shells render in full; unknown owners get a count; peers and watchers stay silent."""
+    rest = [r for r in rows if not r.get("watcher")]
+    full = [r for r in rest if r.get("owner") == "own"]
+    unknown = [r for r in rest if r.get("owner") == "unknown"]
     lines = []
     if full:
         lines.append("[shells] %d long-running shell(s) — hung or legitimately long? decide now, "
@@ -228,23 +280,19 @@ def render(rows):
                 extra = " | -P stream idle %d min%s" % (r["stream"], " (STALE)" if r["stream"] >= STALE_STREAM_MIN else "")
             label = " (owner unknown)" if r.get("owner") == "unknown" else ""
             lines.append("  pid %d  age %dh%02dm%s%s | %s" % (r["pid"], r["age"] // 60, r["age"] % 60, label, extra, r["tail"]))
-    if other:
-        lines.append("[shells] %d long-running shell(s) belong to other Claude sessions — their owners "
-                      "decide; leave them running." % len(other))
+    if unknown:
+        lines.append("[shells] %d long-running shell(s), owner unknown; leave them running." % len(unknown))
     return "\n".join(lines)
 
 
 def emission_key(rows):
-    """Sorted [pid, stale, owner] for own/unknown rows, plus the other-session count. Comparing
-    this against the last stored key is what makes the hook silent once a prompt has already told
-    the model about an unchanged set of shells; the owner is in the key because it changes the
-    render ("(owner unknown)")."""
+    """Only facts present in the rendered output can re-arm it."""
     full = sorted(
-        [r["pid"], bool(r["stream"] is not None and r["stream"] >= STALE_STREAM_MIN), r.get("owner")]
-        for r in rows if r.get("owner") != "other"
+        [r["pid"], bool(r["stream"] is not None and r["stream"] >= STALE_STREAM_MIN)]
+        for r in rows if r.get("owner") == "own" and not r.get("watcher")
     )
-    other = sum(1 for r in rows if r.get("owner") == "other")
-    return {"rows": full, "other": other}
+    unknown = sum(1 for r in rows if r.get("owner") == "unknown" and not r.get("watcher"))
+    return {"rows": full, "unknown": unknown}
 
 
 def should_emit(session_id, key):
@@ -262,13 +310,15 @@ def should_emit(session_id, key):
     return emit if written else True
 
 
-def run(payload, procs, now=None, own_pid=None, own_root=None):
+def run(payload, procs, now=None, own_pid=None, own_root=None, watchers=None):
     """Core logic, injectable for tests: no live CIM query, no stdin. Returns the text to print,
     or "" when there is nothing to show or the dedupe key repeats."""
     session_id = (payload or {}).get("session_id") or "unknown"
     if own_pid is None:
         own_pid = os.getpid()
-    rows = select(procs, own_pid=own_pid, now=now, own_root=own_root)
+    if watchers is None:
+        watchers = watcher_pids(session_id)
+    rows = select(procs, own_pid=own_pid, now=now, own_root=own_root, watcher_pids=watchers)
     text = render(rows)
     if not text:
         return ""

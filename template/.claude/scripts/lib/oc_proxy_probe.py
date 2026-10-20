@@ -17,6 +17,11 @@ The generous default budget in callers (90s) is not defensive: LiteLLM is a Pyth
 server and its cold start measured 10-15s on this workstation, against ~0.2s for the
 Rust codex proxy. Waiting less just re-labels a slow start as a broken proxy.
 """
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".claude" / "tools"))
+from cli_usage import usage
 import json
 import socket
 import sys
@@ -55,7 +60,7 @@ def freeport():
 
 def main(argv):
     if len(argv) < 2:
-        print(__doc__, file=sys.stderr)
+        print(usage(__doc__), file=sys.stderr)
         return 2
     cmd = argv[1]
     if cmd == "freeport":

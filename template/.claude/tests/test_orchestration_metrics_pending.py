@@ -16,8 +16,11 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _om_session_fixture as fixture  # noqa: E402
 MODULE_PATH = os.path.join(HERE, "..", "tools", "orchestration_metrics.py")
 
 spec = importlib.util.spec_from_file_location("orchestration_metrics", MODULE_PATH)
@@ -25,11 +28,12 @@ om = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(om)
 
 
-def write_run(wdir, run_id, labels, workflow_name=None):
+def write_run(wdir, run_id, labels, workflow_name=None, args=None):
     with open(os.path.join(wdir, f"{run_id}.json"), "w", encoding="utf-8") as fh:
         json.dump({
             "runId": run_id,
             **({"workflowName": workflow_name} if workflow_name else {}),
+            **({"args": args} if args is not None else {}),
             "workflowProgress": [
                 {"type": "workflow_agent", "agentId": f"{run_id}-a{i}", "label": lab}
                 for i, lab in enumerate(labels)
@@ -51,6 +55,95 @@ def setup_session(root):
     write_run(wdir, "wf_2", ["review:x"])
     write_run(wdir, "wf_3", ["review:unique"])
     return session
+
+
+def norm(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def real_session_cases(cases):
+    """D1/D2 of the 2026-10-18 unratable-dispatch defect, on launches and records cut from session 30b7e19d."""
+    def fresh():
+        root = tempfile.mkdtemp(prefix="ompending_real_")
+        return root, fixture.materialize(root)
+
+    def side_rows(session, diagnostics=None):
+        return {r["label"]: r for r in om.collect_session_sidecar(session, diagnostics if diagnostics is not None else [])}
+
+    def set_pid(root, text):
+        with open(fixture.record_path(root, "exec_out", "exec-gatefix") + ".pid", "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def set_exit(root, code):
+        with open(fixture.record_path(root, "exec_out", "exec-gatefix") + ".exit", "w", encoding="utf-8") as fh:
+            fh.write(code)
+
+    root, session = fresh()
+    launches = {norm(p) for p in om._sidecar_record_launches(session)}
+    def launched(name, label):
+        return norm(fixture.record_path(root, name, label)) in launches
+    cases.append(("D1 `--out <dir> --detach 2>&1 | tail -4` (argparse abbreviation of --out-dir) attributes its records",
+                  launched("run2", "codify-4") and launched("run2", "codify-5")))
+    cases.append(("D1 a `for`/`python3 -c`/`;` compound ending in `--out <dir> --detach 2>&1 | tail -3` attributes its records",
+                  launched("exec", "codify-exec-watch") and launched("exec", "codify-exec-floor")))
+    cases.append(("D1 a bare `--out <dir>` launch with no redirect attributes its record",
+                  launched("exec_out", "exec-gatefix")))
+    rows = side_rows(session)
+    cases.append(("D1 every record of those launches is a session sidecar row",
+                  {"codify-4", "codify-5", "codify-exec-watch", "codify-exec-floor", "exec-gatefix"} <= set(rows)))
+
+    gate = rows.get("exec-gatefix") or {}
+    cases.append(("D2 a stopped run (empty record, no .exit, launcher pid gone) is a row",
+                  bool(gate)))
+    cases.append(("D2 the bodyless row keys on the launch id and invents no tokens, cost or model",
+                  gate.get("run") == "sidecar-" + fixture.GATEFIX_LAUNCH and gate.get("source") == "sidecar"
+                  and gate.get("inp") is None and gate.get("out") is None and gate.get("cost_usd") is None
+                  and gate.get("model") == "?" and gate.get("state") == "no-record"
+                  and norm(gate.get("record_path") or "") == norm(fixture.record_path(root, "exec_out", "exec-gatefix"))))
+    detail = om.pending_detail(session, diagnostics=[])
+    cases.append(("D2 the stopped run and the attributed records are pending",
+                  ("sidecar-" + fixture.GATEFIX_LAUNCH, "exec-gatefix") in detail["remaining"]
+                  and {"codify-4", "codify-exec-watch"} <= {lab for _, lab in detail["remaining"]}))
+
+    diagnostics = []
+    side_rows(session, diagnostics)
+    cases.append(("D2 a stopped run raises no malformed-record diagnostic", not any(
+        d.get("status") == "malformed" for d in diagnostics)))
+
+    set_exit(root, "0")
+    diagnostics = []
+    cases.append(("D2 an empty record after a clean .exit is also a bodyless row, not malformed",
+                  "exec-gatefix" in side_rows(session, diagnostics)
+                  and not any(d.get("status") == "malformed" for d in diagnostics)))
+
+    set_exit(root, "8")
+    diagnostics = []
+    cases.append(("D2 an empty record after a nonzero .exit stays a failed launch, not a dispatch",
+                  "exec-gatefix" not in side_rows(session, diagnostics)
+                  and any(d.get("status") == "launch-failed" for d in diagnostics)))
+    os.remove(fixture.record_path(root, "exec_out", "exec-gatefix") + ".exit")
+
+    key = "winpid=" if os.name == "nt" else "pid="
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    set_pid(root, "%s launch=%s %s%d pid=%d\n" % (stamp, fixture.GATEFIX_LAUNCH, "winpid=%d " % os.getpid()
+                                                  if key == "winpid=" else "", os.getpid(), os.getpid()))
+    cases.append(("D2 a run whose launcher pid is alive is still in progress, not a row",
+                  "exec-gatefix" not in side_rows(session)))
+
+    set_pid(root, "2026-10-18T12:00:00Z launch=%s winpid=%d pid=%d\n" % (fixture.GATEFIX_LAUNCH, 62696, 1313380))
+    cases.append(("D2 a pid file stamped before this session's launch is another launch's, not a row",
+                  "exec-gatefix" not in side_rows(session)))
+
+    root, session = fresh()
+    inventory = next(os.path.join(fixture.out_dir(root, "exec_out"), n)
+                     for n in os.listdir(fixture.out_dir(root, "exec_out")) if n.endswith(".inventory.json"))
+    with open(inventory, encoding="utf-8") as fh:
+        data = json.load(fh)
+    data["parentSessionId"] = "another-session"
+    with open(inventory, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    cases.append(("D2 a bodyless record listed only by another session's inventory is not this session's",
+                  "exec-gatefix" not in side_rows(session)))
 
 
 def main():
@@ -101,7 +194,7 @@ def main():
         archived_rows.extend(dict(row) for row in rows)
         return rows, 0, []
 
-    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar", "--verdicts",
+    sys.argv = [MODULE_PATH, "--session", session, "--verdicts",
                 json.dumps({"wf_1:review:x": ["clean", "high"], "review:x": "defects"})]
     om.collect = lambda *_: [dict(row) for row in archive_rows]
     om.collect_session_sidecar = lambda *_: []
@@ -138,7 +231,7 @@ def main():
         {"run": "wf_1", "label": "review:x", "effort": "low", "state": "completed"},
         {"run": "wf_3", "label": "review:unique", "effort": "low", "state": "completed"},
     ]
-    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    sys.argv = [MODULE_PATH, "--session", session, "--archive"]
     om.collect = lambda *_: [dict(row) for row in cleanup_rows]
     om.collect_session_sidecar = lambda *_: []
     om.load_record_ledger = lambda *_: (set(), set())
@@ -159,9 +252,31 @@ def main():
                       "review:x": "rework", "foreign:label": "clean",
                   }))
 
+    # A bodyless sidecar row exists only for a run that ended (reaped, killed, or no output),
+    # so it is terminal: it must not block the archive forever.
+    write_verdicts(om.PENDING_VERDICTS, {"sidecar-x:exec-y": "clean"})
+    sys.argv = [MODULE_PATH, "--session", session, "--archive"]
+    om.collect = lambda *_: []
+    om.collect_session_sidecar = lambda *_: [{"run": "sidecar-x", "label": "exec-y", "effort": "high",
+                                             "state": "no-record", "source": "sidecar"}]
+    om.load_record_ledger = lambda *_: (set(), set())
+    om.report = lambda *_: None
+    om._archive_rows_atomic = lambda rows: (rows, 0, [])
+    try:
+        bodyless_rc = om.main()
+    finally:
+        sys.argv = real_argv
+        om.collect = real_collect
+        om.collect_session_sidecar = real_collect_sidecar
+        om.load_record_ledger = real_ledger
+        om.report = real_report
+        om._archive_rows_atomic = real_archive
+    cases.append(("an ended sidecar run with an empty record is terminal, so the archive takes it",
+                  bodyless_rc == 0))
+
     # A concurrent correction after the snapshot is not the value that was archived.
     write_verdicts(om.PENDING_VERDICTS, {"wf_1:review:x": "clean"})
-    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    sys.argv = [MODULE_PATH, "--session", session, "--archive"]
     om.collect = lambda *_: [{"run": "wf_1", "label": "review:x", "effort": "low",
                                    "state": "completed"}]
     om.collect_session_sidecar = lambda *_: []
@@ -207,7 +322,7 @@ def main():
     # remain pending rather than becoming permanent calibration evidence.
     write_verdicts(om.PENDING_VERDICTS, {"wf_running:review:running": "clean"})
     archived_rows.clear()
-    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    sys.argv = [MODULE_PATH, "--session", session, "--archive"]
     om.collect = lambda *_: [{
         "run": "wf_running", "label": "review:running", "effort": "low",
         "state": "running", "cost": 10, "turns": 1,
@@ -248,7 +363,7 @@ def main():
     write_run(os.path.join(session, "workflows"), "wf_legacy", ["review:legacy"])
     write_verdicts(om.PENDING_VERDICTS, {})
     write_verdicts(om.LEGACY_PENDING_VERDICTS, {"wf_legacy:review:legacy": "clean"})
-    sys.argv = [MODULE_PATH, "--session", session, "--no-sidecar"]
+    sys.argv = [MODULE_PATH, "--session", session, "--archive"]
     om.collect = lambda *_: [{
         "run": "wf_legacy", "label": "review:legacy", "effort": "low", "state": "completed",
     }]
@@ -342,6 +457,7 @@ def main():
         handle.write("{}\n")
     real_expand = os.path.expanduser
     old_session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    old_config_dir = os.environ.pop("CLAUDE_CONFIG_DIR", None)  # a real second-account dir would override the planted home
     os.path.expanduser = lambda p: p.replace("~", home, 1)
     try:
         cases.append(("explicit id with no workflows dir -> None, not the peer's dir",
@@ -362,6 +478,8 @@ def main():
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         else:
             os.environ["CLAUDE_CODE_SESSION_ID"] = old_session_id
+        if old_config_dir is not None:
+            os.environ["CLAUDE_CONFIG_DIR"] = old_config_dir
         os.path.expanduser = real_expand
 
     # --- a benchmark instrument's internal stages are not rating debt (D29, 2026-09-09) ---
@@ -377,6 +495,16 @@ def main():
     cases.append(("key-reachability judges are not pending", "wf_kr" not in runs_pending))
     cases.append(("a delivered-work workflow still is", ("wf_rf", "review:lens") in items))
     cases.append(("a run with no workflowName still counts", ("wf_nn", "review:noname") in items))
+
+    # --- a declared probe proves one behavior and is not rating debt; an A/B arm is real comparison data ---
+    write_run(wdir, "wf_pr", ["probe-old-1"], workflow_name="dispatch",
+              args={"measurement": "text probe: old vs new rule", "probe": True})
+    write_run(wdir, "wf_ab", ["ab-seat"], workflow_name="review-fanout",
+              args={"measurement": "pin A/B: haiku:max vs sonnet:xhigh"})
+    items = om.pending_labels(session)
+    runs_pending = {rid for rid, _ in items}
+    cases.append(("a run declaring args.probe is not pending", "wf_pr" not in runs_pending))
+    cases.append(("an A/B arm that declares only measurement still is", ("wf_ab", "ab-seat") in items))
 
     # --- the legacy-merge notice never lands on stdout (a per-prompt hook's model channel) ---
     import contextlib
@@ -410,6 +538,119 @@ def main():
                   == ("wf_mine:review:lens", ["clean", "xhigh"])))
     cases.append(("an ambiguous bare label selects nothing",
                   om._select_verdict(row, {"review:lens": "clean"}, {"review:lens": 2}) == (None, None)))
+
+    # --- this session's finished, unrated sidecar dispatches are rating debt ----------------------
+    import contextlib
+    import io
+    sc_root = tempfile.mkdtemp(prefix="ommsidecar_")
+    sc_session = os.path.join(sc_root, "session")
+    os.makedirs(os.path.join(sc_session, "workflows"))
+    write_run(os.path.join(sc_session, "workflows"), "wf_n", ["native:one"])
+    sc_records = {name: os.path.join(sc_root, name + ".record.json")
+                  for name in ("done", "rated", "archived", "live", "failed")}
+    for name in ("done", "rated", "archived"):
+        with open(sc_records[name], "w", encoding="utf-8") as handle:
+            json.dump({"timestamp": "2026-09-10T10:01:00Z", "parentSessionId": "session",
+                       "label": name, "transport": "opencode", "costModel": "marginal-usd",
+                       "servedModel": "muse-spark", "requestedModel": "muse", "effort": "low",
+                       "inputTokens": 1, "outputTokens": 1, "numTurns": 1, "durationMs": 1,
+                       "costUSD": 0.0, "exitCode": 0}, handle)
+    for name in ("live", "failed"):
+        open(sc_records[name], "w").close()
+    with open(sc_records["failed"] + ".exit", "w", encoding="utf-8") as handle:
+        handle.write("8")
+    real_launches = om._sidecar_record_launches
+    om._sidecar_record_launches = lambda _s: {path: None for path in sc_records.values()}
+    real_ledger = om.load_record_ledger
+    write_verdicts(om.PENDING_VERDICTS, {})
+    try:
+        pairs = om.pending_labels(sc_session)
+        sc_labels = {lab for _, lab in pairs}
+        cases.append(("an unrated finished sidecar record is pending",
+                      {"done", "rated", "archived"} <= sc_labels and "native:one" in sc_labels))
+        cases.append(("an in-progress or launch-failed sidecar record is not debt",
+                      "live" not in sc_labels and "failed" not in sc_labels))
+        done_run = next((rid for rid, lab in pairs if lab == "done"), "sidecar-missing")
+        cases.append(("a sidecar pair is keyed as --rate writes it (sidecar-...)",
+                      done_run.startswith("sidecar-")))
+        write_verdicts(om.PENDING_VERDICTS, {f"{done_run}:done": "clean"})
+        cases.append(("a sidecar pair rated under its exact run:label key is not pending",
+                      "done" not in {lab for _, lab in om.pending_labels(sc_session)}))
+        write_verdicts(om.PENDING_VERDICTS, {})
+        archived_run = next((rid for rid, lab in pairs if lab == "archived"), "sidecar-missing")
+        om.load_record_ledger = lambda *_: ({(archived_run, "archived")}, set())
+        cases.append(("an archived sidecar pair is not pending",
+                      "archived" not in {lab for _, lab in om.pending_labels(sc_session)}))
+        om.load_record_ledger = lambda *_: (set(), {archived_run})
+        cases.append(("an ignored sidecar run is not pending",
+                      "archived" not in {lab for _, lab in om.pending_labels(sc_session)}))
+        om.load_record_ledger = real_ledger
+        cases.append(("pending_count includes the sidecar debt",
+                      om.pending_count(sc_session) == len(om.pending_labels(sc_session)) == 4))
+
+        # The compaction hook's count needs each record's run and label, never its price: repricing
+        # reads the record's transcript, which cost 31 s over 170 records on a long drive.
+        repriced = []
+        real_reprice = om.model_registry.reprice_record
+        om.model_registry.reprice_record = lambda rec, *a, **k: (repriced.append(1), real_reprice(rec, *a, **k))[1]
+        try:
+            counted = om.pending_count(sc_session)
+            count_reprices = len(repriced)
+            del repriced[:]
+            priced_rows = om.pending_detail(sc_session)["sidecar"]
+            detail_reprices = len(repriced)
+        finally:
+            om.model_registry.reprice_record = real_reprice
+        cases.append(("pending_count reads sidecar records without repricing them",
+                      counted == 4 and count_reprices == 0))
+        cases.append(("pending_detail still reprices the sidecar rows its caller reports",
+                      len(priced_rows) == 3 and detail_reprices == 3))
+
+        def run_pending(*extra):
+            real_argv_local, out = sys.argv, io.StringIO()
+            sys.argv = [MODULE_PATH, "--session", sc_session, "--pending", *extra]
+            try:
+                with contextlib.redirect_stdout(out):
+                    om.main()
+            finally:
+                sys.argv = real_argv_local
+            return out.getvalue()
+        shown = run_pending()
+        cases.append(("--pending lists the sidecar pair and counts it",
+                      "unrated dispatches: 4" in shown and f"{done_run}:done" in shown))
+        cases.append(("--pending reports the launch failure beside the debt",
+                      "launch-failed" in shown))
+        with contextlib.redirect_stdout(io.StringIO()):
+            om.accept_rest(sc_session)
+        cases.append(("--accept-rest never accepts a sidecar pair unseen",
+                      not any(k.startswith("sidecar-") for k in om.load_pending_verdicts())))
+
+        def raising_collect(*_):
+            raise RuntimeError("sidecar read failed")
+        real_collect_sc = om.collect_session_sidecar
+        om.collect_session_sidecar = raising_collect
+        try:
+            failed_detail = om.pending_detail(sc_session, diagnostics=[])
+            cases.append(("a sidecar read that raises keeps the native rows and names its error",
+                          [lab for _, lab in failed_detail["remaining"]] == ["native:one"]
+                          and "sidecar read failed" in str(failed_detail.get("sidecar_error"))))
+            cases.append(("a sidecar read that raises makes pending_count unknown (-1), never a clean count",
+                          om.pending_count(sc_session) == -1))
+            failed_shown = run_pending()
+            cases.append(("--pending prints the sidecar census failure and an unknown count",
+                          "sidecar read failed" in failed_shown and "unrated dispatches: unknown" in failed_shown))
+        finally:
+            om.collect_session_sidecar = real_collect_sc
+
+        sidecar_only = os.path.join(sc_root, "bare", "session")
+        os.makedirs(sidecar_only)
+        cases.append(("a session with only sidecar dispatches still counts them",
+                      om.pending_count(sidecar_only) == 3))
+    finally:
+        om._sidecar_record_launches = real_launches
+        om.load_record_ledger = real_ledger
+
+    real_session_cases(cases)
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

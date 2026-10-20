@@ -1,5 +1,5 @@
 ---
-description: Ingest a conversation transcript into a dated Meetings digest of deduped, routed actionables plus a rolling collaboration profile.
+description: Ingest a conversation transcript or a YouTube video into a dated digest of deduped, routed actionables plus a rolling collaboration profile.
 disable-model-invocation: true
 ---
 
@@ -7,13 +7,13 @@ disable-model-invocation: true
 
 Turns a collaborator conversation transcript into a durable, deduped ledger of routed actionables, and folds the same transcript into a rolling per-participant collaboration profile.
 
-**Vault convention:** one folder per conversation at `<vault>/Claude/Meetings/YYYY-MM-DD-<slug>/`, holding `transcript.md` (verbatim) and `digest.md` (the processed ledger). The digest corpus — never the raw transcripts — is what future ingests dedup against.
+**Vault convention:** one folder per conversation at `<vault>/Claude/Meetings/YYYY-MM-DD-<slug>/`, holding `transcript.md` (verbatim) and `digest.md` (the processed ledger). A YouTube video gets `<vault>/Claude/References/YYYY-MM-DD-<slug>/` holding `digest.md` only; its transcript stays in the local cache `tools/yt_transcript.py` writes. The digest corpus — never the raw transcripts — is what future ingests dedup against.
 
 **One rolling doc** at `<vault>/Claude/Meta/Collaboration-Profile.md` accumulates across ingests: tendencies, communication, strengths, watch-fors, and per-person suggestions, each line carrying the number of distinct conversations behind it.
 
 ## When to invoke
 
-A conversation happened (voice note, call, live session) and its decisions, ideas, and action items need to land somewhere durable and routed. Explicit invocation only.
+A conversation happened (voice note, call, live session) and its decisions, ideas, and action items need to land somewhere durable and routed. Or an outside video holds practices or ideas worth comparing against the project's own. Explicit invocation only.
 
 **Not this command:** already-converged design (the project's design or feature drive), a single deferral (`/worklog`), or audio with no transcript — transcribe first, this command takes text.
 
@@ -21,7 +21,7 @@ A conversation happened (voice note, call, live session) and its decisions, idea
 
 ## Arguments
 
-`/ingest_conversation <transcript-path> [slug]` — path may point anywhere on disk. No argument → ask for the path and nothing else.
+`/ingest_conversation <transcript-path | youtube-url> [slug]` — a path may point anywhere on disk; a YouTube URL (`youtu.be`, `youtube.com/watch`, `/shorts/`, `/live/`) makes this a **video source**. No argument → ask for the path or URL and nothing else. Any other URL → ask for a transcript path or a YouTube link.
 
 ---
 
@@ -30,7 +30,7 @@ A conversation happened (voice note, call, live session) and its decisions, idea
 Seven steps in order. Read each step's reference file at the step that runs it — none of it is needed before then.
 
 1. **Step 1 — Intake.** Create the dated Meetings folder and copy the transcript in byte-verbatim; speaker labels decide whether the collaboration read runs at all — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 1 — Intake.
-2. **Step 2 — Extract.** ONE `.claude/workflows/dispatch.js` fan-out carrying two jobs, both `agentType: "general-purpose"` at the default fan-out tier with `medium` effort (converged spec, evidence extraction — neither job renders judgment); record both pins in the run report. Job specs, the args-transport rule and the STT rule — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 2 — Extract.
+2. **Step 2 — Extract.** ONE fan-out through `/delegate` carrying two jobs, both on a fanout-tier row whose ladder `±` covers tight-spec extraction, at its cell's rung for it (converged spec, evidence extraction — neither job renders judgment); record both pins in the run report. Job specs, the args-transport rule and the STT rule — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 2 — Extract.
 3. **Step 3 — Dedup.** The session gathers the corpus and pushes it into the dispatch prompt; the delegate never discovers by search — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 3 — Dedup.
 4. **Step 3.5 — Premise check** (session model). Verify the conversation's factual claims about the codebase before classification turns them into staged work — [`reference/ingest_conversation_verify.md`](reference/ingest_conversation_verify.md) §Step 3.5 — Premise check.
 5. **Step 3.7 — Outside read** (session + one blind dispatch). Solution-stripped briefs, one blind job, compared against what the conversation concluded — [`reference/ingest_conversation_verify.md`](reference/ingest_conversation_verify.md) §Step 3.7 — Outside read.

@@ -126,8 +126,8 @@ for env_tier, expected in [("condensed", "condensed"), ("none", "minimal"), ("mi
     if env_tier != "none":
         check(f"[delegate TIER={env_tier or '<unset>'}] guard header names the {expected} tier",
               f"{expected} tier; home:" in out, out[-400:])
-    check(f"[delegate TIER={env_tier or '<unset>'}] no driver notes (notes follow the model, not the tier)",
-          "Driver notes" not in out and "Recognizing a name" not in out)
+    check(f"[delegate TIER={env_tier or '<unset>'}] driver notes follow the child model, not the tier",
+          "Recognizing a name" in out)
 
 print("-" * 78)
 print(f"{'FAILED: ' + ', '.join(failures) if failures else 'all checks passed'}")

@@ -19,14 +19,14 @@ def _project_owned(relpath):
 ORCHESTRATION_CONTRACTS = {
     'independent coverage': r'(?:Keep|Retain) required (?:coverage|lenses) and independent review',
     'evidence retention': r'Preserve (?:full evidence|original findings and provenance)',
-    'source verification': r'verify decisive claims and original-source coverage',
+    'source verification': r'verify (?:its )?decisive claims and original-source coverage',
     'conflict handling': r'Reconcile conflicting evidence directly',
     'grounded handoffs': r'Check inherited claims against source and local inputs',
     'known values retained': r'preserve known values even when an inference fails',
     'votes are not proof': r'not (?:a guarantee from vote count|vote counts)',
     'resume requirements': r'task state: requirements/exclusions, decisions, active jobs, accepted artifacts, verification',
     'resume freshness': r'After resume, recheck required inputs and decisions before trusting receipts',
-    'actionable coordination': r'Message another session or agent only when it changes their next action',
+    'actionable coordination': r'Message a dispatched agent only when it changes its next action',
     'no routine resumptions': r'A message may resume a finished agent; do not reopen a completed audit',
 }
 
@@ -44,6 +44,10 @@ class PolicyContracts(unittest.TestCase):
         return text + ''.join('\n' + ((ROOT / path).parent / name).read_text(encoding='utf-8')
                               for name in imports if ((ROOT / path).parent / name).is_file())
 
+    def orchestration_doctrine(self):
+        return '\n'.join(self.read('skills/orchestration/' + part)
+                         for part in ('SKILL.md', 'reference/checkpointing.md', 'reference/model_evidence.md'))
+
     def test_metrics_candidates_are_advisory_in_all_consumers(self):
         for path in ('skills/orchestration/SKILL.md', 'commands/orchestration_metrics.md', 'commands/eval_dashboard.md'):
             with self.subTest(path=path):
@@ -55,21 +59,24 @@ class PolicyContracts(unittest.TestCase):
                 self.assertRegex(text.lower(), 'complete.task|parent')
 
     def test_read_only_integration_and_compaction_are_not_free(self):
-        text = self.read('skills/orchestration/SKILL.md')
+        text = self.orchestration_doctrine()
         self.assertNotIn('Read-only lanes integrate for free', text)
         self.assertNotIn('Compaction is survivable, not degrading', text)
         self.assertEqual(missing_orchestration_contracts(text), [])
         self.assertRegex(text.lower(), 'frozen')
 
     def test_handoff_contract_checks_detect_each_removed_obligation(self):
-        text = self.read('skills/orchestration/SKILL.md')
+        text = self.orchestration_doctrine()
         for name, pattern in ORCHESTRATION_CONTRACTS.items():
             with self.subTest(contract=name):
                 mutant = re.sub(pattern, '', text)
                 self.assertIn(name, missing_orchestration_contracts(mutant))
 
     def test_instruction_loading_has_no_free_context_claim(self):
-        text = self.read('skills/instruction_quality/SKILL.md')
+        text = '\n'.join(self.read('skills/instruction_quality/' + part) for part in (
+            'SKILL.md', 'reference/skills_and_commands.md', 'reference/orchestration.md',
+            'reference/hooks.md', 'reference/claims_and_wording.md')
+            if (ROOT / 'skills/instruction_quality' / part).is_file())
         self.assertNotIn('Conditionally-loaded files: size is free', text)
         self.assertNotIn('the count may not drop', text)
         self.assertRegex(text.lower(), 'trigger')
@@ -123,22 +130,7 @@ class PolicyContracts(unittest.TestCase):
         self.assertIn('--validate-close', overnight)
         self.assertIn('Resume: /session_digest', overnight)
         self.assertNotIn('push to main', overnight.split('## Step 2', 1)[1].split('## Step 3', 1)[0].lower())
-        self.assertRegex(audit, r'>20 `?\.cs`?')
-        if not all(_project_owned(path) for path in (
-                'commands/session_end.md', 'commands/agents/review_agents.md', 'commands/harness_prune.md')):
-            return
-        session_end = self.read('commands/session_end.md')
-        reviews = self.read('commands/agents/review_agents.md')
-        prune = self.read('commands/harness_prune.md')
-        self.assertIn('Run `/orchestration_metrics` unconditionally', session_end)
-        self.assertIn('harness_tests.py --staged', session_end)
-        self.assertIn('armed `/overnight`', reviews)
-        self.assertIn(':(top,glob).claude/plans/*.md', prune)
-        for label in ('STALE', 'BLOCKED', 'CURRENT', 'FUTURE'):
-            self.assertIn(label, prune)
-        self.assertIn('harness_prune_<sid8>.md', prune)
-        self.assertIn('### Plans', prune)
-        self.assertIn('### Worktrees', prune)
+        self.assertIn('Batch the complete audit when full context exceeds the bound', audit)
 
     def test_self_evaluation_uses_the_bounded_ledger(self):
         command = self.read('commands/self_evaluate.md')
@@ -160,24 +152,6 @@ class PolicyContracts(unittest.TestCase):
             syncs = self.read('commands/agents/pr_branch_sync.md')
             self.assertIn('self_evaluate_archive.jsonl', syncs)
             self.assertIn('read-only legacy snapshot', syncs)
-
-    def test_closeout_keeps_full_phase_set_but_defers_loading(self):
-        if not _project_owned('commands/session_end.md'):
-            self.skipTest('commands/session_end.md is not tracked as a local fork here; '
-                           'this checkout has no {{PROJECT_NAME}}-specific phase set to police')
-        text = self.read('commands/session_end.md')
-        for phase in ('0', '1', '2', '3', '3.5', '3.6', '4', '5', '5.4', '5.5', '5.6', '6', '7', '8'):
-            self.assertIn('## Phase ' + phase + ':', text)
-        self.assertIn('/harness_prune', text)
-        self.assertIn('--stage precommit', text)
-        self.assertIn('--stage final', text)
-        self.assertIn('Run `/orchestration_metrics` unconditionally', text)
-        self.assertNotIn('every user prompt verbatim, every friction row', text)
-        self.assertIn('every user requirement and friction row', text)
-        self.assertNotIn('For each plan file in `.claude/plans/`', text)
-        self.assertIn('session_digest.py --prompt-tail session_end', text)
-        self.assertIn('session_digest.py --list 20', text)
-        self.assertNotIn('session_digest.py --session <exact-session-id>', text)
 
 
 if __name__ == '__main__':

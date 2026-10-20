@@ -43,7 +43,8 @@ function extractInline(jsPath) {
   const eq = block.indexOf('=')
   if (eq < 0) throw new Error('SSOT block in ' + jsPath + ' has no `const NAME = {...}` assignment')
   const expr = block.slice(eq + 1).trim().replace(/;\s*$/, '')
-  return new Function('return (' + expr + ')')()
+  const evidence = src.match(/\/\/ EVIDENCE-SSOT-BEGIN([\s\S]*?)\/\/ EVIDENCE-SSOT-END/)
+  return new Function((evidence ? evidence[1] : '') + '\nreturn (' + expr + ')')()
 }
 
 function canon(v) {
@@ -99,4 +100,27 @@ for (const [js, json] of pairs) {
     failed = failed || 1
   }
 }
+const checkedEngines = ['dispatch', 'dispatch_chains', 'explore_fanout', 'review_fanout', 'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
+const canonical = fs.readFileSync(path.join(ROOT, '.claude/workflows/dispatch.js'), 'utf8')
+for (const marker of ['CLOSE-CHECK', 'EVIDENCE-SSOT']) {
+  const pattern = new RegExp('// ' + marker + '-BEGIN[\\s\\S]*?// ' + marker + '-END')
+  const expected = canonical.match(pattern)
+  for (const name of checkedEngines) {
+    const source = fs.readFileSync(path.join(ROOT, '.claude/workflows', name + '.js'), 'utf8')
+    const actual = source.match(pattern)
+    if (!expected || !actual || actual[0] !== expected[0]) {
+      console.error('DIVERGED ' + marker + ': ' + name)
+      failed = failed || 1
+    }
+  }
+  if (marker === 'EVIDENCE-SSOT' && expected) {
+    const twin = new Function(expected[0] + '\nreturn {schema: EVIDENCE_SCHEMA, rules: EVIDENCE_RULES}')()
+    const file = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/schemas/evidence.json'), 'utf8'))
+    if (JSON.stringify(canon(twin.schema)) !== JSON.stringify(canon(file)) || twin.rules !== file.description) {
+      console.error('DIVERGED evidence schema/rules owner')
+      failed = failed || 1
+    }
+  }
+}
+if (!failed) console.log('OK   CLOSE-CHECK and EVIDENCE-SSOT parity (7 engines)')
 process.exit(failed)

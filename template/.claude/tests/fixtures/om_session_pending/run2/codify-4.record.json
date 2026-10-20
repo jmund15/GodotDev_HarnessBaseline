@@ -1,0 +1,20 @@
+{
+ "launchId": "befbe3e5-f6cd-43ac-aa14-68df2eae577f",
+ "parentSessionId": "30b7e19d-8945-4de9-ab38-4b02699ef340",
+ "label": "codify-4",
+ "transport": "anthropic-secondary",
+ "costModel": "plan-quota",
+ "servedModel": "claude-opus-5-5",
+ "requestedModel": "claude-opus-5-5",
+ "effort": "high",
+ "pinBasis": "cell,judged",
+ "inputTokens": 86,
+ "outputTokens": 33306,
+ "cacheReadTokens": 4071715,
+ "cacheWriteTokens": 144991,
+ "numTurns": 48,
+ "durationMs": 567184,
+ "costUSD": 2.205762,
+ "exitCode": 0,
+ "timestamp": "2026-10-18T17:29:58Z"
+}

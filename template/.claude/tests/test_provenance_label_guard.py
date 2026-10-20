@@ -44,8 +44,8 @@ check("a Write of a command carrying a label is blocked",
       "block" in (guard.process({"tool_name": "Write", "tool_input": {
           "file_path": os.path.join(ROOT, ".claude", "commands", "c.md"), "content": LABEL}}) or {}))
 msg = (guard.process(edit(".claude/skills/x/SKILL.md", LABEL)) or {}).get("block", "")
-check("the block names the fix (state the rule, provenance to commit or memory)",
-      "commit" in msg and "memory" in msg, msg)
+check("the block cites instruction_quality and names the provenance home",
+      "instruction_quality §5" in msg and "commit message or an auto-memory file" in msg, msg)
 
 for rel in (".claude/skills/failure_archaeology/SKILL.md", ".claude/auto-memory/f.md",
             ".claude/plans/p.md", ".claude/reference/model_ladder_evidence.md", "Docs/notes.md"):
@@ -61,11 +61,18 @@ check("a label outside the quotes on the same line is still blocked",
       blocked(edit(".claude/skills/x/SKILL.md", 'Use "x" here (owner decision).')))
 check("a plain skill line passes", not blocked(edit(".claude/skills/x/SKILL.md", "Dispatch it without asking.")))
 
+check("net-neutral replacement introduces provenance", blocked(edit(
+    ".claude/rules/r.md", "Use Y (user decision).", old="Use X (owner decision).")))
+check("same-label replacement introduces a new provenance span", blocked(edit(
+    ".claude/rules/r.md", "Use Y (owner decision).", old="Use X (owner decision).")))
+check("label removal passes", not blocked(edit(".claude/rules/r.md", "Use X.", old=LABEL)))
+
 dispatcher = os.path.join(HOOKS, "pre_edit_dispatch.py")
 r = subprocess.run([sys.executable, dispatcher], input=json.dumps(edit(".claude/rules/r.md", BY)),
                    capture_output=True, text=True, timeout=60)
-check("the live dispatcher blocks the label (exit 2)", r.returncode == 2 and "provenance" in r.stderr,
-      r.stderr or r.stdout)
+check("the live dispatcher blocks with the cite and provenance next step (exit 2)",
+      r.returncode == 2 and "instruction_quality §5" in r.stderr
+      and "commit message or an auto-memory file" in r.stderr, r.stderr or r.stdout)
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

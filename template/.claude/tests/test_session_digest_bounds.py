@@ -390,6 +390,24 @@ class CommandArgumentRecoveryTests(unittest.TestCase):
                        'the goal text is preserved verbatim')
         self.assertNotIn('Canonical route for ordinary ad hoc delegation', recovered[0]['content'])
 
+    def test_a_model_issued_skill_call_is_not_an_owner_prompt(self):
+        # Keys cut from a live transcript (session 30b7e19d, line 12244): the body row a model `Skill`
+        # call leaves carries `sourceToolUseID`; the body row of a command the owner typed has none.
+        model_row = _row(isMeta=True, turnCompanion=True, sourceToolUseID='toolu_01Uue2Z3C1Zit7QQMgZxMjSL',
+                         message={'role': 'user', 'content': [{'type': 'text', 'text': OVERNIGHT_BODY}]})
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / 'issuers.jsonl'
+        path.write_text('\n'.join([model_row, _text_row(OVERNIGHT_BODY)]) + '\n', encoding='utf-8')
+        recovered = digest.recover_meta_command_prompts(path)
+        self.assertEqual([r.get('issuer') for r in recovered], ['model', 'owner'])
+        self.assertEqual([digest.is_substantive_owner_prompt(r) for r in recovered], [False, True],
+                         'the shared owner policy (anchor, ledger, facts) keeps only the typed one')
+        self.assertEqual(digest._mode_row_attribution(recovered[1]), 'owner',
+                         'a typed command argument is provably the owner\'s')
+        kept = [m for m in digest.owner_prompts(path) if digest.is_substantive_owner_prompt(m)]
+        self.assertEqual(len(kept), 1, kept)
+
     def test_a_body_with_no_arguments_stays_excluded(self):
         path = self._write_fixture()
         recovered = digest.recover_meta_command_prompts(path)

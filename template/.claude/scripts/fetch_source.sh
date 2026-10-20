@@ -5,7 +5,8 @@
 # against it using a small fast model"; read_web summarizes and silently truncates (measured:
 # 101,558 bytes -> 71,478 extracted). Neither can be audited, because the quote you would check is
 # produced by the same layer that could have mangled it. This lands bytes, so a claimed quote
-# becomes checkable (`.claude/tools/verify_claims.py`).
+# becomes checkable (`.claude/tools/verify_claims.py`; the evidence contract's `{url, quote, artifact}`
+# item, UNCHECKED without the artifact).
 #
 # Costs zero plan quota and zero sidecar dollars. Prefer it whenever a claim will quote the source.
 #
@@ -14,7 +15,7 @@
 #
 # Emits a TSV manifest to stdout: status<TAB>http<TAB>bytes<TAB>artifact<TAB>url
 # `artifact` is `-` for any non-OK row. The URL->artifact mapping is what lets verify_claims.py
-# join a claim's cited URL to the local bytes; without it the verifier cannot resolve its own input.
+# join a claim's cited URL to the local bytes; without it the item is UNCHECKED (`external`).
 #
 # Exit 0 only if EVERY url landed OK. Any failure exits 1 — a partially-fetched set must never read
 # as complete, which is the silent-degradation class this whole effort removes.

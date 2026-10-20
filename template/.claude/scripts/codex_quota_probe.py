@@ -14,14 +14,20 @@ The response nests, and three properties of its shape are load-bearing:
     `secondary` on this account and the 7-day in `primary`, but that is an observation,
     not a contract -- read `windowDurationMins`, never the slot name.
   * `usedPercent` is required while `windowDurationMins` and `resetsAt` are NULLABLE, and
-    a band needs all three. A window missing either is UNCOMPUTABLE, which is a third
-    value and not a band: reported as `unknown`, never collapsed onto Surplus. Surplus is
-    the most permissive band, so collapsing would open the gate on the strength of a
-    payload that measured nothing.
+    a band needs all three. A slot the payload REPORTS but that cannot supply all three is
+    a typed `malformed` outcome, never collapsed onto Surplus: Surplus is the most
+    permissive band, so a bandless window would open the gate on the strength of a payload
+    that measured nothing, and a valid sibling cap would silently stand in for it. A slot
+    the payload omits entirely stays absent, and the reported caps stand on their own.
 
 `credits` is a second axis, not a refinement of the first. Purchased credits keep work
 running after the plan allowance is spent, so an exhausted band with `hasCredits: true`
 is not a blocked dispatch -- the caller gets both and decides.
+
+Plan-usage sampling. Each successful reading (plain or `--check`) appends one sample per window,
+{ts: observedAt, provider: "codex", window, used, resets_at, windowDurationMins}, through the locked
+writer in tools/usage_samples.py (HARNESS_USAGE_SAMPLES overrides the file). `--raw` and a failed
+reading append nothing.
 
 Exit codes:
     0   normalized provider outcome printed, including auth/network/malformed outcomes
@@ -33,6 +39,7 @@ CLI:
 """
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -41,7 +48,11 @@ import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-from quota_bands import compute_band, worst_of, is_exhausted, EXHAUSTED_BAND  # noqa: E402
+from quota_bands import (  # noqa: E402
+    EXHAUSTED_BAND, compute_band, dormant_band, is_exhausted, most_constrained_window,
+    runout_ratio_for,
+)
+import calendar  # noqa: E402
 
 TRANSPORT = "codex"
 HANDSHAKE_TIMEOUT = 25
@@ -144,6 +155,8 @@ def failure(exc, now=None):
     lower = text.lower()
     if any(token in lower for token in ("401", "403", "unauthorized", "authentication")):
         status, kind = "auth-error", "auth"
+    elif any(token in lower for token in ("429", "too many requests")):
+        status, kind = "network-error", "rate-limit"
     elif any(token in lower for token in ("timed out", "connection", "os error", "rpc error")):
         status, kind = "network-error", "server" if "rpc error" in lower else "network"
     else:
@@ -166,40 +179,50 @@ def summarize(result, now=None):
         win = snapshot.get(slot)
         if not isinstance(win, dict):
             continue
+        used = win.get("usedPercent")
+        if (isinstance(used, bool) or not isinstance(used, (int, float))
+                or not 0 <= used <= 100 or not math.isfinite(used)):
+            return failure(ValueError(slot + " window has invalid use"), now)
         mins = win.get("windowDurationMins")
-        pressure, band = compute_band(
-            win.get("usedPercent"),
-            win.get("resetsAt"),
-            mins * 60 if isinstance(mins, (int, float)) else None,
-            now,
-        )
+        seconds = mins * 60 if isinstance(mins, (int, float)) and not isinstance(mins, bool) else None
+        dormant = dormant_band(used, win.get("resetsAt"))
+        pressure, band = dormant or compute_band(used, win.get("resetsAt"), seconds, now)
+        if pressure is None:
+            # A REPORTED slot that cannot produce a band is a broken reading, not an absent one:
+            # letting it through would leave a sibling cap standing in for a cap nothing measured,
+            # and the caller cannot tell the two apart afterwards.
+            return failure(ValueError(slot + " window has no usable duration, reset time and use"), now)
+        ratio = None if dormant else runout_ratio_for(used, win.get("resetsAt"), seconds, now)
         name = "five_hour" if mins == 300 else "seven_day" if mins == 10080 else slot
         windows.append({
             "name": name,
             "usedPercent": win.get("usedPercent"),
             "windowDurationMins": mins,
             "resetsAt": win.get("resetsAt"),
-            "pressure": round(pressure, 4) if pressure is not None else None,
+            "pressure": round(pressure, 4),
             "band": band,
+            "runoutRatio": round(ratio, 4) if ratio is not None else None,
         })
 
     if not windows:
         return failure(ValueError("rateLimits contains no quota windows"), now)
-    pressure, legacy_band = worst_of((w["pressure"], w["band"]) for w in windows)
+    selected = most_constrained_window(windows)
     credits_raw = snapshot.get("credits") or {}
     peaks = [w["usedPercent"] for w in windows if isinstance(w["usedPercent"], (int, float))]
     peak = max(peaks) if peaks else None
     exhausted = is_exhausted(peak, credits_raw)
     if exhausted:
-        binding = next((w for w in windows if w["usedPercent"] == peak), None)
-    elif pressure is not None:
-        binding = next((w for w in windows if w["band"] == legacy_band
-                        and w["pressure"] == pressure), None)
+        binding = next((w for w in windows if w["usedPercent"] == peak), None) or selected
     else:
-        binding = windows[0] if windows else None
-    dispatch_band = EXHAUSTED_BAND if exhausted else legacy_band
-    weekly = next((w for w in windows if w["name"] == "seven_day" and w["band"]), None)
-    routing_band = weekly["band"] if weekly else dispatch_band
+        binding = selected
+    dispatch_band = EXHAUSTED_BAND if exhausted else selected["band"]
+    # Routing follows the weekly cap whenever it is reported and running, so a headroom-Hot week
+    # and a headroom-Hot five-hour window cannot route to two different currencies. A dormant week
+    # routes on the binding window, which is the cap actually being spent.
+    weekly = next((w for w in windows
+                   if w["name"] == "seven_day" and w["resetsAt"] is not None), None)
+    routing_row = weekly or binding
+    routing_band = routing_row["band"]
     credit_available = bool(credits_raw.get("unlimited"))
     if credits_raw.get("hasCredits"):
         try:
@@ -225,6 +248,7 @@ def summarize(result, now=None):
             "windows": windows,
             "dispatchBand": dispatch_band,
             "routingBand": routing_band,
+            "routingWindow": routing_row["name"],
             "bindingWindow": binding["name"] if binding else "unknown",
             "credits": credits,
         },
@@ -232,13 +256,27 @@ def summarize(result, now=None):
         # Compatibility fields until provider_bands and the shell wire migrate.
         "planType": snapshot.get("planType"),
         "limitId": snapshot.get("limitId"),
-        "pressure": round(pressure, 4) if pressure is not None else None,
+        "pressure": binding["pressure"] if binding else None,
         "band": dispatch_band,
         "bindingWindowMins": binding["windowDurationMins"] if binding else None,
         "resetsAt": binding["resetsAt"] if binding else None,
         "credits": credits_raw,
         "windows": windows,
     }
+
+
+def sample_usage(reading):
+    """Append one plan-usage sample per window of a successful reading; never raises."""
+    try:
+        import usage_samples
+        ts = calendar.timegm(time.strptime(reading["observedAt"], "%Y-%m-%dT%H:%M:%SZ"))
+        usage_samples.record([
+            {"ts": ts, "provider": TRANSPORT, "window": w["name"], "used": w["usedPercent"],
+             "resets_at": w["resetsAt"], "windowDurationMins": w["windowDurationMins"]}
+            for w in (reading.get("quota") or {}).get("windows") or []
+            if w.get("usedPercent") is not None], now=ts)
+    except Exception:
+        pass
 
 
 def main(argv):
@@ -257,6 +295,8 @@ def main(argv):
         print(json.dumps(result, indent=2))
         return 0
     reading = summarize(result)
+    if reading.get("status") in ("available", "exhausted"):
+        sample_usage(reading)
     if "--check" in argv:
         # Availability, not a value: the round-trip worked and the payload parsed. An
         # uncomputable band is still a successful probe -- the gate reads `band: null` and

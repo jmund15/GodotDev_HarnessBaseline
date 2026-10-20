@@ -25,7 +25,7 @@ Read before writing a suite, and when reviewing or curating one; named from `SKI
 - Button/signal wiring → load the real `.tscn` + `EmitSignal(BaseButton.SignalName.Pressed)` + assert outcome (NOT the `#if TOOLS` direct-call seam — that bypasses `_Ready` wiring).
 - Overlay/resource leak on close → act, then assert `GodotObject.IsInstanceValid(node) == false`.
 - Focus/selection → `control.HasFocus()` after the entry hook.
-- Boot / autoload init / `.tscn`-loads-without-error → Godot MCP `run_project` + `get_debug_output` smoke (catches `.tscn` parse failures and `ValidateRequiredExports` throws `dotnet build` never sees).
+- Boot / autoload init / `.tscn`-loads-without-error → Godot MCP `run_project {projectPath: <linked worktree>}` + `get_debug_output` smoke (`rules/godot_files.md` §MCP tools) (catches `.tscn` parse failures and `ValidateRequiredExports` throws `dotnet build` never sees).
 
 Only genuinely-subjective items remain deferrable: visual aesthetics, timing/juice, multi-resolution fill.
 
@@ -35,7 +35,7 @@ Only genuinely-subjective items remain deferrable: visual aesthetics, timing/jui
 
 - **Building blocks** (components, systems, strategies, Resources with behavior) get the full three-level treatment below — coverage here protects every entity composed from them.
 - **Composed entities/scenes** (a specific enemy, a specific spell scene) get (a) one **parameterized roster wiring-contract suite** over all instances (`[TestCase]` rows over a discovered set — exemplar `Tests/Integration/Enemies/NewUnitDataTests.cs`), and (b) a few **representative** full-composition E2Es — NOT one per entity. No per-entity logic suites; no per-instance resource pins.
-- **Data-integrity pins are per-SCHEMA, never per-instance.** A project-wide convention (iso facing, sprite scale anchor) is pinned once over a discovered set.
+- **Data-integrity pins are per-SCHEMA, never per-instance.** A project-wide convention (iso facing, sprite scale anchor) is pinned once per schema over a discovered set.
 - *Litmus:* if this test fails, is the defect in the block or in one instance's wiring? Block → test the block. Wiring → the roster suite already owns it.
 
 ## Test Coverage Strategy
@@ -52,7 +52,7 @@ Unit tests passing ≠ system works. Cross-domain systems especially need E2E co
 
 ## Primary Observable Behavior (POB) Rule
 
-Every new system with player-observable behavior MUST include at least one E2E/integration test asserting the primary observable outcome — what a player would notice if the system broke. One POB test per system, not per behavior — the roster suite owns the rest.
+Every new system with player-observable behavior MUST include at least one E2E/integration test asserting the primary observable outcome — what a player would notice if the system broke. The rule requires the outcome to be tested at all, and the count is per system, not per behavior; the roster suite owns the rest.
 
 | System | POB Test Assertion |
 |--------|--------------------|

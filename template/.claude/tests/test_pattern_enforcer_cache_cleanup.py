@@ -125,7 +125,34 @@ for cmd, want in (("rm -rf Tests/.search-index", "allow"), ("rm -rf .claude/.cac
     else:
         print(f"  ok   channel {want}: {cmd}")
 
-total = len(MUST_PASS) + len(MUST_BLOCK) + 2
+# A scratch folder named by this session's full id is this session's own output (2026-10-09: the guard
+# blocked deleting .claude/scratch/session_end/<own id>/p1/inputs, a folder the close had just written).
+import tempfile  # noqa: E402
+SID = "b48600e4-2ced-4055-895c-18867ef93b99"
+OTHER = "11111111-2222-3333-4444-555555555555"
+transcript = os.path.join(tempfile.mkdtemp(prefix="pe_scratch_"), SID + ".jsonl")
+REPO = os.path.dirname(ROOT)
+OWN_PASS = ["rm -rf .claude/scratch/session_end/%s/p1/inputs" % SID, "rm -rf .claude/scratch/%s" % SID]
+OWN_BLOCK = [("rm -rf .claude/scratch/session_end/%s/p1" % OTHER, transcript),
+             ("rm -rf .claude/scratch/session_end/%s/p1" % SID, None),
+             ("rm -rf .claude/scratch/session_end/%s/../.." % SID, transcript),
+             ("rm -rf .claude/scratch/x%s" % SID, transcript),
+             ("rm -rf .claude/%s" % SID, transcript),
+             ("rm -rf .claude/scratch/%s Assets" % SID, transcript)]
+for cmd in OWN_PASS:
+    if pe.check_bash_command(cmd, REPO, transcript)[0]:
+        print(f"  FAIL own-scratch must-pass blocked: {cmd}")
+        fails += 1
+    else:
+        print(f"  ok   own-scratch pass: {cmd}")
+for cmd, tp in OWN_BLOCK:
+    if not pe.check_bash_command(cmd, REPO, tp)[0]:
+        print(f"  FAIL own-scratch must-block allowed: {cmd} (transcript {tp is not None})")
+        fails += 1
+    else:
+        print(f"  ok   own-scratch block: {cmd}")
+
+total = len(MUST_PASS) + len(MUST_BLOCK) + 2 + len(OWN_PASS) + len(OWN_BLOCK)
 print()
 print(f"{total - fails}/{total} cases pass" if fails else f"ALL PASS ({total} cases)")
 sys.exit(1 if fails else 0)

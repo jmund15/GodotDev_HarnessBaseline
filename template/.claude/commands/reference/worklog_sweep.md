@@ -12,11 +12,8 @@ Three passes over the recent session, each confirmation-driven — never auto-ap
 
 **Add-sweep:** scan the transcript for missed trigger phrases (`worklog_reference` — both regular-deferral and Future-Scope catalogs). Propose `Add to Worklog: <title> — <domain> · <class> · scope <n>?` (or `Add to Worklog Future Scope: ...` on a strong-trigger phrase), citing the turn it appeared in. On `y` (or `y, <override>`), run ADD.
 
-**Completion-sweep:** read Active and diff its `[ ]` items against `git status` / `git log --since="session start"` and the session's tool calls. For each plausibly resolved item propose `Mark complete: <title> (<commit-ref>)?`. On `y`, run COMPLETE.
+**Completion-sweep:** read Active and Ledger, then inspect commits back to each item's named Source or last decision when deciding whether it shipped or became stale; record the checked interval. Compare with `git status --short` and the session's tool calls. For each plausibly resolved item propose `Mark complete: <title> (<commit-ref>)?`. On `y`, run COMPLETE.
 
-**Promotion-sweep (Future Scope ripening):** read `## Future Scope`. Scan each `FSLINE`'s title + parenthetical against `git log --since="session start"` (widen to `--since="2 weeks ago"` on the first session of the week), `git status --short`, and the session's tool-call topics (file paths, test names, system terms). On overlap propose `Promote from Future Scope: <title> — looks ripened (matched: "<short evidence>")?`. On `y`, run PROMOTE. On `n` / `n, still parked`, skip silently.
+**Promotion-sweep (Future Scope ripening):** read `## Future Scope`. For each `FSLINE`, search from its recorded `added YYYY-MM-DD` creation stamp unless a later verified prerequisite assessment records complete coverage since then. Use session start only when that interval covers the relevant event; record the searched range. If no creation stamp exists, report that the item has no verified search start. On specific evidence that a prerequisite cleared, propose `Promote from Future Scope: <title> — <matched evidence>?`. On `y`, run PROMOTE. On `n` / `n, still parked`, skip silently.
 
-Matcher heuristics (better to miss than to spam):
-- Require ≥2 distinct token matches OR one specific identifier match (file path, function name, version number, PR number).
-- Skip generic words ("test", "audit", "review") as match anchors.
-- Cap at 5 proposals per sweep; beyond that, propose the top 5 by match-strength and surface `(N more Future Scope candidates — run /worklog show all to review)`.
+Require a specific identifier or independent context that genuinely links an item to a change; skip generic words. Surface all supported proposals in a scannable batch. If the user stops, record the remainder as unaddressed; never treat an unshown item as assessed.

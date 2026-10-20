@@ -164,7 +164,8 @@ class StraySearchIndexSweepTests(unittest.TestCase):
         with patch.object(scl.subprocess, "run", side_effect=spy):
             found = scl.find_stray_search_indexes(self.root)
         self.assertEqual([p.relative_to(self.root).as_posix() for p in found], ["a/b/c/.search-index"])
-        status_calls = [c for c in calls if c[:2] == ["git", "status"]]
+        # Global flags such as --no-optional-locks may precede the subcommand.
+        status_calls = [c for c in calls if c[:1] == ["git"] and "status" in c]
         self.assertTrue(status_calls and any(".search-index" in part for part in status_calls[0]), status_calls)
 
     def test_non_git_directory_is_a_no_op(self):

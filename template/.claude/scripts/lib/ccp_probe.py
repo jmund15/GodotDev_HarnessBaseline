@@ -24,6 +24,11 @@ Subcommands:
                            exit 0 iff `<proxy_exe> models` lists that id; 1 when it does not,
                            3 when the list is unreadable; the reason goes to stdout
 """
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".claude" / "tools"))
+from cli_usage import usage
 import glob
 import json
 import math
@@ -171,6 +176,8 @@ def _is_compaction_request(body):
     if not isinstance(body, dict):
         return False
     for item in body.get("input") or []:
+        if isinstance(item, dict) and item.get("type") == "compaction_trigger":
+            return True  # the adapter's native server compaction (its developer text is not the client's)
         if not (isinstance(item, dict)
                 and item.get("type") == "message"
                 and item.get("role") == "developer"):
@@ -267,7 +274,7 @@ def _append_ledger(ledger_path, record):
 
 def main(argv):
     if len(argv) < 2:
-        print(__doc__, file=sys.stderr)
+        print(usage(__doc__), file=sys.stderr)
         return 2
     cmd = argv[1]
     if cmd == "health":

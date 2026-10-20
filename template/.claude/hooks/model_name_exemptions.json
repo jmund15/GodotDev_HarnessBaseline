@@ -1,0 +1,25 @@
+{
+  "_comment": "Mechanism-layer paths that may name models (hooks/model_name_guard.py). Globs are relative to .claude/. Each entry names what makes the file a measurement or a model-fact home; a file that only needs a model at run time resolves it from the registry instead.",
+  "exemptions": [
+    {
+      "glob": "scripts/benchmark_campaign/campaigns/**",
+      "justification": "A campaign definition names the arm it runs; the arm is the measured variable."
+    },
+    {
+      "glob": "scripts/benchmark_campaign/core/instruments.json",
+      "justification": "The reference pin names the measured arm that cleared task readiness; the arm is a measurement fact."
+    },
+    {
+      "glob": "scripts/benchmark_campaign/scoring/*.json",
+      "justification": "Sealed cells, calibration sets and rulings are measurement records keyed by the arm they scored."
+    },
+    {
+      "glob": "scripts/benchmark_campaign/luna_extracted/**",
+      "justification": "Extracted deliverables of a measured arm, kept as scoring evidence."
+    },
+    {
+      "glob": "scripts/rail_battery/reports/**",
+      "justification": "Rail-battery reports record which model each measured arm ran on."
+    }
+  ]
+}

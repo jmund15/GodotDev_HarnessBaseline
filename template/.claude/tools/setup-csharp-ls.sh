@@ -8,7 +8,7 @@
 #   - ENABLE_LSP_TOOL=1 set in environment
 #
 # What this script does:
-#   1. Restores dotnet tools (installs csharp-ls per .config/dotnet-tools.json — currently v0.24.0)
+#   1. Installs the csharp-ls version .config/dotnet-tools.json pins as the global tool
 #   2. Renames the real csharp-ls binary → csharp-ls-original.exe (re-run-safe: overwrites old binary)
 #   3. Deploys the adapter script to ~/.dotnet/tools/
 #   4. Generates plugin.json with correct absolute paths
@@ -46,12 +46,17 @@ echo "Adapter dest:  $ADAPTER_DEST"
 echo "Plugin.json:   $PLUGIN_JSON"
 echo ""
 
-# Step 1: Restore dotnet tools
-echo "[1/4] Restoring dotnet tools..."
+# Step 1: Install the pinned csharp-ls as the GLOBAL tool. The adapter launches the binary in
+# ~/.dotnet/tools, so a local `dotnet tool restore` alone never changes the server that runs.
+# Run from $HOME: the repo's global.json pins an SDK that cannot read csharp-ls 0.28+'s tool package
+# ("DotnetToolSettings.xml was not found"); outside the repo the newest installed SDK resolves.
+MANIFEST="$PROJECT_ROOT/.config/dotnet-tools.json"
+CSLS_VERSION="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['tools']['csharp-ls']['version'])" "$MANIFEST")"
+echo "[1/4] Installing global csharp-ls $CSLS_VERSION (pinned in .config/dotnet-tools.json)..."
 if [[ "$DRY_RUN" == false ]]; then
-  dotnet tool restore --tool-manifest "$PROJECT_ROOT/.config/dotnet-tools.json"
+  (cd "$HOME" && dotnet tool update --global csharp-ls --version "$CSLS_VERSION" --allow-downgrade)
 else
-  echo "  Would run: dotnet tool restore"
+  echo "  Would run: dotnet tool update --global csharp-ls --version $CSLS_VERSION --allow-downgrade"
 fi
 
 # Step 2: Rename the real csharp-ls binary
@@ -75,7 +80,7 @@ elif [[ -f "$RENAMED_EXE" ]]; then
   echo "[2/4] csharp-ls-original.exe already in place; no fresh csharp-ls.exe to rename."
 else
   echo "[2/4] ERROR: neither csharp-ls.exe nor csharp-ls-original.exe found."
-  echo "  dotnet tool restore may have installed it elsewhere."
+  echo "  The global install in step 1 may have failed or installed it elsewhere."
   echo "  Check: dotnet tool list --global"
   exit 1
 fi

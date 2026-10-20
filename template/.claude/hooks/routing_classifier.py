@@ -20,13 +20,13 @@ Design contract:
   `Classification` dataclass. Severity values:
     - COMPLIANT          : call followed §Tool Routing; no rule applies → no nudge expected
     - NUDGE_WARRANTED    : call violated a clear rule (PascalCase Grep on
-                           indexed file; synthesis-shaped Obsidian read; etc.)
+                           indexed file; a bulk-copyable native Read; etc.)
                            Silent-miss if the existing nudge channel doesn't fire.
     - CUE_EXEMPT         : would warrant nudge BUT user prompt cue words
                            legitimize the override (K1 literal-intent, L6
                            verified-unique-name, audit-shape carve-out).
-    - ADVISORY_APPLICABLE: soft-nudge category (memory_search, broad obsidian
-                           search) — informational, not a violation.
+    - ADVISORY_APPLICABLE: soft-nudge category (memory_search, read_web below
+                           the synthesis floor) — informational, not a violation.
     - NOT_ROUTABLE       : tool has no §Tool Routing routing rules (Bash, Edit, Write,
                            Glob, etc.) OR the call shape doesn't match a rule.
 
@@ -41,11 +41,30 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from typing import Literal
 
 import _optional_hooks
 from _claude_scope import harness_tail
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+
+
+def _ai_worker_absent() -> bool:
+    """Is ai-worker registered on this machine? `False` whenever that cannot be read.
+
+    This module is the one home of every routing VERDICT, and a verdict's reason names the route
+    its nudge will print — so the name has to be one this machine has. The verdict itself never
+    depends on the machine: `tools/workstation_profile.py` answers `None` for unknown, and unknown
+    keeps the authored reason rather than narrowing it on a guess.
+    """
+    try:
+        import workstation_profile
+        return workstation_profile.ai_worker() == "absent"
+    except Exception:
+        return False
+
 
 # Version-pinned documentation sources a WebFetch should not bypass, one module per adopted layer.
 SOURCE_PINS = tuple(m for m in (_optional_hooks.load("godot_source_pins"),) if m)
@@ -83,7 +102,7 @@ VERIFIED_UNIQUE_CUES = (
     "no other class defines",
 )
 
-# Audit-shape carve-out (CLAUDE.md §Tool Routing Exception clause): line-precision direct
+# Audit-shape carve-out (CLAUDE.core.md §9 known-evidence bullet): line-precision direct
 # reads are warranted only when user explicitly framed the task as audit/
 # debug/security-review/fact-check at source-code level.
 AUDIT_INTENT_CUES = (
@@ -130,11 +149,6 @@ COPYABLE_OUTPUT_CUES = (
     "one row per",
     "extract",
 )
-
-# Bulk-search thresholds for obsidian_search_notes.
-BULK_CONTEXT_THRESHOLD = 100
-BULK_MAXMATCHES_THRESHOLD = 5
-
 
 # === Pattern matchers ========================================================
 
@@ -232,7 +246,7 @@ def is_bounded_read(tool_input: dict) -> bool:
 
 def prompt_requests_bulk_copyable(prompt: str) -> bool:
     """True only when the request names BOTH a multi-input scope and a copyable output shape.
-    A path, extension or read count is never evidence (CLAUDE.md §Tool Routing)."""
+    A path, extension or read count is never evidence (CLAUDE.core.md §9)."""
     if not prompt:
         return False
     lowered = prompt.lower()
@@ -319,14 +333,6 @@ def classify_call(
     # Native Read while the request asks for bulk copyable I/O.
     if tool_name == "Read":
         return _classify_native_read(tool_input, last_prompt, agent_id)
-
-    # Obsidian read under the same prompt-evidence rule.
-    if tool_name == "mcp__obsidian__obsidian_get_note":
-        return _classify_obsidian_read(tool_input, last_prompt)
-
-    # Obsidian broad search.
-    if tool_name == "mcp__obsidian__obsidian_search_notes":
-        return _classify_obsidian_search(tool_input, last_prompt)
 
     # Web transport — deterministic tiers rank ahead of the paid/lossy ones.
     if tool_name == "WebFetch":
@@ -440,7 +446,10 @@ def _classify_native_read(tool_input: dict, last_prompt: str, agent_id: str = ""
         rule="native-read-bulk-copyable",
         reason=(
             f"native Read of {path} for an explicit bulk-copyable request — "
-            "route the extraction through mcp__ai-worker__read_files"
+            + ("route the extraction through bounded Read or a subagent "
+               "[no ai-worker on this machine]"
+               if _ai_worker_absent() else
+               "route the extraction through mcp__ai-worker__read_files")
         ),
         tool="Read",
     )
@@ -473,34 +482,6 @@ def _classify_vault_write(tool_name: str, tool_input: dict) -> Classification:
         return Classification("not-routable", None, None, tool_name)
     return Classification("census", "vault-write-direct",
                           f"direct Write of {size} chars -> {path}", tool_name)
-
-
-def _classify_obsidian_read(tool_input: dict, last_prompt: str) -> Classification:
-    target = tool_input.get("target") or {}
-    path = (target.get("path") if isinstance(target, dict) else "") or ""
-    if not path:
-        return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
-    if not prompt_requests_bulk_copyable(last_prompt):
-        return Classification("compliant", None, None, "mcp__obsidian__obsidian_get_note")
-    if prompt_has_audit_intent(last_prompt):
-        return Classification(
-            severity="cue-exempt",
-            rule="obsidian-read-bulk-copyable",
-            reason=(
-                "bulk-copyable request on an Obsidian read would route to read_files, "
-                "but the prompt also invokes the audit-shape carve-out"
-            ),
-            tool="mcp__obsidian__obsidian_get_note",
-        )
-    return Classification(
-        severity="nudge-warranted",
-        rule="obsidian-read-bulk-copyable",
-        reason=(
-            f"direct Obsidian read of {path} for an explicit bulk-copyable request — "
-            "route the extraction through mcp__ai-worker__read_files"
-        ),
-        tool="mcp__obsidian__obsidian_get_note",
-    )
 
 
 def _classify_webfetch(tool_input: dict, last_prompt: str) -> Classification:
@@ -548,29 +529,4 @@ def _classify_read_web(tool_input: dict, last_prompt: str) -> Classification:
             "quote-bearing bytes to .claude/scripts/fetch_source.sh"
         ),
         tool="mcp__ai-worker__read_web",
-    )
-
-
-def _classify_obsidian_search(tool_input: dict, last_prompt: str) -> Classification:
-    max_matches = tool_input.get("maxMatchesPerHit")
-    context_length = tool_input.get("contextLength")
-    is_bulk = (
-        max_matches is None
-        or (isinstance(max_matches, (int, float)) and max_matches > BULK_MAXMATCHES_THRESHOLD)
-        or (isinstance(context_length, (int, float)) and context_length > BULK_CONTEXT_THRESHOLD)
-    )
-    if not is_bulk:
-        # Targeted search — fine.
-        return Classification(
-            "compliant", None, None, "mcp__obsidian__obsidian_search_notes"
-        )
-
-    # Broad searches are advisory (the existing nudge is informational, not
-    # a "violation"). Don't classify as nudge-warranted; this would inflate the
-    # silent-miss count for routine broad searches that may be the right move.
-    return Classification(
-        severity="advisory-applicable",
-        rule="obsidian-broad-search-soft-nudge",
-        reason="broad obsidian_search_notes may be better as bundled read_files",
-        tool="mcp__obsidian__obsidian_search_notes",
     )

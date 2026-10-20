@@ -9,7 +9,7 @@ metadata:
 
 # Workflow `args` generation-fidelity failure
 
-**Symptom.** A `Workflow` call dies almost instantly — `agentCount 0`, `durationMs ~4`, **0-byte output file, no `journal.jsonl` / run dir created** — with `SyntaxError: JSON Parse error: Unable to parse JSON string`. The throw is the script's own `const A = (typeof args === 'string') ? JSON.parse(args) : ...` guard (e.g. `review_fanout.js:11`). Reads as "the Workflow tool is broken"; it is not.
+**Symptom.** A `Workflow` call dies almost instantly — `agentCount 0`, `durationMs ~4`, **0-byte output file, no `journal.jsonl` / run dir created** — with `SyntaxError: JSON Parse error: Unable to parse JSON string`. The throw is the script's own `const A = (typeof args === 'string') ? JSON.parse(args) : ...` guard (e.g. `review_fanout.js:27`). Reads as "the Workflow tool is broken"; it is not.
 
 **Root cause.** `args` is always delivered to the script **as a string** that the script `JSON.parse`s. When the *tool call* carries a **large, deeply-nested, escape-dense** `args` — e.g. `agents: [N objects]`, each a long prompt studded with escaped `"`, `**`, `<>`, `|`, arrows — the **model's tool-call generation** emits subtly-malformed JSON (a dropped/mismatched delimiter, a stray unescaped quote, or a silently-truncated run). The runtime can't structure it, passes the raw text through as a string, and `JSON.parse` throws. It is a **generation** failure, surfaced at the script's parse — not a harness or tool defect.
 

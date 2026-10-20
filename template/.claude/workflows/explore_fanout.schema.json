@@ -1,16 +1,38 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["claims", "checked"],
+  "required": [
+    "claims",
+    "checked"
+  ],
   "properties": {
     "checked": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["toolsUsed", "stoppedAt", "basis"],
+      "required": [
+        "toolsUsed",
+        "stoppedAt",
+        "basis"
+      ],
       "properties": {
-        "toolsUsed": { "type": "array", "items": { "type": "string" } },
-        "stoppedAt": { "type": "string", "enum": ["nothing-in-scope", "exhausted-leads", "trigger-not-met", "blocked"] },
-        "basis": { "type": "string" }
+        "toolsUsed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "stoppedAt": {
+          "type": "string",
+          "enum": [
+            "nothing-in-scope",
+            "exhausted-leads",
+            "trigger-not-met",
+            "blocked"
+          ]
+        },
+        "basis": {
+          "type": "string"
+        }
       }
     },
     "claims": {
@@ -18,19 +40,150 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["subject", "polarity", "claim", "bearing"],
+        "required": [
+          "subject",
+          "polarity",
+          "claim",
+          "bearing"
+        ],
         "properties": {
-          "subject": { "type": "string" },
-          "polarity": { "type": "string", "enum": ["exists", "absent", "partial", "unclear"] },
-          "claim": { "type": "string" },
-          "evidence": { "type": ["string", "null"] },
-          "verification": { "type": ["string", "null"] },
-          "file": { "type": ["string", "null"] },
-          "bearing": { "type": "string", "enum": ["premise-contradiction", "reuse-candidate", "constraint", "blast-radius", "context"] },
-          "confidence": { "type": "string", "enum": ["verified", "unverified"] }
+          "subject": {
+            "type": "string"
+          },
+          "polarity": {
+            "type": "string",
+            "enum": [
+              "exists",
+              "absent",
+              "partial",
+              "unclear"
+            ]
+          },
+          "claim": {
+            "type": "string"
+          },
+          "evidence": {
+            "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "file",
+                    "quote"
+                  ],
+                  "description": "A quote from a local file. VERIFIED when the quote (case-folded, in-order `...` gaps allowed, a leading `path:N:` or `N:` grep prefix stripped) occurs in the file; UNVERIFIED when the file is readable and lacks it or does not exist; UNCHECKED when the file cannot be read.",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "description": "repository-relative or absolute path, optionally with :N or :N-M; the line range is reported, never decisive"
+                    },
+                    "quote": {
+                      "type": "string",
+                      "description": "the file's raw bytes, copied verbatim; one source per item"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "command",
+                    "output"
+                  ],
+                  "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED.",
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "description": "one git command, no pipe, redirect or substitution"
+                    },
+                    "output": {
+                      "type": "string",
+                      "description": "a verbatim run of the command's stdout, or the empty string for an absent claim"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "owner"
+                  ],
+                  "description": "The owner's verbatim words. VERIFIED when an owner turn of the session transcript holds them (an AskUserQuestion answer is an owner turn when the item also carries its `question`; a runtime envelope is not), or when a row of the named task record holds them and still resolves. A delegate-recorded, missing or unresolved row, or an unreadable transcript, is UNCHECKED.",
+                  "properties": {
+                    "owner": {
+                      "type": "string",
+                      "description": "the owner's words, verbatim"
+                    },
+                    "question": {
+                      "type": "string",
+                      "description": "the AskUserQuestion question the owner answered; required when the quote is a picked option label"
+                    },
+                    "task": {
+                      "type": "string",
+                      "description": "a task record id whose condition rows may hold the words when this session's transcript does not"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "url",
+                    "quote"
+                  ],
+                  "description": "A quote from an external page. A fetched artifact (fetch_source.sh manifest) is checked like a file; without one the item is UNCHECKED.",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "the page the quote was read from"
+                    },
+                    "quote": {
+                      "type": "string",
+                      "description": "verbatim from the fetched bytes"
+                    },
+                    "artifact": {
+                      "type": "string",
+                      "description": "local path of the fetched bytes"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bearing": {
+            "type": "string",
+            "enum": [
+              "premise-contradiction",
+              "reuse-candidate",
+              "constraint",
+              "blast-radius",
+              "context"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified"
+            ]
+          }
         }
       }
     },
-    "gaps": { "type": "array", "items": { "type": "string" } }
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   }
 }

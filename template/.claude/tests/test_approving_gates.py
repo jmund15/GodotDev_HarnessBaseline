@@ -31,6 +31,10 @@ def main():
     (peer / "sub").mkdir(parents=True)
     (peer / "p.md").write_text("peer\n", encoding="utf-8")
     (root / "output").mkdir()
+    (root / ".gitmodules").write_text(
+        '[submodule "Widgets"]\n\tpath = Widgets\n\turl = https://github.com/acme/Widgets.git\n'
+        '[submodule "Gadgets"]\n\tpath = Gadgets\n\turl = git@github.com:acme/Gadgets.git\n',
+        encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", ".claude/scripts/codex_proxy_sidecar.sh",
                     ".claude/tools/session_digest.py"], cwd=root, check=True)
@@ -233,6 +237,31 @@ def main():
 
     (root / ".claude" / "scratch").mkdir()
     (root / ".claude" / "scratch" / "msg.txt").write_text("feat: x\n", encoding="utf-8")
+    consent_command = (
+        "bash .claude/scripts/codex_proxy_sidecar.sh -m fake -e high -D full -G review "
+        "-t +Bash -f .claude/reference/prompt.md -S .claude/reference/prompt.md "
+        "-R .claude/scratch/consent.record.json -P .claude/scratch/consent.progress.jsonl "
+        "-l consent -d %s" % root.as_posix()
+    )
+    consent_shape = getattr(approving_gates, "sidecar_bash_ask_shape", lambda *_: (False, "missing"))
+    consent_ok, _ = consent_shape(consent_command, root)
+    cases.append(("a standalone review with only +Bash qualifies for one-time consent", consent_ok))
+    cases.append(("the same +Bash launch is never auto-approved",
+                  not approving_gates.sidecar_launch_shape(consent_command, root)[0]))
+    for label, command in (
+        ("semicolon", consent_command + "; git status"),
+        ("pipe", consent_command + " | git status"),
+        ("newline", consent_command + "\ngit status"),
+        ("subshell", "(" + consent_command + ")"),
+        ("bash -c", "bash -c '" + consent_command + "'"),
+        ("extra tool", consent_command.replace("+Bash", "+Bash,+Write")),
+        ("permission override", consent_command + " -p bypassPermissions"),
+        ("outside context", consent_command + " -C " + outside_match.as_posix()),
+        ("peer context", consent_command + " -C .claude/worktrees/peer/p.md"),
+        ("missing record", consent_command.replace(" -R .claude/scratch/consent.record.json", "")),
+    ):
+        accepted, _ = consent_shape(command, root)
+        cases.append(("consent rejects " + label, not accepted))
     (root / "m.txt").write_text("feat: x\n", encoding="utf-8")
     msg = "-F .claude/scratch/msg.txt"
     root_posix = root.resolve().as_posix()
@@ -318,8 +347,159 @@ def main():
             ["python3", ".claude/tools/session_digest.py", "--match-file", real.as_posix(),
              "--match", "x"], str(root))
         cases.append(("an absolute `~/.claude/projects` digest path is approved", ok))
+    claimed = approving_gates.owning_contract(["git", "log", "--grep", "commit"], str(root))
     cases.append(("`git log` is not claimed by the git-commit gate",
-                  approving_gates.owning_contract(["git", "log", "--grep", "commit"], str(root)) is None))
+                  claimed is None or claimed.name != "git-commit"))
+
+    probe = lambda command: approving_gates.readonly_probe_shape(command, str(root))[0]
+    for label, command in (
+        ("the 10-09 denied search pipeline is approved",
+         "git grep -n -iE 'owner-approved removal|owner_approved|session_created_worktree' "
+         "-- .claude/hooks .claude/tools | head -12 | cut -c1-220"),
+        ("`git log --oneline -5 -- <path>` is approved", "git log --oneline -5 -- .claude/plans"),
+        ("`git -C <project root> status --short` is approved", "git -C %s status --short" % root.as_posix()),
+        ("`git worktree list --porcelain | grep -c worktree` is approved",
+         "git worktree list --porcelain | grep -c worktree"),
+        ("`git branch --merged main` is approved", "git branch --merged main"),
+        ("`git ls-files | wc -l` is approved", "git ls-files | wc -l"),
+        ("`git diff --stat | tail -3` is approved", "git diff --stat | tail -3"),
+        ("`git log -n 3 --format=%h` is approved", "git log -n 3 --format=%h"),
+        ("`git log | sort -u | uniq -c` is approved", "git log --format=%an | sort -u | uniq -c"),
+    ):
+        cases.append((label, probe(command)))
+    for label, command in (
+        ("a pager-executing `git grep -O` is refused", "git grep -O vim foo"),
+        ("`git grep --open-files-in-pager` is refused", "git grep --open-files-in-pager=vim foo"),
+        ("`git log --output=` is refused", "git log --output=x.txt"),
+        ("`git diff --output` is refused", "git diff --output x.txt"),
+        ("`git diff --ext-diff` is refused", "git diff --ext-diff"),
+        ("`git show --textconv` is refused", "git show --textconv HEAD"),
+        ("`git -c` config injection is refused", "git -c core.pager=x log"),
+        ("`git -C` onto another path is refused", "git -C /elsewhere log"),
+        ("`git --git-dir=` is refused", "git --git-dir=x log"),
+        ("`git branch <name>` is refused", "git branch newbranch"),
+        ("`git branch -D` is refused", "git branch -D x"),
+        ("`git worktree add` is refused", "git worktree add x"),
+        ("`git worktree remove` is refused", "git worktree remove x"),
+        ("`git push` is refused", "git push origin main"),
+        ("`git fetch` is refused", "git fetch origin"),
+        ("`git commit` is not a probe", "git commit -m x"),
+        ("`sort -o` is refused", "git grep foo | sort -o out.txt"),
+        ("a file operand to `head` is refused", "git log | head -3 notes.txt"),
+        ("`tee` is refused", "git log | tee out.txt"),
+        ("`xargs` is refused", "git ls-files | xargs rm"),
+        ("a piped shell is refused", "git log | sh"),
+        ("`tail -f` is refused", "git log | tail -f"),
+        ("recursive `grep -r` is refused", "git log | grep -r foo"),
+        ("a non-git first stage is refused", "ls | head -3"),
+        ("a redirection is refused", "git log > out.txt"),
+        ("a stderr merge is refused", "git status 2>&1"),
+        ("command substitution is refused", "git log $(echo x)"),
+        ("a semicolon chain is refused", "git log; rm x"),
+        ("`&&` is refused", "git log && echo x"),
+        ("`||` is refused", "git log || true"),
+        ("an environment prefix is refused", "GIT_PAGER=x git log"),
+        ("an unlisted flag is refused", "git log --exec-path"),
+    ):
+        cases.append((label, not probe(command)))
+    rc, hso = run_gate("git log --oneline -3 | head -2")
+    cases.append(("the hook allows a read-only pipeline through the real channel",
+                  rc == 0 and hso.get("permissionDecision") == "allow"))
+    rc, hso = run_gate("git log --oneline -3 | head -2", cwd=root / "output")
+    cases.append(("a probe from another cwd falls through", rc == 0 and not hso))
+    rc, hso = run_gate("git log --output=x.txt | head -2")
+    cases.append(("a probe with a write flag falls through", rc == 0 and not hso))
+    env_before = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = str(root)
+    try:
+        probe_note = approving_gates.explain({
+            "tool_name": "Bash", "cwd": str(root),
+            "tool_input": {"command": "git grep -O vim foo | head -3"}})
+    finally:
+        if env_before is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = env_before
+    cases.append(("explain names the readonly-probe gate for a refused probe",
+                  "readonly-probe gate" in (probe_note or "")))
+
+    for label, command in (
+        ("a submodule PR merge is approved", "gh pr merge 61 --repo acme/Widgets --merge"),
+        ("a submodule PR merge that deletes its branch is approved",
+         "gh pr merge 61 --repo acme/Widgets --merge --delete-branch"),
+        ("a submodule PR merge pinned to a head commit is approved",
+         "gh pr merge 61 --merge --repo acme/Widgets --match-head-commit 789feb6"),
+        ("an ssh-url submodule PR merge is approved", "gh pr merge 7 --repo acme/Gadgets --merge"),
+    ):
+        rc, hso = run_gate(command)
+        cases.append((label, rc == 0 and hso.get("permissionDecision") == "allow"
+                      and "submodule-pr-merge" in hso.get("permissionDecisionReason", "")))
+    for label, command in (
+        ("a project merge without --repo falls through", "gh pr merge 101 --merge"),
+        ("a project merge by repo falls through", "gh pr merge 101 --repo acme/Project --merge"),
+        ("another account's submodule falls through", "gh pr merge 61 --repo someone/Widgets --merge"),
+        ("`--admin` falls through", "gh pr merge 61 --repo acme/Widgets --merge --admin"),
+        ("`--squash` falls through", "gh pr merge 61 --repo acme/Widgets --squash"),
+        ("`--auto` falls through", "gh pr merge 61 --repo acme/Widgets --merge --auto"),
+        ("no merge method falls through", "gh pr merge 61 --repo acme/Widgets"),
+        ("a branch name instead of a number falls through", "gh pr merge feature --repo acme/Widgets --merge"),
+        ("chaining falls through", "gh pr merge 61 --repo acme/Widgets --merge && git push"),
+        ("a body override falls through", "gh pr merge 61 --repo acme/Widgets --merge --body x"),
+        ("a repeated --repo falls through",
+         "gh pr merge 61 --repo acme/Widgets --repo acme/Project --merge"),
+    ):
+        rc, hso = run_gate(command)
+        cases.append((label, rc == 0 and not hso))
+    rc, hso = run_gate("gh pr merge 61 --repo acme/Widgets --merge", cwd=root / "output")
+    cases.append(("a merge from another cwd falls through", rc == 0 and not hso))
+    (root / ".gitmodules").unlink()
+    rc, hso = run_gate("gh pr merge 61 --repo acme/Widgets --merge")
+    cases.append(("a project with no .gitmodules approves no merge", rc == 0 and not hso))
+
+    from unittest.mock import patch as _patch
+    merged = {"fix/done": ("MERGED", "a" * 40)}
+
+    def fake_lookup(branch):
+        return merged.get(branch)
+
+    def fake_tip(branch):
+        return {"fix/done": "a" * 40, "fix/moved": "b" * 40}.get(branch)
+
+    judge = approving_gates._merged_branch_delete_shape
+    with _patch.object(approving_gates, "_merged_pr_head", fake_lookup), \
+            _patch.object(approving_gates, "_remote_tip", fake_tip):
+        for label, argv in (
+            ("a merged PR's branch delete is approved", ["git", "push", "origin", "--delete", "fix/done"]),
+            ("the flag-first spelling is approved", ["git", "push", "--delete", "origin", "fix/done"]),
+        ):
+            cases.append((label, judge(argv, str(root))[0]))
+        merged["fix/moved"] = ("MERGED", "a" * 40)
+        merged["fix/open"] = ("OPEN", "a" * 40)
+        for label, argv in (
+            ("a branch with no merged PR is refused", ["git", "push", "origin", "--delete", "fix/none"]),
+            ("a branch with an open PR is refused", ["git", "push", "origin", "--delete", "fix/open"]),
+            ("a branch moved past its merged head is refused", ["git", "push", "origin", "--delete", "fix/moved"]),
+            ("main is refused", ["git", "push", "origin", "--delete", "main"]),
+            ("master is refused", ["git", "push", "origin", "--delete", "master"]),
+            ("two branches are refused", ["git", "push", "origin", "--delete", "fix/done", "fix/moved"]),
+            ("another remote is refused", ["git", "push", "upstream", "--delete", "fix/done"]),
+            ("a force flag is refused", ["git", "push", "--force", "origin", "--delete", "fix/done"]),
+            ("a refspec push is refused", ["git", "push", "origin", ":fix/done"]),
+            ("an option-shaped branch is refused", ["git", "push", "origin", "--delete", "--mirror"]),
+        ):
+            cases.append((label, not judge(argv, str(root))[0]))
+    with _patch.object(approving_gates, "_merged_pr_head", lambda branch: None):
+        cases.append(("a failed GitHub lookup is refused",
+                      not judge(["git", "push", "origin", "--delete", "fix/done"], str(root))[0]))
+    cases.append(("a branch delete is owned by the merged-branch contract",
+                  (approving_gates.owning_contract(["git", "push", "origin", "--delete", "x"], str(root))
+                   or approving_gates.CONTRACTS[0]).name == "merged-branch-delete"))
+    for label, command in (
+        ("a plain push falls through", "git push origin fix/done"),
+        ("a chained delete falls through", "git push origin --delete fix/done && git push origin main"),
+    ):
+        rc, hso = run_gate(command)
+        cases.append((label, rc == 0 and not hso))
 
     parser_source = (HERE.parent / "tools" / "session_digest.py").read_text(encoding="utf-8")
     import re

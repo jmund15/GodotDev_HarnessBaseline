@@ -43,6 +43,24 @@ def plant_prompt(state_dir, session, prompt):
         json.dump({"last_prompt": prompt}, fh)
 
 
+def profile_env(base, tier, ai_worker):
+    """`base` env with this machine's tier and ai-worker registration planted where the hook reads
+    them (`tools/workstation_profile.py`: the profile path for the tier, the config walk for the
+    registration)."""
+    root = tempfile.mkdtemp(prefix="trnprofile_")
+    cfg = os.path.join(root, "cfg")
+    os.makedirs(os.path.join(cfg, "plugins"))
+    servers = {"ai-worker": {"command": "python"}} if ai_worker == "present" else {}
+    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": servers}, fh)
+    profile = os.path.join(root, "workstation_profile.json")
+    if tier is not None:
+        with open(profile, "w", encoding="utf-8") as fh:
+            json.dump({"schema": 1, "local_tier": tier}, fh)
+    return dict(base, WORKSTATION_PROFILE_PATH=profile, CLAUDE_CONFIG_DIR=cfg,
+                SC_WORKDIR=os.path.join(root, "nowhere"))
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="trnstate_")
     os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
@@ -100,7 +118,7 @@ def main():
     bulk = "Extract the same raw fields from every file and return one copyable entry per input path."
     plant_prompt(tmp, "trn00009", bulk)
     bulk_msg = call("Read", {"file_path": "C:/vault/Design/x.md"},
-                    env, session="trn00009")
+                    profile_env(env, None, "present"), session="trn00009")
     cases.append(("explicit bulk-copyable extraction gets a Read advisory",
                   "bulk copyable" in bulk_msg.lower() and "read_files" in bulk_msg))
 
@@ -118,8 +136,30 @@ def main():
     obsidian_msg = call("mcp__obsidian__obsidian_get_note",
                         {"target": {"path": "Claude/Design/x.md"}},
                         env, session="trn00011")
-    cases.append(("explicit bulk-copyable Obsidian read gets read_files advice",
-                  "bulk copyable" in obsidian_msg.lower() and "read_files" in obsidian_msg))
+    # Reversed 2026-09-23: the obsidian MCP server is not registered in this project any more, so
+    # the obsidian arm was retired with it. The control is now that no advisory is emitted for the
+    # retired tool even under the verdict that used to trigger one.
+    cases.append(("the retired Obsidian tool gets no advisory under a bulk-copyable prompt",
+                  obsidian_msg == ""))
+
+    # C7: the advisory names a tool this machine may not have. The nudge still fires — the rule is
+    # about the call shape — but it must name a route that is actually there.
+    plant_prompt(tmp, "trn00020", bulk)
+    absent_msg = call("Read", {"file_path": "C:/vault/Design/x.md"},
+                      profile_env(env, "full", "absent"), session="trn00020")
+    cases.append(("an absent ai-worker keeps the advisory but names the local route",
+                  "tool-routing" in absent_msg and "read_files" not in absent_msg
+                  and "bounded Read" in absent_msg and "subagent" in absent_msg))
+    plant_prompt(tmp, "trn00021", bulk)
+    present_msg = call("Read", {"file_path": "C:/vault/Design/x.md"},
+                       profile_env(env, "full", "present"), session="trn00021")
+    cases.append(("a present ai-worker keeps the worker route",
+                  "mcp__ai-worker__read_files" in present_msg))
+    plant_prompt(tmp, "trn00022", bulk)
+    unknown_msg = call("Read", {"file_path": "C:/vault/Design/x.md"},
+                       profile_env(env, None, "present"), session="trn00022")
+    cases.append(("no profile keeps the worker route",
+                  "mcp__ai-worker__read_files" in unknown_msg))
 
     verified_unique = "The SpellFactory name is verified unique; locate its authored resource use."
     plant_prompt(tmp, "trn00012", verified_unique)

@@ -79,6 +79,52 @@ def conflicted_repo():
     return repo
 
 
+def ref_checkout_repo():
+    """HEAD at c1; c2 changes every file and adds n.txt. d.txt carries an unstaged edit, s.txt a staged
+    one, n.txt sits untracked with local content: checking any of those out of c2 loses it."""
+    repo = tempfile.mkdtemp(prefix="ggref_")
+    git(repo, "init", "-q")
+    for name in ("a.txt", "d.txt", "s.txt", "gone.txt"):
+        write(repo, name, "c1\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "c1")
+    git(repo, "tag", "c1")
+    for name in ("a.txt", "d.txt", "s.txt", "n.txt", "new.txt", "gone.txt"):
+        write(repo, name, "c2\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "c2")
+    git(repo, "tag", "c2")
+    git(repo, "checkout", "-q", "c1")
+    write(repo, "d.txt", "mine\n")
+    write(repo, "s.txt", "staged\n")
+    git(repo, "add", "s.txt")
+    write(repo, "n.txt", "local\n")
+    os.remove(os.path.join(repo, "gone.txt"))
+    return repo
+
+
+def squashed_branch_repo():
+    """main carries a cherry-pick of `sq`'s one commit, so `sq` is patch-equal to main but not merged;
+    `uniq` holds a commit no other ref has. `other` sits at the base, and origin/HEAD names a ref that
+    carries the cherry-pick, the shape of a branch squash-merged on the remote."""
+    repo = tempfile.mkdtemp(prefix="ggsquash_")
+    git(repo, "init", "-q", "-b", "main")
+    write(repo, "a.txt", "base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "base")
+    git(repo, "branch", "other")
+    for branch, name in (("sq", "sq.txt"), ("uniq", "u.txt")):
+        git(repo, "checkout", "-q", "-b", branch, "main")
+        write(repo, name, branch + "\n")
+        git(repo, "add", name)
+        git(repo, "commit", "-q", "-m", branch)
+    git(repo, "checkout", "-q", "main")
+    git(repo, "cherry-pick", "sq")
+    git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return repo
+
+
 def recommends_stash(message):
     return "git stash" in message.replace("Never `git stash`", "")
 
@@ -102,6 +148,61 @@ def main():
 
     rc, msg, crashed = run_hook("git stash drop", repo)
     check("git stash drop is still blocked", not crashed and rc == 2, msg)
+
+    # A drop loses nothing when another ref still holds the stash commit: the block's stated
+    # reason ("unreferenced once dropped") is then false, so the drop passes. Unpreserved stashes,
+    # an unresolvable target and `clear` stay blocked.
+    stashed = tempfile.mkdtemp(prefix="ggstash_")
+    git(stashed, "init", "-q")
+    write(stashed, "a.txt", "base\n")
+    git(stashed, "add", "a.txt")
+    git(stashed, "commit", "-q", "-m", "base")
+    write(stashed, "a.txt", "kept\n")
+    git(stashed, "stash", "-q")
+    write(stashed, "a.txt", "loose\n")
+    git(stashed, "stash", "-q")
+    kept = subprocess.run(["git", "rev-parse", "stash@{1}"], cwd=stashed, capture_output=True,
+                          text=True, check=True).stdout.strip()
+    git(stashed, "update-ref", "refs/preserve/kept", kept)
+    rc, msg, crashed = run_hook("git stash drop stash@{1}", stashed)
+    check("drop of a stash another ref preserves passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop 'stash@{1}'", stashed)
+    check("quoted preserved target passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop -q stash@{1}", stashed)
+    check("a quiet drop of a preserved stash passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop --quiet stash@{0}", stashed)
+    check("a quiet drop of an unpreserved stash is still blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop --index stash@{1}", stashed)
+    check("an unknown drop flag fails closed", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop stash@{0}", stashed)
+    check("drop of an unpreserved stash is blocked", not crashed and rc == 2, msg)
+    check("the drop block names the preserve-then-drop retry",
+          "git update-ref refs/preserve/" in msg and "stash@{0}" in msg, msg)
+    rc, msg, crashed = run_hook("git stash drop", stashed)
+    check("implicit drop of an unpreserved stash@{0} is blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop stash@{9}", stashed)
+    check("drop of a missing stash is blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash clear", stashed)
+    check("git stash clear stays blocked with a preserved entry", not crashed and rc == 2, msg)
+
+    cite = "CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first"
+    destructive_ops = (
+        ("git reset --hard", "git reset --keep"),
+        ("git checkout -- f.txt", "Copy the file aside"),
+        ("git restore f.txt", "Copy the file aside"),
+        ("git push --force", "Rebase onto the remote and push normally"),
+        ("git branch -D obsolete", "Use `git branch -d`"),
+        ("git clean -f", "Run the same command with `-n` first"),
+        ("git stash drop", "then the same drop passes"),
+        ("git stash clear", "ask the user before discarding"),
+        ("git reflog expire --expire=now --all", "Leave expiry to git's own schedule"),
+        ("git gc --prune=now", "Run `git gc` without `--prune`"),
+        ("git filter-branch -- --all", "Ask the user for explicit go-ahead"),
+    )
+    for command, next_step in destructive_ops:
+        rc, msg, crashed = run_hook(command, repo)
+        check("%s denial cites the hard-to-reverse rule and next step" % command,
+              not crashed and rc == 2 and cite in msg and next_step in msg, msg)
 
     rc, msg, crashed = run_hook("git restore --staged f.txt", repo)
     check("git restore --staged still passes", not crashed and rc == 0, msg)
@@ -131,6 +232,41 @@ def main():
     check("--theirs on an unmerged .tscn is blocked", not crashed and rc == 2, msg)
     rc, msg, crashed = run_hook("git checkout --theirs -- f.txt", repo)
     check("--theirs on a dirty, merged path is blocked", not crashed and rc == 2, msg)
+
+    # A path with no staged or unstaged edit, tracked in HEAD, loses nothing when checked out of another
+    # commit (landing a merge onto a shared checkout): every byte it held is still in HEAD.
+    ref = ref_checkout_repo()
+    rc, msg, crashed = run_hook("git checkout c2 -- a.txt", ref)
+    check("checkout <ref> -- a clean tracked path passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git checkout c2 -- new.txt", ref)
+    check("checkout <ref> -- a path absent from HEAD and the worktree passes", not crashed and rc == 0, msg)
+    for command in ("git checkout c2 -- d.txt", "git checkout c2 -- s.txt", "git checkout c2 -- n.txt",
+                    "git checkout c2 -- gone.txt",
+                    "git checkout c2 -- a.txt d.txt"):
+        rc, msg, crashed = run_hook(command, ref)
+        check("%s is blocked (an edit or an untracked file would be lost)" % command, not crashed and rc == 2, msg)
+
+    # A branch whose every commit is already applied to HEAD or to origin/HEAD loses nothing on -D
+    # (a squash-merged or cherry-picked branch, which `-d` refuses because it is no ancestor).
+    sq = squashed_branch_repo()
+    rc, msg, crashed = run_hook("git branch -D sq", sq)
+    check("branch -D of a branch whose commits HEAD already carries passes", not crashed and rc == 0, msg)
+    for command in ("git branch -D uniq", "git branch -D sq uniq", "git branch -D nosuch",
+                    "git branch -D -r origin/main"):
+        rc, msg, crashed = run_hook(command, sq)
+        check("%s is blocked (a commit would be lost, or the ref is not a local branch)" % command,
+              not crashed and rc == 2, msg)
+    git(sq, "branch", "scratch/fx", "uniq")
+    rc, msg, crashed = run_hook("git branch -D scratch/fx", sq)
+    check("branch -D of a scratch/ fixture branch passes though its commits are unmerged",
+          not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git branch -D scratch/fx uniq", sq)
+    check("branch -D of a scratch/ branch beside an unmerged other branch is blocked", not crashed and rc == 2, msg)
+    git(sq, "checkout", "-q", "other")
+    rc, msg, crashed = run_hook("git branch -D sq", sq)
+    check("branch -D passes when origin/HEAD carries every commit and HEAD does not", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git branch --delete --force sq", sq)
+    check("branch --delete --force takes the same pass", not crashed and rc == 0, msg)
 
     print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
     for f in FAILURES:

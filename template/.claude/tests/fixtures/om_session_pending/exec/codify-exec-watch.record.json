@@ -1,0 +1,20 @@
+{
+ "launchId": "cbe967c6-17de-4103-b021-5d34c2970422",
+ "parentSessionId": "30b7e19d-8945-4de9-ab38-4b02699ef340",
+ "label": "codify-exec-watch",
+ "transport": "anthropic-secondary",
+ "costModel": "plan-quota",
+ "servedModel": "claude-sonnet-5-5",
+ "requestedModel": "claude-sonnet-5-5",
+ "effort": "high",
+ "pinBasis": "cell,judged",
+ "inputTokens": 160,
+ "outputTokens": 96305,
+ "cacheReadTokens": 12552658,
+ "cacheWriteTokens": 238847,
+ "numTurns": 84,
+ "durationMs": 1452447,
+ "costUSD": 2.815753,
+ "exitCode": 0,
+ "timestamp": "2026-10-18T18:02:36Z"
+}

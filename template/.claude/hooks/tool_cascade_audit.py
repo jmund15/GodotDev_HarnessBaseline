@@ -40,6 +40,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _cs_files import cs_files  # noqa: E402
+
 # --- Godot base-type knowledge (roots of the Resource / Node cascade surfaces) ---
 RESOURCE_ROOTS = {"Resource"}
 NODE_ROOTS = {
@@ -120,14 +123,14 @@ def module_of(rel_path: str) -> str:
     return "{{PROJECT_NAME}}"
 
 
+_SKIP_DIRS = {".godot", ".claude", ".git", "obj", "bin", "TestResults",
+              ".search-index", "gdunit4_testadapter_v5", "script_templates"}
+
+
 def iter_cs_files(root: str):
-    skip_dirs = {".godot", ".claude", ".git", "obj", "bin", "TestResults",
-                 ".search-index", "gdunit4_testadapter_v5", "script_templates"}
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
-        for fn in filenames:
-            if fn.endswith(".cs") and not fn.endswith(".generated.cs"):
-                yield os.path.join(dirpath, fn)
+    for path, _rel in cs_files(root, _SKIP_DIRS):
+        if not path.name.endswith(".generated.cs"):
+            yield str(path)
 
 
 def split_bases(base_str: str):

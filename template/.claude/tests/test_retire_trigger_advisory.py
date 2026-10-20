@@ -126,6 +126,53 @@ def main():
                                       rule_body + "\n<!-- retire-when: -->\n", repo))
         check("a malformed comment in a rules subdirectory also warns", bool(result), str(result))
 
+        print("case 12 — evidence markers: a malformed one advises, a valid one stays silent")
+        thin = "<!-- basis: thin; reverses-if: %s; review-when: %s -->\n"
+        good = thin % ("the planted observation", "escape path:Jmodot since:2026-01-01 >= 1")
+        result = hook.process(payload("Write", rules_scope, rule_body + "\n" + good, repo))
+        check("a valid evidence marker stays silent, whatever its source holds", result is None, str(result))
+        for label, text in (
+                ("a marker with no since:", thin % ("x", "escape path:Jmodot >= 1")),
+                ("an unknown source", thin % ("x", "nowhere since:2026-01-01 >= 1")),
+                ("N of 0", thin % ("x", "escape since:2026-01-01 >= 0")),
+                ("review-when inside the reverses-if prose",
+                 thin % ("x; review-when: escape since:2020-01-01 >= 1", "escape since:2026-01-01 >= 1")),
+                ("a comment terminator inside the reverses-if prose",
+                 thin % ("x --> y", "escape since:2026-01-01 >= 1"))):
+            result = hook.process(payload("Write", rules_scope, rule_body + "\n" + text, repo))
+            check("a rules file with %s advises" % label,
+                  bool(result) and "[retire-trigger-advisory]" in result["context"]
+                  and "rules/probe.md" in result["context"], str(result))
+        result = hook.process(payload("Write", in_scope, NO_TRIGGER + "\n" + thin % ("x", "escape >= 1"), repo))
+        check("a memory file with a malformed evidence marker advises", bool(result), str(result))
+        result = hook.process(payload("Write", rules_scope, rule_body + "\n" + thin % ("x", "escape >= 1"), repo,
+                                      response_type="update"))
+        check("an update Write stays silent", result is None, str(result))
+
+        print("case 13 — an Edit that adds a malformed evidence marker advises, from the post-edit file")
+        bad_marker = "<!-- basis: thin; reverses-if: x; review-when: escape >= 1 -->\n"
+        good_marker = "<!-- basis: thin; reverses-if: x; review-when: escape since:2026-01-01 >= 1 -->\n"
+        os.makedirs(os.path.dirname(rules_scope), exist_ok=True)
+        os.makedirs(os.path.dirname(in_scope), exist_ok=True)
+
+        def edit_payload(path, new_string):
+            return {"tool_name": "Edit", "cwd": repo, "tool_response": {"filePath": path},
+                    "tool_input": {"file_path": path, "old_string": "Body.", "new_string": new_string}}
+        for path, base in ((rules_scope, rule_body), (in_scope, NO_TRIGGER)):
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(base + "\n" + bad_marker)
+            result = hook.process(edit_payload(path, bad_marker))
+            check("an Edit adding a malformed marker advises (%s)" % os.path.basename(os.path.dirname(path)),
+                  bool(result) and "[retire-trigger-advisory]" in result["context"], str(result))
+            result = hook.process(edit_payload(path, "unrelated prose"))
+            check("an Edit that leaves the marker out of its new text stays silent", result is None, str(result))
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(base + "\n" + good_marker)
+            result = hook.process(edit_payload(path, good_marker))
+            check("an Edit adding a valid marker stays silent", result is None, str(result))
+        result = hook.process(edit_payload(os.path.join(repo, ".claude", "rules", "gone.md"), bad_marker))
+        check("an Edit of an unreadable file stays silent", result is None, str(result))
+
         print("case 6 — a non-.md file inside auto-memory/ stays silent")
         result = hook.process(payload(
             "Write", os.path.join(repo, ".claude", "auto-memory", "archive", "probe.txt"),

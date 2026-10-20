@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Single home of delegate-guard tier extraction.
 
-`.claude/guards/{any,survey,review,author}.md` is the one home for delegate rails. Every route
+`.claude/guards/{any,survey,review,author,arm}.md` is the one home for delegate rails. Every route
 delivers this module's assembly and none may re-implement the parse:
 
   * hooks/workflow_provider_guard.py — INLINES, as `args.__railsText`, for the four Workflow
@@ -23,20 +23,70 @@ A higher baseline layer adds rails through an overlay, `<shape>.<layer>.md` (lay
 OVERLAY_LAYERS order). Each present overlay's tier section follows its base file's section; an
 overlay without that tier adds nothing, and a project without the layer has no overlay file.
 
-CLI:  guard_text.py <shape> <tier>   -> the text on stdout, exit 0
+The ai-worker clause is rendered against THIS machine. `guards/any.md` names
+`mcp__ai-worker__read_files` as the bulk-copyable route, which is false on a machine where the
+server is not registered: the delegate would obey an instruction naming a tool that is not there
+and silently change search behavior. With `workstation_profile.ai_worker()` saying `"absent"` the
+clause renders as the route such a machine does have — bounded Read or a subagent — and every
+consumer above gets it for free, because this module is the one assembly they all deliver. A
+registration walk that cannot run is unknown, not absent, and keeps the authored text.
+
+CLI:  guard_text.py <shape> <tier> [model]   -> the text on stdout, exit 0; a model appends its
+      registry driver notes, as the sidecar launcher's isolated tiers need (no hook fires there)
       bad arguments                  -> the legal set on stderr, exit 2
 """
 import os
 import re
 import sys
 
-VALID_SHAPES = ("any", "survey", "review", "author")
+VALID_SHAPES = ("any", "survey", "review", "author", "arm", "bench-score")
 VALID_TIERS = ("detailed", "condensed", "minimal", "none")
 OVERLAY_LAYERS = ("coding", "godot")
 
 _GUARDS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "guards"
 )
+
+# The authored clause names a TOOL; the machine-absent rendering names a ROUTE. Both the tool name
+# and the route are single strings so the substitution cannot half-apply.
+AI_WORKER_TOOL = "mcp__ai-worker__read_files"
+AI_WORKER_ABSENT_ROUTE = "bounded Read or a subagent"
+
+
+def _ai_worker_absent() -> bool:
+    """Is ai-worker registered on this machine? `False` whenever that cannot be read.
+
+    `workstation_profile.ai_worker()` owns the walk (user, local, project and plugin scopes) and
+    returns `None` for unknown. Unknown is deliberately NOT absent: the authored rails are the safe
+    delivery, and narrowing them on a guess would drop a route that works.
+    """
+    try:
+        tools_dir = os.path.dirname(os.path.abspath(__file__))
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+        import workstation_profile
+        return workstation_profile.ai_worker() == "absent"
+    except Exception:
+        return False
+
+
+def driver_notes_block(model: str, data=None) -> str:
+    """The registry's per-model corrections for a model as one block ("" if none), the same text on the
+    SessionStart, sidecar-inline and Workflow routes."""
+    tools_dir = os.path.dirname(os.path.abspath(__file__))
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import model_registry
+    notes = model_registry.driver_notes(model, data)
+    if not notes:
+        return ""
+    return "[session] Driver notes (%s):\n%s" % (model, "\n".join("- %s (%s)" % note for note in notes))
+
+
+def _driver_notes(model: str) -> str:
+    """`driver_notes_block` as a suffix after the rails of a sidecar child; "" if none."""
+    block = driver_notes_block(model)
+    return "\n\n" + block if block else ""
 
 
 def _section(path: str, tier: str) -> str:
@@ -90,19 +140,25 @@ def guard_text(shape: str, tier: str) -> str:
             except ValueError:
                 continue
             homes.append(".claude/guards/%s.%s.md" % (name, layer))
-    return "[delegate rails — shape '%s', %s tier; home: %s]\n%s" % (
+    text = "[delegate rails — shape '%s', %s tier; home: %s]\n%s" % (
         shape, tier, " + ".join(homes), "\n\n".join(parts))
+    if AI_WORKER_TOOL in text and _ai_worker_absent():
+        text = text.replace(AI_WORKER_TOOL, AI_WORKER_ABSENT_ROUTE)
+    return text
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: guard_text.py <shape> <tier>", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print("usage: guard_text.py <shape> <tier> [model]", file=sys.stderr)
         print("  shape: %s" % ", ".join(VALID_SHAPES), file=sys.stderr)
         print("  tier:  %s" % ", ".join(VALID_TIERS), file=sys.stderr)
         return 2
     try:
         sys.stdout.reconfigure(encoding="utf-8")
-        sys.stdout.write(guard_text(sys.argv[1], sys.argv[2]))
+        text = guard_text(sys.argv[1], sys.argv[2])
+        if len(sys.argv) == 4:
+            text += _driver_notes(sys.argv[3])
+        sys.stdout.write(text)
     except Exception as exc:
         print("guard_text: %s" % exc, file=sys.stderr)
         return 2

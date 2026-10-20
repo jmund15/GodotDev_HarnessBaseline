@@ -1,4 +1,4 @@
-"""Proof cases for workflow_provider_guard's role-ladder injection (harness_tooling: every guard
+"""Proof cases for workflow_provider_guard's silence on the role ladder (harness_tooling: every guard
 has a re-runnable proof). Feeds real PreToolUse payloads and asserts on the emitted channel."""
 import json
 import os
@@ -19,14 +19,12 @@ def run_hook(payload):
     return out.stdout.strip()
 
 
-def test_workflow_call_injects_ladder_roles():
+def test_workflow_call_adds_no_ladder_dump():
+    # The ladder rows reach the session when it loads Skill(orchestration) (skill_load_marker) and the doctrine
+    # gate denies a call until they are in context, so an admitted call restates none of them.
     stdout = run_hook({"tool_name": "Workflow", "tool_input": {"name": "review-fanout"}})
-    assert stdout, "Workflow call must emit additionalContext"
-    ctx = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "[role ladder" in ctx
-    # a known ladder row must be present with its claimed tiers and its role prose
-    assert "luna:" in ctx  # family names: a new version never churns them
-    assert "luna: fanout/scout (test authoring" in ctx, ctx
+    assert "[role ladder" not in stdout
+    assert "model_ladder_evidence" not in stdout
 
 
 def test_non_workflow_tool_emits_nothing():
@@ -34,6 +32,6 @@ def test_non_workflow_tool_emits_nothing():
 
 
 if __name__ == "__main__":
-    test_workflow_call_injects_ladder_roles()
+    test_workflow_call_adds_no_ladder_dump()
     test_non_workflow_tool_emits_nothing()
     print("OK")

@@ -8,6 +8,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _commit_guard_cases import run_for  # noqa: E402
+from _merge_guard_cases import merge_run_for  # noqa: E402
 
 if __name__ == "__main__":
-    sys.exit(run_for("provisional_totality_guard.py"))
+    sys.exit(run_for("provisional_totality_guard.py")
+             or merge_run_for("provisional_totality_guard.py"))

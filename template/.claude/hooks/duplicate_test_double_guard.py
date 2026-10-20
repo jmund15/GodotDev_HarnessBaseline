@@ -22,12 +22,11 @@ IEquatable<T>, ...) and is skipped.
 Tests/Framework is exempt -- that IS the shared-double home, and a double living there is the
 resolution this guard asks for, not a violation.
 
-Threshold: families at or above FAIL_AT distinct doubles exit 1 -- but only when they EXCEED the
-committed baseline (duplicate_test_double_baseline.json beside this script). The baseline
-grandfathers the pre-existing backlog so the gate ratchets against GROWTH instead of blocking every
-commit on debt this guard was born into; the backlog itself is the test-curation sweep's job, and
-consolidating a family below its baseline count is locked in by regenerating the baseline
-(--write-baseline). Families at 2 are reported as advisory and exit 0.
+Threshold: a repo-declared interface family exits 1 at 2 or more doubles only when its count
+exceeds the committed baseline (duplicate_test_double_baseline.json beside this script).
+An interface family whose doubles each derive a different project class (no two can share one
+type) is advisory too. Class (abstract or not), record and struct families stay advisory at 2 or more; the baseline
+grandfathers existing families and --write-baseline locks in consolidation gains.
 
 Resolution: promote one double to Tests/Framework/Mocks (public, parameterised over whatever the
 per-test variants actually needed -- a recording list, a canned return) and delete the copies.
@@ -36,7 +35,6 @@ Blanket-disable with HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES=1.
 Modes:
     duplicate_test_double_guard.py                  # scan Tests/; exit 1 on growth past the baseline
     duplicate_test_double_guard.py --json           # machine-readable on stdout, always exit 0
-    duplicate_test_double_guard.py --hook           # PreToolUse: deny a `git commit` that grows one
     duplicate_test_double_guard.py --write-baseline # regenerate the grandfather baseline (run after
                                                     # consolidating a family, to lock the gain in)
 
@@ -50,7 +48,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _git_commit import commit_invocations, bypass_declared  # noqa: E402
+from _cs_files import cs_files  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -59,11 +57,11 @@ TESTS_ROOT = REPO / "Tests"
 # The shared-double home. A double here is the fix, not the finding.
 EXEMPT_TEST_DIRS = {"Framework"}
 
-# Distinct doubles of one base before the guard blocks. 2 is advisory, 3 is a missing abstraction.
-FAIL_AT = 3
+INTERFACE_FAIL_AT = 2
+REPORT_AT = 2
 
-# Grandfathered counts: {base: count} at baseline time. Blocking requires BOTH >= FAIL_AT and
-# > baseline count, so the gate fires on growth only. Regenerate with --write-baseline.
+# Grandfathered counts: {base: count} at baseline time. Only interface growth blocks.
+# Regenerate with --write-baseline.
 BASELINE_PATH = Path(__file__).with_name("duplicate_test_double_baseline.json")
 
 # Sites printed per family in the human report -- enough to locate the pattern without burying the
@@ -81,7 +79,7 @@ NON_PUBLIC = re.compile(
 )
 
 ANY_DECL = re.compile(
-    r"\b(?:class|interface|record|struct)\s+(\w+)\s*(?:<[^>]*>)?\s*"
+    r"\b(class|interface|record|struct)\s+(\w+)\s*(?:<[^>]*>)?\s*"
 )
 
 
@@ -118,11 +116,8 @@ def split_bases(base_text):
 
 
 def source_files(root):
-    for path in sorted(root.rglob("*.cs")):
-        rel = path.relative_to(REPO)
-        if SKIP_DIRS & set(rel.parts[:-1]):
-            continue
-        yield path, rel
+    for path, _ in cs_files(root, SKIP_DIRS):
+        yield path, path.relative_to(REPO)
 
 
 def read_lines(path):
@@ -133,25 +128,29 @@ def read_lines(path):
 
 
 def project_types():
-    """Every type name this repository declares -- anything else is engine/BCL surface."""
-    names = set()
+    """Return {type_name: declaration_kind}; anything else is engine/BCL surface."""
+    kinds = {}
     for path, _rel in source_files(REPO):
         for line in read_lines(path):
             stripped = line.strip()
             if stripped.startswith(("//", "*", "///")):
                 continue
-            names.update(ANY_DECL.findall(stripped))
-    return names
+            for kind, name in ANY_DECL.findall(stripped):
+                kinds[name] = kind
+    return kinds
 
 
-def find_doubles(known_types):
-    """Return {base_name: [(rel_path, line_no, double_name)]} for file-local test doubles."""
+def find_doubles(known_types, authored=None):
+    """Return {base_name: [(rel_path, line_no, double_name)]} for file-local test doubles.
+    `authored` is `_commit_scope.merge_authored`'s answer -- None to judge every file."""
     families = {}
     if not TESTS_ROOT.is_dir():
         return families
     for path, rel in source_files(TESTS_ROOT):
         parts = rel.parts
         if len(parts) > 1 and parts[1] in EXEMPT_TEST_DIRS:
+            continue
+        if authored is not None and rel.as_posix() not in authored:
             continue
         for index, line in enumerate(read_lines(path)):
             match = NON_PUBLIC.match(line)
@@ -165,6 +164,22 @@ def find_doubles(known_types):
     return families
 
 
+def consolidatable(sites, known_types):
+    """True when two doubles of one interface can share a type: both name the same project class
+    base (or neither names one). A double also deriving a project class needs that class, so two
+    doubles on different project classes cannot be merged into one shared double."""
+    seen = set()
+    for rel, line_no, _double in sites:
+        lines = read_lines(REPO / rel)
+        match = NON_PUBLIC.match(lines[line_no - 1]) if 0 < line_no <= len(lines) else None
+        bases = split_bases(match.group(2)) if match else []
+        key = tuple(sorted(b for b in bases if known_types.get(b) == "class"))
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
 def load_baseline():
     try:
         with open(BASELINE_PATH, encoding="utf-8") as fh:
@@ -174,22 +189,26 @@ def load_baseline():
         return {}
 
 
-def find_violations():
+def find_violations(authored=None, known_types=None):
     """Return (blocking, grandfathered, advisory) lists, each [(base, [(rel, line, name), ...])].
 
-    blocking: >= FAIL_AT doubles AND grown past the committed baseline.
-    grandfathered: >= FAIL_AT but within baseline -- pre-existing debt, curation-sweep territory.
-    advisory: exactly 2 doubles.
+    blocking: interface families at INTERFACE_FAIL_AT or more, grown past baseline.
+    grandfathered: interface families at threshold but within baseline.
+    advisory: class/record/struct families at REPORT_AT or more.
+    `authored` narrows the counted files to what this commit wrote, or None for all of them.
     """
     baseline = load_baseline()
-    families = find_doubles(project_types())
+    if known_types is None:
+        known_types = project_types()
+    families = find_doubles(known_types, authored)
     ranked = sorted(
-        ((base, sites) for base, sites in families.items() if len(sites) >= 2),
+        ((base, sites) for base, sites in families.items() if len(sites) >= REPORT_AT),
         key=lambda item: (-len(item[1]), item[0]),
     )
     blocking, grandfathered, advisory = [], [], []
     for base, sites in ranked:
-        if len(sites) < FAIL_AT:
+        if (known_types[base] != "interface" or len(sites) < INTERFACE_FAIL_AT
+                or not consolidatable(sites, known_types)):
             advisory.append((base, sites))
         elif len(sites) > baseline.get(base, 0):
             blocking.append((base, sites))
@@ -199,10 +218,10 @@ def find_violations():
 
 
 def write_baseline():
-    """Snapshot every family at/above FAIL_AT as the new grandfather baseline."""
+    """Snapshot every reported family as the new grandfather baseline."""
     families = find_doubles(project_types())
-    snapshot = {base: len(sites) for base, sites in families.items() if len(sites) >= FAIL_AT}
-    with open(BASELINE_PATH, "w", encoding="utf-8") as fh:
+    snapshot = {base: len(sites) for base, sites in families.items() if len(sites) >= REPORT_AT}
+    with open(BASELINE_PATH, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(dict(sorted(snapshot.items())), fh, indent=2)
         fh.write("\n")
     print(f"[duplicate-test-double-guard] baseline written: {len(snapshot)} grandfathered "
@@ -222,8 +241,8 @@ def render(families, stream):
 
 def report(blocking, grandfathered, advisory):
     print(
-        f"[duplicate-test-double-guard] {len(blocking)} interface(s)/base(s) hand-rolled as "
-        f"{FAIL_AT}+ separate test doubles AND grown past the committed baseline:",
+        f"[duplicate-test-double-guard] {len(blocking)} interface(s) hand-rolled as "
+        f"{INTERFACE_FAIL_AT}+ separate test doubles AND grown past the committed baseline:",
         file=sys.stderr,
     )
     render(blocking, sys.stderr)
@@ -232,10 +251,11 @@ def report(blocking, grandfathered, advisory):
               "backlog, not blocking):", file=sys.stderr)
         render(grandfathered[:3], sys.stderr)
     if advisory:
-        print(f"\n  advisory ({FAIL_AT - 1} doubles, not blocking):", file=sys.stderr)
+        print(f"\n  advisory ({len(advisory)} class/record/struct families at {REPORT_AT}+ doubles, "
+              "not blocking):", file=sys.stderr)
         render(advisory, sys.stderr)
     print(
-        "\nEach copy is an independently-drifting stand-in: an interface member added later means N "
+        "\nEach blocking interface copy is an independently-drifting stand-in: a member added later means N "
         "edits, and a behavioural assumption fixed in one double is silently absent from the rest. "
         "Promote ONE of them to Tests/Framework/Mocks as a public double, parameterised over "
         "whatever the per-test variants actually differ on (a recording list, a canned return), and "
@@ -245,17 +265,18 @@ def report(blocking, grandfathered, advisory):
 
 
 def emit_json():
-    blocking, grandfathered, advisory = find_violations()
+    known_types = project_types()
+    blocking, grandfathered, advisory = find_violations(known_types=known_types)
 
     def rows(families):
         return [
-            {"base": base, "count": len(sites),
+            {"base": base, "kind": known_types[base], "count": len(sites),
              "sites": [{"file": rel, "line": line, "double": name} for rel, line, name in sites]}
             for base, sites in families
         ]
 
     print(json.dumps({
-        "fail_at": FAIL_AT,
+        "interface_fail_at": INTERFACE_FAIL_AT,
         "baseline": load_baseline(),
         "blocking": rows(blocking),
         "grandfathered": rows(grandfathered),
@@ -274,7 +295,7 @@ def standalone():
         if grandfathered:
             summary.append(f"{len(grandfathered)} grandfathered (within baseline)")
         if advisory:
-            summary.append(f"{len(advisory)} advisory at {FAIL_AT - 1}")
+            summary.append(f"{len(advisory)} advisory at {REPORT_AT}+")
         print(
             "[duplicate-test-double-guard] OK - no family grew past the baseline"
             + (f" ({'; '.join(summary)})" if summary else "")
@@ -285,56 +306,8 @@ def standalone():
     return 1
 
 
-def hook():
-    try:
-        data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        print("{}")
-        return 0
-    if data.get("tool_name") != "Bash":
-        print("{}")
-        return 0
-    commits = [c for c in commit_invocations(data.get("tool_input", {}).get("command", ""),
-                                             data.get("cwd") or ".") if c.sub == "commit"]
-    if not commits:
-        print("{}")
-        return 0
-    commit = commits[-1]
-    if bypass_declared(commit.inline_env, "HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES"):
-        print("{}")
-        return 0
-    try:
-        os.chdir(commit.cwd)   # the scan below reads the repo the commit targets
-    except OSError:
-        pass
-
-    blocking, _grandfathered, _advisory = find_violations()
-    if not blocking:
-        print("{}")
-        return 0
-
-    # permissionDecisionReason is the only model-visible channel here (stderr on an exit-0
-    # PreToolUse is not), so the families go in the reason itself rather than a stderr report.
-    families = "; ".join(f"{base} ({len(sites)})" for base, sites in blocking[:5])
-    overflow = "" if len(blocking) <= 5 else f" (+{len(blocking) - 5} more)"
-    reason = (
-        f"Blocked: {len(blocking)} interface(s)/base(s) hand-rolled as {FAIL_AT}+ separate "
-        f"file-local test doubles, grown past the committed baseline: {families}{overflow}. Each "
-        "copy drifts independently -- promote one to Tests/Framework/Mocks as a public "
-        "parameterised double and delete the copies, or set HARNESS_ALLOW_DUPLICATE_TEST_DOUBLES=1."
-    )
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason,
-    }}))
-    return 0
-
-
 def main():
     args = sys.argv[1:]
-    if args and args[0] == "--hook":
-        return hook()
     if args and args[0] == "--json":
         return emit_json()
     if args and args[0] == "--write-baseline":

@@ -39,13 +39,12 @@
 # CCP_TRAFFIC_LOG stays on; captures contain prompts under
 # ~/.local/state/claude-code-proxy/traffic and must be deleted periodically.
 #
-# DELEGATE RAILS. `-G <shape>` (any|survey|review|author) is honored here through the normal
-# hook path, because the child IS Claude Code: the shape is exported as
-# CLAUDE_CODE_SIDECAR_SHAPE and hooks/session_model_rails.py inlines .claude/guards/any.md plus
-# the shape file on the child's SessionStart. Omitting -G yields `any`. Under `-D bare` or
-# `-D pointer` no project hook fires, so lib/sidecar_common.sh appends the same assembled text
-# itself. That is a delivery difference, not a content one — both routes call
-# tools/guard_text.py.
+# DELEGATE RAILS + DRIVER NOTES. `-G <shape>` (any|survey|review|author) exports
+# CLAUDE_CODE_SIDECAR_SHAPE; omitting -G yields `any`. With `-D full`, the child runs
+# in the repo and hooks/session_model_rails.py inlines the shape rails and its resolved
+# model's registry driver notes on SessionStart. With `-D bare` or `-D pointer`, no
+# project hook fires, so lib/sidecar_common.sh appends the same assembly itself.
+# Both routes key the rails and driver notes to the child's model, never the parent's.
 #
 # Exit codes: see lib/sidecar_common.sh. Exit 8 (provider quota-band ceiling) is live here.
 
@@ -173,8 +172,11 @@ sc_parse_flags "$@"
 shift "$SC_SHIFT"
 [ "${1:-}" = "--" ] && shift
 sc_read_prompt "$@"
+# Before any process starts: a low-memory launch refuses here (exit 12) instead of holding a proxy
+# and a shim while it waits.
+sc_check_launch_memory
 
-SC_CLAUDE="$(sc_claude_bin)" || { echo "claude CLI not found (set CLAUDE_BIN)" >&2; exit 4; }
+SC_CLAUDE="$(sc_claude_bin)" || sc_die 4 "claude CLI not found (set CLAUDE_BIN)"
 
 sc_resolve_model
 sc_gate_availability
@@ -183,17 +185,16 @@ sc_validate_common
 # Credential BEFORE the band gates, matching every other launcher: a missing login is a
 # configuration fault, and a band refusal on a machine that could never have dispatched
 # sends the reader to the wrong fix.
-[ -f "$CCP_AUTH" ] || {
-  echo "no $CCP_AUTH — run: claude-code-proxy codex auth login" >&2
-  echo "  (this is the PROXY's own login; ~/.codex/auth.json is the codex CLI's and does not satisfy it)" >&2
-  exit 3
-}
+[ -f "$CCP_AUTH" ] || sc_die 3 \
+  "no $CCP_AUTH — run: claude-code-proxy codex auth login" \
+  "  (this is the PROXY's own login; ~/.codex/auth.json is the codex CLI's and does not satisfy it)"
 
 sc_gate_band
 sc_gate_capacity     # one live Codex quota read, shared with --check
 sc_gate_price_window # no-op without a registry pricingSchedule; present so the ladder is uniform
 sc_build_disclosure
 sc_validate_effort
+[ "$SC_EFFORT" != none ] || sc_die 2 'effort none refused: codex-proxy requires an effort rung'
 
 # Claude Code defaults an UNRECOGNIZED model to a 200,000-token window, and every GPT id is
 # unrecognized to it (the `[claude-code:unrecognized_model]` warning is the same fact surfacing).
@@ -204,9 +205,7 @@ sc_validate_effort
 # would over-declare past this model's ceiling and convert a managed client-side compaction into
 # a hard upstream error mid-run. Parity between arms means each declares ITS OWN model's window,
 # not the same integer.
-# SIDECAR_CONTEXT_TOKENS_OVERRIDE forces a smaller declared window — the lever that makes a
-# compaction happen on purpose (hooks/sidecar_recompact_reprompt.py proof). Never set it for real work.
-SC_CONTEXT_TOKENS="${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" 2>/dev/null)}"
+# -M declares the registry's MAX window instead: for a job whose live context must pass the default.
 # Reserve the child's output budget (32000, the maxOutputTokens a proxied child reports) out of the
 # declared window. The provider enforces input + max_output <= its window, while the client's
 # auto-compaction watches input alone against the declared figure: declared at the provider's own
@@ -221,9 +220,8 @@ SC_CONTEXT_TOKENS="${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-$(python3 "$SC_REGISTRY_CL
 # SIDECAR_MAX_OUTPUT_TOKENS, and SIDECAR_OUTPUT_RESERVE still overrides the subtraction alone.
 SC_MAX_OUTPUT="${SIDECAR_MAX_OUTPUT_TOKENS:-16000}"
 SC_OUTPUT_RESERVE="${SIDECAR_OUTPUT_RESERVE:-$SC_MAX_OUTPUT}"
-if [ -n "$SC_CONTEXT_TOKENS" ] && [ -z "${SIDECAR_CONTEXT_TOKENS_OVERRIDE:-}" ] && [ "$SC_CONTEXT_TOKENS" -gt $((SC_OUTPUT_RESERVE * 2)) ]; then
-  SC_CONTEXT_TOKENS=$((SC_CONTEXT_TOKENS - SC_OUTPUT_RESERVE))
-fi
+SC_CONTEXT_TOKENS="$(sc_declared_context_window)"
+[ -n "${SC_LONG_CONTEXT:-}" ] && echo "[proxy-sidecar] -M: requests past the codex longContextTier threshold (external_models.json) bill at its multipliers; cost: reference/codex_session_runbook.md §Launch" >&2
 [ -n "$SC_CONTEXT_TOKENS" ] &&   echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry effective window minus the ${SC_OUTPUT_RESERVE}-token output reserve; max output ${SC_MAX_OUTPUT}; auto-compaction expected near $((SC_CONTEXT_TOKENS - SC_MAX_OUTPUT - 3000)))" >&2
 # Window-relative harness cost (measured 2026-09-03 on gpt-5.6-luna: -D bare 22k, pointer 25k, full 37k tokens at turn 1).
 # Under 400k a survey/review child at -D full spends ~14% of its window before the brief; the shape table
@@ -235,7 +233,7 @@ fi
 
 # AFTER sc_build_disclosure so the port is never claimed for a run a validation gate rejects,
 # and so the proxy's cleanup registers behind the scratch-dir cleanup rather than replacing it.
-ccp_start || exit 4
+ccp_start || sc_die 4 "[proxy-sidecar] claude-code-proxy did not start (its output above)"
 
 VERBOSE_ARGS=()
 [ "$SC_FORMAT" = "stream-json" ] && VERBOSE_ARGS=(--verbose)
@@ -248,7 +246,7 @@ EXTRA_ARGS=()
 # Register the re-prompt hook from the LAUNCHER (a worktree older than the hook has no
 # registration of its own); --settings merges with the cwd's settings, and the hook no-ops
 # without the env var. The path must be absolute and native (`C:/...`, never `/c/...` or
-# relative): the hook opens it from the CHILD's cwd. Rationale: reference/sidecar_dispatch.md §Compaction.
+# relative): the hook opens it from the CHILD's cwd. Rationale: reference/sidecar_dispatch.md §After launch.
 SC_PROMPT_FILE_ABS=""
 if [ -n "$SC_PROMPT_FILE" ]; then
   SC_PROMPT_FILE_ABS="$(cd "$(dirname "$SC_PROMPT_FILE")" && pwd)/$(basename "$SC_PROMPT_FILE")"
@@ -266,6 +264,13 @@ sc_scrub_env
 # CLAUDE_CODE_ENTRYPOINT=claude-desktop, which makes the child authenticate through the HOST's
 # subscription OAuth and ignore this token entirely.
 #
+# API_TIMEOUT_MS and the two stream watchdogs: Claude Code ends a request at 600000 ms by default, and
+# its watchdogs end one that gets no parsed content event for that long, pings included. A compaction
+# request waits on the proxy's server compaction plus the summary, which runs 5-11 min on gpt-6.1-sol;
+# the client then re-sends it and the proxy pays for the compaction again. The child waits as long as
+# the text-only shim waits on the proxy (`Shim.upstream_timeout_s`); tests/test_codex_child_timeout.py
+# keeps them in step.
+#
 # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 stops the child's background calls (conversation
 # titles, telemetry) from crossing the proxy as extra upstream requests, which would both
 # spend plan allowance and pollute the attestation capture with non-task traffic.
@@ -281,18 +286,22 @@ run_claude() {
     ANTHROPIC_SMALL_FAST_MODEL="$SC_MODEL" \
     CLAUDE_CODE_SUBAGENT_MODEL="$SC_MODEL" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    API_TIMEOUT_MS=1800000 \
+    CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000 \
+    CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=1800000 \
     CLAUDE_CODE_SIDECAR="$SC_TRANSPORT" \
     CLAUDE_CODE_TRANSPORT="$SC_TRANSPORT" \
     ${SC_CONTEXT_TOKENS:+CLAUDE_CODE_MAX_CONTEXT_TOKENS="$SC_CONTEXT_TOKENS"} \
     ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
     ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
-    ${SC_PROMPT_FILE_ABS:+CLAUDE_CODE_SIDECAR_PROMPT_FILE="$SC_PROMPT_FILE_ABS"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
     "$SC_CLAUDE" -p \
       --model "$SC_MODEL" \
       --output-format "$SC_FORMAT" \
       ${VERBOSE_ARGS[@]+"${VERBOSE_ARGS[@]}"} \
-      --allowedTools "$SC_TOOLS" \
+      --allowedTools "${SC_ALLOWED_TOOLS:-$SC_TOOLS}" \
+      --tools "$(sc_builtin_tools "${SC_RESOLVED_BUILTINS:-$SC_TOOLS}")" \
+      --strict-mcp-config --mcp-config "$(sc_mcp_config "${SC_RESOLVED_TOOL_SPEC:-$SC_TOOLS}" "${SC_MCP_CONFIG_DIR:-}")" \
       ${SC_DISALLOWED:+--disallowedTools "$SC_DISALLOWED"} \
       ${SC_APPEND_ARGS[@]+"${SC_APPEND_ARGS[@]}"} \
       ${SC_MAX_TURNS:+--max-turns "$SC_MAX_TURNS"} \
@@ -314,7 +323,7 @@ sc_run_watched run_claude "$SC_PROGRESS"   # stall watchdog on the -P stream; se
 # An auto-compaction ENDS a -p run: the child answers the summarize request and the harness closes
 # the turn, so the SessionStart:compact re-prompt is never read. Resume the same session with the
 # brief as the next user turn, up to SC_COMPACT_RESUMES times (stream-json runs only — json has no
-# boundary event). Detector: tools/sidecar_compact_end.py.
+# boundary event). Detector: tools/sidecar_resume_check.py.
 sc_resume_loop run_claude "$SC_PROGRESS"
 printf '%s\n' "$OUTPUT"
 [ $rc -eq 124 ] && echo "proxy sidecar timed out after ${SC_TIMEOUT}s" >&2

@@ -241,6 +241,111 @@ def classify_message_signal(content: str) -> str:
 
 
 # =============================================================================
+# Owner rows: one definition for the builder and the incremental owner scan
+# =============================================================================
+
+def entry_message(entry: dict) -> tuple[dict, bool]:
+    """(message object, malformed): a row whose `message` is not an object reads its top-level content."""
+    message = entry.get('message', {})
+    if not isinstance(message, dict):
+        return {'content': entry.get('content', '')}, True
+    return message, False
+
+
+def entry_role(entry: dict, message: dict) -> str | None:
+    """'user', 'assistant' or None. A message the owner sent MID-TURN (a queued prompt) carries no
+    `message` object, so its role is empty; it is still the owner's and routes as 'user'."""
+    entry_type = entry.get('type', '')
+    role = entry_type if entry_type in ('user', 'assistant') else message.get('role', '')
+    if role in ('user', 'assistant'):
+        return role
+    return 'user' if queued_owner_prompt(entry) is not None else None
+
+
+def owner_row(entry: dict, message: dict, index: int, full_evidence: bool, on_tool_result=None):
+    """What one user-role row yields: ('compaction', timestamp, None), ('interrupt', row, content),
+    ('prompt', row, content) or None. `row` is the `user_messages` entry and `index` its line number.
+    Each tool_result block goes to `on_tool_result(block, entry)` before the row's own text is read."""
+    row = classify(dict(entry, message=message), index)
+    if row is None or row.sidechain:
+        return None  # Subagent prompts are the orchestrator's, not the user's
+
+    raw = (message or {}).get('content', entry.get('content', ''))
+    if isinstance(raw, list) and any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in raw):
+        if on_tool_result is not None:
+            for block in raw:
+                if isinstance(block, dict) and block.get('type') == 'tool_result':
+                    on_tool_result(block, entry)
+        raw = [block for block in raw if isinstance(block, dict) and block.get('type') == 'text']
+        if not raw:
+            return None
+        message = dict(message, content=raw)
+
+    content = extract_content(message) if message else extract_content(entry)
+    if not content and row.kind == 'queued_prompt':
+        # The queued text lives on the attachment, not on `entry['content']`; `classify` already
+        # resolved it, so read it from the row rather than re-deriving the shape here.
+        content = row.text
+
+    if COMPACTION_MARKER in content:
+        return 'compaction', entry.get('timestamp'), None
+
+    if row.meta:
+        return None
+
+    if row.kind == 'command' and not row.injection_prefixed:
+        # Slash-command row, in either tag order (desktop rows open with <command-message>):
+        # the user's words are the args; the rest is harness plumbing.
+        args_text = row.command_args or ''
+        if not args_text and not full_evidence:
+            return None
+        content = f"{row.command_name or ''} {args_text}".strip()
+    elif row.envelope == 'agent-message' or content.startswith((
+            '<system-reminder>', '<user-prompt-submit-hook>', '<local-command-caveat>',
+            '<local-command-stdout>', '<task-notification>', '<cross-session-message ')):
+        return None
+    elif not full_evidence and content.startswith('<') and '>' in content[:50]:
+        return None  # Bounded backup summary retains its historical filter.
+
+    if content.startswith('[Request interrupted'):
+        return 'interrupt', {'index': index, 'timestamp': entry.get('timestamp'), 'content': content[:120],
+                             'signals': ['interrupt'], 'matched_patterns': []}, content
+
+    if not content.strip() or (not full_evidence and len(content) < 10):
+        return None
+
+    signals = detect_correction_signals(content)
+    signal_type = classify_message_signal(content)
+    friction = detect_friction_signals(content)
+    return 'prompt', {
+        'index': index,
+        'timestamp': entry.get('timestamp'),
+        'content': content if full_evidence else truncate_at_sentence(content, 2000),
+        'signals': ([signal_type] if signal_type != 'other' else []) + (['friction'] if friction else []),
+        'matched_patterns': (signals + friction)[:6],
+    }, content
+
+
+def owner_line(line: str, index: int, full_evidence: bool = True):
+    """`owner_row` for one raw transcript line, under `TranscriptSummaryBuilder.process_line`'s parse
+    rules (blank, malformed and non-object lines yield None); a row the builder would fail on yields None.
+    Tool results are not routed: an owner scan keeps no friction."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        entry = json.loads(line)
+        if not isinstance(entry, dict):
+            return None
+        message, _ = entry_message(entry)
+        if entry_role(entry, message) != 'user':
+            return None
+        return owner_row(entry, message, index, full_evidence)
+    except Exception:
+        return None
+
+
+# =============================================================================
 # Error Tracker (error -> resolution pairing)
 # =============================================================================
 
@@ -561,7 +666,9 @@ class TranscriptSummaryBuilder:
         self.friction: list[dict] = []              # Tool errors/denials + the assistant's next move
         self._tool_inputs: dict[str, tuple] = {}    # tool_use_id -> (tool, input excerpt)
         self._open_friction: dict | None = None     # Last friction row awaiting the assistant's response
-        self.compaction_markers: list[str | None] = []  # Timestamps of continuation summaries
+        # Timestamps of `compact_boundary` rows. The continuation summary's text also rides in an
+        # `api-request-blob` row, so a count of summary text counted most compactions twice.
+        self.compaction_markers: list[str | None] = []
 
         self.first_timestamp: str | None = None
         self.last_timestamp: str | None = None
@@ -600,89 +707,31 @@ class TranscriptSummaryBuilder:
                 self.first_timestamp = timestamp
             self.last_timestamp = timestamp
 
-        message = entry.get('message', {})
-        if not isinstance(message, dict):
+        if entry.get('subtype') == 'compact_boundary' and not entry.get('isSidechain'):
+            self.compaction_markers.append(timestamp)
+            return
+
+        message, malformed = entry_message(entry)
+        if malformed:
             self.processing_error_rows.append(self.source_line_count)
-            message = {'content': entry.get('content', '')}
-        entry_type = entry.get('type', '')
-
-        role = entry_type if entry_type in ('user', 'assistant') else message.get('role', '')
-
+        role = entry_role(entry, message)
         if role == 'user':
             self._process_user_message(entry, message)
         elif role == 'assistant':
             self._process_assistant_message(entry, message)
-        elif queued_owner_prompt(entry) is not None:
-            # A message the owner sent MID-TURN carries no `message` object, so `role` is empty and
-            # neither branch above runs -- which is how such a message stayed out of every digest
-            # and out of the compaction anchors, however directive it was.
-            self._process_user_message(entry, message)
 
     def _process_user_message(self, entry: dict, message: dict):
         """Record every real user prompt verbatim; route tool_result rows to friction capture."""
-        row = classify(dict(entry, message=message), self.source_line_count)
-        if row is None or row.sidechain:
-            return  # Subagent prompts are the orchestrator's, not the user's
-
-        raw = (message or {}).get('content', entry.get('content', ''))
-        if isinstance(raw, list) and any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in raw):
-            for block in raw:
-                if isinstance(block, dict) and block.get('type') == 'tool_result':
-                    self._process_tool_result(block, entry)
-            raw = [block for block in raw if isinstance(block, dict) and block.get('type') == 'text']
-            if not raw:
-                return
-            message = dict(message, content=raw)
-
-        content = extract_content(message) if message else extract_content(entry)
-        if not content and row.kind == 'queued_prompt':
-            # The queued text lives on the attachment, not on `entry['content']`; `classify` already
-            # resolved it, so read it from the row rather than re-deriving the shape here.
-            content = row.text
-
-        if COMPACTION_MARKER in content:
-            self.compaction_markers.append(entry.get('timestamp'))
+        found = owner_row(entry, message, self.source_line_count, self.full_evidence, self._process_tool_result)
+        if found is None:
             return
-
-        if row.meta:
+        kind, value, content = found
+        if kind == 'compaction':
             return
-
-        if row.kind == 'command' and not row.injection_prefixed:
-            # Slash-command row, in either tag order (desktop rows open with <command-message>):
-            # the user's words are the args; the rest is harness plumbing.
-            args_text = row.command_args or ''
-            if not args_text and not self.full_evidence:
-                return
-            content = f"{row.command_name or ''} {args_text}".strip()
-        elif row.envelope == 'agent-message' or content.startswith((
-                '<system-reminder>', '<user-prompt-submit-hook>', '<local-command-caveat>',
-                '<local-command-stdout>', '<task-notification>', '<cross-session-message ')):
+        self.user_messages.append(value)
+        if kind == 'interrupt':
             return
-        elif not self.full_evidence and content.startswith('<') and '>' in content[:50]:
-            return  # Bounded backup summary retains its historical filter.
-
-        if content.startswith('[Request interrupted'):
-            self.user_messages.append({'index': self.source_line_count, 'timestamp': entry.get('timestamp'),
-                                       'content': content[:120], 'signals': ['interrupt'], 'matched_patterns': []})
-            return
-
-        if not content.strip() or (not self.full_evidence and len(content) < 10):
-            return
-
         self.last_user_request = truncate_at_sentence(content, 500)
-
-        signals = detect_correction_signals(content)
-        signal_type = classify_message_signal(content)
-        friction = detect_friction_signals(content)
-
-        self.user_messages.append({
-            'index': self.source_line_count,
-            'timestamp': entry.get('timestamp'),
-            'content': content if self.full_evidence else truncate_at_sentence(content, 2000),
-            'signals': ([signal_type] if signal_type != 'other' else []) + (['friction'] if friction else []),
-            'matched_patterns': (signals + friction)[:6],
-        })
-
         error_type = detect_error_type(content)
         if error_type:
             self.error_tracker.record_error(error_type, content, self.message_count)

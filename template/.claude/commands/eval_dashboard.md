@@ -1,226 +1,104 @@
 ---
-description: Generate the Self-Evaluation Performance Dashboard from the session archive.
+description: Build the self-evaluation dashboard
 ---
 
-## Fast Path (preferred — use the analysis script)
+`tools/eval_dashboard.py` reads every archive in one pass and writes the note, the offline report and the month's history entry. The session model writes one file, the verdict, and reads nothing from the archives by hand. If a tool crashes or exits 2 on an unreadable input, fix it and rerun; do not model-read or rewrite an archive as a fallback. A finding is not a failure: step 3's exit 1 (a rule fired) and exit 2 (a malformed rule row) are results the dashboard reports, so carry on to step 4.
 
-A canonical analysis script lives at `.claude/tools/analyze_eval_archive.py`. It merges the frozen legacy snapshot with the bounded JSONL ledger, keeps the newest row per `session_id`, computes deterministic statistics, and writes `/tmp/eval_out/stats.json`.
+## Run order
 
-**Run order on every `/eval_dashboard` invocation:**
+1. `python3 .claude/tools/analyze_eval_archive.py` — read its bounded console output. It merges the frozen legacy snapshot (`.claude/self_evaluate_archive.json`) with the bounded JSONL ledger (`.claude/self_evaluate_archive.jsonl` and its rotations), keeps the newest row per `session_id`, and is the only full-archive session reader. Superseded rows are normal ledger revisions; no cleanup pass is required.
+2. `python3 .claude/tools/load_census.py --budgets --json .claude/logs/load_census.json`
+3. `python3 .claude/tools/rule_retirement.py --client-version <client> --tools <live tool names> --census .claude/logs/load_census.json --json .claude/scratch/eval_out/rule_retirement.json`. A missing census makes `load_census budget` triggers undecidable; the report says so. Its exit 1 or 2 is a finding (see above); only a traceback is a failure.
+4. Run the analysis pass in `.claude/commands/reference/eval_analysis.md`; it names its inputs. Then delete and rewrite `.claude/scratch/eval_out/verdict.json` from it (schema below). Its `month` must equal this run's month. With no previous note, run step 5 once without `--verdict`, read the note it writes, then write the verdict and run step 5 again; a second run over the same sources changes nothing but the verdict.
+5. `python3 .claude/tools/eval_dashboard.py --verdict .claude/scratch/eval_out/verdict.json --rules-json .claude/scratch/eval_out/rule_retirement.json`
+6. On exit 0 or 3 only: `python3 .claude/tools/self_improvement_due.py --stamp`. It records the row count and date to `.claude/logs/eval_dashboard_last.json`, the row half of `session_context_loader`'s due-check.
 
-1. `python3 .claude/tools/analyze_eval_archive.py` — read its bounded console output for inline review.
-2. Treat `/tmp/eval_out/stats.json` as the **single source of truth** for §1 / §3 / §4 / §4b / §6 / §8.6 numbers.
-3. Use Claude reasoning ONLY for §7 (Strength/Weakness narrative) and §8 (Conclusions) — these need session-context judgment that the script can't produce.
-4. Stamp the run: `python3 .claude/tools/self_improvement_due.py --stamp`. It records the current row count and today's date to `.claude/logs/eval_dashboard_last.json`, the row half of `session_context_loader`'s startup due-check.
+Optional flags: `--today YYYY-MM-DD` (a real date), `--vault DIR`, `--root DIR`, `--refreeze YYYY-MM` (rewrite a closed month from the live sources; repeatable; exits 2 while the model registry is unreadable, because the month would lose its ladder), `--sessions-root DIR` (a directory of session directories, each holding `workflows/<run>.json`; it resolves ledger rows recorded before `session_id` to their session for the ladder's session counts; without it the dashboard reads this project's Claude Code sessions, matched from the working directory, so a run from another directory counts none). A malformed value, a `--sessions-root` that is not a directory, or an unreadable `--verdict` or `--rules-json` file exits 2 naming it.
 
-The script is the only full-archive reader. If it fails, fix and rerun it; do not model-read or rewrite the archive as a fallback.
+## Outputs
 
-`Superseded-row rate` measures normal ledger revisions; no cleanup pass is required.
+| output | path | tracked |
+|---|---|---|
+| note | vault `Claude/Meta/Self Evaluation Dashboard.md` (one screen: a sessions block, a dispatched-agents block, at most 6 attention rows, ladder callout, inputs) | no |
+| report | vault `Claude/Meta/EVAL-DASHBOARD.html`, nine tabs: Overview, Trend, Sessions, Agents, Ladder, Log, Inputs, Review, Findings | no |
+| month notes | vault `Claude/Meta/Eval Dashboard Archive/Eval Dashboard <YYYY-MM>.md`, frozen when the month closes | no |
+| history | `.claude/eval_history.json`, one snapshot per month, an earlier open month closed once, a missing earlier month backfilled; a month stores its sessions with the causes of the non-clean ones, and its agents as (model, effort) cells that sum to `n` plus the pay-per-token spend; a file of a previous schema is rebuilt month by month from the live sources on its next run, keeping each month's verdict, flags and stored skill-drift rows. Schema stays 3: the sessions block's `corrections`, `prompts`, `facts_rows`, per-domain/skill/per-duration-bucket sums, `drivers`, `cause_counts`, `rule_misses` (by kind) and `rule_miss_rows` are optional keys, so a month written before them is read as absent rather than zeroed, and the per-rule table stays live | yes |
 
-## Data Source
-The script reads both storage layers:
+The note's **sessions block** lists clean, correction and failure sessions for the prior and current month, each as a count and a share of the sessions with a known outcome, the corrections-per-100-owner-prompts rate beside the clean share when the month stores it (D2: it replaces nothing; a month stored before `facts` existed reads no rate, never a zero one), then the non-clean sessions by recorded cause: A rules existed, not followed; B docs missing; D tool and its docs disagree; E tooling bug cascaded across sessions; and a row for the sessions that recorded none of them (shown only when one exists). Code C is the clean session under the old convention and is not a cause. One definition line states that `/self_evaluate` grades each session itself; a second defines the change words and the bars. The report's **Sessions tab** draws each domain, skill and duration row with the same rate beside its clean share, then a **driver** table (one row per store-derived `model / effort`, with its outcome and rate) and a live **rule** table (rule, kind, sessions, example ids, from `rule_misses`; the month stores the per-kind counts only). Its **dispatched-agents block** lists only problem cells, each as `model at effort: k of n rated` (a problem cell has `FLOOR_MIN_FALSIFIED` or more defects or rework among `FLOOR_MIN_ROWS` or more rated agents, the constants the effort-floor rule uses), one caveat line with the unrated share, and one `pay-per-token spend: $X over N runs` line only when the month has runs priced above zero on a route whose registry `costModel` is `marginal-usd`. The note carries no pooled cost row: cost lives per (model, effort) in the report's Agents tab. The report's Overview and Trend tabs use the same labels and definitions. The month-over-month word `rebuilt later` marks a base month that was reconstructed from the ledgers that remained when it was first seen, so its agent counts are not comparable.
 
-### Structured entries
-- `.claude/self_evaluate_archive.json` is the read-only legacy snapshot.
-- `.claude/self_evaluate_archive.jsonl` and its rotations hold bounded new and revised rows.
-- The newest row per `session_id` is effective; pre-session-ID rows fall back to `(title, date)`.
+The note links the report by `file:///` URL. The report is one HTML file with its data inlined and no network reference.
 
-### Legacy entries (historical — pre-2026-02-03)
-- `legacy_entries[]` are compressed prose strings classified heuristically.
-- `Self_Evaluate_Themes` supplies pattern definitions and meta-insights.
+## Exit codes
 
-### Merging both formats
-Use the script output. Structured entries take priority; note ambiguous legacy classification in footnotes.
+- 0 published.
+- 1 vault or write failure.
+- 2 invalid argument, unreadable input or invalid verdict.
+- 3 published with a stale or unparseable input listed on the Inputs tab. An absent optional producer, such as the routing audit, is listed `absent` and does not degrade the run. A producer older than `STALE_DAYS` is stale. The orchestration ledger is unparseable when any line cannot be read, and the model registry is unparseable when it cannot be loaded (the Ladder tab and the note then say the readout is unavailable).
+- 4 history refused: the stored file is unparseable or has an unknown schema and is left untouched. The note and report are still written; month notes are withheld.
 
-## Output
-Write to the vault at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Self Evaluation Dashboard.md` using `Write` (whole-file overwrite; creates the file if absent) per CLAUDE.md §3.
+`verdict.json` is removed after exit 0 or 3 and kept after 1, 2 and 4.
 
-## Document Structure
+## Verdict
 
-### Frontmatter
-```yaml
----
-updated: <current date>
-total_sessions: <count>
-clean_sessions: <count>
-correction_sessions: <count>
-current_streak: <count>
-tags: [self-evaluate, dashboard, claude, meta]
----
+The verdict is the only hand-written content. Write it from the analysis pass, not from memory of the session.
+
+```json
+{"month": "YYYY-MM", "state": "<=300 chars", "moves": [{"do": "", "why": "", "see": "overview|trend|sessions|agents|ladder|log|inputs|review|findings", "finding": ["<id>"], "metric": "<key>"}],
+ "watch": ["at most 3"], "layers": {"sessions|guards|cascades|pins|ladder|review": "move | no move: <evidence>"}, "milestone": "optional", "profile": {"strengths": ["at most 5"], "weaknesses": ["at most 5"]}}
 ```
 
-### Section 1: Overview Stats
-Quick-reference table:
-| Metric | Value |
-|--------|-------|
-| Total Sessions | N |
-| Clean (0 corrections) | N (X%) |
-| Minor Corrections | N (X%) |
-| Major Failures | N (X%) |
-| Current Clean Streak | N |
-| Longest Clean Streak | N |
+`moves` holds at most 5 entries. `layers` is optional: when present it names a subset of the six layers, each `move` or `no move: <evidence>`, and `move` needs a non-empty `moves`. `finding` and `metric` are one optional pair: both or neither. `finding` lists ids from the Findings tab and `metric` is the one metric key the fix should move; an id or key that this run does not compute exits 2 naming the move. A move that cites another readout (a ladder proposal, a pricier-pin pair, a rule retirement, a review proposal) carries neither and renders `not measured`. `profile` is optional and appears on the report only. A violation exits 2 naming the field. With no `--verdict` and none stored for the month, the note and report show "Verdict not written for this run" and the snapshot stores null; a stored verdict is shown and kept. A closed month keeps the verdict written in it.
 
-### Section 2: Timeline
-Mermaid `gantt` or `xychart-beta` chart showing sessions over time.
-- X-axis: dates (group by week if >20 entries)
-- Color/category: Clean / Correction / Failure
-- Goal: visual trend of improvement over time
+## Where each former section went
 
-**Mermaid rules:** renderer constraints (no click links, etc.) live in the `mermaid_diagrams` skill. Diagram-specific: keep labels short (session # only); prefer `gantt` for broad Obsidian compatibility.
+| former section | now |
+|---|---|
+| 1 Overview, 2 Timeline | sessions block with sparklines in the note; Overview and Trend tabs, with compare-two-months |
+| 3 Patterns, 4 Domains, 4b Skills | Sessions tab; a skill falling 10 points or more with enough sessions is an attention row |
+| 4c Routing stability | one Inputs row; a Routing card only when `routing_audit_stats.json` exists |
+| 4d Effort calibration | Agents tab; attention rows for a moved floor and over-pin candidates |
+| 4e Rules past their trigger | Log tab; up to the attention list in the note |
+| 4f Model by tier | Ladder tab; verdicts and advisory proposals |
+| 5 Corrections, 6 Valuable rules | Log tab |
+| 7 Strength and weakness, 8 Conclusions | the verdict; the periodic review's proposals are on the Review tab |
 
-### Section 3: Pattern Distribution
-Classify each session into the established patterns, then summarize:
+`/autolearn` owns acting on skill drift and rule retirements; the dashboard reports them.
 
-> [!abstract]- Pattern Classification
-> | Pattern | Description | Count | Sessions |
-> |---------|-------------|-------|----------|
-> | A | Discipline failure (clear docs exist) | N | #3, #5, ... |
-> | B | Documentation gap (autolearn fixes) | N | #1, #7, ... |
-> | C | Clean session | N | #8-#19, ... |
-> | D | Tooling/Documentation mismatch | N | #21, ... |
+## Findings
 
-### Section 4: Domain Performance
-Analyze which domains generated the most corrections vs. clean execution:
+`tools/eval_findings.py` computes the Findings tab from the archives, over the prior and current month: friction categories per session, session outcome shares, defect-note classes per served model, sessions with a guard denial per category (signature matches in the session transcripts, `tools/guard_denials.py`, not keyword counts), the `rules` family (one `rules.<slug>.sessions` per rule named in any row, emitted zero-filled in every window, with the sessions that recorded `rule_misses` as the denominator, and a `rule.<slug>` finding for a rule named in two or more sessions), and a fix status for each failed or cause-E session (`landed` only when a sha in its notes is an ancestor of HEAD). Two metrics of that set are not keyword counts: `outcome.corrections-per-prompt` divides the corrections by the store-derived owner prompts, times 100, over the rows carrying both (its floor still counts the sessions that carry them, and a row without `facts.owner_prompts` is typed absent, never a zero-prompt session), and `agents.unrated.all` / `agents.tier-absent.all` read the ledger rows' rating state instead of their notes. Every metric counts something bad, so lower is better, and each finding is addressable by its id for a verdict move. The remaining counts are keyword counts: they never assert a recurrence or a cause, the unclassified share prints beside each family, and the patterns are scored against hand-labeled strings (`tests/fixtures/eval_findings/`), so read an example before building a move on a count. The tool names no move; the verdict writer chooses which findings deserve one.
 
-> [!tip]- Domain Hit Rates
-> | Domain | Sessions Touching | Corrections | Clean Rate |
-> |--------|------------------|-------------|------------|
-> | Pooling | N | N | X% |
-> | Testing | N | N | X% |
-> | Refactoring | N | N | X% |
-> | Combat/Effects | N | N | X% |
-> | UI/Animation | N | N | X% |
-> | Meta/Tooling | N | N | X% |
+The Findings table's `last 6 weeks` column shows each metric in 7-day windows, oldest first (`eval_findings.trends`). The analysis pass owns how to read it.
 
-### Section 4b: Skill Performance
+A finding with a declined ledger row becomes a move only when the decline's reason no longer holds (`/autolearn` §Signal detection, Packet outcomes). The owner approves a move before it lands; a declined move is recorded with `python3 .claude/tools/autolearn_outcomes.py record --outcome declined --metric <key> --target <home path> --reason <why> ...`, so the Findings tab shows the decline beside the finding. It lands through `/codify`, whose Step 6 record carries the move's `metric` in `--metric`; the Findings tab then compares the month before the row's date with the days after it (the day it landed counts in neither) and shows `waiting`, `baseline thin`, `baseline partial` or `baseline unavailable` instead of a verdict on `moved` until both windows hold enough rows. `moved` is an association: other changes land in the same window.
 
-The per-skill mirror of Section 4. For each skill that appeared in `skills_used[]` 3+ times across the structured archive, compute the clean rate. Structured-entries-only — legacy entries don't reliably surface `skills_used[]` and would inflate denominators with unattributed sessions.
+## Review calibration
 
-> [!tip]- Skill Hit Rates
-> | Skill | Sessions Loaded | Clean | Correction | Failure | Clean Rate | Trend |
-> |-------|-----------------|-------|-----------|---------|-----------|-------|
-> | architecture_philosophy | N | N | N | N | X% | ↑/↓/→ |
-> | spell_authoring | N | N | N | N | X% | ↑/↓/→ |
-> | testing | N | N | N | N | X% | ↑/↓/→ |
-> | jmodot | N | N | N | N | X% | ↑/↓/→ |
-> | autolearn | N | N | N | N | X% | ↑/↓/→ |
-> | (skills with <3 loads omitted as low-signal) | | | | | | |
+The Review tab (`tools/review_calibration.py`) shows the escape log beside the review yield log and lists the periodic review's proposals. It reads the live sources on every run; the monthly history does not store it. The tab holds the escape rows with file bytes and counts by mandate, domain, author model and tier; per mandate, the reviews it was reached in, its unique findings, its pre-merge `ledger_new` (single-mandate seats only; a null renders as `—`) and the escape rows naming it; the pre-merge seats by model family; and the ledger join counts (joined, absent, unreadable), so an absent join never reads as zero. An absent escape log or review ledger is an `absent` Inputs row and does not degrade the run. The note gains `review proposals: N — see the Review tab` only when N is above zero.
 
-**Trend column:** compare the most recent ≤10 sessions' clean rate for that skill against the prior window of the same size. ↑ if recent > prior + 10pp, ↓ if recent < prior − 10pp, → otherwise. With small N this is noisy — flag the trend column with `(low N)` when fewer than 6 recent sessions touched the skill.
+The dashboard edits nothing. The owner approves each proposal, then makes the edit.
 
-**Predicted-vs-measured (optional, gated on data):** if a skill's frontmatter declares `expected_clean_rate: 0.NN`, render a `Predicted` column and flag (⚠) when measured falls outside ±10pp of predicted. Skip the column entirely if no skill declares the field. The field is opt-in; new skills get a calibration period; mature skills can declare a target after 1–2 dashboard runs reveal a stable baseline.
+| kind | fires when | proposes |
+|---|---|---|
+| `merge-seat` | `orchestration_metrics.seat_yield` returns the seat | merge the seat into one that reads the same input, with one evidence marker per mandate |
+| `premerge-seat` | the newest pre-merge reviews of a seat and model family carry `ledger_new` 0 | drop the cross-family pre-merge seat |
+| `sensitivity-tag` | an escape row has domain `untagged` | a tag over its paths |
+| `triage-rule` | an escape row's recorded triage sits below `triage.raises` over its paths, or reads `unrecorded` | change the triage rule or tag |
+| `compensation` | a model carries an owner `probation` mark or a driver note with `removeWhen` | removal per the note, shown beside the model's escape rows |
 
-### Section 4c: Routing Stability
+<!-- basis: reasoned; reverses-if: an escaped defect falls under a mandate a merge-seat proposal folded into another seat; review-when: escape tier:!inline since:2026-10-01 >= 1 -->
 
-**Data source:** `logs/routing_audit_stats.json` (produced by the routing audit's aggregate step where the project installs it, also auto-run by `/session_end` Phase 3.5). If the file doesn't exist, render the section with a "(no audit data — the routing audit has not run)" placeholder rather than omitting — visible absence is a signal that the audit hook may not be wired.
+`premerge-seat` lists every group whose newest rows are all zero, longest run first, with the run length L printed. A null `ledger_new` is unmeasured and ends a run. The owner judges whether L is enough evidence.
 
-This section answers the question Sections 4 and 4b can't: *are the routing hooks reaching the agent?* Section 4b measures whether skills carry their declared compliance, but routing decisions happen below the skill layer (per-call PostToolUse classification against §9 rules). Drift here surfaces *before* it manifests as Pattern A discipline failures in Section 4b.
+## Effort Calibration
 
-> [!tip]- Routing Audit — Headline Counts
-> | Metric | Value | Reading |
-> |--------|-------|---------|
-> | silent_misses | N | rule-warranted, nudge channel didn't reach agent — the gap to close |
-> | nudged_routing_misses | N | rule-warranted, nudge fired (channel works; agent may still ignore) |
-> | cue_exempt_overrides | N | legitimate K1/L6/audit-shape override (compliance, not failure) |
+Sessions measure whether skills carry their compliance. The Agents tab measures whether effort pins are sized right, the only failure surface whose cost is attributable. It is one table keyed by model and requested effort, ordered by model then low to max then `?`, holding Workflow (`wf`) and sidecar (`sc`) rows together with each row's route mix. A row's model is the served model when the row records one, else the requested pin, resolved to the registry's canonical id through its alias data (`model_tier_readout.model_identity`, shared with the floor cells and the ladder readout), so a dated and an undated id of one model share a row; a bare family name with no served id cannot name a version and reads `<family> (version unrecorded)`. Every row lands in one column: clean, defects, rework, discarded, unrated (sampled-out rows included) or `other` (no outcome, or one outside the vocabulary), so the columns sum to `n`. Quota cost (Workflow rows) and USD (sidecar rows) are separate columns, each averaged over the rows that carry it. The route control on the tab splits every row by route, to see whether a model does worse on one route; the default view is merged. `orchestration_metrics.py --archive-summary` prints the same table. The tab's footer adds one line naming why the unrated rows are unrated (`orchestration_metrics.unrated_reason`, read at collection and never stored): the deliberate exclusions are the coverage line's, a row no structural cause explains is plain rating debt and is not named, and a row set with no named reason prints no line.
 
-> [!tip]- Top-5 Silent-Miss Rules
-> Read from `top_5_silent_miss_rules` array in stats JSON. Each row: rule, total in window, current week count, prior-4wk avg, trend label.
->
-> | Rule | Total | This week | Prior 4-wk avg | Trend |
-> |------|-------|-----------|----------------|-------|
-> | (populate from stats JSON) | N | N | N.N | ±N% / new / flat |
+- **`defects` or `rework`** falsify a shape's floor. One instance is noise; two in one label family (the label before its first `:`) on one model at one requested effort, with at least 8 rated Workflow agents there, make the attention row "effort floor moved" (`review on <model> at <effort>: ...`). The note's problem cells apply the same two constants to a whole (model, effort) cell, across label families and both routes.
+- **`discarded`** and **`clean`** mean what `/orchestration_metrics` step 3 defines. Over-pin candidates are advisory; `/orchestration_metrics` *Over-pin candidates* owns promotion on matched quality and complete-task cost, including parent work and rework.
+- **Pricier pins** are computed from records, never ratings: fanout and scout dispatches pinned while a cheaper row claimed the tier. A pin chosen because its plan had more quota for its window is the selection line working, not an error; judge each recurring (tier, pinned row) pair by the `pick` its dispatcher recorded at launch (`orchestration` §5), read from the row, rather than by the posture of its dispatch days. A pair the recorded reason does not explain — a row whose `pick` is absent, or one no plan quota accounts for — becomes a verdict action: the cheaper row's ladder cell gains the shape it clears, or the pinned row's cell states the work only it clears.
+- **`?` efforts** mean the script's `PINS` log line is missing (`orchestration` §9); that data is unattributable.
 
-**Trend reading:**
-- `+N%` (current vs. prior-4wk) — rule is firing more often than usual; investigate whether new code-discovery patterns are tripping it.
-- `-N%` — improvement; if persistent, candidate for moving the rule from advisory to hard-block, OR the rule is becoming irrelevant (stale).
-- `flat` — steady-state; nothing to act on.
-- `new` — rule didn't fire at all in prior window; first appearance is the diagnostic signal.
+## Ladder readout
 
-**Cross-link:** trend deltas here should triangulate with the most recent synthetic routing-battery results, where the project runs one. If continuous-audit silent-miss spikes but the last battery still passes, the doctrine is intact and the spike is task-specific (a sprint of unfamiliar code-discovery). If both the audit AND battery show the same rule degrading, doctrine drift is real and the rule needs a CLAUDE.md negative-framing addition or skill update.
-
-Label these counts as classifier observations, not measurements of routing quality. **No-data state:** if `silent_misses == 0` and `cue_exempt_overrides == 0`, either (a) all routing is compliant (excellent), (b) no routing-classifiable calls happened in window (fresh project, recent rotation), or (c) audit hook isn't firing. Disambiguate via `total_entries` field — if zero entries, suspect (c) and check `settings.json` for `routing_audit.py` wire-up.
-
-### Section 4d: Effort Calibration
-
-**Data source:** `.claude/orchestration_metrics.jsonl` (written by `/orchestration_metrics archive`, also run by `/session_end` Phase 3.6). Render via `python3 .claude/tools/orchestration_metrics.py --archive-summary`. If the file doesn't exist, render a "(no orchestration data — no Workflow-dispatching session has been archived yet)" placeholder rather than omitting; visible absence signals the phase isn't firing.
-
-Sections 4/4b measure whether *skills* carry their declared compliance. This measures whether *effort pins* are sized right — a different failure surface, and the only one whose cost is directly attributable.
-
-`--archive-summary` also prints a **DeepSeek sidecar** section (labeled runs from the spend ledger, real USD, requested-effort vendor coordinates). Render it as its own table beside — never merged into — the Anthropic matrix below; the effort axes are not commensurable.
-
-> [!tip]- Effort Fit vs Cost
-> | Effort | Agents | clean | defects | rework | discarded | Cost/agent |
-> |--------|--------|-------|---------|--------|-----------|------------|
-> | low | N | N | N | N | N | X |
-> | medium | N | N | N | N | N | X |
-> | high | N | N | N | N | N | X |
-> | xhigh | N | N | N | N | N | X |
-
-**Reading the distribution:**
-- **Any `defects`/`rework`** → the falsification signal — that shape's floor is too low. One instance is noise; two on the same family means the floor moved.
-- **`discarded` → audit the spec, not the pin.** It usually means an open decision was pushed into an agent instead of settled first, which no effort level fixes.
-- **`clean` is a null measurement, not a certification** — it does not show a lower pin would pass. Render over-pin candidates as advisory. `/orchestration_metrics` *Over-pin candidates* owns promotion: matched quality and complete-task cost, including parent work and rework. No automatic downgrade follows from this table.
-- **`?` efforts in the archive** → scripts are missing the `PINS` log line (`orchestration` §9); the data is unattributable until that lands.
-
-**Minimum N before proposing a ladder edit:** ≥8 archived agents at the tier in question, spanning ≥3 sessions. Below that, per-session variance dominates — say so rather than tuning on it.
-
-### Section 4e: Rules Past Their Trigger
-
-**Data source:** First generate the runtime census with `python3 .claude/tools/load_census.py --budgets --json .claude/logs/load_census.json`, then run `python3 .claude/tools/rule_retirement.py --client-version <client> --tools <live tool names> --census .claude/logs/load_census.json --json /tmp/eval_out/rule_retirement.json`. Sections 4–4d measure how the harness performs; this one measures what it is still carrying. `--census` is the load-census JSON generated by `tools/load_census.py`; when the file is absent the scanner marks `load_census budget …` triggers undecidable, and this section says so rather than dropping them.
-
-> [!tip]- Rules past their retirement trigger
-> | Rule | Trigger | Why it fired |
-> |------|---------|--------------|
-> | (populate from `fired[]`) | | |
-
-Render `malformed[]` beneath as a defect list — a trigger no kind matches retires nothing — and state the `undecidable[]` count with the evidence that was missing. An empty `fired[]` renders as "no rule is past its trigger", never an omitted section. `/autolearn` owns proposing these retirements; this section only reports them.
-
-### Section 5: Key Corrections Log
-Chronological table of sessions with corrections:
-
-> [!warning]- Correction History
-> | # | Date | Session | What Happened | Root Cause | Pattern |
-> |---|------|---------|---------------|------------|---------|
-> | 3 | 2026-01-14 | Status Effect Stacking | Skipped RED step | Discipline | A |
-> | ... | ... | ... | ... | ... | ... |
-
-### Section 6: Most Valuable Rules & Skills
-Analyze the archive to identify which rules, skills, and memory entities were cited most often as either:
-- **Preventing issues** (proactive value) — e.g., "Memory search for 'pool' surfaced needed gotchas"
-- **Catching issues** (reactive value) — e.g., "User caught .tres TDD gap"
-
-> [!success]- High-Value Rules & Skills
-> | Rule/Skill/Entity | Times Cited | Preventive | Reactive | Notes |
-> |-------------------|-------------|------------|----------|-------|
-> | Memory search at session start | N | N | N | ... |
-> | Refactoring_Verification_Pattern | N | N | N | ... |
-> | ... | ... | ... | ... | ... |
-
-### Section 7: Strength & Weakness Profile
-Based on all data, characterize what task types, scales, and scopes the agent excels at vs. struggles with:
-
-> [!example]- Agent Strengths
-> Bullet list of task types, system scales, and workflows where the agent consistently performs well. Include evidence (session #s).
-
-> [!danger]- Agent Weaknesses
-> Bullet list of task types, scopes, or situations where corrections cluster. Include evidence and whether the weakness is improving, stable, or recurring.
-
-### Section 8: Conclusions & Recommendations
-**This is the most important section.** Synthesize ALL of the above into actionable insights:
-
-1. **Pipeline Health:** Is the design pipeline (CLAUDE.md + Skills + Memory + Hooks) working? What's the trend?
-2. **Recommended Changes:** Based on correction patterns, are there specific rules, skills, or hooks that should be added, modified, or removed? Be specific — cite the evidence.
-3. **Diminishing Returns Check:** Are there areas where more documentation/hooks would NOT help (Pattern A — discipline gaps)? Call these out to prevent context bloat.
-4. **Scale & Scope Insights:** What size/complexity of tasks does the agent handle best? Where does it break down? Should session structure change for certain task types?
-5. **Next Milestone:** What would the next meaningful improvement look like? Define it concretely (e.g., "15 consecutive clean sessions across all domains" or "zero Pattern A failures for 2 weeks").
-6. **Skill Drift Watchlist:** which skills' clean rates dropped in the most recent window (Section 4b ↓ trend, ideally ≥10pp drop)? These are the candidates for the next `/autolearn` pass — observed regressions, not vibes. Cite the sessions that drove the drop. If no skill is drifting, say so explicitly so the absence is visible rather than implicit.
-
-## Execution Notes
-- **Structured entries:** Use fields directly — `outcome`, `pattern`, `domains`, etc. No parsing needed.
-- **Legacy entries:** Parse heuristically for: date, session number, clean/correction/failure, domains touched, patterns referenced
-  - Entries like "#8-#19 ARCHIVED" count as individual clean sessions (12 sessions)
-  - Entries with "USER CORRECTION" or "CRITICAL" = correction/failure
-  - Entries with "Zero corrections" or "Clean" = clean
-  - Use judgment for ambiguous entries
-- **Structured data enriches Sections 4 & 6:** `domains[]`, `skills_used[]`, `memory_hits[]`, and `tests{}` fields enable precise Domain Performance and Most Valuable Rules analysis. Legacy entries require inference for these sections.
-- Obsidian callout style: `> [!type]- Descriptive Title` (NOT generic "Details")
+A cell is a served registry model at a role tier. The minimum sample is code: `MIN_ROWS`, `MIN_SESSIONS`, `CONTRADICT_MIN_FALSIFIED` and `CONTRADICT_MIN_SHARE` in `.claude/tools/model_tier_readout.py`, printed with every verdict. Every proposal is advisory, names the owner as the editor of `external_models.json` `roles`, and points at `/ladder_ingest`, whose §What lands weighs it against `bench` and `pub` evidence. Rows without a recorded tier land in "tier absent"; the footer counts each bucket. Each cell also shows `mismatch`, the number of its Workflow rows whose requested pin the served model does not honor (`/orchestration_metrics` defines `MODEL MISMATCH`; a `[1m]` context suffix is ignored); the row still counts toward the served model's cell.

@@ -38,11 +38,11 @@ LADDER = """# Model ladder
 
 ## Role guidance
 
-| model | role | intel | deleg | speed | cost | taste | effort | plusminus |
-|---|---|---|---|---|---|---|---|---|
-| opus | architect & executor | 8 | 5 | 4 | 4 | 7 | `xhigh` hardest design | + scoped work |
-| sonnet | fan-out, validation | 5 | 6 | 6 | 7 | 5 | high for depth | + surveys |
-| haiku | scout | 2 | - | 9 | 9 | 1 | low | + locate |
+| model | strengths | evidence | intel | deleg | speed | cost | taste | effort | plusminus |
+|---|---|---|---|---|---|---|---|---|---|
+| opus | architect & executor | bench | 8 | 5 | 4 | 4 | 7 | `xhigh` hardest design | + scoped work |
+| sonnet | fan-out, validation | bench | 5 | 6 | 6 | 7 | 5 | high for depth | + surveys |
+| haiku | scout | bench | 2 | - | 9 | 9 | 1 | low | + locate |
 
 ## Axis definitions
 
@@ -61,11 +61,11 @@ LADDER_SHIFTED = """## Pick by work shape
 
 ## Role guidance
 
-| tier | model | role | intel | deleg | speed | cost | taste | effort | plusminus |
-|---|---|---|---|---|---|---|---|---|---|
-| A | opus | architect & executor | 8 | 5 | 4 | 4 | 7 | `xhigh` hardest design | + scoped work |
-| B | sonnet | fan-out, validation | 5 | 6 | 6 | 7 | 5 | high for depth | + surveys |
-| C | haiku | scout | 2 | - | 9 | 9 | 1 | low | + locate |
+| tier | model | strengths | evidence | intel | deleg | speed | cost | taste | effort | plusminus |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A | opus | architect & executor | bench | 8 | 5 | 4 | 4 | 7 | `xhigh` hardest design | + scoped work |
+| B | sonnet | fan-out, validation | bench | 5 | 6 | 6 | 7 | 5 | high for depth | + surveys |
+| C | haiku | scout | bench | 2 | - | 9 | 9 | 1 | low | + locate |
 """
 
 NO_HEADING = """## Pick by work shape
@@ -75,37 +75,81 @@ NO_HEADING = """## Pick by work shape
 | deep review (T11) | `opus.xhigh` | `luna.max` | opus at `high` |
 """
 
-RENAMED_COLUMN = LADDER.replace("| model | role |", "| row | role |")
+RENAMED_COLUMN = LADDER.replace("| model | strengths |", "| row | strengths |")
 
-# A role cell opening with two tier tokens: the row claims both tiers, so the line prints both.
-TWO_TIER = LADDER.replace("| opus | architect & executor |", "| opus | `architect` `executor` — design & execution |")
+# A strengths cell carrying tier tokens: registry `roles` alone decides what the row claims.
+TOKEN_CELL = LADDER.replace("| opus | architect & executor |", "| opus | `scout` — design & execution |")
 
-# A non-Anthropic row whose role cell is prose; its tier claim lives in registry `roles` alone.
+# A row whose strengths cell is prose; its tier claim lives in registry `roles`, as on every row.
 REGISTRY_ONLY = LADDER.replace("| haiku | scout |",
-                               "| sol | fresh architecting | 7 | - | 3 | 5 | - | `high` only | + x |\n| haiku | scout |")
+                               "| sol | fresh architecting | bench | 7 | - | 3 | 5 | - | `high` only | + x |\n| haiku | scout |")
 PLANTED_REGISTRY = {"transports": {}, "models": [
-    {"alias": "sol", "id": "gpt-6-sol", "transport": "codex", "roles": ["sol", "architect"]},
-    {"alias": "opus", "id": "claude-opus-5", "transport": "anthropic", "roles": ["opus"]}]}
+    {"alias": "sol", "id": "gpt-6-sol", "transport": "codex", "roles": ["architect"]},
+    {"alias": "opus", "id": "claude-opus-5", "transport": "anthropic", "roles": ["architect", "executor"]}]}
 
-# Malformed role cells: the guard prints the tiers it could read and never raises.
-MISSPELLED = TWO_TIER.replace("`architect` `executor`", "`architect` `excutor`")
-UNCLOSED = TWO_TIER.replace("`architect` `executor`", "`architect")
 EMPTY_TABLE = """## Role guidance
 
-| model | role | intel | deleg | speed | cost | taste | effort | plusminus |
-|---|---|---|---|---|---|---|---|---|
+| model | strengths | evidence | intel | deleg | speed | cost | taste | effort | plusminus |
+|---|---|---|---|---|---|---|---|---|---|
 """
 
+# The evidence column removed: a table without it is schema drift, and every reader says nothing.
+NO_EVIDENCE = LADDER.replace("| model | strengths | evidence |", "| model | strengths |").replace(
+    "|---|---|---|---|---|---|---|---|---|---|", "|---|---|---|---|---|---|---|---|---|").replace(" | bench |", " |")
+
+# Family rows and the scout pool: each cell covers every registry row of the families it names, on
+# any transport. The `±` column carries the bar half a `capability:` citation is verified against.
+FAMILY_LADDER = """## Role guidance
+
+| model | strengths | evidence | effort | ± |
+|---|---|---|---|---|
+| luna | volume reading | bench+use | `low` converged | + surveys; − broad review seats |
+| kimi | agentic coding | pub | `high` (unmeasured) | + long agentic runs; − vendor-only numbers |
+| scout pool (minimax, hy) | locate and extract | pub | `low` (unmeasured) | + locate, enumerate; − never authors a patch or a spec |
+"""
+FAMILY_REGISTRY = {"transports": {}, "models": [
+    {"alias": "luna", "id": "gpt-6-luna", "transport": "codex", "family": "luna", "roles": ["fanout", "scout"]},
+    {"alias": "go-luna56", "id": "go/gpt-5.6-luna", "transport": "go", "family": "luna", "roles": []},
+    {"alias": "go-kimi", "id": "kimi-k3", "transport": "go", "family": "kimi", "roles": ["fanout"]},
+    {"alias": "go-minimax", "id": "minimax-m3", "transport": "go", "family": "minimax", "roles": ["scout"]},
+    {"alias": "go-hy3", "id": "go/hy3", "transport": "go", "family": "hy", "roles": ["scout"]}]}
+
+
+def _fixture_path(text):
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    return path
+
+
+# Cheapest first by the table's cost cell; the effort cell is never copied (its first rung names one shape).
 EXPECTED = [
-    "opus: architect & executor, xhigh",
-    "sonnet: fan-out, validation, high",
-    "haiku: scout, low",
+    "opus: architect & executor, cost 4",
+    "sonnet: fan-out, validation, cost 7",
+    "haiku: scout, cost 9",
 ]
 
 
 def parse(text):
-    return wpg.parse_ladder_role_lines(text.splitlines(True))
+    return wpg.parse_ladder_role_lines(text.splitlines(True), {"models": []})
 
+
+SUPP_LADDER = """## Role guidance
+
+| model | strengths | evidence | intel | deleg | speed | cost | taste | effort | plusminus |
+|---|---|---|---|---|---|---|---|---|---|
+| haiku | scout | bench | 2 | - | 9 | 10 | 1 | low | + locate |
+| flash | middling | bench | 4 | - | 8 | 8 | 2 | high | - false positives |
+| plain | design | bench | 5 | - | 5 | 5 | 5 | high | + x |
+"""
+SUPP_REGISTRY = {"transports": {}, "models": [
+    {"alias": "haiku", "id": "claude-haiku-5-5", "transport": "anthropic", "family": "haiku",
+     "roles": ["fanout", "scout", "executor"], "supplementary": ["architect"]},
+    {"alias": "flash", "id": "deepseek-flash", "transport": "deepseek", "family": "flash",
+     "roles": ["architect", "executor", "fanout"], "supplementary": ["architect"]},
+    {"alias": "plain", "id": "plain-1", "transport": "anthropic", "family": "plain", "roles": ["architect"]}]}
 
 CASES = [
     # (name, callable -> bool, why it matters)
@@ -117,7 +161,7 @@ CASES = [
      lambda: not any("on the sidecar" in l for l in parse(LADDER)),
      "`also` sat at cells[-2] in a 4-column table, exactly where effort sits in the 9-column one"),
 
-    ("every Role-guidance row emits its own model, role and effort",
+    ("every Role-guidance row emits its own model, role and cost, in ladder order (no sort reads as a pick)",
      lambda: parse(LADDER) == EXPECTED,
      "one line per row, keyed by header name"),
 
@@ -137,22 +181,34 @@ CASES = [
      lambda: parse(RENAMED_COLUMN) == [],
      "schema drift must not emit a plausible-looking wrong row"),
 
-    ("a row whose role cell opens with two tier tokens prints both tiers",
-     lambda: parse(TWO_TIER)[0] == "opus: architect/executor, xhigh",
-     "reading only the first token hid the row's second tier from every Workflow dispatch"),
+    ("a row prints every tier its registry `roles` claim, on any transport",
+     lambda: {"opus: architect/executor, cost 4", "sol: architect, cost 5"}
+             <= set(wpg.parse_ladder_role_lines(REGISTRY_ONLY.splitlines(True), PLANTED_REGISTRY)),
+     "the registry is the only home of every row's tier claim"),
 
-    ("a tier claimed only in registry `roles` prints, beside the row's role prose",
-     lambda: wpg.parse_ladder_role_lines(REGISTRY_ONLY.splitlines(True), PLANTED_REGISTRY)[2]
-             == "sol: architect (fresh architecting), high",
-     "the registry is the only home of a non-Anthropic row's tier claim; the line hid it"),
+    ("a tier token in a strengths cell claims nothing: the registry decides",
+     lambda: next(l for l in wpg.parse_ladder_role_lines(TOKEN_CELL.splitlines(True), PLANTED_REGISTRY)
+                  if l.startswith("opus:")) == "opus: architect/executor, cost 4",
+     "a cell restating a tier would drift from the registry; `model_registry.py --check` rejects it"),
 
-    ("a misspelled second tier token prints the tier it could read, without raising",
-     lambda: parse(MISSPELLED)[0] == "opus: architect, xhigh",
-     "the guard never crashes a dispatch; `model_registry.py --check` names the bad token"),
+    ("a supplementary-only tier prints after the plain tiers, marked",
+     lambda: wpg.parse_ladder_role_lines(SUPP_LADDER.splitlines(True), SUPP_REGISTRY)[0]
+     == "haiku: executor/fanout/scout +architect (supplementary), cost 10",
+     "the role line is the one place a pinning session reads that a tier is a seat constraint, not a claim"),
 
-    ("an unclosed backtick prints the role prose, without raising",
-     lambda: parse(UNCLOSED)[0].startswith("opus: architect"),
-     "an unreadable token run falls back to the cell's words"),
+    ("a tier held in both roles and supplementary is marked in place",
+     lambda: wpg.parse_ladder_role_lines(SUPP_LADDER.splitlines(True), SUPP_REGISTRY)[1]
+     == "flash: architect (supplementary)/executor/fanout, cost 8",
+     "flash authors at architect and fills a review seat there only beside a qualified one"),
+
+    ("a row with no supplementary entry prints as before",
+     lambda: wpg.parse_ladder_role_lines(SUPP_LADDER.splitlines(True), SUPP_REGISTRY)[2] == "plain: architect, cost 5",
+     "the marker must not touch a plain claimant"),
+
+    ("the header carries the supplementary exception",
+     lambda: "A pin must claim its job's tier, except a tier marked supplementary, which fills a review seat "
+             "beside a qualified seat only (ladder §Role definitions); which claimant to use" in wpg.ROLE_LADDER_HEADER,
+     "a session that reads only the header and role lines must learn the exception"),
 
     ("an empty Role guidance table returns []",
      lambda: parse(EMPTY_TABLE) == [],
@@ -161,6 +217,16 @@ CASES = [
     ("empty input returns []",
      lambda: parse("") == [],
      "the degraded path the caller already treats as 'no ladder'"),
+
+    ("a table without the evidence column returns []",
+     lambda: parse(LADDER) == EXPECTED and parse(NO_EVIDENCE) == [],
+     "a removed column is schema drift; the injection fails closed"),
+
+    ("a family row and the scout pool print their members' registry tiers",
+     lambda: wpg.parse_ladder_role_lines(FAMILY_LADDER.splitlines(True), FAMILY_REGISTRY)
+     == ["luna: fanout/scout, cost ?", "kimi: fanout, cost ?", "scout pool: scout, cost ?"],
+     "a ladder name resolves to every registry row of its family, or of each family a pool lists"),
+
 ]
 
 
@@ -183,24 +249,31 @@ def main():
     print("%s live ladder parses to %d role rows (anchor still matches the SSOT)"
           % ("ok  " if ok else "FAIL", len(live)))
 
-    ok = all(re.search(r"^[^:]+: .+, (low|medium|high|xhigh|max)$", l) for l in live)
+    ok = all(re.search(r"^[^:]+: .+, cost (\d+|\?)$", l) for l in live)
     failed += not ok
-    print("%s every live row is `model: tier, effort`, whole tokens only" % ("ok  " if ok else "FAIL"))
+    print("%s every live row is `model: tier, cost N`, whole tokens only" % ("ok  " if ok else "FAIL"))
+
+    order = [r["model"] for r in wpg.model_registry.parse_ladder_rows(
+        open(wpg._ladder_path(), encoding="utf-8").read().splitlines(), ("model",), wpg.LADDER_ROLE_HEADING)]
+    ok = ([l.split(":", 1)[0].replace(" (excluded)", "") for l in live]
+          == [re.sub(r"\s*\([^)]*\)", "", m).replace("`", "").strip().removesuffix(" excluded") for m in order])
+    failed += not ok
+    print("%s live rows keep the ladder's own order" % ("ok  " if ok else "FAIL"))
 
     ok = not any("on the sidecar" in l or "T11" in l or "T12" in l for l in live)
     failed += not ok
     print("%s no live work-shape row leaked into the injection" % ("ok  " if ok else "FAIL"))
 
-    ok = any(l.startswith("sol: architect (") for l in live)
+    ok = any(l.startswith("sol: architect/executor/fanout, ") for l in live)
     failed += not ok
-    print("%s the live sol row prints the `architect` tier it claims in registry `roles`"
+    print("%s the live sol row prints the tiers it claims in registry `roles`, like every row"
           % ("ok  " if ok else "FAIL"))
 
     ok = wpg.ladder_role_lines(path=os.path.join(HERE, "does-not-exist.md")) == []
     failed += not ok
     print("%s an unreadable ladder returns [] rather than raising" % ("ok  " if ok else "FAIL"))
 
-    total = len(CASES) + 5
+    total = len(CASES) + 6
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

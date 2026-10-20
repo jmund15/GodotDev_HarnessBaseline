@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-Hook: PreToolUse on Bash|PowerShell|Monitor — deny recursive grep, nudge other unbounded scans.
+Hook: PreToolUse on Bash|PowerShell|Monitor — rewrite or deny recursive grep, nudge other unbounded scans.
 
-DENY — recursive grep that walks a tree, whatever its output bound:
+REWRITE — Bash `grep -r` segments with known flags and non-ignored repo paths run as
+`git grep --untracked` through `updatedInput`. Literal cwd changes, quoted patterns, pipelines
+and trailing redirects stay intact; include/exclude filters become pathspecs. The note names the
+same files minus gitignored ones (`recursive_grep_rewrite`). A simple recursive grep whose paths all
+lie outside any git tree (session transcripts, the vault) runs as `rg -uu --max-count 200` with
+clipped lines, `-F` kept and `-E` left to rg's default regex; include/exclude, `-P`, `-z`, unknown
+flags, backreferences and basic-regex `+?|(){}` stay denied.
+
+DENY — any other recursive grep that walks a tree, whatever its output bound:
 - A recursive grep that reaches a giant single-line or special file buffers without bound, and on
   Git Bash it keeps running after its parent shell, or a downstream `head`, exits. Measured
   2026-09-14: orphaned `grep -rln ProjectSuite .` and `grep -rn noclobber .claude/` reached
@@ -18,7 +26,7 @@ DENY — recursive grep that walks a tree, whatever its output bound:
   (`*.py`), with no operand appended by `xargs`; `-r` then reads those files as plain grep does.
 - The match is on the invocation: heredoc bodies, quoted arguments and comments are data, so
   `echo "grep -r"` and a commit message naming it are allowed.
-- Routes named in the deny: the Grep tool, `rg`, `git grep`. Canon: CLAUDE.md §Tool Routing.
+- Routes named in the deny: the Grep tool, `rg`, `git grep`. Canon: CLAUDE.core.md §9.
 - The reaper `runaway_scan_reaper.py` contains what slips past this parse.
 
 ADVISE — volume: a recursive `rg`/`find`/`ls -R` with no bounding token lands its full match set
@@ -32,6 +40,7 @@ ADVISE — scope: `find` is blind to .gitignore and sweeps `.claude/worktrees/` 
 narrowing path operand scopes the walk, or when cwd is inside a nested checkout
 (`.claude/worktrees/<checkout>/` or `.claude/.cache/<name>-worktrees/<checkout>/`).
 
+Both advisory axes use `_command_text.executable_text`: heredoc data neither triggers advice nor bounds a real scan.
 Advisories are full on the first fire per axis and one line afterwards, re-armed by a compaction
 (`_hook_state.fire_once_since_compaction`). The deny is emitted as `permissionDecision: deny`
 through `pre_bash_dispatch.py`. Any internal error exits 0 silent.
@@ -47,6 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _claude_scope import in_nested_checkout
 from _command_text import executable_text
 from _hook_state import fire_once_since_compaction
+from _win_path import native_path
 
 # ---------------------------------------------------------------------------------------------
 # Recursive grep: shell parse
@@ -324,11 +334,289 @@ def runs_recursive_grep(tool, command):
     return shell_runs_recursive_grep(command)
 
 
+# ---------------------------------------------------------------------------------------------
+# Recursive grep: the rewrite the call's own values settle
+# ---------------------------------------------------------------------------------------------
+
+def _shell_parts(text):
+    """Keep source spans intact; operators inside quoted patterns are not shell operators."""
+    parts, start, quote, escaped = [], 0, None, False
+    for i, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if char in "`$" and quote != "'":
+            return None
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in "\"'":
+            quote = char
+        elif char in "()":
+            return None
+        elif char in "|;&\n":
+            if char == "&" and i and text[i - 1] in "<>":
+                continue
+            separator = char
+            if char in "|&" and text[i:i + 2] == char * 2:
+                separator = char * 2
+                escaped = True
+            elif char == "&":
+                return None
+            parts.append((text[start:i], separator))
+            start = i + len(separator)
+    if quote or escaped:
+        return None
+    parts.append((text[start:], ""))
+    return parts
+
+
+_REDIRECT_SUFFIX = re.compile(r'''(?:\s*\d*(?:>>?|<)\s*(?:'[^']*'|"[^"]*"|[^\s<>;&|]+))+\s*$''')
+
+
+def _grep_redirect(segment):
+    quote, escaped = None, False
+    for i, char in enumerate(segment):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char in "<>":
+            start = i
+            while start and segment[start - 1].isdigit():
+                start -= 1
+            if start and not segment[start - 1].isspace():
+                return None
+            suffix = segment[start:]
+            return (segment[:start].rstrip(), suffix) if _REDIRECT_SUFFIX.fullmatch(suffix) else None
+    return segment.strip(), ""
+_GIT_GREP_FLAGS = {"n": "-n", "i": "-i", "l": "-l", "c": "-c", "w": "-w", "F": "-F", "E": "-E", "o": "-o",
+                   "h": "-h", "I": "-I"}
+_DROPPED_FLAGS = set("rRHs")
+_LONG_FLAGS = {"recursive": None, "line-number": "-n", "ignore-case": "-i", "files-with-matches": "-l",
+               "count": "-c", "word-regexp": "-w", "fixed-strings": "-F", "extended-regexp": "-E",
+               "only-matching": "-o"}
+_GNU_BRE = re.compile(r"\\[+?(){}]")
+
+
+def _git(cwd, *args):
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def recursive_grep_rewrite(command, cwd):
+    """Rewrite known grep segments, preserving other commands and literal cwd changes. Unknown
+    shell evaluation, paths or flags leave the whole call denied, never a partial rewrite."""
+    parts = _shell_parts(command) if command else None
+    if parts is None:
+        return None
+    rewritten, notes = [], []
+    for segment, separator in parts:
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            return None
+        if words and words[0] == "cd":
+            if len(words) != 2 or separator not in ("&&", ";", "\n"):
+                return None
+            cwd = os.path.abspath(os.path.join(cwd, words[1]))
+            if not os.path.isdir(cwd):
+                return None
+        elif words and words[0] in ("pushd", "popd", "for", "while", "until", "if", "eval", "source", "."):
+            return None
+        elif words and words[0] == "grep" and grep_is_recursive(words[1:]):
+            redirect = _grep_redirect(segment)
+            if redirect is None:
+                return None
+            body, suffix = redirect
+            found = _plain_grep_rewrite(body, cwd)
+            if found is None:
+                return None
+            replacement, note = found
+            notes.append(note)
+            leading = segment[:len(segment) - len(segment.lstrip())]
+            trailing = segment[len(segment.rstrip()):]
+            segment = leading + replacement + (" " + suffix if suffix else trailing)
+        rewritten.append(segment + separator)
+    result = "".join(rewritten)
+    if not notes or runs_recursive_grep("Bash", result):
+        return None
+    return result, notes[0] if len(set(notes)) == 1 else REWRITE_NOTE_MIXED
+
+
+def _plain_grep_rewrite(command, cwd):
+    """(command, note) for one simple recursive grep, or None when no tool states its meaning."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    flags, patterns, operands, globs, exclusions, i = [], [], [], [], [], 1
+    args = tokens[1:]
+    while i - 1 < len(args):
+        tok = args[i - 1]
+        i += 1
+        if tok == "--":
+            operands += args[i - 1:]
+            break
+        if tok.startswith("--"):
+            name, eq, value = tok[2:].partition("=")
+            if name in ("include", "exclude", "exclude-dir"):
+                if not eq:
+                    if i - 1 >= len(args):
+                        return None
+                    value = args[i - 1]
+                    i += 1
+                if not value or "/" in value:
+                    return None
+                if name == "include":
+                    globs.append(value)
+                else:
+                    exclusions.append((name, value))
+            elif name in ("max-count", "after-context", "before-context", "context") and eq and value.isdigit():
+                flags += ["--" + name, value]
+            elif name in _LONG_FLAGS and not eq:
+                if _LONG_FLAGS[name]:
+                    flags.append(_LONG_FLAGS[name])
+            else:
+                return None
+        elif tok.startswith("-") and len(tok) > 1:
+            j = 1
+            while j < len(tok):
+                ch = tok[j]
+                if ch in _DROPPED_FLAGS:
+                    pass
+                elif ch in _GIT_GREP_FLAGS:
+                    flags.append(_GIT_GREP_FLAGS[ch])
+                elif ch in "ABCme":
+                    value = tok[j + 1:] or (args[i - 1] if i - 1 < len(args) else None)
+                    if not tok[j + 1:]:
+                        i += 1
+                    if value is None or (ch != "e" and not value.isdigit()):
+                        return None
+                    if ch == "e":
+                        patterns.append(value)
+                    else:
+                        flags += ["--max-count" if ch == "m" else "-" + ch, value]
+                    break
+                else:
+                    return None
+                j += 1
+        else:
+            operands.append(tok)
+    if not patterns:
+        if not operands:
+            return None
+        patterns, operands = [None, operands[0]], operands[1:]
+    if any(p and "-F" not in flags and "-E" not in flags and _GNU_BRE.search(p) for p in patterns):
+        return None
+    operands = operands or ["."]
+    repo = _git_grep_command(cwd, flags, patterns, operands, globs, exclusions)
+    if repo:
+        return repo, REWRITE_NOTE
+    if globs or exclusions:
+        return None
+    rg = _rg_command(cwd, flags, patterns, operands)
+    return (rg, REWRITE_NOTE_RG) if rg else None
+
+
+def _git_grep_command(cwd, flags, patterns, operands, globs, exclusions):
+    top = _git(cwd, "rev-parse", "--show-toplevel")
+    if top is None or top.returncode != 0:
+        return None
+    root = os.path.normcase(os.path.abspath(top.stdout.strip()))
+    for path in operands:
+        full = os.path.normcase(os.path.abspath(os.path.join(cwd, path)))
+        if not os.path.exists(full) or not (full == root or full.startswith(root.rstrip(os.sep) + os.sep)):
+            return None
+        ignored = _git(cwd, "check-ignore", "-q", path)
+        if ignored is None or ignored.returncode == 0:
+            return None
+    if globs:
+        specs = [":(glob)%s**/%s" % ("" if p in (".", "./") else p.rstrip("/") + "/", g)
+                 for p in operands for g in globs]
+    else:
+        specs = operands
+    specs += [":(exclude,glob)**/%s%s" % (value, "/**" if name == "exclude-dir" else "")
+              for name, value in exclusions]
+    words = ["git", "grep", "--untracked"] + flags
+    if patterns[0] is None:
+        words += ["-e", patterns[1]]
+    else:
+        for p in patterns:
+            words += ["-e", p]
+    words += ["--"] + specs
+    return " ".join(shlex.quote(w) for w in words)
+
+
+# Bounds for a grep outside git: rg's `--max-count` is per file, `--max-columns` clips a giant
+# single-line record (session transcripts) to a preview.
+_RG_MAX_COUNT = ["--max-count", "200"]
+_RG_CLIP = ["--max-columns", "500", "--max-columns-preview"]
+_RG_FLAG_MAP = {"-h": "--no-filename", "-I": None, "-E": None}
+_RG_UNSAFE_BRE = re.compile(r"[+?|(){}]")
+_BACKREFERENCE = re.compile(r"\\[1-9]")
+
+
+def _rg_command(cwd, flags, patterns, operands):
+    """A bounded `rg` for a simple recursive grep whose every path lies outside git. rg's regex
+    reads as ERE, so a basic-regex pattern with ERE metacharacters, or any backreference, has no
+    faithful translation."""
+    texts = [p for p in patterns if p]
+    fixed, extended = "-F" in flags, "-E" in flags
+    if any(_BACKREFERENCE.search(t) for t in texts) and not fixed:
+        return None
+    if not fixed and not extended and any(_RG_UNSAFE_BRE.search(t) for t in texts):
+        return None
+    paths = []
+    for path in operands:
+        shown = os.path.expanduser(path).replace("\\", "/") if path.startswith("~") else path
+        full = os.path.abspath(os.path.join(cwd, native_path(shown)))
+        if not os.path.exists(full):
+            return None
+        inside = _git(full if os.path.isdir(full) else os.path.dirname(full), "rev-parse", "--is-inside-work-tree")
+        if inside is None or inside.returncode == 0:
+            return None
+        paths.append(shown)
+    counting = "-c" in flags or "-l" in flags
+    words = ["rg", "-uu"]
+    for flag in flags:
+        mapped = _RG_FLAG_MAP.get(flag, flag)
+        if mapped:
+            words.append(mapped)
+    if not counting and "--max-count" not in flags:
+        words += _RG_MAX_COUNT
+    words += _RG_CLIP
+    for p in texts:
+        words += ["-e", p]
+    words += ["--"] + paths
+    return " ".join(shlex.quote(w) for w in words)
+
+
+REWRITE_NOTE_RG = ("[scan] recursive grep outside git ran as a bounded `rg -uu` (hidden and ignored files "
+                   "included; --max-count and clipped lines; CLAUDE.core.md \u00a79).")
+REWRITE_NOTE_MIXED = ("[scan] recursive greps ran as `git grep --untracked` inside the checkout and as a bounded "
+                      "`rg -uu` outside git (CLAUDE.core.md \u00a79).")
+REWRITE_NOTE = ("[scan] recursive grep ran as `git grep --untracked` (the same files minus gitignored ones; "
+                "CLAUDE.core.md §9).")
+
 DENY_REASON = (
     "RECURSIVE GREP DENIED: `grep -r`, `find -exec grep`, `find | xargs grep` and "
     "`Get-ChildItem -Recurse | Select-String` can run away without bound. Use the Grep tool "
     "(`path`/`glob`, `head_limit`), `rg -n <pat> <dir> --max-count N` (`-uu` for ignored trees), "
-    "or `git grep -n <pat> -- <path>` (CLAUDE.md §Tool Routing)."
+    "or `git grep -n <pat> -- <path>` (CLAUDE.core.md §9)."
 )
 
 # ---------------------------------------------------------------------------------------------
@@ -474,13 +762,13 @@ def in_worktree(cwd: str) -> bool:
 SCOPE_ADVICE = (
     "⚠ GITIGNORE-BLIND SCAN — `find` sweeps `.claude/worktrees/`, whose duplicate hits look "
     "real; capping output does not fix that. Use the Grep or Glob tool, `git ls-files`, or "
-    "`find` with `-path ./.claude -prune` or a narrower root (CLAUDE.md §Tool Routing)."
+    "`find` with `-path ./.claude -prune` or a narrower root (CLAUDE.core.md §9)."
 )
 
 ADVICE = (
     "⚠ UNBOUNDED RECURSIVE SCAN — output size is unknown, and every match stays in context. "
     "Bound it: `rg --max-count N`, `-l`/`-c`, a narrower path/glob, or the Grep tool's "
-    "`head_limit` (CLAUDE.md §Tool Routing)."
+    "`head_limit` (CLAUDE.core.md §9)."
 )
 
 SCOPE_ADVICE_SHORT = (
@@ -494,6 +782,7 @@ ADVICE_SHORT = (
 
 
 def needs_bound(command: str, cwd: str = "") -> bool:
+    command = executable_text(command or "")
     if not command:
         return False
     return (bool(RECURSIVE_SCAN.search(command)) and not BOUNDED.search(command)
@@ -501,6 +790,7 @@ def needs_bound(command: str, cwd: str = "") -> bool:
 
 
 def needs_scope(command: str, cwd: str = "") -> bool:
+    command = executable_text(command or "")
     if not command:
         return False
     if not GITIGNORE_BLIND.search(command):
@@ -524,6 +814,15 @@ def main() -> None:
     command = tool_input.get("command") or ""
 
     if runs_recursive_grep(tool, command):
+        rewrite = recursive_grep_rewrite(command, input_data.get("cwd") or ".") if tool == "Bash" else None
+        if rewrite:
+            rewritten, note = rewrite
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": dict(tool_input, command=rewritten),
+                "additionalContext": note,
+            }}))
+            sys.exit(0)
         sys.stdout.write(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

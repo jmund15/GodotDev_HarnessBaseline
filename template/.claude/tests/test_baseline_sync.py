@@ -21,6 +21,8 @@ from pathlib import Path
 ENGINE = Path(__file__).resolve().parents[1] / "tools" / "baseline_sync.py"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from harness_tests import GIT_REPO_ENV  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _case_pool import run_cases  # noqa: E402
 
 
 def _env(root: Path) -> dict[str, str]:
@@ -78,10 +80,9 @@ def _seed_project_subsystems(root: Path) -> None:
 
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-q")
-    _git(path, "config", "user.email", "fixture@example.invalid")
-    _git(path, "config", "user.name", "fixture")
-    _git(path, "branch", "-M", "main")
+    _git(path, "init", "-q", "-b", "main")
+    with open(path / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
+        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n")
 
 
 def _commit(path: Path, message: str) -> str:
@@ -1867,8 +1868,35 @@ def test_check_reports_offered_and_strict_passes() -> None:
         assert strict.returncode == 0, _out(strict)
 
 
+def test_check_reports_layer_closure_and_strict_fails() -> None:
+    skill = ".claude/skills/demo/SKILL.md"
+    detail = ".claude/skills/demo/reference/detail.md"
+    cites = b"Read [detail](reference/detail.md) first.\n"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            skill: {"upstream": cites},
+            detail: {"status": "local", "manifest": False, "local": b"detail\n"},
+        })
+        data = _json_output(_run_baseline(root, baseline, "check", "--json"))
+        closure = data.get("layer_closure", [])
+        assert len(closure) == 1 and closure[0].startswith(skill + ": local-only"), data
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert strict.returncode == 1, _out(strict)
+        assert "layer-closure" in _out(strict) and skill in _out(strict), _out(strict)
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            skill: {"upstream": cites},
+            detail: {"upstream": b"detail\n"},
+        })
+        data = _json_output(_run_baseline(root, baseline, "check", "--json"))
+        assert "layer_closure" not in data, data
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert strict.returncode == 0, _out(strict)
+
+
 def main() -> int:
     cases = [
+        test_check_reports_layer_closure_and_strict_fails,
         test_bare_pull_skips_unrowed_offer_and_counts_it,
         test_named_pull_adopts_offer_as_tracked,
         test_bare_pull_updates_rowed_offer,
@@ -1935,16 +1963,7 @@ def main() -> int:
         test_pull_seed_project_settings_makes_composed_row,
         test_pull_keeps_existing_seed_file_says_kept,
     ]
-    failures = []
-    for case in cases:
-        try:
-            case()
-            print("ok " + case.__name__)
-        except Exception as exc:
-            failures.append(case.__name__)
-            print("FAIL %s: %s" % (case.__name__, exc))
-    print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
+    return run_cases(cases)
 
 
 if __name__ == "__main__":

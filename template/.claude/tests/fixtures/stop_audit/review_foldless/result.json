@@ -1,0 +1,275 @@
+{
+ "findings": [
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "rule",
+   "critical": false,
+   "file": ".claude/commands/agents/plan_check_agents.md:277",
+   "description": "Step 4 still tells the seat to file FIX for wording, which contradicts the new step 3 ('Never audit its phrasing'). Quoted: '**FIX** for wording, an unearned al \u2026[+68 chars]",
+   "old": "**FIX** for wording, an unearned always-loaded line, or a missing verification step \u2014 with exact text.",
+   "new": "**FIX** for an unearned always-loaded line or a missing verification step, with exact text.",
+   "rationale": "instruction_quality \u00a72: one decision, one rule. Step 3 (line 276) forbids phrasing audits while step 4 mandates a FIX tier for wording, so a seat obeys whicheve \u2026[+226 chars]",
+   "file_line_note": "step 4 is line 277 of subject-0.txt",
+   "id": "F1",
+   "verdict": "UNCHECKED",
+   "confidence": "unverified",
+   "journalSelectors": [
+    "F1"
+   ]
+  },
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "rule",
+   "critical": false,
+   "file": ".claude/skills/_brainstorm_shared/plan_file_format.md:29",
+   "description": "The added sentence restates the plan-vs-close-audit split without citing its owner, and lists the unit's required content as '(its rule, home and trigger)' whil \u2026[+126 chars]",
+   "old": "A meta plan states what each edited unit must say (its rule, home and trigger), not its final wording: the close audit reviews the shipped wording once.",
+   "new": "A meta plan states what each edited unit must say, not its final wording (`orchestration/reference/review_width.md` \u00a7Coverage).",
+   "rationale": "instruction_quality \u00a73: the split is owned by review_width.md (Coverage), and a second independent statement with a different content list can drift; point at t \u2026[+209 chars]",
+   "file_line_note": null,
+   "id": "F2",
+   "verdict": "UNCHECKED",
+   "confidence": "unverified",
+   "journalSelectors": [
+    "F2"
+   ]
+  },
+  {
+   "agent": "sa-harness-quality",
+   "action": "FIX",
+   "category": "rule",
+   "critical": false,
+   "file": ".claude/commands/agents/plan_check_agents.md:276",
+   "description": "The commit diff touches only plan_check_agents.md and plan_file_format.md, but the commit message and ledger state a third edit (orchestration/reference/review_ \u2026[+313 chars]",
+   "old": "(`orchestration/reference/review_width.md`)",
+   "new": "(`orchestration/reference/review_width.md`), with the Coverage edit included in this commit",
+   "rationale": "instruction_quality \u00a74: verify cited paths; a citation to an owner that this commit does not ship leaves the rule's only home missing at the replay head. Rung:  \u2026[+192 chars]",
+   "file_line_note": null,
+   "id": "F3",
+   "verdict": "UNCHECKED",
+   "confidence": "unverified",
+   "journalSelectors": [
+    "F3"
+   ]
+  },
+  {
+   "id": "F4",
+   "verdict": "UNCHECKED",
+   "confidence": "unverified",
+   "action": "FIX",
+   "category": "rule",
+   "critical": false,
+   "file": ".claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/doctrine-commits.md:26",
+   "description": "Commit 8fc89aadc6a68a2533d73466e079568f20a617fa premise 1 states '31 of 40 round-1 findings and 19 of 23 round-2 finding \u2026[+205 chars]",
+   "journalSelectors": [
+    "F4"
+   ]
+  }
+ ],
+ "sources": [],
+ "counts": {
+  "raw": 5,
+  "exactDuplicates": 0,
+  "rejected": 0,
+  "merged": 5,
+  "total": 5,
+  "critical": 0,
+  "fix": 4,
+  "ask": 1,
+  "plan": 0
+ },
+ "flags": [],
+ "reports": {},
+ "perAgent": [
+  {
+   "key": "sa-harness-quality",
+   "count": 5,
+   "status": "completed",
+   "rejected": 0,
+   "stoppedAt": "exhausted-leads",
+   "basis": "Read every must-read input whole, the instruction_quality skill whole, and checked the review_width.md citation in the main checkout and the proof worktree. Cou \u2026[+325 chars]",
+   "toolsUsed": 12,
+   "gaps": 0,
+   "gapTexts": [],
+   "unread": [],
+   "capabilityPartial": false,
+   "mandates": {
+    "harness-quality": "findings"
+   },
+   "checkedTargets": [
+    "Read:C:\\Users\\dev\\proj\\.claude\\scratch\\egr\\b6\\briefs\\b6_sa-harness-quality.md:1-159",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/doctrine-commits.md:1-36",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/decisions.json:1-1",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/commit-8fc89aadc6a68a2533d73466e079568f20a617fa.diff:1-65",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/subject-0.diff:1-15",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/subject-0.txt:1-332",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/subject-1.diff:1-15",
+    "Read:.claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/subject-1.txt:1-33"
+   ]
+  }
+ ],
+ "verification": {
+  "status": "fail",
+  "counts": {
+   "VERIFIED": 0,
+   "UNVERIFIED": 0,
+   "UNCHECKED": 5
+  },
+  "report": ".claude/scratch/egr/b6/spill2/post_check-verify-11abeu.json",
+  "nonVerified": [
+   "F1",
+   "F2",
+   "F3",
+   "F4",
+   "F5"
+  ]
+ },
+ "delivery": {
+  "contract": "native-fanout-bounded/v1",
+  "engine": "review-fanout",
+  "resultMode": "bounded",
+  "status": "completed",
+  "maxResultBytes": 8192,
+  "byteLimitExceeded": false,
+  "payloadComplete": false,
+  "processedState": {
+   "mergedFindingsInline": true,
+   "engineFlagsInline": true,
+   "criticalIdsInline": true,
+   "decisionIdsInline": true
+  },
+  "counts": {
+   "raw": 5,
+   "exactDuplicates": 0,
+   "rejected": 0,
+   "merged": 5,
+   "total": 5,
+   "critical": 0,
+   "fix": 4,
+   "ask": 1,
+   "plan": 0,
+   "findings": 5,
+   "sources": 5,
+   "flags": 1,
+   "reports": 1,
+   "perAgent": 1,
+   "decisionIds": 1,
+   "criticalIds": 0,
+   "spillMetadata": 2
+  },
+  "criticalFindingIds": [],
+  "decisionFindingIds": [
+   "F5"
+  ],
+  "mergedSelectors": {},
+  "coverage": {
+   "status": "completed",
+   "requested": 1,
+   "completed": 1,
+   "partial": 0,
+   "failed": 0,
+   "uncovered": 0,
+   "rowsPreviewed": 1,
+   "rowsOmitted": 0,
+   "seats": [
+    {
+     "key": "sa-harness-quality",
+     "status": "completed",
+     "stoppedAt": "exhausted-leads",
+     "mandates": {
+      "harness-quality": "findings"
+     },
+     "checkedTargets": 12,
+     "count": 5,
+     "gaps": 0,
+     "capabilityPartial": false
+    }
+   ]
+  },
+  "preview": {
+   "findings": {
+    "total": 5,
+    "shown": 4,
+    "omitted": 1,
+    "clipped": true,
+    "complete": false
+   },
+   "sources": {
+    "total": 5,
+    "shown": 0,
+    "omitted": 5,
+    "clipped": true,
+    "complete": false
+   },
+   "flags": {
+    "total": 1,
+    "shown": 0,
+    "omitted": 1,
+    "clipped": false,
+    "complete": false
+   },
+   "reports": {
+    "total": 1,
+    "shown": 0,
+    "omitted": 1,
+    "clipped": false,
+    "complete": false
+   },
+   "perAgent": {
+    "total": 1,
+    "shown": 1,
+    "omitted": 0,
+    "clipped": true,
+    "complete": false
+   },
+   "decisionIds": {
+    "total": 1,
+    "shown": 1,
+    "omitted": 0,
+    "clipped": false,
+    "complete": true
+   },
+   "criticalIds": {
+    "total": 0,
+    "shown": 0,
+    "omitted": 0,
+    "clipped": false,
+    "complete": true
+   },
+   "spillMetadata": {
+    "total": 2,
+    "shown": 0,
+    "omitted": 2,
+    "clipped": false,
+    "complete": false
+   }
+  },
+  "archive": {
+   "source": "workflow-journal",
+   "delivered": false,
+   "relativePath": "journal.jsonl",
+   "validation": "required",
+   "transcriptDirRequired": true,
+   "selectors": "F<number>",
+   "sourceOrder": "read selectors.sourceOrder and selectors.idOrder from the workflow manifest",
+   "contains": "raw source findings, lens coverage, reports, and gaps",
+   "doesNotContain": "semantic merged views or engine validation flags; those remain inline",
+   "commands": {
+    "manifest": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-manifest",
+    "select": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-select <ID> --expect-journal-sha256 <sha256-from-manifest>",
+    "page": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-page items|lenses|reports|gaps --page <N> --page-size <N> --expect-journal-sha256 <sha256-from-manifest>",
+    "full": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-full --expect-journal-sha256 <sha256-from-manifest>"
+   }
+  },
+  "resume": {
+   "contract": "workflow-resume/v1",
+   "how": "Workflow({scriptPath, resumeFromRunId: <this run's runId>}, {...same args, resultMode: \"full\"})",
+   "costsNewModelSpend": false,
+   "onlyIf": "this engine script and the hook-injected rails are byte-identical to this run. An edit to either since the run changes every agent prompt, so every agent re-runs at full cost; then read archive.commands.full instead.",
+   "why": "resultMode is read only when this result is rendered \u2014 it never reaches an agent() prompt or option \u2014 so an already-completed agent() call with an unchanged prompt replays from cache.",
+   "contains": "the complete processed state: every merged finding and engine flag in full, plus every source and per-lens row, none clipped or omitted."
+  }
+ }
+}

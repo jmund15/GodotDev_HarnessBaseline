@@ -30,6 +30,9 @@ Mode:
     provisional_totality_guard.py --hook   # PreToolUse: deny a `git commit`
                                            # staging PROVISIONAL markers whose
                                            # slugs are absent from the registry
+
+Commit scope is `hooks/_commit_scope.py`: it names the invocations that publish the index and the
+paths a merge authors.
 """
 import json
 import os
@@ -43,6 +46,7 @@ REGISTRY_PATH = ".claude/prototype_registry.md"
 MARKER_RE = re.compile(r"PROVISIONAL\(([a-z0-9-]+)\)")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _git_commit import commit_invocations, git_environ, staged_paths as _seam_staged_paths  # noqa: E402
+from _commit_scope import authored_paths, publishes_index  # noqa: E402
 
 
 # The commit's GIT_* variables, set by hook() from the invocation it judges: every git read below uses
@@ -87,10 +91,12 @@ def _registry_text(repo=None):
 
 
 def _marker_slugs(repo=None):
-    """Slugs of PROVISIONAL markers across staged .cs contents; None on git failure."""
+    """Slugs of PROVISIONAL markers across the staged .cs contents THIS commit authors; None on
+    git failure. A merge re-commits a parent's markers, which were judged on the parent's ref."""
     paths = _staged_paths(repo)
     if paths is None:
         return None
+    paths = authored_paths(paths, repo, _COMMIT_GIT_ENV)
     slugs = []
     for path in paths:
         if not path.lower().endswith(".cs"):
@@ -146,7 +152,8 @@ def hook():
         if data.get("tool_name") != "Bash":
             return allow()
         command = data.get("tool_input", {}).get("command", "") or ""
-        commits = [c for c in commit_invocations(command, data.get("cwd") or ".") if c.sub == "commit"]
+        commits = [c for c in commit_invocations(command, data.get("cwd") or ".")
+                   if publishes_index(c.sub, c.rest)]
         if not commits:
             return allow()
         commit = commits[-1]
@@ -156,6 +163,7 @@ def hook():
         paths = _staged_paths(repo, commit.rest)
         if paths is None:
             return allow()
+        paths = authored_paths(paths, repo, _COMMIT_GIT_ENV)
         slugs = _marker_slugs(repo)
         if slugs is None:
             return allow()

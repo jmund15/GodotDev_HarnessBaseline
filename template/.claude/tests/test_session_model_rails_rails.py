@@ -14,6 +14,7 @@ Run: python3 .claude/tests/test_session_model_rails_rails.py
 """
 import importlib.util
 import os
+import subprocess
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -30,6 +31,7 @@ spec.loader.exec_module(smr)
 import model_registry  # noqa: E402
 
 CODEX = smr.provider_rails("codex", "env", {"model": "gpt-5.6-luna"})
+SUFFIXED = smr.provider_rails("codex", "env", {"model": "gpt-6-sol[1m]"})
 NO_MODEL = smr.provider_rails("codex", "env", {})           # the shape after /clear
 OPENCODE = smr.provider_rails("opencode", "baseUrl", {"model": "muse-spark-1.3-contributor-free"})
 
@@ -66,15 +68,67 @@ def broken_registry():
 
 BROKEN = broken_registry()
 
+
+def _profile_env(tier, ai_worker):
+    """This machine's tier and ai-worker registration, planted where the hook reads them live."""
+    import json
+    import tempfile
+    root = tempfile.mkdtemp(prefix="smrprofile_")
+    cfg = os.path.join(root, "cfg")
+    os.makedirs(os.path.join(cfg, "plugins"))
+    servers = {"ai-worker": {"command": "python"}} if ai_worker == "present" else {}
+    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": servers}, fh)
+    profile = os.path.join(root, "workstation_profile.json")
+    if tier is not None:
+        with open(profile, "w", encoding="utf-8") as fh:
+            json.dump({"schema": 1, "local_tier": tier}, fh)
+    return {"WORKSTATION_PROFILE_PATH": profile, "CLAUDE_CONFIG_DIR": cfg,
+            "SC_WORKDIR": os.path.join(root, "nowhere")}
+
+
+def _session_output(model, delegate=False, planted=None, extra=None):
+    import json
+    env = dict(os.environ)
+    env.pop("CLAUDE_CODE_SIDECAR", None)
+    env.pop("CLAUDE_CODE_SIDECAR_SHAPE", None)
+    env.pop("ANTHROPIC_BASE_URL", None)
+    env["CLAUDE_CODE_TRANSPORT"] = "anthropic"
+    if delegate:
+        env.update(CLAUDE_CODE_SIDECAR="1", CLAUDE_CODE_SIDECAR_SHAPE="any")
+    if planted:
+        env.update(planted)
+    result = subprocess.run([sys.executable, MOD], input=json.dumps(dict({"model": model}, **(extra or {}))),
+                            capture_output=True, text=True, env=env, timeout=30)
+    return result.stdout
+
+
+def _delegate_output(model, planted=None):
+    return _session_output(model, delegate=True, planted=planted)
+
+
 # What the live registry actually says codex lacks -- the assertion below compares against this
 # rather than against a literal, so adding a codex row does not red the proof for the wrong reason.
 TIERS = model_registry.role_tiers()
 DATA = model_registry.load()
 LACKED = [t for t in model_registry.TIER_ORDER
-          if not [m for m in model_registry.rows_for_tier(t, DATA, TIERS)
+          if not [m for m in model_registry.rows_for_tier(t, DATA)
                   if m["transport"] == "codex"]]
 
+def missing_ladder():
+    real = model_registry.role_tiers
+    model_registry.role_tiers = lambda *_a, **_k: (_ for _ in ()).throw(
+        model_registry.RegistryError("missing ladder"))
+    try:
+        return smr.provider_rails("codex", "env", {"model": "gpt-5.6-luna"})
+    finally:
+        model_registry.role_tiers = real
+
+
 CASES = [
+    ("T1 missing ladder still computes registry tier gaps",
+     lambda: "NO AVAILABLE codex ROW SERVES:" in missing_ladder()
+             and "could not be computed" not in missing_ladder()),
     # ---- the floor split cites its home, never replaces it ------------------
     ("the rails cite orchestration §5b for the reserved floor",
      lambda: "orchestration §5b" in CODEX),
@@ -124,6 +178,14 @@ CASES = [
     ("the transport and its identifying signal are still named",
      lambda: "`codex` transport (identified by env)" in CODEX),
 
+    ("a committed arg-driven workflow is not described as Anthropic-only",
+     lambda: "Committed `.claude/workflows/*.js` scripts pin Anthropic" not in CODEX
+             and "native" in CODEX and "literal" in CODEX),
+    ("startup rails do not freeze a moving proxy model mapping",
+     lambda: "gpt-5.6-sol" not in CODEX and "proxy" in CODEX),
+    ("a driver with a client window suffix resolves to its registry row",
+     lambda: "gpt-6-sol" in SUFFIXED and "not a registry model" not in SUFFIXED),
+
     # Measured both regimes: with CCP_CODEX_EFFORT set, a client asking `low` reaches the model at
     # `medium`; unset, `low` reaches it as `low`. The launcher sets neither variable and hands the
     # launch rung to the child via `--effort`, so both controls are live and the statusline is
@@ -161,6 +223,29 @@ CASES = [
     ("every format placeholder is filled -- no stray braces reach the model",
      lambda: "{" not in CODEX and "}" not in CODEX
              and "{" not in BROKEN and "{" not in OPENCODE),
+    # Delegates receive notes keyed to the child model, not the parent/orchestrator.
+    ("a luna delegate receives its registry driver notes exactly once, through the rails",
+     lambda: _delegate_output("gpt-6-luna").count("Work unattended: never stop to ask.") == 1
+             and _delegate_output("gpt-6-luna").index("[delegate rails")
+                 < _delegate_output("gpt-6-luna").index("[session] Driver notes (gpt-6-luna)")),
+    ("a non-delegate session still prints its separate notes block before transport rails",
+     lambda: _session_output("gpt-6-luna").count("Work unattended: never stop to ask.") == 1
+             and _session_output("gpt-6-luna").index("[session] Driver notes (gpt-6-luna)")
+                 < _session_output("gpt-6-luna").index("[anthropic session")),
+    ("a delegate whose model has no notes gets no driver-notes heading",
+     lambda: "Driver notes (" not in _delegate_output("claude-opus-5-5")),
+    # C7: the delegate tool grant names the worker MCP, so on a machine without it the grant must
+    # name the route that IS there. The grant block itself still prints either way.
+    ("a delegate on a machine with no ai-worker is granted the local route instead",
+     lambda: (lambda out: "[delegate tool grant" in out and "mcp__ai-worker__" not in out
+                          and "bounded Read" in out)(
+         _delegate_output("claude-opus-5-5", _profile_env("full", "absent")))),
+    ("a delegate on a machine with ai-worker keeps the worker grant",
+     lambda: "mcp__ai-worker__read_files" in _delegate_output(
+         "claude-opus-5-5", _profile_env("full", "present"))),
+    ("...and no profile keeps it too",
+     lambda: "mcp__ai-worker__read_files" in _delegate_output(
+         "claude-opus-5-5", _profile_env(None, "present"))),
     # Driver notes: registry data, keyed to the model that DRIVES the session.
     ("a fable driver gets the F12 note from the registry, with its evidence",
      lambda: "Recognizing a name" in smr.driver_notes_block("claude-fable-5-1")
@@ -184,7 +269,60 @@ CASES = [
              and smr.tier_line("minimal") == "[session] Session tier: `minimal` — skip `## detailed` sections."),
     ("the detailed tier line names the detailed sections",
      lambda: "read every `## detailed` section" in smr.tier_line("detailed")),
+    # Compaction drops the ladder from context; the resumed session learns at start where it is,
+    # before it chooses a pin.
+    ("a compact start names the owed ladder read by its absolute path",
+     lambda: "model_ladder_evidence.md" in _session_output("claude-opus-5-5", extra={"source": "compact"})
+             and os.path.isabs(next(w.strip("`") for w in _session_output(
+                 "claude-opus-5-5", extra={"source": "compact"}).split() if "model_ladder_evidence.md" in w))),
+    ("a fresh start does not name a ladder read",
+     lambda: "model_ladder_evidence.md" not in _session_output("claude-opus-5-5", extra={"source": "startup"})),
+    ("a delegate's compact start does not name a ladder read",
+     lambda: "model_ladder_evidence.md" not in _delegate_output_compact("claude-opus-5-5")),
+    # The client writes the re-attached skills after SessionStart runs, so the compact start states the gate's rule
+    # (skill, or a whole re-attached copy; slice or full read) rather than naming the skill as kept or cleared.
+    ("a compact start with unknown dispatch history states the gate's doctrine rule, skill and ladder steps",
+     lambda: _compact_notice() is not None
+             and "Skill(skill=\"orchestration\")" in _compact_notice()
+             and "re-attached whole" in _compact_notice()
+             and "ladder-slice <tier>" in _compact_notice()
+             and "in full" in _compact_notice()),
+    # The edit guard denies a harness edit while instruction_quality is not in context (6 denies in session 9c1a9920,
+    # 2026-10-14), so the compact start names it in the re-attach rule, and never claims a skill was cleared.
+    ("a compaction notice names instruction_quality in the re-attach rule and names no skill cleared",
+     lambda: any("instruction_quality" in line and "truncated for compaction" in line
+                 for line in _compact_lines())
+             and not any("Compaction cleared" in line for line in _compact_lines())
+             and not any("instruction_quality" in line for line in _startup_lines())),
+    # The ladder's selection line alone states how a dispatch's row and plan are chosen; the effort line points there.
+    ("the effort line points at the selection line for the route and never restates its condition",
+     lambda: all("selection line" in line and "session's plan" not in line and "launcher" not in line
+                 for line in (smr.effort_line({"effort": "high"}), smr.effort_line({"session_id": None})))),
 ]
+
+
+def _compact_lines():
+    """Every `[compaction]` line of one compact SessionStart whose payload names no transcript."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as state:
+        env = {"HARNESS_HOOK_STATE_DIR": state}
+        out = _session_output("claude-opus-5-5", planted=env, extra={"source": "compact", "session_id": "cmpl0001"})
+    return [l for l in out.splitlines() if l.startswith("[compaction]")]
+
+
+def _compact_notice():
+    """The dispatch-doctrine line of one compact SessionStart, or None."""
+    lines = [l for l in _compact_lines() if "dispatch doctrine" in l]
+    return lines[0] if lines else None
+
+
+def _startup_lines():
+    """A startup SessionStart's lines: the compaction notices never print there."""
+    return _session_output("claude-opus-5-5", extra={"source": "startup", "session_id": "strt0001"}).splitlines()
+
+
+def _delegate_output_compact(model):
+    return _session_output(model, delegate=True, extra={"source": "compact"})
 
 
 def main():

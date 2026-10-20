@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""PostToolUse(Write|Edit) — soft-warn on JmoLogger.Info/Debug calls missing [Tag] prefix.
+"""PostToolUse(Write|Edit) — soft-warn on new JmoLogger.Info/Debug lines missing [Tag].
+A Write compares against its immediate preimage; retained call sites are not this edit's warning.
 
 Producer side of the contract documented in .claude/skills/logging_methodology/SKILL.md.
 The Tagged corpus is what makes /analyze_godot_logs --target [Tag] work — every untagged
@@ -21,8 +22,12 @@ Non-compliant (warns):
   JmoLogger.Debug(this, $"plain interpolated {x}")
 """
 import json
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harness_growth_guard import added_lines, pre_edit_text
 
 # Tagged: literal "[Tag]" or interpolated $"[Tag]" or $"{InstrumentationTags.X} ...".
 # Captures the JmoLogger.(Info|Debug)( portion + the first argument shape afterward.
@@ -75,6 +80,13 @@ def process(payload):
     if not candidate_text:
         return None
 
+    if payload.get("tool_name") == "Write":
+        before = pre_edit_text(payload, candidate_text)
+        if before is None:
+            return None
+        candidate_text = "\n".join(added_lines(before, candidate_text))
+    elif isinstance(tool_input.get("old_string"), str):
+        candidate_text = "\n".join(added_lines(tool_input["old_string"], candidate_text))
     findings = scan_added_lines(candidate_text)
     if not findings:
         return None

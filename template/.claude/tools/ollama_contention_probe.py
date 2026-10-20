@@ -27,6 +27,13 @@ eviction thrash (both fit), and a queued call emitted nothing until its turn.
 
 from __future__ import annotations
 
+import sys as _cli_usage_sys
+from pathlib import Path as _cli_usage_path
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+from cli_usage import usage
+
+
+
 import argparse
 import json
 import os
@@ -41,7 +48,7 @@ import urllib.request
 # Configuration surface
 # --------------------------------------------------------------------------------------
 
-DEFAULT_HOST = "http://localhost:11434"
+DEFAULT_HOST = "http://127.0.0.1:11434"  # not localhost: ::1 can reach a Docker ollama instead
 
 # Two DISTINCT weight sets so Q2 can force a residency decision. Both are installed per
 # ~/.config/ai-worker/models.yaml. MODEL_A is the alias `qwen-local` actually resolves to,
@@ -510,7 +517,8 @@ def emit_verdicts(result: dict) -> list[str]:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=usage(__doc__),
+                                    formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--model-a", default=MODEL_A)
     p.add_argument("--model-b", default=MODEL_B)

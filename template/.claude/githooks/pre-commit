@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by `git config core.hooksPath .claude/githooks`. Builds a merge whose tree changes C# before its commit exists.
+# Body, live-checkout route and `--no-verify` bypass: .claude/hooks/merge_build_check.py.
+exec python3 "$(dirname "$0")/../hooks/merge_build_check.py" pre-commit

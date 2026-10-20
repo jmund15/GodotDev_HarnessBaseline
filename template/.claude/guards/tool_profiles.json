@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "defaultShape": "any",
+  "requiredReadTools": ["Read", "Glob", "Grep"],
+  "canonicalOrder": ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "TodoWrite"],
+  "shapes": {
+    "any": {
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"]
+    },
+    "survey": {
+      "agentType": "lane-survey",
+      "tier": "fanout",
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"]
+    },
+    "review": {
+      "agentType": "lane-review",
+      "tier": "executor",
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"]
+    },
+    "author": {
+      "agentType": "lane-author",
+      "tier": "executor",
+      "builtins": ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
+      "mcpServers": ["semantic-search", "ai-worker"]
+    },
+    "verify": {
+      "agentType": "lane-verify",
+      "tier": "fanout",
+      "builtins": ["Read", "Bash"],
+      "mcpServers": []
+    },
+    "bench-score": {
+      "builtins": ["Workflow", "Read", "Glob", "Grep"],
+      "mcpServers": []
+    },
+    "arm": {
+      "builtins": null,
+      "mcpServers": ["semantic-search"]
+    }
+  }
+}

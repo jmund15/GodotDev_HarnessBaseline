@@ -1,10 +1,6 @@
 ---
 description: >-
-  Auto-load when authoring, editing, or reviewing a mermaid diagram, or when working
-  on a command/skill that generates one — diagram syntax (graph/flowchart/stateDiagram,
-  classDef), the house palette, or roadmap/memory-graph/dashboard diagram regen.
-  Canonical home for renderer constraints and diagram-type selection. SKIP for
-  non-mermaid visuals (ASCII art, image files) and pure-prose docs.
+  Use when authoring, editing or reviewing Mermaid diagrams, or changing commands/skills that generate them.
 ---
 
 # Mermaid Diagram Conventions
@@ -15,7 +11,7 @@ Canonical house style for every mermaid diagram in the project — Obsidian-vaul
 
 | Mode | What it is | What governs it |
 |---|---|---|
-| **Generated** | A command renders the diagram deterministically from structured data and never hand-edits it (`/memory_graph` from the knowledge graph, `/eval_dashboard` from the archive). | Determinism outranks source readability. Short slug IDs (`P1`, `P2a`) are fine — no human maintains the source. The generator owns node/edge derivation; this skill owns the palette, direction, and renderer rules it must emit. |
+| **Generated** | A command renders the diagram deterministically from structured data and never hand-edits it (`/memory_graph` from the knowledge graph). | Determinism outranks source readability. Short slug IDs (`P1`, `P2a`) are fine — no human maintains the source. The generator owns node/edge derivation; this skill owns the palette, direction, and renderer rules it must emit. |
 | **Hand-authored** | An agent writes the diagram inline while producing a doc — architecture system diagram, NPC behavior flow, retrospective decision tree. | The full *House style* checklist below applies: self-explanatory node IDs, subgraph discipline, spacing config. |
 
 ## Renderer constraints — Obsidian + GitHub
@@ -26,7 +22,7 @@ Hard rules for both renderers:
 - **Color via `classDef`, not theme directives.** Obsidian strips/overrides `%%{init}%%` theming inconsistently. `classDef` is the portable styling channel.
 - **In-block frontmatter config** (`layout`, `nodeSpacing`, `rankSpacing`) is honored by both Obsidian and GitHub — safe to emit and to rely on for legibility.
 - **Never start a node label with `N. ` / `N) ` / `- ` / `* ` / `# ` / `> `.** Mermaid v10+ runs labels through a CommonMark parser; leading list-markers and ATX-headings render as "Unsupported markdown: list" / "Unsupported markdown: heading" warnings and the label falls back to raw text. Position/numbering is encoded by graph rank (`graph TD` topology), not by prefixing the label. If a Pos must appear in-label, use `N: Name` or `[N] Name` or `Pos N — Name` (em-dash-separated). Generated diagrams are particularly prone to this when porting a Pos column straight into the label slot.
-- Heading anchors elsewhere in the doc use literal heading text, never kebab-slugs — see the `obsidian_conventions` skill.
+- Heading anchors elsewhere in the doc follow the `obsidian_conventions` skill.
 
 ## Diagram-type selection
 

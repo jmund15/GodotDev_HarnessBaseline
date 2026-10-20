@@ -14,10 +14,15 @@ import os
 import sys
 import tempfile
 import types
+from unittest.mock import patch
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, '..', 'tools'))
+import _supervised_launch
+
+os.environ.update(LAUNCH_MIN_COMMIT_GIB='0', LAUNCH_MIN_PHYSICAL_GIB='0')
 MOD = os.path.join(HERE, "..", "tools", "sidecar_launch.py")
 spec = importlib.util.spec_from_file_location("sl", MOD)
 sl = importlib.util.module_from_spec(spec)
@@ -93,6 +98,37 @@ def main():
     except RuntimeError as exc:
         print("CANNOT-RUN no usable bash for the live cases:", exc)
         return 2
+
+    attempts = os.path.join(tmp, 'attempts')
+    with open(launcher, 'w', encoding='utf-8', newline='\n') as fh:
+        fh.write('n=$(( $(cat "$SL_ATTEMPTS" 2>/dev/null || printf 0) + 1 ))\n'
+                 'printf "%s" "$n" > "$SL_ATTEMPTS"\n'
+                 '[ "$n" = 1 ] && { echo "REFUSED memory headroom" >&2; exit 12; }\n'
+                 'printf "normal:%s" "$1"\nexit 0\n')
+    events = []
+    real_run = sl.subprocess.run
+
+    def traced_run(cmd, **kwargs):
+        events.append('wait' if 'wait' in cmd and str(cmd[1]).endswith('launch_memory.py') else 'child')
+        return real_run(cmd, **kwargs)
+
+    with patch.object(_supervised_launch.subprocess, 'run', side_effect=traced_run):
+        retried = sl.run_launcher(launcher.replace('\\', '/'), ['same-cell'], work, timeout=60,
+                                  env={'SL_ATTEMPTS': attempts, 'LAUNCH_MEMORY_POLL_SEC': '1'})
+    cases.append(('memory refusal retries to a normal CompletedProcess',
+                  retried.returncode == 0 and retried.stdout == 'normal:same-cell'
+                  and retried.stderr == ''))
+    cases.append(('real admission runs before each attempt', events == ['wait', 'child', 'wait', 'child']))
+    with open(attempts, encoding='utf-8') as fh:
+        cases.append(('exit 12 starts no failed job: same launcher runs twice', fh.read() == '2'))
+    events.clear()
+    try:
+        with patch.object(_supervised_launch.subprocess, 'run', side_effect=traced_run):
+            sl.run_launcher(launcher, [], work, env={'LAUNCH_MEMORY_POLL_SEC': '0'})
+    except sl.subprocess.CalledProcessError:
+        cases.append(('invalid admission config dispatches nothing', events == ['wait']))
+    else:
+        cases.append(('invalid admission config dispatches nothing', False))
 
     failures = [name for name, ok in cases if not ok]
     for name, ok in cases:

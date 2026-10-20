@@ -137,6 +137,15 @@ def main():
     dump(verdicts, {native_label: "clean", side_label: "defects"})
 
     cases = []
+    traced = {"source": "workflow", "workflow": "review-fanout", "run": "wf_trace", "label": "review:seat"}
+    selection = {"lineageFingerprint": "accepted-executor", "policyFingerprint": "candidate-policy"}
+    om.attach_review_ledger([traced], [{"id": "wf_trace:seat:cq", "seat": "seat", "reviewer": "panel",
+        "stage": "candidate", "files": {}, "authorModel": "recorder-not-author", "model": "runtime-reviewer",
+        "modelObserved": True, "identityBasis": "attestedModel", "reviewerSelection": selection}])
+    cases.append(("E1 metrics joins selection and runtime reviewer, not recorder lineage",
+                  traced.get("reviewer_selection") == selection and traced.get("reviewer_model") == "runtime-reviewer"
+                  and traced.get("reviewer_identity_basis") == "attestedModel", repr(traced)))
+
 
     mixed_seed = seed("rk", [
         job(native_label, "codex", "plan-quota"),
@@ -176,6 +185,14 @@ def main():
     cases.append(("verdict outcomes join by exact label",
                   [row["outcome"] for row in manifest["jobs"]] == ["clean", "defects"],
                   json.dumps(manifest)))
+    # `--rate` writes `run:label`; the manifest joins that key first, the bare label second.
+    exact = {"%s:%s" % (row["run"], row["label"]): "rework" for row in workflow_evidence}
+    exact.update({side_label: "defects", native_label: "clean"})
+    exact_manifest = om.build_manifest(mixed_seed, workflow_rows=workflow_evidence,
+                                       sidecar_rows=sidecar_evidence, verdicts=exact)
+    cases.append(("an exact run:label verdict joins ahead of the bare label",
+                  [row["outcome"] for row in exact_manifest["jobs"]] == ["rework", "defects"],
+                  json.dumps(exact_manifest)))
 
     seed_path = os.path.join(root, "seed.json")
     output_path = os.path.join(root, "output", "manifest.json")
@@ -389,6 +406,10 @@ def main():
     aggregate_ok, aggregate_detail = captured_report([known_row, unknown_row])
     low_line = next((line for line in aggregate_detail.splitlines()
                      if re.match(r"^low\s+2\s+", line)), "")
+    max_row = dict(known_row, run="ceiling", label="ceiling", effort="max", requested_effort="max")
+    max_ok, max_detail = captured_report([max_row])
+    cases.append(("the per-effort table lists a max-effort agent the route now serves",
+                  max_ok and re.search(r"^max\s+1\s+", max_detail, re.M) is not None, max_detail))
     cases.append(("Workflow aggregates divide by known rows only",
                   aggregate_ok and re.match(r"^low\s+2\s+100\b", low_line) is not None,
                   aggregate_detail))
@@ -418,11 +439,11 @@ def main():
     with open(summary_archive, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps({
             "run": "summary-known", "label": "summary-known", "effort": "low",
-            "outcome": "clean", "cost": 100.0, "turns": 2,
+            "outcome": "clean", "cost": 100.0, "qcost": 100.0, "turns": 2,
         }) + "\n")
         fh.write(json.dumps({
             "run": "summary-unknown", "label": "summary-unknown", "effort": "low",
-            "outcome": "clean", "cost": None, "turns": None,
+            "outcome": "clean", "cost": None, "qcost": None, "turns": None,
         }) + "\n")
     old_archive = om.ARCHIVE
     old_candidates = om.CANDIDATES_FILE
@@ -439,9 +460,9 @@ def main():
         om.ARCHIVE = old_archive
         om.CANDIDATES_FILE = old_candidates
     summary_detail = summary_stream.getvalue()
-    cases.append(("archive summary divides by known costs and reports unknown count",
+    cases.append(("archive summary divides quota cost by the rows that carry it and reports that priced count",
                   summary_rc == 0
-                  and re.search(r"^low\s+clean\s+2\s+100\s+1$",
+                  and re.search(r"^\?\s+low\s+wf:2\s+2\s+2\s+0\s+0\s+0\s+0\s+0\s+100\s+1$",
                                 summary_detail, re.MULTILINE) is not None,
                   summary_detail))
 
@@ -463,12 +484,11 @@ def main():
     finally:
         sys.argv, om.ARCHIVE, om.CANDIDATES_FILE = old_argv, old_archive, old_candidates
     per_model_detail = per_model_stream.getvalue()
-    cases.append(("archive summary renders one sidecar table per served model, never blended",
+    cases.append(("archive summary prints one row per served model and effort with its own USD, never blended",
                   per_model_rc == 0
-                  and re.search(r"^-- sidecar \[m-one\]", per_model_detail, re.MULTILINE) is not None
-                  and re.search(r"^-- sidecar \[m-two\]", per_model_detail, re.MULTILINE) is not None
-                  and re.search(r"^low\s+clean\s+1\s+1\.0000\s+0$", per_model_detail, re.MULTILINE) is not None
-                  and re.search(r"^low\s+clean\s+1\s+3\.0000\s+0$", per_model_detail, re.MULTILINE) is not None
+                  and re.search(r"^m-one\s+low\s+sc:1\s+1\s+1\s+0\s+0\s+0\s+0\s+0\s+1\.0000\s+1$", per_model_detail, re.MULTILINE) is not None
+                  and re.search(r"^m-two\s+low\s+sc:1\s+1\s+1\s+0\s+0\s+0\s+0\s+0\s+3\.0000\s+1$", per_model_detail, re.MULTILINE) is not None
+                  and "-- sidecar [" not in per_model_detail
                   and "DeepSeek" not in per_model_detail,
                   per_model_detail))
 
@@ -659,6 +679,125 @@ def main():
                                         'PINS {"review:consolidate":"opus/low/general-purpose"}']})
     cases.append(("every PINS line in a run resolves its labels",
                   two_pins == {"review:a": "high", "review:consolidate": "low"}, repr(two_pins)))
+
+    pins = om.tiers_for({"logs": ['PINS ' + json.dumps({
+        "a": "opus/high/general-purpose tier:executor", "b": "opus/low tier:-", "c": "opus/low tier:bogus",
+        "d": "opus/low tier:validation", "e": "opus/low", "f": "opus/low tier:Standard"})]})
+    cases.append(("tiers_for reads the tier suffix: role tier, validation folds, '-' and a missing suffix are absent, "
+                  "any other token is kept raw for the readout to bucket",
+                  pins == {"a": "executor", "c": "bogus", "d": "fanout", "f": "Standard"}, repr(pins)))
+    cases.append(("tiers_for does not disturb effort resolution",
+                  om.efforts_for({"logs": ['PINS {"a":"opus/high/general-purpose tier:executor"}']}) == {"a": "high"}, ""))
+
+    tier_session = os.path.join(root, "tier_session")
+    write_workflow(tier_session, "wf_tier", "rk-tier", model="opus")
+    with open(os.path.join(tier_session, "workflows", "wf_tier.json"), encoding="utf-8") as fh:
+        journal = json.load(fh)
+    journal["logs"] = ['PINS {"rk-tier":"opus/low/general-purpose tier:executor"}']
+    dump(os.path.join(tier_session, "workflows", "wf_tier.json"), journal)
+    tier_rows = om.collect(tier_session)
+    cases.append(("a Workflow row carries the PINS tier and the session directory's name",
+                  len(tier_rows) == 1 and tier_rows[0].get("tier") == "executor"
+                  and tier_rows[0].get("session_id") == "tier_session", json.dumps(tier_rows)))
+    cases.append(("a Workflow row with no PINS tier has no tier key",
+                  "tier" not in om.collect(session)[0], json.dumps(om.collect(session)[0])))
+
+    tier_records = os.path.join(root, "tier_records")
+    dump(os.path.join(tier_records, "rk-prof.record.json"), {
+        "label": "rk-prof", "transport": "anthropic", "costModel": "plan-quota", "servedModel": "claude-sonnet-5",
+        "effort": "medium", "exitCode": 0, "parentSessionId": "parent-abc",
+        "toolProfile": {"shape": "review", "tier": "executor", "builtins": ["Read"]}})
+    dump(os.path.join(tier_records, "rk-old.record.json"), {
+        "label": "rk-old", "transport": "anthropic", "servedModel": "claude-sonnet-5", "effort": "medium",
+        "exitCode": 0, "toolProfile": {"shape": "any", "builtins": ["Read"]}})
+    dump(os.path.join(tier_records, "rk-bare.record.json"), {
+        "label": "rk-bare", "transport": "anthropic", "servedModel": "claude-sonnet-5", "effort": "medium",
+        "exitCode": 0})
+    side_rows = {r["label"]: r for r in om.collect_sidecar_records(tier_records)}
+    cases.append(("a sidecar record's toolProfile.tier and parentSessionId reach the row",
+                  side_rows["rk-prof"].get("tier") == "executor" and side_rows["rk-prof"].get("session_id") == "parent-abc",
+                  json.dumps(side_rows["rk-prof"])))
+    cases.append(("a sidecar record with no tier or parent adds neither key",
+                  all("tier" not in side_rows[k] and "session_id" not in side_rows[k]
+                      for k in ("rk-old", "rk-bare")), json.dumps(side_rows)))
+
+    # S-D: drift lists requested-vs-attested differences for model, transport and currency.
+    def drift_of(request, source_rows_wf=None, source_rows_side=None, label="rk-drift"):
+        req = {"label": label, "requested": request}
+        built = om.build_manifest(seed("d", [req], route="single"),
+                                  workflow_rows=source_rows_wf or [], sidecar_rows=source_rows_side or [])
+        return built["jobs"][0].get("drift", "absent")
+
+    def _list(value):
+        return value if isinstance(value, list) else []
+
+    # Names come from the live registry, so a roster change never breaks these cases.
+    reg = om.model_registry.load()
+    row_a = reg["models"][0]
+    row_b = next(m for m in reg["models"] if m["id"] != row_a["id"] and m["transport"] != row_a["transport"])
+    plan_name, plan_cfg = next((n, c) for n, c in reg["transports"].items() if c.get("planOf"))
+    route = plan_cfg["planOf"]
+    side_row = {"label": "rk-drift", "run": "r", "model": row_a["id"], "transport": route,
+                "currency": "plan-quota", "state": "exit-0"}
+    wf_row = {"label": "rk-drift", "run": "r", "source": "workflow", "model": row_a["alias"],
+              "served_model": None, "state": "done"}
+    unset = {"model": None, "transport": None, "currency": None}
+    cases.append(("a sidecar row served another model than the alias reports one model drift",
+                  drift_of(dict(unset, model=row_b["alias"]), source_rows_side=[side_row])
+                  == [{"field": "model", "requested": row_b["alias"], "effective": row_a["id"]}],
+                  "drift"))
+    cases.append(("an alias against its own resolved id reports no drift",
+                  drift_of(dict(unset, model=row_a["alias"]), source_rows_side=[side_row]) == [],
+                  "drift"))
+    cases.append(("a plan transport against its route reports no transport drift",
+                  drift_of(dict(unset, transport=plan_name), source_rows_side=[side_row]) == [],
+                  "drift"))
+    cases.append(("a different transport and currency each report one drift entry",
+                  [d["field"] for d in _list(drift_of(
+                      dict(unset, transport=row_b["transport"], currency="marginal-usd"),
+                      source_rows_side=[side_row]))] == ["transport", "currency"],
+                  "drift"))
+    cases.append(("an unset requested value reports no drift",
+                  drift_of(unset, source_rows_side=[side_row]) == [], "drift"))
+    cases.append(("a Workflow row with a null served model reports no drift",
+                  drift_of(dict(unset, model=row_b["alias"]), source_rows_wf=[wf_row]) == [], "drift"))
+    cases.append(("a Workflow row served another model reports a model drift",
+                  [d["field"] for d in _list(drift_of(
+                      dict(unset, model=row_b["alias"]),
+                      source_rows_wf=[dict(wf_row, served_model=row_a["id"])]))] == ["model"],
+                  "drift"))
+    cases.append(("a mixed served set drifts when any member differs from the alias",
+                  [d["field"] for d in _list(drift_of(
+                      dict(unset, model=row_a["alias"]),
+                      source_rows_wf=[dict(wf_row, served_model="mixed:%s,%s" % (row_a["id"], row_b["id"]))]))]
+                  == ["model"],
+                  "drift"))
+    cases.append(("effort never drifts",
+                  all(d["field"] != "effort" for d in _list(drift_of(
+                      dict(unset, effort="high"), source_rows_side=[dict(side_row, effort="low")]))),
+                  "drift"))
+    try:
+        om.build_manifest(seed("d", [{"label": "rk-drift", "requested": {}}], route="single"),
+                          workflow_rows=[], sidecar_rows=[])
+        cases.append(("a label with no evidence row is still refused", False, "no ManifestError"))
+    except om.ManifestError as exc:
+        cases.append(("a label with no evidence row is still refused", "expected exactly 1" in str(exc), str(exc)))
+
+    # S2: the seed holds each job's requested pins, from a dispatch.js args object or a sidecar jobs file
+    wf_args = {"jobs": [{"label": "seed-wf", "promptPath": "p.md", "model": "requested-wf", "effort": "low",
+                         "agentType": "general-purpose", "role": "executor"}], "spillDir": "unused"}
+    side_jobs = [{"label": side_label, "model": "proof-other-model", "effort": "high", "agentType": "general-purpose"}]
+    wf_seed = om.seed_from_jobs(wf_args["jobs"])
+    side_seed = om.seed_from_jobs(side_jobs)
+    cases.append(("seed_from_jobs keeps a dispatch.js job's requested label, model and effort",
+                  [(r["label"], r["model"], r["effort"]) for r in wf_seed["jobs"]] == [("seed-wf", "requested-wf", "low")],
+                  json.dumps(wf_seed)))
+    cases.append(("seed_from_jobs keeps a sidecar job's requested label, model and effort",
+                  [(r["label"], r["model"], r["effort"]) for r in side_seed["jobs"]] == [(side_label, "proof-other-model", "high")],
+                  json.dumps(side_seed)))
+    drifted = om.build_manifest(side_seed, workflow_rows=[], sidecar_rows=sidecar_evidence)
+    cases.append(("a manifest built from a seed records model drift when the served model differs",
+                  any(d["field"] == "model" for d in drifted["jobs"][0]["drift"]), json.dumps(drifted["jobs"][0])))
 
     passed = failed = 0
     for label, ok, detail in cases:

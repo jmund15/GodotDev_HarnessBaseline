@@ -14,10 +14,23 @@
       "properties": {
         "toolsUsed": { "type": "array", "items": { "type": "string" } },
         "stoppedAt": { "type": "string", "enum": ["nothing-in-scope", "exhausted-leads", "trigger-not-met", "blocked"] },
-        "basis": { "type": "string" }
+        "basis": { "type": "string" },
+        "mandates": { "type": "object", "additionalProperties": true, "description": "outcome per mandate key (findings, clean or not-reached)" }
       }
     },
-    "gaps": { "type": "array", "items": { "type": "string" } },
+    "gaps": {
+      "type": "array",
+      "description": "one entry per must-read item the seat did not read, with its closed reason",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item", "reason"],
+        "properties": {
+          "item": { "type": "string" },
+          "reason": { "type": "string", "enum": ["outside-lens", "capability", "missing"] }
+        }
+      }
+    },
     "findings": {
       "type": "array",
       "items": {
@@ -35,7 +48,7 @@
           },
           "description": {
             "type": "string",
-            "description": "the defect in 2-3 sentences (~400 chars); no restatement of the rationale"
+            "description": "the defect, briefly enough to act on without the rationale; no restatement of the rationale"
           },
           "old": {
             "type": ["string", "null"],
@@ -43,14 +56,106 @@
           },
           "new": {
             "type": ["string", "null"],
-            "description": "replacement for `old` at the same granularity"
+            "description": "literal replacement text for `old` at the same granularity for FIX; a fix the seat can only describe is a PLAN with `scope` and `options` (orchestrator_action_protocol §Finding Schema)"
           },
           "question": { "type": ["string", "null"] },
           "options": { "type": ["array", "null"], "items": { "type": "string" } },
           "scope": { "type": ["array", "null"], "items": { "type": "string" } },
+          "refuting": { "type": "boolean", "description": "true when the finding says the plan misstates a cited source" },
+          "evidence": {
+            "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "file",
+                    "quote"
+                  ],
+                  "description": "A quote from a local file. VERIFIED when the quote (case-folded, in-order `...` gaps allowed, a leading `path:N:` or `N:` grep prefix stripped) occurs in the file; UNVERIFIED when the file is readable and lacks it or does not exist; UNCHECKED when the file cannot be read.",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "description": "repository-relative or absolute path, optionally with :N or :N-M; the line range is reported, never decisive"
+                    },
+                    "quote": {
+                      "type": "string",
+                      "description": "the file's raw bytes, copied verbatim; one source per item"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "command",
+                    "output"
+                  ],
+                  "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED.",
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "description": "one git command, no pipe, redirect or substitution"
+                    },
+                    "output": {
+                      "type": "string",
+                      "description": "a verbatim run of the command's stdout, or the empty string for an absent claim"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "owner"
+                  ],
+                  "description": "The owner's verbatim words. VERIFIED when an owner turn of the session transcript holds them (an AskUserQuestion answer is an owner turn when the item also carries its `question`; a runtime envelope is not), or when a row of the named task record holds them and still resolves. A delegate-recorded, missing or unresolved row, or an unreadable transcript, is UNCHECKED.",
+                  "properties": {
+                    "owner": {
+                      "type": "string",
+                      "description": "the owner's words, verbatim"
+                    },
+                    "question": {
+                      "type": "string",
+                      "description": "the AskUserQuestion question the owner answered; required when the quote is a picked option label"
+                    },
+                    "task": {
+                      "type": "string",
+                      "description": "a task record id whose condition rows may hold the words when this session's transcript does not"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "url",
+                    "quote"
+                  ],
+                  "description": "A quote from an external page. A fetched artifact (fetch_source.sh manifest) is checked like a file; without one the item is UNCHECKED.",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "the page the quote was read from"
+                    },
+                    "quote": {
+                      "type": "string",
+                      "description": "verbatim from the fetched bytes"
+                    },
+                    "artifact": {
+                      "type": "string",
+                      "description": "local path of the fetched bytes"
+                    }
+                  }
+                }
+              ]
+            }
+          },
           "rationale": {
             "type": "string",
-            "description": "why it is wrong and what breaks (~500 chars); cite the rule or invariant rather than re-deriving it"
+            "description": "why it is wrong and what breaks, briefly; cite the rule or invariant rather than re-deriving it"
           }
         },
         "required": ["agent", "action", "category", "description", "rationale"]

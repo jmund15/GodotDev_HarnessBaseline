@@ -62,6 +62,13 @@ def test_matching_effort_is_not_flagged():
     assert om.model_mismatches(om.collect(session)) == []
 
 
+def test_context_suffixed_pin_groups_with_its_bare_id():
+    session, _ = plant(["high"], model="vendor-mid-9[1m]", served="vendor-mid-9")
+    rows = om.collect(session)
+    assert rows and rows[0]["model"] == "vendor-mid-9", rows
+    assert om.model_mismatches(rows) == []
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

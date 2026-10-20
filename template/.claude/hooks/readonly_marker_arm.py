@@ -17,6 +17,11 @@ file carrying the `// READONLY-FANOUT-ENGINE` line. Those engines inject a per-l
 guard exists to observe. A `dispatch.js` run is NOT armed: it mixes read-only and
 author jobs in one run, so arming it would warn on every legitimate authored write.
 
+THE FOLD EXCEPTION. A `review_fanout.js` run with `args.fold` ends in a fold stage that writes claims and the
+digest under the scratch prefixes below, then edits the files of each `args.fold.subjects[]` entry: its
+`files` that exist, and its declared `newPaths`, each under the subject's `root`. Only files join
+`allow_prefixes`, so a seat's write anywhere else, a directory's other files included, still warns.
+
 NO DISARM, BY DESIGN. `Workflow` returns as soon as the run is backgrounded, so a
 PostToolUse disarm would clear the marker while the lenses are still running. The TTL
 is the disarm instead -- which is also what makes a killed orchestrator harmless
@@ -29,6 +34,7 @@ warning; blocking a dispatch costs the session.
 """
 import json
 import os
+import re
 import sys
 import time
 
@@ -90,6 +96,55 @@ def _allow_prefixes() -> list:
     return prefixes
 
 
+def _is_repo_relative(path: str) -> bool:
+    """True for a repository-relative path: not empty, not absolute, not drive-lettered and not escaping with `..`."""
+    return bool(path) and not os.path.isabs(path) and not re.match(r"^[A-Za-z]:", path) \
+        and not re.search(r"(^|[\\/])\.\.([\\/]|$)", path)
+
+
+def _subject_file(root: str, rel: str, cwd: str, must_exist: bool) -> str:
+    """The absolute file `rel` names under the subject `root`, or "" when it is not a file the fold may write.
+
+    An existing file qualifies. A declared new path qualifies when nothing but a missing file stands there.
+    A directory never does: the guard matches an allow entry as a prefix, so it would open every write under it.
+    """
+    if not _is_repo_relative(root) or not _is_repo_relative(rel) or rel.endswith(("/", "\\")):
+        return ""
+    roots = [r for r in (cwd, os.environ.get("CLAUDE_PROJECT_DIR")) if r]
+    for base in roots:
+        path = os.path.join(base, root, rel)
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+        if os.path.isdir(path):
+            return ""
+    if must_exist or not roots:
+        return ""
+    return os.path.abspath(os.path.join(roots[0], root, rel))
+
+
+def _fold_subject_files(tool_input: dict, cwd: str) -> list:
+    """The files `review_fanout.js`'s fold stage may edit: each subject's existing `files` and declared `newPaths`."""
+    args = tool_input.get("args")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return []
+    fold = args.get("fold") if isinstance(args, dict) else None
+    subjects = fold.get("subjects") if isinstance(fold, dict) else None
+    if not isinstance(subjects, list):
+        return []
+    found = []
+    for subject in subjects:
+        if not isinstance(subject, dict):
+            continue
+        root = str(subject.get("root") or ".")
+        for field, must_exist in (("files", True), ("newPaths", False)):
+            listed = subject.get(field) if isinstance(subject.get(field), list) else []
+            found += [p for p in (_subject_file(root, str(item or ""), cwd, must_exist) for item in listed) if p]
+    return found
+
+
 def main() -> None:
     raw = sys.stdin.read()
     payload = json.loads(raw) if raw.strip() else {}
@@ -105,10 +160,12 @@ def main() -> None:
 
     session_id = str(payload.get("session_id") or "")
     marker = _marker_path(session_id)
+    allow = _allow_prefixes()
+    allow.extend(_fold_subject_files(tool_input, cwd))
     state = {
         "readonly": True,
         "expires_at": int(time.time()) + TTL_SECONDS,
-        "allow_prefixes": _allow_prefixes(),
+        "allow_prefixes": allow,
     }
     write_json_atomic(marker, state)
 

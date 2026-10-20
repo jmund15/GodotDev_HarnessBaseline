@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Re-runnable proof for hooks/pre_read_dispatch.py — the PreToolUse read/search chain.
 
-Four sub-hooks run in one interpreter: indexed_reference_guard (block), semantic_search_scope_guard
-(block), file_size_preblock (block, subagent-exempt and counted), and tool_routing_nudge (advisory
-or env-gated block). Each case below feeds a
+Four sub-hooks run in one interpreter: indexed_reference_guard (main advice, delegate block),
+semantic_search_scope_guard (block), file_size_preblock (block, subagent-exempt and counted), and tool_routing_nudge
+(advisory). Each case below feeds a
 real PreToolUse payload by subprocess and asserts on the emitted channel: exit 2 + stderr for a
 block, hookSpecificOutput.additionalContext for an advisory, nothing for a clean call. An exit code
 outside {0, 2} is a CRASH, never an allow.
@@ -105,25 +105,37 @@ def main():
     crash_free("a clean small Read emits nothing and exits 0", rc, out, err,
                rc == 0 and out in ("", "{}") and err == "")
 
-    # --- indexed_reference_guard: block, first in the chain ------------------
+    # --- indexed_reference_guard: main advice, delegate block ----------------
     indexed = os.path.join(CLAUDE, "commands", "agents", "plan_check_agents.md")
     rc, out, err = run(call("Read", {"file_path": indexed}), env)
-    crash_free("indexed_reference_guard blocks a whole-file Read with exit 2 + stderr",
-               rc, out, err, rc == 2 and "BLOCKED: whole-file Read" in err and out in ("", "{}"))
+    try:
+        indexed_advice = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    except (ValueError, KeyError, TypeError):
+        indexed_advice = ""
+    crash_free("main-session indexed Read proceeds with accessor advice on the model channel",
+               rc, out, err, rc == 0 and err == "" and "lens.py get --shared" in indexed_advice)
     rc, out, err = run(call("Read", {"file_path": indexed, "offset": 1, "limit": 40}), env)
     crash_free("a bounded Read of the same reference passes", rc, out, err, rc == 0)
     rc, out, err = run(call("Read", {"file_path": indexed}, agent_id="agent-9",
                             agent_type="workflow-subagent"), env)
-    crash_free("a subagent is NOT exempt from the indexed-reference block", rc, out, err, rc == 2)
-
-    # --- semantic_search_scope_guard: block, not subagent-exempt ------------
-    bad_root = os.path.join(ROOT, ".claude")
-    rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": bad_root}), env)
-    crash_free("scope guard blocks a subdirectory searchDir through the dispatcher",
-               rc, out, err, rc == 2 and "searchDir" in err)
-    rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": bad_root},
+    crash_free("a subagent deny cites guards/any.md and names the accessor next step",
+               rc, out, err, rc == 2 and "guards/any.md" in err
+               and "read a catalog with an accessor through it" in err
+               and "lens.py get --shared" in err)
+    rc, out, err = run(call("Read", {"file_path": indexed, "offset": 1, "limit": 40},
                             agent_id="agent-9", agent_type="workflow-subagent"), env)
-    crash_free("a subagent is NOT exempt from the scope block", rc, out, err, rc == 2)
+    crash_free("a bounded Read passes for a subagent too", rc, out, err, rc == 0)
+
+    # --- semantic_search_scope_guard: correct or block, not subagent-exempt ------------
+    sub_root = os.path.join(ROOT, ".claude")
+    rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": sub_root}), env)
+    fixed = (json.loads(out or "{}").get("hookSpecificOutput") or {}).get("updatedInput") or {}
+    crash_free("a subdirectory searchDir is corrected through the dispatcher, keeping the query",
+               rc, out, err, rc == 0 and fixed.get("restrictToDir") == ".claude" and fixed.get("query") == "x")
+    outside = os.path.dirname(ROOT)
+    rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": outside},
+                            agent_id="agent-9", agent_type="workflow-subagent"), env)
+    crash_free("a subagent is NOT exempt from the scope block", rc, out, err, rc == 2 and "searchDir" in err)
     rc, out, err = run(call(SEARCH_TOOL, {"query": "x", "searchDir": ROOT,
                                           "restrictToDir": ".claude/auto-memory"}), env)
     crash_free("a root searchDir with a repo-relative restrictToDir passes", rc, out, err,
@@ -160,8 +172,34 @@ def main():
                rc, out, err, rc == 0 and "[tool-routing]" in ctx)
     rc, out, err = run(call("Grep", grep_input, session="rdgrep02"),
                        dict(env, HARNESS_ROUTING_HARD_BLOCK_CS_GREP="1"))
-    crash_free("with the hard-block env var the same Grep is denied with exit 2",
-               rc, out, err, rc == 2 and "BLOCKED" in err)
+    crash_free("the retired hard-block env var cannot deny a C# Grep",
+               rc, out, err, rc == 0 and "[tool-routing]" in context_of(out) and not err)
+
+    # A present optional member's broken import must not stop sibling checks.
+    for member in ('indexed_reference_guard', 'semantic_search_scope_guard', 'tool_routing_nudge',
+                   'rail_probe_guard', 'video_read_hint', 'file_size_preblock'):
+        if not os.path.isfile(os.path.join(CLAUDE, "hooks", member + ".py")):
+            continue  # a project that does not carry this optional hook has no import to break
+        script = (
+            'import sys, runpy\n'
+            'class Broken:\n'
+            '    def find_spec(self, name, path=None, target=None):\n'
+            f'        if name == {member!r}:\n'
+            "            raise RuntimeError('planted read import fault')\n"
+            'sys.meta_path.insert(0, Broken())\n'
+            f'runpy.run_path({DISPATCH!r}, run_name="__main__")\n')
+        data = call('Read', {'file_path': big}, session='fault-' + member)
+        if member == 'file_size_preblock':
+            data = call('Grep', grep_input, session='fault-' + member)
+        proc = subprocess.run([sys.executable, '-c', script], input=json.dumps(data),
+                              capture_output=True, text=True, encoding='utf-8', env=env, timeout=120)
+        crash_free(member + ' import fault reports on model channel and keeps later checks',
+                   proc.returncode, proc.stdout, proc.stderr,
+                   proc.returncode == 0 and member in context_of(proc.stdout)
+                   and 'planted read import fault' in context_of(proc.stdout)
+                   and 'Repair' in context_of(proc.stdout)
+                   and ('[tool-routing]' in context_of(proc.stdout) if member == 'file_size_preblock'
+                        else (json.loads(proc.stdout).get('hookSpecificOutput') or {}).get('updatedInput', {}).get('limit', 0) > 0))
 
     # --- malformed payload ------------------------------------------------
     rc, out, err = run(None, env, raw="not json at all")

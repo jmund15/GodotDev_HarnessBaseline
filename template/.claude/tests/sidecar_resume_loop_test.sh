@@ -14,6 +14,8 @@ set -u
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$R/scripts/lib/sidecar_common.sh"
+# This proof exercises resume policy, not launch admission; the real memory gate can wait indefinitely.
+sc_check_launch_memory() { :; }
 SC_ROOT="$R"
 SC_FORMAT="stream-json"
 EXTRA_ARGS=()
@@ -36,8 +38,8 @@ reset_calls() { : > "$CNT"; }
 # Source the library's complete function dependencies; its flags are parsed only when called.
 declare -F sc_resume_loop >/dev/null || { echo "CANNOT RUN: sc_resume_loop not found in sidecar_common.sh"; exit 2; }
 declare -F sc_run_watched >/dev/null || { echo "CANNOT RUN: sc_run_watched not found in sidecar_common.sh"; exit 2; }
-# Keep the watchdog off: a stub answers instantly and the stream is unset.
-SC_STALL_SEC=0; SC_STALLED=0
+# Keep the stall signal off: a stub answers instantly and the stream is unset.
+SC_STALL_SEC=0
 
 SID="sess-abc-123"
 transient() {

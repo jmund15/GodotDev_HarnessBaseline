@@ -39,9 +39,9 @@ def _init_repo_with_submodule(root, sub_name):
     subprocess.run(["git", "-C", root, "commit", "-q", "-m", "init"], check=True)
 
 
-def run_hook(hook_path, repo_root, session_id="probe001"):
+def run_hook(hook_path, repo_root, session_id="probe001", env_extra=None):
     payload = {"session_id": session_id}
-    env = dict(os.environ)
+    env = dict(os.environ, **(env_extra or {}))
     r = subprocess.run([sys.executable, hook_path], input=json.dumps(payload),
                        capture_output=True, text=True, timeout=30, cwd=repo_root, env=env)
     return r.stdout, r.stderr, r.returncode
@@ -83,6 +83,20 @@ def main():
         cases.append(("wrong-typed git_submodules: hook still exits 0 (never blocks)", rc == 0))
         cases.append(("wrong-typed git_submodules: one stderr line names the key",
                       err.count("\n") <= 1 and "git_submodules" in err))
+
+        # --- cache override: HARNESS_GIT_STATE_CACHE_DIR keeps the cache out of the repo ----
+        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None)
+        scratches.append(tmp)
+        repo = tempfile.mkdtemp(prefix="gsd_repo_")
+        repos.append(repo)
+        _init_repo_with_submodule(repo, "Jmodot")
+        cache_dir = tempfile.mkdtemp(prefix="gsd_cache_")
+        repos.append(cache_dir)
+        run_hook(os.path.join(tmp, "hooks", HOOK_NAME), repo, env_extra={"HARNESS_GIT_STATE_CACHE_DIR": cache_dir})
+        cases.append(("cache override: the cache file lands in the override dir",
+                      any(n.startswith("git-state-") for n in os.listdir(cache_dir))))
+        cases.append(("cache override: the repo's own .claude/.cache is not written",
+                      not os.path.exists(os.path.join(repo, ".claude", ".cache"))))
     finally:
         for tmp in scratches:
             fx.rm(tmp)

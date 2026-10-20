@@ -11,33 +11,25 @@ batteries, not correctness suites, and both blow past the runner's wall-clock ca
 Until now that exclusion existed only as prose, indistinguishable from an oversight. EXCLUDED below
 is the machine-readable version: a named directory plus the rationale that earned it the pass.
 
-Detection: a top-level `Tests/<X>/` directory containing a `.cs` file whose stripped line is exactly
-`[TestSuite]` on a NON-abstract class. Exactness matters -- Tests/Framework/SpyLogger.cs and its
-suite carry the marker inside doc comments and `JmoLogger.Info("[TestSuite]", ...)` string literals.
-Abstract carriers matter too -- Tests/Framework/Fixtures/*.cs mark abstract base fixtures whose
-concrete subclasses live (and run) under the gated namespaces.
-
-GATED is also cross-checked against the filter strings the gate actually issues, so renaming a
-filter without updating this constant fails loudly instead of silently un-gating a whole suite.
+Detection follows file-scoped and nested block namespaces and suite attributes on concrete
+classes/records, ignoring comments and string literals. Directory placement alone cannot prove
+coverage. GATED is cross-checked against executable PowerShell filter sources, not documentation.
 
 Escape hatch: add the directory to EXCLUDED with a written rationale (that IS the sanctioned third
 remedy, not a bypass). Blanket-disable with HARNESS_ALLOW_UNGATED_TEST_DIR=1.
 
 Modes:
     test_suite_gate_coverage_guard.py           # scan the tree; exit 1 on any un-accounted suite dir
-    test_suite_gate_coverage_guard.py --hook    # PreToolUse: deny a `git commit` that introduces one
 
 Not registered in settings.json. Intended consumer is /regression_gate step 1f, alongside
 tool_cascade_audit.py and trail_mutation_seam_guard.py, which invoke the standalone mode.
 """
-import json
 import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _git_commit import commit_invocations, bypass_declared  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -62,34 +54,62 @@ EXCLUDED = {
 
 # The two files that define what the gate actually runs.
 FILTER_SOURCES = (
-    # The orchestrator issues the Logic/Sanity filters; the command file documents them. Both are
-    # listed because either is a legitimate home and dropping one produces a false `drift` finding.
     Path(".claude/scripts/regression_gate.ps1"),
-    Path(".claude/commands/regression_gate.md"),
-    Path(".claude/scripts/run_integration_batched.ps1"),
+    Path(".claude/scripts/IntegrationBatches.ps1"),
 )
 FILTER = re.compile(r"FullyQualifiedName~Tests\.([A-Za-z0-9_]+)")
 
-SUITE_MARKER = "[TestSuite]"
-DECL = re.compile(r"\b(?:class|record)\b")
-
-# How far below the marker the class declaration may sit -- enough for stacked attributes
-# ([RequireGodotRuntime], [Ignore], ...) without spilling into the next type.
-DECL_LOOKAHEAD = 10
+def runnable_namespaces(lines):
+    """Read C# namespace scopes and real suite attributes, ignoring comments/literals."""
+    text = "\n".join(lines)
+    text = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', ' ', text)
+    tokens = re.findall(r'[A-Za-z_][A-Za-z_0-9]*|[.{};\[\],()]', text)
+    scopes, namespace, file_namespace, attributes = [], "", "", False
+    found = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == 'namespace':
+            j = i + 1
+            parts = []
+            while j < len(tokens) and tokens[j] not in ('{', ';'):
+                parts.append(tokens[j]); j += 1
+            name = ''.join(parts)
+            if j < len(tokens) and tokens[j] == ';':
+                file_namespace = name; namespace = name
+            else:
+                scopes.append(namespace)
+                namespace = '.'.join(p for p in (namespace, name) if p)
+            i = j + 1; continue
+        if token == '[':
+            j = i + 1
+            while j < len(tokens) and tokens[j] != ']':
+                j += 1
+            attributes = attributes or any(t in ('TestSuite', 'TestSuiteAttribute') for t in tokens[i+1:j])
+            i = j + 1; continue
+        if token in ('class', 'record'):
+            # Modifiers since the preceding structural delimiter belong to this type.
+            start = i - 1
+            while start >= 0 and tokens[start] not in ('}', '{', ';', ']'):
+                start -= 1
+            if attributes and 'abstract' not in tokens[start+1:i]:
+                class_index = i + 2 if token == 'record' and tokens[i+1:i+2] in (['class'], ['struct']) else i + 1
+                class_name = tokens[class_index] if class_index < len(tokens) else ''
+                found.append('.'.join(p for p in (namespace or file_namespace, class_name) if p))
+            attributes = False
+        if token == '{':
+            scopes.append(namespace)
+        elif token == '}':
+            namespace = scopes.pop() if scopes else file_namespace
+            attributes = False
+        elif token == ';':
+            attributes = False
+        i += 1
+    return found
 
 
 def declares_runnable_suite(lines):
-    """True if the file marks a [TestSuite] on a class GdUnit4 can actually instantiate."""
-    for index, line in enumerate(lines):
-        if line.strip() != SUITE_MARKER:
-            continue
-        for decl in lines[index + 1:index + 1 + DECL_LOOKAHEAD]:
-            if not DECL.search(decl):
-                continue
-            if "abstract" not in decl.split("//")[0]:
-                return True
-            break
-    return False
+    return bool(runnable_namespaces(lines))
 
 
 def suite_files(directory):
@@ -112,14 +132,37 @@ def declared_filters():
         path = REPO / rel
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r'<#[\s\S]*?#>|(?m:^\s*#.*$)', '', text)
         except OSError:
             continue
         names.update(FILTER.findall(text))
     return names
 
 
-def find_violations():
-    """Return [(kind, name, detail)] -- kind is 'ungated' (suite dir) or 'drift' (stale GATED)."""
+def covered_by_filters(qualified_name, filters):
+    for name in filters:
+        if name != 'Integration' and 'Tests.' + name in qualified_name:
+            return True
+    if 'Integration' not in filters:
+        return False
+    directory = TESTS_ROOT / 'Integration'
+    if not directory.is_dir():
+        return False
+    # Match Get-IntegrationSegments: direct directories and the first class in
+    # each root file generate trailing-dot clauses (class methods add that dot).
+    segments = [p.name for p in directory.iterdir() if p.is_dir()]
+    for path in directory.glob('*.cs'):
+        match = re.search(r'class\s+(\w+)', path.read_text(encoding='utf-8'))
+        if match:
+            segments.append(match[1])
+    return any('Tests.Integration.' + segment + '.' in qualified_name + '.' for segment in segments)
+
+
+def find_violations(authored=None):
+    """Return [(kind, name, detail)] -- kind is 'ungated' (suite dir) or 'drift' (stale GATED).
+    `authored` is `_commit_scope.merge_authored`'s answer -- None to judge every suite file. The
+    'drift' arm compares the GATED constant against the gate's own filter text, names no suite
+    path, and stays unscoped: it is a repo-wide invariant, not this commit's content."""
     findings = []
     filters = declared_filters()
     for name in GATED:
@@ -133,9 +176,20 @@ def find_violations():
         return findings
     for directory in sorted(p for p in TESTS_ROOT.iterdir() if p.is_dir()):
         name = directory.name
-        if name in GATED or name in EXCLUDED:
+        if name in EXCLUDED:
             continue
-        files = suite_files(directory)
+        files = []
+        for path in sorted(directory.rglob("*.cs")):
+            rel = path.relative_to(REPO).as_posix()
+            if authored is not None and rel not in authored:
+                continue
+            try:
+                namespaces = runnable_namespaces(path.read_text(encoding="utf-8").splitlines())
+            except (OSError, UnicodeError) as exc:
+                findings.append(("uncovered", name, rel + " " + type(exc).__name__))
+                continue
+            if any(not covered_by_filters(ns, filters) for ns in namespaces):
+                files.append(rel)
         if files:
             findings.append(("ungated", name, ", ".join(files)))
     return findings
@@ -177,58 +231,7 @@ def standalone():
     return 1
 
 
-def hook():
-    try:
-        data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        print("{}")
-        return 0
-    if data.get("tool_name") != "Bash":
-        print("{}")
-        return 0
-    commits = [c for c in commit_invocations(data.get("tool_input", {}).get("command", ""),
-                                             data.get("cwd") or ".") if c.sub == "commit"]
-    if not commits:
-        print("{}")
-        return 0
-    commit = commits[-1]
-    if bypass_declared(commit.inline_env, "HARNESS_ALLOW_UNGATED_TEST_DIR"):
-        print("{}")
-        return 0
-    try:
-        os.chdir(commit.cwd)   # the scan below reads the repo the commit targets
-    except OSError:
-        pass
-
-    findings = find_violations()
-    if not findings:
-        print("{}")
-        return 0
-
-    # permissionDecisionReason is the only model-visible channel here (stderr on an exit-0
-    # PreToolUse is not), so the offenders go in the reason itself rather than a stderr report.
-    sites = "; ".join(f"Tests/{name} ({detail})" for _, name, detail in findings[:5])
-    overflow = "" if len(findings) <= 5 else f" (+{len(findings) - 5} more)"
-    reason = (
-        f"Blocked: {len(findings)} test-suite gate-coverage violation(s) -- [TestSuite] classes "
-        f"the gate's ~Tests.{{Logic,Integration,Sanity}} filters never run: {sites}{overflow}. "
-        "Move them under a gated prefix (namespace too), extend the gate (filter line + "
-        "suites.<X> baseline entry + GATED), or add the directory to "
-        "test_suite_gate_coverage_guard.py's EXCLUDED map with a written rationale. "
-        "Blanket-disable with HARNESS_ALLOW_UNGATED_TEST_DIR=1."
-    )
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason,
-    }}))
-    return 0
-
-
 def main():
-    args = sys.argv[1:]
-    if args and args[0] == "--hook":
-        return hook()
     return standalone()
 
 

@@ -26,26 +26,26 @@ Each Part the design authored maps to a Parts table row:
 
 | Arch-brainstorm output | Resulting Part State |
 |---|---|
-| Part passing the readiness gate (per arch SKILL Step 5) | `plan-pending` |
+| Part passing the `architecture_brainstorm` skill's Part-readiness gate procedure | `plan-pending` |
 | Part with open arch design questions (architectural fork) | `arch-pending` |
 | Part needing creative ideation (creative fork) | `idea-pending` |
 | Part awaiting user decision | `workshop-pending` |
-| Part blocked on a feel-fork the design can't grill (per arch Step 5 *Feel-fork detour*) | `prototype-pending` |
-| Part marked user-owned (per arch Step 5 user-owned ask) | `user-owned` |
+| Part blocked on a feel-fork the design can't grill (per the `architecture_brainstorm` skill's Part-readiness gate feel-fork detour trigger) | `prototype-pending` |
+| Part marked user-owned (per the `architecture_brainstorm` skill's Part-authoring user-owned-question rule) | `user-owned` |
 
 Each Part inherits Deps from the design doc's enumerated dependencies and gets a Source link to the design section.
 
 ## Existing Part decomposed via child-subfolder spawn
 
-Per arch SKILL Step 8 spawn-placement extension + [common.md §5.1](../../skills/_brainstorm_shared/common.md) — transitions an existing Part to `submap-pending`. Distinct from the table above: this is a transition on a pre-existing Part, NOT a new Part. The Part's name, Deps, Source, and dependent edges are preserved; only State + Trigger change. Trigger format: `"Decomposed into <child-folder>/roadmap.md (N child Parts)."` per common.md §6.10. The child sub-roadmap is also added to the parent's `Spawned sub-brainstorms` section in the same batch.
+Per arch SKILL Step 8 spawn-placement extension + [common.md §5.1](../../skills/_brainstorm_shared/common.md) — transitions an existing Part to `submap-pending`. Distinct from the table above: this is a transition on a pre-existing Part, NOT a new Part. The Part's name, Deps, Source, and dependent edges are preserved; only State + Trigger change. Trigger format: `"Decomposed into <child-folder>/roadmap.md (N child Parts)."` per roadmap_triggers_mvp.md §6.10. The child sub-roadmap is also added to the parent's `Spawned sub-brainstorms` section in the same batch.
 
 ## Re-authoring paths
 
-For `/update_roadmap split` outcomes + re-decomposition triggered by arch Step 5 hard-stop remediation:
+For `/update_roadmap split` outcomes + re-decomposition triggered by the `architecture_brainstorm` skill's Part-readiness gate hard-stop remediation:
 
 | Pre-existing State + remediation | Children's State |
 |---|---|
-| `plan-pending` Part split with known lines | Each child gated per arch Step 5; typically `plan-pending` |
+| `plan-pending` Part split with known lines | Each child gated by the `architecture_brainstorm` skill's Part-readiness gate procedure; typically `plan-pending` |
 | Part kicked to `arch-rework` with split charter | Children start `plan-pending` after the arch-rework session lands |
 
 ## Standalone

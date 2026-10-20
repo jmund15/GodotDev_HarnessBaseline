@@ -2,13 +2,11 @@
 """UserPromptSubmit hook — machine-wide Godot/gate activity registry (advisory).
 
 Bridges the machine-global activity registry at <tempdir>/harness-activity/*.json
-(written by regression_gate.ps1, run_test_suite.ps1, and the gate queue
-watcher) to the model-visible channel, so a session can name what is blocking
-it instead of guessing. Companion doc: .claude/plans/godot-process-identity-
-and-gate-queue.md Part 3.
+(written by regression_gate.ps1 and run_test_suite.ps1) to the model-visible
+channel, so a session can name what is blocking it instead of guessing.
 
 Registry record schema (one file per activity, <kind>-<pid>.json):
-    { pid, procStart, kind: gate|suite|watcher, checkout, sessionId, label,
+    { pid, procStart, kind: gate|suite|waiter, checkout, sessionId, label,
       startedAt, heartbeatAt, expectedSec, ownerRootPid, ownerRootStart }
 
 OWNERSHIP — which records are "mine" vs a concurrent session's. Three axes,
@@ -20,8 +18,11 @@ in order, because the first two are frequently unavailable:
   2. ownerRootPid — the load-bearing axis. The Claude Code process that owns the
      writer's subtree, stamped BY THE WRITER at record-creation time. It must be
      captured then, not derived by a reader later: a detached gate outlives its
-     launcher (Claude Code kills a backgrounded wrapper at ~10 minutes), and the
-     orphaned process's parent chain then reaches no session at all.
+     launcher (its `-Detach` launcher exits within a second), and the
+     orphaned process's parent chain then reaches no session at all. A gate's
+     children (run_test_suite.ps1) stamp the GATE's owner root, passed to them as
+     HARNESS_OWNER_ROOT_PID / HARNESS_OWNER_ROOT_START, so a child of a detached
+     gate reads as its session's own run although its own chain reaches no session.
   3. checkout — cannot separate two sessions sharing one working tree, which is
      the common case here. It only distinguishes separate worktrees.
 
@@ -170,6 +171,25 @@ def _proc_table_windows():
     return table
 
 
+def _session_root_proc(pid: int):
+    """`session_root` for a Linux host without psutil: the same ancestor walk over /proc."""
+    cur = pid
+    for _ in range(OWNER_WALK_LIMIT):
+        try:
+            with open("/proc/%d/stat" % cur, "rb") as fh:
+                ppid = int(fh.read().decode("utf-8", "replace").rsplit(")", 1)[1].split()[1])
+            if ppid <= 0:
+                return None
+            with open("/proc/%d/comm" % ppid, encoding="utf-8", errors="replace") as fh:
+                name = fh.read().strip().lower()
+        except (OSError, ValueError, IndexError):
+            return None
+        if name in SESSION_PROC_NAMES:
+            return (ppid, None)
+        cur = ppid
+    return None
+
+
 def session_root(pid: int):
     """(pid, create_time_or_None) of the Claude Code process owning `pid`'s subtree.
 
@@ -201,7 +221,7 @@ def session_root(pid: int):
         return None
 
     if platform.system() != "Windows":
-        return None
+        return _session_root_proc(pid) if os.path.isdir("/proc") else None
     try:
         table = _proc_table_windows()
         cur = pid
@@ -226,7 +246,7 @@ def is_own_record(rec, my_root) -> bool:
 
     Reads `ownerRootPid` off the record rather than re-walking the record process's
     ancestry now, because ancestry is not durable: a detached gate outlives its
-    launcher (Claude Code kills a backgrounded wrapper at its ~10-minute ceiling),
+    launcher (its `-Detach` launcher exits within a second),
     and the orphaned process's chain no longer reaches any session. The writer
     stamps this while the chain is still intact.
     """
@@ -326,8 +346,7 @@ def tree_write_blockers(checkout: str):
     non-empty (measured 2026-08-20: a SessionStart .tres repair landed mid-Integration-suite
     and cost a 16-minute queue wait plus a full gate, verdict INVALID, zero test signal).
 
-    `watcher` records are not blockers — the watcher only waits and launches; it digests
-    nothing. Returns the blocking records, newest first, or [] when a write is safe.
+    `waiter` records are not blockers — a waiting gate holds nothing and has digested nothing. Returns the blocking records, newest first, or [] when a write is safe.
     """
     target = normalize_checkout(checkout)
     if not target:
@@ -345,8 +364,7 @@ def tree_write_blockers(checkout: str):
 
 def find_repo_root(start):
     """Walk up from the session cwd to the checkout that owns .claude/. The hook's own
-    location cannot stand in: worktrees each carry their own .claude/scratch/gate_queue,
-    and a shared hooks directory would point every worktree at the wrong queue."""
+    location cannot stand in: a shared hooks directory would point every worktree at the wrong checkout."""
     cur = os.path.abspath(start or os.getcwd())
     while True:
         if os.path.isdir(os.path.join(cur, ".claude")):
@@ -391,18 +409,6 @@ def main():
     my_checkout = normalize_checkout(cwd)
     my_pid = os.getpid()
     my_root = session_root(my_pid)
-
-    # Queued-gate results — surfaced BEFORE the no-peers early return below, because a
-    # queued run finishing is exactly the moment its peer disappears from the registry.
-    # This is the only mid-session channel a detached watcher has back to a session.
-    try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from gate_queue_surface import surface_lines
-
-        for line in surface_lines(find_repo_root(cwd), session_id):
-            print("[gate-queue] " + line)
-    except Exception:
-        pass
 
     records = load_registry()
 

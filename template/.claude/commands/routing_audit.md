@@ -5,7 +5,7 @@ disable-model-invocation: true
 
 Inspect and aggregate the continuous routing-audit log.
 
-> Surfaces silent-misses against CLAUDE.md §Tool Routing routing rules. Complements a synthetic routing battery, where the project keeps one, with continuous real-traffic data.
+> Surfaces silent-misses against CLAUDE.core.md §9 routing rules. Complements a synthetic routing battery, where the project keeps one, with continuous real-traffic data.
 
 ## Quick reference
 
@@ -21,7 +21,7 @@ Inspect and aggregate the continuous routing-audit log.
 
 The `routing_audit.py` PostToolUse hook (wired at `settings.json`) classifies every routing-relevant tool call and appends an event to `logs/routing_audit.jsonl` when the call falls into one of two tiers:
 
-- **`nudge-warranted`** — call violated a clear §Tool Routing rule (PascalCase Grep on indexed file, synthesis-shaped Obsidian read, etc.). Each entry records `nudge_fired: bool` indicating whether the existing nudge channel (`tool_routing_post_grep.py` / stderr) actually reached the agent.
+- **`nudge-warranted`** — call violated a clear §Tool Routing rule (PascalCase Grep on indexed file, synthesis-shaped Obsidian read, etc.). Each entry records `nudge_fired: bool` indicating whether `tool_routing_nudge.py` delivered PreToolUse `additionalContext` to the agent.
   - `nudge_fired=false` → **silent-miss** (the gap this audit log exists to find).
   - `nudge_fired=true` → **nudged routing miss** (channel works; agent ignored or accepted the nudge).
 - **`cue-exempt`** — would warrant nudge BUT user prompt invokes K1 (literal-intent), L6 (verified-unique-name), or audit-shape carve-out. These count as compliant overrides.
@@ -33,7 +33,7 @@ Compliant calls and tools without §Tool Routing rules (Bash, Edit, Write, Read,
 The headline number is **`silent_miss`** count. Three things drive it up:
 1. Doctrine drift in the agent — re-run the project's synthetic routing battery, where it keeps one, to check if a doctrine-level fix is needed (negative-framing bullet in CLAUDE.md, etc.).
 2. New code-discovery patterns the classifier doesn't recognize as compliant — extend `routing_classifier.py`.
-3. The nudge channel breaking — verify `tool_routing_post_grep.py` still wires in `settings.json` and the per-session state file path is reachable.
+3. The nudge channel breaking — run `python3 .claude/tests/test_tool_routing_post_grep.py`. It checks the registered pre/post dispatchers, PreToolUse advice, and the audit's receipt; PostToolUse must not repeat the advice.
 
 The **`top_5_silent_miss_rules`** block shows trends vs. the prior 4-week average:
 - `+N%` / `-N%` — current week vs. prior-4-week average; `flat` for <5% change.
@@ -45,7 +45,7 @@ The **`top_5_silent_miss_rules`** block shows trends vs. the prior 4-week averag
 - `.claude/hooks/routing_classifier.py` — shared classification library.
 - `.claude/tools/aggregate_routing_audit.py` — the aggregator (subcommands wrap this).
 - `logs/routing_audit.jsonl` — active log (gitignored via `logs/`).
-- `logs/routing_audit_stats.json` — single source of truth for `/eval_dashboard` Routing Stability section.
+- `logs/routing_audit_stats.json` — single source of truth for the `/eval_dashboard` routing input row and Routing card.
 - `logs/routing-audit-archive/YYYY-MM.jsonl` — rotated entries (>30 days old).
 
 ## Procedure
@@ -125,7 +125,7 @@ python3 .claude/tools/aggregate_routing_audit.py 2>/dev/null | sed -n '/Top sile
 
 ## Integration with /eval_dashboard
 
-The dashboard's "Routing Stability" section reads `logs/routing_audit_stats.json` produced by this command. Renders:
+The dashboard reads `logs/routing_audit_stats.json`; [`eval_dashboard.md`](eval_dashboard.md) owns when its routing Inputs row and Routing card appear. The card renders:
 - 4-week trend line of `silent_miss` count.
 - Top-5 silent-miss rules with `current_week / prior_4wk_avg / trend` columns.
 - Cross-link to the most recent synthetic routing-battery results, where the project keeps one, for triangulation (synthetic vs. real-traffic).

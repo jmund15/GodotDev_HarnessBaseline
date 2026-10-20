@@ -1,0 +1,29 @@
+{
+ "status": "pass",
+ "counts": {
+  "VERIFIED": 1,
+  "UNVERIFIED": 0,
+  "UNCHECKED": 0
+ },
+ "verdicts": {
+  "F1": {
+   "verdict": "VERIFIED",
+   "items": [
+    {
+     "kind": "file",
+     "verdict": "VERIFIED",
+     "reason": "quote-found",
+     "file": ".claude/plans/loop-construct-ports.md",
+     "rangeHit": null,
+     "citedRange": null
+    }
+   ]
+  }
+ },
+ "errors": [],
+ "mode": "review",
+ "source": [
+  "--workflow-dir",
+  "RUN_DIR"
+ ]
+}

@@ -56,11 +56,22 @@ def process(payload):
     if not _loaded_guidance((payload.get("tool_input") or {}).get("file_path") or ""):
         return None
     before, after = _before_after(payload)
-    if len(_labels(after)) <= len(_labels(before)):
+    retained = [ln.strip() for ln in before.splitlines() if _labels(ln)]
+    hits = []
+    for line in after.splitlines():
+        if not _labels(line):
+            continue
+        # Consume retained spans once: moving/indenting a line or appending plain
+        # prose is a no-op, but replacing its rule or duplicating it is an addition.
+        match = next((old for old in retained if old in line.strip()
+                      and _labels(old) == _labels(line)), None)
+        if match is not None:
+            retained.remove(match)
+        else:
+            hits.append(line.strip())
+    if not hits:
         return None
-    hits = [ln.strip() for ln in after.splitlines() if _labels(ln) and ln not in before]
-    hits = hits or [ln.strip() for ln in after.splitlines() if _labels(ln)]
-    return {"block": "BLOCKED: loaded guidance states the rule, not its provenance: %r. Drop the "
+    return {"block": "BLOCKED (instruction_quality §5): loaded guidance states the rule, not its provenance: %r. Drop the "
                      "decision label; put who decided and when in the commit message or an auto-memory file."
                      % hits[0][:120]}
 

@@ -50,7 +50,7 @@ Creature/entity generator code is genre- and style-shaped — author it per-proj
 
 `templates/conform_external.py`: curated CC0/CC-BY asset → posterize to N luminance levels → map each level to a chosen palette ramp step → relaxed lint profile (`source: external`) → mandatory license ledger entry. Use when a fidelity tier demands artist-quality bases the procedural track can't hit.
 
-Clear the license BEFORE conforming — [`references/provenance.md`](references/provenance.md) owns the sourcing rules, the ledger's required fields, and the verified CC0 endpoints. Posterize/conform/atlas do not discharge an attribution term, and atlas packing is where the link to the source asset is silently lost.
+Clear the license BEFORE conforming — [`references/provenance.md`](references/provenance.md) owns the sourcing rules, the rule that attribution survives every transformation (posterize, conform, atlas packing), the ledger's required fields, and the verified CC0 endpoints.
 
 ## 5. The verification loop (every change, every track)
 

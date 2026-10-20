@@ -54,7 +54,7 @@ def main() -> int:
     claude = root / ".claude"
     (claude / "hooks").mkdir(parents=True)
     (claude / "tools").mkdir(parents=True)
-    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py"):
+    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
         shutil.copy(_TOOLS_DIR / name, claude / "tools" / name)
     shutil.copy(base_path, claude / "settings.base.json")
     (claude / "settings.project.json").write_text("{}\n", encoding="utf-8")

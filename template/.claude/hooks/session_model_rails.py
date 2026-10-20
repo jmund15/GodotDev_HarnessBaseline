@@ -3,8 +3,8 @@
 rails + tool-grant correction for sidecar CHILD sessions, dispatch-transport rails
 (one transport-parameterized block for every non-Anthropic ORCHESTRATOR session, the
 mirror for Anthropic ones, and a fail-closed block when the endpoint cannot be identified),
-the re-pitch protocol for opus sessions, and strict tool-routing rails for non-orchestrator
-session models.
+the re-pitch protocol for opus sessions, strict tool-routing rails for non-orchestrator
+session models, and, on an orchestrator's compact start, the ladder Read the dispatch gates now owe.
 
 Which transport a session is on is resolved ONCE, in hooks/_session_transport.py, and shared
 with workflow_provider_guard.py. Adding a provider is a registry row plus a launcher that
@@ -19,9 +19,10 @@ tools/guard_text.py. `any` is concatenated rather than chained: it holds the rul
 binding every delegate, so its delivery must not depend on the child choosing to follow
 a pointer it finds inside another file. On the -D bare/pointer tiers no project hook fires,
 so lib/sidecar_common.sh calls guard_text.py directly — which is why that parse is a shared
-module rather than a function here.
+module rather than a function here. The child's registry driver notes are keyed to the
+child's model and printed here, after the rails.
 
-Tool-routing prohibitions are NOT injected here. They live once in CLAUDE.md §Tool Routing,
+Tool-routing prohibitions are NOT injected here. They live once in CLAUDE.core.md §9,
 in the NEVER-list form this hook used to supply (moved 2026-08-17): CLAUDE.md is
 already injected into every session, so a second delivery path to the same audience
 bought nothing — and the old model gate exempted fable, leaving the orchestrator tier
@@ -44,9 +45,9 @@ import tempfile
 # Windows consoles default stdout to cp1252; rails text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
-# The guard tier parse lives once, in tools/guard_text.py, because the sidecar bash lib
-# calls that same module as a CLI on the -D bare/pointer tiers, where no hook fires and it
-# must assemble the rails itself. Precedent: budget_posture.py.
+# The guard tier parse and the machine-aware clause rendering live once, in tools/guard_text.py,
+# because the sidecar bash lib calls that same module as a CLI on -D bare/pointer, where no hook
+# fires and it must assemble the rails itself. Precedent: budget_posture.py.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
 try:
     from guard_text import guard_text
@@ -63,20 +64,58 @@ except Exception:
     # delegate tool-grant included -- over a helper only the transport branch needs.
     _session_transport = None
 
+
+def _ai_worker_absent() -> bool:
+    """Is ai-worker registered on this machine? `False` whenever that cannot be read.
+
+    `tools/workstation_profile.py` owns the walk and answers `None` for unknown; unknown is NOT
+    absent, so an unreadable config keeps the authored grant rather than narrowing it on a guess.
+    """
+    try:
+        import workstation_profile
+        return workstation_profile.ai_worker() == "absent"
+    except Exception:
+        return False
+
 # Model ids that run with the lean always-loaded surface (no rails injection).
 
-# Correction printed AFTER RAILS to a sidecar child only. RAILS (and CLAUDE.md §Tool Routing, injected into the
+# Correction printed AFTER RAILS to a sidecar child only. RAILS (and CLAUDE.core.md §9, injected into the
 # same child) route some lookups to a tool the child's grant lacks — it obeys an instruction naming an
 # absent tool and silently changes search behavior instead. The grant is decided by which MCP servers
 # CONNECT, not by auth: semantic-search connects at init; ai-worker connects a turn or two later, so a short
 # dispatch can still miss it.
 # Canon: gotcha_sidecar_child_mcp_tool_grant.md.
-DELEGATE_TOOL_GRANT = """\
-[delegate tool grant — overrides tool routing wherever CLAUDE.md §Tool Routing or a rails block names an absent tool; canon: gotcha_sidecar_child_mcp_tool_grant]
-- semantic-search IS available here (mcp__plugin_semantic-search_semantic-search__search, same name as a normal session). Route to it exactly as CLAUDE.md §Tool Routing directs — do NOT substitute Grep.
-- ai-worker IS available too (mcp__ai-worker__read_files / write_doc), though it can connect a turn or two after init — a short dispatch may not see it yet. Route to it exactly as the global ~/.claude/CLAUDE.md §Worker Model Delegation directs. Only if a call fails with tool-not-found: substitute bounded Read (offset/limit) of the named files and say so in your deliverable.
+#
+# The ai-worker bullet is machine-dependent for the same reason it exists: it asserts the tool IS
+# available, and `tools/workstation_profile.py` reads whether the server is registered at all. On a
+# machine where it is not, the bullet grants the route that machine has instead — the same bounded
+# Read it already named as the tool-not-found fallback, plus a subagent. Unknown keeps the bullet.
+DELEGATE_TOOL_GRANT_HEAD = """\
+[delegate tool grant — overrides tool routing wherever CLAUDE.core.md §9 or a rails block names an absent tool; canon: gotcha_sidecar_child_mcp_tool_grant]
+- semantic-search IS available here (mcp__plugin_semantic-search_semantic-search__search, same name as a normal session). Route to it exactly as CLAUDE.core.md §9 directs — do NOT substitute Grep.
+"""
+DELEGATE_AI_WORKER_GRANT = (
+    "- ai-worker IS available too (mcp__ai-worker__read_files / write_doc), though it can connect "
+    "a turn or two after init — a short dispatch may not see it yet. Route to it exactly as the "
+    "global ~/.claude/CLAUDE.md §Worker Model Delegation directs. Only if a call fails with "
+    "tool-not-found: substitute bounded Read (offset/limit) of the named files and say so in your "
+    "deliverable.\n"
+)
+DELEGATE_AI_WORKER_ABSENT = (
+    "- ai-worker is NOT registered on this machine, so nothing here routes to it: substitute "
+    "bounded Read (offset/limit) of the named files, or hand the extraction to a subagent, and "
+    "say so in your deliverable.\n"
+)
+DELEGATE_TOOL_GRANT_TAIL = """\
 - Verify a tool exists before routing to it. Never report "not found" on the strength of a call that never ran.
 """
+
+
+def delegate_tool_grant() -> str:
+    """The grant block, with the ai-worker bullet rendered against THIS machine."""
+    bullet = DELEGATE_AI_WORKER_ABSENT if _ai_worker_absent() else DELEGATE_AI_WORKER_GRANT
+    return DELEGATE_TOOL_GRANT_HEAD + bullet + DELEGATE_TOOL_GRANT_TAIL
+
 
 # Injected when the session runs on ANY non-Anthropic endpoint. One block, filled from the
 # registry — adding a provider is a registry row, never an edit here.
@@ -98,9 +137,9 @@ PROVIDER_RAILS_HEAD = """\
 [{transport} session — rails; canon: orchestration §0 (pin vocabulary) + §5b; roster: python3 .claude/tools/model_registry.py available]
 - THIS SESSION IS DRIVING {driver} on the `{transport}` transport (identified by {source}).{driver_extra}
 - Unpinned subagent spawns go to {subagent} (CLAUDE_CODE_SUBAGENT_MODEL), regardless of what drives this session.
-- PIN THIS TRANSPORT'S OWN MODEL IDS, never Anthropic role names. `opus`/`sonnet`/`haiku`/`fable` are ANTHROPIC-session vocabulary and workflow_provider_guard.py DENIES them here, naming the legal ids. The proxy would in fact map them onto a tier of ITS OWN (measured: `opus` -> `gpt-5.6-sol`) — which is the reason for the deny, not an argument against it: the pin would silently name a model you did not choose. Sibling models on this transport ARE reachable in-harness by Workflow pin — no sidecar needed.{effort_note}
-- Committed `.claude/workflows/*.js` scripts pin Anthropic role names and are Anthropic-session tools: dispatching one here is denied. Write the pins for this transport, or run that workflow from an Anthropic session.
-- COVERAGE LIMIT of that deny: it reads pins that are statically visible — args, the Agent `model`, and quoted literals in the script (a `PIN('x')` wrapper included). A pin COMPUTED at runtime (a variable, a map lookup, a template literal) is not seen and not denied, so it reaches the endpoint and returns a null agent. Write pins as literals in scripts you run here.
+- PIN THIS TRANSPORT'S OWN MODEL IDS, never Anthropic role names: they are an Anthropic session's vocabulary, and workflow_provider_guard.py DENIES them here, naming the ids this endpoint serves. A proxy may map a role name onto a provider row of ITS OWN, silently choosing a model you did not select. Sibling models on this transport ARE reachable in-harness by Workflow pin — no sidecar needed.{effort_note}
+- A committed Workflow filename does not choose a provider. Reusable engines take this transport's native model and effort from caller args; measured arms may pin a literal model. Check the script's actual pins: the provider guard denies incompatible literal pins, not the whole file because it is committed. [instruction_quality §12; orchestration §5b]
+- COVERAGE LIMIT of that deny: it reads statically visible pins in args, the Agent `model`, and quoted literals in the script. A pin COMPUTED at runtime can escape that guard; use native IDs in caller args and validate them before spawning, not literal pins in reusable scripts.
 - Reaching ANOTHER transport (including Anthropic itself) goes through its own sidecar launcher — `reference/sidecar_dispatch.md`, roster above. Workflow/Agent never cross transports.
 - You ARE the orchestrator this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
 - ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints what serves a tier here, what serves it one hop away with the launcher line, and the nearest in-transport row when nothing here does. It picks no effort: take the rung from the ladder's effort cell for the work shape.{lacked_tiers}
@@ -121,7 +160,7 @@ UNKNOWN_RAILS = """\
 # Mirror of DEEPSEEK_RAILS: pin translation is a deepseek-session mechanism, so an
 # Anthropic session's role-name pins dispatch claude-* agents — expected, not a
 # failure. External-model work needs a separate transport; the sidecar script is
-# the deepseek one. Canon: orchestration §0 *Dispatch is transport-bound*.
+# the deepseek one. Canon: orchestration §0 (Workflow and Agent stay on the current endpoint).
 ANTHROPIC_RAILS = (
     "[anthropic session] Workflow/Agent reach claude-* models only; every other model runs "
     "through its sidecar launcher (`reference/sidecar_dispatch.md`).\n"
@@ -143,9 +182,7 @@ def sidecar_delegate_shape() -> str | None:
 def sidecar_delegate_tier() -> str:
     """How verbosely this delegate's rails are spelled out: CLAUDE_CODE_SIDECAR_TIER, else detailed.
 
-    The env override is the only input. No launcher sets it today, and no sidecar row carries a
-    registry `railTier`, so every external delegate reads `detailed`, measured rows included.
-    Anything unset or unrecognized therefore falls to `detailed` — the safe direction, since an
+    The env override is the only input. Anything unset or unrecognized therefore falls to `detailed` — the safe direction, since an
     over-explicit rail costs bytes while an under-explicit one costs adherence.
     """
     tier = (os.environ.get("CLAUDE_CODE_SIDECAR_TIER") or "").strip().lower()
@@ -178,7 +215,7 @@ def driver_notes_block(model) -> str:
 
     Per-model guidance lives in `driverNotes` on the model's row and its transport's row, each
     note carrying the evidence that earned it, so a correction reaches only the model that showed
-    the failure (rules/harness_authoring.md, a correction takes the scope of its evidence).
+    the failure (instruction_quality §3, a correction takes the scope of its evidence).
     """
     try:
         import model_registry
@@ -216,7 +253,9 @@ def provider_rails(transport: str, source: str, payload: dict) -> str:
         data = registry.load()
         if driver:
             try:
-                entry = registry.resolve(driver, data)
+                entry = registry.row_for_model(driver, data)
+                if entry is None:
+                    raise ValueError("unknown registry model")
                 driver = entry["id"]
                 gate = entry.get("gate") or {}
                 if entry.get("authTier") == "gated":
@@ -249,20 +288,17 @@ def provider_rails(transport: str, source: str, payload: dict) -> str:
     # Named at SessionStart because that is the only surface preceding the first delegation
     # decision -- after it, the seat has already picked whatever was in-transport.
     try:
-        tiers = registry.role_tiers()
-        # `for_role`, not a second in-transport filter: that resolver already owns what counts as
-        # in-transport (seat-aware availability included), and a copy here would drift from it
-        # silently -- this line would keep printing a tier the resolver had stopped offering.
+        # `for_role` owns in-transport availability, including seat-aware exclusions.
         missing = [t for t in registry.TIER_ORDER
-                   if not registry.for_role(t, transport, data, tiers)["inTransport"]]
+                   if not registry.for_role(t, transport, data)["inTransport"]]
         if missing:
             lacked_tiers = (
                 " NO AVAILABLE %s ROW SERVES: %s — every dispatch at those tiers is one sidecar "
                 "hop, and taking the nearest in-transport row instead is a silent tier trade."
                 % (transport, ", ".join("`%s`" % t for t in missing)))
     except Exception:
-        lacked_tiers = (" Which tiers this seat lacks could not be computed (registry or ladder "
-                        "unreadable) — run the command above before assuming this seat covers one.")
+        lacked_tiers = (" Which tiers this seat lacks could not be computed (registry unreadable) "
+                        "— run the command above before assuming this seat covers one.")
 
     if transport == "codex":
         effort_note = (
@@ -327,14 +363,45 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
     if effort:
         return (
             f"[session] Your session effort is '{effort}'. Delegates never inherit it: "
-            "fan-outs and judgment stages dispatch via Workflow with explicit model+effort "
-            "pins (orchestration §0 Workflow-first, §5 pins)."
+            "fan-outs and judgment stages dispatch with explicit model+effort pins on the "
+            "route you choose by the model ladder's selection line (§0 Workflow-first, §5 pins)."
         )
     return (
         "[session] Your session effort is not visible to you — assume nothing about it. "
-        "Fan-outs and judgment stages dispatch via Workflow with explicit model+effort pins; "
-        "never let a dispatch inherit session effort (orchestration §0 Workflow-first, §5 pins)."
+        "Fan-outs and judgment stages dispatch with explicit model+effort pins on the route "
+        "you choose by the model ladder's selection line; never let a dispatch inherit session effort "
+        "(§0 Workflow-first, §5 pins)."
     )
+
+
+def compaction_lines(payload):
+    """The SessionStart:compact state lines: the compaction ordinal and previous boundary time, which skills
+    survive, and, for a session that dispatched, the dispatch doctrine as `model_ladder_gate` applies it. The
+    client writes the re-attached skills after this hook runs, so the skill line states the rule the guards apply
+    (`_hook_state.skill_in_context`) and never names a skill as kept or cleared. An unreadable transcript prints
+    the doctrine line too, since its dispatch history is unknown."""
+    lines = []
+    try:
+        import _compaction_record
+        ordinal, previous, dispatches = _compaction_record.position(payload.get("transcript_path") or "")
+        lines.append("[compaction] Compaction %d of this session%s." % (
+            ordinal, "; the previous one ended %s" % str(previous)[:19] + "Z" if previous else ""))
+    except Exception as exc:
+        dispatches = None
+        lines.append("[compaction] The transcript's compaction record could not be read (%s): this compaction's "
+                     "ordinal and the session's dispatch history are unknown." % type(exc).__name__)
+    # The edit guard (harness_edit_skill_reminder.py) and the dispatch gate deny on a skill not in context; this
+    # line is the earlier surface those denies back up (instruction_quality §3).
+    lines.append("[compaction] An invoked skill the client re-attached whole after this compaction is still loaded; "
+                 "a copy marked truncated for compaction is not, so invoke that skill again before an action that "
+                 "needs it (an edit of a `.claude/` file needs instruction_quality).")
+    if dispatches != 0:
+        try:
+            import model_ladder_gate
+            lines.append("[compaction] This session has dispatched. " + model_ladder_gate.doctrine_rule(payload))
+        except Exception:
+            pass
+    return lines
 
 
 def main() -> None:
@@ -353,6 +420,9 @@ def main() -> None:
         notes = driver_notes_block(payload.get("model"))
         if notes:
             print(notes)
+        if payload.get("source") == "compact":
+            for line in compaction_lines(payload):
+                print(line)
     if shape:
         # DELEGATE, not orchestrator: DEEPSEEK_RAILS opens "You ARE the orchestrator
         # this session", which is actively wrong for a child that cannot even spawn
@@ -363,9 +433,16 @@ def main() -> None:
                 print(rails)
         except Exception:
             pass  # advisory hook — a missing/malformed guard file must not brick the child
-        # Unconditional for a delegate: it corrects CLAUDE.md §Tool Routing as much as RAILS, so it
+        # Unconditional for a delegate: it corrects CLAUDE.core.md §9 as much as RAILS, so it
         # must survive the lean-model early return below.
-        print(DELEGATE_TOOL_GRANT)
+        print(delegate_tool_grant())
+        # A delegate's corrections are keyed to the CHILD's model, not the parent's: a dispatched
+        # luna lane needs the luna notes, and the payload of its own session start carries them.
+        # Printed here rather than in the `not shape` branch above, so the delegate gets its rails
+        # and grant first and one notes block, not two.
+        notes = driver_notes_block(payload.get("model"))
+        if notes:
+            print(notes)
     elif _session_transport is None:
         print(ANTHROPIC_RAILS)  # resolver unavailable: the host transport is the safe rails to emit
     else:

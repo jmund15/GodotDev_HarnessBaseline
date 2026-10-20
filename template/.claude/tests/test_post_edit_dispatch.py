@@ -6,9 +6,8 @@ to survive, and they now merge into ONE additionalContext payload instead of sev
 competing ones. Each case feeds a real PostToolUse payload by subprocess and asserts on the
 emitted channel.
 
-PostToolUse has no blocking sub-hook today, so the hard-block contract (a block chained
-both before and after a non-blocking sub-hook still aborts the tool call) and the
-fault-isolation contract run in-process against a synthetic chain.
+PostToolUse is advisory-only. Retired block/deny results cannot erase another
+advisory. These and the fault-isolation cases run against a synthetic chain.
 
 State is redirected with HARNESS_HOOK_STATE_DIR/HOME/USERPROFILE — this never touches
 ~/.claude/.routing_state/.
@@ -34,8 +33,7 @@ DISPATCH = os.path.join(HOOKS, "post_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
 SUBHOOKS = ("check_logger_tag_prefix.py", "plan_memory_reminder.py",
-            "design_surface_reminder.py", "load_steps_validator.py",
-            "tres_format_guard.py", "harness_growth_guard.py",
+            "design_surface_reminder.py", "harness_growth_guard.py",
             "self_eval_archive_guard.py", "retire_trigger_advisory.py")
 
 GAME_PLAN = """# Spell AI status behavior
@@ -154,7 +152,10 @@ def main():
     cases.append(("a clean edit emits nothing and exits 0", rc == 0 and out in ("", "{}")))
 
     # --- check_logger_tag_prefix ------------------------------------------
-    rc, out, err = run(written(clean_cs, 'JmoLogger.Info(this, "plain message");'), env)
+    logger_payload = written(clean_cs, 'JmoLogger.Info(this, "plain message");', tool="Edit")
+    logger_payload["tool_input"] = {"file_path": clean_cs, "old_string": "var x = 1;",
+                                    "new_string": 'JmoLogger.Info(this, "plain message");'}
+    rc, out, err = run(logger_payload, env)
     cases.append(("check_logger_tag_prefix still warns about an untagged call",
                   rc == 0 and "[logger_tag_prefix]" in context(out)))
 
@@ -162,7 +163,7 @@ def main():
     plan_path = os.path.join(tmp, "repo", ".claude", "plans", "b2-game-fixture.md")
     rc, out, err = run(written(plan_path, GAME_PLAN, session="postplan"), env)
     cases.append(("plan_memory_reminder still fires on a game-scope plan",
-                  rc == 0 and "Plan touches" in context(out)))
+                  rc == 0 and "Plan text names domains:" in context(out) and "Before implementing" not in context(out)))
 
     # --- design_surface_reminder ------------------------------------------
     rc, out, err = run(written(clean_cs, "[Export] public bool Enabled = false;",
@@ -170,21 +171,20 @@ def main():
     cases.append(("design_surface_reminder still fires on an [Export] bool",
                   rc == 0 and "design_litmus" in context(out)))
 
-    # --- load_steps_validator + tres_format_guard, merged -----------------
+    # Resource normalization now belongs to PreToolUse.
     tres = plant(os.path.join(tmp, "repo", "Data", "probe.tres"), BAD_TRES)
     rc, out, err = run(written(tres, BAD_TRES, session="posttres"), env)
-    merged = context(out)
-    cases.append(("load_steps_validator still reports a header mismatch",
-                  rc == 0 and "[load_steps_validator]" in merged))
-    cases.append(("tres_format_guard still reports a non-canonical header",
-                  rc == 0 and "[tres-format-guard]" in merged))
-    cases.append(("two advisories merge into ONE additionalContext payload",
-                  out.count("additionalContext") == 1))
+    cases.append(("resource edits get no post-edit formatting advisory", rc == 0 and not context(out)))
+    module = load_dispatch_module()
+    cases.append(("only PreToolUse owns resource formatting",
+                  'tres_format_guard' not in dict(module.CHAIN)))
 
     # --- harness_growth_guard ---------------------------------------------
     repo = os.path.join(tmp, "growth")
     big_md = plant(os.path.join(repo, ".claude", "commands", "big.md"), "- " + "large " * 500)
-    rc, out, err = run(written(big_md, "x", session="postgrow", cwd=repo), env)
+    growth_payload = written(big_md, "- " + "large " * 500, session="postgrow", cwd=repo)
+    growth_payload["tool_response"]["type"] = "create"
+    rc, out, err = run(growth_payload, env)
     cases.append(("harness_growth_guard still reports a size/density measurement",
                   rc == 0 and "[harness-growth]" in context(out)))
 
@@ -236,13 +236,23 @@ def main():
 
     payload = written(clean_cs, "var x = 1;")
 
-    rc, out, err = module.dispatch(payload, chain=(blocker, noisy))
-    cases.append(("a block BEFORE a non-blocking sub-hook aborts the call",
-                  rc == 2 and "BLOCKED: planted" in err and "advisory-from-noisy" not in out))
+    for retired in (blocker, ("denier", lambda payload: {"deny": "planted deny"})):
+        for chain in ((retired, noisy), (noisy, retired)):
+            rc, out, err = module.dispatch(payload, chain=chain)
+            cases.append((f"retired {retired[0]} preserves advisories in either position",
+                          rc == 0 and context(out) == "advisory-from-noisy"
+                          and "permissionDecision" not in out and not err))
 
-    rc, out, err = module.dispatch(payload, chain=(noisy, blocker))
-    cases.append(("a block AFTER a non-blocking sub-hook still aborts the call",
-                  rc == 2 and "BLOCKED: planted" in err and "advisory-from-noisy" not in out))
+    for name in ("duplicate_test_double_guard", "floorcell_mutation_seam_guard",
+                 "test_suite_gate_coverage_guard", "trail_mutation_seam_guard"):
+        hook_path = os.path.join(HOOKS, name + ".py")
+        if not os.path.isfile(hook_path):
+            continue  # a project that does not carry this guard has no branch to retire
+        with open(hook_path, encoding="utf-8") as fh:
+            source = fh.read()
+        cases.append((f"{name} retains standalone checks, not a hook branch",
+                      "def standalone(" in source and "def hook(" not in source
+                      and "--hook" not in source))
 
     rc, out, err = module.dispatch(payload, chain=(("plan_memory_reminder", boom), noisy))
     cases.append(("E8: a runtime fault preserves later output and names its hook",

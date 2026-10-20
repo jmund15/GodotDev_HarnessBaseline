@@ -1,0 +1,91 @@
+{
+  "status": "fail",
+  "counts": {
+    "VERIFIED": 0,
+    "UNVERIFIED": 0,
+    "UNCHECKED": 5
+  },
+  "verdicts": {
+    "F1": {
+      "verdict": "UNCHECKED",
+      "items": []
+    },
+    "F2": {
+      "verdict": "UNCHECKED",
+      "items": []
+    },
+    "F3": {
+      "verdict": "UNCHECKED",
+      "items": []
+    },
+    "F4": {
+      "verdict": "UNCHECKED",
+      "items": []
+    },
+    "F5": {
+      "verdict": "UNCHECKED",
+      "items": []
+    }
+  },
+  "errors": [],
+  "unverified": [],
+  "held": [
+    {
+      "id": "F1",
+      "class": "unfolded",
+      "reason": "Step 4 still tells the seat to file FIX for wording, which contradicts the new step 3 ('Never audit its phrasing'). Quoted: '**FIX** for wording, an unearned always-loaded line, or a missing verification step — with exact text.'"
+    },
+    {
+      "id": "F2",
+      "class": "unfolded",
+      "reason": "The added sentence restates the plan-vs-close-audit split without citing its owner, and lists the unit's required content as '(its rule, home and trigger)' while plan_check_agents.md step 3 lists 'home, trigger, scope, always-loaded cost, verification and conflicts' for the same thing."
+    },
+    {
+      "id": "F3",
+      "class": "unfolded",
+      "reason": "The commit diff touches only plan_check_agents.md and plan_file_format.md, but the commit message and ledger state a third edit (orchestration/reference/review_width.md Coverage, +426 B) and step 3 cites that file as the owner. In the proof worktree .claude/worktrees/egr-b6-proof/.claude/skills/orchestration/reference/review_width.md does not exist, so the new citation does not resolve at the PR head. In the main checkout the file exists and contains 'coverage defect'."
+    },
+    {
+      "id": "F4",
+      "class": "unfolded",
+      "reason": "Commit 8fc89aadc6a68a2533d73466e079568f20a617fa premise 1 states '31 of 40 round-1 findings and 19 of 23 round-2 findings on the wording of a 48 KB meta plan', but its only evidence is the file quote 'plc-instruction-quality' in plan_check_agents.md, which shows the lens exists and not any finding count, round or plan size."
+    },
+    {
+      "id": "F5",
+      "class": "ask",
+      "reason": "Does task evidence-gated-review-and-claims hold the quote 'If plan checking vs auditing and reviewing are doing the exact same thing, then once again, we've just failed.' as an owner row?"
+    }
+  ],
+  "failures": [],
+  "ledger": {
+    "panelRows": 1,
+    "inlineRows": 0
+  },
+  "nextRound": {
+    "seats": [],
+    "units": {},
+    "change": null,
+    "unaccounted": [],
+    "inline": false,
+    "refold": {
+      "findings": ".claude\\scratch\\egr\\b6\\spill2\\post_check-verify-11abeu.json.fold.findings.json",
+      "held": [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5"
+      ],
+      "failedCheck": [],
+      "files": [
+        ".claude/commands/agents/plan_check_agents.md",
+        ".claude/skills/_brainstorm_shared/plan_file_format.md",
+        ".claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/doctrine-commits.md"
+      ],
+      "snapshot": "python3 .claude/tools/post_check.py snapshot --root 'C:\\Users\\dev\\proj' --files .claude/commands/agents/plan_check_agents.md .claude/skills/_brainstorm_shared/plan_file_format.md .claude/worktrees/egr-b6-proof/.claude/scratch/egr/b6/inputs/doctrine-commits.md --out '.claude\\scratch\\egr\\b6\\spill2\\post_check-verify-11abeu.json.refold.snapshot.json'",
+      "check": "python3 .claude/tools/post_check.py review --findings '.claude\\scratch\\egr\\b6\\spill2\\post_check-verify-11abeu.json.fold.findings.json' --digest '.claude\\scratch\\egr\\b6\\spill2\\post_check-verify-11abeu.json.refold.digest.json' --snapshot '.claude\\scratch\\egr\\b6\\spill2\\post_check-verify-11abeu.json.refold.snapshot.json' --stage candidate --subject session:ae2238a9-d793-452f-97fa-1b628cf81394 --roster .claude/scratch/egr/b6/roster.json --task evidence-gated-review-and-claims --out '.claude\\scratch\\egr\\b6\\spill2\\post_check-verify-11abeu.json.refold.json'"
+    }
+  },
+  "changedPaths": [],
+  "foldReport": null
+}

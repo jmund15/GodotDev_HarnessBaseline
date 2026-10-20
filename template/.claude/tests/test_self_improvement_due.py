@@ -147,6 +147,64 @@ def in_process_cases():
             holder.wait(timeout=10)
 
 
+def evidence_cases():
+    """case 15 — evidence markers add a due reason naming /autolearn; a raising scan is due with its error."""
+    import importlib.util
+    marker = "<!-- basis: thin; reverses-if: the planted observation; review-when: %s -->\n"
+    with tempfile.TemporaryDirectory() as base:
+        write_json(os.path.join(base, "self_evaluate_archive.json"), archive_with_rows(3))
+        write_json(os.path.join(base, "logs", "eval_dashboard_last.json"), {"row_count": 3, "date": TODAY_ISO})
+        write_json(os.path.join(base, "orchestration_candidates.json"), {"ok": True})
+        escapes = os.path.join(base, "escape.jsonl")
+        with open(escapes, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps({"id": "e1", "ts": "2026-06-01T00:00:00Z", "paths": ["Jmodot"]}) + "\n")
+        env = dict(os.environ, HARNESS_ESCAPE_LOG=escapes)
+        rule = os.path.join(base, "commands", "rule.md")
+
+        def line():
+            proc = subprocess.run([sys.executable, TOOL, "--root", base, "--today", TODAY_ISO, "--line"],
+                                  capture_output=True, text=True, env=env)
+            return proc.stdout.strip()
+
+        print("case 15 — evidence markers in the due line")
+        os.makedirs(os.path.dirname(rule), exist_ok=True)
+        with open(rule, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("Step.\n\n" + marker % "escape path:Jmodot since:2026-01-01 >= 2")
+        check("a live marker leaves the line empty", line() == "", repr(line()))
+        with open(rule, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("Step.\n\n" + marker % "escape path:Jmodot since:2026-01-01 >= 1")
+        got = line()
+        check("one fired marker makes the line name it and /autolearn",
+              "1 evidence markers fired, 0 malformed (run /autolearn)" in got, repr(got))
+        with open(rule, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("Step.\n\n" + marker % "escape path:Jmodot >= 1")
+        got = line()
+        check("one malformed marker makes the line name it",
+              "0 evidence markers fired, 1 malformed (run /autolearn)" in got, repr(got))
+        os.remove(rule)
+        check("no marker leaves the line unchanged", line() == "", repr(line()))
+
+        spec = importlib.util.spec_from_file_location("self_improvement_due_evidence_probe", TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        import rule_retirement
+        real = rule_retirement.evidence_due
+
+        def boom(root):
+            raise RuntimeError("planted")
+
+        rule_retirement.evidence_due = boom
+        try:
+            due, reason = tool.markers_due(base)
+            got = tool.due_line(base, TODAY)
+        finally:
+            rule_retirement.evidence_due = real
+        check("a raising scan is due with its error", due and "evidence scan failed" in reason
+              and "RuntimeError" in reason, reason)
+        check("the due line carries the failed scan and names /autolearn",
+              "evidence scan failed" in got and "(run /autolearn)" in got, got)
+
+
 def main():
     if not os.path.exists(TOOL):
         raise SystemExit("RED: %s does not exist" % TOOL)
@@ -249,6 +307,7 @@ def main():
 
     in_process_cases()
     review_cases()
+    evidence_cases()
 
     print()
     if FAILURES:

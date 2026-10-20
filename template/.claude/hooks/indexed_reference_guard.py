@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: block a whole-file Read of a reference that is served through an index.
+Hook: advise the main session and block a delegate on a whole-file Read of an indexed reference.
 
 Some harness references are scan-all-read-few: a reader must see every entry's trigger to know
 which few bear, but needs the body of only a handful. Those files carry an ACCESSOR that emits a
@@ -12,21 +12,22 @@ Prose in the consuming command covers the paths it knows about. It cannot cover 
 found the file through semantic-search, a `Glob`, or a memory citation and reached for `Read`
 next -- which is precisely how a per-entry contract erodes. This hook is that backstop.
 
-NOT SUBAGENT-EXEMPT, unlike the two blocks in pre_read_dispatch.py. Those exist because a read
-spends the ORCHESTRATOR's context permanently, a cost a discarded subagent context does not carry.
-The cost here is different in kind: a fan-out lens reading 46KB spends 46KB of input tokens on
-every lens, N times per dispatch, and the discard at the end recovers none of it. The
-multiplication IS the defect, so the actor that multiplies it is the one that must be stopped.
+NOT SUBAGENT-EXEMPT: the main session gets an accessor advisory, but a delegate is blocked. The
+cost here is different in kind: a fan-out lens reading 46KB spends 46KB of input tokens on every
+lens, N times per dispatch, and the discard at the end recovers none of it. The multiplication IS
+the defect, so the actor that multiplies it is the one that must be stopped.
 
-Bounded reads pass. `Read(offset=..., limit=...)` means the agent has already scoped the read, and
-editing an entry is a legitimate bounded read of these files.
+Bounded reads pass for both actors. `Read(offset=..., limit=...)` means the agent has already
+scoped the read, and editing an entry is a legitimate bounded read of these files.
 
 Registry below is the whole configuration surface. To add a file: give its repo-relative suffix,
 the command that replaces the read, and one clause on what the index gives back.
 
-Output contract: returns a block message string (caller writes stderr + exit 2), or None.
-Wired in: pre_read_dispatch.py step 0. Not registered in settings.json on its own -- one spawn per
-matched call is the budget (`instruction_quality` §15).
+Output contract: `process(payload)` returns `{"block": message}` for a delegate, `{"advisory": message}`
+for the main session, or None. `pre_read_dispatch.py` writes blocks to stderr and exits 2; it emits
+main-session advice on `hookSpecificOutput.additionalContext` and exits 0. Standalone `main()` does
+the same. Wired in: pre_read_dispatch.py step 0. Not registered in settings.json on its own -- one
+spawn per matched call is the budget (`instruction_quality` §15).
 """
 
 import os
@@ -63,7 +64,7 @@ INDEXED_REFERENCES = {
         "grep -n '<Concern>' .claude/generated/abstraction_families.md",
         "the matching rows only. The file is ~128KB of 341 families; a plan or "
         "design question needs the handful whose name or owning folder matches "
-        "the domains in scope (plan_check.md §1g states this rule).",
+        "the domains in scope (plan_check_detail.md §1g states this rule).",
     ),
 }
 
@@ -86,7 +87,7 @@ def _is_bounded(tool_input) -> bool:
 
 
 def process(input_data):
-    """Return a block message for an unbounded whole-file Read of an index-served reference."""
+    """Return delegate block or main-session advice for an unbounded indexed-reference Read."""
     if not isinstance(input_data, dict) or input_data.get("tool_name") != "Read":
         return None
 
@@ -108,13 +109,22 @@ def process(input_data):
             size = f"~{size_kb}KB"
         except OSError:
             size = "the whole file"
-        return (
-            f"BLOCKED: whole-file Read of {suffix} ({size}).\n"
-            f"This reference is served through an index, not read end-to-end.\n"
-            f"Run instead:  {command}\n"
-            f"That returns {gives}\n"
-            f"Editing an entry? Bound the read: Read(file_path=..., offset=N, limit=M)."
-        )
+        if str(input_data.get("agent_id") or "").strip():
+            return {
+                "block": (
+                    f"BLOCKED: whole-file Read of {suffix} ({size}).\n"
+                    "Delegate rail (guards/any.md): read a catalog with an accessor through it.\n"
+                    f"Run instead:  {command}\n"
+                    f"That returns {gives}\n"
+                    "Editing an entry? Bound the read: Read(file_path=..., offset=N, limit=M)."
+                )
+            }
+        return {
+            "advisory": (
+                f"Indexed reference: use the accessor for {suffix}, not a whole-file Read. "
+                f"Run: {command}. That returns {gives}"
+            )
+        }
     return None
 
 
@@ -126,10 +136,15 @@ def main() -> None:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
-    msg = process(input_data)
-    if msg:
-        sys.stderr.write(msg + "\n")
+    result = process(input_data)
+    if result and result.get("block"):
+        sys.stderr.write(result["block"] + "\n")
         sys.exit(2)
+    if result and result.get("advisory"):
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": result["advisory"],
+        }}))
     sys.exit(0)
 
 

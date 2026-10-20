@@ -484,7 +484,7 @@ function claude-gpt-astra-1m { Invoke-ClaudeGpt -Model 'astra' -Effort 'medium' 
 
 function Get-OpencodeAliases {
     # Live roster query for the opencode FREE tier - never a hardcoded list here,
-    # because free models churn (refresh via .claude/scripts/opencode_refresh_models.py).
+    # because free models churn (new free models register through /model_ingest).
     try {
         $registry = Join-Path $PSScriptRoot "..\reference\external_models.json"
         $data = Get-Content $registry -Raw | ConvertFrom-Json
@@ -523,7 +523,7 @@ function Invoke-ClaudeOpenCode {
     $model = Get-ExternalModel -Alias $Alias
     if (-not $model -or $model.transport -ne 'opencode') {
         $known = Get-OpencodeAliases
-        Write-Error "opencode model '$Alias' not in .claude/reference/external_models.json (available: $($known -join ' | ')). Refresh stale rosters with scripts/opencode_refresh_models.py."; return
+        Write-Error "opencode model '$Alias' not in .claude/reference/external_models.json (available: $($known -join ' | ')). New free models register through /model_ingest, which serves them on the opencode CLI seat."; return
     }
     $companion = Get-ExternalModel -Alias $SmallFast
     if (-not $companion -or $companion.transport -ne 'opencode') { $companion = $model }

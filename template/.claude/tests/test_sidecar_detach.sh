@@ -49,6 +49,7 @@ LIB="${SC_LIB_UNDER_TEST:-$ROOT/scripts/lib/sidecar_common.sh}"
 TMPBASE="${TEMP:-${TMPDIR:-/tmp}}"
 [ -d "$TMPBASE" ] || { echo "CANNOT RUN: no usable temp dir (TEMP/TMPDIR unset and /tmp missing)"; exit 2; }
 WORK="$(mktemp -d "$TMPBASE/sidecar-detach-test.XXXXXX" 2>/dev/null)" || { echo "CANNOT RUN: mktemp -d failed under $TMPBASE"; exit 2; }
+export SIDECAR_LEDGER_PATH="$WORK/ledger.jsonl"
 KILLED_PIDS_FILE="$WORK/.owned_pids"
 : > "$KILLED_PIDS_FILE"
 
@@ -78,6 +79,7 @@ SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
 # shellcheck disable=SC1090
 . "${SC_LIB_UNDER_TEST:?SC_LIB_UNDER_TEST must point at the lib to test}"
 sc_reexec_snapshot "$@"
+sc_check_launch_memory() { :; }
 
 sc_parse_flags "$@"
 shift "$SC_SHIFT"
@@ -189,13 +191,14 @@ else
   fail "2 -AX -R <rec>" "rc=$rc2 (want 2)" "stderr=$err2 (want '-X must be a standalone argument')" "pid file exists=$( [ -e "${REC2}.pid" ] && echo yes || echo no )"
 fi
 
-# --- 3. -l -X -R <rec>: -X is -l's VALUE, runs in the foreground, no detach files -------------
+# --- 3. -l -X -R <rec>: -X is -l's VALUE, foreground writer records its own exit -----------
 REC3="$WORK/case3.record.json"
 run_launcher out3 err3 rc3 -l -X -R "$REC3"
-if [ "$rc3" = "0" ] && [[ "$out3" == *"PARSED_LABEL=-X"* ]] && [ ! -e "${REC3}.pid" ] && [ ! -e "${REC3}.out" ]; then
-  pass "3 -l -X -R <rec> treats -X as -l's value, foreground, no detach files (CONTROL)"
+if [ "$rc3" = "0" ] && [[ "$out3" == *"PARSED_LABEL=-X"* ]] \
+   && [ -s "${REC3}.pid" ] && [ "$(cat "${REC3}.exit" 2>/dev/null)" = "0" ] && [ ! -e "${REC3}.out" ]; then
+  pass "3 -l -X -R <rec> treats -X as -l's value, foreground writer records exit 0 (CONTROL)"
 else
-  fail "3 -l -X -R <rec>" "rc=$rc3 (want 0)" "stdout=$out3" "pid file exists=$( [ -e "${REC3}.pid" ] && echo yes || echo no )"
+  fail "3 -l -X -R <rec>" "rc=$rc3 (want 0)" "stdout=$out3" "exit=$(cat "${REC3}.exit" 2>/dev/null)"
 fi
 
 # --- 4. -X -R <rec>, unwritable snapshot dir: exit 1, spawns nothing --------------------------
@@ -319,6 +322,16 @@ else
   fail "9 reused record" "rc=$rc9 (want 1)" "stderr=$err9" "before=$SUM_BEFORE after=$SUM_AFTER"
 fi
 
+# --- 9b. record directory missing: the refusal names the missing directory, not "already used" ----
+REC9B="$WORK/no-such-dir/case9b.record.json"
+SC_LIB_UNDER_TEST="$LIB" bash "$LAUNCHER" -A -X -R "$REC9B" -l case9b >/dev/null 2>"$WORK/.stderr_tmp"; rc9b=$?
+err9b="$(cat "$WORK/.stderr_tmp")"
+if [ "$rc9b" != "0" ] && [[ "$err9b" == *"record directory does not exist"* ]] && [[ "$err9b" != *"already used"* ]]; then
+  pass "9b a missing record directory is named as missing"
+else
+  fail "9b missing record directory" "rc=$rc9b" "stderr=$err9b"
+fi
+
 # --- 10. two concurrent -X launches, one new record: exactly one spawns ----------------------
 REC10="$WORK/case10.record.json"
 ( SC_LIB_UNDER_TEST="$LIB" bash "$LAUNCHER" -A -X -R "$REC10" -l case10a >"$WORK/case10a.out" 2>"$WORK/case10a.err"; echo $? > "$WORK/case10a.rc" ) &
@@ -355,16 +368,17 @@ if [[ "$out11" == *"DETACHED pid="* ]] && poll_until 8 "${REC11}.exit"; then
     fail "11 resume through detach" "exit=$ex11" "child stderr=$child_err11" "child stdout=$child_out11"
   fi
 else
-  fail "11 resume through detach setup" "rc=$rc11 out=$out11"
+  fail "11 resume through detach setup" "rc=$rc11 out=$out11" "child stderr=$(cat "${REC11}.err" 2>/dev/null)" "child out=$(cat "${REC11}.out" 2>/dev/null)" "pid=$(cat "${REC11}.pid" 2>/dev/null)"
 fi
 
-# --- 12. no -X: returns the child's exit code in the foreground, unchanged (CONTROL) ---------
+# --- 12. no -X: foreground exit code stays 7 and its durable writer records it (CONTROL) ----
 REC12="$WORK/case12.record.json"
 out12="$(SC_LIB_UNDER_TEST="$LIB" FAKE_EXIT=7 bash "$LAUNCHER" -R "$REC12" -l case12 2>"$WORK/.stderr_tmp")"; rc12=$?
-if [ "$rc12" = "7" ] && [[ "$out12" == *"PARSED_RECORD=$REC12"* ]] && [ ! -e "${REC12}.pid" ]; then
-  pass "12 no -X returns the child's exit code (7) unchanged, no detach files (CONTROL)"
+if [ "$rc12" = "7" ] && [[ "$out12" == *"PARSED_RECORD=$REC12"* ]] \
+   && [ -s "${REC12}.pid" ] && [ "$(cat "${REC12}.exit" 2>/dev/null)" = "7" ]; then
+  pass "12 no -X returns exit 7 and the foreground writer records exit 7 (CONTROL)"
 else
-  fail "12 no -X foreground" "rc=$rc12 (want 7)" "out=$out12"
+  fail "12 no -X foreground" "rc=$rc12 (want 7)" "out=$out12" "exit=$(cat "${REC12}.exit" 2>/dev/null)"
 fi
 
 # --- 13. every lib launcher calls sc_reexec_snapshot "$@" right after sourcing the lib --------
@@ -411,6 +425,18 @@ if [ "$rc14" = "0" ] && [ -n "$c14_pid" ] && [ "$c14_elapsed" -lt 5 ] && poll_un
   pass "14 detached launch released the caller's pipe after ${c14_elapsed}s with a 12 s child"
 else
   fail "14 detached launch releases the caller's pipe" "rc=$rc14 (want 0)" "elapsed=${c14_elapsed}s (want < 5)" "DETACHED pid=${c14_pid:-none}" "exit file present=$( [ -e "${REC14}.exit" ] && echo yes || echo no )"
+fi
+
+# --- 15. the atomic detached claim has a Windows identity on its first line ------------------
+if [ -r "/proc/$$/winpid" ]; then
+  first_claim="$(sed -n '1p' "${REC5}.pid")"
+  if [[ "$first_claim" == *"winpid="* ]]; then
+    pass "15 detached first claim carries winpid"
+  else
+    fail "15 detached first claim carries winpid" "first line=$first_claim"
+  fi
+else
+  pass "15 winpid unavailable on this host (POSIX control)"
 fi
 
 echo "test_sidecar_detach: $PASS passed, $FAIL failed"

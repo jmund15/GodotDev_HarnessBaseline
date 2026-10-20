@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: b729ef67-4b61-4c62-b99a-cdf587856c42
-  modified: 2026-08-13T03:39:18.394Z
+  modified: 2026-10-13T15:01:39.434Z
 retire_when:
   - review-by: 2027-02-08
 ---
@@ -13,21 +13,18 @@ retire_when:
 Workflow/Agent subagents run on the session's own endpoint and nothing else. What changes with the
 endpoint is the PIN VOCABULARY, and since 2026-09-04 nothing translates between vocabularies.
 
-**Pin the session transport's own model ids.** On an Anthropic session that means role names
-(`opus`/`sonnet`/`haiku`/`fable`) or `claude-*` ids; on a codex session `gpt-5.6-*`; on deepseek
-`deepseek-v4-*`. `hooks/workflow_provider_guard.py` DENIES the other vocabulary before the call
-runs and names the legal set — it does not warn, because the failure it prevents is silent: a pin
-the endpoint cannot serve returns a null agent that `.filter(Boolean)` swallows into "0 findings",
-a fan-out that looks clean and ran nothing.
+**Pin the session transport's own model IDs.** Use `model_registry.py for-role <tier>` to read
+the current roster, then pass that endpoint's legal pin. `hooks/workflow_provider_guard.py` DENIES
+another transport's vocabulary before the call runs: an unsupported pin can otherwise return a
+null agent that a workflow mistakes for zero findings.
 
-**Siblings on your OWN transport need no sidecar.** A codex session pins `gpt-5.6-terra` in a
-Workflow and it dispatches in-harness; the guard injects `args.__transport` so `dispatch.js` and
-`review_fanout.js` accept those ids. A sidecar is for CROSSING transports — including reaching
-Anthropic from a provider session, which is what `.claude/scripts/anthropic_sidecar.sh` is for.
+**Siblings on the current transport need no sidecar while the session's plan pays.** Transport-aware
+Workflow engines accept that endpoint's IDs from their arguments. A separate sidecar process reaches
+another transport or another plan of the same transport; it can also isolate process-level settings
+on the current one.
 
-**The committed `.claude/workflows/*.js` scripts pin Anthropic role names**, so they are
-Anthropic-session tools by construction; running one from a provider session is denied rather than
-silently mis-routed.
+**A committed script is not a transport.** A reusable workflow can accept runtime pins, while a
+script with literal provider pins is limited to that endpoint. Rule: `orchestration` §5 *Effort*.
 
 **Why:** 2026-08-07 — a Sonnet-session fan-out meant for deepseek ran all four survey agents on
 claude-sonnet-5 (~494k tokens of plan quota) because CLAUDE.md's "pins translate MECHANICALLY"

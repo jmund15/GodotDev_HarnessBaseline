@@ -1,5 +1,5 @@
 ---
-description: Apply queued harness edits after checking target drift and preserving unresolved entries
+description: Apply queued harness edits
 argument-hint: [--check-baseline]
 ---
 
