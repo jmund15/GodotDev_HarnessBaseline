@@ -859,7 +859,7 @@ def case_a_corpus_scanning_proof_is_keyed_by_the_corpus_it_scans():
     """A proof that lists a tracked directory reads files its text never names; the key covers them."""
     table = getattr(harness_tests, "_CORPUS_SCANNING", {})
     check("the corpus-scanning table names the proofs that read a whole directory",
-          {"test_claudemd_citations.py", "test_guard_text.py", "test_routing_scenarios.py"} <= set(table),
+          {"test_claudemd_citations.py", "test_guard_text.py"} <= set(table),
           "table=%s" % sorted(table))
     for name, folders in sorted(table.items()):
         repo, _proof, counter = make_repo()

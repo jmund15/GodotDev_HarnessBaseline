@@ -82,12 +82,12 @@ function Resolve-TestRepo {
     (Get-Item -LiteralPath $ScriptsRoot).Parent.Parent.FullName
 }
 
-# A project that pins a runner build able to skip the held recompile declares it in GateTargetPin.ps1, which
-# defines Test-GdUnitRecompileSkipSupport -Repo and Get-GateTargetPinRequirement. Without that file no target is
-# barred and every standalone run recompiles.
-$script:GateTargetPinFile = Join-Path $PSScriptRoot 'GateTargetPin.ps1'
-if (Test-Path -LiteralPath $script:GateTargetPinFile) {
-    . $script:GateTargetPinFile
+# A project that pins a runner build able to skip the held recompile declares it in a `*.pin.ps1` beside this
+# script, which defines Test-GdUnitRecompileSkipSupport -Repo and Get-GateTargetPinRequirement. Without one no
+# target is barred and every standalone run recompiles.
+$script:GatePinFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.pin.ps1' -File -ErrorAction SilentlyContinue)
+if ($script:GatePinFiles.Count -gt 0) {
+    foreach ($pinFile in $script:GatePinFiles) { . $pinFile.FullName }
 } else {
     function Test-GdUnitRecompileSkipSupport {
         param([Parameter(Mandatory)] [string] $Repo)
@@ -97,7 +97,7 @@ if (Test-Path -LiteralPath $script:GateTargetPinFile) {
 
 function Assert-GateTargetCompatible {
     param([Parameter(Mandatory)] [string] $Repo)
-    if (-not (Test-Path -LiteralPath $script:GateTargetPinFile)) { return }
+    if ($script:GatePinFiles.Count -eq 0) { return }
     if (-not (Test-GdUnitRecompileSkipSupport -Repo $Repo)) {
         Write-Output "VERDICT=BLOCKED reason=target requires $(Get-GateTargetPinRequirement) (held recompile skip); merge main first  repo=$Repo"
         exit 4

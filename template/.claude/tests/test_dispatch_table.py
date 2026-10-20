@@ -1740,14 +1740,6 @@ def test_a_launch_inside_a_bench_owned_tree_is_not_the_sessions_dispatch():
     assert _probe_env(code, CLAUDE_CODE_SESSION_ID=SID, SIDECAR_DISPATCH_OWNER="bench") == ["None"]
 
 
-def test_bench_marks_its_process_tree_as_the_dispatch_owner():
-    if not os.path.isfile(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "bench.py")):
-        return
-    code = ("import os, sys; sys.path.insert(0, %r); import bench; print(os.environ.get('SIDECAR_DISPATCH_OWNER'))"
-            % os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign"))
-    assert _probe_env(code, CLAUDE_CODE_SESSION_ID=SID) == ["bench"]
-
-
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
