@@ -128,8 +128,14 @@ check() { # <name> <ok 0|1> <detail>
 }
 
 PARENT_AUTH_LEAK=parent-auth-leak
+# The dispatch-doctrine gate is not under test: a launch from a live session is denied until that session
+# loaded the doctrine, so the proof launches as its own session with the ladder and skill marked loaded.
+HOOK_STATE="$(mktemp -d)"
+printf '{"model_ladder_ready": true, "fired_since_compaction": {"skill_in_context:orchestration": true}}' \
+  > "$HOOK_STATE/consolep.json"
 launch() { # <launcher> <record>; the parent carries a leak of every kind the scrub must remove
   ( cd "$ROOT" && \
+    HARNESS_HOOK_STATE_DIR="$HOOK_STATE" CLAUDE_CODE_SESSION_ID="consolep-0000-0000-0000-000000000000" \
     ANTHROPIC_BASE_URL="https://parent.invalid/leak" ANTHROPIC_AUTH_TOKEN="$PARENT_AUTH_LEAK" \
     ANTHROPIC_CONSOLE_KEY_LEAK="parent-console-leak-sentinel" \
     ANTHROPIC_CONSOLE_WORKSPACE_ID_PRIMARY="$WORKSPACE_ID" \

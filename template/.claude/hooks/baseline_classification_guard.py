@@ -145,9 +145,9 @@ def _dropped_lock_rows(rest: list, cwd: str, root: str, env: dict | None = None)
     """`(rows, None) | (None, failing-step)` -- rows HEAD's lock holds that the committed lock
     lacks while their file still exists. A peer's temp-index commit moves HEAD but leaves the
     shared working-tree lock behind, so committing that lock reverts the peer's rows. A row whose
-    file is gone left with its file, except a declined row (`absent`), which never has one; the
-    same commit moving `synced_commit` is the engine consuming a baseline publication that deleted
-    the declined file, so that row left upstream."""
+    file is gone left with its file, except a declined row (`absent`), which never has one.
+    A declined row also left upstream when the same commit moves `synced_commit`: the engine is
+    consuming a baseline publication that deleted the declined file."""
     new_text, failed_cmd = _committed_lock_text(rest, cwd, root, env)
     if new_text is None:
         return None, failed_cmd
