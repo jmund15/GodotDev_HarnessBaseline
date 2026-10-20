@@ -15,7 +15,7 @@ import review_result
 # Failed Read: sr-D6b.progress.jsonl 1969/1970. Only tool/input and ids are planted below.
 _CAPTURED_READ = [
     {"type": "tool_use", "id": "call_ced555ac026348e4b3ea3c2e8f249c72", "name": "Read",
-     "input": {"file_path": "{{PROJECT_ROOT}}/.claude/worktrees/sr-d/.claude/plans/scaled-rigor.md", "limit": 92}},
+     "input": {"file_path": "/work/proj/.claude/worktrees/sr-d/.claude/plans/scaled-rigor.md", "limit": 92}},
     {"type": "tool_result", "tool_use_id": "call_ced555ac026348e4b3ea3c2e8f249c72",
      "content": "1\t# Scaled rigor: three inputs every scaled check reads, and no blanket checks", "is_error": False},
 ]
@@ -28,7 +28,7 @@ _CAPTURED_BASH = [
 ]
 _CAPTURED_FAILED_READ = [
     {"type": "tool_use", "id": "call_aaa97b1b00e9447eaf2a1e854e0ec6f5", "name": "Read",
-     "input": {"file_path": "{{PROJECT_ROOT}}/.claude/worktrees/sr-d6b/.claude/scratch/sr_brief/D6b.md.amend.md"}},
+     "input": {"file_path": "/work/proj/.claude/worktrees/sr-d6b/.claude/scratch/sr_brief/D6b.md.amend.md"}},
     {"type": "tool_result", "tool_use_id": "call_aaa97b1b00e9447eaf2a1e854e0ec6f5",
      "content": "File does not exist.", "is_error": True},
 ]

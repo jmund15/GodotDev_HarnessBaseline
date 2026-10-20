@@ -1612,6 +1612,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/gitignore.harness",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/guards/any.godot.md",
       "layer": "godot",
       "sync": "auto"
@@ -3633,6 +3638,11 @@
     },
     {
       "path": ".claude/tests/test_baseline_sync.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_baseline_sync_doctor.py",
       "layer": "pure",
       "sync": "auto"
     },

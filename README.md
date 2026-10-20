@@ -40,7 +40,8 @@ Template files use four substitution variables, applied by `bootstrap.sh`:
 - `{{PROJECT_NAME}}` — Godot project name (also used for `app_userdata` log paths and the Obsidian `DevProjects/<name>` folder)
 - `{{PROJECT_NAMESPACE}}` — C# namespace / library prefix (defaults to the project name)
 - `{{VAULT_ROOT}}` — absolute path to the Obsidian vault root
-- `{{PROJECT_ROOT}}` — absolute path to the project repo on your dev machine
+- `{{PROJECT_ROOT}}` — the `--target` folder, derived by bootstrap (no flag); the engine re-derives it from the
+  checkout on every run, and the lock keeps it empty
 
 ## Adopting into a new project
 
@@ -49,17 +50,24 @@ git clone <this-repo> harness-baseline
 cd harness-baseline
 ./bootstrap.sh --target /path/to/NewGame --project-name NewGame \
     --vault-root "C:/Users/you/Documents/ObsidianVault" \
-    --project-root "C:/path/to/NewGame"          # --layers pure,coding,godot to choose your prefix (default: all)
+    # --project-name defaults to the target folder name; --layers pure,coding,godot chooses your prefix (default: all)
 ```
 
 A content-production repo bootstraps with `--layers pure`.
 
-Bootstrap copies the template, substitutes placeholders, and writes
+Path arguments take `C:\x`, `C:/x` or `/c/x`; a `--vault-root` that is not a directory stops the run before
+any write. Bootstrap copies the template, substitutes placeholders, and writes
 `.claude/baseline.lock.json` (per-file hashes + your substitution map) so the sync
-loop works from the first session. Then follow the printed next-steps checklist
-(fill the CLAUDE.md PROJECT section, seed `game_vision` / `project_subsystems`,
-create the vault `Claude/TODO/` folders, `/system_check`, `/reindex_search`), and
-walk the **Known adaptation points** below.
+loop works from the first session; `init` and every later `pull` write `.claude/gitignore.harness` into the
+root `.gitignore` between `# >>> harness >>>` and `# <<< harness <<<`. Bootstrap also runs `git init` when the
+target has no repo, sets `core.hooksPath` to `.claude/githooks`, creates the vault worklog skeleton
+`<vault>/DevProjects/<project>/Claude/TODO/Worklog.md` when absent, merges `autoMemoryDirectory` into the
+gitignored `.claude/settings.local.json`, and prints `baseline_sync.py doctor`, the adoption self-check. Every file it writes uses LF. `--force` re-runs over an existing
+`.claude`: seed files already there stay as they are, and the lock is rebuilt.
+
+Then follow the printed next-steps checklist, and walk the **Known adaptation points** below. In
+`.claude/CLAUDE.md` you fill four headings: **Project Guidelines**, **Development Philosophy: Hybrid TDD**,
+**Project Domains** and **Project-Specific Conventions**.
 
 ## Keeping projects and baseline in sync
 
@@ -182,69 +190,75 @@ A few included files are generic in shape but carry conventions as concrete
 defaults — review them on first use in a new project. (`tools/audit_baseline.py`
 keeps this list honest: its judgment pass flags adaptation-shaped files missing from here.)
 
-- `reference/memory_domains.md` — the domain → search-seed → companion-skill table, rendered
+- [pure] `reference/memory_domains.md` — the domain → search-seed → companion-skill table, rendered
   by `compose` from `reference/memory_domains.base.md` (tracked, universal prose) and
   `adaptation.json` `memory_domains`; `hooks/plan_memory_reminder.py` reads the same key.
   Add your project's content domains to `adaptation.json`, never to either file directly.
-- `commands/doc_start_here_update.md` — the domain-classification table's stack-generic rows
+- [pure] `commands/doc_start_here_update.md` — the domain-classification table's stack-generic rows
   read `adaptation.json` `content_domains` for your project's central content pipeline row(s).
-- `commands/agents/pr_test_checklist_conventions.md` — the merge-heuristics table's
+- [godot] `commands/agents/pr_test_checklist_conventions.md` — the merge-heuristics table's
   stack-generic rows read `adaptation.json` `content_scopes` for your content/entity
   scope-to-section rows.
-- `commands/agents/pr_classification.md` — the domain table reads `adaptation.json`
+- [coding] `commands/agents/pr_classification.md` — the domain table reads `adaptation.json`
   `pr_domains` for your project's folder-shape-to-domain signals.
-- `commands/agents/review_agents.md` — the `pool-lifecycle` agent's checklist names
+- [coding] `commands/agents/review_agents.md` — the `pool-lifecycle` agent's checklist names
   example pooled types (`IPoolable` family) in brackets; substitute your pooling types
   and prune any pattern your project lacks.
-- `skills/worklog_reference/SKILL.md` — the domain-classification tables use example
+- [pure] `skills/worklog_reference/SKILL.md` — the domain-classification tables use example
   content domains; replace with your project's domains.
-- `skills/project_subsystems/SKILL.md` (seed) — the subsystem registry that
+- [pure] `reference/project_stack.md` (seed) — the toolchain version pins every other surface cites
+  (engine, runtime, test framework, build command); fill the placeholder fields at adoption.
+- [pure] `skills/environment_bootstrap/SKILL.md` (seed) — this machine's ground truth: binaries, vault
+  root, log locations, shell and launcher differences; fill it for your machine.
+- [pure] `reference/vault_taxonomy.md` (seed) — the vault layout `obsidian_conventions` reads (project
+  folders, the live design surface, legacy areas); list your vault's folders.
+- [pure] `skills/project_subsystems/SKILL.md` (seed) — the subsystem registry that
   `/sync_subsystems`, `/structure_audit`, the structure rules, the testing skill's
   test-support path and the brainstorm scope litmus route through; fill it at adoption.
   Its sibling `adaptation.json` (seed) holds the other adaptation tables this list names —
   one skill folder owns both files.
-- `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
+- [godot, coding] `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
   folder-layout rules read the registry above, plus `adaptation.json` `structure_exceptions`
   for justified folder/namespace-alias exceptions.
-- `skills/architecture_philosophy/SKILL.md` — the design-philosophy skill reflects
+- [coding] `skills/architecture_philosophy/SKILL.md` — the design-philosophy skill reflects
   the source projects' architectural conventions; prune to taste on first use.
-- `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
+- [pure] `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
   assumes the 4-doc Obsidian documentation system; adapt vocabulary if your doc
   tree differs.
-- `cloud-install.sh` / `hooks/session_context_loader.py` / `commands/reference/workstation_setup_toolchain.md` —
+- [godot, pure] `cloud-install.sh` / `hooks/session_context_loader.py` / `commands/reference/workstation_setup_toolchain.md` —
   pin your Godot/.NET/LSP versions (config constants at the top of each; the
   workstation toolchain reference carries them as defaults).
-- `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
+- [godot] `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
   artifact paths excluded from the tree digest; add your project's.
-- `scripts/run_integration_batched.ps1` — `$quarantine` reads `adaptation.json`
+- [godot] `scripts/run_integration_batched.ps1` — `$quarantine` reads `adaptation.json`
   `test_quarantine_filter`, the filter appended to every Integration batch; ships empty.
-- `hooks/test_suite_gate_coverage_guard.py` — `GATED` names the test tiers the gate
+- [godot] `hooks/test_suite_gate_coverage_guard.py` — `GATED` names the test tiers the gate
   filters on (`Logic`/`Integration`/`Sanity`) and `EXCLUDED` the deliberate non-gated
   folders; match them to your `Tests/` layout.
-- `hooks/refcounted_free_guard.py` — `TESTS_ROOT` and `EXEMPT` read `adaptation.json`
+- [godot] `hooks/refcounted_free_guard.py` — `TESTS_ROOT` and `EXEMPT` read `adaptation.json`
   `tests_root` and `teardown_helpers` (e.g. `Tests/Framework/Helpers/TestObjectTeardown.cs`).
-- `scripts/harness_tests.py` — `EXCLUDED` and `_PROOF_TIMEOUTS` merge in `adaptation.json`
+- [pure] `scripts/harness_tests.py` — `EXCLUDED` and `_PROOF_TIMEOUTS` merge in `adaptation.json`
   `proof_excluded` and `proof_timeouts` for project-specific proof exclusions and overrides.
-- `hooks/duplicate_test_double_baseline.json` — ships empty (`{}`); regenerate with
+- [godot] `hooks/duplicate_test_double_baseline.json` — ships empty (`{}`); regenerate with
   `duplicate_test_double_guard.py --write-baseline` once your project carries a
   test-double backlog it wants grandfathered.
-- `hooks/check_logger_tag_prefix.py` + `skills/logging_methodology/SKILL.md` — the
+- [godot] `hooks/check_logger_tag_prefix.py` + `skills/logging_methodology/SKILL.md` — the
   tag-constant class is named `InstrumentationTags`; rename in both if your project
   uses another holder.
-- `tools/lens.py` — `REGISTRIES` pairs each agent-registry file with the ID prefix
+- [pure] `tools/lens.py` — `REGISTRIES` pairs each agent-registry file with the ID prefix
   its lenses use. The shipped `review` entry assumes unprefixed IDs; set your own
   prefix if your `review_agents.md` namespaces them.
-- pure files with example domain nouns as inline examples only (mechanism is
+- [pure] pure files with example domain nouns as inline examples only (mechanism is
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,
   `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,
   `workflows/review_fanout.js`. Allowlisted in `tools/audit_baseline.py`'s
   core-domain-noun check — swap the examples for your domain's when you first touch each file.
-- `commands/clean_pull.md`, `clean_push.md`, `commit_push.md`, `create_pr.md` — the paired-repo
+- [pure] `commands/clean_pull.md`, `clean_push.md`, `commit_push.md`, `create_pr.md` — the paired-repo
   steps read `adaptation.json` `paired_repos` for the list; empty skips the step.
-- `hooks/prompt_memory_loader.py` — `HIGH_RISK_PATTERNS` and `DRIVE_COMMANDS` extend from
+- [pure] `hooks/prompt_memory_loader.py` — `HIGH_RISK_PATTERNS` and `DRIVE_COMMANDS` extend from
   `adaptation.json` `high_risk_patterns` and `drive_commands`.
-- `hooks/prompt_git_state_delta.py` — `WATCHED_SUBMODULES` reads `adaptation.json`
+- [pure] `hooks/prompt_git_state_delta.py` — `WATCHED_SUBMODULES` reads `adaptation.json`
   `git_submodules`.
-- `hooks/compound_cd_approver.py` — `SAFE_SEGMENT_COMMANDS` extends from `adaptation.json`
+- [pure] `hooks/compound_cd_approver.py` — `SAFE_SEGMENT_COMMANDS` extends from `adaptation.json`
   `read_only_commands`, each entry validated against `NEVER_SAFE` and a shape regex.
