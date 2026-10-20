@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "hooks"))
 
-import pattern_enforcer as pe  # noqa: E402
+import dangerous_shell_guard as dsg  # noqa: E402
 
 # An absolute path outside this repo on the running platform: `C:/...` is relative on POSIX,
 # where a cache segment under it would be an in-repo cache the rule rightly admits.
@@ -86,11 +86,11 @@ MUST_BLOCK = [
 
 
 def blocked(cmd):
-    return pe.check_bash_command(cmd)[0]
+    return dsg.check_bash_command(cmd)[0]
 
 
 def channel(cmd):
-    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "pe-cache-proof",
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "dsg-cache-proof",
                "hook_event_name": "PreToolUse", "cwd": ROOT}
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "hooks", "pre_bash_dispatch.py")],
                           input=json.dumps(payload), capture_output=True, text=True, timeout=60,
@@ -102,7 +102,7 @@ def channel(cmd):
 
 
 fails = 0
-print("pattern_enforcer — regenerable-cache recursive delete")
+print("dangerous_shell_guard — regenerable-cache recursive delete")
 for cmd in MUST_PASS:
     if blocked(cmd):
         print(f"  FAIL must-pass blocked: {cmd}")
@@ -140,13 +140,13 @@ OWN_BLOCK = [("rm -rf .claude/scratch/session_end/%s/p1" % OTHER, transcript),
              ("rm -rf .claude/%s" % SID, transcript),
              ("rm -rf .claude/scratch/%s Assets" % SID, transcript)]
 for cmd in OWN_PASS:
-    if pe.check_bash_command(cmd, REPO, transcript)[0]:
+    if dsg.check_bash_command(cmd, REPO, transcript)[0]:
         print(f"  FAIL own-scratch must-pass blocked: {cmd}")
         fails += 1
     else:
         print(f"  ok   own-scratch pass: {cmd}")
 for cmd, tp in OWN_BLOCK:
-    if not pe.check_bash_command(cmd, REPO, tp)[0]:
+    if not dsg.check_bash_command(cmd, REPO, tp)[0]:
         print(f"  FAIL own-scratch must-block allowed: {cmd} (transcript {tp is not None})")
         fails += 1
     else:

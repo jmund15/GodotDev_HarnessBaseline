@@ -24,7 +24,7 @@ REMEDY = ("(plan_check.md §Phase 2) Run lens_briefs.py with each typed --subjec
 @lru_cache(maxsize=1)
 def citer_keys():
     import lens
-    return {item.key for reg in lens.REGISTRIES for item in lens.parse(reg)[1] if item.citers == "plan"}
+    return {key for key, item in lens.catalog()[1].items() if item.citers == "plan"}
 
 
 def path_at(root, value):

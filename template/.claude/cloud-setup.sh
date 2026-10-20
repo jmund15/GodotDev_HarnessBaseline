@@ -17,11 +17,11 @@ DOTNET_CHANNEL="9.0"
 GODOT_MCP_VERSION="3.8.0"
 
 # The digest of this file with this line's value blanked. Refresh it in the same change as any edit
-# above or below: `python3 .claude/tools/workstation_profile.py fingerprint --write .claude/cloud-setup.sh`.
+# above or below: `python3 .claude/tools/workstation_profile_godot.py fingerprint --write .claude/cloud-setup.sh`.
 # The script writes the value to ${PREFIX}/.cloud-setup.fingerprint below, which is how
 # SessionStart tells a snapshot built from an older paste (paste this file again) from one built
 # from the repo's copy. `tests/test_setup_surface_parity.py` fails when the stored value is stale.
-SETUP_FINGERPRINT="b7cc6c22fbe1effd69d82bc3ad3113570adf2a78db15e14756db41398667e0b9"
+SETUP_FINGERPRINT="21b0cc5636ce7d87dffe61af63861fb4d65e7e1a4021f37a22b7f7b81a7b9d80"
 
 if [ "$(id -u)" = "0" ]; then SUDO=""; PREFIX="/opt"
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo"; PREFIX="/opt"

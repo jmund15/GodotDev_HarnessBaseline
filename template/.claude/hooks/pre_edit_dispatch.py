@@ -8,7 +8,7 @@ order. A content normalizer feeds its updatedInput to later checks; no advisory
 or rewrite is emitted for a call that is denied.
 
 Order (the first block wins; advisories emit after all checks):
-  1. pattern_enforcer.process            — .cs computed attributes; dangerous content/command → block
+  1. pattern_enforcer.process            — .cs computed attributes; GD.Print in C# → block
      tres_format_guard.process           — scene and resource file normalization and unresolved-reference advice
   2. composed_output_guard.process       — direct edit of composed or generated text → exit 2 + stderr
   3. provenance_label_guard.process      — provenance label added to loaded guidance → exit 2

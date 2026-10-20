@@ -627,6 +627,44 @@ def shape_tier(shape):
     return TOOL_PROFILES.load_table()["shapes"].get(shape, {}).get("tier")
 
 
+STRA_REGISTRY = """# Structure audit
+
+## Agent Templates
+
+### stra-layout-hygiene (planted layout lens)
+
+```
+planted
+```
+
+### stra-domain-coherence (planted domain lens)
+
+```
+planted
+```
+"""
+
+
+@contextlib.contextmanager
+def planted_agents_dir():
+    """`lens.AGENTS` pointed at a copy of the shipped registries whose structure-audit file is the planted
+    one above: a consumer that did not adopt the godot layer holds no real one, and every profile
+    then judges the same stra seats."""
+    import shutil
+    saved = LENS.AGENTS
+    with tempfile.TemporaryDirectory(prefix="wpg_agents_") as tmp:
+        for name in os.listdir(saved):
+            if name.endswith("_agents.md"):
+                shutil.copy(os.path.join(saved, name), os.path.join(tmp, name))
+        with open(os.path.join(tmp, LENS.REGISTRIES["structure_audit"][0]), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(STRA_REGISTRY)
+        LENS.AGENTS = type(saved)(tmp)
+        try:
+            yield
+        finally:
+            LENS.AGENTS = saved
+
+
 def implied_tier_cases():
     out = []
 
@@ -642,13 +680,16 @@ def implied_tier_cases():
                     "got %s, missing %s, unwanted %s: %s" % (got, missing, present, raw[:500])))
 
     seat_tier = getattr(LENS, "seat_tier", lambda _k: None)
-    for key in ("plc-memory-alignment", "sa-design-semantics", "stra-layout-hygiene",
-                "stra-layout-hygiene+stra-domain-coherence"):
-        tier = seat_tier(key) or "executor"
-        case("review seat %s with no tier takes its lens's tier (%s) -> fitting pin allowed" % (key, tier),
-             run_channel(seats([(key, TIERS[tier][0])])), "allow")
-        case("review seat %s with no tier: a pin outside its lens's tier -> deny naming %s" % (key, tier),
-             run_channel(seats([(key, OTHER_PIN[tier])])), "deny", (tier, EFFORT_LINE))
+    with planted_agents_dir():
+        out.append(("a planted stra-layout-hygiene lens takes the tier LENS_TIERS names for it",
+                    seat_tier("stra-layout-hygiene") == "fanout", repr(seat_tier("stra-layout-hygiene"))))
+        for key in ("plc-memory-alignment", "sa-design-semantics", "stra-layout-hygiene",
+                    "stra-layout-hygiene+stra-domain-coherence"):
+            tier = seat_tier(key) or "executor"
+            case("review seat %s with no tier takes its lens's tier (%s) -> fitting pin allowed" % (key, tier),
+                 run_channel(seats([(key, TIERS[tier][0])])), "allow")
+            case("review seat %s with no tier: a pin outside its lens's tier -> deny naming %s" % (key, tier),
+                 run_channel(seats([(key, OTHER_PIN[tier])])), "deny", (tier, EFFORT_LINE))
     case("review seat keyed by no registry lens and no tier -> allow: a missing tier never denies",
          run_channel(seats([("zz-boundary", "h-arch")])), "allow", absent=("No tier declared",))
     lens_tier = seat_tier("plc-memory-alignment") or "executor"

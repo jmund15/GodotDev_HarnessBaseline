@@ -8,11 +8,14 @@ below it. So a file closes when every file it cites, imports or executes is ship
 Dependencies read per file type:
 - markdown: backticked `/command`, `skill`, `path/file.md` and `file.py` tokens, and relative
   `[text](path)` links resolved against the file's own directory, and memory slugs, bare or
-  backticked, that name a file in the memory store or its archive;
+  backticked, that name a file in the memory store or its archive; and `preload: <path>` header lines
+  (a lens template's doctrine file, relative to `.claude/`);
 - python: imports outside a `try` that catches ImportError, string literals naming a `.py`/`.sh`/
-  `.js`/`.ps1` file (in a test, only whitespace-free ones: a test's command line is fixture input), and bare
-  string literals naming a sibling module (a sub-hook chain imported by name). A file importing
-  `_optional_hooks` loads by name through it, so its names count as optional;
+  `.js`/`.ps1` file (in a test, only whitespace-free ones: a test's command line is fixture input), string
+  literals that are wholly a `.md`/`.json` file name or path (a registry's filename; not in a test, whose
+  literals are plant data), and bare string literals naming a sibling module (a sub-hook chain imported
+  by name). A file importing `_optional_hooks` loads by name through it, so its names count as optional;
+  `OPTIONAL_DATA` lists the sources that tolerate their `.md`/`.json` literals absent;
 - shell, javascript, powershell: script paths outside comments (`#` lines and trailing `# ...`, and
   PowerShell `<# #>` blocks).
 
@@ -57,8 +60,21 @@ GENERATED = (
     "baseline.lock.json", "settings.json", "settings.local.json", "worklog-pending.md",
     "pending_harness_edits.md", "orchestration_verdicts.json", "orchestration_candidates.json", "eval_history.json",
     "self_evaluate_archive.json", "logs/*", "scratch/*", ".cache/*", "cache/*", "worktrees/*",
-    "sessions/*", "state/*", "generated/*", "reference/godot_class_index.md",
+    "sessions/*", "state/*", "generated/*", "reference/godot_class_index.md", "plugins/*", "__*__/*",
 )
+# Python sources whose string literals name a .md/.json file the source tolerates absent (a path it
+# matches, a name in a message, a read behind an existence check, or a list it classifies):
+# {source: (target fnmatch patterns relative to .claude/)}. A row is added only after reading the use.
+OPTIONAL_DATA = {
+    ".claude/tools/baseline_sync.py": ("*",),
+    ".claude/tools/layer_closure.py": ("*",),
+    ".claude/tools/lens.py": ("commands/agents/*_agents.md",),
+    ".claude/tools/lens_briefs.py": ("commands/checklists/*.md",),
+    ".claude/tools/review_ledger.py": ("skills/_brainstorm_shared/execution_depth.md",),
+    ".claude/tools/workstation_profile.py": ("commands/workstation_setup.md",),
+    ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md",),
+    ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
+}
 OPTIONAL_LOADER = "_optional_hooks"
 PLACEHOLDERS = {"foo", "bar", "baz", "example", "slug", "name", "x", "y"}
 SKIP_WALK = {".cache", "cache", "logs", "scratch", "worktrees", "sessions", "__pycache__", "plans"}
@@ -269,6 +285,14 @@ def _scan_doc(tree: Tree, source: str, text: str):
         found = _judge(tree, source, (joined,), joined, path_shaped=True)
         if found:
             yield found
+    for token in PRELOAD_LINE.findall(text):
+        joined = ".claude/" + token
+        if token in seen or _generated(joined):
+            continue
+        seen.add(token)
+        found = _judge(tree, source, _expand(tree, (joined,)), token, path_shaped=True)
+        if found:
+            yield found
     slugs = set()
     for slug in re.findall(r"(?<![\w/-])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?:\.md)?(?![\w/-])", text):
         if slug in slugs or slug not in tree.memories():
@@ -337,6 +361,32 @@ def _script_refs(tree: Tree, source: str, text: str, skip: set[str]):
             yield base, cands
 
 
+DATA_LITERAL = re.compile(r"[\w.-]+(?:/[\w.-]+)*\.(?:md|json)")
+PRELOAD_LINE = re.compile(r"^preload:[ \t]*(\S+)[ \t]*$", re.M)
+
+
+def _data_refs(tree: Tree, source: str, strings, seen: set[str]):
+    """A string constant that is wholly a `.md`/`.json` file name or path (a registry's filename, a
+    seed): a bare name resolves like a script name, a path like a document token."""
+    source_dir = posixpath.dirname(source)
+    optional = OPTIONAL_DATA.get(source, ())
+    for value in strings:
+        value = value.strip()
+        if value in seen or not DATA_LITERAL.fullmatch(value) or posixpath.basename(value) == posixpath.basename(source) \
+                or _generated(value):
+            continue
+        seen.add(value)
+        if "/" in value:
+            cands, path_shaped = _doc_candidates(value, source_dir)
+            cands = _expand(tree, cands) if cands else None
+        else:
+            cands, path_shaped = tree.by_base.get(value) or tree.local_with_suffix("/" + value), False
+        if cands and not any(fnmatch.fnmatch(c, ".claude/" + pat) for c in cands for pat in optional):
+            found = _judge(tree, source, cands, value, path_shaped=path_shaped)
+            if found:
+                yield found
+
+
 def _scan_python(tree: Tree, source: str, text: str):
     try:
         imports, strings, optional, loader = _python_deps(text)
@@ -368,6 +418,8 @@ def _scan_python(tree: Tree, source: str, text: str):
             found = _judge(tree, source, cands, base, path_shaped=False)
             if found:
                 yield found
+    if not fixtures:
+        yield from _data_refs(tree, source, strings, set())
 
 
 def _strip_comments(text: str, suffix: str) -> str:

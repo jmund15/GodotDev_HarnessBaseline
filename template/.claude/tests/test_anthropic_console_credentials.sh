@@ -96,6 +96,9 @@ STUB
 chmod +x "$CLAUDE_BIN"
 MODEL_ID="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import model_registry as m
 print(next(r["id"] for r in m.available_models() if r["transport"] == "anthropic"))' "$ROOT/.claude/tools")"
+EFFORT="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import model_registry as m
+data = m.load(); row = next(r for r in data["models"] if r["id"] == sys.argv[2])
+print(next(e for e in m.effort_values(row, data) if e not in row.get("effort", {}).get("avoid", [])))' "$ROOT/.claude/tools" "$MODEL_ID")"
 sed -i "s/__MODEL__/$MODEL_ID/" "$CLAUDE_BIN"
 
 # The `env` shim: one argv element per line, then the real binary. Shebangs elsewhere resolve
@@ -140,7 +143,7 @@ launch() { # <launcher> <record>; the parent carries a leak of every kind the sc
     ANTHROPIC_CONSOLE_KEY_LEAK="parent-console-leak-sentinel" \
     ANTHROPIC_CONSOLE_WORKSPACE_ID_PRIMARY="$WORKSPACE_ID" \
     CLAUDE_CONFIG_DIR="$HOME_DIR/.claude" CLAUDE_CODE_TRANSPORT="codex" \
-    bash "$1" -m "$MODEL_ID" -e low -G review -D bare -t Read -f "$NATIVE/prompt.md" \
+    bash "$1" -m "$MODEL_ID" -e "$EFFORT" -G review -D bare -t Read -f "$NATIVE/prompt.md" \
       -R "$2" -l console-creds -d "$ROOT" ) >"$NATIVE/launch.out" 2>"$NATIVE/launch.err"
 }
 
