@@ -3,13 +3,9 @@
     {
       "name": "Design Philosophy",
       "triggers": [
-        "modifier",
-        "stat",
-        "affinity",
         "design"
       ],
       "memory_keywords": [
-        "modifier",
         "existing abstraction",
         "composition over inheritance",
         "strategy family",

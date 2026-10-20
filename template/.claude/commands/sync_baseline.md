@@ -55,7 +55,7 @@ A change to a tracked file is **universal** (→ upstream it) when it would impr
 
    Done when `check --strict` exits 0 and the `triage` and `candidates` result sets are empty. Empty listings may still print status text. Recommend the follow-up mode; don't execute it without confirmation unless the user already asked for a full sync.
 
-**Doctor (what adoption left undone):** `python3 .claude/tools/baseline_sync.py doctor [--json]` prints one `[ok|pending|fail]` row per item with the fix for a non-ok one: path substitutions, surviving `{{...}}` or `<placeholder>` seed text, git repo, `core.hooksPath`, the root `.gitignore` harness block, the vault Worklog.md, `user_scope.py check`, lens registry resolution, `autoMemoryDirectory` and lane agents. A `pending` row is owner content (seed files to fill in); any `fail` exits 1. Apply each fix, then rerun until it exits 0. `init` and `pull` render the lane agents (`.claude/agents/lane-*.md`) and record them as `local` rows.
+**Doctor (what adoption left undone):** `python3 .claude/tools/baseline_sync.py doctor [--json]` prints one `[ok|pending|fail]` row per adoption item, with its fix. A `pending` row is owner content (seed files to fill in); any `fail` exits 1. Apply each fix and rerun until it exits 0. `init` and `pull` render the lane agents as `local` rows and write the root `.gitignore` harness block.
 
 **Pull (adopt baseline updates):**
 1. Run `check`; list `upstream-updated` and `new-upstream` rows with one-line summaries from `diff <relpath>`.

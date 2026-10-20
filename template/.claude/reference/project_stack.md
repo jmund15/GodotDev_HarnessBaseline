@@ -4,8 +4,7 @@
 
 SSOT for the project's toolchain versions. Every other surface cites these pins instead of restating a version.
 
-- Engine: **<version>** (<edition>)
-- Physics: <physics engine>
-- Runtime: **<version>**
+- Platform or framework: **<version>** (<edition>)
+- Language runtime: **<version>**
 - Test framework: <package and version, including any patched fork>
-- Build: `<the command that builds the project, e.g. dotnet build --nologo -v q>`
+- Build: `<the command that builds the project>`

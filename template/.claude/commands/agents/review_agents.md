@@ -39,18 +39,18 @@ For inline Python data processing on Windows, always write `.py` files instead o
 
 ### Batch Sizing Rules
 
-**`.cs` files are the primary unit of batch complexity.** Data files (`.tres`/`.tscn`) are structurally simpler (key-value pairs, resource references) and should NOT count equally toward batch limits.
+**`.cs` files are the primary unit of batch complexity.** Data files (resource and config files) are structurally simpler (key-value pairs, references) and should NOT count equally toward batch limits.
 
 - **~15 `.cs` files** per batch — the hard unit that drives agent context load
-- **Associated `.tres`/`.tscn` files** — bundled with their `.cs` counterparts at no count cost. "Associated" means: data files that configure, instantiate, or are defined by `.cs` files in the same batch (e.g., `Modifier.cs` + `boosted_modifier.tres`)
+- **Associated data files** — bundled with their `.cs` counterparts at no count cost. "Associated" means: data files that configure, instantiate, or are defined by `.cs` files in the same batch
 - **Soft ceiling of ~30 total files** per batch — if a batch of 15 `.cs` files has 15+ associated data files, consider splitting further
-- **Orphaned data files** (`.tres`/`.tscn` with no `.cs` counterpart in any batch) get grouped into a dedicated data-only batch reviewed by data-integrity alone
+- **Orphaned data files** (no `.cs` counterpart in any batch) get grouped into a dedicated data-only batch reviewed by data-integrity alone
 
 ### Multi-Batch Review Protocol (Option A)
 
 When the user chooses **(A) Batch review**, the orchestrator follows this protocol:
 
-1. **Intelligent grouping:** Group files into batches of ~15 `.cs` files by **logical subsystem** (not alphabetically). Files that interact heavily should be in the same batch so agents can catch cross-file issues. Common groupings: core system + its tests, data files + their Resource classes, related components. Bundle associated `.tres`/`.tscn` files with their defining `.cs` files (see Batch Sizing Rules).
+1. **Intelligent grouping:** Group files into batches of ~15 `.cs` files by **logical subsystem** (not alphabetically). Files that interact heavily should be in the same batch so agents can catch cross-file issues. Common groupings: core system + its tests, data files + their Resource classes, related components. Bundle associated data files with their defining `.cs` files (see Batch Sizing Rules).
 
 2. **Running results file:** Create a temporary results file (e.g., `logs/batch_review_results.json`) with this structure:
    ```json
@@ -80,28 +80,27 @@ When the user chooses **(A) Batch review**, the orchestrator follows this protoc
 
 ## Submodule Review (MANDATORY)
 
-**Before batching ANY files**, check if the PR includes Jmodot submodule changes:
+**Before batching ANY files**, check whether the PR changes a submodule pointer:
 
 ```bash
-git diff main...HEAD -- Jmodot          # Shows submodule pointer change
-git -C Jmodot diff <old-hash>..<new-hash> --name-only  # Files changed in submodule
+git diff main...HEAD -- <submodule-path>          # Shows submodule pointer change
+git -C <submodule-path> diff <old-hash>..<new-hash> --name-only  # Files changed in submodule
 ```
 
-If the submodule pointer changed:
-1. **Checkout the corresponding Jmodot branch** (`jmodot/<worktree-name>`) BEFORE building or reviewing — without this, the build will fail with missing API errors that look "pre-existing"
-2. **Get the Jmodot diff**: `git -C Jmodot diff <old-hash>..<new-hash>`
-3. **Include Jmodot files in the batch plan** — treat them as first-class review targets. Jmodot `.cs` files count toward batch limits just like {{PROJECT_NAME}} files. Group them in a dedicated batch or with their {{PROJECT_NAME}} consumers.
-4. **Include the Jmodot diff in the CONTEXT block** for every batch that references Jmodot APIs — agents need to see both sides of an API contract change.
+If the pointer changed:
+1. **Check out the submodule branch that matches the PR** BEFORE building or reviewing — without this, the build will fail with missing API errors that look "pre-existing"
+2. **Get the submodule diff**: `git -C <submodule-path> diff <old-hash>..<new-hash>`
+3. **Include submodule files in the batch plan** — treat them as first-class review targets. Their `.cs` files count toward batch limits just like {{PROJECT_NAME}} files. Group them in a dedicated batch or with their {{PROJECT_NAME}} consumers.
+4. **Include the submodule diff in the CONTEXT block** for every batch that references its APIs — agents need to see both sides of an API contract change.
 
-**Why this matters:** Jmodot defines the APIs that {{PROJECT_NAME}} calls. Reviewing {{PROJECT_NAME}} code without seeing the Jmodot changes is like reviewing function calls without reading the function definitions. Missing API contract changes, signature mismatches, and behavioral changes will slip through.
 ---
 
 ## Shared Context Block
 
 Before spawning agents, the **caller** (orchestrator) must assemble a `CONTEXT` string containing:
 - The full diff (from `gh pr diff` or `git diff`)
-- **Jmodot submodule diff** (if submodule pointer changed — see Submodule Review above)
-- Full file contents of all changed files (including Jmodot files if applicable)
+- **Submodule diff** (if a submodule pointer changed — see Submodule Review above)
+- Full file contents of all changed files (including submodule files if applicable)
 - auto-memory gotchas for touched domains
 - Architecture Philosophy rules summary (key rules, not full file)
 - Transcript corrections (if found)
@@ -116,6 +115,8 @@ Additionally, the **caller** must read these shared checklists and inject **targ
 - Read `/.claude/commands/checklists/test_quality.md` -> inject as `{{TEST_QUALITY_CHECKLIST}}`
 
 **If either checklist file cannot be read, STOP and report the error.**
+
+When the godot layer is installed, the companion of this file (same name plus `_godot`) adds engine items: append its `## <agent>` section to that agent's checklist, and apply its *Batch Sizing* and *Submodule Review* sections with the two above.
 
 ## Finding Schema & Reporting Filter
 
@@ -173,14 +174,10 @@ You are test-analyzer, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for TDD comp
   - Does a matching test exist under the project's Logic test root?
   - Check commit order via `git log main..{{BRANCH}} --name-only --reverse`: was the test committed before or with the implementation?
   - For authored-data edits that change Logic behavior, did a test pin the intended behavior before the data edit?
-- **Gameplay Domain**: For changes assigned to the project's Gameplay domain:
-  - Deterministic behavior has ISceneRunner test (`Tests/Integration/` or `Tests/Sanity/`)
-  - `await runner.AwaitInputProcessed()` called after every `SimulateActionPressed`/`SimulateKeyPress`
+- **Gameplay Domain**: For changes assigned to the project's Gameplay domain, deterministic behavior has an integration test
 - **Shared test quality checklist**: Check every item below:
   {{TEST_QUALITY_CHECKLIST}}
 - **Test quality (PR-specific)**:
-  - `[RequireGodotRuntime]` used only when actually needed (GD.Load, Nodes, scenes, Vector3)
-  - Orphan prevention: `using` with ISceneRunner, or explicit cleanup in `[After]`
   - Proper test isolation (no shared mutable state between tests)
 
 ## Process
@@ -217,17 +214,12 @@ Check every item in this Robustness + Performance checklist:
 Additionally, check these detailed error-hunting items:
 - **Silent failure details**:
   - Catch blocks that only log but don't re-throw or handle properly
-  - `JmoLogger.Error` missing where exceptions are caught
+  - The project's error-logging call missing where exceptions are caught
   - Return null/default on failure without logging
   - Optional chaining `?.` silently skipping operations that should fail loudly
-- **Null safety details**:
-  - `GetNode<T>()` results used without null check (prefer `TryGetNode`)
 - **Edge cases**:
   - Off-by-one errors in loops/indices
   - Race conditions in async code
-- **Physics callback safety**:
-  - Direct property assignment (Monitoring, Monitorable) inside physics callbacks or methods called from them (should use SetDeferred)
-  - Signal connection/disconnection in physics callbacks without guards
 
 ## Process
 1. Read EVERY changed file fully -- trace error paths through the code
@@ -248,28 +240,23 @@ Return a JSON array of findings (see orchestrator_action_protocol.md for schema)
 ### type-reviewer (aspect: `types + intuitiveness`) -- `model: "sonnet"`
 
 ```
-You are type-reviewer, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for type invariants, encapsulation, Resource patterns, and designer intuitiveness.
+You are type-reviewer, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for type invariants, encapsulation, and intuitiveness.
 
 **RULES: Do NOT use TodoWrite. Return findings ONLY. Use forward slashes in all git paths. Do NOT re-read files already in CONTEXT.**
 
 ## Your Checklist — Types
 - Type invariants: Are they enforced at construction time? Can invalid instances be created?
 - Encapsulation: Mutable internals exposed? Properties that should be read-only?
-- `[RequiredExport]` usage: Every `[Export] = null!` paired with `[RequiredExport]`?
-- Resource patterns: Factory->Runner pattern followed? Shared Resources not caching per-instance state?
-- Immutability: Data objects implementing `IRuntimeCopyable<T>` where deep copy is needed?
-- enum vs Resource: Could an enum be replaced with a Resource subclass for extensibility (or vice versa)?
 
 ## Your Checklist — Intuitiveness (I)
-Check every item below against all changed files (covers both `[Export]` clarity and broader code readability):
+Check every item below against all changed files (covers exposed-option clarity and broader code readability):
 
 {{CHECKLIST_I}}
 
 ## Process
 1. Read all changed files
 2. Check each type definition against the Types checklist
-3. For Resource subclasses: verify no mutable instance state leaks between consumers sharing the same .tres
-4. For files with `[Export]` properties: check each Intuitiveness item
+3. For files with exposed options: check each Intuitiveness item
 4. For each potential finding, classify as FIX/ASK/PLAN and assign a category (bug/rule/improvement)
 5. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
 

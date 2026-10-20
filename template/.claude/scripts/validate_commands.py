@@ -121,15 +121,42 @@ def check_section_headers() -> list[str]:
 # Expected item counts per section. Update these when intentionally adding/removing items.
 # Pattern matched: lines starting with `- [ ] **` (checklist items with bold labels)
 EXPECTED_COUNTS = {
-    "Compliance (C)": 14,
+    "Compliance (C)": 5,
     "Design (D)": 8,
     "Semantics (S)": 8,
-    "Robustness (R)": 14,
+    "Robustness (R)": 11,
     "Performance (P)": 4,
-    "Intuitiveness (I)": 10,
+    "Intuitiveness (I)": 8,
 }
-EXPECTED_CODE_QUALITY_TOTAL = 58
+EXPECTED_CODE_QUALITY_TOTAL = 44
+# The engine layer's `<stem>_godot.md` companion is checked only when that layer ships it.
+EXPECTED_GODOT_COUNTS = {
+    "Godot Compliance (C)": 9,
+    "Godot Design (D)": 1,
+    "Godot Robustness (R)": 4,
+    "Godot Performance (P)": 1,
+    "Godot Intuitiveness (I)": 3,
+}
 EXPECTED_TEST_QUALITY_TOTAL = 8
+
+
+def _count_sections(content: str, expected: dict[str, int]) -> tuple[dict[str, int], list[str]]:
+    """Items per `## <name>` section named in `expected`, and a mismatch line for each section whose count differs."""
+    current, counts = None, {}
+    for line in content.split("\n"):
+        header = re.match(r"^## (.*?)\s*$", line)
+        if header:
+            current = header.group(1) if header.group(1) in expected else None
+            if current:
+                counts[current] = 0
+        elif current and re.match(r"^- \[ \] \*\*", line):
+            counts[current] += 1
+    errors = []
+    for name, want in expected.items():
+        got = counts.get(name, 0)
+        if got != want:
+            errors.append(f"  {name}: expected {want}, got {got} ({'+' if got > want else ''}{got - want})")
+    return counts, errors
 
 
 def check_checklist_counts() -> list[str]:
@@ -185,7 +212,14 @@ def check_checklist_counts() -> list[str]:
             sign = "+" if diff > 0 else ""
             errors.append(f"  test_quality.md total: expected {EXPECTED_TEST_QUALITY_TOTAL}, got {tq_count} ({sign}{diff})")
 
-    check_count = len(EXPECTED_COUNTS) + 2  # per-section + code total + test total
+    godot_path = cq_path.with_name(f"{cq_path.stem}_godot.md")
+    godot_count = 0
+    if godot_path.exists():
+        _, godot_errors = _count_sections(godot_path.read_text(encoding="utf-8"), EXPECTED_GODOT_COUNTS)
+        errors.extend(f"  {godot_path.name}{e}" for e in godot_errors)
+        godot_count = len(EXPECTED_GODOT_COUNTS)
+
+    check_count = len(EXPECTED_COUNTS) + 2 + godot_count  # per-section + code total + test total + godot sections
     return _format_result("Checklist counts", check_count, errors)
 
 

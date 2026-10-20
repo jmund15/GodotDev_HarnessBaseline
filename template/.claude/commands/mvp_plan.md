@@ -1,5 +1,5 @@
 ---
-description: Add, refine or verify playable MVP checkpoints above Parts when Parts hide playable milestones
+description: Add, refine or verify MVP checkpoints above Parts when Parts hide usable milestones
 ---
 
 # /mvp_plan

@@ -41,7 +41,8 @@ seat's tier: `--effort` sets the panel and `--effort-for KEY=RUNG` raises one se
 neither is refused, because a tier names a work shape and the ladder's effort cell selects the rung.
 {{CHECKLIST_CDS}}/{{CHECKLIST_RP}}/{{CHECKLIST_I}} come from
 commands/checklists/code_quality.md by section letter; {{TEST_QUALITY_CHECKLIST}} is test_quality.md
-below its frontmatter and {{CODE_QUALITY_CHECKLIST}} is code_quality.md whole. {{CONTEXT}} becomes a pointer to --context-path
+below its frontmatter and {{CODE_QUALITY_CHECKLIST}} is code_quality.md whole. Each code_quality
+placeholder also carries the same letters of its `<stem>_godot.md` companion when the engine layer ships it. {{CONTEXT}} becomes a pointer to --context-path
 (dispatch.js `contextPath` already tells the agent to read it first). Unresolved placeholders are an
 error, never silently left in a brief. `--pr-num`/`--branch` are required only by a selected
 template that uses their placeholder.
@@ -294,6 +295,13 @@ def sections(path: Path, letters: set[str]) -> str:
         if keep:
             out.append(line)
     return "".join(out).rstrip() + "\n"
+
+
+def with_companion(path: Path, render) -> str:
+    """`render(file)` over a checklist plus, when the godot layer ships one, its `<stem>_godot.md` companion."""
+    companion = path.with_name(f"{path.stem}_godot.md")
+    parts = [render(path)] + ([render(companion)] if companion.exists() else [])
+    return "\n".join(part for part in parts if part.strip())
 
 
 def below_frontmatter(text: str) -> str:
@@ -606,10 +614,10 @@ def main() -> None:
     tq = CHECKLISTS / "test_quality.md"
     subs = {
         "CONTEXT": f"## Context\nThe shared CONTEXT for this review is the file `{a.context_path}` — read it first (dispatch already told you to). It carries the diff, the changed-file list, the worktree path where every changed file sits at the PR head, and the Jmodot pointer pair.",
-        "CHECKLIST_CDS": sections(cq, {"C", "D", "S"}),
-        "CHECKLIST_RP": sections(cq, {"R", "P"}),
-        "CHECKLIST_I": sections(cq, {"I"}),
-        "CODE_QUALITY_CHECKLIST": below_frontmatter(cq.read_text(encoding="utf-8")),
+        "CHECKLIST_CDS": with_companion(cq, lambda f: sections(f, {"C", "D", "S"})),
+        "CHECKLIST_RP": with_companion(cq, lambda f: sections(f, {"R", "P"})),
+        "CHECKLIST_I": with_companion(cq, lambda f: sections(f, {"I"})),
+        "CODE_QUALITY_CHECKLIST": with_companion(cq, lambda f: below_frontmatter(f.read_text(encoding="utf-8"))),
         "TEST_QUALITY_CHECKLIST": below_frontmatter(tq.read_text(encoding="utf-8")),
     }
     if a.pr_num is not None:

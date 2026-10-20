@@ -169,6 +169,14 @@ def test_init_and_pull_write_the_ignore_block_and_keep_project_lines() -> None:
         assert (root / ".gitignore").read_text(encoding="utf-8") == text
 
 
+def test_pull_keeps_this_proofs_planted_tokens() -> None:
+    sys.path.insert(0, str(T.ENGINE.parent))
+    import baseline_sync
+    text = Path(__file__).read_text(encoding="utf-8")
+    subs = {"{{VAULT_ROOT}}": "C:/vault", "{{PROJECT_NAME}}": "Real"}
+    assert baseline_sync.forward_for(".claude/tests/test_baseline_sync_doctor.py", text, subs) == text
+
+
 LANE_TABLE_ROW = ".claude/guards/tool_profiles.json"
 
 
@@ -223,6 +231,7 @@ def main() -> int:
         test_doctor_names_a_wrong_auto_memory_directory,
         test_doctor_fails_a_block_that_lags_the_shipped_entries,
         test_init_and_pull_write_the_ignore_block_and_keep_project_lines,
+        test_pull_keeps_this_proofs_planted_tokens,
         test_init_renders_lane_agents_with_local_rows,
         test_pull_that_changes_an_agent_input_renders_and_a_noop_pull_writes_nothing,
     ])

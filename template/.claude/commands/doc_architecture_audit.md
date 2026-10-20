@@ -44,7 +44,7 @@ List `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/` (recursion depth 2). C
   "templateFormat": "4-doc | design-doc-only | mixed | empty" }
 ```
 
-`classification` and `domain` are load-bearing: the manifest is the only channel that carries skip/grouping intent to the workflow's agents (push-don't-pull). In particular, `entity-doc` folders (e.g. `NPC/` with per-entity docs + a `BuildingBlocks/` subfolder) follow the entity-doc conventions `agents/documentation_structure.md` §Folder Classification assigns them and are **exempt from template-compliance checks (S1-S4)** — the structural lens honors that exemption only if the manifest tags them. There is **no hand-maintained exclusion list** — skipping is derived from classification (the canonical rules are content-based and stateless).
+`classification` and `domain` are load-bearing: the manifest is the only channel that carries skip/grouping intent to the workflow's agents (push-don't-pull). In particular, `entity-doc` folders (a folder of per-entity docs, optionally with a shared building-blocks subfolder) follow the entity-doc conventions `agents/documentation_structure.md` §Folder Classification assigns them and are **exempt from template-compliance checks (S1-S4)** — the structural lens honors that exemption only if the manifest tags them. There is **no hand-maintained exclusion list** — skipping is derived from classification (the canonical rules are content-based and stateless).
 
 ### 1c. Read Start Here
 Read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Start Here.md`. Parse all `[[wikilinks]]` + domain-table assignments, Role table entries (Designer/Developer), and entry-point links (Quick Reference vs Design Document).

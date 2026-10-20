@@ -14,8 +14,12 @@ Checks (each emits findings with a severity):
                         home paths / topology tokens, via baseline_identity.scan_tree
                         against tools/identity_digests.json (see that module's docstring)
   secret-scan           token/key/credential shapes in template/
-  layer-gate            pure files naming >=4 godot/coding markers; coding files
-                        naming >=4 godot markers (advisory archetype-appropriateness)
+  layer-gate            pure files naming >=4 godot/coding markers (advisory
+                        archetype-appropriateness)
+  core-domain-noun      pure files naming >=2 domain tokens; coding files naming
+                        >=4 godot markers
+  surface-domain-noun   a skill/command description or a CLAUDE.*.md in the pure or
+                        coding layer naming one game, engine or content-domain noun
 
 Severities: ERROR (publish blocker, exit 1), WARN (review before publish, exit 0),
 INFO (advisory). Run from the baseline repo root:  python3 tools/audit_baseline.py
@@ -86,9 +90,24 @@ CORE_DOMAIN_TOKENS = [
     r"\bYouTube\b", r"\bdevlog\b", r"\bDaVinci\b",
 ]
 CORE_DOMAIN_MIN_DISTINCT = 2
+# Game nouns for the always-loaded surfaces, where one is enough: the skill/command catalog and the
+# CLAUDE.*.md files load on every turn of every consumer, a team dashboard included.
+GAME_DOMAIN_TOKENS = [
+    r"\bplaytests?\b", r"\bplayable\b", r"\bgame[ _]vision\b", r"\bgameplay\b",
+    r"\bgames?\b", r"\bscenes?\b", r"\bsprites?\b", r"\bJmodot\b", r"\[Export\w*\]",
+]
+# Tokens of CORE_DOMAIN_TOKENS that are plain git or language vocabulary, not a project domain.
+SURFACE_GENERIC_TOKENS = {r"\bnamespace\b", r"\bsubmodule\b"}
+SURFACE_PURE_TOKENS = [t for t in CORE_DOMAIN_TOKENS if t not in SURFACE_GENERIC_TOKENS] + GAME_DOMAIN_TOKENS
+SURFACE_CODING_TOKENS = GODOT_MARKERS + GAME_DOMAIN_TOKENS
+# {path: {token: why the noun is domain-agnostic there}}
+SURFACE_NOUN_EXEMPT = {
+    ".claude/commands/ingest_conversation.md": {
+        r"\bYouTube\b": "a transcript source URL the command accepts, not the consumer's domain",
+    },
+}
 CORE_DOMAIN_ALLOWLIST = {
     ".claude/CLAUDE.md",            # seed: consumer replaces domain sections
-    ".claude/CLAUDE.core.md",       # universal doctrine: cites Godot/C# build commands as examples
     ".claude/settings.json",        # seed: wiring layered at bootstrap
     ".claude/settings.base.json",   # tracked: wiring layered at bootstrap (was settings.json)
     ".claude/auto-memory/MEMORY.md",
@@ -223,8 +242,8 @@ def check_layer_mistag(f: Findings, manifest: dict) -> None:
     """Archetype-gate: a file must not substantively name a *narrower* archetype.
 
     pure files must not name >= 4 godot markers NOR >= 4 coding markers.
-    coding files must not name >= 4 godot markers.
     All advisory (INFO): the classification rule's canonical home is sync_baseline.md.
+    The coding-vs-godot gate is check_core_domain_nouns.
     """
     if not manifest:
         return
@@ -247,29 +266,71 @@ def check_layer_mistag(f: Findings, manifest: dict) -> None:
                 f.add("INFO", "layer-gate", rel,
                       f"pure-tagged but names {len(c_hits)} coding markers "
                       f"({', '.join(c_hits)}) -- confirm content-agnostic or move to coding")
-        elif layer == "coding":
-            if len(g_hits) >= LAYER_GATE_MIN_DISTINCT:
-                f.add("INFO", "layer-gate", rel,
-                      f"coding-tagged but names {len(g_hits)} godot markers "
-                      f"({', '.join(g_hits)}) -- confirm engine-agnostic or move to godot")
 
 
 def check_core_domain_nouns(f: Findings, manifest: dict) -> None:
+    """pure files: >= CORE_DOMAIN_MIN_DISTINCT domain tokens. coding files: >= LAYER_GATE_MIN_DISTINCT
+    godot markers, so engine-only content moves to the godot layer."""
     if not manifest:
         return
     layer_of = {e["path"]: e["layer"] for e in manifest["files"]}
     for p, rel in iter_template_files():
-        if layer_of.get(rel) != "pure" or rel in CORE_DOMAIN_ALLOWLIST:
+        layer = layer_of.get(rel)
+        if layer not in ("pure", "coding") or rel in CORE_DOMAIN_ALLOWLIST:
             continue
         text = read_text(p)
         if text is None:
             continue
-        hits = sorted({tok for tok in CORE_DOMAIN_TOKENS if re.search(tok, text)})
-        if len(hits) >= CORE_DOMAIN_MIN_DISTINCT:
+        tokens, floor, target = ((CORE_DOMAIN_TOKENS, CORE_DOMAIN_MIN_DISTINCT, "demote a layer")
+                                 if layer == "pure" else
+                                 (GODOT_MARKERS, LAYER_GATE_MIN_DISTINCT, "move the engine content to the godot layer"))
+        hits = sorted({tok for tok in tokens if re.search(tok, text)})
+        if len(hits) >= floor:
             names = ", ".join(t.replace(r"\b", "") for t in hits)
             f.add("WARN", "core-domain-noun", rel,
-                  f"pure-tagged but names {len(hits)} domain tokens ({names}) -- "
-                  "extract to an adaptation point or demote a layer")
+                  f"{layer}-tagged but names {len(hits)} domain tokens ({names}) -- "
+                  f"extract to an adaptation point or {target}")
+
+
+def frontmatter_description(text: str) -> str | None:
+    """The `description:` value of a leading frontmatter block, a folded `>-` scalar included."""
+    block = re.match(r"---\r?\n(.*?)\r?\n---", text, re.S)
+    if not block:
+        return None
+    m = re.search(r"^description:[ \t]*(.*(?:\r?\n[ \t]+.*)*)", block.group(1), re.M)
+    return m.group(1) if m else None
+
+
+def surface_text(rel: str, text: str) -> str | None:
+    """The part of a file that loads on every turn: a skill or command description, or all of a CLAUDE.*.md."""
+    if re.fullmatch(r"\.claude/CLAUDE\.[^/]+\.md", rel):
+        return text
+    if re.fullmatch(r"\.claude/skills/[^/]+/SKILL\.md", rel) or rel.startswith(".claude/commands/"):
+        return frontmatter_description(text)
+    return None
+
+
+def check_surface_domain_nouns(f: Findings, manifest: dict) -> None:
+    """One game, engine or content-domain noun in an always-loaded surface of a pure or coding file."""
+    if not manifest:
+        return
+    layer_of = {e["path"]: e["layer"] for e in manifest["files"]}
+    for p, rel in iter_template_files():
+        layer = layer_of.get(rel)
+        if layer not in ("pure", "coding") or not rel.endswith(".md"):
+            continue
+        text = read_text(p)
+        surface = surface_text(rel, text) if text is not None else None
+        if not surface:
+            continue
+        exempt = SURFACE_NOUN_EXEMPT.get(rel, {})
+        tokens = SURFACE_PURE_TOKENS if layer == "pure" else SURFACE_CODING_TOKENS
+        hits = sorted({m.group(0) for tok in tokens if tok not in exempt
+                       for m in re.finditer(tok, surface)})
+        if hits:
+            f.add("WARN", "surface-domain-noun", rel,
+                  f"{layer}-tagged surface that loads on every turn names {', '.join(hits)} -- "
+                  "reword domain-neutrally or move the rule to the godot layer")
 
 
 def check_layer_closure(f: Findings, manifest: dict, template: Path = TEMPLATE) -> None:
@@ -307,6 +368,7 @@ def main() -> int:
     check_identity(f)
     check_layer_mistag(f, manifest)
     check_core_domain_nouns(f, manifest)
+    check_surface_domain_nouns(f, manifest)
     check_layer_closure(f, manifest)
 
     errors, warns, infos = (f.by_severity(s) for s in ("ERROR", "WARN", "INFO"))
