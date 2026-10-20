@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -229,9 +230,163 @@ def test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine()
             subprocess.run(["git", "worktree", "prune"], cwd=ROOT, capture_output=True)
 
 
+class _Baseline:
+    """A snapshot checkout plus a scratch dir, removed on exit."""
+
+    def __enter__(self):
+        self.origin = _origin()
+        self.temp_root = Path(tempfile.mkdtemp(prefix="bootstrap_onb_"))
+        self.baseline = None
+        self.baseline, self.snapshot = _snapshot_checkout(self.temp_root)
+        return self
+
+    def __exit__(self, *exc):
+        removed = self.baseline is None or subprocess.run(
+            ["git", "worktree", "remove", "--force", str(self.baseline)], cwd=ROOT, capture_output=True
+        ).returncode == 0
+        _rmtree_writable(self.temp_root)
+        if not removed:
+            subprocess.run(["git", "worktree", "prune"], cwd=ROOT, capture_output=True)
+
+    def run(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [BASH, str(self.baseline / "bootstrap.sh"), "--repo", self.origin, "--ref", self.snapshot, *args],
+            cwd=self.baseline, capture_output=True, text=True, timeout=180,
+        )
+
+
+def _native(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _text_files(target: Path):
+    for p in sorted(target.rglob("*")):
+        if ".git" in p.relative_to(target).parts or not p.is_file():
+            continue
+        data = p.read_bytes()
+        if b"\0" in data:
+            continue
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        yield p, data
+
+
+def _tree(target: Path) -> dict[str, bytes]:
+    """Every file but the git dir and bytecode, with the lock's per-row `at` timestamps masked: a rebuilt lock
+    stamps the run time, which is the only byte a second run may change."""
+    tree = {p.relative_to(target).as_posix(): p.read_bytes()
+            for p in sorted(target.rglob("*"))
+            if p.is_file() and not {".git", "__pycache__"} & set(p.relative_to(target).parts)}
+    lock = ".claude/baseline.lock.json"
+    tree[lock] = re.sub(rb'"at": "[^"]*"', b'"at": ""', tree[lock])
+    return tree
+
+
+def test_backslash_paths_normalize_and_a_bad_vault_root_fails_before_any_write() -> None:
+    with _Baseline() as b:
+        vault = b.temp_root / "vault"
+        vault.mkdir()
+        target = b.temp_root / "proj"
+        result = b.run("--target", str(target), "--project-name", "TestGame", "--vault-root", str(vault))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (target / ".claude" / "baseline.lock.json").is_file(), "backslash --target did not reach the real folder"
+        assert not [p for p in b.baseline.iterdir() if "\\" in p.name or ":" in p.name], "a backslash path became a relative folder"
+        subs = json.loads((target / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))["substitutions"]
+        assert subs["{{VAULT_ROOT}}"] == _native(vault), subs
+        absent = b.temp_root / "no_such_vault"
+        refused = b.temp_root / "refused"
+        result = b.run("--target", str(refused), "--project-name", "TestGame", "--vault-root", str(absent))
+        assert result.returncode != 0, "a vault root that is not a directory was accepted"
+        assert not refused.exists(), "files were written before the vault root was rejected"
+        dropped = b.run("--target", str(refused), "--project-root", str(refused))
+        assert dropped.returncode != 0 and not refused.exists(), "--project-root is still accepted"
+
+
+def test_every_written_file_is_lf() -> None:
+    with _Baseline() as b:
+        vault = b.temp_root / "vault"
+        vault.mkdir()
+        target = b.temp_root / "proj"
+        result = b.run("--target", _to_posix(target), "--project-name", "TestGame", "--vault-root", _to_posix(vault))
+        assert result.returncode == 0, result.stdout + result.stderr
+        crlf = [p.relative_to(target).as_posix() for p, data in _text_files(target) if b"\r" in data]
+        crlf += [p.relative_to(vault).as_posix() for p, data in _text_files(vault) if b"\r" in data]
+        assert not crlf, f"{len(crlf)} written files carry CR bytes: {crlf[:5]}"
+
+
+def test_forced_rerun_is_idempotent_and_keeps_seeds() -> None:
+    with _Baseline() as b:
+        vault = b.temp_root / "vault"
+        vault.mkdir()
+        target = b.temp_root / "proj"
+        args = ["--target", _to_posix(target), "--project-name", "TestGame", "--vault-root", _to_posix(vault)]
+        first = b.run(*args)
+        assert first.returncode == 0, first.stdout + first.stderr
+        rerun_without_force = b.run(*args)
+        assert rerun_without_force.returncode != 0, "a second run without --force clobbered .claude"
+        before = _tree(target)
+        second = b.run(*args, "--force")
+        assert second.returncode == 0, second.stdout + second.stderr
+        after = _tree(target)
+        changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+        assert not changed, f"a forced re-run changed {changed[:6]}"
+        seed = target / ".claude" / "CLAUDE.md"
+        seed.write_bytes(seed.read_bytes() + b"\nPROJECT-OWNED LINE\n")
+        third = b.run(*args, "--force")
+        assert third.returncode == 0, third.stdout + third.stderr
+        assert b"PROJECT-OWNED LINE" in seed.read_bytes(), "--force overwrote an existing seed"
+        text = (target / ".gitignore").read_text(encoding="utf-8")
+        assert text.count("# >>> harness >>>") == 1 and text.count("# <<< harness <<<") == 1, text
+
+
+def test_bootstrap_sets_up_git_ignore_worklog_and_memory_directory() -> None:
+    with _Baseline() as b:
+        vault = b.temp_root / "vault"
+        vault.mkdir()
+        target = b.temp_root / "OnboardGame"
+        target.mkdir()
+        (target / ".gitignore").write_text("build/\n", encoding="utf-8", newline="\n")
+        local = target / ".claude" / "settings.local.json"
+        local.parent.mkdir()
+        local.write_text('{"permissions": {"allow": ["Read"]}}\n', encoding="utf-8", newline="\n")
+        args = ["--target", _to_posix(target), "--vault-root", _to_posix(vault), "--layers", "pure,coding"]
+        result = b.run(*args, "--force")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "OnboardGame" in result.stdout, "the derived project name was not echoed"
+        assert (target / ".git").exists(), "no git repo created"
+        hooks = subprocess.run(["git", "-C", str(target), "config", "--get", "core.hooksPath"],
+                               capture_output=True, text=True).stdout.strip()
+        assert hooks == ".claude/githooks", hooks
+        assert (target / ".claude" / "githooks").is_dir(), "hooksPath points at a missing folder"
+        ignore = (target / ".gitignore").read_text(encoding="utf-8")
+        assert ignore.startswith("build/\n"), "the existing .gitignore lines were not kept"
+        assert ".claude/settings.local.json" in ignore and ".claude/scratch/" in ignore, ignore
+        assert ignore.index("# >>> harness >>>") < ignore.index(".claude/scratch/") < ignore.index("# <<< harness <<<")
+        worklog = vault / "DevProjects" / "OnboardGame" / "Claude" / "TODO" / "Worklog.md"
+        assert worklog.is_file(), "no vault Worklog.md skeleton"
+        body = worklog.read_text(encoding="utf-8")
+        assert "## Active" in body and "last_updated:" in body, body
+        worklog.write_text("MINE\n", encoding="utf-8", newline="\n")
+        data = json.loads(local.read_text(encoding="utf-8"))
+        assert data["permissions"] == {"allow": ["Read"]}, "settings.local.json lost its other keys"
+        assert data["autoMemoryDirectory"] == _native(target) + "/.claude/auto-memory", data
+        again = b.run(*args, "--force")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert worklog.read_text(encoding="utf-8") == "MINE\n", "an existing Worklog.md was overwritten"
+        assert ignore == (target / ".gitignore").read_text(encoding="utf-8"), "the .gitignore block is not idempotent"
+        subs = json.loads((target / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))["substitutions"]
+        assert subs["{{PROJECT_NAME}}"] == "OnboardGame", subs
+
+
 def main() -> int:
     cases = [test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean,
-             test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine]
+             test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine,
+             test_backslash_paths_normalize_and_a_bad_vault_root_fails_before_any_write,
+             test_every_written_file_is_lf,
+             test_forced_rerun_is_idempotent_and_keeps_seeds,
+             test_bootstrap_sets_up_git_ignore_worklog_and_memory_directory]
     failures = []
     for case in cases:
         try:

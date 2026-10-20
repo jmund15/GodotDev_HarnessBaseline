@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import difflib
 import hashlib
+import io
 import json
 import os
 import re
@@ -1909,6 +1910,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         print(f"offered: {len(offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
     if skipped:
         print(f"profile: {','.join(layers)} — {skipped} row(s) skipped")
+    render_lane_agents(root)
+    write_harness_ignore_block(root)
     return 0
 
 
@@ -2422,7 +2425,285 @@ def v2_init(root: Path, baseline_dir: str, repo: str, ref: str,
                 raise BaselineError(f"{LOCK_RELPATH} already exists; use --force")
         save_lock(root, lock)
     print(f"lock written: {len(files)} row(s)")
+    render_lane_agents(root)
+    write_harness_ignore_block(root)
     return 0
+
+
+LANE_TABLE_RELPATH = ".claude/guards/tool_profiles.json"
+LANE_AGENTS_RELPATH = ".claude/agents"
+
+
+def _lane_inputs(root: Path):
+    """(tool_profiles module, table, MCP registrations) for a root that ships the shape table, else None."""
+    table_path = root / LANE_TABLE_RELPATH
+    if not table_path.is_file():
+        return None
+    import tool_profiles
+    return tool_profiles, tool_profiles.load_table(str(table_path)), tool_profiles.load_registrations()
+
+
+def render_lane_agents(root: Path) -> list[str]:
+    """Render `.claude/agents/<agentType>.md` from the shape table (`tool_profiles.sync_agents`, the one
+    renderer) and record each as a `local` row. A file and its row are written only when they differ."""
+    try:
+        inputs = _lane_inputs(root)
+        if inputs is None:
+            return []
+        tool_profiles, table, candidates = inputs
+        rendered = tool_profiles.render_agents(table, candidates)
+        tool_profiles.sync_agents(write=True, table_path=str(root / LANE_TABLE_RELPATH),
+                                  agents_dir=str(root / LANE_AGENTS_RELPATH), candidates=candidates)
+    except (ValueError, OSError) as exc:
+        print(f"warning: lane agents not rendered: {exc}", file=sys.stderr)
+        return []
+    shas = {f"{LANE_AGENTS_RELPATH}/{name}": sha(text.encode("utf-8")) for name, text in rendered.items()}
+
+    def apply(lock: dict):
+        files = lock.setdefault("files", {})
+        changed = []
+        for relpath, digest in sorted(shas.items()):
+            entry = files.get(relpath)
+            if entry is not None and (_entry_status(entry) != "local"
+                                      or (entry.get("judged") or {}).get("sha") == digest):
+                continue
+            files[relpath] = {"status": "local", "layer": None,
+                              "judged": _decision(root, relpath, "keep-local", sha_value=digest)}
+            changed.append(relpath)
+        return changed or NO_CHANGE
+
+    result = mutate_lock(root, apply)
+    return [] if result is NO_CHANGE else result
+
+
+HARNESS_BLOCK_OPEN = "# >>> harness >>>"
+HARNESS_BLOCK_CLOSE = "# <<< harness <<<"
+HARNESS_BLOCK_RE = re.compile(re.escape(HARNESS_BLOCK_OPEN) + r"\n.*?" + re.escape(HARNESS_BLOCK_CLOSE) + r"\n?",
+                              re.DOTALL)
+GITIGNORE_ENTRIES_RELPATH = ".claude/gitignore.harness"
+HOOKS_PATH = ".claude/githooks"
+
+
+def gitignore_with_harness_block(text: str, entries: str) -> str:
+    """`text` with the harness block holding `entries`: replaced in place between its markers, else appended once."""
+    entries = entries.replace("\r\n", "\n")
+    block = HARNESS_BLOCK_OPEN + "\n" + entries + ("" if entries.endswith("\n") else "\n") + HARNESS_BLOCK_CLOSE + "\n"
+    text = text.replace("\r\n", "\n")
+    if HARNESS_BLOCK_RE.search(text):
+        return HARNESS_BLOCK_RE.sub(lambda _: block, text, count=1)
+    return text + ("\n" if text and not text.endswith("\n\n") else "") + block
+
+
+def write_harness_ignore_block(root: Path) -> bool:
+    """Write the shipped `.claude/gitignore.harness` into the root .gitignore's harness block; True when it changed."""
+    entries = local_text(root, GITIGNORE_ENTRIES_RELPATH)
+    if entries is None:
+        return False
+    current = local_text(root, ".gitignore") or ""
+    updated = gitignore_with_harness_block(current, entries)
+    if updated == current:
+        return False
+    (root / ".gitignore").write_bytes(updated.encode("utf-8"))
+    print("root .gitignore: harness block written")
+    return True
+SEED_TOKEN_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}|<[A-Za-z][^<>\n`]*[ :][^<>\n`]*>")
+WORKLOG_RE = re.compile(r"`([^`\s]*Worklog\.md)`")
+ABS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|/|~)")
+
+
+def _doctor_row(item: str, status: str, detail: str, fix: str = "") -> dict:
+    return {"item": item, "status": status, "detail": detail, "fix": fix}
+
+
+def _doctor_run(root: Path, args: list[str], timeout: int = 120) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 2, str(exc)
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _slashes(value: str) -> str:
+    return value.replace("\\", "/")
+
+
+def _doctor_substitutions(lock: dict) -> dict:
+    missing = []
+    checked = 0
+    for key, value in sorted((lock.get("substitutions") or {}).items()):
+        if isinstance(value, str) and ABS_PATH_RE.match(value):
+            checked += 1
+            if not Path(value).expanduser().exists():
+                missing.append(f"{key}={value}")
+    if missing:
+        return _doctor_row("substitutions", "fail", "path does not exist: " + "; ".join(missing),
+                           "baseline_sync.py sub --sub <PLACEHOLDER>=<existing path>, or create the directory")
+    return _doctor_row("substitutions", "ok", f"{checked} path substitution(s) resolve")
+
+
+def _doctor_seeds(root: Path, lock: dict) -> dict:
+    hits = []
+    for relpath, entry in sorted(lock.get("files", {}).items()):
+        if _entry_status(entry) != "local" or entry.get("layer") not in FULL_LAYERS:
+            continue
+        text = local_text(root, relpath)
+        found = sorted(set(SEED_TOKEN_RE.findall(text))) if text else []
+        if found:
+            hits.append(f"{relpath} ({len(found)})")
+    if hits:
+        return _doctor_row("seeds", "pending", "owner content still unfilled: " + "; ".join(hits),
+                           "edit each named seed file, replacing its {{...}} tokens and <placeholder> lines")
+    return _doctor_row("seeds", "ok", "no placeholder survives in a seed file")
+
+
+def _doctor_gitignore(root: Path) -> dict:
+    entries = local_text(root, GITIGNORE_ENTRIES_RELPATH)
+    if entries is None:
+        return _doctor_row("gitignore-block", "fail", f"{GITIGNORE_ENTRIES_RELPATH} is missing",
+                           "python3 .claude/tools/baseline_sync.py pull")
+    text = local_text(root, ".gitignore") or ""
+    if not HARNESS_BLOCK_RE.search(text):
+        detail = f"root .gitignore lacks the {HARNESS_BLOCK_OPEN} ... {HARNESS_BLOCK_CLOSE} block"
+    elif gitignore_with_harness_block(text, entries) != text:
+        detail = f"root .gitignore's harness block differs from {GITIGNORE_ENTRIES_RELPATH}"
+    else:
+        return _doctor_row("gitignore-block", "ok", "root .gitignore carries the current harness block")
+    return _doctor_row("gitignore-block", "fail", detail,
+                       "python3 .claude/tools/baseline_sync.py pull (rewrites the block)")
+
+
+def _doctor_git(root: Path) -> list[dict]:
+    hooks_fix = f"git config core.hooksPath {HOOKS_PATH}"
+    rc, _ = _doctor_run(root, ["git", "rev-parse", "--git-dir"])
+    if rc != 0:
+        return [_doctor_row("git-repo", "fail", "not a git repository", "git init"),
+                _doctor_row("git-hooks-path", "fail", "no repository", "git init, then " + hooks_fix),
+                _doctor_gitignore(root)]
+    rows = [_doctor_row("git-repo", "ok", "repository present")]
+    rc, value = _doctor_run(root, ["git", "config", "--get", "core.hooksPath"])
+    if not (root / HOOKS_PATH).is_dir():
+        rows.append(_doctor_row("git-hooks-path", "ok", f"{HOOKS_PATH} not shipped in this profile"))
+    elif rc == 0 and value == HOOKS_PATH:
+        rows.append(_doctor_row("git-hooks-path", "ok", f"core.hooksPath = {HOOKS_PATH}"))
+    else:
+        rows.append(_doctor_row("git-hooks-path", "fail", f"core.hooksPath is {value or 'unset'}", hooks_fix))
+    rows.append(_doctor_gitignore(root))
+    return rows
+
+
+def _doctor_worklog(root: Path, lock: dict) -> dict:
+    text = local_text(root, ".claude/CLAUDE.md") or ""
+    match = WORKLOG_RE.search(text)
+    if not match:
+        return _doctor_row("worklog", "fail", ".claude/CLAUDE.md names no Worklog.md path",
+                           "name the vault Worklog.md path in CLAUDE.md under The Worklog")
+    named = match.group(1)
+    vault = (lock.get("substitutions") or {}).get("{{VAULT_ROOT}}")
+    if ABS_PATH_RE.match(named):
+        target = Path(named).expanduser()
+    elif vault:
+        target = Path(vault) / named
+    else:
+        return _doctor_row("worklog", "fail", f"{named} is vault-relative and the lock has no VAULT_ROOT",
+                           "baseline_sync.py sub --sub {{VAULT_ROOT}}=<vault path>")
+    if target.is_file():
+        return _doctor_row("worklog", "ok", _slashes(str(target)))
+    return _doctor_row("worklog", "fail", f"missing: {_slashes(str(target))}",
+                       "create it with a '# Worklog' heading, or rerun bootstrap.sh")
+
+
+def _doctor_script(root: Path, item: str, script: str, args: list[str], ok_detail: str) -> dict:
+    path = root / ".claude" / "tools" / script
+    if not path.is_file():
+        return _doctor_row(item, "ok", f"{script} not shipped in this profile")
+    rc, out = _doctor_run(root, [sys.executable, str(path), *args])
+    if rc == 0:
+        return _doctor_row(item, "ok", ok_detail)
+    lines = [line for line in out.splitlines() if line.strip()]
+    return _doctor_row(item, "fail", f"exit {rc}: " + " | ".join(lines[:3]),
+                       f"python3 .claude/tools/{script} {' '.join(args)}")
+
+
+def _norm_path(value: str) -> str:
+    value = _slashes(value).rstrip("/")
+    return re.sub(r"^([A-Za-z]):", lambda m: m.group(1).lower() + ":", value)
+
+
+def expected_auto_memory_dir(root: Path) -> str:
+    """`<main checkout root>/.claude/auto-memory`: the parent of the git common dir, so a linked
+    worktree names the one shared store (`commands/workstation_setup.md` Phase 2 step 1)."""
+    rc, common = _doctor_run(root, ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])
+    base = Path(common).parent if rc == 0 and common else root
+    return _slashes(str(base.resolve())) + "/.claude/auto-memory"
+
+
+def _doctor_auto_memory(root: Path) -> dict:
+    item, expected = "auto-memory-dir", expected_auto_memory_dir(root)
+    fix = f'set "autoMemoryDirectory": "{expected}" in .claude/settings.local.json'
+    path = root / ".claude" / "settings.local.json"
+    if not path.is_file():
+        return _doctor_row(item, "fail", "settings.local.json is missing", fix)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("autoMemoryDirectory")
+    except (OSError, ValueError, AttributeError) as exc:
+        return _doctor_row(item, "fail", f"settings.local.json is unreadable: {exc}", "repair the JSON by hand")
+    if not isinstance(value, str) or _norm_path(value) != _norm_path(expected):
+        return _doctor_row(item, "fail", f"autoMemoryDirectory is {value!r}, expected {expected}", fix)
+    rc, _ = _doctor_run(root, ["git", "check-ignore", "-q", ".claude/settings.local.json"])
+    if rc != 0:
+        return _doctor_row(item, "fail", "settings.local.json is not gitignored: it would commit a machine path",
+                           "add .claude/settings.local.json to the root .gitignore")
+    if not (Path(expected) / "MEMORY.md").is_file():
+        return _doctor_row(item, "fail", f"{expected}/MEMORY.md is missing", "pull the auto-memory seed")
+    return _doctor_row(item, "ok", expected)
+
+
+def _doctor_lane_agents(root: Path, lock: dict) -> dict:
+    item = "lane-agents"
+    fix = ("python3 .claude/tools/tool_profiles.py agents --write, or baseline_sync.py pull "
+           "(renders them and records the local rows)")
+    try:
+        inputs = _lane_inputs(root)
+        if inputs is None:
+            return _doctor_row(item, "ok", f"{LANE_TABLE_RELPATH} not shipped in this profile")
+        tool_profiles, table, candidates = inputs
+        names = sorted(tool_profiles.render_agents(table, candidates))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            drift = tool_profiles.sync_agents(check=True, table_path=str(root / LANE_TABLE_RELPATH),
+                                              agents_dir=str(root / LANE_AGENTS_RELPATH), candidates=candidates)
+    except (ValueError, OSError) as exc:
+        return _doctor_row(item, "fail", f"cannot render: {exc}", fix)
+    if drift:
+        return _doctor_row(item, "fail", "; ".join(err.getvalue().strip().splitlines()[:3]), fix)
+    unrowed = [n for n in names if f"{LANE_AGENTS_RELPATH}/{n}" not in lock.get("files", {})]
+    if unrowed:
+        return _doctor_row(item, "fail", "no lock row for " + ", ".join(unrowed), fix)
+    return _doctor_row(item, "ok", f"{len(names)} lane agent file(s) current with local rows")
+
+
+def doctor_rows(root: Path, lock: dict) -> list[dict]:
+    return [_doctor_substitutions(lock), _doctor_seeds(root, lock), *_doctor_git(root),
+            _doctor_worklog(root, lock),
+            _doctor_script(root, "user-scope", "user_scope.py", ["check", "--repo", str(root)],
+                           "user_scope.py check is green"),
+            _doctor_script(root, "lens-registry", "lens.py", ["index"], "every registered lens resolves"),
+            _doctor_auto_memory(root), _doctor_lane_agents(root, lock)]
+
+
+def cmd_doctor(root: Path, lock: dict, as_json: bool) -> int:
+    """What adoption left undone, one row per item. Exit 1 on any `fail`; a `pending` row is owner
+    content (seed files to fill in) and does not fail."""
+    rows = doctor_rows(root, lock)
+    if as_json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for row in rows:
+            print(f"[{row['status']}] {row['item']}: {row['detail']}")
+            if row["status"] != "ok":
+                print(f"        fix: {row['fix']}")
+    return 1 if any(row["status"] == "fail" for row in rows) else 0
 
 
 AUTHOR_WORKTREES_RELPATH = ".claude/.cache/baseline-worktrees"
@@ -2592,7 +2873,7 @@ def main(argv=None) -> int:
     ap.add_argument("op", choices=[
         "check", "diff", "pull", "update-lock", "migrate", "upgrade",
         "classify", "judge", "triage", "forget", "gc", "fork", "track",
-        "ignore", "candidates", "paths", "init", "compose", "sub",
+        "ignore", "candidates", "paths", "init", "compose", "sub", "doctor",
     ])
     ap.add_argument("relpaths", nargs="*")
     ap.add_argument("--baseline-dir")
@@ -2626,6 +2907,8 @@ def main(argv=None) -> int:
                 raise UsageError("upgrade takes --project <path> and no relpaths")
             return v2_upgrade(args.project, args.baseline_dir, args.layers, args.abbrev)
         root = project_root()
+        if args.op == "doctor":
+            return cmd_doctor(root, load_lock(root), args.json)
         if args.op == "init":
             if (root / LOCK_RELPATH).exists():
                 require_v2_lock(load_lock(root))

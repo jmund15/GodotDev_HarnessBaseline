@@ -16,7 +16,7 @@ For indexed file types and tool guidance, see CLAUDE.md §9.
 
 2. Trigger a clean rebuild by issuing a no-op search call with `rebuild: true`:
    - `query`: `"."`  (any non-empty string — content doesn't matter when rebuild is on)
-   - `searchDir`: project root (absolute path, `{{PROJECT_ROOT}}` on local Windows)
+   - `searchDir`: project root (absolute path)
    - `rebuild`: `true`
    - `limit`: `1`  (we don't care about results, just the rebuild side effect)
 
