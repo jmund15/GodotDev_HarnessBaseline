@@ -1858,6 +1858,7 @@ def main() -> int:
         test_publish_resume_refuses_malformed_adaptation_contract,
         test_published_forked_row_records_tracked_not_forked,
         test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
+        test_worktree_deletion_leaves_every_row_for_the_consumer_pull,
         test_full_battery_upgrade_refuses_a_published_journal,
     ]
     # The fixtures run a copied harness_tests.py, which takes machine slots; peers holding the shared
@@ -1893,12 +1894,39 @@ def test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds() ->
             gone: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
         }}
         records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in (held_local, held_tracked, gone)]
-        publish._update_lock(root, lock, records, root, "after", {"kind": "worktree"})
+        publish._update_lock(root, lock, records, root, "after", {"kind": "commit"})
         files = lock["files"]
         assert files.get(held_local) == {"status": "local", "layer": "coding", "judged": None}, files.get(held_local)
         assert files.get(held_tracked, {}).get("status") == "local", files.get(held_tracked)
         assert "hash" not in files.get(held_tracked, {}), files.get(held_tracked)
         assert gone not in files, files.get(gone)
+
+
+def test_worktree_deletion_leaves_every_row_for_the_consumer_pull() -> None:
+    """A `--from-worktree` upstream `D` changes no lock row.
+
+    The consumer's copy is pre-publication content, so its own `pull` decides: an unmodified file
+    is retired (file and row), a modified one is kept as `local`, and a missing one loses its row.
+    Rewriting the row here would hide the deletion from that pull.
+    """
+    publish = _load_publish()
+
+    def rows() -> dict:
+        return {"files": {
+            ".claude/commands/held_local.md": {"status": "local", "layer": "coding", "judged": None},
+            ".claude/commands/held_tracked.md": {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+            ".claude/commands/gone.md": {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+        }}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for rel in (".claude/commands/held_local.md", ".claude/commands/held_tracked.md"):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text("x\n", encoding="utf-8")
+        lock = rows()
+        records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in lock["files"]]
+        publish._update_lock(root, lock, records, root, "after", {"kind": "worktree"})
+        assert lock["files"] == rows()["files"], lock
 
 
 def test_publish_renames_project_identifiers_without_touching_the_local_file() -> None:
