@@ -19,6 +19,9 @@ from pathlib import Path
 COMMANDS_DIR = Path(".claude/commands")
 AGENTS_DIR = COMMANDS_DIR / "agents"
 CHECKLISTS_DIR = COMMANDS_DIR / "checklists"
+TOOLS_DIR = Path(".claude/tools")
+# Optional: absent in projects that carry no external-model transport.
+REGISTRY_FILE = Path(".claude/reference/external_models.json")
 
 # --- Category 1: File References ---
 
@@ -60,12 +63,19 @@ KNOWN_INJECTIONS = {
     "CHECKLIST_RP": ["review_pr.md"],
     "CHECKLIST_I": ["review_pr.md"],
     "TEST_QUALITY_CHECKLIST": ["review_pr.md", "session_audit.md"],
-    "CODE_QUALITY_CHECKLIST": ["session_audit.md"],
+    "CODE_QUALITY_CHECKLIST": ["../tools/lens_briefs.py"],
+    "DESIGN_LIST": ["reference/session_audit_seats.md"],
 }
 
 
 def check_template_variables() -> list[str]:
-    """Verify every {{VAR}} in agent templates has a known injection source."""
+    """Verify every {{VAR}} in agent templates is injected by a real orchestrator.
+
+    Two-sided: the variable must be declared in KNOWN_INJECTIONS, AND at least one
+    declared orchestrator must actually name it. A declaration alone is a rubber
+    stamp: it passes for a variable whose injection was renamed away or never
+    written, which is the failure this check exists to catch.
+    """
     errors = []
     count = 0
 
@@ -74,12 +84,24 @@ def check_template_variables() -> list[str]:
         for match in re.finditer(r'\{\{(\w+)\}\}', content):
             var_name = match.group(1)
             count += 1
+            rel = os.path.relpath(agent_file, COMMANDS_DIR)
 
             if var_name in RUNTIME_VARS:
                 continue
             if var_name not in KNOWN_INJECTIONS:
-                rel = os.path.relpath(agent_file, COMMANDS_DIR)
                 errors.append(f"  {rel}: {{{{{var_name}}}}} has no known injection source")
+                continue
+
+            injectors = KNOWN_INJECTIONS[var_name]
+            missing = [n for n in injectors if not (COMMANDS_DIR / n).is_file()]
+            if missing:
+                errors.append(f"  {rel}: {{{{{var_name}}}}} declares missing orchestrator(s): {', '.join(missing)}")
+                continue
+            if not any(var_name in (COMMANDS_DIR / n).read_text(encoding="utf-8") for n in injectors):
+                errors.append(
+                    f"  {rel}: {{{{{var_name}}}}} declared injected by {', '.join(injectors)}, "
+                    f"but no such file mentions it"
+                )
 
     return _format_result("Template variables", count, errors)
 
@@ -118,26 +140,33 @@ def check_section_headers() -> list[str]:
 
 # --- Category 4: Checklist Item Counts ---
 
-# Expected item counts per section. Update these when intentionally adding/removing items.
+# Expected item counts per section. Update these IN THE SAME COMMIT that adds or removes
+# a checklist item: the checklist files are authoritative and these mirror them, so drift
+# here is always a stale mirror, never a content defect.
 # Pattern matched: lines starting with `- [ ] **` (checklist items with bold labels)
 EXPECTED_COUNTS = {
     "Compliance (C)": 5,
-    "Design (D)": 8,
+    "Design (D)": 21,
     "Semantics (S)": 8,
     "Robustness (R)": 11,
     "Performance (P)": 4,
-    "Intuitiveness (I)": 8,
+    "Intuitiveness (I)": 6,
 }
-EXPECTED_CODE_QUALITY_TOTAL = 44
-# The engine layer's `<stem>_godot.md` companion is checked only when that layer ships it.
+EXPECTED_CODE_QUALITY_TOTAL = 55
+# The engine layer's `<stem>_godot.md` companions are checked only when that layer ships them.
 EXPECTED_GODOT_COUNTS = {
-    "Godot Compliance (C)": 9,
+    "Godot Compliance (C)": 11,
     "Godot Design (D)": 1,
     "Godot Robustness (R)": 4,
     "Godot Performance (P)": 1,
     "Godot Intuitiveness (I)": 3,
 }
-EXPECTED_TEST_QUALITY_TOTAL = 8
+EXPECTED_TEST_QUALITY_TOTAL = 14
+EXPECTED_GODOT_TEST_COUNTS = {
+    "Godot Quality": 1,
+    "Godot Curation": 1,
+    "Godot Testability": 1,
+}
 
 
 def _count_sections(content: str, expected: dict[str, int]) -> tuple[dict[str, int], list[str]]:
@@ -168,32 +197,11 @@ def check_checklist_counts() -> list[str]:
     if not cq_path.exists():
         return ["[FAIL] Checklist counts: code_quality.md not found"]
 
-    content = cq_path.read_text(encoding="utf-8")
-    lines = content.split("\n")
-
-    current_section = None
-    section_counts: dict[str, int] = {}
-
-    for line in lines:
-        # Detect section headers
-        for section_name in EXPECTED_COUNTS:
-            if f"## {section_name}" in line:
-                current_section = section_name
-                section_counts[current_section] = 0
-                break
-
-        # Count checklist items
-        if current_section and re.match(r'^- \[ \] \*\*', line):
-            section_counts[current_section] = section_counts.get(current_section, 0) + 1
-
-    total = 0
-    for section_name, expected in EXPECTED_COUNTS.items():
-        actual = section_counts.get(section_name, 0)
-        total += actual
-        if actual != expected:
-            diff = actual - expected
-            sign = "+" if diff > 0 else ""
-            errors.append(f"  {section_name}: expected {expected}, got {actual} ({sign}{diff})")
+    # Sections are anchored to a leading `## `, so a `### Design (D)` subheading is not read as its
+    # section and an unlisted `## ` section closes the current one instead of inflating its count.
+    section_counts, count_errors = _count_sections(cq_path.read_text(encoding="utf-8"), EXPECTED_COUNTS)
+    errors.extend(count_errors)
+    total = sum(section_counts.values())
 
     if total != EXPECTED_CODE_QUALITY_TOTAL:
         diff = total - EXPECTED_CODE_QUALITY_TOTAL
@@ -218,6 +226,12 @@ def check_checklist_counts() -> list[str]:
         _, godot_errors = _count_sections(godot_path.read_text(encoding="utf-8"), EXPECTED_GODOT_COUNTS)
         errors.extend(f"  {godot_path.name}{e}" for e in godot_errors)
         godot_count = len(EXPECTED_GODOT_COUNTS)
+
+    tq_godot_path = tq_path.with_name(f"{tq_path.stem}_godot.md")
+    if tq_godot_path.exists():
+        _, tq_godot_errors = _count_sections(tq_godot_path.read_text(encoding="utf-8"), EXPECTED_GODOT_TEST_COUNTS)
+        errors.extend(f"  {tq_godot_path.name}{e}" for e in tq_godot_errors)
+        godot_count += len(EXPECTED_GODOT_TEST_COUNTS)
 
     check_count = len(EXPECTED_COUNTS) + 2 + godot_count  # per-section + code total + test total + godot sections
     return _format_result("Checklist counts", check_count, errors)
@@ -317,7 +331,7 @@ AGENT_MODEL_MAP = {
     "sa-intuitiveness-testability": ("sonnet", "session_audit_agents.md"),
 }
 
-VALID_CHECKLIST_SECTIONS = {"C+D+S", "R+P", "I", "full", "test", "full+test"}
+VALID_CHECKLIST_SECTIONS = {"C+D+S", "R+P", "I", "I+test", "full", "test", "full+test"}
 
 REQUIRED_FIXTURE_SECTIONS = [
     "## Metadata",
@@ -435,6 +449,39 @@ def _extract_expected_field(content: str, field: str) -> int | None:
     return None
 
 
+def check_external_model_registry() -> list[str]:
+    """Validate .claude/reference/external_models.json against its field contracts.
+
+    SKIPS SILENTLY WHEN THE FILE IS ABSENT. This validator is baseline-tracked and
+    ships to projects that will never carry an external-model registry; hard-failing
+    on a missing optional file would break every downstream harness on the next
+    baseline pull.
+    """
+    registry = REGISTRY_FILE
+    if not registry.is_file():
+        return []
+
+    tools = TOOLS_DIR.resolve()
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    try:
+        import model_registry
+    except Exception as exc:
+        return _format_result("External model registry", 1, [f"  reader unimportable: {exc}"])
+
+    try:
+        data = model_registry.load(registry)
+    except Exception as exc:
+        return _format_result("External model registry", 1, [f"  {exc}"])
+
+    # Non-fatal: a stale rate degrades a cited fact into an assumption while the
+    # sidecar's cost echo still states it as measured.
+    for model_id, why in model_registry.stale_prices(data):
+        print(f"[WARN] External model registry: {model_id} price.asOf is {why} - re-probe the vendor page")
+
+    return _format_result("External model registry", len(data["models"]), [])
+
+
 # --- Helpers ---
 
 def _format_result(category: str, check_count: int, errors: list[str]) -> list[str]:
@@ -460,6 +507,7 @@ def main() -> int:
         check_agent_names,
         check_no_hardcoded_templates,
         check_fixture_integrity,
+        check_external_model_registry,
     ]
 
     for check_fn in checks:

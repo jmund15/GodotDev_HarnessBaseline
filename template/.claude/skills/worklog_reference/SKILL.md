@@ -1,19 +1,14 @@
 ---
 name: worklog_reference
 description: >-
-  Decision-time companion to the `/worklog` command — load when a deferral, follow-up,
-  or out-of-scope item surfaces and you must classify or route it: class/scope
-  inference, domain pick, regular-vs-future-vs-user-tasks routing, completion signals.
-  SKIP for ad-hoc todos unrelated to the Obsidian worklog system, and for executing a
-  `/worklog` operation — the command is self-contained for mechanics (classification
-  heuristics live here).
+  Use to decide worklog routing for deferrals, follow-ups, out-of-scope candidates or completion signals. SKIP executing worklog operations; use /worklog.
 ---
 
 # Worklog Reference
 
 The **decision-time** half of the worklog system: it tells you *whether* a deferral should be logged, *how* to classify it, and *where* it routes. The `/worklog` slash command is the **execution** half — it owns the operation recipes (show / add / complete / sweep / triage / drive / unblock / promote / user-add). Reach for this skill when CLAUDE.md's auto-detect fires on a deferral phrase and you need to compose a correct `Add to Worklog` proposal; reach for `/worklog` when you need to actually perform a write.
 
-The worklog itself is one Obsidian doc with two live buckets — **Active** (in-flight, mirror-visible) and **Future Scope** (distant-horizon `When: future` items, one-liner format, mirror-excluded) — plus two opaque sibling docs: **Worklog-Archive.md** (completed `[x]` items, moved out of Active on completion, read only via `/worklog history`) and **User-Tasks.md** (user-only-addressable, fully agent-opaque). Active soft-caps at 30 items; `/worklog show` alarms over the cap and recommends `/worklog triage`.
+Doc topology (Active / Ledger / Future Scope buckets, opaque `Worklog-Archive.md` + `User-Tasks.md` siblings), the ADD routes, Active readiness and scannability, and the op summaries are canon in `commands/worklog.md`, not restated here. This skill owns classification, scope, domains and the expanded trigger catalog.
 
 ## File paths (cite, don't guess)
 
@@ -27,22 +22,24 @@ The worklog itself is one Obsidian doc with two live buckets — **Active** (in-
 
 **The mirror is a discovery index, not a spec.** When planning or scoping a logged item, read its full `Context` / `Where` / `Source` block in `Worklog.md` — the title-only mirror (`worklog-titles.md`) can mislead about scope entirely (a title naming one concept whose Context is about a different subsystem). Plan from the source block, not the mirror line.
 
-**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the once-per-session relevance check (CLAUDE.md §The Worklog *Relevance check*) — `.claude/workflows/worklog_relevance.js` or `.claude/scripts/worklog_relevance_sidecar.sh`, both driven by `.claude/workflows/worklog_relevance.prompt.md`. It returns structured overlaps or an empty array without loading the backlog into your context.
+**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the relevance check that CLAUDE.md §The Worklog names; `.claude/workflows/worklog_relevance.prompt.md` defines it. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before routing an overlap.
 
 ## Classification (required on every item)
 
 Pick the best match. If genuinely ambiguous, ask the user.
 
-| Class | When to use | Typical scope range |
-|-------|-------------|---------------------|
-| `fix` | Known bug, known or quickly-determinable repair path | 1–2 |
-| `debug` | Unknown root cause, investigation needed before any fix | 1–3 |
-| `feature` | New behavior, capability, or content | 2–4 |
-| `refactor` | Restructure with no behavior change | 1–3 |
-| `test` | Add or expand test coverage | 1–2 |
-| `docs` | Documentation-only update (skill, README, design doc tweak) | 1–2 |
-| `chore` | Tooling, config, build, data-file maintenance | 1–2 |
-| `design` | Brainstorming/planning, no implementation yet | 4 (always paired with a linked doc) |
+| Class | When to use |
+|-------|-------------|
+| `fix` | Known bug, known or quickly-determinable repair path |
+| `debug` | Unknown root cause, investigation needed before any fix |
+| `feature` | New behavior, capability, or content |
+| `refactor` | Restructure with no behavior change |
+| `test` | Add or expand test coverage |
+| `docs` | Documentation-only update (skill, README, design doc tweak) |
+| `chore` | Tooling, config, build, data-file maintenance |
+| `design` | Brainstorming/planning, no implementation yet |
+
+Scope comes from the Scope table's litmus, not from the class. A `design` item is scope 4 only when it needs the linked design track.
 
 **Reclassification rule:** when an item's nature changes (e.g., `debug` resolves into a known root cause), update its class in-place — don't open a new entry. Bump the date stamp via `- updated YYYY-MM-DD` if the change is non-trivial.
 
@@ -54,10 +51,14 @@ A coarse effort signal, not a deadline.
 
 | Scope | Meaning | Heuristic |
 |-------|---------|-----------|
-| **1** | Trivial — sub-30 min, single file, mechanical | "I could finish this in the time it took to log it" |
-| **2** | Small focused — couple hours, possibly multi-file | "One sitting; no design choices to agonize over" |
-| **3** | Multi-file thoughtful — half-day; real design tradeoffs | "I'll need to read related code and pick an approach" |
-| **4** | Full feature/system — multi-session; **linked planning doc required** | "This needs its own design doc; can't fit in Active alone" |
+| **1** | Mechanical, locally verifiable | A small change with an obvious check |
+| **2** | Focused work with no unsettled design fork | A coherent change with a clear approach |
+| **3** | A bounded change with real cross-file trade-offs | The approach needs evidence and trade-off resolution |
+| **4** | A design-track feature/system with a linked planning doc | The work needs a separately approved design and implementation track |
+
+Scope values are ordinal labels; `/worklog drive` reads them in `scope:N` budget targets.
+
+Where the project defines triage Size and Design fields, its entry-routing table maps a scope value to them.
 
 **Scope-4 → linked doc rule:** scope-4 items live as one-line pointers in Active with a `Plan doc:` field; the actual design lives in a sibling `TODO/<name>.md` and is indexed under the worklog's `## Linked Docs`. Don't write multi-paragraph designs in the Active block. When a `TODO/` doc is created, deleted, or merged, its Linked Docs entry should follow.
 
@@ -70,7 +71,7 @@ A readiness classifier: *can this item be worked on now?* Distinct from scope (e
 | Value | Meaning | Where it lives |
 |-------|---------|----------------|
 | *(omitted)* | **Ready** — actionable now. Default; all items without a `When:` line are implicitly ready. | `## Active > ### Domain` |
-| `after <condition>` | Has a prerequisite or phase gate. `<condition>` is free text: another worklog item title, a milestone, or a non-code event. | `## Active > ### Domain` (surfaced in mirror with `[after: <condition>]` suffix) |
+| `after <condition>` | Has a prerequisite or phase gate. `<condition>` is free text: another worklog item title, a milestone, or a non-code event. | `## Ledger > ### Domain` until the condition clears; then promote to `## Active` |
 | `future` | Distant-horizon deferral — **no specific trigger**, revisited "someday". Stronger threshold than a normal next-session deferral. | `## Future Scope` (collapsible callout, one-liner format, **excluded from mirror**) |
 
 **Rules:**
@@ -102,38 +103,25 @@ If an item genuinely doesn't fit, use `Other` — never invent a new domain with
 
 ## Full Trigger Catalog (auto-detect signals)
 
-CLAUDE.md has the compact list. This is the expanded version. Treat any of these as *candidate* signals — propose adding via `/worklog add`, then let the user confirm.
+These signals extend CLAUDE.md §The Worklog; treat each as a candidate, run the Do-now gate first, and propose `/worklog add` only when a defer reason holds.
 
-### Trivial-do-now branch (preempts logging entirely)
+### Do-now gate (runs before any logging)
 
-**This is the FIRST gate** — before evaluating regular vs. conditional vs. future routing, ask: should this item even be logged?
+**Relevant work surfaced mid-session is done now by default.** Do it inline when it is smaller than its handoff; otherwise dispatch it through `orchestration` in the background and keep the main task moving. Never ask "do now or log?". Needing an agent, touching many files, taking longer than expected or sitting off the session's topic are not defer reasons.
 
-**Fires when ALL of these hold:**
-- Inferred scope == 1.
-- Inferred class is `fix`, `refactor`, `docs`, or `chore` (NOT `debug`, `design`, `feature`, or `test`).
-- Phrasing is mechanical and single-action — words like "remove X reference", "rename Y to Z", "sweep `<single thing>`", "add line/paragraph to `<file>`", "fix typo", "delete dead code at `<path>`".
+Defer only for one of these, and name it in the entry's Context:
+1. **Owner judgment** — ask the owner about a fork blocking the current task. If they defer owner-only work, route its concrete action to User-Tasks (or leave a roadmap-owned Part in `user-owned`); do not create a Claude-ready Worklog item for the unanswered question.
+2. **External block** — git topology (merge order, another branch or worktree), an unreleased model, quota budget, or a peer's file under live edit. Route with `When: after <condition>`.
+3. **Design first** — scope 4 with no design doc. Route it to the project's design track.
+4. **Owner deferral** — the owner said defer, or typed `/worklog add`.
+5. **Collision** — the work writes into the current task's write set or a gate in progress. Do it once that closes, in this session when it can.
+6. **Own plan** — the work, below scope 4, needs its own design or plan (a new subsystem change, not a fix inside the current task's subject). Log it with its measured size and name it in the reply; it joins the current drive only when the owner adds it.
 
-**Does NOT fire when:**
-- Investigative phrasing: "investigate", "audit", "find out", "trace why".
-- Open-ended decisions: "decide", "consider", "convention for", "policy for".
-- Multi-file or multi-domain scope (even if individually small).
-- Any `debug` / `design` class signal — those need investigation/exploration, not "just do it".
-
-**Propose-and-confirm shape:**
-```
-This looks trivial — do now (y), or add to worklog (a)?
-```
-- `y`: do the work this turn (skip logging entirely).
-- `a`: fall through to the Regular-deferral path (log normally).
-- `n`: skip both (user wants neither).
-
-**Rationale:** Items like "Remove deleted FreezeState reference from project_subsystems SKILL.md" or "Sweep `subagent` vs `subagent` terminology" are 30-second jobs. Logging them costs more attention long-term (mirror line, eventual completion-sweep, JSONL chatter) than just doing them. The worklog should hold *deferrals*, not *items the agent could finish in the time it took to log them*.
-
-**Explicit `/worklog add` bypasses this gate.** When the user types `/worklog add ...` directly, treat it as an intentional log-it-anyway signal and skip the trivial check. The user already decided.
+A defect named in a turn ends that turn fixed, dispatched, logged with one of these reasons, or declined with a reason and an offer.
 
 ### Regular-deferral triggers (→ Active section, no `When:` line)
 
-These signal "not now, but could come up next session". Default routing.
+These phrases send an item through the Do-now gate first; it lands here only when a defer reason holds.
 
 #### My-side triggers (things I might say)
 - **Hedging on cleanup:** "this is a bit duplicated", "could be cleaner", "not pretty but works", "smells off"
@@ -148,9 +136,9 @@ These signal "not now, but could come up next session". Default routing.
 - **Scope-shift:** "next pass", "another time", "different session", "not now", "save that for"
 - **Plan-trim signals:** explicitly removing items from a plan during scoping discussion
 
-### Conditional-gate triggers (→ Active section, `When: after <condition>`)
+### Conditional-gate triggers (→ Ledger, `When: after <condition>`)
 
-These signal "ready when X happens". Item stays in Active mirror with `[after: X]` suffix.
+These signal "ready when X happens". Item stays in Ledger with `[after: X]` suffix in the mirror until the condition clears.
 
 - **Phrase patterns:** "after X ships", "once Y is done", "when Z lands", "blocked on W", "we can do this once...", "as soon as we have..."
 - **Inferred from context:** if a deferral mentions a specific PR/ability/system as prerequisite (`"do this after Core Elemental tier-1 ships"`), capture the prereq as the `<condition>`.
@@ -164,9 +152,7 @@ These signal "ready when X happens". Item stays in Active mirror with `[after: X
 - **Your-side:** "eventually", "someday", "long-term", "long-haul", "down the road", "if/when we ever", "in the distant future", "way out there", "wishlist"
 - **Inferred shape:** items whose `Context` reads like a *standing observation* (e.g., "watch X landscape", "re-evaluate when Y matures") rather than an actionable task. The action is *re-evaluate later*, not *do now-ish*.
 
-**Anti-trigger (do NOT route to Future Scope on these):** "later", "next pass", "follow-up", "for now", "out of scope", "not addressing this here". These are normal deferrals — the item could come up next session and should stay visible in the mirror.
-
-When in doubt → regular Active. The cost of a too-visible item is one mirror line; the cost of a hidden-and-forgotten item is a permanent leak.
+**Anti-trigger (do NOT route to Future Scope on these):** "later", "next pass", "follow-up", "for now", "out of scope", "not addressing this here". These are normal deferrals — the item could come up next session and should stay visible in the mirror. When in doubt → regular Active (litmus above).
 
 If unsure whether something qualifies as Future Scope → **ask, don't auto-route**. The propose-and-confirm shape is: `Add to Worklog Future Scope: <title> — <domain> · <class> · scope <n>?` (note the explicit "Future Scope" in the prompt so user knows it'll be hidden from mirror).
 
@@ -214,14 +200,14 @@ When the auto-detect rule fires `Add to Worklog: <title> (<domain>)?`, also prop
 
 > `Add to Worklog: <title> — <domain> · <class> · scope <n>?`
 
-Inference heuristics:
-- "Investigate / why does X happen / pre-existing failure" → `debug`, scope 1–2 unless symptom touches multiple systems.
-- "Refactor / extract / consolidate / sweep" → `refactor`, scope 2–3.
-- "Add test for / cover X" → `test`, scope 1–2.
-- "Document / update SKILL / fix doc reference" → `docs`, scope 1.
-- "Wire X / extend Y / new system" → `feature`, scope 2–4 (use 4 only if a planning doc would help).
-- "Plan / design / brainstorm" → `design`, scope 4 (always paired with a doc).
-- Bug-class language ("breaks", "regression", "not working") with known cause → `fix`, scope 1–2.
+Inference heuristics (class cues; scope comes from the Scope table's litmus):
+- "Investigate / why does X happen / pre-existing failure" → `debug`.
+- "Refactor / extract / consolidate / sweep" → `refactor`.
+- "Add test for / cover X" → `test`.
+- "Document / update SKILL / fix doc reference" → `docs`.
+- "Wire X / extend Y / new system" → `feature` (scope 4 only if a planning doc would help).
+- "Plan / design / brainstorm" → `design`.
+- Bug-class language ("breaks", "regression", "not working") with known cause → `fix`.
 
 User's `y` accepts your proposed class+scope. User can override mid-confirm: `y, scope 3` or `y, refactor not feature`.
 
@@ -231,29 +217,20 @@ User's `y` accepts your proposed class+scope. User can override mid-confirm: `y,
 
 ## Completion Detection signals
 
-Mark-complete (via `/worklog complete`) fires on:
+When the agent recognizes a completion signal below, invoke `/worklog complete`:
 - A test that gates a logged item passes (and the item is the cause)
 - A commit lands that names the item (commit message reference)
 - User explicitly says "done with X", "X is fixed", "marked X complete"
 - A PR merges that resolves the item
 
-Mark **immediately**, in the same turn the resolution lands. The Active section's `[ ]` items must always reflect reality — on completion the item moves out of `Worklog.md` into `Worklog-Archive.md` as a `[x]` one-liner and drops from the mirror. The archive is opaque (never loaded passively); review past completions via `/worklog history`.
+Mark **immediately**, in the same turn the resolution lands. Active must always reflect reality. Completion mechanics (archive move, mirror drop, `/worklog history`): `commands/worklog.md` → COMPLETE (canon).
 
 ## Choosing the right operation
 
-The `/worklog` command's Forms table is the full operation list. Three routing decisions worth internalizing before you reach for the command:
+The `/worklog` Forms table plus installed `commands/reference/worklog_<form>.md` recipes are the operation inventory. Three routing decisions worth internalizing before you reach for the command:
 
-- **`/worklog add` vs. `/worklog user-add`** — use `user-add` when the item needs user judgment Claude fundamentally can't produce: production art, feel-tuning, open-ended brainstorms whose output is the user's preference, cross-doc audits requiring the user's vision. Use `add` (default) for everything Claude can plausibly tackle — including `design`-class items with technical output. **Litmus:** *"If Claude wrote a perfect plan body for this and the user said 'go', would the result be a working artifact?"* Yes → `add`. No (output is taste / art / a personal decision) → `user-add`. When in doubt → `add` — false-routing to User-Tasks is a permanent leak (the doc isn't agent-surveyed); false-routing to Active just costs one mirror line.
-- **`/worklog drive` — which mode you get** — the argument decides, first match wins: no argument *surveys* candidate batches (pick later); a budget-shaped argument (`<N>` ≡ `scope:N`, combinable with `items:N`) *fills* the target from the highest-scoring ready items; anything else is read as *named items* (comma-split, fuzzy-matched, no scoring). Survey and budget share the Step 1–3 scoring engine. Every mode executes through to commits at the item's scope tier — append `--plan-only` to stop at the drafted plan body instead.
-- **Worklog item vs. `spawn_task`** — the worklog holds deferrals that fit a *future session*. If an item grows beyond inline scope (typically a scope-4 that must be acted on *now*), graduate it via `mcp__ccd_session__spawn_task`, then run the COMPLETE recipe so it moves to `Worklog-Archive.md` — with a `(spawned task <id>)` ref in place of a commit hash.
+- **`/worklog add` vs. `/worklog user-add`** — use `user-add` when the item needs user judgment Claude fundamentally can't produce: production art, feel-tuning, open-ended brainstorms whose output is the user's preference, cross-doc audits requiring the user's vision. Use `add` (default) for everything Claude can plausibly tackle — including `design`-class items with technical output. **Litmus:** *"If Claude wrote a perfect plan body for this and the user said 'go', would the result be a working artifact?"* Yes → `add`. No (output is taste / art / a personal decision) → `user-add`. When in doubt → `add` (see *User-Tasks triggers* above).
+- **`/worklog drive` — mode dispatch and execution** — read the installed `worklog_<form>.md` recipe for `drive` (Survey, Budget, Named-items and `--plan-only`); that recipe owns selection and its execution authorization.
+- **Worklog item vs. its own design track** — the worklog holds deferrals that fit a *future session*. A scope-4 item follows the drive recipe's selection rule and routes to its design track. If the work lands in that separate track, run the COMPLETE recipe so the item moves to `Worklog-Archive.md` — with a `(spawned session)` ref in place of a commit hash.
 
-## MCP-offline
-
-Non-event — `Worklog.md` is a vault file edited with native `Read`/`Edit`/`Write`. Obsidian MCP offline does not block `/worklog`; only the `last_updated:` frontmatter bump prefers the MCP (`obsidian_manage_frontmatter`), with a native `Edit` as the fallback. See CLAUDE.md §3 / `obsidian_conventions` skill.
-
-## Cloud fallback (CLAUDE_CODE_REMOTE=true)
-
-Distinct from MCP-offline: on cloud the **entire Obsidian vault** is unreachable (not just the MCP), so there is no native-edit fallback — `Worklog.md` simply does not exist in the sandbox. Mutating ops queue to the tracked file `.claude/worklog-pending.md` for replay in a later local session. Full recipe (detection, entry format, replay flow, skip-and-audit-trail conflict policy, idempotency) lives in `/worklog` → *Cloud fallback*. Decision-time summary:
-
-- **On cloud:** `add` / `complete` / `promote` / `unblock` **append** to `worklog-pending.md` under a per-session header instead of writing Obsidian. Read ops use the local mirror where it suffices (`show`); full-doc ops (`show all`, `sweep`, `plan`/`tackle`) defer to local. Commit the pending file — the handoff crosses machines via git.
-- **On local:** any `/worklog` invocation first offers to replay un-struck pending entries into Obsidian, strikes through (not fails) conflicts, then truncates the queue body (keeping its header). Header-only body → no-op. The SessionStart hook surfaces `Cloud worklog: N pending` as the awareness anchor.
+Read [`worklog_cloud.md`](../../commands/reference/worklog_cloud.md) before a cloud invocation or a local pending replay; that recipe owns queueing, native application, conflicts and no-ops.

@@ -3,7 +3,7 @@ name: LSP is default for C# symbol queries (not grep)
 description: For C# symbol/type/caller questions, default to the LSP plugin; grep only for text-only files or initial anchor discovery
 type: feedback
 ---
-For any C# semantic question — callers of a method, the type of an expression, file structure, rename blast radius, interface-implementation discovery — anchor with one `Grep("class X")` then navigate with the `LSP` tool (`documentSymbol` → `findReferences`; `ToolSearch("select:LSP")` if not yet loaded). Never a bare-Grep sweep of a PascalCase identifier — CLAUDE.md §Tool Routing owns the order (reconciled 2026-09-04).
+For any C# semantic question — callers of a method, the type of an expression, file structure, rename blast radius, interface-implementation discovery — anchor with one `Grep("class X")` then navigate with the `LSP` tool (`documentSymbol` → `findReferences`; `ToolSearch("select:LSP")` if not yet loaded). Never a bare-Grep sweep of a PascalCase identifier — CLAUDE.core.md §9 owns the order (reconciled 2026-09-04).
 
 **Why:** Observed 2026-04-19 that prior sessions relied almost exclusively on Grep for C# work even when the LSP plugin was enabled and healthy. Grep misses semantic cases that bite in refactors: explicit interface implementations, generic instantiations, operator overloads, symbols reached via inheritance or overrides. User explicitly flagged this as a pattern to break. LSP was under-used because (a) schema is deferred and needs a ToolSearch step, (b) grep is frictionless for initial discovery, (c) prior CLAUDE.md "goToImplementation broken" warning caused overgeneralization to "LSP unreliable" — which is false for `findReferences`, `hover`, `incomingCalls`, `documentSymbol`, `workspaceSymbol`.
 

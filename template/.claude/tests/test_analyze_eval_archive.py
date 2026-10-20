@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "analyze_eval_archive")
 ANALYZER = os.path.join(ROOT, "tools", "analyze_eval_archive.py")
 
 FIXTURE = {
@@ -77,6 +78,59 @@ def run_analyzer(repo, out_dir):
         text=True,
         timeout=60,
     )
+
+
+def _entry(n, month, day, outcome, pattern=None, domains=("meta",), skills=(), hits=(), shape=None):
+    row = {"session_id": "golden-%03d" % n, "id": 500 + n, "title": "Golden entry %03d" % n,
+           "date": "%s-%02d" % (month, day), "outcome": outcome, "pattern": pattern,
+           "domains": list(domains), "corrections": ["c"] if outcome != "clean" else [],
+           "skills_used": list(skills), "memory_searches": 0, "memory_hits": list(hits),
+           "tests": {"written": 0, "total_passing": 0, "tdd_followed": True},
+           "key_takeaway": "takeaway %d" % n, "notes": ""}
+    if shape:
+        row["shape"] = shape
+    return row
+
+
+def golden_archive():
+    """A fixed archive over three months, legacy prose rows included, for the characterization."""
+    rows = []
+    plan = [("2026-07", 3, "clean", None, ("meta",), ("testing",)),
+            ("2026-07", 9, "correction", "A", ("meta", "gameplay"), ("testing", "debugging")),
+            ("2026-08", 2, "clean", None, ("gameplay",), ("writing",)),
+            ("2026-08", 12, "failure", "B", ("meta",), ("testing",)),
+            ("2026-08", 20, "clean", None, ("meta", "gameplay"), ("testing", "writing")),
+            ("2026-09", 1, "clean", None, ("meta",), ("testing",)),
+            ("2026-09", 4, "correction", "A", ("gameplay",), ("writing",)),
+            ("2026-09", 8, "clean", None, ("meta",), ("testing", "debugging")),
+            ("2026-09", 15, "clean", None, ("meta", "gameplay"), ("testing",))]
+    for n, (month, day, outcome, pattern, domains, skills) in enumerate(plan, 1):
+        rows.append(_entry(n, month, day, outcome, pattern, domains, skills,
+                           hits=["gotcha_%d" % (n % 3)],
+                           shape={"duration_min": 100 * n} if n % 2 else None))
+    doc = {"Self_Evaluate_Themes": FIXTURE["Self_Evaluate_Themes"], "structured_entries": rows,
+           "legacy_entries": ["#1 clean session", "#2 USER CORRECTION on scope", "#3 mystery"]}
+    return doc
+
+
+def plant_golden(repo):
+    claude = os.path.join(repo, ".claude")
+    os.makedirs(claude, exist_ok=True)
+    with open(os.path.join(claude, "self_evaluate_archive.json"), "w", encoding="utf-8") as f:
+        json.dump(golden_archive(), f)
+    with open(os.path.join(claude, "self_evaluate_archive.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps(_entry(10, "2026-09", 20, "failure", "C", ("meta",), ("testing",))) + "\n")
+
+
+def run_golden():
+    repo = tempfile.mkdtemp(prefix="analyzegolden_")
+    plant_golden(repo)
+    out_dir = tempfile.mkdtemp(prefix="analyzegoldenout_")
+    result = run_analyzer(repo, out_dir)
+    console = result.stdout.replace(out_dir, "<OUT>").replace("\\", "/")
+    with open(os.path.join(out_dir, "stats.json"), "rb") as handle:
+        stats = handle.read()
+    return repo, result, console, stats
 
 
 def main():
@@ -372,7 +426,271 @@ def main():
     if not ok:
         failures.append("memory_hit_counts missing or incomplete: %r" % counts)
 
-    total = 23
+
+    # Cases 24-25: characterization captured before the compute() extraction: the CLI's console
+    # output and stats.json over one planted archive stay byte-identical.
+    _, golden_result, console, stats_bytes = run_golden()
+    with open(os.path.join(GOLDEN, "console.txt"), "rb") as handle:
+        want_console = handle.read().decode("utf-8")
+    with open(os.path.join(GOLDEN, "stats.json"), "rb") as handle:
+        want_stats = handle.read()
+    ok = golden_result.returncode == 0 and console == want_console
+    print("%-4s %s" % ("ok" if ok else "FAIL", "CLI console output is byte-identical to the captured golden"))
+    if not ok:
+        failures.append("console drifted from the golden")
+    ok = stats_bytes == want_stats
+    print("%-4s %s" % ("ok" if ok else "FAIL", "stats.json is byte-identical to the captured golden"))
+    if not ok:
+        failures.append("stats.json drifted from the golden")
+
+    # Case 26: compute(root) from a foreign cwd returns the dictionary the CLI writes (RED today: the
+    # analyzer reads a cwd-relative archive path and has no importable compute()).
+    compute_repo = tempfile.mkdtemp(prefix="analyzecompute_")
+    plant_golden(compute_repo)
+    probe = subprocess.run(
+        [sys.executable, "-c",
+         "import json, sys; sys.path.insert(0, %r); import analyze_eval_archive as a; "
+         "print(json.dumps(a.compute(%r), indent=2))" % (os.path.join(ROOT, "tools"), compute_repo)],
+        cwd=tempfile.gettempdir(), capture_output=True, text=True, timeout=60)
+    want_text = want_stats.decode("utf-8").replace("\r\n", "\n").strip()
+    ok = probe.returncode == 0 and probe.stdout.strip() == want_text
+    print("%-4s %s" % ("ok" if ok else "FAIL", "compute(root) from a foreign cwd equals the CLI's stats.json"))
+    if not ok:
+        failures.append("compute(root) foreign cwd: rc=%d stderr=%r" % (probe.returncode, probe.stderr[-300:]))
+
+    # Case 27: month filters structured entries by their date prefix and drops undated legacy prose.
+    month_probe = subprocess.run(
+        [sys.executable, "-c",
+         "import json, sys; sys.path.insert(0, %r); import analyze_eval_archive as a; "
+         "s = a.compute(%r, month='2026-08'); print(json.dumps([s['total_sessions'], s['total_clean'], "
+         "s['total_failure'], s['legacy_count'], s['date_first'], s['date_last']]))"
+         % (os.path.join(ROOT, "tools"), compute_repo)],
+        cwd=tempfile.gettempdir(), capture_output=True, text=True, timeout=60)
+    ok = month_probe.returncode == 0 and month_probe.stdout.strip() == '[3, 2, 1, 0, "2026-08-02", "2026-08-20"]'
+    print("%-4s %s" % ("ok" if ok else "FAIL", "compute(month=) keeps only that month's structured entries"))
+    if not ok:
+        failures.append("compute(month=): %r %r" % (month_probe.stdout[-200:], month_probe.stderr[-200:]))
+
+    # Case 28: a bad archive raises through compute() and the CLI still prints UNKNOWN and exits 2.
+    bad_code = "\n".join([
+        "import sys",
+        "sys.path.insert(0, %r)" % os.path.join(ROOT, "tools"),
+        "import analyze_eval_archive as a",
+        "try:",
+        "    a.compute(%r)" % os.path.join(tempfile.gettempdir(), "no-such-root-xyz"),
+        "except a.AnalysisError as e:",
+        "    print('raised', e)"])
+    bad_probe = subprocess.run([sys.executable, "-c", bad_code], cwd=tempfile.gettempdir(),
+                               capture_output=True, text=True, timeout=60)
+    ok = bad_probe.returncode == 0 and "raised" in bad_probe.stdout
+    print("%-4s %s" % ("ok" if ok else "FAIL", "compute() raises AnalysisError on an unreadable archive"))
+    if not ok:
+        failures.append("compute() bad archive: %r %r" % (bad_probe.stdout[-200:], bad_probe.stderr[-200:]))
+
+    # Case 29: tied memory-hit counts come out in one order whatever the hash seed.
+    tie_repo = tempfile.mkdtemp(prefix="analyzetie_")
+    tie_claude = os.path.join(tie_repo, ".claude")
+    os.makedirs(tie_claude, exist_ok=True)
+    tie_rows = [_entry(n, "2026-09", n, "clean", hits=["mem_%02d" % k for k in range(12)]) for n in range(1, 4)]
+    with open(os.path.join(tie_claude, "self_evaluate_archive.json"), "w", encoding="utf-8") as handle:
+        json.dump({"Self_Evaluate_Themes": FIXTURE["Self_Evaluate_Themes"], "structured_entries": tie_rows,
+                   "legacy_entries": []}, handle)
+    with open(os.path.join(tie_claude, "self_evaluate_archive.jsonl"), "w", encoding="utf-8") as handle:
+        handle.write("")
+    orders = []
+    for seed in ("1", "2", "3"):
+        tie_out = tempfile.mkdtemp(prefix="analyzetieout_")
+        probe = subprocess.run([sys.executable, ANALYZER], cwd=tie_repo, capture_output=True, text=True, timeout=60,
+                               env=dict(os.environ, HARNESS_EVAL_OUT=tie_out, PYTHONHASHSEED=seed))
+        with open(os.path.join(tie_out, "stats.json"), encoding="utf-8") as handle:
+            orders.append([row["entity"] for row in json.load(handle)["top_memory_hits"]])
+    ok = orders[0] == orders[1] == orders[2] and len(orders[0]) == 12
+    print("%-4s %s" % ("ok" if ok else "FAIL", "tied memory-hit counts keep one order across hash seeds"))
+    if not ok:
+        failures.append("memory-hit tie order differs by seed: %r" % (orders,))
+
+    # Cases 30-35: the month snapshot's session block is compute(month=)'s, the one definition of a session statistic.
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import analyze_eval_archive as aea
+
+    def plant_rows(rows):
+        repo_dir = tempfile.mkdtemp(prefix="analyzemonth_")
+        claude_dir = os.path.join(repo_dir, ".claude")
+        os.makedirs(claude_dir)
+        with open(os.path.join(claude_dir, "self_evaluate_archive.json"), "w", encoding="utf-8") as handle:
+            json.dump({"Self_Evaluate_Themes": FIXTURE["Self_Evaluate_Themes"], "structured_entries": rows,
+                       "legacy_entries": []}, handle)
+        return repo_dir
+
+    def case(ok, label, detail=""):
+        print("%-4s %s" % ("ok" if ok else "FAIL", label))
+        if not ok:
+            failures.append(label + (": " + detail if detail else ""))
+
+    edge_rows = [_entry(i, "2026-09", 1 + i, "clean" if i % 2 else "correction", "A" if i % 2 == 0 else None,
+                        shape={"duration_min": minutes})
+                 for i, minutes in enumerate((299, 300, 301, 700, 701), 1)]
+    edges = aea.compute(plant_rows(edge_rows), month="2026-09")["sessions"]["duration"]
+    case(edges["lt300"]["n"] == 1 and edges["300_700"]["n"] == 3 and edges["gt700"]["n"] == 1 and edges["unknown"] == 0,
+         "sessions: duration buckets split at 300 and 700 minutes (299 low, 300 301 700 middle, 701 high)", repr(edges))
+    case(edges["lt300"]["clean"] + edges["300_700"]["clean"] + edges["gt700"]["clean"] == 3,
+         "sessions: each duration bucket counts its clean entries", repr(edges))
+
+    # Duration is store-derived on a new row (`facts.duration_min`) and was model-typed on an old
+    # one (`shape.duration_min`); the bucket reads facts first, and a row with neither is unknown,
+    # never a zero-minute session.
+    facts_rows = [_entry(1, "2026-09", 1, "clean"), _entry(2, "2026-09", 2, "clean"),
+                  _entry(3, "2026-09", 3, "clean"), _entry(4, "2026-09", 4, "clean")]
+    facts_rows[0]["facts"] = {"duration_min": 299}
+    facts_rows[1]["facts"] = {"driver": {"model": "m-three", "effort": "high"},
+                              "owner_prompts": 3, "duration_min": 700}
+    facts_rows[2]["facts"] = {"duration_min": 701}
+    facts_rows[2]["shape"] = {"duration_min": 5}
+    from_facts = aea.compute(plant_rows(facts_rows), month="2026-09")["sessions"]["duration"]
+    case(from_facts["lt300"]["n"] == 1 and from_facts["300_700"]["n"] == 1
+         and from_facts["gt700"]["n"] == 1 and from_facts["unknown"] == 1,
+         "sessions: duration reads facts.duration_min first, shape beside it only when facts is absent",
+         repr(from_facts))
+    legacy_rows = [_entry(5, "2026-09", 5, "clean", shape={"duration_min": 400})]
+    legacy = aea.compute(plant_rows(legacy_rows), month="2026-09")["sessions"]["duration"]
+    case(legacy["300_700"]["n"] == 1,
+         "sessions: a row with no facts still buckets from its shape.duration_min", repr(legacy))
+
+    dup_rows = [_entry(1, "2026-09", 1, "clean", domains=("meta", "meta", "gameplay"), skills=("testing", "testing")),
+                _entry(2, "2026-09", 2, "correction", "A", domains=("meta",), skills=("testing",)),
+                _entry(3, "2026-09", 3, "clean", domains=("meta",), skills=("testing",))]
+    dup_repo = plant_rows(dup_rows)
+    dup_all = aea.compute(dup_repo)
+    dup_month = aea.compute(dup_repo, month="2026-09")["sessions"]
+    meta_perf = next(d for d in dup_all["domain_perf"] if d["domain"] == "meta")
+    testing_perf = next(s for s in dup_all["skill_perf"] if s["skill"] == "testing")
+    cell_keys = {"n": 3, "clean": 2, "corrections": 0, "prompts": 0, "facts_rows": 0}
+    case(dup_month["domains"]["meta"] == cell_keys and dup_month["skills"]["testing"] == cell_keys
+         and meta_perf["total"] == 3 and testing_perf["total"] == 3,
+         "sessions: a domain or skill listed twice on one entry counts once, in the month block and the all-time tables",
+         repr((dup_month["domains"], meta_perf["total"], testing_perf["total"])))
+
+    golden_repo = tempfile.mkdtemp(prefix="analyzeagree_")
+    plant_golden(golden_repo)
+    every = aea.compute(golden_repo)
+    months = aea.dated_months(every)
+    blocks = {month: aea.compute(golden_repo, month=month)["sessions"] for month in months}
+    summed_n = sum(block["n"] for block in blocks.values())
+    summed_domains = {}
+    for block in blocks.values():
+        for name, cell in block["domains"].items():
+            summed_domains[name] = summed_domains.get(name, 0) + cell["n"]
+    case(months == ["2026-07", "2026-08", "2026-09"] and summed_n == every["structured_population"]
+         and all(summed_domains[d["domain"]] == d["total"] for d in every["domain_perf"])
+         and sum(b["clean"] for b in blocks.values()) == every["structured_outcomes"]["clean"]
+         and sum(b["patterns"].get("C", 0) for b in blocks.values()) == every["structured_patterns_normalized"]["C"],
+         "sessions: the month blocks sum to the all-time statistics (entries, outcomes, domains, normalized patterns)",
+         repr((months, summed_n, summed_domains)))
+
+    messy = [_entry(1, "2026-09", 1, "clean"), _entry(2, "2026-09", 2, "clean"), _entry(3, "2026-09", 3, "clean"),
+             _entry(4, "2026-09", 4, "clean"), _entry(5, "2026-09", 5, "clean")]
+    messy[0]["date"] = None
+    messy[1]["date"] = "2026-13-45"
+    messy[2]["date"] = "2026-09-28T10:00"
+    messy[3]["date"] = "sometime"
+    messy_repo = plant_rows(messy)
+    messy_all = aea.compute(messy_repo)
+    case(aea.dated_months(messy_all) == ["2026-09"] and aea.calendar_day("2026-09-28T10:00") == "2026-09-28"
+         and aea.calendar_day("2026-13-45") is None and aea.calendar_day(None) is None
+         and aea.compute(messy_repo, month="2026-09")["unique_count"] == 2
+         and aea.compute(messy_repo, month="2026-13")["unique_count"] == 0,
+         "sessions: only a valid calendar day places an entry in a month; None, 2026-13-45 and prose place none",
+         repr((aea.dated_months(messy_all), aea.compute(messy_repo, month="2026-09")["unique_count"])))
+
+    domain_rows = [_entry(1, "2026-09", 1, "correction", "A", domains=("meta", "gameplay")),
+                   _entry(2, "2026-09", 2, "failure", "B", domains=()),
+                   _entry(3, "2026-09", 3, "correction", "A", domains=("meta",))]
+    corrections = aea.compute(plant_rows(domain_rows))["all_corrections"]
+    case([row.get("domains") for row in corrections] == [["meta", "gameplay"], [], ["meta"]],
+         "corrections: every all_corrections row carries the entry's domains", repr(corrections))
+
+    cause_rows = [_entry(1, "2026-09", 1, "clean", "A"), _entry(2, "2026-09", 2, "correction", "A"),
+                  _entry(3, "2026-09", 3, "failure", "E"), _entry(4, "2026-09", 4, "correction", None),
+                  _entry(5, "2026-09", 5, "correction", "C"), _entry(6, "2026-09", 6, "clean"),
+                  _entry(7, "2026-09", 7, "correction", "B")]
+    causes = aea.compute(plant_rows(cause_rows), month="2026-09")["sessions"]["causes"]
+    case(causes == {"A": 1, "B": 1, "C": 1, "D": 0, "E": 1, "none": 1} and aea.empty_sessions()["causes"] == dict.fromkeys(
+        aea.BASE_PATTERNS, 0),
+         "sessions: causes tallies the pattern of each correction or failure session alone, so a clean session that "
+         "carries a pattern is not a cause and the split reconciles to the non-clean sessions", repr(causes))
+
+    # S3: the month's sessions block carries the corrections-per-owner-prompt sums, per month, domain,
+    # skill, duration bucket and driver. A row without `facts.owner_prompts` is typed absent, never a
+    # zero-prompt session, and a row without `facts.driver` belongs to no driver row at all.
+    rate_rows = [_entry(1, "2026-09", 1, "clean", domains=("meta",), skills=("testing",)),
+                 _entry(2, "2026-09", 2, "correction", "A", domains=("meta", "gameplay"), skills=("testing",)),
+                 _entry(3, "2026-09", 3, "failure", "B", domains=("gameplay",), skills=("writing",)),
+                 _entry(4, "2026-09", 4, "clean", domains=("meta",))]
+    rate_rows[0]["facts"] = {"driver": {"model": "m-one", "effort": "high"}, "owner_prompts": 10, "duration_min": 100}
+    rate_rows[0]["corrections"] = ["a", "b"]
+    rate_rows[1]["facts"] = {"driver": {"model": "m-one", "effort": "high"}, "owner_prompts": 30, "duration_min": 200}
+    rate_rows[1]["corrections"] = ["a"]
+    rate_rows[2]["facts"] = {"driver": {"model": "m-two", "effort": "low"}, "owner_prompts": 20, "duration_min": 800}
+    rate_rows[2]["corrections"] = ["a", "b", "c"]
+    rate_rows[3]["corrections"] = ["a"]
+    rate_block = aea.compute(plant_rows(rate_rows), month="2026-09")["sessions"]
+    case((rate_block.get("corrections"), rate_block.get("prompts"), rate_block.get("facts_rows")) == (6, 60, 3),
+         "sessions: the month sums corrections and owner prompts over the rows that carry both", repr(rate_block))
+    case(rate_block.get("domains", {}).get("meta") == {"n": 3, "clean": 2, "corrections": 3, "prompts": 40,
+                                                       "facts_rows": 2}
+         and rate_block.get("domains", {}).get("gameplay", {}).get("corrections") == 4
+         and rate_block.get("domains", {}).get("gameplay", {}).get("prompts") == 50,
+         "sessions: each domain cell sums the corrections and prompts of the sessions that name it",
+         repr(rate_block.get("domains")))
+    case(rate_block.get("duration", {}).get("lt300") == {"n": 2, "clean": 1, "corrections": 3, "prompts": 40, "facts_rows": 2}
+         and rate_block.get("duration", {}).get("gt700") == {"n": 1, "clean": 0, "corrections": 3, "prompts": 20, "facts_rows": 1}
+         and rate_block.get("duration", {}).get("unknown") == 1,
+         "sessions: each duration bucket sums the corrections and prompts of the sessions in it",
+         repr(rate_block.get("duration")))
+    case(rate_block.get("drivers") == {
+             "m-one / high": {"n": 2, "clean": 1, "correction": 1, "failure": 0, "unknown": 0,
+                              "corrections": 3, "prompts": 40, "facts_rows": 2},
+             "m-two / low": {"n": 1, "clean": 0, "correction": 0, "failure": 1, "unknown": 0,
+                             "corrections": 3, "prompts": 20, "facts_rows": 1}},
+         "sessions: the driver table keys each session by its store-derived model and effort, and a row with no "
+         "facts belongs to no driver", repr(rate_block.get("drivers")))
+
+    # S5: `cause_counts` sums the model-recorded per-correction cause letters, and `rule_misses` counts
+    # sessions by kind beside a live table of rule, kind, sessions and example ids.
+    cause_rows2 = [_entry(1, "2026-09", 1, "correction", "A"), _entry(2, "2026-09", 2, "failure", "B"),
+                   _entry(3, "2026-09", 3, "clean")]
+    cause_rows2[0]["corrections"] = ["a", "b"]
+    cause_rows2[0]["cause_counts"] = {"A": 2}
+    cause_rows2[1]["corrections"] = ["a"]
+    cause_rows2[1]["cause_counts"] = {"B": 1}
+    cause_block = aea.compute(plant_rows(cause_rows2), month="2026-09")["sessions"]
+    case(cause_block.get("cause_counts") == {"A": 2, "B": 1} and cause_block.get("cause_counts_rows") == 2,
+         "sessions: cause_counts sums the letters the sessions recorded, with the recording rows counted beside it",
+         repr((cause_block.get("cause_counts"), cause_block.get("cause_counts_rows"))))
+    bare_block = aea.compute(plant_rows([_entry(1, "2026-09", 1, "correction", "A")]), month="2026-09")["sessions"]
+    case(bare_block.get("cause_counts") == {} and bare_block.get("cause_counts_rows") == 0,
+         "sessions: a month whose rows recorded no cause_counts types it absent, never a zero count",
+         repr((bare_block.get("cause_counts"), bare_block.get("cause_counts_rows"))))
+
+    rule_rows = [_entry(1, "2026-09", 1, "correction", "A"), _entry(2, "2026-09", 2, "failure", "B")]
+    rule_rows[0]["rule_misses"] = [{"rule": ".claude/CLAUDE.md", "kind": "not-read", "evidence": "U1"},
+                                   {"rule": ".claude/CLAUDE.md", "kind": "not-followed", "evidence": "U2"}]
+    rule_rows[1]["rule_misses"] = [{"rule": ".claude/CLAUDE.md", "kind": "not-read", "evidence": "an owner quote"}]
+    rule_block = aea.compute(plant_rows(rule_rows), month="2026-09")
+    case(rule_block["sessions"].get("rule_misses") == {"not-read": 2, "not-followed": 1}
+         and rule_block["sessions"].get("rule_miss_rows") == 2,
+         "sessions: rule_misses counts the sessions that missed each kind of rule, with the recording rows counted beside it",
+         repr((rule_block["sessions"].get("rule_misses"), rule_block["sessions"].get("rule_miss_rows"))))
+    case(rule_block.get("rule_misses") == [
+             {"rule": ".claude/CLAUDE.md", "kind": "not-read", "sessions": 2,
+              "ids": ["golden-001", "golden-002"]},
+             {"rule": ".claude/CLAUDE.md", "kind": "not-followed", "sessions": 1, "ids": ["golden-001"]}],
+         "sessions: the live rule_misses table lists rule, kind, the sessions naming it and example ids",
+         repr(rule_block.get("rule_misses")))
+    case(aea.compute(plant_rows([_entry(1, "2026-09", 1, "clean")]), month="2026-09").get("rule_misses") == [],
+         "sessions: a month whose rows recorded no rule_misses has an empty table, not a row of zeroes")
+
+    total = 45
     print("\n%d/%d cases pass" % (total - len(failures), total))
     for f in failures:
         print("  FAIL " + f)

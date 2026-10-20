@@ -983,7 +983,7 @@ def inline_cases():
         "no re-runnable proof"))
 
     # A proof guards behavior. A docstring- or comment-only edit to an unproven hook changes none,
-    # so demanding a new proof file for it is friction (live block 2026-09-23 on json_merge.py).
+    # so demanding a new proof file for it is friction (live block 2026-09-23 on a docstring-only edit).
     repo = make_repo()
     write(repo, ".claude/hooks/legacy.py", '"""Old doc."""\n\ndef f(x):\n    return x + 1\n')
     git(repo, ["add", "-A"])

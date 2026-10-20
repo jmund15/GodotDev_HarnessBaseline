@@ -41,6 +41,37 @@ def write_transcript(d, name, rows, mtime):
     return p
 
 
+def _parses(row):
+    """The builder SKIPS an unparseable line, so a transcribed fixture row must be checked here."""
+    try:
+        return isinstance(json.loads(row), dict)
+    except ValueError:
+        return False
+
+
+# A live transcript's row shapes (field set and order unchanged; project path, session id and prose
+# neutralised): a prose prompt, two model-a/high turns, a `<synthetic>` turn, the plumbed `/model`
+# command, and "continue".
+LIVE_ROWS_MIXED = [
+    r"""{"parentUuid":"25264d52-11ec-4dce-bebc-5524a78ec374","isSidechain":false,"promptId":"7b498c1c-38e2-4ca5-ade9-69fe81b73837","type":"user","message":{"role":"user","content":"In the sample repo, the file src/Stats/Modifier.cs declares a class whose name does not match its file name. This raises a duplicate-key exception on every editor start.\n\nTask: rename the file to match the class following the refactor procedure. Notes: (1) the file lives inside a nested repository, so commit there first and then bump the parent pointer; (2) move the .cs.uid sidecar alongside via git mv; (3) update every path reference to the old file name; (4) run the build and the regression gate."},"uuid":"dcefc9fc-945f-41cd-8119-741c09ce3402","timestamp":"2026-07-24T12:56:12.181Z","permissionMode":"auto","origin":{"kind":"human"},"promptSource":"sdk","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.217","gitBranch":"main"}""",
+    r"""{"parentUuid":"4a909478-c780-41dd-a505-2719f27bdeac","isSidechain":false,"message":{"model":"model-a","id":"msg_011CdLvG4KmTAnmjATe6XkEc","type":"message","role":"assistant","content":[{"type":"text","text":"I'll start by loading the refactor skill and searching memory for refactoring gotchas."}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":45495,"cache_read_input_tokens":28034,"output_tokens":531,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":45495,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":531,"cache_read_input_tokens":28034,"cache_creation_input_tokens":45495,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":45495},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CdLvG2PgoMfUftcMQhMDU","type":"assistant","uuid":"9a673795-bfbb-43ec-9cfe-1c157feaab00","timestamp":"2026-07-24T12:56:26.916Z","effort":"high","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.217","gitBranch":"main"}""",
+    r"""{"parentUuid":"15136698-be8d-44e8-895a-bbaea0891183","isSidechain":false,"message":{"model":"model-a","id":"msg_011CdLvMZJRytuXpKwE31nmv","type":"message","role":"assistant","content":[{"type":"text","text":"Both renames staged cleanly (git detected them as `R` renames, preserving history). Now building:"}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":1758,"cache_read_input_tokens":95049,"output_tokens":233,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":1758,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":233,"cache_read_input_tokens":95049,"cache_creation_input_tokens":1758,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":1758},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CdLvMXCvMyjjxHSauR9qP","attributionSkill":"refactor_procedure","attributionMcpServer":"plugin:semantic-search:semantic-search","attributionMcpTool":"search","type":"assistant","uuid":"864951aa-4525-4b03-af1f-de751243e673","timestamp":"2026-07-24T12:57:31.520Z","effort":"high","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.217","gitBranch":"main"}""",
+    r"""{"parentUuid":"e6e0c944-2b81-485b-85de-02e807359163","isSidechain":false,"type":"assistant","uuid":"1c5dc638-37c0-4cc5-a9c5-2f687aadd9b9","timestamp":"2026-07-24T22:06:44.449Z","message":{"id":"1521ae51-d2b4-471c-95c6-5677c4ec97d1","container":null,"model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":null,"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":null,"iterations":null,"speed":null},"content":[{"type":"text","text":"No response requested."}],"context_management":null},"isApiErrorMessage":false,"userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+    r"""{"parentUuid":"c72b7d48-5ea9-449c-b529-d34ba532b0d4","isSidechain":false,"promptId":"b2851b5a-fc43-4230-8bb5-81b3358a9e91","type":"user","message":{"role":"user","content":"<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>"},"isMeta":true,"uuid":"bc754e63-8da4-4103-b5eb-624d4e0f9f2f","timestamp":"2026-07-24T22:06:47.255Z","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+    r"""{"parentUuid":"bc754e63-8da4-4103-b5eb-624d4e0f9f2f","isSidechain":false,"promptId":"b2851b5a-fc43-4230-8bb5-81b3358a9e91","type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>model-b</command-args>"},"uuid":"91b4192a-070f-4e6d-b27b-6351811bdb2f","timestamp":"2026-07-24T22:06:47.255Z","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+    r"""{"parentUuid":"91b4192a-070f-4e6d-b27b-6351811bdb2f","isSidechain":false,"promptId":"b2851b5a-fc43-4230-8bb5-81b3358a9e91","type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to model-b</local-command-stdout>"},"uuid":"14cfc194-78b3-4611-abbd-c706e0f6f966","timestamp":"2026-07-24T22:06:47.255Z","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+    r"""{"parentUuid":"14cfc194-78b3-4611-abbd-c706e0f6f966","isSidechain":false,"promptId":"b2851b5a-fc43-4230-8bb5-81b3358a9e91","type":"user","message":{"role":"user","content":"continue"},"uuid":"9c0f90a3-e1df-47dd-8f42-e5ebed841f03","timestamp":"2026-07-24T22:06:51.736Z","permissionMode":"auto","origin":{"kind":"human"},"promptSource":"sdk","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+]
+
+# The same shapes again: one model-a/high turn and two model-b/low turns, so the dominant driver and
+# the mixed flag are both observable.
+LIVE_ROWS_ONE_MODEL = [
+    r"""{"parentUuid":"4a909478-c780-41dd-a505-2719f27bdeac","isSidechain":false,"message":{"model":"model-a","id":"msg_011CdLvG4KmTAnmjATe6XkEc","type":"message","role":"assistant","content":[{"type":"text","text":"I'll start by loading the refactor skill and searching memory for refactoring gotchas."}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":45495,"cache_read_input_tokens":28034,"output_tokens":531,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":45495,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":531,"cache_read_input_tokens":28034,"cache_creation_input_tokens":45495,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":45495},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CdLvG2PgoMfUftcMQhMDU","type":"assistant","uuid":"9a673795-bfbb-43ec-9cfe-1c157feaab00","timestamp":"2026-07-24T12:56:26.916Z","effort":"high","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.217","gitBranch":"main"}""",
+    r"""{"parentUuid":"878e6362-781b-4f4a-a3d0-d388d8eb529d","isSidechain":false,"message":{"model":"model-b","id":"msg_011CdMeFcLxw3Z4GJ3rE14b8","type":"message","role":"assistant","content":[{"type":"text","text":"Proceeding with the acknowledged-known-failure path. Committing the first change, then the second with a pathspec so I don't sweep unrelated work."}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":117839,"cache_read_input_tokens":0,"output_tokens":918,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":117839,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":918,"cache_read_input_tokens":0,"cache_creation_input_tokens":117839,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":117839},"type":"message"}],"speed":"standard"},"diagnostics":{"cache_miss_reason":{"type":"previous_message_not_found"}}},"requestId":"req_011CdMeFarvCYhufCPEowDcE","type":"assistant","uuid":"c3e60fff-733b-442e-b81f-bc6521980585","timestamp":"2026-07-24T22:06:57.286Z","effort":"low","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+    r"""{"parentUuid":"62decbb5-6db4-47fd-a117-fa0ca0f5e4ef","isSidechain":false,"message":{"model":"model-b","id":"msg_011CdMeJFLFUtWRjod78YdiQ","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01PA6PHv8raUGJ6gLXaXEzPc","name":"Bash","input":{"command":"ls /c/repo/.claude/auto-memory/ | grep -i -E \"script_class|filename\"","description":"Check for existing memory covering this gotcha"},"caller":{"type":"direct"}}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":767,"cache_read_input_tokens":120818,"output_tokens":708,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":767,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":708,"cache_read_input_tokens":120818,"cache_creation_input_tokens":767,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":767},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CdMeJDvApTCMEG2oBXkpU","type":"assistant","uuid":"7c816e50-a28a-47e6-80c4-9ef40be74ef6","timestamp":"2026-07-24T22:07:40.466Z","effort":"low","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\repo","sessionId":"00000000-0000-4000-8000-000000000001","version":"2.1.219","gitBranch":"main"}""",
+]
+
+
 def main():
     fails = []
     now = time.time()
@@ -251,9 +282,89 @@ def main():
     except AttributeError as exc:
         fails.append(f"bounded evidence API missing: {exc}")
 
+    # A session under another account's config dir keeps its transcripts there.
+    with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": os.path.join("X:", os.sep, "second")}):
+        got = sd.projects_dir("C:\\repo")
+        if got != Path("X:", os.sep, "second", "projects", "C--repo"):
+            fails.append(f"CLAUDE_CONFIG_DIR ignored: {got}")
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        if sd.projects_dir("C:\\repo") != Path.home() / ".claude" / "projects" / "C--repo":
+            fails.append("default config dir is not ~/.claude")
+
+    # --session resolves in another account's store when this login holds no match: a session run on
+    # the second account is still digestible from the first.
+    with tempfile.TemporaryDirectory() as home:
+        primary = Path(home, ".claude", "projects", "C--repo")
+        second = Path(home, ".claude-secondary", "projects", "C--repo")
+        third = Path(home, ".claude-third", "projects", "C--repo")
+        stale = Path(home, ".claude-stale", "projects", "C--repo")
+        for folder, name in ((primary, "aaaa1111"), (second, "bbbb2222"), (third, "cccc3333"), (second, "cccc4444"),
+                             (stale, "eeee5555")):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"{name}.jsonl").write_text("{}\n", encoding="utf-8")
+        declared = [str(Path(home, d)) for d in (".claude", ".claude-secondary", ".claude-third")]
+        with patch.object(sd, "login_dirs", lambda: declared, create=True):
+            try:
+                sd.pick_transcript(primary, "eeee", None)
+                fails.append("a login store the registry does not declare must not be searched")
+            except SystemExit:
+                pass
+            if sd.pick_transcript(primary, "aaaa", None) != primary / "aaaa1111.jsonl":
+                fails.append("a match in this login's store must win")
+            try:
+                got = sd.pick_transcript(primary, "bbbb", None)
+                if got != second / "bbbb2222.jsonl":
+                    fails.append(f"another account's unique match not resolved: {got}")
+            except SystemExit as exc:
+                fails.append(f"another account's unique match refused: {exc}")
+            for prefix, why in (("cccc", "ambiguous across stores"), ("dddd", "absent everywhere")):
+                try:
+                    sd.pick_transcript(primary, prefix, None)
+                    fails.append(f"{why} must refuse")
+                except SystemExit as exc:
+                    if ".claude-secondary" not in str(exc):
+                        fails.append(f"{why}: refusal must name the stores searched: {exc}")
+
+    # --- facts: the numbers a self-evaluation row carries, derived here and never by the model ----
+    # The fixtures keep a live transcript's row shapes, so the pin is a definition and not a shape
+    # someone imagined. Every value below is counted from the fixture's own rows: two model-a/high
+    # turns and two prompts (the prose task and "continue"), while the `<synthetic>` turn is not a
+    # driver, the bare /model control command is not an owner prompt, and the caveat/stdout plumbing
+    # never reaches the prompt list. 12:56:12.181Z to 22:06:51.736Z floors to 550 whole minutes.
+    with tempfile.TemporaryDirectory() as d:
+        facts_fn = getattr(sd, "session_facts", None)
+        if facts_fn is None:
+            fails.append("session_facts is missing: facts must be store-derived")
+        else:
+            for name in ("LIVE_ROWS_MIXED", "LIVE_ROWS_ONE_MODEL"):
+                rows = globals()[name]
+                if not all(isinstance(row, str) and _parses(row) for row in rows):
+                    fails.append("%s holds a row that is not one JSON line" % name)
+            mixed = facts_fn(write_transcript(d, "11112222-mixed", LIVE_ROWS_MIXED, now))
+            one_model = facts_fn(write_transcript(d, "33334444-one-model", LIVE_ROWS_ONE_MODEL, now))
+            if mixed.get("driver") != {"model": "model-a", "effort": "high"}:
+                fails.append("facts driver (most assistant turns) wrong: %r" % (mixed.get("driver"),))
+            if mixed.get("owner_prompts") != 2:
+                fails.append("facts owner_prompts counted %r, expected the two substantive rows"
+                             % (mixed.get("owner_prompts"),))
+            if mixed.get("duration_min") != 550:
+                fails.append("facts duration_min is %r, expected 550 whole minutes"
+                             % (mixed.get("duration_min"),))
+            if "driver_mixed" in mixed:
+                fails.append("a single-pair session must not read as mixed")
+            if one_model.get("driver") != {"model": "model-b", "effort": "low"}:
+                fails.append("facts driver ignored the row counts: %r" % (one_model.get("driver"),))
+            if one_model.get("driver_mixed") is not True:
+                fails.append("two model/effort pairs must set driver_mixed: %r"
+                             % (one_model.get("driver_mixed"),))
+            if one_model.get("owner_prompts") != 0:
+                fails.append("a transcript with no user row counted %r prompts"
+                             % (one_model.get("owner_prompts"),))
+
     for f in fails:
         print("FAIL", f)
-    print("test_session_digest: %d checks, %d fail" % (22, len(fails)))
+    print("test_session_digest: %d checks, %d fail" % (38, len(fails)))
     return 1 if fails else 0
 
 

@@ -8,7 +8,7 @@ Audit the test suite for duplication and structural debt; propose targeted compa
 Takes no arguments — always audits the whole `Tests/` tree.
 
 ## Constraints
-- **Retention Policy**: Keep all behavior tests. Delete only when: feature removed, test is genuinely redundant, or test checks implementation details (not behavior). See [Testing Skill](/.claude/skills/testing/SKILL.md).
+- **Retention Policy**: Keep all behavior tests. Delete only when: feature removed, test is genuinely redundant, or test checks implementation details (not behavior). See [testing `reference/choosing.md`](/.claude/skills/testing/reference/choosing.md) §Retention & Curation Policy.
 - **Verification**: Full gate BEFORE and AFTER (Steps 1 and 5). Every count change must be attributable to an approved removal.
 - **User Approval**: Propose ALL changes before executing. Group by category for efficient review.
 
@@ -17,13 +17,13 @@ Takes no arguments — always audits the whole `Tests/` tree.
 ### 1. BASELINE — Capture current test metrics
 
 ```bash
-pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -NoBaselineUpdate
+pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -NoBaselineUpdate -Detach
 ```
-Run with `run_in_background: true` (the suites exceed the Bash 600000ms ceiling). Take per-suite counts from the `SUITE` lines. `-NoBaselineUpdate` is required here — a baseline capture must not ratchet.
+`-Detach` is mandatory (`/regression_gate` owns why); poll its `OUT=` file until a line begins `VERDICT=`. Take per-suite counts from the `SUITE` lines. `-NoBaselineUpdate` is required here — a baseline capture must not ratchet.
 
 Record the three counts and note any pre-existing failures; **do NOT fix them here** (separate task). A `VERDICT` other than `PASS` means you have no trustworthy baseline — resolve it before scanning, or the Step-5 comparison is meaningless.
 
-**Reuse a gate run from earlier in this session if the tree hasn't changed since** — the counts are the same and the suites cost ~9 minutes.
+**Reuse a gate run from earlier in this session if the tree hasn't changed since** — the counts are the same.
 
 ### 2. SCAN — Identify compaction candidates
 Search the `Tests/` directory for these categories, in priority order:
@@ -33,7 +33,7 @@ Search the `Tests/` directory for these categories, in priority order:
 - Tests for features confirmed removed (grep for missing types/methods)
 - Diagnostic-only tests that log data but assert nothing meaningful
 - Constant-mirroring tests that assert a field equals its default/constant value — these break on intentional changes and can never catch real bugs. Test behavioral consequences instead.
-- The compiler-guaranteed / storage-only shapes (isinstance, enum ordinal, constructor-stores-field, bool set-get) — table and carve-outs in [Testing Skill](/.claude/skills/testing/SKILL.md). **Apply the carve-outs and the deletion gate**; matching on shape alone deletes real coverage.
+- The compiler-guaranteed / storage-only shapes (isinstance, enum ordinal, constructor-stores-field, bool set-get) — table and carve-outs in [testing `reference/choosing.md`](/.claude/skills/testing/reference/choosing.md) §Anti-pattern: Compiler-guaranteed and storage-only tests. **Apply the carve-outs and the deletion gate**; matching on shape alone deletes real coverage.
 - Repetitive fallback boilerplate: 3+ tests exercising the same "returns fallback" path with different null configurations → consolidate into one `[TestCase]`-parameterized test. Parameterize rather than inlining sequential asserts — a hard assert aborts the method, so inlining loses which permutation broke, and a dropped permutation is the usual consolidation defect.
 - Stale NOTE/TODO comments referencing completed work
 
@@ -48,11 +48,11 @@ Search the `Tests/` directory for these categories, in priority order:
   ```bash
   python3 .claude/hooks/duplicate_test_double_guard.py --json
   ```
-  The guard groups by the base being doubled (`private sealed partial class FakeX : Node, IX` is attributed to `IX`, never `Node`) and buckets each family: **blocking** (at 3+ copies AND grown past `duplicate_test_double_baseline.json` — your change added one), **grandfathered** (at 3+ but committed as backlog), **advisory** (below the fail threshold). `Tests/Framework` is exempt — a double living there is the resolution, not a finding.
+  The guard groups by the base being doubled (`private sealed partial class FakeX : Node, IX` is attributed to `IX`, never `Node`). Each JSON row carries the base's declaration `kind`; use **blocking**, **grandfathered** and **advisory** buckets under the [guard's Threshold contract](/.claude/hooks/duplicate_test_double_guard.py). `Tests/Framework` is exempt — a double living there is the resolution, not a finding.
 
-  Prioritize families with **no baseline entry at all** — those are wholly new duplication, not inherited debt. Consolidate by promoting one double to `Tests/Framework/Mocks` as a public double parameterised over whatever the variants differ on, then delete the copies. **After consolidating, rerun with `--write-baseline`** to lock the reduction in; the baseline only ever ratchets down through this command.
+  Prioritize **blocking interface families with no baseline entry** — those are wholly new duplication, not inherited debt. Consolidate by promoting one double to `Tests/Framework/Mocks` as a public double parameterised over whatever the variants differ on, then delete the copies. Advisory subclasses may carry distinct test behavior; judge whether they share a contract before proposing consolidation. **After consolidating, rerun with `--write-baseline`** to lock the reduction in.
 
-  > New files under `Tests/Framework/Mocks/` are untracked. A pathspec-scoped commit that stages only the edited test files silently drops the new mock and breaks the build for everyone else — stage the mock too (`feedback_pathspec_commit_stage_infra_deps.md`).
+  > New files under `Tests/Framework/Mocks/` are untracked. A pathspec-scoped commit that stages only the edited test files silently drops the new mock and breaks the build for everyone else — stage the mock too (`archive/feedback_pathspec_commit_stage_infra_deps.md`).
 - **Setup boilerplate**: Repeated `new <Context> { ... }` or archetype loading → extract factory methods into fixtures/builders
 - **Event assertion pattern**: `bool fired = false; comp.Event += () => fired = true; ...` → extract helper if 5+ instances
 

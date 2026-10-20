@@ -226,7 +226,7 @@ Ask user if they want to commit the changelog update.
 
 ## Constraints
 
-- **Not a dynamic `Workflow` (intentional):** Phase 1 is *nested* fan-out — each per-PR agent runs `/review-pr`, which itself spawns 4–7 sub-agents. A `Workflow` `agent()` guard reaches only the top-level fanned agent, not those sub-sub-agents, so the single-flight protections (no regression gate, no language server) would silently lapse one level down. Also, per-PR grouping fights the `review_fanout` engine's global `file:line` dedup — cross-PR same-line edits are *conflicts to surface*, not duplicates to collapse. Kept Claude-orchestrated like `/plan_check`; only the batch math + conflict-detection are deterministic, and those are cheap to keep here.
+- **Not a dynamic `Workflow` (intentional):** Phase 1 is *nested* fan-out — each per-PR agent runs `/review-pr`, which itself spawns 4–7 sub-agents. A `Workflow` `agent()` guard reaches only the top-level fanned agent, not those sub-sub-agents, so the single-flight protections (no regression gate, no language server) would silently lapse one level down. Also, the `review_fanout` engine treats location as an anchor, never identity, and does not dedup by `file:line`, so same-location hits stay separate findings; a cross-PR same-line edit is a *conflict to surface*, and recognizing it as one needs a bespoke shape. Kept Claude-orchestrated like `/plan_check`; only the batch math + conflict-detection are deterministic, and those are cheap to keep here.
 - **Delegate reviews to `/review-pr`** — this command orchestrates, does not define review criteria
 - **Delegate merges to `/merge-pr`** — this command does not inline merge logic
 - **Never force-push** to PR branches (except `--force-with-lease` for post-rebase pushes)

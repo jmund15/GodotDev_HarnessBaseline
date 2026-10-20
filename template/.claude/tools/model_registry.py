@@ -2,8 +2,8 @@
 """Reader + validator for .claude/reference/external_models.json.
 
 The registry is the SSOT for external-transport models: role resolution, prices,
-limits, and authorization gates. This module is the ONE parser — hooks import it,
-Bash and validate_commands.py call the CLI, PowerShell parses the JSON natively
+limits, and authorization gates. This module is the ONE parser — hooks and validate_commands.py
+import it, Bash calls the CLI, PowerShell parses the JSON natively
 (ConvertFrom-Json) to keep the shell profile free of a Python dependency.
 
 Consumers differ in failure posture, deliberately (instruction_quality section 16):

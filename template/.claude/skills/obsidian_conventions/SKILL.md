@@ -1,26 +1,20 @@
 ---
 description: >-
-  Auto-load when reading, writing, or editing files in the Obsidian vault
-  (DevProjects/{{PROJECT_NAME}} and the sibling folders its vault taxonomy lists) — design docs, roadmaps, worklog,
-  brainstorm docs, framework notes, wikilinks, heading-anchor links, or any vault file
-  path. SKIP for the /doc_* documentation-folder structure (folder classification, the
-  4-doc system template, domain routing) — that lives in agents/documentation_structure.md.
+  Use when reading, writing, editing, linking or moving Obsidian vault files. SKIP documentation-folder classification and system templates; use agents/documentation_structure.md.
 ---
 
 # Obsidian Vault Conventions
 
 Universal rules for any interaction with the Obsidian vault — every command,
 skill, or ad-hoc edit that touches `DevProjects/{{PROJECT_NAME}}/` or a sibling folder
-`reference/vault_taxonomy.md` lists. The `/doc_*` documentation-folder structure (folder
-classification, the 4-doc system template, domain routing) is a separate
-concern — see [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md).
+`reference/vault_taxonomy.md` lists.
 
 ## Tooling — native-first
 The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\`. Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired.
 
 | Operation | Tool |
 |---|---|
-| Read a vault file | `Read` on the path — synthesis-shaped reads route to `read_files` (CLAUDE.md §Tool Routing) |
+| Read a vault file | `Read` on the path — synthesis-shaped reads route to `read_files` (CLAUDE.core.md §9) |
 | Search the vault | `Grep` (literal) / `semantic-search` (natural language) |
 | List vault files | `Glob` |
 | Write / overwrite / append | `Write` / `Edit` — confirmed safe on a doc open in the Obsidian app (writes propagate, no conflict prompt) |
@@ -28,8 +22,7 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 | Edit frontmatter / tags | `Edit` on the YAML block |
 | Date-filtered search | `Grep` with `path` set to the vault directory, or `Glob` + file mtimes |
 
-> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — both land on disk, so the unsaved buffer conflicts regardless of writer. In practice the agent is directed, not hand-editing the same file simultaneously.
-
+> Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — both land on disk, so the unsaved buffer conflicts regardless of writer.
 ## Vault taxonomy — live vs legacy
 
 - **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`.** All agent reads and writes land here. `reference/vault_taxonomy.md` maps its folders, the sibling project folders and any legacy areas.
@@ -52,8 +45,7 @@ All cross-doc references **MUST** be wikilinks — never plain text, bold, or in
 **Heading-anchor links** (targeting a specific `##`/`###` heading, not just a file):
 - Anchor text is the **literal heading text**, verbatim — Obsidian does NOT use GitHub-style kebab-case slugs. `[[doc#Session 1 — Foo]]` resolves; `[[doc#session-1-foo]]` does not.
 - Inside a markdown **table cell**, escape the alias pipe as `\|` — an unescaped `|` is parsed as a column separator and breaks the table: `[[doc#Heading\|display]]`.
-- Headings containing `/` resolve fine in wikilinks; they break in URL-encoded markdown-style links (`/` → `%2F`, unresolvable). Another reason wikilinks are mandatory.
-
+- Headings containing `/` resolve fine in wikilinks; they break in URL-encoded markdown-style links (`/` → `%2F`, unresolvable).
 **Common verbatim pitfalls** — all three fail SILENTLY (anchor falls through to file-top, no error):
 - `## Section N — Title` headings: keep BOTH the `Section ` prefix AND the ` — ` em-dash. `[[doc#Section 6 — Migration Plan]]` resolves; `[[doc#6 Migration Plan]]` does not.
 - `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — LevelPersistence × StateScope Mapping]]` resolves; `[[doc#1.4 LevelPersistence × StateScope Mapping]]` does not.
@@ -73,12 +65,15 @@ Two questions pick it: does the content inform **action** (doing) or **understan
 
 Don't mix modes: no reference tables inside a tutorial, no tutorial hand-holding inside reference, no arguing inside a how-to. Split and link instead. Every `write_doc` spec states the mode.
 
+## Revising a doc
+Rewrite the body so the doc reads as one continuous, current account, as if written that way first. Put no callout, banner, "superseded" marker, rulings list or addendum into the body to announce the change. What changed and why goes in the commit or the session. It goes in the doc only when the doc's type keeps a log: a roadmap's revision log, or a plan's decision record.
+
 ## Formatting
 - Use `> [!type]- Collapsible Title` for subsections within `##` categories.
 - Keep examples concrete — "set ProjectileCount to 3" not "configure the count property".
 - No screenshots. Focus on textual descriptions.
 - Search Obsidian first — do not guess file paths.
-- Do not invent formulas. Read them from the vault. If missing, ask the user.
+- Formulas: CLAUDE.md §3. Read them from the vault. If missing, ask the user.
 
 ## Cross-references
 - [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md) — `/doc_*` documentation-folder structure: folder classification, the 4-doc system template, domain routing, Related Systems callouts

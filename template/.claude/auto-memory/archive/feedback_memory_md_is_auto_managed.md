@@ -10,8 +10,7 @@ When writing a new topic file in `.claude/auto-memory/`, **also update `MEMORY.m
 **How to apply:**
 - New behavioral rule / feedback / principle → write topic file (`feedback_*.md` / `arch_rule_*.md` / etc.) AND add a one-line pointer to MEMORY.md in the same turn under the appropriate section.
 - Pointer format: `- <hook text>` — no path, no markdown link (paths were stripped 2026-08-16, `feedback_memory_file_refs_no_markdown_links`); one hook line per topic file, ≤150 chars.
-- Section choice: use the existing categories at the top of MEMORY.md (Communication & process discipline / Architectural & design rules / Testing & TDD / Tool routing & workflow / Jmodot framework / Godot / scene / data / Ability / combat / visual subsystems / Misc gotchas).
-- If genuinely new and recent → "Recent additions" section at top works too.
+- Section choice: use the existing `##` headings in MEMORY.md. `commands/codify.md` Step 4 and Step 5 own placement and the hook-line format.
 
 **Counter-pattern (DON'T):** Set up hooks, slash commands, or `/session_end`-style workflows that hand-edit MEMORY.md outside the normal topic-file write flow. Those would race any future Claude session's own MEMORY.md rewrites (Auto Dream consolidation passes do full-file rewrites; even normal-mode Claude in another session may re-shape the index based on its own model of what should be there). The safe write-window is **same-turn-as-topic-file**, because at that point Claude (you) is the only writer and the action is atomic from the user's view.
 

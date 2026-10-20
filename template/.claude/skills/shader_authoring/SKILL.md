@@ -1,11 +1,7 @@
 ---
 name: Shader Authoring
 description: >-
-  Procedure for authoring prototype-grade Godot shaders (.gdshader) for sprite and
-  surface looks — pulse, swirl, glow, dissolve, distortion, or other procedural effects
-  — with a deterministic multi-phase screenshot review loop. SKIP for authoring the
-  underlying sprite/texture (use `sprite_authoring`), wiring effects into the runtime
-  VFX pipeline (use `vfx_patterns`), and Environment/post-processing tuning.
+  Use to author prototype Godot shaders for animated/procedural sprite or surface looks. SKIP sprite/texture assets; use sprite_authoring. SKIP runtime VFX wiring; use vfx_patterns.
 ---
 
 # Prototype Shader Authoring
@@ -17,7 +13,8 @@ Shaders are the text-native track for **animated or procedural surface looks** �
 | Target | `shader_type` | Carrier node |
 |---|---|---|
 | Sprite2D / Control / GUI | `canvas_item` | the sprite itself, or a duplicate overlay sprite when the base must render untouched |
-| Sprite3D / meshes | `spatial` | ShaderMaterial on the node (`SpriteBase3D.material_override`) |
+| Entity `Sprite3D` / `AnimatedSprite3D` | `spatial` | the project's sprite effect material: a binder binds every sprite under its entity root and a contributor supplies the glow uniforms (`vfx_patterns` §8), never an authored `material_override` |
+| VFX `Sprite3D` / meshes | `spatial` | ShaderMaterial on the node (`SpriteBase3D.material_override`) |
 | Asset-free full-rect effect (vignette, panel background) | `canvas_item` | ColorRect |
 
 ## Authoring Rules
@@ -44,7 +41,7 @@ Screenshots need a real rendering driver — `xvfb-run + --rendering-driver open
 
 ## Gotchas
 
-- `StandardMaterial3D` emission does NOT produce HDR on Sprite3D — bloom-driven glow needs a custom ShaderMaterial, and `render_mode unshaded` ignores `EMISSION`. The full bloom architecture (overlay sprite + edge emission + Environment settings) is canon in `vfx_patterns` §Bloom-Based Glow — extend it rather than re-deriving.
+- `StandardMaterial3D` emission does NOT produce HDR on Sprite3D (empirical: the engine docs do not state it) — bloom-driven glow needs a custom ShaderMaterial, and `render_mode unshaded` ignores `EMISSION`. Bloom comes from emission above the Environment's glow threshold. The sprite effect material and its glow contributors are canon in `vfx_patterns` §Bloom-Based Glow — extend them rather than re-deriving.
 - A `spatial` shader replaces the whole material — re-declare billboard behavior if the node relied on material billboard mode.
 - Uniform names are the public API once gameplay code drives them — name like exports (`glow_color`, not `c1`) and keep them stable.
 

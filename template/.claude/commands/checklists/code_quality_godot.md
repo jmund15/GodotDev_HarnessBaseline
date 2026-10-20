@@ -9,14 +9,16 @@ Godot and Jmodot items for [`code_quality.md`](code_quality.md), which reads thi
 ## Godot Compliance (C)
 
 - [ ] **Node retrieval**: `GetNode()` used instead of `NodeExts` (`.GetFirstChildOfType<T>()`, `.TryGetNode<T>()`, `.GetChildrenOfInterface<T>()`)
-- [ ] **Logging**: `GD.Print` or `GD.PrintErr` used instead of `JmoLogger` (Info/Warning/Error)
-- [ ] **Godot naming**: PascalCase files/classes, snake_case directories, `MaterialTrait` naming convention
-- [ ] **Nullability**: `[Export] = null!` without `[RequiredExport]`. Missing `this.ValidateRequiredExports()` in `_Ready()`
-- [ ] **Lifecycle**: Game logic in C# constructor (should be `_Ready()`/`_EnterTree()`). Node queries in `_Process` (should be cached in `_Ready`)
+- [ ] **Logging**: `GD.Print`/`GD.PrintErr` — blocked at edit time by `hooks/pattern_enforcer.py`
+- [ ] **Godot naming**: casing per `skills/architecture_philosophy/structure_rules.md` R1/R2 (folders follow the declared project convention; `.cs` files and types PascalCase; `.tscn`/`.tres` snake_case)
+- [ ] **Nullability**: Missing `this.ValidateRequiredExports()` in `_Ready()` on a class carrying `[RequiredExport]` fields
+- [ ] **Lifecycle**: Game logic in a C# constructor (belongs in `_Ready()`/`_EnterTree()`)
 - [ ] **Resources**: Shared `.tres` caching mutable per-instance state (Factory->Runner pattern violation)
 - [ ] **Groups**: `AddToGroup`/`GetNodesInGroup` usage without clear justification — prefer C# interfaces or typed registries for type-safe lookups
 - [ ] **Signals vs Events**: Godot signals used for gameplay logic (should be C# events) or C# events used for UI/engine interaction (should be Godot signals)
 - [ ] **StringName**: String literals used in lookups, `SetDeferred` calls, or signal names where `StringName`/`PropertyName.*`/`SignalName.*` constants should be preferred
+- [ ] **`[Tool]` on Resources**: A `[GlobalClass]` Resource missing `[Tool]` (blanket policy `[GlobalClass, Tool]`). Policy: `rules/csharp_patterns.md` §`[Tool]` Attribute
+- [ ] **Unguarded test accessors**: An `internal` test helper (`Set<Prop>`, `_Test*`, `Simulate*`, `ResetForTesting`, `SetTestValues`) reachable outside `#if TOOLS`. Policy: `rules/csharp_patterns.md` §Test Helper Setters; sweep: `/audit_test_accessors`
 
 ## Godot Design (D)
 

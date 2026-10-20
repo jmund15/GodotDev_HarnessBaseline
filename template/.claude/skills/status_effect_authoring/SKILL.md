@@ -1,9 +1,7 @@
 ---
 name: Status Effect Authoring
 description: >-
-  Procedure for creating a status effect that drives an HSM state transition. SKIP for status effects with no
-  HSM transition (just a CombatTag + factory — author inline), pure visual tints
-  (`vfx_patterns`), or balance tuning on existing effects.
+  Use to create status effects that drive HSM state transitions. SKIP visual-only tints; use vfx_patterns.
 ---
 
 # Status Effect Authoring (HSM State Transition)
@@ -35,8 +33,8 @@ description: >-
 
 ## Runner Authoring Rules
 
-*   **Start-time scaling must survive refresh.** Any target-side scaling applied in `StatusRunner.Start` (element resistance, potency) is silently stripped by the StackPolicy Refresh path — `RefreshDuration` sources its duration from the *incoming, never-started* runner, whose values are unscaled. Override `RefreshDuration` alongside `Start`, and pin the behavior with a refresh-preserves-scaling test.
-*   **Status-vs-status rules live in `CategoryInteraction`**, not payload filters or `ImmuneCategories`. Author state-conditional accept/cancel behavior in the project's category-interactions Resource. A bidirectional `CancelIncoming` also rejects the reverse application; author two directional interactions when the directions differ.
+*   **Start-time scaling must survive refresh.** Any target-side scaling baked into a runner's own state in `StatusRunner.Start` (a duration, a stat modifier) is silently stripped by the StackPolicy Refresh path — `RefreshDuration` sources its duration from the *incoming, never-started* runner, whose values are unscaled. Override `RefreshDuration` alongside `Start`.
+*   **Status-vs-status rules live in `CategoryInteraction`**, not payload filters or `ImmuneCategories`: state-conditional acceptance/extinguish is authored as entries in the project's category-interactions Resource (`CancelIncoming`/`CancelExisting`, matched via `IsOrDescendsFrom`). Trap: author two DIRECTIONAL interactions when the two directions need different effects — a bidirectional `CancelIncoming` also rejects the reverse application.
 
 ## Design Decisions
 

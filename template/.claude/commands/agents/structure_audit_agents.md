@@ -35,15 +35,16 @@ Checks:
    `conventions.namespace_root` plus its PascalCase-folded folder path. Apply declared aliases.
    Compare case-insensitively. Exclude all registry `framework_paths` and `reserved_paths`.
 
-R1–R5 are FIX when the move/delete is fully determined. R13 is ASK because a namespace change can
-change every consumer. Treat leaf-collapse and foreign namespaces as low-confidence ASK. Use PLAN
-only for a whole unaliased folder cluster.
+R1–R5 are FIX when the move/delete is fully determined. R13 is PLAN because a namespace change can
+change every consumer: `options[0]` renames the namespace to the derived value, and the alternatives
+are an alias row or renaming the folder or a colliding type. Treat leaf-collapse and foreign
+namespaces as low-confidence PLAN.
 
 Example FIX:
 [{"agent":"stra-layout-hygiene","action":"FIX","category":"rule","critical":false,"file":"sample_scene.tscn","description":"Loose scene at project root violates R3","old":"sample_scene.tscn","new":"Tests/Sanity/sample_scene.tscn","question":null,"options":null,"scope":["sample_scene.tscn"],"rationale":"R3 forbids loose scenes at project root"}]
 
-Example namespace ASK:
-[{"agent":"stra-layout-hygiene","action":"ASK","category":"rule","critical":false,"file":"Systems/Runtime/Example.cs","description":"Declared namespace does not match Systems/Runtime","old":null,"new":null,"question":"Rename the namespace, move the file, or declare an alias?","options":["Rename namespace to the derived value (Recommended)","Move the file to match its namespace","Declare a justified alias"],"scope":["Systems/Runtime/Example.cs"],"rationale":"R13 requires alias-aware folder and namespace parity"}]
+Example namespace PLAN:
+[{"agent":"stra-layout-hygiene","action":"PLAN","category":"rule","critical":false,"file":"Systems/Runtime/Example.cs","description":"Declared namespace does not match Systems/Runtime","old":null,"new":null,"question":"Rename the namespace, move the file, or declare an alias?","options":["Rename namespace to the derived value and update consumer usings","Declare a justified alias; wins when the folder is a documented namespace alias"],"scope":["Systems/Runtime/Example.cs"],"rationale":"R13 requires alias-aware folder and namespace parity"}]
 
 {{CONTEXT}}
 ```
@@ -93,8 +94,10 @@ Checks:
 2. R12: compare actual project-owned top-level folders with all subsystem `paths`. Ignore
    `reserved_paths` and framework roots. Report each unmatched folder as ASK.
 3. Orphans: build one inbound path-and-UID set from scenes, resources, source loads, preload calls,
-   and engine autoload entries. Report an otherwise unreferenced `.tscn` or `.tres` as ASK. Exclude
-   tests and consumer-declared fixture/archive roots.
+   and engine autoload entries (`project.godot` autoloads use a `*res://` prefix, so a path regex
+   anchored on `"res://` misses them). A per-file path-only grep over-counts orphans badly; an empty
+   search is not proof of absence. Report an otherwise unreferenced `.tscn` or `.tres` as ASK.
+   Exclude tests and consumer-declared fixture/archive roots.
 4. Broken references: parse every `ext_resource`; verify the path exists and its UID matches. For
    script resources, use the Class Symbol Manifest to verify the class survives. Verify each
    resource `script_class` the same way. Missing targets/classes are critical FIX findings.

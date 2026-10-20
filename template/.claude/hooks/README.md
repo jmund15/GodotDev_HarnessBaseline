@@ -12,24 +12,29 @@ command CLIs; each of those files documents itself in its docstring.
    `self_eval_archive_guard.py`, `retire_trigger_advisory.py`, the reaper's `check()`) and
    `pre_bash_dispatch.py` (Bash/PowerShell/Monitor family: `git_guardrails.py`,
    `baseline_classification_guard.py`, `unbounded_scan_guard.py`, `compound_cd_approver.py`,
-   `bash_shape_guard.py`, `sidecar_dispatch_context.py`, the four `--hook` commit guards, and last
-   `bash_backslash_fidelity.py`, which repairs the Bash tool's `\\` collapse on a recorded client) — each dispatcher
+   `sidecar_dispatch_context.py`, the four `--hook` commit guards, and last
+   `bash_backslash_fidelity.py`, which repairs the Bash tool's `\\` collapse on a recorded client) and
+   `pre_workflow_dispatch.py` (Workflow|Agent family: `subagent_dispatch_guard.py`,
+   `workflow_script_lf_guard.py`, `dispatch_mechanism_guard.py`, `workflow_provider_guard.py`,
+   `readonly_marker_arm.py`; it joins every member's deny into one reason) — each dispatcher
    imports its sub-hooks in-process. Other entry points:
-   `prompt_memory_loader.py`, `critical_analysis_reminder.py`, `prompt_git_state_delta.py`,
+   `prompt_memory_loader.py`, `critical_analysis_reminder.py`, `prompt_git_state_delta.py`
+   (a project may register these directly, or list them in a prompt dispatcher's `CHAIN`, which
+   runs its members concurrently in one process),
    `runaway_scan_reaper.py` (kills orphaned search processes: `check()` runs in-process from the three
    dispatchers, plus UserPromptSubmit and a PostToolUse matcher for the tools no dispatcher covers —
    Agent, Workflow, TaskStop, TaskOutput, Skill, ToolSearch, LSP, NotebookEdit, `mcp__*`; AskUserQuestion,
    SendMessage, the Task list, worktree, cron and notification tools rely on the prompt-time run),
-   `log_instruction_loads.py`, `transcript_backup.py`, on PreCompact
+   `session_context_loader.py`, `log_instruction_loads.py`, `transcript_backup.py`, on PreCompact
    `compact_directive_ledger.py` (asks the summary for a status per owner message), and on
    SessionStart(compact) `sidecar_recompact_reprompt.py` (a sidecar child's brief) and
    `compact_directive_anchor.py` (the owner's own messages, under the same IDs). Sub-hooks behind the
    dispatchers (`routing_audit.py`, `file_size_preblock.py`, `semantic_search_scope_guard.py`) keep
    standalone `main()` for testing.
-2. **Libraries** — imported, never registered: `_transcript_summary.py`, `json_merge.py` (also a
-   CLI), `_owner_text.py` (the one owner-row parser; kill_guard, harness_growth_guard and the digest
-   each project it) and `_file_lock.py` (the open-handle lock behind `_hook_state`, the
-   self-evaluate store and orchestration metrics).
+2. **Libraries** — imported, never registered: `_transcript_summary.py`, `_owner_text.py` (the one
+   owner-row parser; kill_guard, harness_growth_guard and the digest each project it) and
+   `_file_lock.py` (the open-handle lock behind `_hook_state`, the self-evaluate store and
+   orchestration metrics).
 3. **Command CLIs** — invoked by slash commands, not events. The pure layer ships none; the higher
    layers name theirs from the command that runs them.
 

@@ -1,7 +1,5 @@
 ---
 paths:
-  - "**/*.tscn"
-  - "**/*.tres"
   - "**/*Decal*.cs"
   - "**/*PlacementPreview*.cs"
   - "Jmodot/Core/Shared/RenderLayers.cs"
@@ -22,7 +20,7 @@ Two named bits. Typed constants live in `Jmodot/Core/Shared/RenderLayers.cs`:
 
 ## When authoring
 
-- **Ground / terrain / floor / wall** meshes that should receive shadows or aiming-preview decals → set `layers = 3` (`Default | DecalReceiver`) on the `MeshInstance3D` in the `.tscn`.
+- Scene-authored receiver meshes: `scene_authoring.md` §Scene anatomy — what a good scene looks like.
 - **Non-receiver meshes** → leave `layers = 1` default. **Do NOT** add them to layer 2; decals would project onto their own or unrelated geometry.
 - **Decal** nodes for shadows or placement previews → set `cull_mask = 2` (`DecalReceiver` only). In C# code, reference `Jmodot.Core.Shared.RenderLayers.DecalReceiver`.
 

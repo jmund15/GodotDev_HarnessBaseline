@@ -1,8 +1,7 @@
 ---
+description: Reconcile the documentation Start Here index against the actual folder structure.
 disable-model-invocation: true
 ---
-
-Reconcile `Documentation/Start Here.md` against the actual folder structure.
 
 ## When This Runs
 - Called by `/doc_full` as Phase 4 (after all sub-agents complete and Quick Reference is written)
@@ -11,10 +10,10 @@ Reconcile `Documentation/Start Here.md` against the actual folder structure.
 ## Phase 1 — Gather State
 
 ### 1a. Vault tooling
-Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path — see the `obsidian_conventions` skill. No MCP-connectivity gate.
+Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path — see the `obsidian_conventions` skill.
 
 ### 1b. List all system folders
-Use `obsidian_list_notes` on `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/` with recursion depth 2.
+Use `Glob` on `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/` (recursive) to list the folder tree.
 Build the **authoritative system list** by classifying each top-level folder:
 
 **Folder classification** — apply the Folder Classification rules from `agents/documentation_structure.md` to categorize each subfolder as archived, structural, domain, or system. Then:
@@ -24,7 +23,7 @@ Build the **authoritative system list** by classifying each top-level folder:
 Both flat systems and domain-nested systems are included in the unified system list. Each entry tracks its **system path** (used for doc reads and wikilinks) and **display name** (the leaf folder name, used in table rows).
 
 ### 1c. Read Start Here
-Use `obsidian_read_note` to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Start Here.md`.
+Use `Read` on the vault path to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Start Here.md`.
 
 ### 1d. Compute the diff
 Compare folder names against all Obsidian `[[wikilinks]]` in Start Here to identify:
@@ -44,7 +43,7 @@ up to date." and **exit without rewriting the file**.
 For each new system identified in Phase 1d:
 
 ### 2a. Read the best available doc
-Use `obsidian_read_note` to read (in priority order), using the system path from Phase 1b:
+Use `Read` on the vault path to read (in priority order), using the system path from Phase 1b:
 1. `{SystemPath}/Quick Reference.md`
 2. `{SystemPath}/Architecture.md`
 3. `{SystemPath}/Designer Usage.md` or `{SystemPath}/Usage.md`
@@ -85,7 +84,7 @@ For each new system, note which of these files exist in the folder:
 ## Phase 3 — Update Start Here
 
 Apply all changes in memory, then write the full updated file in a single
-`obsidian_update_note` call (wholeFileMode: "overwrite"). Never make partial writes.
+`Write` call (overwrite). Never make partial writes.
 
 ### Change rules
 
@@ -124,7 +123,6 @@ Apply all changes in memory, then write the full updated file in a single
 ---
 
 ## Constraints
-- Write the complete updated file in one `obsidian_update_note` call — never patch line by line
 - If diff is empty, do NOT rewrite the file (avoids spurious modification timestamps)
 - Never invent descriptions — derive them from the Quick Reference System Overview
 - Never change the section order in Start Here

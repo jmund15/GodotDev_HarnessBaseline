@@ -12,7 +12,7 @@ Since v5, tests run **WITHOUT the Godot runtime by default** (10x faster). Add `
 | `[TestCase]` | Mark test method (default timeout: 5 min) |
 | `[TestCase(Timeout = 10000)]` | Custom timeout in ms |
 | `[TestCase(DoSkip = true, SkipReason = "...")]` | Skip test with reason |
-| `[RequireGodotRuntime]` | GD.Load, Nodes, scenes, Vector3 |
+| `[RequireGodotRuntime]` | Any Godot type: GD.Load, Nodes, scenes, value types (`Vector2`/`Vector3`/`StringName`); GdUnit0501 enforces it |
 | `[Before]`/`[After]` | Suite-level setup/teardown (once) |
 | `[BeforeTest]`/`[AfterTest]` | Per-test setup/teardown (each test) |
 | `[DataPoint(nameof(X))]` | Parameterized tests (C# only) |
@@ -25,7 +25,7 @@ AssertThat(actual).IsNotNull();
 AssertThat(list).Contains(item);
 // Note: No IsGreaterOrEqual() - use AssertThat(x >= y).IsTrue()
 ```
-**Pin exact values for deterministic pure functions.** Known-constant inputs + a pure function (no randomness/state) ⇒ assert the exact result (`IsEqual(15.5f)`), not a range (`IsGreater(0f)`). Weak assertions mask constant drift silently.
+**Pin exact values for deterministic pure functions.** Known-constant inputs + a pure function (no randomness/state) ⇒ assert the exact result (`IsEqual(15.5f)`), not a range (`IsGreater(0f)`). Weak assertions mask constant drift silently. A production data value is never pinned: `rules/test_authoring.md` #12 owns that boundary, and #6 owns sweeping a derivation instead of pinning its shipped value.
 
 ## Testing Node subclasses directly
 
@@ -33,43 +33,24 @@ With `new NodeType()`, `_Ready()` is **NOT called** (the node never enters the s
 - Initialize fields at **declaration time** where possible, not in `_Ready()`.
 - Null-conditional for singletons: `EventBus.Instance?.Method()`.
 - Null-coalescing for owner refs: `_owner?.Name ?? "Unknown"`.
-- Orphan warnings are expected and don't affect test correctness.
+- Free the out-of-tree nodes you create (teardown table below); an engine orphan warning does not fail the test.
 
 ## Fixtures
 
-Base fixtures, builders, mocks, assertions live in `Tests/Framework/`. **Exception:** `ActivationTestFixture` is at `Tests/Integration/Casting/ActivationTestFixture.cs` (extends `AbilityTestFixture`).
+Fixtures, builders, mocks and assertions live under `Tests/Framework/`; read each fixture's source for its API — an inventory here drifts. **Exception:** `ActivationTestFixture` is at `Tests/Integration/Casting/ActivationTestFixture.cs` (extends `AbilityTestFixture`).
 
-**SceneTestFixture** (base): `LoadIngredient("Apple")` / `LoadArchetype("Watergun")`; `CraftFromIngredients(...)` / `CraftFromIngredientNames(...)`.
-
-**AbilityTestFixture** (extends above): `Crafter` property (fresh per test); `HasEffect<T>()`, `GetEffects<T>()`, `GetPhysicsLayerType()`.
-
-**ActivationTestFixture** (E2E spell tests):
-- `LoadCasterScene()` / `GetCaster(runner)` — load scene with AbilityCasterService
-- `LoadArchetype("Fireball")` / `CreateTestBlueprint(archetype, ...effects)` — create test spells
-- `CountSpawnedSpells(runner)` / `GetSpawnedSpells(runner)` — count/get active spells
 - **Pool isolation:** call `AbilityPoolManager.Instance?.ClearAllPools()` in `[BeforeTest]`
-- **SetExportProperty helper:** prefer `#if TOOLS` test helpers (`architecture_philosophy` skill); reflection only for third-party types you can't modify
+- **Setting an export from a test:** `rules/csharp_patterns.md` §Test Helper Setters owns the `#if TOOLS` helper preference over reflection.
 
 ## Modular test modules
 
-**Trigger:** create the module on the SECOND test for a system.
-```
-First test for HSM  → Inline setup (quick, specific)
-Second test for HSM → Extract into reusable module
-```
-
-**Existing:** `AbilityTestFixture`, `ActivationTestFixture`, `ScenarioFactory`, `AbilityAssertions`, `TreeFixture`
+**Trigger:** a second test repeats the setup — extract it into a shared module. `rules/test_authoring.md` #2 owns a different trigger, reuse of a double or fixture that already exists.
 
 ## E2E waits
 
-| E2E wait | Purpose |
-|------|---------|
-| `100ms` | Charge/initialization, physics server registration after AddChild |
-| `200ms` | Collision processing (Area3D overlap) |
-| `400ms` | Pool return completion |
-| `500-800ms` | AbilitySpawner spawn-count assertions (heavy synchronous per-spawn work) |
+Wait on an observable condition where one exists; where a fixed delay is unavoidable, use the shortest that passes stably. `rules/test_authoring.md` #9 owns which wait to choose.
 
-**AbilitySpawner timing caveat:** `SpawnChild()` does heavy synchronous work per spawn (scene instantiation, visual loading, collision shape adoption, combat wiring), eating frame budget — use `Duration >= 0.3s`, `SpawnInterval <= 0.05s`, and generous `AwaitMillis` (500-800ms) for spawn-count assertions.
+**AbilitySpawner timing caveat:** `SpawnChild()` does heavy synchronous work per spawn (scene instantiation, visual loading, collision shape adoption, combat wiring), eating frame budget. A spawn-count assertion therefore needs headroom on `Duration` and `SpawnInterval`, and waits on the count as a condition, not on a padded fixed delay.
 
 ## Usage
 
@@ -93,7 +74,7 @@ Tests loading production `.tres`/`.tscn` from outside `Tests/` are fragile to de
 | Fragility | Example | Action |
 |-----------|---------|--------|
 | **FRAGILE (value)** | `DamageMultiplier == 0.5f` | Replace with `> 0f` or baseline comparison |
-| **FRAGILE (config guard)** | `DoNotInherit == true` | Keep — safety net for game-breaking bugs |
+| **FRAGILE (config guard)** | `DoNotInherit == true` | Assert the guard's effect, not its value; `rules/test_authoring.md` #12 forbids pinning the value |
 | **Structural** | `IsInstanceOf<CompositeOutcome>()` | Acceptable for integration smoke tests |
 
 **Baseline comparison pattern** (modifier tests):
@@ -102,10 +83,6 @@ var baseline = crafter.Create(Array.Empty<Item>(), null);
 var withItem = crafter.Create(new[] { compass }, null);
 AssertThat(withItem.Stat).IsGreater(baseline.Stat);
 ```
-
-## Seam-Injected Dependencies Need One Real-Scene Test
-
-When a node's production dependencies are wired via scene/Inspector (`[Export]` node refs, autoload children) but tests supply them through a `#if TOOLS SetXForTesting` seam, **at least one test must load the real production scene** (`ResourceLoader.Load<PackedScene>(...).Instantiate<T>()` + `AddChild`). A suite that *only* injects via the seam never exercises production wiring — a missing scene (e.g. a script-only autoload that can't satisfy `[RequiredExport]` node refs) then passes every test while being null at runtime. Assert by behavior (the dependency does its job), not that the field is set.
 
 ## Mock at boundaries only
 
@@ -120,7 +97,7 @@ Mock at **system boundaries**, never at internal collaborators. Applies to every
 
 **Warning sign:** the test breaks when you refactor an internal collaborator though *behavior* is unchanged — you mocked too deep, and the test now pins implementation, not contract.
 
-**The Godot runtime is not a boundary you double.** Engine APIs (nodes, scene tree, physics, `GD.Load`) run for real via `[RequireGodotRuntime]` / `ISceneRunner`; the engine-lifecycle failure class is exactly what a double hides. Where a double is unavoidable, its Godot base type must be the type the *consumer* resolves against, not merely one satisfying the physics API.
+**The Godot runtime is not a boundary you double.** Engine APIs (nodes, scene tree, physics, `GD.Load`) run for real via `[RequireGodotRuntime]` / `ISceneRunner`; the engine-lifecycle failure class is exactly what a double hides. Where a double is unavoidable, `rules/test_authoring.md` #11 owns its Godot base type.
 
 **Testability of system-boundary code:**
 - Inject dependencies (`IRngSource` parameter) rather than `new`-ing externally inside the method.
@@ -132,7 +109,7 @@ The Don't Mock column is a boundary constraint, not a cost/benefit tradeoff — 
 
 ## Godot timing gotchas
 
-**SetDeferred + ProcessFrame is non-deterministic with 1 frame** — `SetDeferred` queues property changes for idle-time processing, but `ProcessFrame` can fire BEFORE the queue flushes. **Always await 2 frames** when asserting `SetDeferred` results:
+**A `SetDeferred` result is not ready in the frame you set it.** `SetDeferred` queues the property change for idle-time processing, and `ProcessFrame` can fire before the queue flushes. The sample below shows the flaky and the reliable shape:
 ```csharp
 shape.SetDeferred(CollisionShape3D.PropertyName.Disabled, true);
 // BAD: flaky, especially with nested nodes
@@ -144,8 +121,7 @@ await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 
 **Programmatic nodes need explicit setup:**
 - `AddChild()` does NOT set `Owner` — set `hurtbox.Owner = target` explicitly.
-- `Initialize()` calls using `SetDeferred` (Monitorable, etc.) need scene tree + 2 frames.
-- `SetDeferred` properties don't take effect on nodes outside the scene tree.
+- An `Initialize()` call using `SetDeferred` (Monitorable, etc.), and a bare `SetDeferred` write, need the node in the scene tree and the channel timing `godot_architecture` §Init-Timing & Data-Source Readiness names.
 
 **Float accumulation in duration tests** — testing time-based BT actions or timers, avoid accumulating small deltas (`60 × 1f/60f ≠ 1.0f`, IEEE 754). Use a single large delta:
 ```csharp
@@ -173,7 +149,7 @@ bool flag = value is Variant v && v.AsBool();
 | Out-of-tree Node (`new NodeType()`) | `Free()` in `[AfterTest]`/`[After]` |
 | Resource / RefCounted (loaded `.tres`, `new SomeResource()`) | Drop references — no Free/QueueFree call at all |
 
-**No numeric orphan/leak ceiling exists today.** At process exit Godot prints one engine ERROR per leaked Node (`Cannot get path of node...` in the ObjectDB leak dump), so `TestResults/godot_test.log` error counts scale with orphan count, not bug count — and exit code `-1073740791` correlates with accumulation. The same dump prints one `Leaked instance:` line per leaked object, and the engine emits that ERROR text itself, so no code site exists to hunt; `/analyze_godot_logs` parses the log.
+At process exit Godot prints one engine ERROR per leaked Node (`Cannot get path of node...` in the ObjectDB leak dump), so `TestResults/godot_test.log` error counts scale with orphan count, not bug count — and exit code `-1073740791` correlates with accumulation. The same dump prints one `Leaked instance:` line per leaked object, and the engine emits that ERROR text itself, so no code site exists to hunt; `/analyze_godot_logs` parses the log.
 
 ```csharp
 // 1. Use 'using' with ISceneRunner (auto-cleanup)

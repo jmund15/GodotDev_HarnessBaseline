@@ -31,12 +31,29 @@ def plant_env():
                 WORKSTATION_PROFILE_PATH=os.path.join(root, "workstation_profile.json"))
 
 
-def run(hook, prompt):
+def profile_env(tier, ai_worker):
+    """An environment where this machine's tier and ai-worker registration read as planted."""
+    root = tempfile.mkdtemp(prefix="trpsprofile_")
+    cfg = os.path.join(root, "cfg")
+    os.makedirs(os.path.join(cfg, "plugins"))
+    servers = {"ai-worker": {"command": "python"}} if ai_worker == "present" else {}
+    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": servers}, fh)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", CLAUDE_CONFIG_DIR=cfg,
+               SC_WORKDIR=os.path.join(root, "nowhere"),
+               WORKSTATION_PROFILE_PATH=os.path.join(root, "workstation_profile.json"))
+    if tier is not None:
+        with open(env["WORKSTATION_PROFILE_PATH"], "w", encoding="utf-8") as fh:
+            json.dump({"schema": 1, "local_tier": tier}, fh)
+    return env
+
+
+def run(hook, prompt, env=None):
     payload = {"hook_event_name": "UserPromptSubmit", "session_id": "trps0001",
                "permission_mode": "default", "prompt": prompt}
     result = subprocess.run([sys.executable, hook], input=json.dumps(payload),
                             capture_output=True, text=True, timeout=30,
-                            env=plant_env())
+                            env=env or plant_env())
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout.strip()
@@ -70,6 +87,14 @@ def main():
          "bulk copyable" in lowered and "read_files" in lowered),
         ("advice routes derived multi-file judgment through orchestration",
          "derived" in lowered and "orchestration" in lowered),
+        # The bulk-copyable arm names a tool this machine may not have.
+        ("an absent ai-worker names the local route instead of the worker",
+         (lambda out: "read_files" not in out and "bounded Read" in out and "subagent" in out)(
+             run(hook, SYNTHESIS, env=profile_env("full", "absent")))),
+        ("a present ai-worker keeps the worker route",
+         "read_files" in run(hook, SYNTHESIS, env=profile_env("full", "present"))),
+        ("no profile keeps the worker route",
+         "read_files" in run(hook, SYNTHESIS, env=profile_env(None, "present"))),
         ("advice rejects count/path routing",
          "not read count or path" in lowered),
         ("background task notification does not emit routing advice",

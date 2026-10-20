@@ -1,19 +1,19 @@
 ---
-description: When the session changed subsystem shape (new/renamed/removed folder, or significant changes to one subsystem), diff actual top-level folders against the project_subsystems registry and propose updates.
+description: Refresh the subsystem registry after folder-shape or substantial subsystem changes
 ---
 
 # /sync_subsystems
 
-Source of truth for the upcoming `architecture_brainstorm` subsystem-breadth scope-litmus. Invoked from `/session_end` Phase 4b (conditional) or manually after subsystem-shape work.
+Source of truth for the upcoming `architecture_brainstorm` subsystem-breadth scope-litmus. Invoked from `/session_end` Phase 4 (conditional) or manually after subsystem-shape work.
 
 ## Step 0: Signal gate
 
-Run `git diff --name-status HEAD` (or against the session's start ref if known). Classify:
+Run `python3 .claude/tools/close_predicates.py --only sync_subsystems` and read its `basis`:
 
-- **Subsystem-shape change** — any added (`A`) or renamed (`R`) path whose first component is NOT already in the `subsystems:` YAML of `project_subsystems/SKILL.md` AND not in the reserved-name list.
-- **Subsystem-density change** — ≥5 files added/modified under a single existing subsystem's `paths:` (likely warrants a refresh of that subsystem's one-line summary or "depends on" wording).
+- `shape` — a changed path whose first component is NOT already in the `subsystems:` YAML of `project_subsystems/SKILL.md` AND not in the reserved-name list.
+- `density` — subsystems with at least `DENSITY_THRESHOLD` changed files under their `paths:` (likely warrants a refresh of that subsystem's one-line summary or "depends on" wording).
 
-If **neither** signal is present, print `[sync_subsystems] No subsystem-shape or density signal this session. Skipping.` and exit. Do not proceed.
+A `null` value (digest or registry absent) runs the command. If **neither** signal is present, print `[sync_subsystems] No subsystem-shape or density signal this session. Skipping.` and exit.
 
 ## Step 1: Enumerate
 
@@ -32,12 +32,12 @@ Extract every `paths:` token from the `subsystems:` YAML block in `.claude/skill
 
 ## Step 4: Propose per candidate
 
-For each candidate, use `AskUserQuestion` with options:
+Decide each candidate from its evidence (paths, git history, the files' contents) and apply it in Step 5. Use `AskUserQuestion` only when the evidence fits two dispositions equally.
 
-- **Add candidate** → ask which existing subsystem `id` to extend (append to `paths:`) OR "new subsystem" (then ask for id, summary, depends-on relationships).
-- **Remove candidate** → confirm deletion or mark as renamed.
-- **Rename candidate** → confirm the source/destination pairing.
-- **Refresh candidate** → present the current summary + a sample of changed files, ask the user to draft/approve a new summary.
+- **Add candidate** → extend the existing subsystem `id` whose scope covers it (append to `paths:`), or create a new subsystem with its id, summary and depends-on relationships.
+- **Remove candidate** → delete it, or mark it renamed when a rename candidate pairs with it.
+- **Rename candidate** → apply the source/destination pairing git history shows.
+- **Refresh candidate** → rewrite the summary from the current summary and a sample of changed files.
 
 ## Step 5: Apply
 

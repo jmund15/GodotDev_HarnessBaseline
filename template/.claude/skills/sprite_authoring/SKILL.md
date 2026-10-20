@@ -1,12 +1,7 @@
 ---
 name: Sprite Authoring
 description: >-
-  Procedure for authoring prototype-grade visual assets as text — hand-written SVG,
-  pixel grids baked via Godot's Image API, procedural .tres (StyleBoxFlat,
-  GradientTexture2D) — covering in-game sprites (Sprite2D/3D), GUI icons, UI chrome,
-  and animation frames/sheets, with a mandatory render→screenshot→critique loop. SKIP
-  for production/final art (user-owned), 3D meshes/models, shader effects (use
-  `shader_authoring`), and composing existing sprites into effects (use `vfx_patterns`).
+  Use to author prototype sprites, textures, GUI icons, UI chrome or animation frames/sheets. SKIP shader effects; use shader_authoring. SKIP effects composed from existing sprites; use vfx_patterns.
 ---
 
 # Prototype Sprite Authoring
@@ -43,6 +38,7 @@ Scale and palette conventions are **per-project** — if not yet recorded, ask o
 - **Compute coordinates on a small grid** (16/32/64 viewBox or canvas); no freehand values. Spatial coherence degrades fast with canvas size — this is the dominant LLM failure mode (symmetry drift, disconnected parts).
 - **Style guardrails for cohesion:** flat fills, dark outline, 2–3 value steps per material, one limited project palette (e.g. project palette), fixed size tiers (16/32/64px). Strong silhouette and value contrast outrank detail.
 - **Color-code the project's semantic role or state** when readability depends on it.
+- **Author art facing +X (right).** Right-facing is the framework neutral: consumers mirror/rotate from it with a null `FacingProfile3D` (code defaults). A left-facing sheet is legitimate but opts in through a profile's mirror channel (`ArtFacesRight = false`) on the consuming node — never a per-node bool, and never by re-drawing. Off-axis neutral (art drawn aiming diagonally) = rotation channel `ArtBaseAngleOffsetDegrees`.
 
 **SVG track:** Godot rasterizes via ThorVG ≈ SVG Tiny 1.2. Safe: shapes, paths, groups, linear/radial gradients, opacity, `clipPath`. Avoid: `<text>` (silently invisible — convert to paths), `<pattern>`, filters, CSS selectors beyond tag/class. Resolution comes from the `svg/scale` import param — never upscale the node (blur).
 
@@ -102,7 +98,7 @@ xvfb-run --auto-servernum godot --path <proj> --rendering-driver opengl3 \
 | `compress/mode` | 0 (lossless) | VRAM compression visibly degrades flat color / pixel art |
 | `detect_3d/compress_to` | 0 (disabled) | first 3D use silently re-imports as VRAM-compressed |
 
-**Sprite3D:** `pixel_size` maps px→meters — pick one project-wide convention (e.g. 32px/m → `0.03125`) so all sprites agree on scale. Prototype defaults: `billboard = 1`, `alpha_cut = 1` (DISCARD — sidesteps transparency sorting), `shaded` off. Filter enums differ: CanvasItem `texture_filter` 1 = nearest, but SpriteBase3D uses BaseMaterial3D values — 0 = nearest (no mipmaps), 2 = nearest-with-mipmaps.
+**Sprite3D:** `pixel_size` maps px→meters — pick one project-wide convention (e.g. 32px/m → `0.03125`) so all sprites agree on scale. Prototype defaults: `billboard = 1`, `alpha_cut = 1` (DISCARD — sidesteps transparency sorting), `shaded = true` on world sprites. Filter enums differ: CanvasItem `texture_filter` 1 = nearest, but SpriteBase3D uses BaseMaterial3D values — 0 = nearest (no mipmaps), 2 = nearest-with-mipmaps.
 
 **Transparency sorting — `sorting_use_aabb_center` / `sorting_offset`.** Both are `GeometryInstance3D` properties affecting **only geometry in the transparent pass**; sprites at `alpha_cut = 1`/`2` are depth-buffer sorted per-pixel and ignore them entirely, which is why DISCARD is the default above. When they do apply, `sorting_use_aabb_center` (default `true`) selects the depth reference point — AABB center vs. the node's global origin — and `sorting_offset` is added to whichever point was selected. Under a pitched camera a tilted sprite's local `+Y` also carries world `+Z`, so the AABB center of a ground-anchored sprite sits *further from the camera* than its base: tall sprites sort as though standing behind their own footprint. **Set `sorting_use_aabb_center = false` on any world-space sprite whose origin is its ground-contact point** — that restores sort-by-feet, the 2.5D rule. Leave it default for center-anchored sprites (projectiles, pickups, stacked particle layers): the two points coincide and the flag buys nothing. The engine tooltip's "more accurate for 3D models" is about solid volumes, where the centroid is a fair depth proxy; for a flat quad standing at an angle it is not.
 

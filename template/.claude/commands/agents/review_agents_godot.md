@@ -12,7 +12,7 @@ Godot data files are `.tres` and `.tscn`. An associated pair is a data file plus
 
 ## Submodule Review
 
-The submodule is `Jmodot`, which defines the APIs {{PROJECT_NAME}} calls. Its branch is `jmodot/<worktree-name>`, derived from the {{PROJECT_NAME}} branch as `jmodot_submodule_procedure.md` describes. Reviewing {{PROJECT_NAME}} code without the Jmodot diff misses API contract changes, signature mismatches and behavioral changes.
+The submodule is `Jmodot`, which defines the APIs {{PROJECT_NAME}} calls. Its branch is `jmodot/<worktree-name>`, derived from the {{PROJECT_NAME}} branch as `rules/jmodot_submodule.md` describes. Reviewing {{PROJECT_NAME}} code without the Jmodot diff misses API contract changes, signature mismatches and behavioral changes.
 
 ## test-analyzer
 

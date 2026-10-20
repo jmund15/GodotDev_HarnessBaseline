@@ -1,22 +1,12 @@
 ---
 name: Architecture_Brainstorm
 description: >-
-  Use BEFORE new systems, 3+ file refactors, framework-boundary changes
-  (shared framework ↔ {{PROJECT_NAME}}), or architecturally-loaded features — once candidate ideas
-  exist. Triggers: "how would we approach X", "design X", "should we build
-  Y", "what's the architecture for Z". Run /idea_brainstorm FIRST if
-  greenfield. Produces a design doc + Parts on the topic-folder roadmap.md
-  (5-criterion readiness gate). SKIP for mechanical work, worklog
-  scope-1/2, bug fixes with known root cause, existing design doc, or Plan
-  Mode. Pass --red_team for interleaved adversarial passes between Socratic
-  steps.
+  Use to design new systems, family contracts or ownership, framework boundaries or architecture-heavy features once candidates exist. SKIP an unpopulated idea space; use idea_brainstorm.
 ---
 
 # Architecture Brainstorm
 
-> **Scope:** Sits **between `/idea_brainstorm` and Plan Mode**. Idea brainstorm answers *"what could exist?"*; this skill answers *"how should we build it?"*; Plan Mode (a Claude Code built-in) answers *"how do we ship it?"*. Three sequential phases.
->
-> **Not to be confused with:** [`idea_brainstorm`](../idea_brainstorm/SKILL.md) — that's the upstream phase where divergent ideation produces the candidate pool. This skill consumes that pool and narrows to a design. **Not** `/create_obsidian_design_doc` either — that's a **post-hoc retrospective** written *after* a system ships.
+> **Scope:** between [`/idea_brainstorm`](../idea_brainstorm/SKILL.md) (*what could exist?*, produces the candidate pool) and plan production ([`/part_drive`](../../commands/part_drive.md), *how do we ship it?*). This skill answers *how should we build it?*. `/doc_full` is post-hoc, written after a system ships.
 
 ## The Hard Gate
 
@@ -49,29 +39,24 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 
 - [ ] Task scope is genuinely 3+ (multi-file or design-choice-heavy) **OR** the user describes the feature in open-ended terms.
 - [ ] No existing design doc covers the topic (verified via common.md §1 existing-doc check, run in Step 1).
-- [ ] User has NOT already entered Plan Mode.
 - [ ] Task is not in the SKIP categories below.
 - [ ] Candidate ideas EXIST — either from `/idea_brainstorm` (read its idea-bank doc), from a mature domain with canonical patterns, or from the user's own framing. If not, route to `/idea_brainstorm` first.
+
+Whether this skill runs follows [`execution_depth.md`](../_brainstorm_shared/execution_depth.md) §Admission table, Design row.
+
+**Autonomous alternative — [`/design_drive`](../../commands/design_drive.md):** satisfies the [design contract](../_brainstorm_shared/design_contract.md) through its required artifact gates with free-form process and taste batched to one design-lock gate. Use this skill when the user's taste enters continuously.
 
 ---
 
 ## 2. When to Skip
 
-**Worklog-scope-driven skips** (use the `worklog_reference` skill's scope definitions):
-
-| Worklog Scope | Definition | Architecture-brainstorming verdict |
-|---|---|---|
-| **1** | Trivial — sub-30 min, single file, mechanical | **SKIP** |
-| **2** | Small focused — couple hours, possibly multi-file, no design choices | **SKIP** |
-| **3** | Multi-file thoughtful — half-day, real design tradeoffs | **CANDIDATE** — ask user "does this need a design pass first?" |
-| **4** | Full feature — multi-session, **linked planning doc REQUIRED** | **SKIP** (read existing linked doc; design has already happened) |
+The skip cases follow `execution_depth.md` §Fields, Design litmus for settled.
 
 **Other skip categories:**
 
 - [ ] **Mechanical changes** — typo fixes, single-line tweaks, simple renames, file moves, mechanical migrations.
 - [ ] **Bug fixes with known root cause** — handled by the [`debugging`](../debugging/SKILL.md) skill's phased procedure. Brainstorming is for forward design, not retrospective root-causing.
 - [ ] **Existing design doc covers the work** — §1 surfaces this. If a doc exists, redirect: *"A design doc covering this exists at `<path>`. Load it and follow `doc_before_writing` discipline; brainstorming would duplicate effort."*
-- [ ] **User already in Plan Mode** — the user has bypassed brainstorming intentionally. Do not interrupt.
 - [ ] **Greenfield with no candidates** — route to `/idea_brainstorm` first; come back here when an idea bank exists.
 
 ---
@@ -79,16 +64,16 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 ## 3. Three-Phase Composition
 
 ```
-/idea_brainstorm           /architecture_brainstorm        Plan Mode + impl
-─────────────────          ─────────────────────────        ────────────────
+/idea_brainstorm           /architecture_brainstorm        /part_drive + impl
+─────────────────          ─────────────────────────        ──────────────────
 "What could exist?"        "How should we build it?"        "How do we ship?"
 
 • Scope-framing Socratic   • Architecture-narrowing         • Entry: /plan_part
-• Per-cluster diverge        Socratic                         <part> (briefs Plan
-  → filter → hone          • 2–3 approaches with              Mode with verbatim
-  → cluster → present        trade-offs                       design surface +
-• Idea-bank doc            • Section-by-section               codebase drift)
-  Status: ideation-          approval                       • Bounded file list
+• Per-cluster diverge        Socratic                         <part> → /part_drive
+  → filter → hone          • 2–3 approaches with              (verbatim design
+  → cluster → present        trade-offs                       surface + codebase
+• Idea-bank doc            • Commitment review                drift)
+  Status: ideation-          before design-lock             • Bounded file list
   complete                 • Parts authored on              • Function sigs
 • /update_roadmap            roadmap.md (per                • Test names
   applies Per-Cluster        common.md §6) —                • Step-by-step
@@ -101,13 +86,13 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 ```
 
 **Key invariants:**
-- Plan Mode is a **Claude Code built-in**, not a local skill. This skill describes the *handoff*, not Plan Mode internals.
-- The user invokes Plan Mode (or chooses inline implementation). This skill does NOT enter Plan Mode for them.
-- A Plan Mode plan should reference the design doc AND the corresponding Part on roadmap.md (e.g., *"Implements Part 'Foundation+Refactor' per `BrainstormingDesigns/YYYY-MM-DD-stamina-system/arch.md#session-1`"*).
-- Plan Mode's first action must be **bounded file enumeration** — if files can't be enumerated, Plan Mode HARD-STOPS (per Step 5 Plan Mode handoff requirement).
+- Plan production is owned by [`/part_drive`](../../commands/part_drive.md). This skill describes the *handoff*, not its internals.
+- The user invokes the drive command (or chooses inline implementation). This skill does NOT start plan production for them.
+- A plan file should reference the design doc AND the corresponding Part on roadmap.md (e.g., *"Implements Part 'Foundation+Refactor' per `BrainstormingDesigns/YYYY-MM-DD-stamina-system/arch.md#session-1`"*).
+- Plan production's first action must be **bounded file enumeration** — if files can't be enumerated, drafting HARD-STOPS (per Step 5 *Plan-production handoff requirement*).
 - An `ideation-complete` idea-bank doc upstream is GENUINELY useful context — load it during §1 so the approaches step (Step 4) draws from a curated pool rather than generating candidates from thin air.
 
-**When the user wants to skip Plan Mode and go straight from brainstorming to inline implementation** — fine, that's their call. The design doc + roadmap Part landed; future maintenance has the design context.
+**When the user wants to skip plan production and go straight from brainstorming to inline implementation** — fine, that's their call. The design doc + roadmap Part landed; future maintenance has the design context.
 
 **Cardinality and flow topology** — full vocabulary (forward fan-out, cluster merge, ideation skip, reverse signal via `*-rework`, zero-impl outcome, workshop terminate) lives at [`_brainstorm_shared/common.md §7`](../_brainstorm_shared/common.md). The above diagram is the slim "you are here" view for this skill; common §7 is the canonical reference. Note that this skill in particular often produces a zero-`plan-pending` outcome (the design IS the answer — usage convention, naming standard, etc.); §7 covers when that's valid.
 
@@ -121,7 +106,7 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 
 ### Step 1: Existing-doc check + spawn-placement decision
 
-**[Shared]** See [`_brainstorm_shared/common.md` §1](../_brainstorm_shared/common.md) — existing-doc digest (one `read_files` call over enumerated paths) + Memory sweep (semantic-search) + early abstraction scan (semantic-search → LSP).
+**[Shared]** See [`_brainstorm_shared/common.md` §1](../_brainstorm_shared/common.md) — the three required asks (existing design doc / memory gotchas / does a family already own it), dispatched as [`/explore`](../../commands/explore.md) lenses. Step 3 below still owns the FULL abstraction inventory; §1's `exp-prior-art` is what surfaces an obvious owner early enough to reshape the topic.
 
 **Architecture-specific consideration:** the digest should ALSO surface any `ideation-complete` idea-bank doc (`ideas.md` in a topic folder) covering the same topic. If one exists, load it — it's the curated candidate pool that Steps 2 and 4 will draw from. If not (and the topic isn't a mature domain), redirect to `/idea_brainstorm` first.
 
@@ -150,7 +135,7 @@ See [`common.md §5.1`](../_brainstorm_shared/common.md) — three placements (s
 
 **Rule:** Multiple-choice preferred over open-ended. One question per turn.
 
-- Don't open with *"great question!"* / *"absolutely!"* — see `feedback_no_performative_agreement.md`. Ask the question directly.
+- Don't open with *"great question!"* / *"absolutely!"* — see `archive/feedback_no_performative_agreement.md`. Ask the question directly.
 - Multiple-choice example: *"For the stamina system: should it be (A) a finite resource that depletes and regenerates, (B) a cooldown stack that gates abilities, or (C) a combination — light actions deplete, heavy actions consume cooldowns?"*
 - One question per turn so the user can think and respond without juggling multiple decisions.
 - Stop asking when the design space is narrow enough to propose 2–3 concrete approaches.
@@ -196,15 +181,15 @@ If you can only think of one approach, that's a signal — either the design is 
 
 **Red-team hook (`--red_team` only).** Once the approaches are drafted, dispatch **Mode B** on them (Step-4 subset: adds `rt-abstraction`, plus `rt-testability` if an approach already names test surface). This is the richest interleave seam — approaches are the first concrete shapes the abstraction/boundary lenses can attack. Fold rigor-holes into the trade-off comparison; surface taste-forks as the choice the user makes *between* approaches.
 
-### Step 5: Present design section-by-section, get approval per section
+### Step 5: Present the design for review, approve taste-bearing or changed commitments
 
-**Rule:** Do not present the full design as one wall of text. Walk through sections (e.g., Data Model → Lifecycle → BB Keys → Tests → Integration Points). Get approval per section before moving on.
+**Rule:** Do not present the full design as one wall of text. Present each load-bearing commitment in a form the owner can review, keeping related fields together (e.g., Data Model → Lifecycle → BB Keys → Tests → Integration Points). Obtain approval for taste-bearing or changed commitments before design-lock, and propagate any reopened decision to dependent commitments.
 
-**Red-team hook (`--red_team` only).** After a section is drafted, before its per-section approval, dispatch the **full 5-lens** Mode B panel on that section (it now has committed shape — `rt-abstraction` and `rt-testability` can finally bite). Rigor-holes → revise the section before presenting; taste-forks → fold into the section's approval decision; a dead-end halts the brainstorm for a reframe.
+**Red-team hook (`--red_team` only).** After a section is drafted, before owner approval of its commitments, dispatch the **full 5-lens** Mode B panel on that section (it now has committed shape — `rt-abstraction` and `rt-testability` can finally bite). Rigor-holes → revise the section before presenting; taste-forks → fold into the section's approval decision; a dead-end halts the brainstorm for a reframe.
 
 **Verbatim port discipline:** when sections are agreed in chat, port them **1:1** into the design doc. Do NOT silently digest the chat-form into a tighter file-form. See `feedback_no_unilateral_condensation.md` — *"chat content IS the spec when the user says 'save to file'."*
 
-If the user pushes back on a section, treat it as a decision to make, not a clarification to dismiss. Update the section, get approval, then continue.
+If the user pushes back on a commitment, treat it as a decision to make, not a clarification to dismiss. Update it, obtain approval when it changes a taste-bearing commitment, and propagate it to dependent commitments.
 
 **Expect 1-2 substantive upstream reopenings per session.** Late-section content (Sections 4-5 — architecture detail, Parts decomposition) routinely surfaces assumptions baked into early-section (1-3) identity locks. Reopening Sections 1-3 from Section 5 feedback is correct behavior, not failure — the alternative is shipping a self-contradicting design. Update the upstream section, get re-approval, propagate downstream implications. If a session reopens 3+ times on the same Section 1 lock, the locked decision was wrong — escalate to a Socratic re-pass rather than continuing to patch.
 
@@ -266,7 +251,7 @@ Is this Part's execution inherently user-domain (spatial design, manual content 
 
 #### Part-readiness gate (when can a Part be authored with State=`plan-pending`?)
 
-A Part may be marked `plan-pending` (ready for Plan Mode + impl) only when ALL FIVE criteria hold:
+A Part may be marked `plan-pending` (ready for plan production + impl) only when ALL FIVE criteria hold:
 
 1. **Files-nameable** — the design commitment names concrete files OR extends classes inventoried in Step 3. *"The X subsystem"* fails; *"new `StaminaComponent.cs` + extends `Jmodot.AI.HSM.Transitions.TransitionCondition`"* passes.
 2. **Tests-writable** — the test plan translates DIRECTLY to one of:
@@ -280,7 +265,7 @@ A Part may be marked `plan-pending` (ready for Plan Mode + impl) only when ALL F
 
 | Criteria passing | State assignment |
 |---|---|
-| **All 5** | `plan-pending` — ready for Plan Mode |
+| **All 5** | `plan-pending` — ready for plan production |
 | **3-4** | `arch-pending` — gap is design-shaped (one criterion open); name the open piece in Trigger |
 | **0-2** | `arch-pending` (architectural fork) OR `idea-pending` (creative fork) — Trigger names the open piece |
 
@@ -299,13 +284,13 @@ Scan any run of sequential `plan-pending` Parts; **merge** adjacent ones matchin
 - **Thin** — production surface is mostly declarative (abstract bases, structs, config Resources, enums); the test artifact dwarfs the production code.
 - **Coupled** — its types exist mainly to feed the next Part (the next Part's API consumes them directly), OR it shares a design decision with its neighbor (resolving one forces resolving the other).
 
-**Litmus:** *"Would one Plan Mode session naturally plan-and-build these adjacent Parts together, because each is thin and exists mainly to feed the next?"* Yes → merge into one buildable unit.
+**Litmus:** *"Would one plan-and-build session naturally take these adjacent Parts together, because each is thin and exists mainly to feed the next?"* Yes → merge into one buildable unit.
 
 **Keep split only for a stated reason** (record it in the Part's Source/Trigger): independent reuse beyond the next layer; isolated risk worth shipping/verifying alone (a substantial layer with its own deep test surface — e.g. a builder); a framework/consumer review boundary; genuine standalone size.
 
 **Not in conflict with Compound-`+`:** that splits ONE Part bundling *unrelated* concerns; this merges SEPARATE Parts that are thin slices of the *same* concern, artificially layered. Discriminator: unrelated-bundle → split; thin-coupled-layer → merge.
 
-**Size-ceiling fallback:** if merging would breach criterion 5's ≤2-subsystem / half-day ceiling, keep the Parts split but **plan the cohesive cluster in one `/plan_part` session** rather than one `/plan_drive` per thin Part — the planning overhead is the real cost, not the Part boundary. (Unit of *shipping* stays small; unit of *planning* becomes the cluster.)
+**Size-ceiling fallback:** if merging would breach criterion 5's ≤2-subsystem / half-day ceiling, keep the Parts split but **plan the cohesive cluster in one `/plan_part` session** rather than one `/part_drive` per thin Part — the planning overhead is the real cost, not the Part boundary. (Unit of *shipping* stays small; unit of *planning* becomes the cluster.)
 
 See `feedback_arch_part_sizing_axis.md`.
 
@@ -322,21 +307,21 @@ For every Part declared `plan-pending`, write the content criteria 2 and 4 deman
 - **Criterion 2** → 2–5 `[TestCase]` method names per `[TestSuite]` (Logic-Domain) OR `ISceneRunner` test method names + playtest rubric (Gameplay-Domain). Prose descriptions like *"tests state-transition validity"* do NOT satisfy this — write `IsTransitionValid_IdleToActive_ReturnsTrue()`.
 - **Criterion 4** → C# class signature (fields + key methods) for every new type. *"`SessionLifecycleManager` autoload owning lifecycle state"* does NOT satisfy this — write `public partial class SessionLifecycleManager : Node { public SessionPhase CurrentState { get; private set; } public void RequestTransition(SessionPhase target, ...); ... }`.
 
-If you can't write them, the Part is `arch-rework` with Trigger naming the missing API surface. Naming a class and saying *"methods TBD in Plan Mode"* is the canonical failure shape — it passes the criteria's letter while violating their spirit. **Litmus:** would a future implementer have to invent method signatures + test names, or can they read them verbatim from this doc?
+If you can't write them, the Part is `arch-rework` with Trigger naming the missing API surface. Naming a class and saying *"methods TBD at plan time"* is the canonical failure shape — it passes the criteria's letter while violating their spirit. **Litmus:** would a future implementer have to invent method signatures + test names, or can they read them verbatim from this doc?
 
 This sub-procedure is the enforcement teeth for the gate. The Step 5 gate criteria define WHAT's required; this step requires WRITING it BEFORE state declaration goes to `/update_roadmap`. Without this enforcement, gate criteria are aspirational — the agent declares plan-pending against criteria the doc body doesn't actually satisfy.
 
-#### Plan Mode handoff requirement
+#### Plan-production handoff requirement
 
-When a `plan-pending` Part is handed to Plan Mode, the FIRST action of Plan Mode MUST be to enumerate the full set of files to be modified. If the file list cannot be bounded ("...and possibly some others"), Plan Mode HARD-STOPS with feedback: *"Part scope is unbounded — split or kick back to arch brainstorm with the discovered cross-cutting."*
+When a `plan-pending` Part enters plan production, the FIRST action MUST be to enumerate the full set of files to be modified. If the file list cannot be bounded ("...and possibly some others"), drafting HARD-STOPS with feedback: *"Part scope is unbounded — split or kick back to arch brainstorm with the discovered cross-cutting."*
 
-This is the failsafe for criterion 1 (files-nameable) drifting between brainstorm time and Plan Mode time. Arch brainstorm names files; Plan Mode verifies. Drift = scope-creep alarm. Don't proceed past the unbounded signal.
+This is the failsafe for criterion 1 (files-nameable) drifting between brainstorm time and plan time. Arch brainstorm names files; plan production verifies. Drift = scope-creep alarm. Don't proceed past the unbounded signal.
 
-**Recommended entry recipe:** invoke [`/plan_part <part-name>`](../../commands/plan_part.md) at the top of the Plan Mode session. The command loads the design surface verbatim (Source-cell section + API + Test Pin + Integration touch points), cross-references the design's named files/types/families against current codebase state, and classifies any divergence as **macro** (HARD-STOP, kicks back to `arch-rework`) or **micro** (surfaced in the briefing for Plan Mode to resolve during drafting). The briefing it emits IS the in-context handoff packet — `/plan_part` operationalizes this requirement so the file-list-bounded gate and the "design is approved, don't redesign" contract are enforced rather than aspirational.
+**Recommended entry recipe:** invoke [`/plan_part <part-name>`](../../commands/plan_part.md) at the top of the planning session. The command loads the design surface verbatim (Source-cell section + API + Test Pin + Integration touch points), cross-references the design's named files/types/families against current codebase state, and classifies any divergence as **macro** (HARD-STOP, kicks back to `arch-rework`) or **micro** (surfaced in the briefing to resolve during drafting). The briefing it emits IS the in-context handoff packet — `/plan_part` operationalizes this requirement so the file-list-bounded gate and the "design is approved, don't redesign" contract are enforced rather than aspirational.
 
-**Autonomous alternative — `/plan_drive`.** To drive a `plan-pending` Part to an approval-ready plan *unattended*, invoke [`/plan_drive <part-name>`](../../commands/plan_drive.md) instead of entering Plan Mode by hand — it wraps `/plan_part` + Plan Mode + `/plan_check` into one brief→draft→audit→converge loop, halting only at the `ExitPlanMode` approval gate (or a halt valve). Use `/plan_part` directly for hands-on planning; `/plan_drive` when you want the loop run for you. (This is the forward seam of the pipeline: `/architecture_brainstorm` → `/plan_drive` → approval → `/part_execute`.)
+**Autonomous alternative — `/part_drive --plan-only`.** To drive a `plan-pending` Part to an approval-ready plan *unattended*, invoke [`/part_drive <part-name> --plan-only`](../../commands/part_drive.md) instead of planning by hand — it wraps `/plan_part` + [`/explore`](../../commands/explore.md) + drafting + `/plan_check` into one brief→explore→draft→audit→converge loop, halting only at the user's approval of the plan file (or a halt valve). Use `/plan_part` directly for hands-on planning; `/part_drive --plan-only` when you want the loop run for you. (This is the forward seam of the pipeline: `/architecture_brainstorm` → `/part_drive --plan-only` → approval → `/part_execute`.)
 
-**Hard-stop remediation.** When Plan Mode hard-stops a `plan-pending` Part, route per the table:
+**Hard-stop remediation.** When plan production hard-stops a `plan-pending` Part, route per the table:
 
 | Situation | Move |
 |---|---|
@@ -448,11 +433,13 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 
 ## 6. Anti-Patterns
 
+Refuse the premise and cite the rule. Inline deliberately — a rationalizing agent never opens a file whose trigger is "when rationalizing".
+
 | Rationalization | Reality |
 |---|---|
 | "The design is clear enough; let me just start coding" | The Hard Gate exists for a reason. If the design *is* clear, Step 5 will move fast. Don't skip the doc. |
-| "I'll write the code first and document the design after" | That's `/create_obsidian_design_doc`'s job (post-hoc retrospective). The brainstorming doc is upfront — it *constrains* the implementation, not the other way around. |
-| "Section-by-section approval is overhead — let me show the full design at once" | Walls of text get rubber-stamped or rejected wholesale. Per-section approval is what makes design decisions traceable. |
+| "I'll write the code first and document the design after" | That's `/doc_full`, which documents a shipped system. The brainstorming doc is upfront — it *constrains* the implementation, not the other way around. |
+| "Reviewing related commitments together is too broad — approve each one separately" | Step 5: group related commitments for review, and obtain approval for taste-bearing or changed ones before design-lock. |
 | "Only one approach makes sense here" | If you can't articulate alternatives, you haven't fully explored the design space. Find at least one alternative, even if you reject it. |
 | "Let me also implement a small part to see if it works" | That's not brainstorming — that's prototyping. Different mode. If you want to prototype, say so explicitly and switch modes. |
 | "The user already approved the topic; I can skip clarifying questions" | The user approved the topic, not the shape. Clarifying questions narrow the shape. |
@@ -466,8 +453,8 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 | "I'll hand-edit `roadmap.md` while I'm in the design doc anyway" | `/update_roadmap` is the single executor for roadmap edits — it owns Mermaid regen, derived-view recomputation, validator checks, and revision log append. Hand-edits drift these layers silently. Always route roadmap changes through the command. |
 | "Topic is greenfield with no candidates — I'll generate ideas inline during Step 4" | No. Idea generation belongs in `/idea_brainstorm`. Generating candidates inline here skips the divergence pipeline (filter / hone / cluster), produces inferior approaches, and loses the idea-bank artifact. Route to `/idea_brainstorm` first, then come back. |
 | "Idea-bank doc exists but the candidates feel thin — let me regenerate during Step 4" | If the idea bank feels thin, that's signal to RE-RUN `/idea_brainstorm` (its revision discipline applies in-place), not to silently regenerate here. Architecture brainstorm consumes idea-bank output, doesn't replace it. |
-| "The design doc has a §5a-style 'recommended session grouping' — port those as the Part list" | Different axes. PR-cohesion groups for review narrative; readiness-gate sizes for impl-units. Author Parts fresh against the gate, item-by-item. A coherent PR may still be too big for one Plan Mode session. See `feedback_pr_grouping_is_not_part_decomp.md`. |
-| "Compound `+` name reads fine, no need to split" | Compound `+` is a split-candidate signal. When 4-of-N sequenced Parts carry `+` names, the porting axis is wrong — re-author against the gate. `Foundation + Refactor` is the canonical failure: bundling 4 unrelated workstreams under one Plan Mode session fails criterion 5 (bounded-scope). When in doubt, split. |
+| "The design doc has a §5a-style 'recommended session grouping' — port those as the Part list" | Different axes. PR-cohesion groups for review narrative; readiness-gate sizes for impl-units. Author Parts fresh against the gate, item-by-item. A coherent PR may still be too big for one plan-and-build session. See `feedback_pr_grouping_is_not_part_decomp.md`. |
+| "Compound `+` name reads fine, no need to split" | Compound `+` is a split-candidate signal. When 4-of-N sequenced Parts carry `+` names, the porting axis is wrong — re-author against the gate. `Foundation + Refactor` is the canonical failure: bundling 4 unrelated workstreams under one plan-and-build session fails criterion 5 (bounded-scope). When in doubt, split. |
 | "Existing brainstorm doc predates current gate but I'll just `/update_roadmap` the existing Parts" | Pre-gate Parts need re-gating, not re-importing. See [`common.md §1.2`](../_brainstorm_shared/common.md) (Stale-roadmap remediation) — the procedure re-runs arch Step 5 against the existing design body, then hands the fresh Part list to `/update_roadmap`. Parts inherit the wrong sizing axis silently otherwise. |
 | "I already know the inventory from grep, so I can pre-list the downstream Parts of the `arch-pending` session to save it work" | Subsystem grouping, file decomposition, and Part shape are the future session's call against ITS gate. Pre-listing pre-empts that decision and locks in inventory groupings (which often change once design questions are answered — e.g., subsystems merge if their patterns are identical). Push inventory into the `*-pending` Part's Trigger per the format spec; let the future session author Parts. See `feedback_arch_part_sizing_axis.md`. |
 | "Each subsystem has its own open question about pattern X, so each gets its own `arch-pending` Part" | Shared higher-order shape ("pattern per class kind?", "injection per type family?", "lifecycle per X?") rolls up to ONE arch session producing a decision matrix. Per-subsystem `arch-pending` Parts pre-decide the matrix axis IS subsystem (when it might be per-class-kind, per-protocol, per-init-timing). Apply *Arch-pending consolidation litmus* in Step 5 before authoring. See `feedback_arch_part_sizing_axis.md`. |
@@ -492,7 +479,7 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 **Commands:**
 - [`/update_roadmap`](../../commands/update_roadmap.md) — Step 8 invocation; single executor for roadmap.md edits (Parts table, Mermaid, derived views, revision log)
 - [`/architecture_brainstorm_redteam`](../../commands/architecture_brainstorm_redteam.md) — adversarial red-team; **Mode A** standalone pass on the drafted design (Step 7 augment) + **Mode B** interleaved per-step passes when invoked with `--red_team` (Steps 2/4/5); classifies rigor-holes vs taste-forks, never decides taste
-- `/create_obsidian_design_doc` — POST-HOC retrospective; complementary to this skill, not overlapping. Run *after* implementation ships, not instead of brainstorming.
+- `/doc_full` — POST-HOC documentation of a shipped system; complementary to this skill, not overlapping. Run *after* implementation ships, not instead of brainstorming.
 - `/test_skill architecture_brainstorm` — adversarial validation of this skill (Mode B rule-negation).
 
 **File-based memory:**
@@ -500,7 +487,7 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 - `feedback_recommended_fix_means_implement.md` — post-approval inline-implementation path
 - `feedback_obsidian_write_locations.md` — Step 6 {{PROJECT_NAME}}/Jmodot tiebreaker
 - `feedback_no_unilateral_condensation.md` — Step 5 verbatim-port discipline
-- `feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
+- `archive/feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
 - `feedback_session_start_hook_does_not_override_skill_procedure.md` — Step 2 / Step 5 procedural-gate discipline
 
 **Agent templates:**
@@ -512,5 +499,5 @@ If `/update_roadmap` reports no parent `roadmap.md` exists, it'll propose creati
 - Obsidian section (Read/Write constraints, tiebreaker, MCP-offline policy)
 - Worklog section (small deferrals vs tracked items in TODO/)
 
-**Plan Mode:**
-- Claude Code built-in. Not documented in `.claude/`. This skill describes the **handoff**, not Plan Mode internals.
+**Plan production:**
+- Owned by [`/part_drive`](../../commands/part_drive.md) — `--plan-only` to an approval-ready plan, unflagged through to shipped code. This skill describes the **handoff**, not its internals.

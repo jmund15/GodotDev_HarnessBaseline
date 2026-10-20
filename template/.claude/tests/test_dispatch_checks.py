@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Proof for hooks/_dispatch_checks.py: the pre-launch check both dispatch routes share.
 
-`tier_fit` is RULE 3's membership check on the job's own transport. Every case plants the registry rows (a dict).
-The channel cases live beside each caller: tests/test_workflow_provider_guard.py (native) and
+`tier_fit` is RULE 3's membership check on the job's own transport. `cheaper_claimants` lists the cheaper claimants of
+a tier with their facts, and `claimant_text` renders one. Every case plants the registry rows (a dict) and a ladder
+file. The channel cases live beside each caller: tests/test_workflow_provider_guard*.py (native) and
 tests/test_sidecar_dispatch_context.py (sidecar).
 
     python3 .claude/tests/test_dispatch_checks.py
 """
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +33,42 @@ DATA = {
     ],
 }
 
+STEP = {"thresholdInputTokens": 100000, "multipliers": {"input": 5.0, "cachedInput": 5.0, "output": 5.0},
+        "appliesPer": "request"}
+
+
+HAIKU_PRICE = {"cacheMissPer1M": 0.1, "outputPer1M": 0.5, "cacheHitPer1M": 0.01}
+SONNET_PRICE = {"cacheMissPer1M": 2, "outputPer1M": 10, "cacheHitPer1M": 0.1}
+
+
+def pricier_data(**haiku):
+    """A host transport with a dearer wide-window row and a cheaper row that prices past 100K, as the real pair does."""
+    cheap = {"transport": "anthropic", "id": "cheap-1", "alias": "haiku", "roles": ["fanout", "scout", "executor"],
+             "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000, "compactAtTokens": 217000},
+             "longContextTier": STEP, "price": HAIKU_PRICE}
+    cheap.update(haiku)
+    return {"transports": {"anthropic": {"costModel": "plan-quota"}}, "models": [
+        {"transport": "anthropic", "id": "dear-1", "alias": "sonnet", "roles": ["architect", "executor", "fanout"],
+         "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}, "price": SONNET_PRICE},
+        cheap,
+        {"transport": "anthropic", "id": "mid-1", "alias": "mid", "roles": ["executor"],
+         "limits": {"contextTokens": 200000, "maxOutputTokens": 32000}}]}
+
+
+def pay_data():
+    """A pay-per-token transport holding a dearer and a cheaper row, so the claimant is priced in USD."""
+    return {"transports": {"deepseek": {"costModel": "marginal-usd"}}, "models": [
+        {"transport": "deepseek", "id": "ds-dear-1", "alias": "ds-dear", "roles": ["executor", "fanout"],
+         "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}, "price": SONNET_PRICE},
+        {"transport": "deepseek", "id": "ds-cheap-1", "alias": "ds-cheap", "roles": ["executor", "fanout"],
+         "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}, "price": HAIKU_PRICE}]}
+
+
+LADDER = ("# Ladder\n\n## Role guidance\n\n| model | cost | ± |\n|---|---|---|\n"
+          "| sonnet | 7 | + the strong default |\n"
+          "| haiku | 10 | + the cheapest reliable pick for read-heavy surveys; − uneven at review |\n"
+          "| mid | 9 | + executor only |\n\n## Next\n")
+
 
 def main():
     cases = []
@@ -49,7 +88,7 @@ def main():
         return report(cases)
     # The advisories that arrived after the decision are gone: their facts reach the session earlier
     # (`[budget-posture]` from the first prompt, `for-role` probation marks, the ladder before the gate admits).
-    case("the late currency, probation and cheaper-claimant builders are gone",
+    case("the late currency and probation builders are gone",
          not any(hasattr(dc, name) for name in ("currency", "currency_facts", "currency_note", "probation",
                                                 "cheaper_rows")))
 
@@ -118,179 +157,69 @@ def main():
     case("without any supplementary field, a row outside the tier keeps today's tier_fit refusal",
          fit(seat("s1", "a-fan", ["m1"]), data=DATA) == [dc.tier_fit("a-fan", "architect", "anthropic", DATA)])
 
-    return report(cases)
-    case("hooks/_dispatch_checks.py exposes tier_fit", hasattr(dc, "tier_fit"))
-    if not hasattr(dc, "tier_fit"):
+    # cheaper_claimants: the facts the preflight line and the brief hook print for a pin above a cheaper claimant.
+    case("hooks/_dispatch_checks.py exposes cheaper_claimants", callable(getattr(dc, "cheaper_claimants", None)))
+    if not callable(getattr(dc, "cheaper_claimants", None)):
         return report(cases)
-    # The advisories that arrived after the decision are gone: their facts reach the session earlier
-    # (`[budget-posture]` from the first prompt, `for-role` probation marks, the ladder before the gate admits).
-    case("the late currency, probation and cheaper-claimant builders are gone",
-         not any(hasattr(dc, name) for name in ("currency", "currency_facts", "currency_note", "probation",
-                                                "cheaper_rows")))
+    with tempfile.TemporaryDirectory() as td:
+        ladder = os.path.join(td, "ladder.md")
+        with open(ladder, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(LADDER)
+        data = pricier_data()
 
-    # tier_fit: the job's own transport decides which rows fit.
-    case("a Go alias that serves the tier fits on go", dc.tier_fit("g-exec", "executor", "go", DATA) is None)
-    why = dc.tier_fit("g-fan", "executor", "go", DATA)
-    case("a Go alias that does not serve the tier is refused, naming the tier's rows on go",
-         isinstance(why, str) and "g-fan" in why and "`executor`" in why and "g-exec" in why, repr(why))
-    case("a missing tier never refuses", dc.tier_fit("g-fan", None, "go", DATA) is None)
-    case("fit is judged on the named transport, not another's rows",
-         dc.tier_fit("a-exec", "executor", "go", DATA) is not None)
+        facts = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 20000, data, ladder)
+        case("cheaper_claimants names the cheaper row with cost, ± cell, window fit and long-context point, no pick",
+             len(facts) == 1 and facts[0]["alias"] == "haiku" and facts[0]["cost"] == 10 and facts[0]["pinCost"] == 7
+             and "uneven at review" in facts[0]["sign"] and facts[0]["fits"] is True
+             and facts[0]["thresholdAt"] == 100000 and facts[0]["pastLongContext"] is False, repr(facts))
+        case("a row not claiming the tier is not a claimant (mid claims only executor)",
+             all(f["alias"] != "mid" for f in facts) and
+             [f["alias"] for f in dc.cheaper_claimants("dear-1", "executor", "anthropic", 20000, data, ladder)]
+             == ["haiku", "mid"])
+        past = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 120000, data, ladder)
+        case("a reading past the price point is reported past it while still fitting the window",
+             past[0]["pastLongContext"] is True and past[0]["fits"] is True, repr(past))
+        over = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 900000, data, ladder)
+        case("a reading over the usable window does not fit", over[0]["fits"] is False, repr(over))
+        case("an unmeasured reading leaves fit unjudged",
+             dc.cheaper_claimants("dear-1", "fanout", "anthropic", None, data, ladder)[0]["fits"] is None)
+        case("the cheapest claimant has no cheaper claimant",
+             dc.cheaper_claimants("cheap-1", "fanout", "anthropic", 20000, data, ladder) == [])
+        case("an unknown model, an unreadable ladder and no tier never raise",
+             dc.cheaper_claimants("nope", "fanout", "anthropic", 1, data, ladder) == []
+             and dc.cheaper_claimants("dear-1", "fanout", "anthropic", 1, data, os.path.join(td, "gone.md")) == []
+             and dc.cheaper_claimants("dear-1", None, "anthropic", 1, data, ladder) == [])
+        claimant = dc.claimant_text(facts[0], 20000)
+        case("the claimant line names haiku, its cost, its ± cell and its window fit",
+             "haiku (cost 10" in claimant and "uneven at review" in claimant and "fits" in claimant, repr(claimant))
+        past_claimant = dc.claimant_text(past[0], 120000)
+        case("a plan claimant past its long-context point states its draw against the pin and that point, no USD",
+             "draw ≈0.05x the pin" in past_claimant and "$" not in past_claimant
+             and "past its 100,000-token long-context point" in past_claimant, repr(past_claimant))
+        pay_ladder = os.path.join(td, "pay_ladder.md")
+        with open(pay_ladder, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# Ladder\n\n## Role guidance\n\n| model | cost | ± |\n|---|---|---|\n"
+                     "| ds-dear | 7 | + the strong default |\n| ds-cheap | 10 | + the cheap pick |\n")
+        pay = dc.cheaper_claimants("ds-dear", "fanout", "deepseek", 20000, pay_data(), pay_ladder)
+        pay_text = dc.claimant_text(pay[0], 20000) if pay else ""
+        case("a pay-per-token claimant keeps its USD prices for the reading and names no draw",
+             len(pay) == 1 and "≈$" in pay_text and "vs the pin's ≈$" in pay_text and "draw" not in pay_text,
+             repr(pay_text))
+        case("the long-context point is a fact, not a bar: the cheaper row past it still fits and is cheaper",
+             past[0]["pastLongContext"] is True and past[0]["fits"] is True and past[0].get("price", 1e9) < past[0].get("pinPrice", 0)
+             and past[0].get("priced") is True, repr(past))
+        unpriced = pricier_data(price=None)
+        ladder_only = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 120000, unpriced, ladder)
+        case("an unpriceable claimant falls back to ladder cost and is marked priced False",
+             len(ladder_only) == 1 and ladder_only[0]["alias"] == "haiku" and ladder_only[0].get("priced") is False
+             and ladder_only[0].get("price") is None, repr(ladder_only))
+        down = pricier_data(status={"state": "unavailable", "reason": "planted"})
+        case("an unavailable cheaper row is not a claimant",
+             dc.cheaper_claimants("dear-1", "fanout", "anthropic", 20000, down, ladder) == [])
+        marked = pricier_data(probation=[{"tier": "fanout", "text": "planted mark", "evidenceRef": "fixture"}])
+        case("a cheaper row on an owner probation mark for the tier is not a claimant",
+             dc.cheaper_claimants("dear-1", "fanout", "anthropic", 20000, marked, ladder) == [])
 
-    read = read_from(TODAY)
-    no_pick = lambda text: isinstance(text, str) and "pick" not in text.lower()
-    line = dc.currency("g-exec", "executor", "anthropic", DATA, read)
-    case("a go job spending faster than its window names go and the plan with more room, never a pick",
-         no_pick(line) and "go Hot: 7d 70% left, 90% to go" in line and "spending faster than its window" in line
-         and "plans paying for a row claiming executor with more quota left for their window: anthropic Hot: 7d 78% left, 87% to go" in line
-         and "codex" not in line and "orchestration §5b" in line, repr(line))
-    case("a job whose plan has the most room gets no advisory",
-         dc.currency("a-exec", "executor", "anthropic", DATA, read) is None)
-    roomy_own = dict(TODAY, anthropic=reading("anthropic", 10, 0.3))
-    case("a job whose plan spends slower than its window gets no advisory, whatever the others read",
-         dc.currency("a-exec", "executor", "anthropic", DATA, read_from(dict(roomy_own, go=reading("go", 0, 0.1))))
-         is None)
-    line = dc.currency("d-exec", "executor", "anthropic", DATA, read)
-    case("a pay-per-token job while every fit plan spends faster than its window still names the plans with quota (§5b: dollars are the last resort)",
-         no_pick(line) and "deepseek pays per token" in line and "anthropic Hot: 7d 78% left" in line
-         and "go Hot: 7d 70% left" in line and "codex" in line and "with quota left" in line, repr(line))
-    line = dc.currency("d-exec", "executor", "anthropic", DATA, read_from(roomy_own))
-    case("a pay-per-token job while a plan spends under its window's pace names every plan with quota",
-         no_pick(line) and "deepseek pays per token" in line and "anthropic Surplus: 7d 90% left" in line
-         and "go Hot" in line, repr(line))
-    mixed = dict(TODAY, go=reading("go", 100, 0.5), codex=None)
-    line = dc.currency("d-exec", "executor", "anthropic", DATA, read_from(mixed))
-    case("a spent plan and an unreadable plan are not named as plans with quota",
-         no_pick(line) and "anthropic" in line and "go " not in line.split("with quota left:")[-1]
-         and "codex" not in line.split("with quota left:")[-1], repr(line))
-    spent = {k: reading(k, 100, 0.5) for k in TODAY}
-    case("a pay-per-token job with no plan left gets no advisory",
-         dc.currency("d-exec", "executor", "anthropic", DATA, read_from(spent)) is None)
-    line = dc.currency("g-exec", None, "anthropic", DATA, read)
-    case("no tier: the row's claimed tiers stand in",
-         no_pick(line) and "spending faster than its window" in line and "a row claiming executor/fanout" in line, repr(line))
-    dropped = dict(TODAY, go=None)
-    line = dc.currency("g-exec", "executor", "anthropic", DATA, read_from(dropped))
-    case("a job on an unreadable plan names why, and the plans with room",
-         no_pick(line) and "go unreadable" in line and "anthropic Hot" in line, repr(line))
-
-    def boom(*_a, **_k):
-        raise RuntimeError("planted reader failure")
-    line = dc.currency("g-exec", "executor", "anthropic", DATA, boom)
-    case("a reader that raises never raises out of currency", line is None or isinstance(line, str), repr(line))
-    case("an unknown model gets no advisory and no exception",
-         dc.currency("no-such-model", "executor", "anthropic", DATA, read) is None)
-
-    facts = dc.currency_facts("g-exec", "executor", "anthropic", DATA, read)
-    case("currency_facts returns the line and the tiers, nothing else",
-         isinstance(facts, dict) and set(facts) == {"line", "tiers"}, repr(facts))
-    if facts:
-        plain = dc.currency_note(facts, [("job-a", "executor"), ("job-b", None)], "anthropic", DATA)
-        case("currency_note names the advisory's jobs and adds no launcher line",
-             plain == "%s (jobs: job-a, job-b)" % facts["line"], repr(plain))
-        real_cap = dc.CURRENCY_JOB_LIST_CAP
-        dc.CURRENCY_JOB_LIST_CAP = 1
-        try:
-            capped = dc.currency_note(facts, [("job-a", "executor"), ("job-b", "executor")], "anthropic", DATA)
-        finally:
-            dc.CURRENCY_JOB_LIST_CAP = real_cap
-        case("the job list is capped and counts the rest", capped.endswith("(jobs: job-a, +1 more)"), repr(capped))
-
-    # A second plan paying for anthropic's rows: the job's PLAN, not its row's transport, is compared.
-    plans = {"transports": dict(DATA["transports"], **{
-        "anthropic-secondary": {"planOf": "anthropic", "costModel": "plan-quota"}}),
-        "models": DATA["models"]}
-    roomy = dict(TODAY, **{"anthropic-secondary": reading("anthropic-secondary", 5, 6.1 / 7)})
-    line = dc.currency("a-exec", "executor", "anthropic", plans, read_from(roomy))
-    case("a native job from a primary session with a roomier secondary names anthropic-secondary",
-         no_pick(line) and "anthropic-secondary" in line.split("with more quota left for their window", 1)[1]
-         and "anthropic Hot: 7d 78% left" in line, repr(line))
-    line = dc.currency("a-exec", "executor", "anthropic", plans, read_from(roomy), job_plan="anthropic-secondary")
-    case("a job launched on a plan spending slower than its window gets no advisory", line is None, repr(line))
-    line = dc.currency("a-exec", "executor", "anthropic-secondary", plans, read_from(roomy))
-    case("a native job from a secondary session defaults to the session plan: no advisory",
-         line is None, repr(line))
-    short = dict(TODAY)
-    short["anthropic"] = reading("anthropic", 22, 6.1 / 7)
-    short["anthropic"]["quota"]["windows"].append(
-        {"name": "five_hour", "usedPercent": 83, "resetsAt": NOW + 0.46 * 300 * 60, "windowDurationMins": 300})
-    line = dc.currency("a-exec", "executor", "anthropic", DATA, read_from(short))
-    case("a job on a plan whose 5-hour window binds gets the advisory, naming its binding window",
-         no_pick(line) and "5h 17% left, 46% to go" in line and "go Hot: 7d 70% left" in line, repr(line))
-    line = dc.currency("g-exec", "executor", "anthropic-secondary", plans, read_from(roomy))
-    case("a cross-transport job's plan defaults to its row's transport",
-         no_pick(line) and line.startswith("currency (orchestration §5b): go ") and "anthropic-secondary" in line,
-         repr(line))
-
-    # probation: an advisory line for a pin on probation for the declared tier, else None.
-    probation = getattr(dc, "probation", None)
-    case("hooks/_dispatch_checks.py exposes probation", callable(probation))
-    if callable(probation):
-        empty = os.path.join(HERE, "__no_such_archive__.jsonl")
-        real = dc.model_registry.metrics_archive if hasattr(dc.model_registry, "metrics_archive") else None
-        dc.model_registry.metrics_archive = lambda: empty
-        try:
-            line = probation("a-fan", "executor", DATA)
-            case("an unclaimed tier prints the probation line with its basis and the verifier pointer",
-                 isinstance(line, str) and line.startswith("probation (orchestration §5): a-fan for executor — ")
-                 and "no executor claim in registry roles" in line
-                 and "drive_spine §Slices runs the spec verifier" in line, repr(line))
-            case("a claimed tier prints nothing", probation("a-exec", "executor", DATA) is None)
-            case("no declared tier prints nothing", probation("a-fan", None, DATA) is None)
-            case("an unknown model prints nothing and never raises",
-                 probation("no-such-model", "executor", DATA) is None)
-            case("an unknown tier prints nothing and never raises", probation("a-fan", "Wide", DATA) is None)
-        finally:
-            if real is not None:
-                dc.model_registry.metrics_archive = real
-
-    # cheaper_rows: the rows on the job's transport claiming its tier at a lower ladder cost, each with its cost
-    # and `±` cell, so the pin is weighed over every claimant (a fact line, never a pick or a deny).
-    cheaper_rows = getattr(dc, "cheaper_rows", None)
-    case("hooks/_dispatch_checks.py exposes cheaper_rows", callable(cheaper_rows))
-    if callable(cheaper_rows):
-        import tempfile
-        data = {"transports": DATA["transports"], "models": DATA["models"] + [
-            {"transport": "anthropic", "id": "host-cheap-1", "alias": "a-cheap", "roles": ["executor", "fanout"]},
-            {"transport": "anthropic", "id": "host-dear-1", "alias": "a-dear", "roles": ["executor"]},
-            {"transport": "go", "id": "go-cheap-1", "alias": "g-cheap", "roles": ["executor"]}]}
-        ladder = ("# Ladder\n\n## Role guidance\n\n| model | cost | ± |\n|---|---|---|\n"
-                  "| a-dear | 3 | + deep design; − the most expensive row |\n"
-                  "| a-exec | 7 | + tight exec |\n"
-                  "| a-cheap | 10 | + the cheapest reliable pick for converged execution; − never a lone review seat |\n"
-                  "| g-cheap | 9 | + go executor |\n"
-                  "| a-fan | ? | + extraction |\n\n## Next\n")
-        with tempfile.TemporaryDirectory() as td:
-            path = os.path.join(td, "ladder.md")
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(ladder)
-            line = cheaper_rows("a-exec", "executor", "anthropic", data, ladder=path)
-            case("a pricier pin names each cheaper claimant on its transport with cost and ± cell",
-                 isinstance(line, str) and "a-cheap (cost 10)" in line and "never a lone review seat" in line
-                 and "a-exec (cost 7)" in line and "`executor`" in line, repr(line))
-            case("a claimant on another transport is not named", isinstance(line, str) and "g-cheap" not in line,
-                 repr(line))
-            case("a pricier claimant is not named", isinstance(line, str) and "a-dear" not in line, repr(line))
-            case("the line cites the selection line and never says which row to pin",
-                 isinstance(line, str) and "selection line" in line and "pin a-cheap" not in line.lower(), repr(line))
-            case("the cheapest claimant gets no line", cheaper_rows("a-cheap", "executor", "anthropic", data,
-                                                                    ladder=path) is None)
-            case("no tier gets no line", cheaper_rows("a-exec", None, "anthropic", data, ladder=path) is None)
-            case("a pin with no ladder cost gets no line",
-                 cheaper_rows("a-fan", "fanout", "anthropic", data, ladder=path) is None)
-            case("an unknown model never raises", cheaper_rows("nope", "executor", "anthropic", data,
-                                                               ladder=path) is None)
-            case("an unreadable ladder never raises",
-                 cheaper_rows("a-exec", "executor", "anthropic", data, ladder=os.path.join(td, "gone.md")) is None)
-            # A `?` ladder cost is no cost: a claimant carrying one is never named cheaper, while a costed one still is.
-            unk_path = os.path.join(td, "ladder_unk.md")
-            with open(unk_path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(ladder.replace("| a-fan | ? |", "| a-unk | ? | + executor with no measured cost |\n| a-fan | ? |"))
-            unk_data = {"transports": data["transports"], "models": data["models"] + [
-                {"transport": "anthropic", "id": "host-unk-1", "alias": "a-unk", "roles": ["executor"]}]}
-            line = cheaper_rows("a-exec", "executor", "anthropic", unk_data, ladder=unk_path)
-            case("a `?`-cost claimant is not named as cheaper; a costed one still is",
-                 isinstance(line, str) and "a-cheap (cost 10)" in line and "a-unk" not in line, repr(line))
     return report(cases)
 
 

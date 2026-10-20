@@ -1,6 +1,6 @@
 ---
-description: Pre-PR release-readiness battery — fan out parity, reachability, API-consumption, worklog/roadmap, doc-coverage lenses over the frozen diff (excludes test runs).
-allowed-tools: Bash(git diff:*), Bash(git log:*), Bash(git status:*), Bash(git show:*), Bash(git grep:*), Bash(git ls-files:*), Bash(python .claude/hooks/analyze_godot_logs.py:*), Read, Agent, Workflow, mcp__godot__get_godot_version, mcp__godot__run_project, mcp__godot__get_debug_output, mcp__godot__stop_project
+description: Audit release readiness before a PR; the regression gate runs the tests
+allowed-tools: Write, Bash(python3 .claude/tools/review_ledger.py:*), Bash(git diff:*), Bash(git log:*), Bash(git status:*), Bash(git show:*), Bash(git grep:*), Bash(git ls-files:*), Bash(python .claude/hooks/analyze_godot_logs.py:*), Read, Agent, Workflow, mcp__godot__get_godot_version, mcp__godot__run_project, mcp__godot__get_debug_output, mcp__godot__stop_project
 ---
 
 # /pr_ready — Release-Readiness Battery
@@ -13,6 +13,7 @@ Consolidates the "done but not actually done" invariants into one gate at the hi
 - Pre-commit after the project's regression gate passes, before `/commit_push`.
 - Pre-PR before `/create_pr`, or pre-merge before `/merge_pr`.
 - Skip for meta-only commits (`.claude/`, docs) — the parity/API lenses have nothing to chew on.
+- Which lenses run for a change follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Mandate admission.
 
 ## Step 0: Assemble the frozen snapshot (Claude-side — push-don't-pull)
 
@@ -57,26 +58,26 @@ Where the project's stack ships a boot-log probe — the engine diagnoses its ow
 
 ## Step 1: Dispatch the battery
 
-**Generation-fidelity guard.** The heaviest lens — `parity` — carries verbatim OLD+NEW source (escape-dense, nested), the exact payload that makes a `Workflow` `args` blob die at generation (`gotcha_workflow_args_generation_fidelity.md`: 4ms / 0-agent / 0-byte, the throw is `review_fanout.js`'s own `JSON.parse(args)`). So `parity` runs through `dispatch.js`, whose brief travels as a file path and never enters `args`; the five lighter lenses go through `review_fanout`. Triage any 4ms/0-agent/0-byte death as **malformed args, not a broken tool** — move the offending lens's payload into a brief file.
+Each lens reads a different input, so a branch's first run runs one seat per mandate (`orchestration` §2 *Sizing the width*); a rerun after new commits is a later round, sized per `orchestration` §2 *Later rounds* from what the new commits changed. Write the seats to `.claude/scratch/pr_ready/roster_<branch>.json` (`{key, mandates, tier, effort}`, pins per `orchestration` §5) and run `python3 .claude/tools/review_ledger.py plan --stage pr-ready --subject session:<sid> --roster <roster.json> --files <changed files>`; dispatch only the mandates it returns. An audit scope the owner names ignores the ledger: pass `--ignore-ledger`. Write `{"files": [<changed files>]}` to `.claude/scratch/pr_ready/scope_<branch>.json`. The `review_fanout` call carries `args.ledger` `{stage: "pr-ready", subject: "session:<sid>", roster: <roster.json>, scopeJson: <that file>}`, so its post-check records those rows over the changed files; the `parity` seat's rows come from its own post-check (Step 1a). Its lens battery needs Workflow, which a delegate lacks, so a delegate never runs `/pr_ready` and the parent keeps the lenses (`orchestration` §0). Triage any 4ms/0-agent/0-byte death as **malformed args, not a broken tool** (`gotcha_workflow_args_generation_fidelity.md`).
 
 ### Step 1a: parity lens — `dispatch.js`, brief as a file
 
-Write the brief (mandate + OLD from `git show main:…` + NEW per changed source file, verbatim with file:line) to `.claude/scratch/pr_ready/parity_<branch>.md`, then:
+Write the brief (mandate + OLD from `git show main:…` + NEW per changed source file, verbatim with file:line) to `.claude/scratch/pr_ready/parity_<branch>.md` and pass that path, never the payload in `args` — `parity` is the one lens heavy enough to hit the generation-fidelity limit (`gotcha_workflow_args_generation_fidelity.md`) — then:
 
 ```
 Workflow({
   scriptPath: ".claude/workflows/dispatch.js",
-  args: { jobs: [ { label: "parity", promptPath: "<abs>/.claude/scratch/pr_ready/parity_<branch>.md", model: "opus", effort: "low", agentType: "general-purpose", readOnly: true } ] }
+  args: { jobs: [ { label: "parity", promptPath: "<abs>/.claude/scratch/pr_ready/parity_<branch>.md", tier: "executor", model: "<executor>", effort: "<executor review rung>", agentType: "general-purpose", readOnly: true, ledger: { stage: "pr-ready", subject: "session:<sid>", roster: "<roster.json>", scopeJson: ".claude/scratch/pr_ready/scope_<branch>.json" } } ] }
 })
 ```
 
-`opus`: executor role (`reference/model_ladder_evidence.md` §Role guidance) — a line-precision OLD-vs-NEW audit that gates the PR, where a missed dropped branch ships a bug. `low`: the lens is anchored (both versions supplied, rubric explicit) so there is no residual ambiguity for effort to buy (`orchestration` §5). Run it in the same message as Step 1b — two Workflow calls in flight together.
+The executor tier at its review rung (`reference/model_ladder_evidence.md` §Role guidance): a line-precision OLD-vs-NEW audit that gates the PR, where a missed dropped branch ships a bug. The parity job declares its ledger above, so the engine closes in review mode; consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md). Run the job in the same message as Step 1b — two Workflow calls in flight together.
 
-Mandate (`parity`): diff OLD vs NEW per changed method. Flag every dropped/weakened branch, stub, `TODO`, `// deferred`, removed validation, or silently-changed default as a **BLOCKER** (`critical:true`). Quote old vs new verbatim with file:line. Return a JSON findings array (`{agent, action, category, critical, file, description, old, new, rationale}`). This is audit-shape line-precision work — read OLD AND NEW; treat critical findings as candidates Claude verifies, not final truth.
+Mandate (`parity`): the brief carries the [Mandate section of the parity checklist](checklists/parity.md) verbatim, the one home of this mandate.
 
 ### Step 1b: the other five lenses — `review_fanout`
 
-Keep each `prompt` lean: push the shared diff stat + changed-file list + the 3 pre-computed BLOCKER grep results via `contextPrefix` (NOT repeated per agent).
+Keep each `prompt` lean: push the shared diff stat + changed-file list + the 3 pre-computed BLOCKER grep results via `contextPrefix` (NOT repeated per agent). Each seat's must-read list is the diff of the changed files its candidates come from (written to scratch); `worklog-roadmap`'s is the worklog-titles and roadmap files it reconciles. Pass it as the seat's `mustRead` (`review_fanout.js` §USAGE CONTRACT).
 
 | key | lens | mandate (findings: action FIX/ASK/PLAN, category bug/rule/improvement, `critical?`, file:line, description, rationale) |
 |---|---|---|
@@ -117,23 +118,21 @@ Workflow({
   args: {
     contextPrefix: "<diff --stat + changed-file list + the 3 pre-computed BLOCKER grep results>",
     agents: [
-      { key: "data-reach",      prompt: "<rubric + changed authored-field declarations with defaults + threshold comparisons, verbatim with file:line>", model: "sonnet", effort: "medium" },
-      { key: "wire-reach",      prompt: "<rubric + OLD+NEW signature lines (from the Step 0 parity capture) + new type declarations, verbatim with file:line>", model: "sonnet", effort: "medium" },
-      { key: "api-consume",     prompt: "<mandate + new-public-API list + call-site content>", model: "sonnet" },
-      { key: "worklog-roadmap", prompt: "<mandate + worklog-titles + roadmap Parts table>", model: "sonnet" },
-      { key: "doc-coverage",    prompt: "<mandate + changed-export/subsystem content>", model: "sonnet" }
+      { key: "data-reach",      prompt: "<rubric + changed authored-field declarations with defaults + threshold comparisons, verbatim with file:line>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
+      { key: "wire-reach",      prompt: "<rubric + OLD+NEW signature lines (from the Step 0 parity capture) + new type declarations, verbatim with file:line>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
+      { key: "api-consume",     prompt: "<mandate + new-public-API list + call-site content>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
+      { key: "worklog-roadmap", prompt: "<mandate + worklog-titles + roadmap Parts table>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
+      { key: "doc-coverage",    prompt: "<mandate + changed-export/subsystem content>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] }
     ]
   }
 })
 ```
 
-Both reachability lenses pin `sonnet/medium` — the engine's defaults, restated in the args so the pin is visible at the dispatch site. They are read-heavy enumeration against a rubric that resolves every classification decision up front, which is the ladder's sonnet profile; residual ambiguity at dispatch is what buys effort, and there is none left to buy. Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope.
-
-`api-consume` is line-precision work — demand verbatim file:line. Treat highest-stakes (critical) findings as candidates Claude verifies, not final truth.
+Every lens runs `git diff`/`git grep` itself, so each declares `tools: { add: ["Bash"] }` on the `review` shape. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
 
 ## Step 2: Present BLOCKER / WARN / INFO
 
-`review_fanout` returns deduped+sorted findings; merge in the standalone `parity` Agent()'s findings, the three Claude-side grep BLOCKER candidates, and any Step 0b boot-probe verdicts.
+`review_fanout` returns deduped+sorted findings; merge in the standalone `parity` Agent()'s findings, the three Claude-side grep BLOCKER candidates, and any Step 0b boot-probe verdicts. Treat every critical finding as a candidate Claude verifies, not final truth.
 
 **Re-run every UNREACHED probe before presenting it.** Take the `git grep` the finding quoted, run it Claude-side, and let the result set the tier: still empty → BLOCKER; returns a production hit → INFO, naming the reacher the lens missed; no probe stated, or it does not run → WARN, saying which. Never promote an UNREACHED on the lens's word alone — the whole finding rests on an absence, and an absence one intermittent `Grep` produced is not evidence.
 
@@ -144,4 +143,4 @@ Present as:
 
 **Never average across lenses, and issue no roll-up verdict.** Each lens reports its own outcome, set by its worst surviving finding — a clean `doc-coverage` does not soften a `parity` BLOCKER, and "5 of 6 lenses clean" is not a result. State each lens's worst finding separately.
 
-Then run the user-gated walkthrough per `agents/orchestrator_action_protocol.md` (Step 1.5 verify → FIX/ASK/PLAN per finding). Do NOT auto-run tests or auto-commit.
+Then run the user-gated walkthrough per `agents/orchestrator_action_protocol.md` Step 1.5 and Step 4. Do NOT auto-run tests or auto-commit.

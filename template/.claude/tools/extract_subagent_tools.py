@@ -8,7 +8,7 @@ Background: when a parent session dispatches a subagent via the Agent tool,
 the subagent's tool calls do NOT appear in the parent's JSONL — they live in
 a separate file at:
 
-    ~/.claude/projects/<sanitized-cwd>/<session_id>/subagents/agent-<agent_id>.jsonl
+    <login>/projects/<sanitized-cwd>/<session_id>/subagents/agent-<agent_id>.jsonl  (login: CLAUDE_CONFIG_DIR, default ~/.claude)
 
 Each line is a JSON object; assistant messages contain `content` arrays whose
 `tool_use` blocks carry the tool `name`. This module returns those names in
@@ -25,6 +25,8 @@ Usage from CLI:
 
     python3 extract_subagent_tools.py <agent_id> [<session_id>]
     # Prints one tool name per line in call order. Empty output if not found.
+    python3 extract_subagent_tools.py --session <session_id>
+    # Same, for a headless `claude -p` child's own session transcript.
 
 Discovery: if `session_id` is omitted, the script globs all session
 subdirectories under the project root for the matching agent file. With
@@ -39,7 +41,10 @@ import re
 import sys
 from pathlib import Path
 
-PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_registry import session_projects_dir  # noqa: E402
+
+PROJECTS_ROOT = Path(session_projects_dir())
 
 
 def sanitize_cwd(cwd: str | os.PathLike[str]) -> str:
@@ -75,11 +80,15 @@ def find_subagent_jsonl(
 
     target_name = f"agent-{agent_id}.jsonl"
 
+    def in_session(sess: Path) -> Path | None:
+        direct = sess / "subagents" / target_name
+        return direct if direct.exists() else None
+
     # Path 1: O(1) direct lookup
     if session_id and project_dir:
-        candidate = Path(project_dir) / session_id / "subagents" / target_name
-        if candidate.exists():
-            return candidate
+        found = in_session(Path(project_dir) / session_id)
+        if found:
+            return found
 
     if not PROJECTS_ROOT.exists():
         return None
@@ -90,9 +99,9 @@ def find_subagent_jsonl(
         for project in PROJECTS_ROOT.iterdir():
             if not project.is_dir():
                 continue
-            candidate = project / session_id / "subagents" / target_name
-            if candidate.exists():
-                return candidate
+            found = in_session(project / session_id)
+            if found:
+                return found
     else:
         # Wide scan: any project, any session
         # Use glob rather than rglob for performance — depth is fixed.
@@ -102,11 +111,19 @@ def find_subagent_jsonl(
             for sess in project.iterdir():
                 if not sess.is_dir():
                     continue
-                candidate = sess / "subagents" / target_name
-                if candidate.exists():
-                    return candidate
+                found = in_session(sess)
+                if found:
+                    return found
 
     return None
+
+
+def find_session_jsonl(session_id: str) -> Path | None:
+    """A headless `claude -p` child's own transcript, `<project>/<session_id>.jsonl`, under any project."""
+    if not session_id or not PROJECTS_ROOT.exists():
+        return None
+    return next((p / f"{session_id}.jsonl" for p in PROJECTS_ROOT.iterdir()
+                 if (p / f"{session_id}.jsonl").is_file()), None)
 
 
 def extract_tool_names(
@@ -128,7 +145,9 @@ def extract_tool_names(
     classification belongs to the caller (e.g. score_routing_battery.py
     has its own SKIP_TOOLS set).
     """
-    jsonl_path = find_subagent_jsonl(agent_id, session_id, project_dir)
+    # No agent id names a headless child: its tools are its own session's.
+    jsonl_path = (find_subagent_jsonl(agent_id, session_id, project_dir) if agent_id
+                  else find_session_jsonl(session_id))
     if jsonl_path is None:
         return []
 
@@ -169,9 +188,17 @@ def extract_tool_names(
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--session"]:
+        if len(sys.argv) != 3:
+            sys.stderr.write("usage: extract_subagent_tools.py --session <session_id>\n")
+            return 2
+        for t in extract_tool_names("", sys.argv[2]):
+            print(t)
+        return 0
     if len(sys.argv) < 2:
         sys.stderr.write(
             "usage: extract_subagent_tools.py <agent_id> [<session_id>]\n"
+            "       extract_subagent_tools.py --session <session_id>\n"
         )
         return 2
 

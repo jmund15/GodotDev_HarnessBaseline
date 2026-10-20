@@ -1,12 +1,7 @@
 ---
 name: VFX Patterns
 description: >-
-  Auto-load for VFX, animation, or visual composition work — particles, tweens, tints,
-  flashes, explosions, or the VisualComposer/VisualSlotNode/VisualQuery/TintByQuery/
-  VisualEffectController/AnimationOrchestrator surface. Also load when diagnosing why a
-  tint isn't applying or a flash gets stomped. SKIP for authoring new sprite/texture
-  assets (use `sprite_authoring`) or authoring new prototype shaders (use
-  `shader_authoring`).
+  Use for VFX, animation or composition, particles, tweens, tints, flashes, explosions, sprite effect materials or missing tint/flash behavior. SKIP new sprite assets; use sprite_authoring. SKIP new shaders; use shader_authoring.
 user-invocable: false
 ---
 
@@ -151,7 +146,9 @@ Central hub for transient timed effects such as flashes and tint pulses. Unlike 
 3. `FinalColor = BaseColor * EffectColor`
 4. On finish: `applier.End()`, remove effect, reset to base
 
-**IEffectApplier**: future effect kinds (glow shaders, particles, gradients) ship their own appliers; the controller composes blend modes and tracks sprites.
+**IEffectApplier**: an applier owns one effect kind's tween mechanics; the controller composes blend modes and tracks sprites. Glow and emission are handle channels the controller alone writes, never an applier that owns a shader material.
+
+**Emission channel**: every effect carries `EmissionColor` and `EmissionWeight` (0–1, default 0), driven by its own envelope. The controller composes them beside the colour — an Override winner, else a Mix combine — and writes `effect_emission` on every tracked sprite, the nested handles `Modulate`'s inheritance filter skips included. Each bound sprite's material therefore whites out at weight 1, and a sprite no binder bound keeps its built-in material and ignores the value.
 
 **Built-in Effects:**
 - `FlashEffect` — on/off flash cycles
@@ -200,6 +197,14 @@ queryA.Or(queryB)
 
 When `Rig` is null, the slot falls back to a recursive sprite walk (tagless, partless handles) and applies overrides to the first sprite found. Both paths use `VisualNodeAggregator.CollectSprites` for the recursive walk (no type-NAME string match — that bug was fixed in the refactor).
 
+### 8. Sprite Effect Material — Bloom-Based Glow
+
+Read [`reference/glow_and_particles.md`](reference/glow_and_particles.md) §8 before binding, tinting or authoring a sprite glow: the sprite-material binder, the contributor scopes, the tint-the-source rule and the HDR glow threshold.
+
+### 9. GPU Particles — Silent-Visibility Gates
+
+Read [`reference/glow_and_particles.md`](reference/glow_and_particles.md) §9 when a `GPUParticles3D` emitter runs but shows nothing: it lists the silent gates and the order to walk them before tuning amount, scale or lifetime.
+
 ## Consumer-owned visual systems
 
 Ability identities, one-shot effects, bloom helpers, and authored visual data belong to the consuming project. Locate their roots through `skills/project_subsystems/SKILL.md`; do not copy another project's classes or folder layout into this framework reference.
@@ -213,6 +218,15 @@ Directional: "run_left", "run_up", "run_downRight"
 Style variant: "armored_run_left" or "run_left_armored"
 Fallback chain: "run_left" → "run" → (skip)
 ```
+
+### Direction Authoring (facing vs clips)
+
+Two orthogonal channels, one shared home (`FacingProfile3D` at `Jmodot/Core/Visual/Sprite/` — mirror channel `ArtFacesRight`, rotation channel `ArtBaseAngleOffsetDegrees`):
+
+- **Consumers** (body, charge and one-shot visuals, hand rigs, particle emitters, plus Jmodot's `HostFacingMirror3D`/`FacingFlipController`) expose one `[Export] FacingProfile3D? FacingProfile`. Null = right-facing art, 0° offset (code defaults). A rig shares one `.tres` across its consumers, so the "which way does my art face" answer is authored once.
+- **Clip selection is a different surface**: the orchestrator's `DirectionSet` (null = one-directional; a direction-set resource selects 8-direction clip variants). A profile never picks clips; a `DirectionSet` never mirrors art.
+- **Iso-tilt contract for any NEW rotation writer**: cache the pivot's authored basis at `_Ready`, then `pivot.Basis = cachedBasis * new Basis(Vector3.Up, angle)` + `ResetPhysicsInterpolation()` on flip change. Never assign `Rotation` on a node that may carry the 45° tilt — the mistake passes every automated gate and only shows at playtest.
+- Mirror targets resolve through `SpriteTargetSet3D` (all-or-nothing, `SpriteBase3D` only, resolve once at `_Ready`); rotation pivots stay plain `Node3D`.
 
 ### Sprite Sheet Rows
 - AnimationPlayer keys ONLY `frame_coords:x` (horizontal frame)
@@ -237,6 +251,7 @@ VisualItemData.ModulateOverride → VisualSlotNode.ApplyOverrides
 ```
 controller.PlayEffect(VisualEffect) → IEffectApplier.Begin (Tween + handle)
 each frame: Final = BaseColor * effectColor (mix product or override winner)
+            controller → effect_emission on every tracked sprite
 ```
 
 ### Slot Wiring Pattern (designer-facing)
@@ -247,21 +262,11 @@ each frame: Final = BaseColor * effectColor (mix product or override winner)
 
 ## Key Interfaces
 
-| Interface | Purpose | Location |
-|-----------|---------|----------|
-| `IVisualNodeProvider` | Producer of typed VisualNodeHandles + add/remove/visibility events | `Jmodot/Core/Visual/` |
-| `IVisualEffectService` | Base-color storage + persistent tint registry | `Jmodot/Core/Visual/Effects/` |
-| `IEffectApplier` | Per-effect lifecycle (Begin/End) — abstracts tween mechanics from controller | `Jmodot/Core/Visual/Effects/` |
-| `IAnimComponent` | Play/query named animations (CompositeAnimatorComponent and leaves both implement) | `Jmodot/Core/Visual/Animation/Sprite/` |
-| `ISpriteComponent` | Sprite dimension/texture queries | `Jmodot/Core/Visual/Sprite/` |
+Read [`reference/interfaces_and_files.md`](reference/interfaces_and_files.md) §Key Interfaces to find the interface a visual provider, effect applier, material contributor or animation component implements, and where it lives.
 
 ## File Reference
 
-| System | Key Files |
-|--------|-----------|
-| **Composition** | `VisualComposer.cs`, `VisualSlotNode.cs`, `SlotKey.cs`, `VisualItemData.cs`, `VisualRig.cs`, `VisualPartBinding.cs`, `VisualNodeHandle.cs`, `VisualQuery.cs` |
-| **Animation** | `AnimationOrchestrator.cs`, `CompositeAnimatorComponent.cs`, `AnimatedSprite3DComponent.cs`, `AnimationVisibilityCoordinator.cs` |
-| **Effects** | `VisualEffectService.cs`, `VisualEffectController.cs`, `IEffectApplier.cs`, `Appliers/ModulateTweenApplier.cs`, `FlashEffect.cs`, `TintEffect.cs`, `VisualNodeAggregator.cs` |
+Read [`reference/interfaces_and_files.md`](reference/interfaces_and_files.md) §File Reference to find the key files of composition, animation, effects and sprite material.
 
 Consumer-owned visual data and effect classes live under paths declared in `skills/project_subsystems/SKILL.md`.
 

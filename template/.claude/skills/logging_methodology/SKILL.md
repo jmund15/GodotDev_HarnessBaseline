@@ -1,19 +1,15 @@
 ---
 name: Logging Methodology
 description: >-
-  Auto-load for the producer-side contract on JmoLogger call sites — Info-vs-Debug level
-  choice, the mandatory [Subsystem] prefix, [DIAG-<id>] composition — and when reviewing a
-  `.cs` change that adds log calls. Pairs with `/analyze_godot_logs` (consumer-side). SKIP
-  for `/analyze_godot_logs` invocation itself and `[DIAG-]` cleanup post-diagnosis (use
-  debugging Phase 6).
+  Use when adding or reviewing JmoLogger calls or choosing log levels, subsystem tags or diagnostic tags. SKIP log analysis; use /analyze_godot_logs. SKIP post-diagnosis cleanup; use debugging.
 user-invocable: false
 ---
 
 # Logging Methodology
 
-The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_logs` — the consumer relies on every convention in this doc to slice the corpus surgically.
+The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_logs` for log reading.
 
-> **Why this skill exists:** the level threshold and `--target` slicing can only be as good as the call sites. A corpus whose levels and tags are assigned by gut cannot be sliced by anything.
+> **Why this skill exists:** consumers need consistent levels and tags for filtering.
 
 ## Level Rules — assign by category, not by gut
 
@@ -34,7 +30,7 @@ The producer-side contract for `JmoLogger` calls. Pairs with `/analyze_godot_log
 - Logic-Domain tests cannot cover Error-path guards — those are integration/playtest verified only.
 - Never demote a Warning to Error to "make it louder." That turns every test exercising the path into a failure.
 
-**Litmus when unsure Info vs Debug:** *"Will this still be useful in 50 plays at the current frequency, or will it become wallpaper?"* Wallpaper → Debug. Signal → Info.
+**Litmus when unsure Info vs Debug:** Will this matter in typical play sessions, or become noise? Noise → Debug. Meaningful events → Info.
 
 ## Mandatory `[Subsystem]` prefix
 
@@ -101,11 +97,11 @@ What the `/analyze_godot_logs` flag does depends on what the call site emits.
 
 ## Anti-patterns
 
-1. **Every-frame logs** — never inside `_Process`, `_PhysicsProcess`, `Tick`, or update loops. Even Debug. Move to a transition edge or a periodic-sampling guard.
+1. **Every-frame logs** — never inside `_Process`, `_PhysicsProcess`, `Tick`, or update loops. Even Debug. Move to a transition edge or a periodic-sampling guard. A log reached through a call counts: before a per-tick loop calls an API, check whether that API logs each call (a per-tick drain through a setter that logs each change). Then log the drain's start, stop or threshold edges and keep the per-tick calls quiet.
 2. **State dumps** — `Info("current health is 30")` when health has not changed. Log the transition (`[Health] {target} health 35 → 30 from {source}`), not the current value.
 3. **Narrative / developer talk** — `Info("checking branch A because foo")`. Either it is a decision point (→ Debug with `[Subsystem]`) or noise (delete).
-4. **Unprefixed Info** — invisible to subsystem filters.
-5. **Info catch-all for what should be Debug** — repeated operation detail belongs at Debug. Keep Info for state transitions and user-visible events.
+4. **Unprefixed Info** — the single biggest source of analyzer blind spots.
+5. **Info catch-all for what should be Debug** — repeated per-operation narrative at Info. Demote to Debug; let `DebugEnabled=true` + `--target [Inventory]` retrieve when needed.
 6. **Demoting Warning to Error to be louder** — fails tests. See `archive_jmologger_gotcha.md`.
 
 ## Workflow recipes
@@ -154,11 +150,7 @@ If (a), author the missing logs at the state boundary per Level Rules and re-run
 
 ## When this skill loads
 
-Auto-load on the triggers in the frontmatter description. Skip for:
-
-- `/analyze_godot_logs` invocations (consumer-side; the command itself owns its inference rules).
-- Phase 6 cleanup of `[DIAG-]` instrumentation (covered by `Debugging` Phase 6 + `archive_diagnostic_log_cleanup_discipline.md`).
-- Pure log-reading tasks where no new instrumentation is being authored (load `Debugging` skill instead for the read-side discipline).
+Beyond the description's SKIP clauses, skip pure log-reading tasks where no new instrumentation is being authored (load `Debugging` skill instead for the read-side discipline).
 
 ## Cross-references
 

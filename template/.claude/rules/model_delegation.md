@@ -26,5 +26,5 @@ and dispatch, so its own tier matters more than its typing speed.
 Pin model+effort explicitly on any dispatch — never inherit session defaults.
 The `Agent` tool pins `model` but carries effort as prompt text only (soft pin);
 the Workflow engine's `agent()` has a real `effort` option — when a hard effort
-pin matters, dispatch via Workflow. Full fan-out selection doctrine (tier
-ladder, carve-outs, engine floors): `skills/parallel_agents/SKILL.md` §5.
+pin matters, dispatch via Workflow. Full fan-out selection doctrine:
+`skills/orchestration/SKILL.md` §5.

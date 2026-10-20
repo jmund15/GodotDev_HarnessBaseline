@@ -32,7 +32,7 @@ paths:
 - *Canonical example:* `Jmodot.Core.Combat.CombatFactoryDefaults` — six combat factories resolve project defaults via static fields wired from {{PROJECT_NAME}} autoload.
 - *Test isolation:* Every static seam owns its own `Reset()` so Jmodot-only tests don't depend on the consuming project's reset path.
 - *No premature deferral:* before writing "X varies per project — consumers resolve their own", grep `Jmodot.Core` and `BBDataSig` for the abstraction; if the framework already committed to it, integrate it now (`feedback_dont_defer_existing_framework_abstractions`).
-- *No carve-outs:* "Temporary" violations during refactor are not accepted — fix the design instead. See auto-memory `jmodot_framework_boundary_rule.md` for the no-carve-out pattern.
+- *No carve-outs:* "Temporary" violations during refactor are not accepted — fix the design instead. See auto-memory `archive/jmodot_framework_boundary_rule.md` for the no-carve-out pattern.
 
 ## Static Seam Pattern (full shape)
 
@@ -64,6 +64,6 @@ public override void _EnterTree()
 ## Touchpoints
 
 - [`../skills/architecture_philosophy/SKILL.md`](../skills/architecture_philosophy/SKILL.md) §"Default Value Pattern" — framework-boundary caveat lives there as the canonical home for the pattern.
-- Auto-memory `jmodot_combat_factory_defaults_seam.md` — six-factory inventory.
+- Auto-memory `archive/jmodot_combat_factory_defaults_seam.md` — six-factory inventory.
 
 <!-- retire-when: review-by: 2027-02-23 -->

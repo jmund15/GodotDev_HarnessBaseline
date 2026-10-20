@@ -7,7 +7,7 @@ Audit recent doc-workflow output for write_doc rule violations. Advisory; does N
 
 ## When to use
 
-- After `/doc_full`, `/doc_architecture`, `/doc_retrospective`, or any brainstorm or design-doc workflow that writes through `write_doc` completes — verify the output didn't drift from the system-prompt rules.
+- After an idea or architecture brainstorm run, `/doc_full`, `/doc_architecture` or `/doc_retrospective` completes — verify the output didn't drift from the system-prompt rules.
 - Periodically as a drift watch — combine with `/eval_dashboard` cadence.
 - After a `models.yaml` (ai-worker host) or `write_doc.*.md` change to confirm the change took effect on real output. This audit itself is Grep-only over vault docs — it runs fine with ai-worker offline.
 
@@ -18,7 +18,8 @@ Audit recent doc-workflow output for write_doc rule violations. Advisory; does N
 Bash to enumerate docs modified in the last 7 days (or since last audit). Three doc surfaces to scan:
 
 ```bash
-DOCS_ROOT="{{VAULT_ROOT}}/DevProjects/{{PROJECT_NAME}}/Claude"
+VAULT="$(cygpath -u '{{VAULT_ROOT}}' 2>/dev/null || echo '{{VAULT_ROOT}}')"
+DOCS_ROOT="$VAULT/DevProjects/{{PROJECT_NAME}}/Claude"
 find "$DOCS_ROOT/BrainstormingDesigns/" -name "*.md" -mtime -7 -not -name "_*"
 find "$DOCS_ROOT/Documentation/" -name "Architecture.md" -mtime -7
 find "$DOCS_ROOT/Documentation/" -name "Retrospective.md" -mtime -7
@@ -36,7 +37,7 @@ For each doc identified in Step 1, run these Grep-anchored checks. Use the `Grep
 | **V2** Vague rejection reasoning | `less suitable\|didn't fit\|more complex\|too complex\|wasn't right\|not ideal\|suboptimal` (within 3 lines of `rejected\|considered\|alternative\|approach`) | **MEDIUM** | `write_doc.design.md` "For every rejected approach, give a SPECIFIC reason... 'Less suitable' / 'didn't fit' / 'complex' are NOT specific reasons" |
 | **V3** Idea-pool enumeration | Markdown tables under `## Idea Pool\|## Bonus Ideas\|## Room Ideas\|## Pool` headings with >15 data rows | **MEDIUM** | `write_doc.design.md` "Idea pools: commit to a target count + 5–10 representative entries. Do not exhaustively enumerate" |
 | **V4** Line-count overrun | `wc -l` on doc body; design >1500 lines, architecture >1200 lines | **LOW** | `write_doc.design.md` "~1200–1400 line target"; `write_doc.architecture.md` "~600–1000 lines, surface in Open Questions if >1200" |
-| **V5** Stale model reference | `kimi\|highest accuracy` outside the doc's Revision History / Changelog sections | **LOW** | Cleanup — references model that's no longer the default since 2026-05-11 |
+| **V5** Stale model reference | `kimi\|highest accuracy` outside the doc's Revision History / Changelog sections | **LOW** | Cleanup — references model that's no longer the default |
 
 For V2, the proximity rule matters — `Grep` with `-C 3` then post-filter for the rejection-context anchor words.
 
@@ -70,14 +71,14 @@ After per-doc tables, render an overall verdict:
 | Total findings | Verdict |
 |---|---|
 | 0 across all docs | **PASS** — workflow is calibrated; no drift detected. |
-| Only LOW (1–3 total) | **PASS-D** — advisory cleanup at next doc revision; no immediate action. |
-| Any HIGH OR ≥4 MEDIUM | **FLAG** — recommend reviewing the relevant skill/prompt for drift. Common causes: model regression (check `models.yaml` `doc_writer` on the ai-worker host); prompt rule weakened (check `write_doc.{design,architecture,retrospective}.md`); skill bypass (the calling workflow's rationale spot-check not firing). |
+| Only LOW, or MEDIUM findings each confined to one doc | **PASS-D** — advisory cleanup at next doc revision; no immediate action. |
+| Any HIGH, or a MEDIUM finding that recurs across docs | **FLAG** — recommend reviewing the relevant skill/prompt for drift. Common causes: model regression (check `models.yaml` `doc_writer` on the ai-worker host); prompt rule weakened (check `write_doc.{design,architecture,retrospective}.md`); skill bypass (the calling workflow's rationale spot-check not firing). |
 | Any check throws errors / files unreadable | **INCOMPLETE** — fix tooling before re-running. |
 
 ### Step 5: Surface to worklog if FLAG
 
 If verdict is FLAG, propose a worklog item naming the specific drift pattern (not the individual doc):
-- *"Investigate doc-workflow drift: 4 MEDIUM `V2 Vague rejection` findings across 3 docs since 2026-05-12 — possible prompt-rule regression"*
+- *"Investigate doc-workflow drift: <count> MEDIUM <check> findings across <docs> since <audit date> — possible prompt-rule regression"*
 
 The worklog item carries the audit date so the next investigation can compare against this baseline.
 
