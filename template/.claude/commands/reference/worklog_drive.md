@@ -2,54 +2,48 @@
 disable-model-invocation: true
 ---
 
-# `/worklog` — DRIVE recipe: mode dispatch, scoring and selection
+# `/worklog` — DRIVE recipe: mode dispatch and selection
 
-Read at a `/worklog drive [<N> | scope:N | items:N | <names>] [--plan-only]` invocation and execute from these steps; do not drive from memory. Execution continues in `worklog_drive_execute.md` at Step 5, unless `--plan-only` stopped the run at 4g. This file owns the `drive` form; `commands/worklog.md` owns the tier model and the cross-cutting rules; entry formats live in `worklog_formats.md`.
+**Input:** the `/worklog drive [<N> | scope:N | items:N | <names>] [--plan-only]` argument forms.
+**Enters at:** intake (selection), then each item runs the spine.
+**Owner stop:** the 4b packet when the fill-set boundary is contested, and `--plan-only` after 4e.
 
-The agentic prioritization-and-execution op: read the worklog, select logged items, drive them to commits. **Execution is the default — the invocation is the execution directive** (`feedback_honor_execution_directive`, `feedback_single_gate_no_secondary_approval`). Mode D (choose-among) still asks when the fill-set is ambiguous; that is the one selection gate. Once selection settles, never ask "start now?".
+Run the stages, halts, slices and close in [`drive_spine.md`](../../skills/_brainstorm_shared/drive_spine.md). This file holds only the selection and plan body a worklog item adds.
+
+Read at a `/worklog drive` invocation and execute from these steps. Execution continues in `worklog_drive_execute.md` at Step 5; `--plan-only` stops after 4e, before tackle-history is written. This file owns the `drive` form; `commands/worklog.md` owns the tier model and the cross-cutting rules; entry formats live in `worklog_formats.md`.
+
+The agentic prioritization-and-execution op: read the worklog, select logged items, drive them to commits. **Execution is the default**: the invocation is the execution directive (spine §Stages). The 4b packet still asks when the fill-set is contested; that is the one selection gate.
 
 **Mode dispatch, ordered — first match wins, after stripping `--plan-only`:**
 
-1. **Argument empty → Survey.** Score ready items, propose 2–3 batches, the user picks. Never executes (Step 4-Survey).
-2. **The WHOLE argument matches `^(\d+|scope:\d+|items:\d+)(\s+(scope:\d+|items:\d+))*$` → Budget.** Bare `<N>` ≡ `scope:N`. `scope:` and `items:` combine; the **more restrictive** limit binds — stop filling as soon as either is hit. On ambiguity `scope:` wins (better proxy for one-session capacity). Runs the scoring engine + Modes A–D, then continues into execution.
-3. **Otherwise → Named-items.** Comma-split, fuzzy-match each name against ready Active + Ledger items (multi-match → ask, like COMPLETE). Selection is the user's, so scoring and Modes C/D don't apply. Then execute.
+1. **Argument empty → Survey.** Surface the distinct actionable batches supported by ready-item evidence, explain why each is useful, and let the user choose. Never executes (Step 4-Survey).
+2. **The WHOLE argument matches `^(\d+|scope:\d+|items:\d+)(\s+(scope:\d+|items:\d+))*$` → Budget.** Bare `<N>` ≡ `scope:N`. `scope:` and `items:` combine; the **more restrictive** user-supplied limit binds — stop filling as soon as either is hit. Use the user's limits as budgets, not ranking signals. Then continue into execution.
+3. **Otherwise → Named-items.** Comma-split, fuzzy-match each name against ready Active + Ledger items (multi-match → ask, like COMPLETE). Selection is the user's; do not rank the named items. Then execute.
 
-**`--plan-only`** (any mode with a selection): stop at the drafted plan body (4d) — non-executing. `drive 3 --plan-only` is the single-session plan-to-approval default.
+**`--plan-only`** (any mode with a selection): stop after 4e's drafted plan and any surfaced pre-execution gate, before 4f logs a `tackle` event. A plan that did not run has nothing to log. `drive 3 --plan-only` is the single-session plan-to-approval default.
 
-**Depth is scope-proportional.** Each selected item is driven at its ladder tier per [`_brainstorm_shared/execution_depth.md`](../../skills/_brainstorm_shared/execution_depth.md); that file's rule 1 (independent litmuses stay the binding floor) governs every gate this op would otherwise reduce.
+Each selected item is driven at the depth [`_brainstorm_shared/execution_depth.md`](../../skills/_brainstorm_shared/execution_depth.md) §Admission table assigns.
 
-**Scope-4: never selected, never driven.** Budget mode keeps the −5 score, the Mode B refusal, and the 4c big-ticket flag; named-items mode refuses a named scope-4 item with the same flag. Route to `/design_drive` (no design doc yet) or `/part_drive` (roadmap Part exists), against the item's linked Plan doc.
+**Scope-4: never selected, never driven.** Surface scope-4 work separately from the ready fill-set and route it to `/design_drive` (no design doc yet), `/part_drive` (roadmap Part exists) or `/feature_drive` (design settled, no Part admitted), against the item's linked Plan doc. Named-items mode applies the same redirect to an explicitly named scope-4 item.
 
-### Step 1 — Read the open tiers
+### Step 1 — Build the shortlist from the title mirror
 
-`READ(Worklog.md)` — full content (date, context, source, where, class, scope), not just titles. Score `[ ]` items only. **Partition into ready vs waiting:** no `When:` sub-bullet → **ready** (scored); `When: after ...` / `When: future` → **waiting** (skip scoring entirely, list in output only). Only ready items flow through Steps 2–4.
-
-**Which tiers to read is mode-dependent.** Survey and Budget score `## Active` alone — the ready pool IS the candidate set, and scoring 200 Ledger items to surface 3 is what the tier split exists to stop. **Named-items mode reads `## Active` + `## Ledger`**: the user named the work, so tier is irrelevant and a name that resolves only in the Ledger must still match. A named Ledger item is driven in place and promoted to Active for the duration, so its `Where:` overlap makes it hot at the next rebalance.
+Read `.claude/worklog-titles.md` and parse both tier sections into a typed inventory of title, scope, class and `When`; reconcile ready/waiting totals and source revision against the live Worklog. Survey and Budget shortlist from that metadata, then read only the full `Worklog.md` blocks for shortlisted or contested items before selection. The mirror is a discovery index, not a spec; never select from title-only evidence. Recheck the Worklog revision before reporting and refresh the inventory if it changed.
 
 ### Step 2 — Gather context signals
 
-In parallel:
-- `git status --short` — items whose `Where:` paths overlap uncommitted changes are HOT.
-- `git log --oneline -10` — items whose context references recent commit topics are warm.
-- Active-item ages — added > 14 days ago = bit-rot candidates.
-- Domain frequencies — domains with 2+ `[ ]` items are batch / cohesion candidates.
-- **Class + scope distribution.** Many scope-1 items in one domain → quick-win sweep.
+Inspect evidence for each shortlisted candidate and contested item:
+- Check current worktree changes against its `Where:` paths and cite any overlap.
+- Inspect commits relevant to each item's `Where:` / `Source:` since its recorded state or last verified blocker; state the searched range.
+- Verify a named `Deferred: <blocker>` against the owning change or commit, searching enough history to reach that event. A recent commit alone does not prove the blocker cleared.
+- Flag an item as stale when its named source, owner, dependency or expected behavior changed; age alone does not establish rot.
+- Treat items sharing an actual change seam or verification surface as cohesion candidates; domain labels alone do not make a batch.
+- Record each signal with its evidence; Step 3 owns how they rank.
+- Inspect tackle history by title and date to identify a prior incomplete attempt. A recently tackled item remains eligible when its blocker or diagnostic state changed; otherwise surface the prior attempt and avoid blind thrash.
 
-### Step 3 — Score every ready item
+### Step 3 — Prioritize every ready item
 
-Per-item signal sum — the **shared scoring engine** Survey and Budget both consume. **Named-items mode skips Steps 2–3 entirely.**
-
-- **+3** if `Where:` paths or `Source:` refs overlap `git status` (hot-context).
-- **+3** if `Source:` carries a `Deferred: <blocker>` clause whose blocker has since cleared — the named
-  drive shipped, the file it held is committed, the PR merged. A deferral records work that was ready and
-  blocked, and nothing re-scores it when the block lifts, so the log's most-ready items sit at the bottom.
-  Check the blocker's own words against `git log --oneline -20` before granting it.
-- **+3** if the item has a `Quick-win:` sub-bullet (triage-flagged; explicit user intent). Stacks with hot-context.
-- **+2** if `Source:` text matches recent commit messages (warm-context).
-- **+2** if 2+ items share its `### Domain` section (cohesion candidate).
-- **+1** per scope point above 1 (scope-3 = +2, scope-2 = +1, scope-1 = 0) — at equal heuristic weight, prefer higher-impact work. This works *against* quick-win-flagged scope-1 items; the +3 quick-win bonus restores parity.
-- **−5** if scope == 4 — effective rule-out; the big-ticket flag handles scope-4 regardless of score.
-- **−2** anti-thrash penalty if the item has an **unpaired** `tackle` event in `.claude/worklog-tackle-history.jsonl` within the last 14 days. Unpaired = a `tackle` for this title with no later `completion` for the same title. `Read` the JSONL, filter to the last 14 days by `date`, check for unpaired matches per the 4f schema. Absent or empty file = no penalties (cold start).
+**Named-items mode skips Steps 2–3.** For Survey and Budget, compare shortlisted ready items by readiness, evidence, dependencies, write-set fit, user intent and effort fit. State what each choice displaces. Group items only where evidence supports a choice. A `Quick-win:` flag is user intent, not a bonus, and does not outrank a live blocker. Emit no scores. A user's `scope:N` and `items:N` values constrain the fill-set only; the more restrictive target binds.
 
 ### Step 4 — Fork on mode
 
@@ -59,41 +53,31 @@ Empty argument → **Step 4-Survey**; budget target → **Step 4-Budget** (4a–
 
 ### Step 4-Survey — Batch and propose (no target)
 
-**Batch the scored items** in heuristic priority order, first match wins per item:
+Group ready items as Step 3 directs, keep each item in one batch and explain the evidence and trade-off. Surface scope-4 items separately and route them to `/design_drive` or `/part_drive`, citing the linked Plan doc.
 
-0. **Quick-win-flagged batch** (highest priority; fires only when ≥1 flagged item exists): items carrying `Quick-win:`, as a dedicated batch above all others named "Batch QW — flagged quick-wins".
-1. **Hot-context batch**: `Where:` / `Source:` overlapping current `git status` or recent commits. Flagged items also matching hot-context stay in batch 0 — never double-list.
-2. **Domain-cohesion batch**: 2+ items sharing a `### Domain`. Bonus weight when they share a class (3 `refactor` items in `vfx`).
-3. **Quick-wins batch** (scope-1 sweep): scope-1 items across any domain *without* the flag; batch 0 takes precedence.
-4. **Stale-item batch**: the 3–5 oldest `[ ]` items regardless of cohesion or scope.
-5. **Big-ticket flag**: any single scope-4 item. Don't batch — route to `/design_drive` or `/part_drive`, citing the linked Plan doc.
-
-Active has ≤ 2 `[ ]` items → skip batching; print them with "Want to drive one of these? (pass `<N>` / `items:N`, or name it, to go straight in)".
+When all ready items form one clear choice or have no useful alternative grouping, show them directly; otherwise offer coherent batches. If there is no useful batch, list the ready items and let the user choose.
 
 **Output proposal:**
 ```
-Worklog drive — 3 candidate batches (<n> ready items; <m> waiting).
+Worklog drive — <n> evidence-backed choices (<r> ready items; <w> waiting).
 
-Batch A — <name> (<n> items, mix of scope <range>)
-  Why: <one-line rationale citing the heuristic>
+Batch A — <name> (<n> items)
+  Why: <evidence and why this grouping is useful>
   Items:
     - <class>/<scope> · <title> (added <date>; <domain>)
     ...
 
-Batch B — ...
+<Additional supported batches, if useful alternatives exist>
 
-Batch C — ...
+Scope-4 (not driven): <title> — see [[Plan doc]]. Route to /design_drive or /part_drive.
 
-Big-ticket (won't batch): <title> — scope 4, see [[Plan doc]]. Route to /design_drive or /part_drive?
-
-Waiting (not scored):
+Waiting (not ranked):
   - <title> [after: <condition>] (<domain>)
-  - <title> [future] (<domain>)
   (omit this section entirely if no waiting items)
 
-Pick a batch (A/B/C) to drive, or re-run with `<N>` / `items:N` to go straight in.
+Pick a batch to drive, or re-run with `<N>` / `items:N` to go straight in.
 ```
-Rationales cite *which heuristic* fired (hot-context, cohesion, quick-wins, age) so the user can sanity-check the priority logic.
+Rationales cite the matched paths, dependency, user flag or shared change/verification surface, and name the trade-off. Do not use an arbitrary score or batch count.
 
 **On batch pick:** re-enter at 4a with that batch's items as the fill-set, then 4c–4g and execute. Its context blocks are already loaded — don't re-read them.
 
@@ -105,58 +89,19 @@ Survey mode does **not** log to tackle-history — it commits to nothing until a
 
 #### 4a — Select the fill-set
 
-**Budget mode:** add ready items by descending Step-3 score until the binding target is reached (scope sum hits `scope:N`, or item count hits `items:N`, whichever comes first). Two items tied at the inclusion boundary → surface both as "contested alternates" in 4b.
+**Budget mode:** select ready items by grounded priority and the user's budget, stopping when either user-supplied target binds (scope sum reaches `scope:N` or item count reaches `items:N`). If an equally viable alternative changes the fill-set at that boundary, surface the contested choice in 4b. Show the evidence and trade-off without a point sum.
 
-**Named-items mode:** comma-split; fuzzy-match each name against ready `[ ]` items in Active or Ledger. A name matching 2+ items → list and ask, exactly as COMPLETE does. A name matching none → say so and stop rather than substituting a near-miss. The fill-set is what the user named — no scoring, no target. Skip 4b (Modes C/D are heuristics the user has overridden); go to 4c.
+**Named-items mode:** comma-split; fuzzy-match each name against ready `[ ]` items in Active or Ledger. A name matching 2+ items → list and ask, exactly as COMPLETE does. A name matching none → say so and stop rather than substituting a near-miss. The fill-set is what the user named — no scoring, no target. Skip 4b (its packet is a heuristic the user has overridden); go to 4c.
 
 **Never include scope-4 items in either mode** — they are flagged in 4c and routed.
 
-#### 4b — Classify pick mode (budget mode only)
+#### 4b — Confirm or ask (budget mode only)
 
-Priority order, first match wins:
-
-**Mode A — `empty-state`.** Active has 0 ready items:
-```
-Worklog clear: no ready items in Active.
-- <m> waiting (after: ...): /worklog show all to review
-- <k> in Future Scope: /worklog show all to review
-```
-Stop. If waiting items exist (`m > 0`), also suggest `/worklog unblock <condition>` for each condition recent commits might satisfy.
-
-**Mode B — `scope-4-only`.** Top-scored item is scope-4 and no viable smaller fill-set exists. Refuse and route:
-```
-Top candidate is scope-4 (one-session viability cap is scope-3).
-
-  <title> — <domain> · scope 4
-  Plan doc: [[<doc>]]
-
-Recommended: /design_drive (no design doc yet) or /part_drive (roadmap Part exists), against the linked plan doc. Or: re-run with a larger `items:N` target to surface smaller candidates.
-```
-Stop.
-
-**Mode C — `auto-confirm`.** Fill-set unambiguous — a single dominant item (top score ≥ 4, second-place < 60% of top) OR a multi-item fill-set with no boundary tie. Print and proceed to 4d:
-```
-Driving: <fill-set summary> — total scope ~<sum>
-  Why: <rationale citing the dominant heuristic(s)>
-  Scores: <per-item score list>
-```
-
-**Mode D — `choose-among`.** Ambiguous — a boundary tie, or top score < 4 with no clear winner:
-```
-Proposed fill-set (target: <target>):
-  - <class>/<scope> · <title>  [score <s>; <heuristic>]
-  ...
-Contested for the last slot (within 60% of each other):
-  a. <title>  [score <s>]
-  b. <title>  [score <s>]
-
-Accept (y), swap (e.g. `use a`), or skip (n)?
-```
-If every item scored 0 (no hot-context, no cohesion, scope-1 odds-and-ends), default the fill-set to the oldest ready items up to the target, noting: "No strong signals — surfacing oldest ready items to clear backlog pressure."
+With no ready item, print `Worklog clear: no ready items in Active or Ledger.` with the waiting count and stop. With only scope-4 candidates, route them per 4c and stop. When the evidence settles the fill-set's boundary and no equally viable alternative exists, print `Driving: <fill-set summary> — total scope ~<sum>` with its evidence and trade-off, and go to 4d. Otherwise ask one packet (`CLAUDE.core.md` §Preferences): the proposed fill-set and each contested alternative as options, the recommendation and the default of driving the recommended fill-set. With no material prioritization signal, the options are the oldest ready candidates within the budget, and the question says so.
 
 #### 4c — Big-ticket flag
 
-Any scope-4 ready item — scored in budget mode, or explicitly named — is surfaced below the fill-set proposal, never silently dropped:
+Any scope-4 ready item — found in the budget candidate set or explicitly named — is surfaced below the fill-set proposal, never silently dropped:
 ```
 Big-ticket (excluded): <title> — scope 4, see [[Plan doc]]. Route to /design_drive (no design doc yet) or /part_drive (roadmap Part exists)?
 ```
@@ -165,7 +110,7 @@ Big-ticket (excluded): <title> — scope 4, see [[Plan doc]]. Route to /design_d
 
 Read each fill-set item's full `Context` / `Where` / `Source` block from `Worklog.md` before scoping it — never the mirror line (`feedback_plan_worklog_items_from_source_not_mirror`).
 
-The body's **artifact** follows the ladder tier: tier 1 needs none; tier 2 keeps it in-conversation (a plan *file* only when the executor is dispatched cold); tier 3 writes `.claude/plans/<slug>.md`. Under `--plan-only` the body is always written out — it is the deliverable. Shape either way:
+Apply `execution_depth.md` §Admission table's fast-path outline when no Plan stage is admitted. Use the body below only for an admitted Plan stage. Under `--plan-only` the requested plan body is always written out — it is the deliverable.
 ```
 ## Plan: <title-or-fill-set-name>
 
@@ -175,7 +120,7 @@ The body's **artifact** follows the ladder tier: tier 1 needs none; tier 2 keeps
 
 ### Approach
 
-<3-7 bullet outline of how to approach the work. Reference specific files/types/methods when known.>
+<a bounded outline of the evidence, implementation and verification steps this item needs. Reference specific files/types/methods when known.>
 
 ### Steps
 
@@ -193,35 +138,35 @@ The body's **artifact** follows the ladder tier: tier 1 needs none; tier 2 keeps
 After landing: `/worklog complete <title>` (commit hash <pending>).
 ```
 
-**Test-first note:** a fill-set item in an area the project's test-first rule covers (CLAUDE.md names those domains) MUST open its **Steps** with a RED test pinning the bug or proving the new behavior missing. No production-code step before a verifying test.
+**Test-first note:** a fill-set item opens its **Steps** per CLAUDE.md *Hybrid TDD*.
 
 **Multi-item drafting:** partition the fill-set by `PLAN_SHAPE` — never one plan spanning both shapes ([*Plan-file format*](../../skills/_brainstorm_shared/plan_file_format.md) → *One shape per plan file*). Within a shape, default to one plan and split further only on that rule's cohesion litmus (one `Constraints` block and one `Verification` section genuinely cover the set). Items sharing an invariant get Steps shaped "do X once, then apply across A, B, C"; items with no shared invariant but one plan's worth of spine get labelled sub-sequences under a single Verification section.
 
 **Class-aware composition:**
 - `class: design`: draft no implementation plan. Say `Picked a design item — recommend running /architecture_brainstorm first; it will route to /idea_brainstorm if the candidate pool is empty. Re-run drive once the design exists.` and stop on that item (drive the rest of the fill-set if any).
 - **Audit-shape items** (title starts `Audit`/`Verify`/`Review`/`Inspect`/`Check`, or Context is read-and-decide): execute the reads while drafting, render the verdict in the plan body, plan only consequent code changes. Compliant verdict → the plan collapses to `/worklog complete` with the verdict as the `XLINE` ref. Same for read-only `debug` reproduction.
-- `class: debug`: structure Steps per the `debugging` skill's 6 phases (feedback loop → reproduce → patterns → hypothesise → fix → cleanup). No fixes before reproduction.
+- `class: debug`: structure Steps per the `debugging` skill's phases (feedback loop → reproduce → patterns → hypothesise → fix → cleanup). No fixes before reproduction.
 - `class: test`: Steps describe what to assert and which test fixture, not implementation.
 
 #### 4e — Conditional `/plan_check`
 
-Evaluate **each** drafted plan against `/plan_check`'s litmus (3+ files, new type/folder, refactor of 2+ subclass family, file deletion/replacement) — a shape partition produced two plans, each judged on its own. Nothing auto-invokes it; this step does.
+Decide plan-check admission for **each** drafted plan per `execution_depth.md` §Admission table — a shape partition produced two plans, each judged on its own. Nothing auto-invokes it; this step does.
 
-- **Litmus trips → run `/plan_check <plan-file>` now** on every plan that trips it, lens set by that plan's own shape, and converge before executing. The ladder never narrows the mandates or waives a pass the litmus mandates (`execution_depth.md` rule 1); seat width follows `orchestration` §2.
+- **Admitted → run `/plan_check <plan-file>` now** on every admitted plan, lens set by that plan's own shape, and converge before executing; seat width follows `orchestration` §2.
 - **`--plan-only` → surface it instead of running it**, so the user approves plan and check together:
   ```
   ---
-  **Pre-execution gate:** This plan touches <N files | introduces <type> | refactors <family>>. Recommend `/plan_check <this-plan>` before approval.
+  **Pre-execution gate:** Plan check is admitted for this plan (`execution_depth.md` §Admission table: <fact that holds>). Recommend `/plan_check <this-plan>` before approval.
   ```
-- **No triggers → omit the block and proceed.**
+- **Not admitted → omit the block and proceed.**
 
 #### 4f — Log to tackle-history
 
 Append one `tackle` line **per fill-set item** to `.claude/worklog-tackle-history.jsonl` (committed; the first append creates it):
 ```json
-{"event": "tackle", "date": "YYYY-MM-DD", "title": "<title verbatim>", "domain": "<domain>", "class": "<class>", "scope": <n>, "mode": "auto-confirm|choose-among|named", "score": <s>}
+{"event": "tackle", "date": "YYYY-MM-DD", "title": "<title verbatim>", "domain": "<domain>", "class": "<class>", "scope": <n>, "mode": "auto-confirm|choose-among|named"}
 ```
-Use `printf '...\n' >> .claude/worklog-tackle-history.jsonl`, NOT `echo` (OS-dependent line endings). `title` MUST be verbatim so COMPLETE's pair-matching works. One line per item, so pairing tracks per item. Named-items mode writes `"mode": "named", "score": null`.
+Use `printf '...\n' >> .claude/worklog-tackle-history.jsonl`, NOT `echo` (OS-dependent line endings). `title` MUST be verbatim so COMPLETE's pair-matching works. One line per item, so pairing tracks per item.
 
 ##### JSONL schema reference
 
@@ -229,26 +174,26 @@ Two event shapes, both carrying `event` and `date`:
 
 | Event | Required fields | Written by |
 |-------|-----------------|------------|
-| `tackle` | `event`, `date`, `title`, `domain`, `class`, `scope`, `mode`, `score` | DRIVE 4f |
+| `tackle` | `event`, `date`, `title`, `domain`, `class`, `scope`, `mode` | DRIVE 4f |
 | `completion` | `event`, `date`, `title` | COMPLETE Step 9 (`worklog_complete.md`) |
 
 The event name `tackle` is historical, retained because live history lines pair on it; the emitter is DRIVE.
 
-**Pairing semantics:** an item is "completed after a tackle" iff a `completion` event for the same `title` has a `date` ≥ the most recent `tackle` event's `date` for that title. Step 3's −2 penalty fires when a `tackle` exists in the last 14 days AND no matching `completion` follows.
+**Pairing semantics:** an item is "completed after a tackle" iff a `completion` event for the same `title` has a `date` ≥ the most recent `tackle` event's `date` for that title. Read historical tackle records by title and date; do not use historical scores.
 
-**Append-only.** Never rewrite or compact this file inline. If it grows past ~1000 lines, introduce a separate `/worklog history-compact` operation that archives old entries.
+**Append-only.** Never rewrite or compact this file inline. When append-only history slows its readers or state size becomes material, introduce an archival operation that preserves tackle/completion pairing and lets the current reader cover the required interval.
 
-#### 4g — Proceed, or stop under `--plan-only`
+#### 4g — Proceed to execution
 
-**Default: proceed straight into Step 5.** Announce in one line — `Selection settled. Driving <n> item(s) now.` — and do not ask for a second go-ahead; the invocation was it.
+On the proceed path, announce in one line — `Selection settled. Driving <n> item(s) now.` — and continue into Step 5.
 
-**Under `--plan-only`,** stop here with `Plan drafted. Say the word when ready to start, or refine first.` If 4e surfaced a pre-execution gate, use `Plan drafted with pre-execution gate flagged. Recommend running /plan_check before starting.` instead.
+`--plan-only` has already stopped after 4e, before 4f writes tackle history. Report `Plan drafted. Say the word when ready to start, or refine first.` If 4e surfaced a pre-execution gate, use `Plan drafted with pre-execution gate flagged. Recommend running /plan_check before starting.` instead.
 
 ### Edge cases for DRIVE
 
 - **Fill-set item already in current uncommitted work.** Hot-context fires on items the user is *already* doing: `git status` files overlap the item's `Where:` paths AND the item is still `[ ]`. Drive it as a continuation of that work and say so in the plan.
 - **Survey Hot-context batch overlaps current work too narrowly.** Flag it rather than proposing it as fresh work.
-- **User picks a fill-set then names a different one.** Re-run 4d with the new selection; don't re-score — the user overrode the heuristic.
+- **User picks a fill-set then names a different one.** Re-run 4d with the new selection; honor the user's override without reranking it.
 - **Non-determinism.** The heuristic shifts with git context, so one Active list yields different batches across sessions. Intentional; say so when asked "why this batch?".
-- **Scope is a coarse effort proxy.** A scope-2 item in an untouched system can be scope-3 in reality. The target is a sizing hint, not a contract; an item visibly exceeding its scope mid-drive is the Step-5 re-scope valve, not a judgment call.
-- **A named item is waiting or absent.** Named-items matches ready `[ ]` items in Active or Ledger only. A `When: after` / `future` hit surfaces the gate and offers `/worklog unblock <condition>` or `/worklog promote <title>`; no hit stops rather than substituting a near-miss.
+- **Scope is a coarse effort proxy.** A scope-2 item in an untouched system can be scope-3 in reality. The target is a sizing hint, not a contract; an item visibly exceeding its scope mid-drive follows Step 5's re-scope valve and spine H2, not a judgment call.
+- **A named item is waiting or absent.** Named-items matches ready `[ ]` items in Active or Ledger only. A `When: after` item surfaces its condition and offers `/worklog unblock <condition>`; Future Scope is not a drive candidate. No ready match stops rather than substituting a near-miss.

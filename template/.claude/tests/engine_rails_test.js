@@ -4,20 +4,24 @@
 // Run: node .claude/tests/engine_rails_test.js
 const fs = require('fs')
 const path = require('path')
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+const engineRun = require('./_engine_run')
+// The vocabulary the provider guard injects on every Workflow call; the engine holds none of its own.
+const HOST_TRANSPORT = { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable'], efforts: ['low', 'medium', 'high', 'xhigh'] }
+// The test pins the self-started verifier and merge steps through args.checker; the engine never picks them.
+const HOST_CHECKER = { model: 'sonnet', effort: 'medium' }
+const withHost = (args) => Object.prototype.hasOwnProperty.call(args || {}, '__transport') ? args : { ...args, checker: (args && args.checker) || HOST_CHECKER, __transport: HOST_TRANSPORT }
 
 const RAILS = { fable: 'minimal', 'claude-fable-5-1': 'minimal', opus: 'condensed', sonnet: 'detailed' }
 const JOB = { label: 'j', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore' }
 const ENGINES = {
   'dispatch.js': (extra) => ({ jobs: [{ ...JOB }], ...extra }),
   'dispatch_chains.js': (extra) => ({ chains: [{ name: 'c', jobs: [{ ...JOB }] }], ...extra }),
-  'explore_fanout.js': (extra) => ({ lenses: [{ key: 'k', promptPath: 'p.md', model: 'fable', agentType: 'Explore' }], ...extra }),
-  'review_fanout.js': (extra) => ({ agents: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore' }], ...extra }),
+  'explore_fanout.js': (extra) => ({ lenses: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore' }], ...extra }),
+  'review_fanout.js': (extra) => ({ agents: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore', mustRead: [{ path: 'x', lines: 1 }] }], ...extra }),
 }
 
 async function prompts(file, args, logs) {
-  const src = fs.readFileSync(path.join(__dirname, '../workflows', file), 'utf8')
-    .replace(/^export const meta = \{[\s\S]*?^\}\r?\n/m, '')
+  const script = path.join(__dirname, '../workflows', file)
   const seen = []
   const agent = async (prompt) => {
     seen.push(String(prompt))
@@ -29,8 +33,8 @@ async function prompts(file, args, logs) {
     for (const s of stages) v = await s(v)
     return v
   }))
-  const result = await new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', src)(
-    args, agent, parallel, pipeline, () => {}, (m) => { if (logs) logs.push(m) })
+  const result = await engineRun.load(script, src => 'const pipeline = ' + pipeline.toString() + '\n' + src)(
+    withHost(args), agent, parallel, () => {}, (m) => { if (logs) logs.push(m) })
   return { seen, result }
 }
 
@@ -73,6 +77,21 @@ async function prompts(file, args, logs) {
     check(file + ': a present map missing the job key logs RAILS-FALLBACK', missLogs.some(l => String(l).includes('RAILS-FALLBACK')),
       missLogs.join(' | ').slice(0, 300))
   }
+  // Driver notes: `__driverNotes[<pinned model>]` is pasted after the rails for a job on that model,
+  // on the inline path and on the pointer fallback, and never for a model it does not name or railTier none.
+  for (const [file, build] of Object.entries(ENGINES)) {
+    const NOTES = { fable: '[session] Driver notes (fable):\n- NOTE-XYZ (ref)' }
+    const withNotes = await prompts(file, build({ __rails: RAILS, __driverNotes: NOTES, __railsText: { [INLINE_KEY[file]]: 'RAILS-BODY-XYZ' } }))
+    const wp = withNotes.seen[0] || ''
+    check(file + ': driver notes follow the inline rails', wp.includes('NOTE-XYZ') && wp.indexOf('NOTE-XYZ') > wp.indexOf('RAILS-BODY-XYZ'),
+      withNotes.result && withNotes.result.error || wp.slice(-300))
+    const ptr = await prompts(file, build({ __rails: RAILS, __driverNotes: NOTES }))
+    check(file + ': driver notes follow the pointer fallback too', (ptr.seen[0] || '').includes('NOTE-XYZ'), (ptr.seen[0] || '').slice(-300))
+    const other = await prompts(file, build({ __rails: RAILS, __driverNotes: { sonnet: 'NOTE-XYZ' } }))
+    check(file + ': notes for another model do not reach this job', !(other.seen[0] || '').includes('NOTE-XYZ'))
+  }
+  const noneNotes = await prompts('dispatch.js', { jobs: [{ ...JOB, railTier: 'none' }], __rails: RAILS, __driverNotes: { fable: 'NOTE-XYZ' } })
+  check('dispatch.js: railTier none sends no driver notes either', !(noneNotes.seen[0] || '').includes('NOTE-XYZ'))
   const chainsBare = await prompts('dispatch_chains.js', ENGINES['dispatch_chains.js']({}))
   check('dispatch_chains.js: the fallback pointer names any.md', (chainsBare.seen[0] || '').includes('guards/any.md'),
     (chainsBare.seen[0] || '').slice(-300))

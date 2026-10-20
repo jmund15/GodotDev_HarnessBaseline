@@ -19,6 +19,10 @@ import tempfile
 import threading
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _case_pool import run_cases  # noqa: E402
+from _runner_fixture import copy_runner_deps  # noqa: E402
+
 PUBLISH = Path(__file__).resolve().parents[1] / "tools" / "baseline_publish.py"
 SYNC = PUBLISH.parent / "baseline_sync.py"
 
@@ -74,10 +78,9 @@ def _seed_project_subsystems(root: Path) -> None:
 
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-q")
-    _git(path, "config", "user.email", "fixture@example.invalid")
-    _git(path, "config", "user.name", "fixture")
-    _git(path, "branch", "-M", "main")
+    _git(path, "init", "-q", "-b", "main")
+    with open(path / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
+        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n")
 
 
 def _commit(path: Path, message: str) -> str:
@@ -452,6 +455,7 @@ def _seed_commit_fixture(path: Path, rel: str, baseline_content: bytes, local_co
     _seed_project_subsystems(root)
     _write(root / rel, local_content)
     lock = {
+        "schema": 2,
         "baseline_repo": remote.as_uri(),
         "baseline_ref": "main",
         "synced_commit": baseline_commit,
@@ -502,6 +506,7 @@ def _seed_worktree_root(path: Path, remote: Path, baseline_commit: str) -> Path:
     _init_repo(root)
     _seed_project_subsystems(root)
     lock = {
+        "schema": 2,
         "baseline_repo": remote.as_uri(),
         "baseline_ref": "main",
         "synced_commit": baseline_commit,
@@ -1235,6 +1240,8 @@ def test_corrupt_journal_resume_exits_nonzero() -> None:
     with _fixture() as path:
         root = path / "consumer"
         _init_repo(root)
+        _seed_project_subsystems(root)
+        _write(root / ".claude" / "baseline.lock.json", b'{"schema": 2, "files": {}}\n')
         journal_dir = root / ".claude" / ".cache" / "baseline-publish"
         journal_dir.mkdir(parents=True, exist_ok=True)
         (journal_dir / "20260101T000000Z-deadbeef.json").write_bytes(b"{not json")
@@ -1769,10 +1776,7 @@ def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
         _write(worktree / "tools/audit_baseline.py", STUB_AUDIT_BASELINE)
         template = worktree / "template"
         _write(template / ".claude/scripts/harness_tests.py", PUBLISH.parents[1].joinpath("scripts/harness_tests.py").read_bytes())
-        hooks = PUBLISH.parents[1] / "hooks/_hook_state.py"
-        _write(template / ".claude/hooks/_hook_state.py", hooks.read_bytes())
-        adaptation = PUBLISH.with_name("adaptation.py")
-        _write(template / ".claude/tools/adaptation.py", adaptation.read_bytes())
+        copy_runner_deps(template / ".claude")
         _write(template / ".claude/skills/project_subsystems/adaptation.json", b"{}\n")
         proof = template / ".claude/tests/test_bound.py"
         _write(proof, b"# fixture.md\nraise SystemExit(1)\n")
@@ -1856,16 +1860,14 @@ def main() -> int:
         test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
         test_full_battery_upgrade_refuses_a_published_journal,
     ]
-    failures = []
-    for case in cases:
-        try:
-            case()
-            print("ok " + case.__name__)
-        except Exception as exc:
-            failures.append(case.__name__)
-            print("FAIL %s: %s" % (case.__name__, exc))
-    print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
+    # The fixtures run a copied harness_tests.py, which takes machine slots; peers holding the shared
+    # ones starved a case for minutes. Case processes inherit this slot dir.
+    slots = tempfile.mkdtemp(prefix="publish_slots_")
+    os.environ["HARNESS_SLOT_DIR"] = slots
+    try:
+        return run_cases(cases)
+    finally:
+        shutil.rmtree(slots, ignore_errors=True)
 
 
 

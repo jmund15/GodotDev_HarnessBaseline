@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Structural proof for commands/commit_push.md and commands/clean_push.md.
 
-Both push commands run the opt-in baseline drift gate (`check --strict`) in a step before their push
-step, allow the `python3` call that gate makes, and stop on an unknown argument before any Git command.
-Each rule is also proven to fire on a planted mutant. It does not prove runtime behavior.
+commit_push runs the opt-in baseline drift gate (`check --strict`) in a step before its push step, allows
+the `python3` call that gate makes, and stops on an unknown argument before any Git command. clean_push
+follows commit_push's steps, so it must link commit_push and keep the `python3` grant. Each rule is also
+proven to fire on a planted mutant. It does not prove runtime behavior.
 
     python3 .claude/tests/test_push_command_contract.py
 """
@@ -16,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lock_rows import project_owned  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-COMMANDS = [ROOT / ".claude" / "commands" / name for name in ("commit_push.md", "clean_push.md")]
+COMMANDS = [ROOT / ".claude" / "commands" / "commit_push.md"]
+CLEAN_PUSH = ROOT / ".claude" / "commands" / "clean_push.md"
 
 PUSH_STEP = re.compile(r"[Pp]ush (?:all commits )?to the current branch on origin")
 UNKNOWN_ARG = re.compile(r"\s+".join("Any other argument: report it and stop before the first Git command".split()))
@@ -35,11 +37,15 @@ def gate_and_push(text):
     return gate, push
 
 
-def problems(text):
-    found = []
+def allowed_tools(text):
     front = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
     tools = re.search(r"^allowed-tools: (.*)$", front.group(1), re.MULTILINE) if front else None
-    if not tools or "Bash(python3:*)" not in tools.group(1):
+    return tools.group(1) if tools else None
+
+
+def problems(text):
+    found = []
+    if "Bash(python3:*)" not in (allowed_tools(text) or ""):
         found.append("allowed-tools lacks Bash(python3:*)")
     if not UNKNOWN_ARG.search(text):
         found.append("an unknown argument does not stop before the first Git command")
@@ -52,6 +58,15 @@ def problems(text):
         found.append("baseline gate step %d is not before push step %d" % (gate, push))
     if GATE_CALL not in text:
         found.append("the gate does not run check --strict")
+    return found
+
+
+def clean_problems(text):
+    found = []
+    if "(commit_push.md)" not in text:
+        found.append("no link to commit_push.md")
+    if "Bash(python3:*)" not in (allowed_tools(text) or ""):
+        found.append("allowed-tools lacks Bash(python3:*)")
     return found
 
 
@@ -81,6 +96,16 @@ def main():
         for label, mutant in mutants(text).items():
             new = [p for p in problems(mutant) if p not in real]
             cases.append(("%s: planted mutant detected: %s" % (name, label), mutant != text and bool(new), str(new)))
+
+    clean = CLEAN_PUSH.read_text(encoding="utf-8") if CLEAN_PUSH.exists() else ""
+    real = clean_problems(clean)
+    cases.append(("clean_push.md follows commit_push.md and keeps python3", not real, str(real)))
+    for label, mutant in {"link removed": clean.replace("(commit_push.md)", ""),
+                          "python3 dropped": clean.replace(", Bash(python3:*)", ""),
+                          "python3 dropped from allowed-tools, kept in body":
+                              clean.replace(", Bash(python3:*)", "") + "\nBash(python3:*)\n"}.items():
+        cases.append(("clean_push.md: planted mutant detected: %s" % label,
+                      mutant != clean and bool(clean_problems(mutant)), label))
 
     overnight = (ROOT / '.claude/commands/overnight.md').read_text(encoding='utf-8')
     park = overnight.split('## Step 2', 1)[-1].split('## Step 3', 1)[0].lower()

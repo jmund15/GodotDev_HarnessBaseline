@@ -5,13 +5,14 @@ first prompt after a compaction, or a change in the live peer set. The 10-turn h
 gone; the fingerprint branch stays. Cases feed real UserPromptSubmit payloads and assert on
 stdout.
 
-Both temp roots are redirected: HARNESS_HOOK_STATE_DIR for the shared session state, TMP/TEMP for
+Both temp roots are redirected: HARNESS_HOOK_STATE_DIR for the shared session state, TMP/TEMP/TMPDIR for
 the machine-wide registry directory and the hook's own dedupe file.
 
     python3 .claude/tests/test_activity_registry_cadence.py
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,13 +52,64 @@ def prompt(env, session=SID):
 def precompact(env, session=SID):
     subprocess.run([sys.executable, PRECOMPACT],
                    input=json.dumps({"session_id": session, "trigger": "auto"}),
-                   capture_output=True, text=True, timeout=60, env=env)
+                   capture_output=True, text=True, timeout=60,
+                   env=dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
+
+
+# The hook runs under a real `node` parent, which its session_root walk takes as this session's Claude Code root. The
+# node runner plants the records first, so they can name its own pid as the owner root a gate passes its children.
+NODE_RUNNER = r"""
+const fs = require('fs'); const cp = require('child_process');
+const [hook, recDir, livePid, stdin] = process.argv.slice(2);
+const now = Date.now() / 1000;
+const rec = (label, checkout, root) => ({pid: Number(livePid), kind: 'suite', checkout, sessionId: null, label,
+  startedAt: now, heartbeatAt: now, expectedSec: 300, ownerRootPid: root, ownerRootStart: null});
+fs.mkdirSync(recDir, {recursive: true});
+fs.writeFileSync(recDir + '/suite-own.json', JSON.stringify(rec('gate child of a detached gate', 'C:/repo', process.pid)));
+fs.writeFileSync(recDir + '/suite-foreign.json', JSON.stringify(rec('another session run', 'C:/repo', process.pid + 100000)));
+fs.writeFileSync(recDir + '/suite-worktree.json', JSON.stringify(rec('own-root worktree run', 'C:/repo/.claude/worktrees/x', process.pid)));
+const r = cp.spawnSync(process.env.PY, [hook], {input: stdin, env: process.env, encoding: 'utf8'});
+process.stdout.write(r.stdout || '');
+process.stderr.write(r.stderr || '');
+process.exit(r.status === null ? 99 : r.status);
+"""
+
+
+def ownership_cases():
+    """A gate's child records the gate's owner root (the HARNESS_OWNER_ROOT_PID pair), so its record reads as the
+    session's own run whatever its own chain; a record from another root, or from a nested worktree, is a peer."""
+    node = shutil.which("node")
+    if not node:
+        return [("CANNOT-RUN node is not on PATH, so no process can stand in as the session root", False)]
+    state = tempfile.mkdtemp(prefix="arcown_")
+    tmp = tempfile.mkdtemp(prefix="arcowntmp_")
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp, TMPDIR=tmp, PYTHONIOENCODING="utf-8", PY=sys.executable)
+    runner = os.path.join(tmp, "runner.js")
+    with open(runner, "w", encoding="utf-8") as fh:
+        fh.write(NODE_RUNNER)
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        r = subprocess.run([node, runner, HOOK, os.path.join(tmp, "harness-activity"), str(live.pid),
+                            json.dumps({"session_id": "arcown01", "cwd": "C:/repo", "prompt": "next"})],
+                           capture_output=True, text=True, timeout=60, env=env, encoding="utf-8")
+        out = (r.stdout or "").strip()
+    finally:
+        live.terminate()
+    return [
+        ("setup: the hook ran under the node session root and reported (%s)" % (out[:160] or r.stderr[:160]),
+         r.returncode == 0 and "[activity]" in out),
+        ("a record carrying this session's owner root (a detached gate's child) is not a peer",
+         "gate child of a detached gate" not in out),
+        ("a same-checkout record from another owner root is a peer", "another session run" in out),
+        ("a record from a .claude/worktrees/<x> checkout is a peer even with this session's root",
+         "own-root worktree run" in out),
+    ]
 
 
 def main():
     state = tempfile.mkdtemp(prefix="arcstate_")
     tmp = tempfile.mkdtemp(prefix="arctmp_")
-    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp,
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
                PYTHONIOENCODING="utf-8")
     # A real live PID: liveness is PID-verified, so a fabricated one is swept as garbage.
     peer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
@@ -90,7 +142,9 @@ def main():
     # Negative: an empty registry says nothing at all.
     empty = tempfile.mkdtemp(prefix="arcnone_")
     cases.append(("no records on disk emits nothing",
-                  prompt(dict(env, TMP=empty, TEMP=empty), session="arc00002") == ""))
+                  prompt(dict(env, TMP=empty, TEMP=empty, TMPDIR=empty), session="arc00002") == ""))
+
+    cases += ownership_cases()
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

@@ -1033,6 +1033,10 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
 
 def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = False,
             full_battery: bool = False) -> dict:
+    try:
+        sync.require_v2_lock(sync.load_lock(root))
+    except sync.BaselineError as exc:
+        raise PublishError(str(exc)) from exc
     journal_path = _journal_path(root, resume_id)
     journal = _load_journal_file(journal_path)
     if journal is None:
@@ -1173,6 +1177,10 @@ def _delete_journal(journal_path: Path) -> None:
 def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str],
         dry_run, no_ci, resume_id, full_battery=False):
     root = Path(root).resolve()
+    try:
+        sync.require_v2_lock(sync.load_lock(root))
+    except sync.BaselineError as exc:
+        raise PublishError(str(exc)) from exc
     # Design §8: refuse a missing/malformed `project_subsystems` adaptation contract before
     # step 1 on a fresh run, and before touching an existing journal on `--resume` -- so a
     # refusal here creates no journal and advances no step.

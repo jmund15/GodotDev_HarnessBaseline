@@ -1,0 +1,8 @@
+# Orchestration files — §12
+
+Read in full when the edit changes dispatch, workflow, fan-out or review-lens text, or any mechanism-layer text that could name a model or an effort. `SKILL.md` §1–§6b apply to it too.
+
+## Orchestration-specific
+
+### 12. Orchestration-contract & known-failure-mode integrity
+Match the actual engine's inputs, output schema and required pins/profile. Use bounded briefs and exact evidence paths; preserve full results without forcing them into the parent. Screen against `gotcha_workflow_args_generation_fidelity`, `gotcha_workflow_fanout_search_false_absence` and single-flight tools (one test, build or language-server run per machine or per checkout); match the engine's own arg guard and output schema by reading the script. Recovery must fit the tools the receiver actually has. `orchestration` owns dispatch policy; do not duplicate model/effort tables here. Mechanism-layer files name tiers, never models. Model judgment and effort live in `reference/model_ladder_evidence.md`: a doc names the tier and the work shape (tight-spec execution, directed work, review, architecting), and the ladder's cell for that shape gives each model's effort. Never write an effort value into doctrine: effort scales differ by model, so a value right for one model misroutes the next; only a benchmark that measures a fixed pin states one. Identity, availability and model-specific overlays live in the registry (`reference/external_models.json`). A reusable script takes an explicit pin as a runtime argument, never as a literal. `hooks/model_name_guard.py` denies net additions of registry names in mechanism-layer text outside `hooks/model_name_exemptions.json` paths.

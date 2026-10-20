@@ -14,6 +14,8 @@ One file may concatenate many voice messages. Default to one file = one conversa
 
 Speaker labels are load-bearing evidence — preserve them exactly as written. A transcript with no speaker labels still yields actionables; the collaboration read is then **skipped with that reason recorded in the digest**, never run on guessed attribution.
 
+**Video source.** Run `python3 .claude/tools/yt_transcript.py <url>`; its JSON names the cached transcript `path`, the `slug` and the identity fields. Exit 3 means no retrievable transcript: stop and report the library's reason, with no folder and nothing invented. Exit 4 means `uvx` is missing: report it and stop. Create `<vault>/Claude/References/<today>-<slug>/` for the digest only. The cached file is the evidence layer the jobs read, and its `[mm:ss]` stamps replace line anchors. The vault never receives the transcript, and the digest quotes only the short span a claim needs. A video has no owner speaking in it, so the collaboration read is skipped with that reason.
+
 ## Step 2 — Extract (dispatched, two jobs)
 
 | label | extracts |
@@ -47,10 +49,11 @@ Sentiment is per topic — one of `aligned` / `energized` / `diverging` / `unres
 
 ## Step 3 — Dedup (inside `extract-actionables`, push-don't-pull)
 
-**The SESSION gathers the corpus first, then embeds that index in the dispatch prompt. The delegate COMPARES against what it was pushed and never discovers by search** — an intermittently-empty search reads as "nothing prior" and silently destroys the ledger's value (`gotcha_workflow_fanout_search_false_absence`).
+**The SESSION gathers the corpus first, then embeds that index in the dispatch prompt. The delegate COMPARES against what it was pushed and never discovers by search** (`gotcha_workflow_fanout_search_false_absence`).
 
 Corpus to gather (Glob, then list paths + titles into the prompt):
 - `<vault>/Claude/Meetings/*/digest.md`
+- `<vault>/Claude/References/*/digest.md`
 - `<vault>/Claude/BrainstormingDesigns/**/ideas.md`
 - `.claude/worklog-titles.md`
 - Roadmap Part rows (`<vault>/Claude/**/roadmap.md` Parts tables)

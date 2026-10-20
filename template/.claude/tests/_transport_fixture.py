@@ -49,9 +49,14 @@ def _available_capacity_cache():
                  "sourceKind": "live", "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
                  "status": "available", "error": None, "liveFailure": None, "quota": None, "balance": None}
         if cfg.get("costModel") == "plan-quota":
-            entry["quota"] = {"windows": [{"name": "seven_day", "usedPercent": 10}],
-                              "dispatchBand": "Normal", "routingBand": "Normal",
-                              "bindingWindow": "seven_day", "credits": None}
+            # What a real probe emits for 10% of a week used at half-week: pace 0.2, run-out 9.0.
+            entry["quota"] = {"windows": [{"name": "seven_day", "usedPercent": 10.0,
+                                            "resetsAt": now + 302400, "windowDurationMins": 10080,
+                                            "pressure": 0.2, "band": "Surplus",
+                                            "runoutRatio": 9.0}],
+                              "dispatchBand": "Surplus", "routingBand": "Surplus",
+                              "routingWindow": "seven_day", "bindingWindow": "seven_day",
+                              "credits": None}
         else:
             entry["balance"] = {"amount": 100.0, "currency": "USD"}
         blob[name] = entry
@@ -61,6 +66,54 @@ def _available_capacity_cache():
     with open(_CAPACITY_CACHE, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(blob, fh)
     return _CAPACITY_CACHE
+
+
+# The `since` a planted transport status carries. Named here so a reader never reads a fixture
+# value as a recorded observation.
+FIXTURE_SINCE = "2020-01-01"
+
+
+def available_transport(folder, transport):
+    """Path to a copy of the live registry with `transport` forced `available`.
+
+    A proof whose fixture job rides a transport the live roster has retired would otherwise deny
+    that job for a reason the case does not test. `folder` is a directory the caller owns.
+    """
+    with open(os.path.join(os.path.dirname(HERE), "reference", "external_models.json"),
+              encoding="utf-8") as fh:
+        registry = json.load(fh)
+    registry["transports"][transport]["status"] = {"state": "available", "since": FIXTURE_SINCE,
+                                                   "reason": "fixture"}
+    path = os.path.join(folder, "planted_registry.json")
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(registry, fh)
+    return path
+
+
+_MCP_WORKDIR = None
+
+
+def planted_mcp_workdir():
+    """A directory whose `.mcp.json` registers every server a profile shape names, once per process.
+
+    Profile resolution refuses a server the config does not define. A proof that inherits the
+    developer's `~/.claude.json` finds the project servers there; a fresh checkout or CI runner
+    has none and raises before the rule under test runs. `SC_WORKDIR` points the registration
+    walk at this directory.
+    """
+    global _MCP_WORKDIR
+    if _MCP_WORKDIR:
+        return _MCP_WORKDIR
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+    import tool_profiles
+    names = sorted({name for row in tool_profiles.load_table()["shapes"].values()
+                    for name in row["mcpServers"]})
+    folder = tempfile.mkdtemp(prefix="transport_mcp_")
+    atexit.register(shutil.rmtree, folder, True)
+    with open(os.path.join(folder, ".mcp.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"mcpServers": {name: {"command": "true"} for name in names}}, fh)
+    _MCP_WORKDIR = folder
+    return folder
 
 
 def hook_env(transport="anthropic", **extra):
@@ -79,6 +132,7 @@ def hook_env(transport="anthropic", **extra):
         env["CLAUDE_CODE_TRANSPORT"] = transport
     if "PROVIDER_CAPACITY_CACHE" not in extra:
         env["PROVIDER_CAPACITY_CACHE"] = _available_capacity_cache()
-        env["PROVIDER_CAPACITY_ADVISORY"] = "1"
+    if "SC_WORKDIR" not in extra:
+        env["SC_WORKDIR"] = planted_mcp_workdir()
     env.update(extra)
     return env

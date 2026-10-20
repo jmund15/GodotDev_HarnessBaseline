@@ -13,6 +13,8 @@ everything the command could run -- a PreToolUse `allow` approves the entire str
 allow-path matcher wants the raw text (`instruction_quality` §13).
 """
 import re
+import shlex
+from dataclasses import dataclass
 
 # `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"` -- capture the delimiter, honouring the `-` variant
 # (which permits a tab-indented terminator).
@@ -27,7 +29,7 @@ _HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$")
 _HERESTRING = re.compile(r"<<<")
 
 
-def strip_heredocs(command: str) -> str:
+def strip_heredocs(command: str, *, preserve_offsets=False) -> str:
     """Remove heredoc BODIES, keeping the command lines around them.
 
     The body is data the shell hands to another program; it is not executed by this command.
@@ -48,9 +50,11 @@ def strip_heredocs(command: str) -> str:
         delim = m.group(2)
         i += 1
         while i < len(lines) and lines[i].strip() != delim:
+            if preserve_offsets:
+                out.append(' ' * len(lines[i]))
             i += 1
         if i < len(lines):
-            out.append(lines[i])   # keep the terminator so line structure survives
+            out.append(' ' * len(lines[i]) if preserve_offsets else lines[i])
             i += 1
     return "\n".join(out)
 
@@ -58,3 +62,93 @@ def strip_heredocs(command: str) -> str:
 def executable_text(command: str) -> str:
     """The command text a content matcher should judge: heredoc bodies removed."""
     return strip_heredocs(command)
+
+
+@dataclass(frozen=True)
+class ShellWord:
+    value: str
+    start: int
+    end: int
+
+
+_QUOTE_OR_ESCAPE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.", re.DOTALL)
+_SEPARATOR = re.compile(r"\|\||&&|[;|\n]|(?<![<>])&(?!>)")
+_WORD = re.compile(r"(?:[^\s'\"\\<>;&|]+|'[^']*'|\"(?:[^\"\\]|\\.)*\"|\\.)+")
+_REDIRECTION = re.compile(r"(?:\d*|&)(?:>>?|<)(?:&(?:\d+-?|-))?")
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def comment_offset(command):
+    masked = _QUOTE_OR_ESCAPE.sub(lambda m: 'x' * len(m[0]), command)
+    match = re.search(r'(?<!\S)#[^\n]*', masked)
+    return match.start() if match else len(command)
+
+
+def _mask_shell_data(command):
+    masked = _QUOTE_OR_ESCAPE.sub(lambda m: 'x' * len(m[0]), command)
+    return re.sub(r"(?<!\S)#[^\n]*", lambda m: ' ' * len(m[0]), masked)
+
+
+def executable_spans(command):
+    """Source spans outside quoted data, comments and heredoc bodies; offsets name the original."""
+    text = strip_heredocs(command, preserve_offsets=True)
+    masked = _mask_shell_data(text)
+    start = 0
+    for match in _SEPARATOR.finditer(masked):
+        end = match.start()
+        left = start + len(text[start:end]) - len(text[start:end].lstrip())
+        right = end - (len(text[start:end]) - len(text[start:end].rstrip()))
+        if left < right and masked[left:right].strip():
+            yield left, right, command[left:right]
+        start = match.end()
+    left = start + len(text[start:]) - len(text[start:].lstrip())
+    right = len(text.rstrip())
+    if left < right and masked[left:right].strip():
+        yield left, right, command[left:right]
+
+
+def command_words(segment):
+    """(argv source words, insertion offset) for a simple literal command, else None.
+
+    Insert new arguments before redirects/comments. Substitutions and heredocs need shell
+    evaluation, so rewriters leave those forms alone rather than guess their source boundary.
+    """
+    dynamic = re.sub(r"'[^']*'", lambda m: ' ' * len(m[0]), segment)
+    if '$(' in dynamic or '`' in dynamic or '<<' in dynamic:
+        return None
+    words, i, insert = [], 0, None
+    while i < len(segment):
+        if segment[i].isspace():
+            i += 1
+            continue
+        if segment[i] == '#':
+            insert = i if insert is None else insert
+            break
+        redirect = _REDIRECTION.match(segment, i)
+        if redirect:
+            insert = i if insert is None else insert
+            i = redirect.end()
+            if '&' not in redirect[0].lstrip('0123456789') or redirect[0].startswith('&'):
+                while i < len(segment) and segment[i].isspace():
+                    i += 1
+                target = _WORD.match(segment, i)
+                if target is None:
+                    return None
+                i = target.end()
+            continue
+        match = _WORD.match(segment, i)
+        if match is None:
+            return None
+        try:
+            value, = shlex.split(match[0], posix=True)
+        except ValueError:
+            return None
+        words.append(ShellWord(value, i, match.end()))
+        i = match.end()
+    return words, insert if insert is not None else len(segment.rstrip())
+
+
+def executable_word(words, segment):
+    """The first word after syntactic assignment prefixes, never an assignment's quoted value."""
+    return next((i for i, word in enumerate(words)
+                 if not _ASSIGNMENT.match(segment[word.start:word.end])), len(words))

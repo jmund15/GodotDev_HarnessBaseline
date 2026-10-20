@@ -556,6 +556,20 @@ def test_parse_subsystems_yaml_reads_id_and_paths() -> None:
     assert rows == [{"id": _SUBSYSTEM_ID, "paths": ["Wizard/", "Other/"]}], rows
 
 
+def test_collect_type_names_reads_record_struct_name_and_skips_comment_lines() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "Sub").mkdir()
+        (root / "Sub" / "Types.cs").write_text(
+            "// remove this class once shipped\n"
+            "public record struct " + "PlantedRecordStruct" + "(int X);\n"
+            "public sealed class " + "PlantedPlainClass" + " {}\n",
+            encoding="utf-8",
+        )
+        names = identity._collect_type_names(root, ["Sub"])
+    assert names == ["PlantedPlainClass", "PlantedRecordStruct"], names
+
+
 def main() -> int:
     cases = [
         test_scan_changed_hits_abbreviation,
@@ -585,6 +599,7 @@ def main() -> int:
         test_digest_command_abbrev_flag_used_when_lock_has_none,
         test_digest_command_lock_abbreviations_win_over_abbrev_flag,
         test_parse_subsystems_yaml_reads_id_and_paths,
+        test_collect_type_names_reads_record_struct_name_and_skips_comment_lines,
     ]
     failures = []
     for case in cases:

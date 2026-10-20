@@ -1,5 +1,5 @@
 ---
-description: Report all delegated-dispatch usage — Workflow + sidecar, every session, never the global account usage
+description: Report all-time delegated usage; /quota_dashboard shows balances
 argument-hint: (none)
 ---
 
@@ -12,4 +12,4 @@ Scope: every model/effort pin dispatched **out** of a session, across this proje
 ```bash
 python3 .claude/tools/orchestration_metrics.py --all-time
 ```
-One call, two tables, never blended: Workflow agents (swept from every session's `workflows/*.json` in this project) and sidecar runs (the global ledger, one table per `servedModel`). Sidecar cost is real USD; Workflow cost is normalized/plan-quota — different currencies, never summed into one number.
+One call, two tables: Workflow agents (swept from every session's `workflows/*.json` in this project) and sidecar runs (the global ledger, one table per `servedModel`). Currencies and cost bases stay separate per [`orchestration_metrics.md`](orchestration_metrics.md).

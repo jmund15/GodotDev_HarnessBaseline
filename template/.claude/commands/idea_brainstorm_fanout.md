@@ -1,6 +1,6 @@
 ---
-allowed-tools: Glob, Grep, Read, Task, Workflow
-description: Lens-diverse multi-agent idea divergence + independent critique for one brainstorm cluster — N generator lenses fan out, independent critics judge the merged pool, Claude curates. Fired by /idea_brainstorm --fan_out or standalone on a broad/enumeration-pressured cluster.
+allowed-tools: Glob, Grep, Read, Workflow
+description: Run lens-diverse fan-out on one broad or enumeration-pressured idea cluster; /idea_brainstorm invokes it with --fan_out
 ---
 
 # /idea_brainstorm_fanout — Lens-Diverse Divergence + Independent Critique
@@ -18,11 +18,7 @@ Fans a single cluster's **Diverge** phase out across N generator agents — each
 
 ## When to use
 
-- A cluster is **broad or enumeration-pressured** — the user asked for "every X you can think of," or the design axis is wide (many orthogonal sub-shapes).
-- The single-agent Diverge pass **under-populated** a cluster (handoff-readiness criterion 1, approach-diversity, would fail).
-- A cluster's completeness matters enough to justify an independent **coverage-gap** pass (what did all generators collectively miss?).
-
-**Skip for** narrow/tactical clusters (single-agent Diverge is enough — fan-out adds noise and cost), mature domains (go straight to architecture design), and any cluster already past Filter. Default `/idea_brainstorm` stays single-agent; this is opt-in.
+Fan-out is opt-in; default `/idea_brainstorm` stays single-agent. Whether it is admitted for a cluster follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Admission table. This command keeps the lens rubric below.
 
 ## Step 0: Assemble the cluster CONTEXT (Claude-side — push-don't-pull)
 
@@ -36,7 +32,7 @@ The generators judge **pushed** content; they do NOT discover. Fanned-agent `Gre
 
 ## Step 1: Select the lenses (the design step)
 
-Pick **~4 orthogonal generative constraints that span the cluster's design axis.** A lens is a *force function for invention*, not a topic label. The set is good when:
+Pick **the orthogonal generative constraints that span the cluster's design axis.** Add a lens only when you can name candidates no chosen lens could surface; stop once the axis is spanned. A lens is a *force function for invention*, not a topic label. The set is good when:
 
 1. **Orthogonal** — each lens surfaces candidates the others structurally can't. Overlapping lenses ("by-type" + "by-category") waste a slot.
 2. **Spanning** — together they cover the cluster's primary design axis (its win-conditions, its roles, its motivations — whatever the axis is).
@@ -66,7 +62,7 @@ The lens *keys* and *axis* change per cluster; the rubric (orthogonal, spanning,
 
 **Dispatch is MANDATORY — do NOT self-generate inline.** The independence is the value: one model brainstorming four lenses sequentially in its own context cross-contaminates them (lens 2 sees lens 1's output and converges). Separate agents stay blind to each other — that's what produces the divergence.
 
-**Keep `args` FLAT** (`gotcha_workflow_args_generation_fidelity` — large/nested/escape-dense args produce malformed JSON that `JSON.parse` throws on). Push the CONTEXT ONCE via `contextPrefix`; keep each lens `instr` to its mandate only; declare per-cluster typed fields via the flat `genFields` descriptor list (the engine builds the schema from it — do NOT nest a JSON Schema object into `args`):
+**Keep `args` FLAT** (`gotcha_workflow_args_generation_fidelity` — large/nested/escape-dense args produce malformed JSON that `JSON.parse` throws on). Push the CONTEXT ONCE via `contextPrefix` (the engine prefixes it to every lens prompt, so a second push duplicates it into each); keep each lens `instr` to its mandate only; declare per-cluster typed fields via the flat `genFields` descriptor list (the engine builds the schema from it — do NOT nest a JSON Schema object into `args`):
 
 ```
 Workflow({
@@ -74,24 +70,24 @@ Workflow({
   args: {
     contextPrefix: "<the Step-0 CONTEXT as ONE flat string>",
     generators: [
-      { key: "canon-import",        instr: "<mandate only>" },
-      { key: "objective-inversion", instr: "<mandate only>" },
-      { key: "theme-exploit",       instr: "<mandate only>" },
-      { key: "systems-exploit",     instr: "<mandate only>" }
+      { key: "canon-import",        instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" },
+      { key: "objective-inversion", instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" },
+      { key: "theme-exploit",       instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" },
+      { key: "systems-exploit",     instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" }
     ],
+    critic: { model: "<row>", effort: "<rung>", tier: "fanout" },
     genFields: [
       { name: "winAxis",   desc: "win-condition axis the candidate maps to", required: true },
       { name: "dependsOn", desc: "which referenced system it leans on" }
     ]
-    // critics omitted -> engine defaults (dedup / fit / coverage-gap); pass args.critics:[{key,instr}] for cluster-specific mandates
-    // model omitted per agent -> phase default (generators architect tier, critics fanout tier); drop a mechanical lens to the fanout tier to save cost
+    // critics omitted -> the engine's dedup / fit / coverage-gap critics run on args.critic; pass args.critics:[{key,instr,model,effort}] for cluster-specific mandates
   }
 })
 ```
 
-**Model — asymmetric defaults: generators default to the architect tier, critics floor to the fanout tier** (the engine's literal defaults are `opus` and `sonnet`). Divergence is solution design and gets the architect tier; rigor (dedup / fit / coverage-gap) does not need it — and fan-out only fires on breadth-critical clusters, so the generator spend is justified by the trigger. An omitted per-agent `model` takes its phase default — it must NOT silently inherit the session model. Override per agent via `args.generators[i].model` / `args.critics[i].model`: drop a *mechanical* lens (axis-inversion / by-taxonomy) to the fanout tier to save cost, and reserve the orchestrator tier for an explicit max-fidelity request.
+**Model:** pin every generator and `args.critic` by the ladder's selection line: divergence is design work (architect tier), and criticism is a rubric check (fanout tier). A mechanical lens may take a fanout-tier row, with its `tier` beside the `model`.
 
-**Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** dispatch the generators as parallel `Task` subagents — each one flat prompt (CONTEXT + its lens mandate inline) with an explicit fanout-tier `model` (the `Task` path bypasses the engine's floor) and the `GEN_GUARD` discipline (work from CONTEXT only, no self-filter, no condense). Merge and critique by hand. This mirrors the redteam command's `Task` fallback.
+**Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** write each generator's flat prompt (CONTEXT + its lens mandate inline, under the `GEN_GUARD` discipline: work from CONTEXT only, no self-filter, no condense) to a scratch file and run them as one `/delegate` dispatch, each job pinned by the ladder's selection line. Merge and critique by hand.
 
 ## Step 3: Liveness, then hand back to Claude for curation
 
@@ -111,9 +107,8 @@ Workflow({
 
 | Rationalization | Reality |
 |---|---|
-| "Run 4 agents on the same divergence prompt to get more ideas." | Lens-diversity is the lever, not agent count. The engine rejects <2 lenses. |
+| "Run 4 agents on the same divergence prompt to get more ideas." | The engine rejects <2 lenses. |
 | "Critics are just the generators re-reading their own output." | Critics are FRESH, independent agents over the merged pool. Generators self-grading share premises and bias the verdict. |
-| "Have the generators condense to their best few." | No-condense is load-bearing (`feedback_no_unilateral_condensation`): raw seeds must survive verbatim for Claude to expand. Generators return raw; the `GEN_GUARD` enforces it. |
 
 ## Cross-references
 

@@ -28,6 +28,9 @@ def case(name, ok, detail=""):
 # needs to be set before shell_census (which imports _hook_state) is imported.
 _state_dir = tempfile.mkdtemp(prefix="shell_census_state_")
 os.environ["HARNESS_HOOK_STATE_DIR"] = _state_dir
+# The hook's cache and the reaper stamp resolve from CLAUDE_PROJECT_DIR: point it at a temp root, not the checkout.
+_project_dir = tempfile.mkdtemp(prefix="shell_census_project_")
+os.environ["CLAUDE_PROJECT_DIR"] = _project_dir
 
 import shell_census  # noqa: E402
 
@@ -39,13 +42,12 @@ procs = [{"pid": 10, "ppid": 1, "age": 60, "cmd": WRAP % "tail -f some.log"}]
 rows = shell_census.select(procs)
 case("planted 60-min shell reported", len(rows) == 1 and rows[0]["pid"] == 10 and rows[0]["tail"] == "tail -f some.log",
      repr(rows))
-case("render names pid, age and the reaper route (never a raw taskkill)", "pid 10" in shell_census.render(rows) and "1h00m" in shell_census.render(rows)
-     and "reap.py" in shell_census.render(rows) and "taskkill" not in shell_census.render(rows)
-     and "owner-unknown shell" in shell_census.render(rows))
+case("unknown owner renders only a count", shell_census.render(rows) ==
+     '[shells] 1 long-running shell(s), owner unknown; leave them running.')
 case("header never claims \"this harness spawned\"", "this harness spawned" not in shell_census.render(rows),
      shell_census.render(rows))
 case("unresolved ancestry renders as owner unknown, not this harness",
-     rows[0]["owner"] == "unknown" and "(owner unknown)" in shell_census.render(rows))
+     rows[0]["owner"] == "unknown" and "owner unknown" in shell_census.render(rows))
 
 # 2. clean: young shell and a foreign process are ignored
 procs = [{"pid": 11, "ppid": 1, "age": 5, "cmd": WRAP % "sleep 1"},
@@ -69,7 +71,28 @@ with tempfile.TemporaryDirectory() as d:
     rows = shell_census.select(procs)
     txt = shell_census.render(rows)
     case("sidecar with a 30-min-idle -P stream flagged STALE", len(rows) == 1 and rows[0]["stream"] is not None
-         and rows[0]["stream"] >= 29 and "STALE" in txt, txt)
+         and rows[0]["stream"] >= 29 and "STALE" not in txt and "owner unknown" in txt, txt)
+
+# 4b. a shell running this session's live watcher renders as the wake route, never a hang candidate
+WATCH_SESSION = "probe-watcher-session"
+WATCHER_PID = os.getpid()
+watcher_identity = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + (
+    " winpid=%d" % WATCHER_PID if os.name == "nt" else "") + " pid=%d" % WATCHER_PID
+watcher_procs = [{"pid": 35, "ppid": 1, "age": 50, "name": "bash.exe",
+                  "cmd": WRAP % "python3 .claude/tools/watch_records.py --session --wake"},
+                 {"pid": WATCHER_PID, "ppid": 35, "name": "python.exe"}]
+os.makedirs(_state_dir, exist_ok=True)
+with open(os.path.join(_state_dir, WATCH_SESSION[:8] + ".json"), "w") as fh:
+    json.dump({"sidecar_watchers": [{"process": watcher_identity, "records": [], "session": True}]}, fh)
+_watcher_text = shell_census.run({"session_id": WATCH_SESSION}, watcher_procs, own_pid=999, own_root=100)
+case("a live watcher shell is silent",
+     _watcher_text == '',
+     repr(_watcher_text))
+_unwatched_text = shell_census.run({"session_id": "nowatch0-0000-0000-000000000000"}, watcher_procs,
+                                   own_pid=999, own_root=100)
+case("the same unresolved shell without a registered watcher gets a count",
+     "owner unknown" in _unwatched_text and "pid" not in _unwatched_text,
+     repr(_unwatched_text))
 
 # 5. empty input renders nothing (the hook is silent, not "clean")
 case("empty process list renders empty string", shell_census.render(shell_census.select([])) == "")
@@ -94,7 +117,7 @@ rows = shell_census.select(procs, own_pid=999)
 case("shell sharing the hook's own root is classified own",
      len(rows) == 1 and rows[0]["owner"] == "own", repr(rows))
 case("own row renders in full without owner-unknown label",
-     "pid 40" in shell_census.render(rows) and "(owner unknown)" not in shell_census.render(rows))
+     "pid 40" in shell_census.render(rows) and "owner unknown" not in shell_census.render(rows))
 
 # 7. other-session ownership: a shell whose chain reaches a DIFFERENT claude.exe root collapses
 # to one summary line, with no pid in it
@@ -105,8 +128,7 @@ procs = ancestry() + [
 rows = shell_census.select(procs, own_pid=999)
 txt = shell_census.render(rows)
 case("shell reaching a different root is classified other", rows[0]["owner"] == "other", repr(rows))
-case("other-session shells collapse to one line with no pid",
-     "belong to other Claude sessions" in txt and "pid 41" not in txt, txt)
+case("other-session shells are silent", txt == '', txt)
 
 # 8. unknown ancestry: a shell whose ppid chain breaks before reaching a claude.exe/node.exe
 # ancestor renders in full labeled "owner unknown", not "own" and not silently dropped
@@ -114,7 +136,7 @@ procs = ancestry() + [{"pid": 42, "ppid": 9999, "age": 60, "name": "bash.exe", "
 rows = shell_census.select(procs, own_pid=999)
 txt = shell_census.render(rows)
 case("broken ancestry chain is owner unknown, not own",
-     rows[0]["owner"] == "unknown" and "pid 42" in txt and "(owner unknown)" in txt, txt)
+     rows[0]["owner"] == "unknown" and "pid 42" not in txt and "owner unknown" in txt, txt)
 
 # --- emission / dedupe (drives shell_census.run(), the per-session path main() calls) ---
 
@@ -166,8 +188,7 @@ other_only = ancestry() + [
 ]
 peer_first = shell_census.run({"session_id": SESSION}, other_only, own_pid=999)
 peer_second = shell_census.run({"session_id": SESSION}, other_only, own_pid=999)
-case("other-session-only set emits the one-line count", bool(peer_first)
-     and "belong to other Claude sessions" in peer_first and "pid" not in peer_first.split("\n")[0], repr(peer_first))
+case("other-session-only set stays silent", peer_first == '', repr(peer_first))
 case("identical other-session-only set re-asked is silent", peer_second == "", repr(peer_second))
 
 # 13. after clear_compaction_keys, the identical set emits again
@@ -200,14 +221,50 @@ case("a stored root absent from the cached table is not trusted",
      shell_census.resolve_own_root(SESSION, gone, own_pid=4242, fresh=False) is None)
 via_run = shell_census.run({"session_id": SESSION + "-run"}, cached, own_pid=4242, own_root=100)
 case("run() passes the stored root through to the render", bool(via_run) and "pid 40" in via_run
-     and "(owner unknown)" not in via_run, repr(via_run))
+     and "owner unknown" not in via_run, repr(via_run))
 
 # 13c. the same pid changing owner (own -> unknown) changes what renders, so it must re-emit
 _clear_session_state()
 owned = shell_census.run({"session_id": SESSION}, cached, own_pid=4242, own_root=100)
 unowned = shell_census.run({"session_id": SESSION}, cached, own_pid=4242, own_root=None)
-case("set up: the owned render emits", bool(owned) and "(owner unknown)" not in owned, repr(owned))
-case("the same pid turning owner-unknown re-emits", bool(unowned) and "(owner unknown)" in unowned, repr(unowned))
+case("set up: the owned render emits", bool(owned) and "owner unknown" not in owned, repr(owned))
+case("the same pid turning owner-unknown re-emits", bool(unowned) and "owner unknown" in unowned, repr(unowned))
+
+# 13d. one unparseable process row must not fail the whole census open
+procs = [{"pid": 60, "ppid": 1, "age": 70, "cmd": WRAP % "bash roster.sh"},
+         {"pid": None, "ppid": 60, "age": 5, "cmd": "child.exe"},
+         {"pid": "x", "ppid": 1, "age": 90, "cmd": WRAP % "bash bad_pid.sh"},
+         {"pid": 61, "ppid": 1, "age": "old", "cmd": WRAP % "bash bad_age.sh"},
+         {"pid": 62, "ppid": "nope", "age": 80, "cmd": WRAP % "bash bad_ppid.sh"}]
+try:
+    rows = shell_census.select(procs)
+except Exception as exc:
+    rows = "raised %s: %s" % (type(exc).__name__, exc)
+case("rows with an unparseable pid, age or ppid are skipped and the valid shells still report",
+     isinstance(rows, list) and sorted(r["pid"] for r in rows) == [60, 62], repr(rows))
+
+
+# 13e. the ppid-to-children map is built once per select(), not once per candidate root
+class CountingRow(dict):
+    reads = 0
+
+    def get(self, key, default=None):
+        if key == "ppid":
+            CountingRow.reads += 1
+        return dict.get(self, key, default)
+
+
+def ppid_reads(roots, total=90):
+    procs = [CountingRow(pid=100 + i, ppid=1, age=70, cmd=WRAP % ("bash r%d.sh" % i)) for i in range(roots)]
+    procs += [CountingRow(pid=1000 + i, ppid=100, age=5, cmd="filler.exe") for i in range(total - roots)]
+    CountingRow.reads = 0
+    shell_census.select(procs)
+    return CountingRow.reads
+
+
+one, six = ppid_reads(1), ppid_reads(6)
+case("ppid reads do not scale with the number of candidate roots (%d for 1 root, %d for 6)" % (one, six),
+     six - one < 90, "1 root=%d 6 roots=%d" % (one, six))
 
 # 14. malformed stdin: main() exits 0 with no traceback
 import subprocess  # noqa: E402
@@ -219,15 +276,22 @@ proc = subprocess.run([sys.executable, hook_path], input="not json{{{", capture_
 case("malformed stdin exits 0", proc.returncode == 0, "rc=%r stderr=%r" % (proc.returncode, proc.stderr))
 case("malformed stdin produces no traceback", "Traceback" not in proc.stderr, proc.stderr)
 
-# 15. no CLAUDE_PROJECT_DIR: the cache lands under this checkout's .claude/.cache, never under cwd
-import tempfile  # noqa: E402
-with tempfile.TemporaryDirectory() as cwd_tmp:
+# 15. no CLAUDE_PROJECT_DIR: the cache lands under the hook's own checkout root, never under cwd.
+# The hook runs from a copy inside a temp checkout so that root is not this one.
+import shutil  # noqa: E402
+with tempfile.TemporaryDirectory() as cwd_tmp, tempfile.TemporaryDirectory() as fake_root:
+    fake_hooks = os.path.join(fake_root, ".claude", "hooks")
+    os.makedirs(fake_hooks)
+    for name in ("shell_census.py", "_hook_state.py"):
+        shutil.copy(os.path.join(HERE, "..", "hooks", name), fake_hooks)
     env = dict(os.environ)
     env.pop("CLAUDE_PROJECT_DIR", None)
     env["HARNESS_HOOK_STATE_DIR"] = _state_dir
-    subprocess.run([sys.executable, os.path.abspath(hook_path)], input="{}", capture_output=True, text=True,
+    subprocess.run([sys.executable, os.path.join(fake_hooks, "shell_census.py")], input="{}", capture_output=True, text=True,
                    env=env, cwd=cwd_tmp, timeout=60)
     case("without CLAUDE_PROJECT_DIR the cache is not written under cwd",
          not os.path.exists(os.path.join(cwd_tmp, ".claude", ".cache", "shell-census.json")))
+    case("without CLAUDE_PROJECT_DIR the cache lands under the hook's checkout root",
+         os.path.exists(os.path.join(fake_root, ".claude", ".cache", "shell-census.json")))
 
 sys.exit(1 if fails else 0)

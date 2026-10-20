@@ -51,7 +51,7 @@
             "type": "command"
           }
         ],
-        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search|mcp__ai-worker__write_doc"
+        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__plugin_semantic-search_semantic-search__search|mcp__ai-worker__write_doc"
       },
       {
         "hooks": [
@@ -74,6 +74,11 @@
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_ledger.py\"",
             "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_compaction_rail.py\"",
+            "timeout": 15,
             "type": "command"
           }
         ]
@@ -103,6 +108,16 @@
       {
         "hooks": [
           {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/peer_message_guard.py\"",
+            "timeout": 20,
+            "type": "command"
+          }
+        ],
+        "matcher": "SendMessage"
+      },
+      {
+        "hooks": [
+          {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash_dispatch.py\"",
             "timeout": 75,
             "type": "command"
@@ -118,13 +133,8 @@
       {
         "hooks": [
           {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_mechanism_guard.py\"",
-            "timeout": 15,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/workflow_provider_guard.py\"",
-            "timeout": 45,
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_workflow_dispatch.py\"",
+            "timeout": 90,
             "type": "command"
           }
         ],
@@ -138,7 +148,7 @@
             "type": "command"
           }
         ],
-        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search"
+        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__plugin_semantic-search_semantic-search__search"
       },
       {
         "hooks": [
@@ -176,6 +186,11 @@
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_anchor.py\"",
             "timeout": 30,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_compaction_rail.py\"",
+            "timeout": 15,
             "type": "command"
           }
         ],
@@ -225,6 +240,9 @@
     ]
   },
   "permissions": {
+    "ask": [
+      "Bash(bash .claude/scripts/*_sidecar.sh * -t +Bash *)"
+    ],
     "allow": [
       "Bash(dotnet build:*)",
       "Bash(dotnet test:*)",
@@ -301,9 +319,6 @@
       "Bash(taskkill:*)",
       "Bash(cygpath:*)",
       "Bash(cmd //c:*)",
-      "PowerShell(Get-Process:*)",
-      "PowerShell(Stop-Process:*)",
-      "PowerShell(git:*)",
       "WebSearch",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
@@ -318,13 +333,6 @@
       "WebFetch(domain:obsidian.md)",
       "WebFetch(domain:docs.anthropic.com)",
       "mcp__godot__*",
-      "mcp__obsidian__obsidian_list_notes",
-      "mcp__obsidian__obsidian_read_note",
-      "mcp__obsidian__obsidian_global_search",
-      "mcp__obsidian__obsidian_update_note",
-      "mcp__obsidian__obsidian_search_replace",
-      "mcp__obsidian__obsidian_manage_frontmatter",
-      "mcp__obsidian__obsidian_manage_tags",
       "mcp__plugin_context7_context7__resolve-library-id",
       "mcp__plugin_context7_context7__query-docs",
       "mcp__plugin_semantic-search_semantic-search__search",
@@ -366,7 +374,11 @@
     "deny": [
       "Glob(.claude/worktrees/**)",
       "Read(.claude/worktrees/**)",
-      "Grep(.claude/worktrees/**)"
+      "Grep(.claude/worktrees/**)",
+      "Agent",
+      "PowerShell",
+      "ReportFindings",
+      "ScheduleWakeup"
     ]
   }
 }

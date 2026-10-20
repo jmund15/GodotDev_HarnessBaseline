@@ -20,7 +20,7 @@ def capacity(status="available", source="live", routing="On pace"):
         "quota": {
             "routingBand": routing,
             "dispatchBand": "Exhausted" if status == "exhausted" else routing,
-            "bindingWindow": "seven_day",
+            "bindingWindow": "seven_day", "routingWindow": "seven_day",
             "windows": [{"name": "seven_day", "band": routing, "pressure": 1.0}],
         },
         "planType": "test",
@@ -37,6 +37,7 @@ def main():
 
     cases = []
     try:
+        assert hasattr(pb.provider_capacity, "reading"), "provider_capacity.reading is the patched seam"
         pb.provider_capacity.reading = fake
         got = pb.reading("codex", ttl=999, data={"marker": True})
         cases.append(("provider capacity is the sole reader", calls == [("codex", {"marker": True})]))
@@ -44,6 +45,33 @@ def main():
                       got.get("band") == "On pace" and got.get("pressure") == 1.0))
         cases.append(("source and observation stay visible",
                       got.get("sourceKind") == "live" and got.get("observedAt")))
+
+        def go_reading(*_args, **_kwargs):
+            result = capacity(routing="Hot")
+            result["quota"].update(bindingWindow="thirty_day", routingWindow="thirty_day", windows=[
+                {"name": "seven_day", "band": "Surplus", "pressure": 0.1},
+                {"name": "thirty_day", "band": "Hot", "pressure": 1.9},
+            ])
+            return result
+
+        pb.provider_capacity.reading = go_reading
+        cases.append(("Go monthly binding pressure outranks low weekly pressure",
+                      pb.reading("go").get("pressure") == 1.9))
+
+        def headroom_reading(*_args, **_kwargs):
+            result = capacity(routing="Hot")
+            result["quota"].update(bindingWindow="five_hour", routingWindow="seven_day", windows=[
+                {"name": "five_hour", "band": "Ahead", "pressure": 1.4, "runoutRatio": 0.3},
+                {"name": "seven_day", "band": "Hot", "pressure": 1.14, "runoutRatio": 0.067},
+            ])
+            return result
+
+        pb.provider_capacity.reading = headroom_reading
+        selected = pb.reading("anthropic") or {}
+        cases.append(("display pressure keeps binding while routing compares weekly headroom",
+                      selected.get("pressure") == 1.4
+                      and selected.get("routingPressure") == 1.14
+                      and selected.get("runoutRatio") == 0.067))
 
         pb.provider_capacity.reading = lambda *_args, **_kwargs: capacity("exhausted", routing="Hot")
         cases.append(("exhaustion is never reduced to a burn-rate band",

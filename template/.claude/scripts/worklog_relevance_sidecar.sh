@@ -44,6 +44,12 @@ RECORD=""
 TIMEOUT=""
 RAW=0
 
+# The dispatch preflight probes every *_sidecar.sh with --check; the launcher this wraps answers it.
+if [ "${1:-}" = "--check" ]; then
+  shift
+  exec bash "$SIDECAR" --check -m "$MODEL" "$@"
+fi
+
 while getopts "e:m:D:F:R:T:r" opt; do
   case "$opt" in
     e) EFFORT="$OPTARG" ;;
@@ -57,6 +63,10 @@ while getopts "e:m:D:F:R:T:r" opt; do
   esac
 done
 shift $((OPTIND - 1))
+[ "$EFFORT" != none ] || {
+  echo 'effort none refused: worklog-relevance requires an effort rung' >&2
+  exit 2
+}
 [ "${1:-}" = "--" ] && shift
 
 if [ -n "$SCOPE_FILE" ]; then
@@ -132,8 +142,9 @@ try:
     r = json.load(open(os.environ["REC_V"], encoding="utf-8"))
 except Exception:
     raise SystemExit(0)
-print("[worklog:relevance] served=%s effort=%s turns=%s cost=$%s schemaValid=%s" % (
-    r.get("servedModel"), r.get("effort"), r.get("numTurns"), r.get("costUSD"), r.get("schemaValid")))
+print("[worklog:relevance] served=%s effort=%s turns=%s cost=$%s (%s) schemaValid=%s" % (
+    r.get("servedModel"), r.get("effort"), r.get("numTurns"), r.get("costUSD"), r.get("costBasis"),
+    r.get("schemaValid")))
 PYEOF
 fi
 

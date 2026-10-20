@@ -32,9 +32,13 @@ Call the workflow, passing the assembled input verbatim:
 ```
 Workflow({
   scriptPath: ".claude/workflows/test_skill_pressure.js",
-  args: { skillName: "<arg>", skillContent: "<full SKILL.md text>", claimsToRefuse: "<Claims to Refuse section>" }
+  args: { skillName: "<arg>", skillContent: "<full SKILL.md text>", claimsToRefuse: "<Claims to Refuse section>", tier: "fanout",
+          subject: { model: "<row>", effort: "<rung>" }, scorer: { model: "<row>", effort: "<rung>", tier: "<its tier>" },
+          validator: { model: "<row>", effort: "<rung>", tier: "<its tier>" } }
 })
 ```
+
+Pin `subject` to a fanout-tier row that can be tempted, since the test needs a subject able to capitulate. Pin `scorer` and `validator` to rows whose ladder `±` covers judging a response against the rule. Choose all three by the ladder's selection line; the engine fills none.
 
 The workflow returns:
 ```
@@ -42,7 +46,7 @@ The workflow returns:
   { source, prompt, excerpt, response, verdict, reason, suggestedPatch, validated, downgraded } ], note? }
 ```
 
-It owns, deterministically: Mode-A-vs-B surface detection, one adversarial prompt per documented entry (capped at 15, rationalizations preferred on overflow), single-message Sonnet dispatch, COMPLIES/DRIFTS/FAILS scoring, and an independent validator on **every** COMPLIES (downgrading false-COMPLIES to DRIFTS). Do not re-implement any of this in the command.
+It owns, deterministically: Mode-A-vs-B surface detection, one adversarial prompt per documented entry (capped at 15, rationalizations preferred on overflow), single-message dispatch on `args.subject`, COMPLIES/DRIFTS/FAILS scoring, and an independent validator on **every** COMPLIES (downgrading false-COMPLIES to DRIFTS). Do not re-implement any of this in the command.
 
 ---
 

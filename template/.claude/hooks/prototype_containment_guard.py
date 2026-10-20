@@ -59,6 +59,9 @@ Mode:
                                             #   they land only there and die at parking
                                             #   (SKILL.md -> ## Extraction)
 
+Commit scope is `hooks/_commit_scope.py`: it names the invocations that publish the index and the
+paths a merge authors.
+
 There is deliberately no `--worktree` mode: it would report on files that already
 exist, and `prototypes/` does not exist on `main` -- a SessionStart sweep would
 cost a subprocess every session to report nothing. If one is ever added it gets
@@ -87,6 +90,7 @@ SHIPPING_STATUSES = ("active", "absorbing")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _git_commit import commit_invocations, git_environ, staged_paths as _seam_staged_paths  # noqa: E402
+from _commit_scope import authored_paths, publishes_index  # noqa: E402
 
 
 # The commit's GIT_* variables, set by hook() from the invocation it judges: every git read below uses
@@ -211,7 +215,8 @@ def hook():
         if data.get("tool_name") != "Bash":
             return allow()
         command = data.get("tool_input", {}).get("command", "") or ""
-        commits = [c for c in commit_invocations(command, data.get("cwd") or ".") if c.sub == "commit"]
+        commits = [c for c in commit_invocations(command, data.get("cwd") or ".")
+                   if publishes_index(c.sub, c.rest)]
         if not commits:
             return allow()
         commit = commits[-1]
@@ -224,6 +229,7 @@ def hook():
         paths = staged_paths(repo, commit.rest)
         if paths is None:
             return allow()
+        paths = authored_paths(paths, repo, _COMMIT_GIT_ENV)
         if branch.startswith(PROTOTYPE_BRANCH_PREFIX):
             non_proto = [p for p in paths if not p.startswith(PROTOTYPES_DIR)]
             if non_proto:

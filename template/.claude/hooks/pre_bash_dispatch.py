@@ -9,7 +9,7 @@ them in-process with stdin/stdout/stderr/argv swapped per hook, so one interpret
 every guard instead of twelve. Measured: twelve cold Python starts per Bash call on Windows cost
 more than any guard's own work (`pre_read_dispatch.py` is the read-family sibling).
 
-Order is cheap-deny first, then the approver, then advisories; the loop STOPS at the first hard
+Order is commit normalizers, then guards, approvers and advisories; the loop STOPS at the first hard
 block (exit 2 or `permissionDecision: deny`), so a blocked command never waits on
 `gate_cadence_guard`'s queue wait. Native parallel hooks would report every block at once; this
 reports the first. Merge otherwise follows the native aggregation: deny > ask > allow, every
@@ -18,14 +18,21 @@ reports the first. Merge otherwise follows the native aggregation: deny > ask > 
 Sub-hook self-gating on `tool_name` makes the union matcher safe: a PowerShell call reaches the
 Bash-only hooks and they exit 0 silently, exactly as they did on their own matcher.
 
-Fail posture per sub-hook is unchanged: an exception or a non-2 non-zero exit is reported on
-stderr (user-visible, never model-visible) and the next hook runs — the same thing the harness
-did when that hook crashed as its own process.
+Fail posture per sub-hook: an exception or a non-2 non-zero exit is reported on stderr and in
+`additionalContext`, naming the lost check and repair; the next hook runs. Floor metadata is
+available before member imports; import faults use independent stubs. A floor member's fault
+blocks the call. Bootstrap import faults deny every Bash/PowerShell call and stay silent for
+other tools. pattern_enforcer is floor only for Bash/PowerShell here; its edit/style faults
+remain advisory in pre_edit_dispatch.
+
+The chain runs inside `_git_commit.memoized()`: every sub-hook reads the same repo state, so a
+read-only git query they repeat spawns git once per tool call.
 
 Wired in: settings.json hooks.PreToolUse, matcher "Bash|PowerShell|Monitor", timeout = the
 largest sub-hook timeout (gate_cadence_guard's queue wait).
 """
 
+import importlib
 import io
 import json
 import os
@@ -34,92 +41,152 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import with the REAL sys.stdout bound: four sub-hooks call sys.stdout.reconfigure() at import.
-import bash_backslash_fidelity  # noqa: E402
-import bash_shape_guard  # noqa: E402
-import compound_cd_approver  # noqa: E402
-import git_guardrails  # noqa: E402
-try:  # project-local (rail battery); absent in projects that sync only the baseline
-    import rail_probe_guard  # noqa: E402
-except ImportError:
-    rail_probe_guard = None
-import sidecar_dispatch_context  # noqa: E402
-import _optional_hooks  # noqa: E402
+try:
+    _bootstrap = '_git_commit'
+    import _git_commit  # noqa: E402
 
-# Godot-layer guards: a project that did not adopt the godot layer has no file for them.
-(cloud_test_enforcer, gate_cadence_guard, pattern_enforcer, prototype_containment_guard,
- provisional_totality_guard, tres_nullstrip_guard, tres_script_strip_guard) = _optional_hooks.load(
-    "cloud_test_enforcer", "gate_cadence_guard", "pattern_enforcer", "prototype_containment_guard",
-    "provisional_totality_guard", "tres_nullstrip_guard", "tres_script_strip_guard")
-class _ApprovingGatesImportStub:
-    """Stands in for `approving_gates` when it fails to import: it approves nothing, the deny
-    guards still run, and its exit 1 puts the import error on the user-visible stderr channel."""
-    __name__ = "approving_gates"
-    __file__ = "approving_gates.py"
+    _bootstrap = '_optional_hooks'
+    import _optional_hooks  # noqa: E402
+except Exception as exc:
+    try:
+        _payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        _payload = None
+    if isinstance(_payload, dict) and _payload.get('tool_name') in ('Bash', 'PowerShell'):
+        sys.stderr.write(
+            'BLOCKED shell call -- %s failed to import (%s: %s). Repair hooks/%s.py; '
+            'no shell call runs until it imports cleanly.\n' %
+            (_bootstrap, type(exc).__name__, exc, _bootstrap))
+        sys.exit(2)
+    sys.exit(0)
 
-    def __init__(self, error):
+
+class _ImportStub:
+    """Stands in for a sub-hook that failed to import, so the dispatcher keeps running every other guard."""
+
+    def __init__(self, name, error):
+        self.__name__ = name
+        self.__file__ = name + ".py"
         self.error = error
 
-    def main(self):
-        sys.stderr.write("approving_gates failed to import (%s); no harness action is auto-approved "
-                         "until hooks/approving_gates.py imports cleanly.\n" % self.error)
+
+def _advisory_stub(name, error, lost):
+    """A failed adviser acts on nothing; the dispatcher reports its exit 1 through
+    stderr and additionalContext. `lost` names what stops until it imports."""
+    stub = _ImportStub(name, error)
+
+    def main():
+        sys.stderr.write("%s failed to import (%s); %s until hooks/%s.py imports cleanly.\n" % (name, error, lost, name))
         return 1
+    stub.main = main
+    return stub
 
 
-try:
-    import approving_gates  # noqa: E402
-    _APPROVING_GATES_IMPORT_ERROR = None
-except Exception as _exc:
-    _APPROVING_GATES_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
-    approving_gates = _ApprovingGatesImportStub(_APPROVING_GATES_IMPORT_ERROR)
-import unbounded_scan_guard  # noqa: E402
+def _floor_stub(name, error, matches, action):
+    """A floor guard that failed to import denies each command `matches(command, cwd)` selects (the action the
+    guard judges, never its noun) and names the import error. A matcher that raises denies."""
+    stub = _ImportStub(name, error)
+    stub.FAIL_CLOSED = True
 
-# Guarded: baseline_classification_guard also imports baseline_sync (tools/), a heavier
-# dependency than any other sub-hook here. A broken import must deny every `git commit`
-# rather than silently skip classification -- so a failure here registers a stub `main()`
-# that does exactly that and names the import error (Design §4 fail-closed).
-try:
-    import baseline_classification_guard  # noqa: E402
-    _BASELINE_GUARD_IMPORT_ERROR = None
-except Exception as _exc:  # noqa: BLE001 - any import failure must still deny, never crash
-    _BASELINE_GUARD_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
-
-    class _BaselineGuardImportStub:
-        """Stands in for `baseline_classification_guard` when it fails to import. Denies
-        every `git commit` it sees rather than allow an unclassified `.claude/` addition
-        through unverified -- the same fail-closed posture the real guard's `main()` keeps
-        for a runtime crash, extended to cover an import-time one."""
-
-        __name__ = "baseline_classification_guard"
-        __file__ = "baseline_classification_guard.py"
-
-        def main(self):
-            try:
-                payload = json.loads(sys.stdin.read())
-            except (json.JSONDecodeError, ValueError):
+    def main():
+        try:
+            payload = json.loads(sys.stdin.read())
+        except (json.JSONDecodeError, ValueError):
+            return 0
+        if not isinstance(payload, dict) or payload.get("tool_name") not in ("Bash", "PowerShell"):
+            return 0
+        command = (payload.get("tool_input") or {}).get("command") or ""
+        try:
+            if not matches(command, payload.get("cwd") or "."):
                 return 0
-            if not isinstance(payload, dict) or payload.get("tool_name") not in ("Bash", "PowerShell"):
-                return 0
-            command = (payload.get("tool_input") or {}).get("command") or ""
-            if "commit" not in command:
-                return 0
-            sys.stderr.write(
-                "BLOCKED git commit -- baseline_classification_guard failed to import (%s). "
-                "Repair hooks/baseline_classification_guard.py; .claude/ classification "
-                "cannot be verified until it imports cleanly.\n" % _BASELINE_GUARD_IMPORT_ERROR
-            )
-            return 2
+        except Exception:  # noqa: BLE001 - an unparseable command denies
+            pass
+        sys.stderr.write("BLOCKED %s -- %s failed to import (%s). Repair hooks/%s.py; no %s runs until it "
+                         "imports cleanly.\n" % (action, name, error, name, action))
+        return 2
+    stub.main = main
+    return stub
 
-    baseline_classification_guard = _BaselineGuardImportStub()
 
-# (module, argv tail). Deny-shaped guards first, cheapest first; the approver; then advisories.
+def _runs_git(command, cwd):
+    return bool(_git_commit.git_invocations(command, cwd))
+
+
+def _commits(command, cwd):
+    return bool(_git_commit.commit_invocations(command, cwd))
+
+
+def _import_error(exc):
+    return "%s: %s" % (type(exc).__name__, exc)
+
+
+# Metadata must survive a member's failed import. pattern_enforcer's floor applies only
+# to this Bash/PowerShell chain, not its advisory Write/Edit consumer.
+_FLOOR_MEMBERS = {
+    'git_guardrails': (_runs_git, 'git call'),
+    'baseline_classification_guard': (_commits, 'git commit'),
+    'pattern_enforcer': (lambda _command, _cwd: True, 'destructive-command check'),
+    'editor_live_build_guard': (lambda command, _cwd: 'dotnet' in command or '-ignoreeditor' in command.lower(),
+                                'build into a checkout'),
+}
+_IMPORT_ERRORS = {}
+
+
+def _failed_import(name, exc):
+    error = _import_error(exc)
+    _IMPORT_ERRORS[name] = error
+    if name in _FLOOR_MEMBERS:
+        matches, action = _FLOOR_MEMBERS[name]
+        return _floor_stub(name, error, matches, action)
+    return _advisory_stub(name, error, 'its checks do not run')
+
+
+def _load(name):
+    try:
+        return importlib.import_module(name)
+    except Exception as exc:
+        return _failed_import(name, exc)
+
+
+# Import with the real stdout bound; some members reconfigure it on import.
+bash_backslash_fidelity = _load('bash_backslash_fidelity')
+compound_cd_approver = _load('compound_cd_approver')
+git_guardrails = _load('git_guardrails')
+editor_live_build_guard = _optional_hooks.load('editor_live_build_guard', on_error=_failed_import)
+rail_probe_guard = _optional_hooks.load('rail_probe_guard', on_error=_failed_import)
+sidecar_dispatch_context = _load('sidecar_dispatch_context')
+hand_pricing_advisory = _optional_hooks.load('hand_pricing_advisory', on_error=_failed_import)
+(cloud_test_enforcer, gate_cadence_guard, pattern_enforcer, prototype_containment_guard,
+ provisional_totality_guard, tres_nullstrip_guard, tres_script_strip_guard) = _optional_hooks.load(
+    'cloud_test_enforcer', 'gate_cadence_guard', 'pattern_enforcer', 'prototype_containment_guard',
+    'provisional_totality_guard', 'tres_nullstrip_guard', 'tres_script_strip_guard', on_error=_failed_import)
+approving_gates = _load('approving_gates')
+unbounded_scan_guard = _load('unbounded_scan_guard')
+harness_shell_write_guard = _load('harness_shell_write_guard')
+foreground_wait_guard = _optional_hooks.load('foreground_wait_guard', on_error=_failed_import)
+wide_test_guard = _optional_hooks.load('wide_test_guard', on_error=_failed_import)
+run_call_router = _optional_hooks.load('run_call_router', on_error=_failed_import)
+triage_commit_check = _load('triage_commit_check')
+duplicate_commit_check = _load('duplicate_commit_check')
+baseline_classification_guard = _load('baseline_classification_guard')
+rule_number_guard = _load('rule_number_guard')
+_APPROVING_GATES_IMPORT_ERROR = _IMPORT_ERRORS.get('approving_gates')
+_TRIAGE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('triage_commit_check')
+_DUPLICATE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('duplicate_commit_check')
+_BASELINE_GUARD_IMPORT_ERROR = _IMPORT_ERRORS.get('baseline_classification_guard')
+
+
+# (module, argv tail). Normalizers first, then guards, approvers and advisories.
 HOOKS = ((rail_probe_guard, ()),) if rail_probe_guard else ()  # inert unless a rail-battery run is armed
 HOOKS += (
-    (pattern_enforcer, ()),
+    (_git_commit, ()),
     (cloud_test_enforcer, ()),
-    (bash_shape_guard, ()),
-    (git_guardrails, ()),
+    (foreground_wait_guard, ()),
+    (wide_test_guard, ()),
     (baseline_classification_guard, ()),
+    (pattern_enforcer, ()),
+    (git_guardrails, ()),
+    (editor_live_build_guard, ()),
     (tres_script_strip_guard, ("--hook",)),
     (tres_nullstrip_guard, ("--hook",)),
     (prototype_containment_guard, ("--hook",)),
@@ -127,6 +194,11 @@ HOOKS += (
     (gate_cadence_guard, ()),
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
+    (harness_shell_write_guard, ()),
+    (triage_commit_check, ()),
+    (duplicate_commit_check, ()),
+    (rule_number_guard, ()),
+    (hand_pricing_advisory, ()),
     (sidecar_dispatch_context, ()),
     (approving_gates, ()),
     # Last: it rewrites the command through updatedInput, so every deny above must win first.
@@ -183,13 +255,42 @@ def _hook_output(stdout_text):
 
 def dispatch(raw_payload, hooks=HOOKS):
     """Run the chain and return (exit_code, stdout_text, stderr_text) for the dispatcher process."""
+    with _git_commit.memoized():
+        return _dispatch(raw_payload, hooks)
+
+
+def _dispatch(raw_payload, hooks):
     decision, reason, contexts, extra, user_stderr = None, None, [], {}, []
+    payload = json.loads(raw_payload)
+    try:
+        updated, routing_context = run_call_router.route(payload) if run_call_router is not None else ({}, [])
+    except Exception as exc:
+        # A routing fault costs only the rewrite; the guard chain below still decides.
+        if isinstance(run_call_router, _ImportStub):
+            exc = run_call_router.error
+        updated, routing_context = {}, []
+        user_stderr.append("run_call_router failed, call left unrouted: %s" % exc)
+        contexts.append("[pre_bash_dispatch] run_call_router fault: %s; call left unrouted. "
+                        "Repair .claude/hooks/run_call_router.py." % exc)
+    if updated:
+        payload['tool_input'] = updated
+        raw_payload = json.dumps(payload)
+        extra['updatedInput'] = updated
+        contexts.extend(routing_context)
     for module, argv_tail in hooks:
         code, out, err = run_hook(module, argv_tail, raw_payload)
         if code == 2:
-            return 2, "", err if err.strip() else "%s blocked the call." % module.__name__
+            block = err.rstrip() if err.strip() else "%s blocked the call." % module.__name__
+            return 2, "", block
+        floor = getattr(module, 'FAIL_CLOSED', False) or (
+            module.__name__ in _FLOOR_MEMBERS and payload.get('tool_name') in ('Bash', 'PowerShell'))
+        if code != 0 and floor:
+            return 2, "", ("%s is a floor guard and failed (exit %s), so the call is blocked until it runs "
+                           "cleanly. Fix the guard; its error:\n%s" % (module.__name__, code, err.strip()[-1500:]))
         if code != 0:
-            user_stderr.append("[pre_bash_dispatch] %s exited %s: %s" % (module.__name__, code, err.strip()))
+            fault = "[pre_bash_dispatch] %s exited %s: %s" % (module.__name__, code, err.strip()[-1500:])
+            user_stderr.append(fault)
+            contexts.append(fault + "; its checks did not run. Repair .claude/hooks/%s.py." % module.__name__)
             continue
         hso = _hook_output(out)
         ctx = hso.get("additionalContext")
@@ -198,9 +299,13 @@ def dispatch(raw_payload, hooks=HOOKS):
         pd = hso.get("permissionDecision")
         if pd in _DECISION_RANK and _DECISION_RANK[pd] > _DECISION_RANK.get(decision, 0):
             decision, reason = pd, hso.get("permissionDecisionReason")
+        if isinstance(hso.get('updatedInput'), dict):
+            payload['tool_input'] = dict(payload.get('tool_input') or {}, **hso['updatedInput'])
+            raw_payload = json.dumps(payload)
+            extra['updatedInput'] = payload['tool_input']
         for key, value in hso.items():
             if key not in ("hookEventName", "permissionDecision", "permissionDecisionReason",
-                           "additionalContext") and key not in extra:
+                           "additionalContext", "updatedInput") and key not in extra:
                 extra[key] = value
         if decision == "deny":
             break

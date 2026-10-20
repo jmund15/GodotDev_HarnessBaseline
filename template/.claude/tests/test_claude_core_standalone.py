@@ -27,7 +27,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 PROJECT_SECTIONS = ("Project Guidelines",)
 LAYER_FILES = ("core", "coding", "godot")  # baseline layer order; CLAUDE.md imports each present one
-NOT_FILES = {"offset", "limit", "write_doc"}  # a Read parameter pair and an MCP tool, not skills
+NOT_FILES = {"offset", "limit", "write_doc", "busy", "premises", "held",
+             "add", "rm", "reset", "stash", "run_in_background"}  # a Read parameter pair, an MCP tool, a ListAgents status, a commit-message block name, a review-report field, git index-write subcommands and a Bash tool parameter, not skills
 BOOTSTRAP_STATE = {"baseline.lock.json"}  # written at bootstrap, absent from the template tree
 PATH_TOKEN = re.compile(r"^[\w.-]+(/[\w.<>-]+)*/?$")
 FILE_SUFFIXES = (".md", ".py", ".json", ".sh", ".ps1", ".js")
@@ -70,7 +71,7 @@ def _exists(root, *relpaths):
 def cited_paths(text):
     """(token, candidate relpaths) for each backticked file, skill or command the text cites."""
     for token in sorted(set(re.findall(r"`([^`\s]+)`", text))):
-        if any(mark in token for mark in "<*~$=(") or token.startswith(("/tmp", ".claude/cache/")) or token in BOOTSTRAP_STATE:
+        if any(mark in token for mark in "<*~$=(") or token.startswith(("/tmp", ".claude/cache/", ".claude/scratch/")) or token in BOOTSTRAP_STATE:
             continue
         if token.startswith("/") and re.fullmatch(r"/[a-z][a-z0-9_]*", token):
             name = token[1:]
@@ -152,8 +153,14 @@ def main():
           any("missing file: change_control" in p for p in planted(clean_core + "`change_control` owns it.\n", "", clean_files)))
     check("a missing cited path fails",
           any("missing file" in p for p in planted(clean_core + "`reference/project_stack.md`\n", "", clean_files)))
+    check("a backticked agent status word is not a skill cite",
+          planted(clean_core + "Only while `ListAgents` shows it `busy`.\n", "", clean_files) == [])
+    check("a backticked git subcommand is not a skill cite",
+          planted(clean_core + "Run a git index write (`add`, `rm`, `reset`, `stash`) alone.\n", "", clean_files) == [])
     check("a missing slash command fails",
           any("missing file: /nowhere" in p for p in planted(clean_core + "Run `/nowhere`.\n", "", clean_files)))
+    check("a cite of the gitignored scratch dir is not judged",
+          planted(clean_core + "Messages go under `.claude/scratch/`.\n", "", clean_files) == [])
 
     check("an overlay may cite a core section",
           planted_layers([("core", clean_core), ("coding", "## Gamma\nPer §Alpha Rules.\n")], clean_files) == [])

@@ -6,6 +6,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from provider_capacity import http_failure  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 TRANSPORT = "deepseek"
@@ -65,12 +69,8 @@ def read_live(url, token, timeout=10):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            return outcome("auth-error", error={"kind": "auth", "message": "DeepSeek authentication failed"})
-        return outcome("network-error", error={
-            "kind": "server" if exc.code >= 500 else "network",
-            "message": "DeepSeek balance endpoint returned HTTP %d" % exc.code,
-        })
+        status, error = http_failure(exc.code, "DeepSeek balance endpoint")
+        return outcome(status, error=error)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return outcome("network-error", error={"kind": "network", "message": str(exc)[:300]})
     try:

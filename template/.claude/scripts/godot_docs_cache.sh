@@ -75,7 +75,8 @@ staged="$(find "$STAGE/doc/classes" -name '*.xml' | wc -l | tr -d ' ')"
 [[ "$staged" -gt 100 ]] || die "only $staged class files fetched — refusing to install a partial cache"
 
 # Index must generate BEFORE the swap, so a generator failure cannot leave cache and index disagreeing.
-python "$GEN" "$STAGE/doc/classes" "$INDEX" "$PIN" || die "index generation failed"
+PY="$(command -v python3 || command -v python)" || die "no python3 or python on PATH"
+"$PY" "$GEN" "$STAGE/doc/classes" "$INDEX" "$PIN" || die "index generation failed"
 
 echo "$PIN" > "$STAGE/.stamp"
 [[ -d "$CACHE" ]] && rm -rf "$CACHE"

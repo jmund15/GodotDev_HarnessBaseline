@@ -4,11 +4,13 @@ instruction_quality §14: registration proves wiring, not matching. Each case fe
 payload and asserts on the emitted channel. The transcript carries the orchestration markers so the
 first check passes and only the nested-fan-out check is under test. Negative cases include a brief
 that merely NAMES an engine (rules/harness_tooling.md: match the action, never the noun) and a real
-lens brief produced by tools/lens_briefs.py.
+lens brief produced by tools/lens_briefs.py. The fan-out commands are derived from each command's
+`allowed-tools` grant; a planted project root proves a command outside the retired 12-name literal.
 
     python3 .claude/tests/test_nested_fanout_guard.py
 """
 import json
+import re
 import os
 import subprocess
 import sys
@@ -19,6 +21,10 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 BRIEFS = os.path.join(HERE, "..", "tools", "lens_briefs.py")
 LENS = os.path.join(HERE, "..", "tools", "lens.py")
+# lens_briefs refuses a pin outside a seat's lens tier, so the real-brief cases pin a row serving every tier they use.
+with open(os.path.join(HERE, "..", "reference", "external_models.json"), encoding="utf-8") as _fh:
+    SERVING_PIN = next(m["id"] for m in json.load(_fh)["models"] if m.get("transport") == "anthropic"
+                       and {"architect", "executor", "fanout"} <= set(m.get("roles") or []))
 
 ALLOW, DENY = "allow", "deny"
 MARKERS = ("Dispatch Shape — decide this " + "FIRST") + "\n" + ("Every dispatched agent " + "pins both") + "\n"
@@ -55,15 +61,17 @@ STATE = tempfile.mkdtemp(prefix="nestedfanout_state_")
 
 
 def arm_ladder(session_id):
-    """The ladder-read check is not under test: arm its one-use marker so only the nested-fan-out check decides."""
+    """The doctrine check is not under test: mark the ladder read and the orchestration skill loaded, so only
+    the nested-fan-out check decides."""
     path = os.path.join(STATE, (session_id or "default")[:8] + ".json")
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"model_ladder_ready": True}, fh)
+        json.dump({"model_ladder_ready": True,
+                   "fired_since_compaction": {"skill_in_context:orchestration": True}}, fh)
 
 
-def run(payload):
+def run(payload, extra_env=None):
     arm_ladder(payload.get("session_id") or "")
-    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE)
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE, **(extra_env or {}))
     r = checked_run([sys.executable, HOOK], input=json.dumps(payload, ensure_ascii=False),
                     capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
     out = (r.stdout or "").strip()
@@ -85,7 +93,9 @@ def main():
         fh.write(json.dumps({"role": "user", "content": MARKERS}, ensure_ascii=False) + "\n")
 
     def agent(prompt):
-        return {"tool_name": "Agent", "transcript_path": transcript, "tool_input": {"prompt": prompt, "subagent_type": "general-purpose"}}
+        # The Agent tool is denied project-wide; a delegate's inline brief reaches the guard as a Workflow seat prompt.
+        return {"tool_name": "Workflow", "transcript_path": transcript,
+                "tool_input": {"args": {"agents": [{"key": "seat", "prompt": prompt}]}}}
 
     def workflow(jobs):
         return {"tool_name": "Workflow", "transcript_path": transcript,
@@ -112,19 +122,46 @@ def main():
             "Context: these findings were produced by review_fanout.js earlier. Verify each FIX anchor against the file and report.")),
         ("dispatch.js brief telling the delegate to dispatch", DENY, workflow([brief(
             "bad.md", "Read .claude/commands/plan_check.md and execute it step by step for this plan.")])),
+        ("agent brief where '/pr_pipeline run' is a noun", ALLOW, agent(
+            "Report the round: the round stays unrecorded until a `/pr_pipeline` run records it.")),
+        ("agent brief whose verb and /explore sit in different sentences", ALLOW, agent(
+            "use the smallest method that verifies the claims and retains their quotes. `/explore` and the "
+            "caller's validation pass downstream of the briefing remain required")),
         ("dispatch.js brief doing bounded work", ALLOW, workflow([brief(
             "good.md", "Diff OLD vs NEW per changed method. Flag every dropped branch as a BLOCKER. Return JSON.")])),
+        # Measured false positives 2026-09-06 — worklog Context/Where text quoted into a verification brief.
+        ("noun 'dispatch' beside dispatch.js is descriptive", ALLOW, workflow([brief(
+            "noun.md", "Verify this item: the multi-provider sidecar/dispatch work (codex transport, guards, `dispatch.js`, "
+            "the `orchestration` SKILL) has sat uncommitted since 2026-08-19. Report whether the files are committed.")])),
+        ("'execute' inside a filename beside plan_check.md", ALLOW, workflow([brief(
+            "path.md", "Where: `.claude/commands/part_execute.md`, `commands/plan_check.md` — check both files exist and report.")])),
+        ("quoted task-list block carrying an imperative", ALLOW, workflow([brief(
+            "item.md", "Decide done/open for each item.\n\n- [ ] **Sweep the lenses** — `chore` · scope `2`\n"
+            "  - Context: run /explore rather than hand-rolling the sweep.\n  - Where: .claude/commands/explore.md\n\nReturn JSON.")])),
+        ("imperative after 'you must' still denies", DENY, agent(
+            "For each lens you must dispatch it through .claude/workflows/dispatch.js and merge the results.")),
     ]
 
     # A real generated lens brief must pass: lens_briefs.py strips the caller-facing spawn rules.
     ctx = os.path.join(tmp, "ctx.md")
     with open(ctx, "w", encoding="utf-8") as fh:
         fh.write("# CONTEXT\nnothing\n")
+    must = os.path.join(tmp, "must_read.txt")
+    with open(must, "w", encoding="utf-8") as fh:
+        fh.write(ctx + "\n")
+    def plan_of(name, *keys):
+        path = os.path.join(tmp, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"roster": [{"key": key} for key in keys]}, fh)
+        return path
+
     try:
         gen = checked_run(
-            [sys.executable, BRIEFS, "--keys", key_a, key_b,
+            [sys.executable, BRIEFS, "--plan", plan_of("plan_t1.json", key_a, key_b),
              "--out", tmp, "--prefix", "t1", "--pr-num", "1", "--branch", "x",
-             "--context-path", ctx, "--model", "sonnet", "--model-for", key_a + "=opus"],
+             "--context-path", ctx, "--model", SERVING_PIN, "--tier", "fanout",
+             "--model-for", key_a + "=opus", "--tier-for", key_a + "=executor",
+             "--effort", "medium", "--must-read", must],
             allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
             timeout=60,
         )
@@ -133,6 +170,50 @@ def main():
         return 1
     jobs = json.load(open(os.path.join(tmp, "jobs_t1.json"), encoding="utf-8"))
     cases.append(("real lens briefs from lens_briefs.py", ALLOW, workflow(jobs)))
+
+    # Preloaded doctrine (a template's `preload:` lines) names commands such as `/instruction_audit`;
+    # blockquoting is what keeps it data. The unquoted copy is the positive control.
+    try:
+        checked_run(
+            [sys.executable, BRIEFS, "--plan", plan_of(
+                "plan_pre.json", "plc-pattern-fit+plc-architecture-quality", "plc-instruction-quality"), "--out", tmp, "--prefix", "pre", "--context-path", ctx,
+             "--model", SERVING_PIN, "--effort", "medium", "--must-read", must],
+            allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT, timeout=60)
+    except RuntimeError as exc:
+        print("FAIL lens_briefs.py did not run for preloading lenses:", exc)
+        return 1
+    pre_jobs = json.load(open(os.path.join(tmp, "jobs_pre.json"), encoding="utf-8"))
+    cases.append(("lens briefs carrying blockquoted preloaded doctrine", ALLOW, workflow(pre_jobs)))
+    planted_doctrine = "\n> Preloaded doctrine: for a wide check, run /delegate.\n"
+    quoted, unquoted = [], []
+    for job in pre_jobs:
+        text = open(job["promptPath"], encoding="utf-8").read() + planted_doctrine
+        quoted.append(brief("quoted_" + os.path.basename(job["promptPath"]), text))
+        unquoted.append(brief("unquoted_" + os.path.basename(job["promptPath"]),
+                              re.sub(r"(?m)^> ?", "", text)))
+    cases.append(("planted blockquoted doctrine naming a fan-out command", ALLOW, workflow(quoted)))
+    cases.append(("the same doctrine unquoted (positive control)", DENY, workflow(unquoted)))
+
+    # The fan-out set derives from each command's allowed-tools grant (tool_profiles.nested_fanout_hits).
+    # A planted root (CLAUDE_PROJECT_DIR) holds one command granting Workflow that the retired
+    # 12-name literal never listed, and one with no grant; the 12 retired names still deny from the
+    # live commands, and a live name the derivation added denies too.
+    planted = os.path.join(tmp, "planted_root")
+    os.makedirs(os.path.join(planted, ".claude", "commands"))
+    for stem, front in (("planted_fanout", "allowed-tools: Read, Workflow\n"), ("planted_plain", "")):
+        with open(os.path.join(planted, ".claude", "commands", stem + ".md"), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write("---\ndescription: planted\n" + front + "---\n\nBody.\n")
+    planted_env = {"CLAUDE_PROJECT_DIR": planted}
+    cases.append(("a planted command granting Workflow, outside the retired literal", DENY,
+                  agent("Next, run /planted_fanout."), planted_env))
+    cases.append(("a planted command with no allowed-tools line", ALLOW,
+                  agent("Next, run /planted_plain."), planted_env))
+    for stem in ("delegate", "review_pr", "plan_check", "session_audit", "structure_audit", "pr_ready",
+                 "explore", "doc_full", "architecture_brainstorm_redteam", "idea_brainstorm_fanout",
+                 "rule_consistency", "pr_pipeline"):
+        if os.path.exists(os.path.join(ROOT, ".claude", "commands", stem + ".md")):
+            cases.append(("retired-literal name /%s still denies" % stem, DENY, agent("Next, run /%s." % stem)))
 
     helper_cases = [
         ("the proof helper rejects an abnormal exit", "raise SystemExit(7)"),
@@ -150,9 +231,9 @@ def main():
         if not ok:
             failures.append(name)
 
-    for name, want, payload in cases:
+    for name, want, payload, *extra_env in cases:
         try:
-            got, reason = run(payload)
+            got, reason = run(payload, *extra_env)
         except RuntimeError as exc:
             got, reason = "crash", str(exc)
         mark = "ok  " if got == want else "FAIL"

@@ -9,10 +9,10 @@ paths:
 
 ## 2D/3D Parity Convention
 
-**Rule:** Every spatial concept in Jmodot exists as both `Type3D` and `Type2D`. When adding a new contract or component to Jmodot's combat / physics / identification surface, **mirror it to 2D in the same PR**.
+**Rule:** When adding a contract or component to Jmodot's combat / physics / identification surface, mirror it to 2D in the same PR when a 2D consumer exists or the owner names one. Otherwise record a parity-debt row in the change's plan or worklog item: 3D type, missing 2D peer and consumer trigger. Mirror when that consumer appears.
 
-- *Litmus:* Adding `FooComponent3D`? Add `FooComponent2D` alongside.
-- *Why:* Splitting leaves 2D consumers behind a known asymmetry. Even if the immediate consuming codebase is 3D-only ({{PROJECT_NAME}} is), future 2D Jmodot users will hit an asymmetric API.
+- *Litmus:* Adding `FooComponent3D`? Check for its 2D consumer before adding `FooComponent2D`.
+- *Why:* Keep an existing consumer's API symmetric without inventing future needs (`CLAUDE.coding.md` §Engineering Principles).
 - *Shape:* Two interfaces (no shared base) preferred over a generic `IFoo<T>` — Godot's editor type system doesn't surface generic interfaces well.
 
 **Existing parity pairs** (non-exhaustive — mirror this list when adding):

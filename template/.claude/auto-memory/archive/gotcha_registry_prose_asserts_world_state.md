@@ -42,4 +42,4 @@ like a checked fact, where "measured at X" invites a date check.
 supersedes the older version's cell by cell; where it does not, the older cell STANDS rather than
 dropping to unmeasured. Dropping an untested rung discards the only measurement of it — the first
 draft of the fix did exactly that, and lost `low`-on-converged, which only the retired version had
-ever tested. Canon: `rules/harness_authoring.md` §Any harness markdown.
+ever tested. Canon: `instruction_quality` §17.

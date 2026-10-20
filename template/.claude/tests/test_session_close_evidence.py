@@ -67,7 +67,7 @@ class CloseEvidenceTests(unittest.TestCase):
     def test_ambiguous_prefix_never_chooses_the_newest(self):
         home = self.root / 'home'
         repo = str(self.root / 'repo')
-        folder = home / '.claude/projects' / check.project_key(repo)
+        folder = home / '.claude/projects' / __import__('session_digest').projects_dir(repo).name
         folder.mkdir(parents=True)
         for sid in ('same-one', 'same-two'):
             (folder / (sid + '.jsonl')).write_text('{}')
@@ -295,8 +295,13 @@ class CloseEvidenceTests(unittest.TestCase):
         self.write_rows([])
         source = self.root / 'scope.json'
         source.write_text('{"search_plugin": "unavailable"}')
+        with self.assertRaisesRegex(ValueError, 'needs --predicate'):
+            check.make_receipt('own-session', 'reindex_search', 'skipped', [str(source)], [],
+                               'Plugin is unavailable in this session')
+        predicate = check.current_predicates(['reindex_search'], str(self.root),
+                                             'own-session', str(self.transcript))['reindex_search']
         receipt = check.make_receipt('own-session', 'reindex_search', 'skipped', [str(source)], [],
-                                     'Plugin is unavailable in this session')
+                                     'Plugin is unavailable in this session', predicate=predicate)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             check.render(str(self.transcript), 'own-session', str(self.root / 'archive.json'), False,
                          {'reindex_search': receipt}, 'final')

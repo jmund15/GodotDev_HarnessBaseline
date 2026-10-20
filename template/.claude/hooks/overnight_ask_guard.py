@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """PreToolUse AskUserQuestion guard for the current session's /overnight run.
 
-Home: commands/overnight.md, Step 2. State is active-<session-id>.json under
+Homes: commands/overnight.md §Step 2 (the guard); commands/overnight_review.md (--open-questions
+and --archive-closed, which read Close docs and never touch markers). State is active-<session-id>.json under
 .claude/scratch/overnight; legacy anonymous active.json is never claimed.
-Expired owned state is removed. Disarm requires an unchanged validated Close doc.
+Expired owned state is removed. Only the owner's return disarms: a UserPromptSubmit carrying
+owner text (prompt_dispatch CHAIN member). The model has no disarm command, so work after the
+Close doc (a /session_end the goal names) stays unattended.
+`--validate-close` checks each `Q` row's Park reason and Default, plus Reversibility (clean, residue
+or none) when supplied, and, when the doc holds a `Q` row, the `Next session: <currency> · <model>`
+line in `## Outcome`. `--open-questions` retains legacy missing-Default rows as open.
+Both Close-doc readers default `<dir>` to `<VAULT_ROOT>/DevProjects/<PROJECT_NAME>/Claude/TODO/Overnight`
+from `baseline.lock.json` substitutions.
+`--archive-closed <dir>` moves each session's docs to <dir>/archive/ once none holds an open,
+malformed or unreadable row and none of its sessions is armed; it never overwrites an archived file.
 Invalid state and hook errors fail open for AskUserQuestion but fail closed for CLI state changes.
 Proof: tests/test_overnight_ask_guard.py.
 """
-import hashlib
 import json
 import math
 import os
@@ -17,27 +26,48 @@ import time
 from pathlib import Path
 
 from _hook_state import write_json_atomic
+from _owner_text import ENVELOPE_RE, LEADING_INJECTION_RE
 
 TTL_HOURS = 16
+TOKEN = "{" + "{%s}" + "}"  # a literal token here would be expanded by a consumer's install
 _ALLOWED_HEADINGS = {"Outcome", "Decisions made", "Decisions for you", "Left undone"}
 _REQUIRED_HEADINGS = {"Outcome", "Decisions for you", "Left undone"}
 _Q_ROW = re.compile(
     r"^\*\*Q(?P<number>\d+) — .+[?.] Options: .+\. "
-    r"Park: (?P<reason>irreversible|out-of-scope|no-recommendation|failed-twice) — .+\. "
-    r"Recommendation: .+\.\s*$"
+    r"Park: (?P<reason>irreversible|out-of-scope|owner-domain|no-recommendation|failed-twice) — .+\. "
+    r"Recommendation: (?P<recommendation>(?:(?!\. (?:Reversibility|Default):).)+?)"
+    r"(?:\. Reversibility: (?P<reversibility>clean|residue|none))?"
+    r"(?:\. Default: (?P<default>.+?))?\.\s*$"
+)
+_NEXT_SESSION = re.compile(r"^(?:- )?Next session: .+ · .+$", re.MULTILINE)
+_NOT_OWNER = re.compile(r"<(?:cross-session-message|task-notification|agent-message)\b", re.I)
+_RESUME = re.compile(
+    r"^(?:/overnight\s*|"
+    r"(?:<command-message>overnight</command-message>\s*)?"
+    r"<command-name>/overnight</command-name>\s*"
+    r"(?:<command-args>\s*</command-args>\s*)?)$", re.I
 )
 
 REASON = (
-    "/overnight is armed — no one is here to answer. Decide it if you would have marked "
-    "the option (Recommended) AND it is reversible from the branch AND inside the goal's "
-    "scope; log it as D<n>. Otherwise park it as Q<n> (fork, options, your recommendation) "
-    "in the session's decisions doc and finish everything that does not depend on it. "
-    "Rule: commands/overnight.md §Step 2. Disarm: overnight_ask_guard.py --disarm."
+    "/overnight is armed — no one is here to answer. Decide or park per commands/overnight.md "
+    "§Step 2; the final message lists the Q rows as text. This holds through /session_end and "
+    "every hook that says to ask. Only the owner's next prompt disarms it."
 )
 
 
 def _root():
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+
+def overnight_dir(root=None):
+    lock = Path(root or _root()) / ".claude/baseline.lock.json"
+    try:
+        subs = json.loads(lock.read_text(encoding="utf-8"))["substitutions"]
+        vault, project = subs[TOKEN % "VAULT_ROOT"], subs[TOKEN % "PROJECT_NAME"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"No Overnight dir given and {lock} has no readable VAULT_ROOT and "
+                         f"PROJECT_NAME substitutions ({exc!r}); pass the dir.") from exc
+    return str(Path(vault) / "DevProjects" / project / "Claude/TODO/Overnight")
 
 
 def session_id(value=None):
@@ -68,15 +98,36 @@ def owned_state(root=None, sid=None):
         return None
 
 
-def _file_sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+_LEFT_UNDONE_ROW = re.compile(r"^- .+ — blocked by Q(?P<number>\d+) — worklog: (?P<title>.+?)\s*$")
+
+
+def _validate_left_undone(text, q_numbers, root):
+    """Each Left undone row names a Q row of this doc and an item in the worklog titles mirror."""
+    section = re.search(r"^## Left undone\s*$(?P<body>.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    rows = [line for line in section.group("body").splitlines() if line.startswith("- ")] if section else []
+    rows = [row for row in rows if row.strip() != "- None."]
+    if not rows:
+        return
+    try:
+        mirror = Path(root, ".claude", "worklog-titles.md").read_text(encoding="utf-8")
+    except OSError:
+        mirror = ""
+    # A Ledger line ends in its `[after: <condition>]`; the title is the text before it.
+    titles = {re.sub(r"\s*\[after: [^\]]*\]$", "", line.rsplit(" · ", 1)[-1].strip())
+              for line in mirror.splitlines() if line.startswith("- ")}
+    for row in rows:
+        match = _LEFT_UNDONE_ROW.match(row)
+        if not match or int(match.group("number")) not in q_numbers or match.group("title") not in titles:
+            raise ValueError(
+                "Each Left undone row reads '- <work> — blocked by Q<n> — worklog: <title>': Q<n> is a Q row "
+                "of this doc and <title> an item in .claude/worklog-titles.md (overnight.md §Step 4). "
+                f"Failing row: {row}")
 
 
 def validate_close(path, root=None):
+    """Check a Close doc's shape. It needs no armed marker: the owner's return deletes the marker, and a
+    Close doc written or edited after that still owes this check. The filename binds it to the session."""
     sid = session_id()
-    state = owned_state(root, sid)
-    if state is None or not armed(root, sid):
-        raise ValueError("--validate-close requires this session's armed marker.")
     target = Path(path).resolve()
     if not target.is_file() or not target.name.endswith(f"-{sid}.md"):
         raise ValueError("Close doc must exist and its filename must end with the current session id.")
@@ -91,16 +142,128 @@ def validate_close(path, root=None):
     for row in q_rows:
         match = _Q_ROW.fullmatch(row)
         if not match:
-            raise ValueError("Each Q row needs Options, a named Park reason/evidence, and Recommendation.")
+            raise ValueError("Each Q row needs Options, a named Park reason/evidence, Recommendation, "
+                             "and Default; optional Reversibility must be clean, residue or none.")
+        if match.group("default") is None:
+            raise ValueError(
+                "Each Q row ends 'Recommendation: <option|none>. Default: <what holds while it stays "
+                "unanswered>.' Optional Reversibility must be clean, residue or none "
+                f"(overnight.md §Step 2). Failing row: {row}")
         numbers.append(int(match.group("number")))
     if len(numbers) != len(set(numbers)):
         raise ValueError("Close doc Q numbers must be unique.")
-    state["validated_close"] = {
-        "path": str(target), "sha256": _file_sha256(target), "validated_at": time.time()
-    }
-    if not write_json_atomic(marker_path(root, sid), state):
-        raise OSError("Could not persist close validation receipt.")
-    print(f"VALIDATED {target}")
+    outcome = re.search(r"^## Outcome\s*$(?P<body>.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    if numbers and not (outcome and _NEXT_SESSION.search(outcome.group("body"))):
+        raise ValueError("A Close doc with a Q row needs 'Next session: <currency> · <model>' in ## Outcome "
+                         "(overnight.md §Step 4).")
+    _validate_left_undone(text, set(numbers), root or _root())
+    print(f"VALIDATED {target}" + (" (still armed until the owner's next prompt)" if armed(root, sid) else ""))
+
+
+_QUESTION_LINE = re.compile(r"^\s*(?:#{1,6}\s*|[-*]\s*)?\**Q(?P<number>\d+)\b")
+
+
+def _resolved_below(lines, index):
+    for later in lines[index + 1:]:
+        text = later.strip()
+        if text:
+            return text.lstrip("- ").startswith("Resolved:")
+    return False
+
+
+def open_questions(folder):
+    """Route every question line of every Close doc in `folder` to exactly one list."""
+    out = {"docs_scanned": 0, "open": [], "malformed": [], "resolved": [], "unreadable": []}
+    for doc in sorted(Path(folder).glob("*.md")):
+        out["docs_scanned"] += 1
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        if not text.strip():
+            out["unreadable"].append(str(doc))
+            continue
+        lines = text.splitlines()
+        section = None
+        for index, line in enumerate(lines):
+            heading = re.match(r"^## (.+?)\s*$", line)
+            if heading:
+                section = heading.group(1)
+                continue
+            match = _QUESTION_LINE.match(line)
+            if not match or section == "Left undone":
+                continue
+            row = {"doc": str(doc), "number": int(match.group("number")), "row": line.strip()}
+            if _resolved_below(lines, index):
+                out["resolved"].append(row)
+            elif _Q_ROW.fullmatch(line):
+                out["open"].append(row)
+            else:
+                out["malformed"].append(row)
+    return out
+
+
+_DOC_SESSION = re.compile(r"^\d{4}-\d{2}-\d{2}-(?P<sid8>[0-9a-f]{8})(?:-|\.md$)")
+
+
+def _live(doc):
+    return doc is not None and time.time() - doc["armed_at"] <= TTL_HOURS * 3600
+
+
+def _armed_ids(root):
+    """Session ids holding a live overnight marker, read without removing an expired one."""
+    ids = set()
+    for path in Path(root, ".claude", "scratch", "overnight").glob("active-*.json"):
+        sid = path.stem[len("active-"):]
+        try:
+            doc = owned_state(root, sid)
+        except ValueError:
+            continue
+        if _live(doc):
+            ids.add(sid)
+    return ids
+
+
+def archive_closed(folder, root=None):
+    """Move every top-level doc that needs no owner action into `folder`/archive/.
+
+    A doc's session group (`<date>-<sid8>…`: its Close doc plus same-session packets) moves only
+    when no doc in it has an open, malformed or unreadable row and no session of it is armed.
+    An existing archive file of the same name is never overwritten.
+    """
+    folder = Path(folder)
+    rows = open_questions(folder)
+    blocked = {}
+    for kind in ("open", "malformed"):
+        for row in rows[kind]:
+            blocked.setdefault(Path(row["doc"]).name, kind)
+    for doc in rows["unreadable"]:
+        blocked[Path(doc).name] = "unreadable"
+    armed_ids = _armed_ids(root or _root())
+    for doc in folder.glob("*.md"):
+        if any(doc.name.endswith(f"-{sid}.md") for sid in armed_ids):
+            blocked[doc.name] = "armed"
+
+    def group(name):
+        match = _DOC_SESSION.match(name)
+        return match.group("sid8") if match else name
+
+    blocked_groups = {group(name): reason for name, reason in blocked.items()}
+    blocked_groups.update({sid[:8]: "armed" for sid in armed_ids})
+    out = {"archived": [], "kept": []}
+    target_dir = folder / "archive"
+    for doc in sorted(folder.glob("*.md")):
+        reason = blocked.get(doc.name) or blocked_groups.get(group(doc.name))
+        target = target_dir / doc.name
+        if reason is None and target.exists():
+            reason = "archive-target-exists"
+        if reason:
+            out["kept"].append({"doc": str(doc), "reason": reason})
+            continue
+        target_dir.mkdir(exist_ok=True)
+        doc.replace(target)
+        out["archived"].append(str(target))
+    return out
 
 
 def arm(goal, root=None):
@@ -113,29 +276,41 @@ def arm(goal, root=None):
     print(f"ARMED {path}")
 
 
-def disarm(root=None, sid=None):
-    state = owned_state(root, sid)
-    if state is None:
-        print("NOT_ARMED (no valid owned marker)")
+def is_owner_prompt(text):
+    if not isinstance(text, str):
+        return False
+    body = text
+    while True:
+        match = LEADING_INJECTION_RE.match(body)
+        if not match:
+            break
+        body = body[match.end():]
+    body = body.strip()
+    return bool(body) and not ENVELOPE_RE.match(body) and not _NOT_OWNER.search(body) \
+        and not _RESUME.match(body)
+
+
+def owner_return(payload):
+    sid = payload.get("session_id", "")
+    root = payload.get("cwd") or _root()
+    doc = owned_state(root, sid) if is_owner_prompt(payload.get("prompt")) else None
+    if doc is None:
         return
-    receipt = state.get("validated_close")
-    if not isinstance(receipt, dict) or not isinstance(receipt.get("path"), str):
-        raise ValueError("Refusing to disarm: run --validate-close <path> first.")
-    try:
-        current = _file_sha256(receipt["path"])
-    except OSError as exc:
-        raise ValueError("Refusing to disarm: validated Close doc is unavailable.") from exc
-    if current != receipt.get("sha256"):
-        raise ValueError("Refusing to disarm: Close doc changed after validation.")
     os.unlink(marker_path(root, sid))
-    print("DISARMED")
+    goal = doc.get("goal") or ""
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "[overnight] An owner message disarmed /overnight for this session. If the message "
+                             "leaves the unattended run going (a side request or status check, not a new direction "
+                             "or an answer that ends it), re-arm before your next owner-facing fork: "
+                             f"python3 .claude/hooks/overnight_ask_guard.py --arm \"{goal}\""}}))
 
 
 def armed(root=None, sid=None):
     doc = owned_state(root, sid)
     if doc is None:
         return False
-    if time.time() - doc["armed_at"] > TTL_HOURS * 3600:
+    if not _live(doc):
         try:
             os.unlink(marker_path(root, sid))
         except OSError:
@@ -144,7 +319,8 @@ def armed(root=None, sid=None):
     return True
 
 
-def main(argv):
+def main(argv=None):
+    argv = sys.argv if argv is None else argv
     if len(argv) >= 2:
         try:
             if argv[1] == "--arm":
@@ -154,8 +330,10 @@ def main(argv):
                 arm(goal)
             elif argv[1] == "--validate-close" and len(argv) == 3:
                 validate_close(argv[2])
-            elif argv[1] == "--disarm" and len(argv) == 2:
-                disarm()
+            elif argv[1] == "--open-questions" and len(argv) in (2, 3):
+                print(json.dumps(open_questions(argv[2] if len(argv) == 3 else overnight_dir())))
+            elif argv[1] == "--archive-closed" and len(argv) in (2, 3):
+                print(json.dumps(archive_closed(argv[2] if len(argv) == 3 else overnight_dir())))
             elif argv[1] == "--status" and len(argv) == 2:
                 sid = session_id()
                 active = armed(sid=sid)
@@ -163,13 +341,18 @@ def main(argv):
                                   "marker_path": marker_path(sid=sid),
                                   "goal": (owned_state(sid=sid) or {}).get("goal") if active else None}))
             else:
-                raise ValueError("Use --arm <goal>, --status, --validate-close <path>, or --disarm.")
+                raise ValueError("Use --arm <goal>, --status, --validate-close <path>, --open-questions [dir] "
+                                 "or --archive-closed [dir]; "
+                                 "only the owner's next prompt disarms.")
             return 0
         except (ValueError, OSError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
     try:
         payload = json.load(sys.stdin)
+        if isinstance(payload, dict) and payload.get("hook_event_name") == "UserPromptSubmit":
+            owner_return(payload)
+            return 0
         if not isinstance(payload, dict) or payload.get("tool_name") != "AskUserQuestion":
             return 0
         root = payload.get("cwd") or _root()

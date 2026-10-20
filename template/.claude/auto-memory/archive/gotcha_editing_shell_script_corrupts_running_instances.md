@@ -21,3 +21,4 @@ process referencing it (`ps aux | grep <script>` / `Get-Process`) — or just tr
 does this automatically on every `Write`/`Edit` to that path and warns with PIDs if it
 finds one. If a run is live: kill it first, or copy-then-edit (edit a copy, swap it in
 once the run finishes) — never edit the file a live process is reading.
+**Verified:** 2026-10-14 memory-claim audit — bash probe: in-place size-changing edit of a running script printed extra P vs control; mv-swap left the live run unchanged

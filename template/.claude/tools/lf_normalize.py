@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Rewrite tracked files whose WORKING COPY is CRLF back to LF, under one directory (default .claude).
 
+Usage:
+
   python3 .claude/tools/lf_normalize.py                 # report + fix clean files under .claude
   python3 .claude/tools/lf_normalize.py --check         # report only; exit 1 if any CRLF working copy
   python3 .claude/tools/lf_normalize.py --include-dirty # also rewrite files with uncommitted changes
@@ -14,6 +16,13 @@ are touched — a blob git stores as CRLF or treats as binary is not drift. Dirt
 default: a peer session may hold them open, and rewriting bytes under an `Edit` trips its
 modified-since-read check. `git ls-files --eol` is the detector; `git status` is the dirty filter.
 """
+
+import sys as _cli_usage_sys
+from pathlib import Path as _cli_usage_path
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+from cli_usage import usage
+
+
 import subprocess
 import sys
 
@@ -39,13 +48,13 @@ KNOWN_FLAGS = ("--check", "--include-dirty")
 def main() -> int:
     args = sys.argv[1:]
     if "--help" in args or "-h" in args:
-        print(__doc__.strip())
+        print(usage(__doc__))
         return 0
     unknown = [a for a in args if a.startswith("-") and a not in KNOWN_FLAGS]
     operands = [a for a in args if not a.startswith("-")]
     if unknown or len(operands) > 1:
         bad = ", ".join(unknown) if unknown else "extra directory operand " + " ".join(operands[1:])
-        print("lf_normalize: unrecognized %s; nothing was rewritten.\n\n%s" % (bad, __doc__.strip()), file=sys.stderr)
+        print("lf_normalize: unrecognized %s; nothing was rewritten.\n\n%s" % (bad, usage(__doc__)), file=sys.stderr)
         return 2
     check = "--check" in args
     include_dirty = "--include-dirty" in args

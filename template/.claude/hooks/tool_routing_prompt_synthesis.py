@@ -28,6 +28,21 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _prompt_provenance import is_user_intent_prompt
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+
+
+def _ai_worker_absent() -> bool:
+    """Is ai-worker registered on this machine? `False` whenever that cannot be read.
+
+    `tools/workstation_profile.py` owns the walk and answers `None` for unknown; unknown is NOT
+    absent, so an unreadable config keeps the authored litmus rather than narrowing it on a guess.
+    """
+    try:
+        import workstation_profile
+        return workstation_profile.ai_worker() == "absent"
+    except Exception:
+        return False
+
 
 # Cue phrases that indicate synthesis intent. Word-boundary matched, case-
 # insensitive. Two distinct categories:
@@ -54,7 +69,7 @@ SYNTHESIS_CUES = (
     r"\b(read|check) (these|all of these|the following)\b",
     r"\bgather (context|info|background)\b",
     # Audit-like (but NOT "audit" alone — that's the audit-shape exception
-    # from CLAUDE.md §Tool Routing, which warrants direct reads)
+    # from CLAUDE.core.md §9, which warrants direct reads)
     r"\binventory\b",
     r"\bcheck whether\b",
     # "X and Y" enumeration shapes (3+ items)
@@ -101,14 +116,21 @@ def _is_audit_exempt(text: str) -> bool:
 
 
 def _build_reminder() -> str:
+    # C7: the bulk-copyable arm names the worker MCP. Where it is not registered the arm keeps its
+    # shape and names the route that is there — bounded Read or a subagent — because the litmus is
+    # about the EVIDENCE shape, and dropping the arm would silently retire the bulk-copyable class.
+    bulk_route = ("Bulk copyable I/O: use a bounded Read (offset/limit) or a subagent, "
+                  "with complete per-input results. " if _ai_worker_absent() else
+                  "Bulk copyable I/O: use `mcp__ai-worker__read_files` "
+                  "with complete per-input results. ")
     return (
         "<user-prompt-submit-hook>\n"
         "Synthesis-shaped request: route by evidence need and output, not read count or path. "
         "Known focused evidence or line-level judgment: use direct Read/search. "
         "Large exact scans/joins: use deterministic bounded extraction. "
-        "Bulk copyable I/O: use `mcp__ai-worker__read_files` with complete per-input results. "
+        + bulk_route +
         "Derived multi-file judgment/execution: load `orchestration` and use one qualified "
-        "delegate. Do not redo evidence already retrieved. CLAUDE.md §Tool Routing.\n"
+        "delegate. Do not redo evidence already retrieved. CLAUDE.core.md §9.\n"
         "</user-prompt-submit-hook>"
     )
 

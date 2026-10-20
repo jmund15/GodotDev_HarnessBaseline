@@ -16,9 +16,12 @@ spec.loader.exec_module(subject)
 class DriftMessageTests(unittest.TestCase):
     def invoke(self, compare, moved):
         with tempfile.TemporaryDirectory(prefix='sidecar-drift-') as tmp:
+            # What a finished job leaves, so the real claim close reads a deliverable that makes no claims.
+            (Path(tmp) / 'fixture.out.json').write_text('{}', encoding='utf-8')
+            (Path(tmp) / 'fixture.md').write_text('deliverable\n', encoding='utf-8')
             planned = ('fixture', ['launcher'], Path(tmp) / 'out.json')
             result = {'fixture': {'exit': 0, 'stdout': str(planned[2]), 'frozenInput': {'held': not moved}}}
-            with patch.object(subject, 'load_jobs', return_value=[{}]), \
+            with patch.object(subject, 'load_jobs', return_value=([{}], None, None)), \
                  patch.object(subject.model_registry, 'load', return_value={}), \
                  patch.object(subject, 'plan_job', return_value=planned), \
                  patch.object(subject, 'run_jobs', return_value=result), \

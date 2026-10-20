@@ -39,22 +39,31 @@ import io
 import json
 import os
 import tempfile
+import time
 
 __all__ = [
     "HARNESS_DIRS",
+    "CODE_EXT",
+    "SETTINGS_FILES",
+    "is_harness_code",
+    "SETUP_SURFACE_FILES",
     "read_json_salvage",
     "write_json_atomic",
     "update_json_locked",
     "state_path",
     "fire_once",
+    "fire_once_machine",
     "fire_once_since_compaction",
+    "mark_ladder_slice",
+    "ladder_slice_tiers",
     "clear_compaction_keys",
+    "is_subagent_payload",
     "log_path",
     "append_jsonl_rotating",
 ]
 
 # The harness code set: what `scripts/harness_tests.py` hashes into the stamp and what
-# `hooks/git_guardrails.py` demands a stamp for. One home so the two never disagree.
+# `hooks/git_guardrails.py`'s skill advisory counts as code. One home so the two never disagree.
 HARNESS_DIRS = (
     ".claude/hooks",
     ".claude/tools",
@@ -66,13 +75,44 @@ HARNESS_DIRS = (
     ".claude/settings.project.json",
 )
 
+# Which harness paths are code (a script or a settings file): the proof runner's binding and the fold
+# checker's untested-code rule read this one predicate.
+CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs")
+SETTINGS_FILES = (".claude/settings.json", ".claude/settings.base.json", ".claude/settings.project.json")
+
+
+def is_harness_code(rel):
+    rel = rel.replace(os.sep, "/")
+    return rel in SETTINGS_FILES or rel.lower().endswith(CODE_EXT)
+
+
+# Files outside HARNESS_DIRS whose change must still run their bound proofs (pins, and a cloud script
+# that copies them). The list is project data, `reference/setup_surfaces.txt`, so this shared module
+# names no project file; absent file -> no surfaces. Read by `scripts/harness_tests.py` (staging and
+# the stamped tree) and `hooks/git_guardrails.py` (the stamp requirement).
+def _setup_surfaces():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "reference", "setup_surfaces.txt")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return tuple(line.strip() for line in fh if line.strip() and not line.startswith("#"))
+    except OSError:
+        return ()
+
+
+SETUP_SURFACE_FILES = _setup_surfaces()
+
 # One state file per session, shared by every hook. HARNESS_HOOK_STATE_DIR redirects it so a
 # test never writes the real one.
 _DEFAULT_STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 
 _ONCE_KEY = "fired_once"
 _COMPACTION_KEY = "fired_since_compaction"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready")
+# The client cuts a re-attached skill body at this many characters (`tools/load_census.py` reports bodies over it).
+SKILL_REATTACH_CHARS = 20_000
+_COMPACTED_AT_KEY = "compacted_at"
+LADDER_SLICE_KEY = "ladder_slice_tiers"
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
 
@@ -128,6 +168,78 @@ def fire_once(session_id, key):
     return _fire_once_under(session_id, key, _ONCE_KEY)
 
 
+def fire_once_machine(key):
+    """Claim `<client-version>:<platform>` once across sessions; retire other versions."""
+    path = os.path.join(state_dir(), "machine.json")
+    version = key.rsplit(":", 1)[0]
+
+    def claim(state):
+        fired = state.get(_ONCE_KEY)
+        fired = fired if isinstance(fired, dict) else {}
+        first = not fired.get(key)
+        state[_ONCE_KEY] = {k: v for k, v in fired.items() if k.rsplit(":", 1)[0] == version}
+        state[_ONCE_KEY][key] = True
+        return first
+
+    written, first = update_json_locked(path, claim)
+    return bool(first) if written else True
+
+
+def _agent_suffix(agent_id):
+    """A subagent shares its parent's session_id; its payload `agent_id` keeps its context markers its own."""
+    agent_id = str(agent_id or "").strip()
+    return "@" + agent_id if agent_id else ""
+
+
+def mark_skill_in_context(session_id, name, agent_id=""):
+    """Record that skill `name` is in this context window (the subagent's when `agent_id` is given); a
+    compaction clears it."""
+    fire_once_since_compaction(session_id, "skill_in_context:" + name + _agent_suffix(agent_id))
+
+
+def skill_in_context(session_id, name, agent_id="", transcript_path=None):
+    """True when skill `name` was loaded since the session started or last compacted, in the subagent's own
+    context when `agent_id` is given. With the main thread's `transcript_path`, a skill the client re-attached
+    whole after the latest compaction counts too (`_compaction_record.reattached_whole`); the first such read
+    marks every whole skill of that attachment. An attachment not yet on disk, or an unreadable transcript,
+    counts as not re-attached."""
+    key = "skill_in_context:" + name + _agent_suffix(agent_id)
+    state = read_json_salvage(state_path(session_id))
+    fired = state.get(_COMPACTION_KEY)
+    if isinstance(fired, dict) and fired.get(key):
+        return True
+    if agent_id or not transcript_path:
+        return False
+    try:
+        import _compaction_record
+        whole = _compaction_record.reattached_whole(transcript_path, state.get(_COMPACTED_AT_KEY))
+    except Exception:
+        return False
+    if not whole:
+        return False
+    for skill in whole:
+        mark_skill_in_context(session_id, skill)
+    return name in whole
+
+
+def mark_ladder_slice(session_id, tiers):
+    """Record that `model_registry.py ladder-slice` printed these tiers into this context window; a compaction
+    clears them. Accumulates across runs. True when the record was written."""
+    def update(state):
+        have = state.get(LADDER_SLICE_KEY)
+        state[LADDER_SLICE_KEY] = sorted({*(have if isinstance(have, list) else []), *tiers})
+        return True
+
+    written, _ = update_json_locked(state_path(session_id), update)
+    return bool(written)
+
+
+def ladder_slice_tiers(session_id):
+    """The tiers whose ladder slice is in this context window, else []. Reads only."""
+    have = read_json_salvage(state_path(session_id)).get(LADDER_SLICE_KEY)
+    return sorted(t for t in have if isinstance(t, str)) if isinstance(have, list) else []
+
+
 def fire_once_since_compaction(session_id, key):
     """True on the first ask for `key` since the session started or last compacted.
 
@@ -137,14 +249,111 @@ def fire_once_since_compaction(session_id, key):
     return _fire_once_under(session_id, key, _COMPACTION_KEY)
 
 
+# The runtime auto-compacts a context only near the end of its window (1M at 700k, 200k near 167k),
+# so an `auto` PreCompact while the parent sits under half its window cannot be the parent's. A set
+# `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` moves that end, and the floor stays at half of it.
+PARENT_AUTOCOMPACT_FLOOR_PCT = 50
+# Bytes of a transcript line per token of context it adds. Lines carry JSON framing, so this
+# over-counts the pending tail, which errs toward the parent.
+_TRANSCRIPT_BYTES_PER_TOKEN = 3
+# How long an orchestrator may stay idle: Claude Code compacts an idle one-hour-cache session at 0.9 of
+# the TTL (about 54 min, a server flag), so the session watcher's check-in and the longest background
+# wait both end at 50 min, before that compaction and well inside the cache.
+ORCHESTRATOR_CHECKIN_SECONDS = 3000
+_TRANSCRIPT_TAIL_BYTES = 8_000_000
+
+
+def _autocompact_floor_pct():
+    try:
+        override = float(os.environ.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE") or "")
+    except ValueError:
+        return PARENT_AUTOCOMPACT_FLOOR_PCT
+    return min(PARENT_AUTOCOMPACT_FLOOR_PCT, override / 2) if override > 0 else PARENT_AUTOCOMPACT_FLOOR_PCT
+
+
+def _parent_window_tokens(session_id):
+    """The parent's context window in tokens, from the status line's `cc-cachestat-<sid>.json`:
+    its `last` call's cache-write:cache-read:input tokens over that call's `context_pct`. None when
+    the file is absent, unreadable or lacks either field. Subagents never write this file."""
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64]
+    path = os.path.join(os.environ.get("CC_CACHESTAT_DIR") or tempfile.gettempdir(),
+                        "cc-cachestat-%s.json" % (safe or "unknown"))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        pct = state.get("context_pct")
+        tokens = sum(int(part) for part in str(state["last"]).split(":"))
+    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+        return None
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)) or pct <= 0 or tokens <= 0:
+        return None
+    return tokens * 100 / pct
+
+
+def _parent_pending_tokens(transcript_path):
+    """The parent's context as its next call would send it: the input tokens of its last recorded
+    API call plus everything written after that call. None when the transcript is unreadable or
+    holds no call. Subagent turns live in their own transcripts, so none of theirs count."""
+    try:
+        with open(transcript_path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - _TRANSCRIPT_TAIL_BYTES))
+            lines = fh.read().splitlines()
+    except (OSError, TypeError, ValueError):
+        return None
+    after = 0
+    for raw in reversed(lines):
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            after += len(raw)
+            continue
+        usage = ((entry.get("message") or {}).get("usage") if isinstance(entry, dict)
+                 and entry.get("type") == "assistant" and not entry.get("isSidechain") else None)
+        if isinstance(usage, dict):
+            sent = sum(int(usage.get(k) or 0) for k in (
+                "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            return sent + (len(raw) + after) // _TRANSCRIPT_BYTES_PER_TOKEN
+        after += len(raw)
+    return None
+
+
+def is_subagent_payload(payload):
+    """True when a PreCompact payload comes from a dispatched subagent, whose `session_id` and
+    `transcript_path` are the parent's. Every PreCompact hook calls this and does nothing for a
+    subagent: its compaction is not the parent's. A non-empty `agent_id` marks one; the client may
+    send none, so an `auto` trigger while the parent's pending context sits under the floor of its
+    window marks one too. A `manual` trigger, an unreadable gauge or transcript, and any payload that
+    is not an object count as the parent, so an unknown keeps the hooks running.
+    """
+    try:
+        if str(payload.get("agent_id") or "").strip():
+            return True
+        if payload.get("trigger") != "auto":
+            return False
+        window = _parent_window_tokens(payload.get("session_id"))
+        pending = _parent_pending_tokens(payload.get("transcript_path"))
+        if window is None or pending is None:
+            return False
+        return pending * 100 / window < _autocompact_floor_pct()
+    except Exception:
+        return False
+
+
 def clear_compaction_keys(session_id):
-    """Re-arm every compaction-scoped advisory key. Called from the PreCompact hook."""
+    """Re-arm every compaction-scoped advisory key, skill markers included, and stamp the clear's time. Called
+    from the PreCompact hook. A skill the client re-attaches whole regains its marker from the attachment, which
+    the client writes after this clear (`skill_in_context`); the stamp keeps an older attachment from counting.
+    True when a key was cleared."""
     path = state_path(session_id)
 
     def update(state):
-        changed = any(key in state for key in _COMPACTION_CLEAR_KEYS)
+        fired = state.get(_COMPACTION_KEY)
+        changed = any(key in state for key in _COMPACTION_CLEAR_KEYS if key != _COMPACTION_KEY)
+        changed = changed or (isinstance(fired, dict) and bool(fired))
         for key in _COMPACTION_CLEAR_KEYS:
             state.pop(key, None)
+        state[_COMPACTED_AT_KEY] = time.time()
         return changed
 
     written, changed = update_json_locked(path, update)
@@ -187,6 +396,20 @@ def log_path(name, env_override=None):
     return os.path.join(root, "logs", name)
 
 
+def replace_path(source, target, wait_s=10.0):
+    """os.replace that waits out a reader holding the target: Windows refuses a rename onto a path another process
+    holds open (WinError 5). Retry until `wait_s` passes, then raise."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
 def append_jsonl_rotating(path, records, max_bytes=2_000_000, keep_lines=500):
     """Append one JSON line per record; once the file passes `max_bytes`, keep the newest
     `keep_lines` first (tail rotation via tempfile + rename). Best-effort: returns False on
@@ -202,7 +425,7 @@ def append_jsonl_rotating(path, records, max_bytes=2_000_000, keep_lines=500):
             fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".jsonl", dir=directory)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.writelines(tail)
-            os.replace(tmp_path, path)
+            replace_path(tmp_path, path)
         with io.open(path, "a", encoding="utf-8") as fh:
             for record in records:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -222,15 +445,23 @@ def _release_json_lock(handle):
         _file_lock.release(handle)
 
 
-def _write_json_atomic_unlocked(path, obj):
+def _dump(obj, fh, pretty):
+    if pretty:
+        json.dump(obj, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    else:
+        json.dump(obj, fh, ensure_ascii=True)
+
+
+def _write_json_atomic_unlocked(path, obj, raising=False, pretty=False):
     directory = os.path.dirname(path) or "."
     tmp_path = None
     try:
         os.makedirs(directory, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=directory)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh, ensure_ascii=True)
-        os.replace(tmp_path, path)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            _dump(obj, fh, pretty)
+        replace_path(tmp_path, path)
         return True
     except (OSError, ValueError, TypeError):
         if tmp_path:
@@ -238,36 +469,57 @@ def _write_json_atomic_unlocked(path, obj):
                 os.unlink(tmp_path)
             except OSError:
                 pass
+        if raising:
+            raise
         return False
 
 
-def update_json_locked(path, updater):
+def _locked_or_raise(path, raising):
+    lock_path = _acquire_json_lock(path)
+    if not lock_path and raising:
+        if _file_lock is None:
+            raise RuntimeError("hooks/_file_lock.py did not load; %s cannot be locked" % path)
+        raise TimeoutError("%s.lock held past %ss" % (path, _LOCK_WAIT_SECONDS))
+    return lock_path
+
+
+def update_json_locked(path, updater, raising=False, pretty=False, reader=None):
     """Run `updater(state)` under a per-file lock and atomically save its changes.
 
-    Returns `(written, result)`. Failures return `(False, None)` and never raise.
+    Returns `(written, result)`. Failures return `(False, None)` and never raise, unless `raising`: then a lock
+    timeout raises TimeoutError, and a write or updater error propagates. `pretty` is `write_json_atomic`'s format
+    knob, for an authored file a reader opens: indent 2, non-ASCII kept, trailing newline. Without it the compact
+    default replaces the file's own format on the first locked write. `reader(path)` supplies a strict
+    transactional read when given; hooks keep the default salvage read. A reader error propagates without a write.
     """
-    lock_path = _acquire_json_lock(path)
+    lock_path = _locked_or_raise(path, raising)
     if not lock_path:
         return False, None
     try:
-        state = read_json_salvage(path)
+        state = (reader or read_json_salvage)(path)
         try:
             result = updater(state)
         except Exception:
+            if raising:
+                raise
             return False, None
-        if not _write_json_atomic_unlocked(path, state):
+        if not _write_json_atomic_unlocked(path, state, raising, pretty):
             return False, None
         return True, result
     finally:
         _release_json_lock(lock_path)
 
 
-def write_json_atomic(path, obj):
-    """Write `obj` to `path` via same-dir tempfile + rename. True on success."""
-    lock_path = _acquire_json_lock(path)
+def write_json_atomic(path, obj, raising=False, pretty=False):
+    """Write `obj` to `path` via same-dir tempfile + rename. True on success.
+
+    `raising` turns a lock timeout into TimeoutError and a write failure into its OSError. `pretty` is the record
+    format: indent 2, non-ASCII kept, trailing newline.
+    """
+    lock_path = _locked_or_raise(path, raising)
     if not lock_path:
         return False
     try:
-        return _write_json_atomic_unlocked(path, obj)
+        return _write_json_atomic_unlocked(path, obj, raising, pretty)
     finally:
         _release_json_lock(lock_path)

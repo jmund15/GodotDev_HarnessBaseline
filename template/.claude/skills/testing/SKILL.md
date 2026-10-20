@@ -1,10 +1,7 @@
 ---
 name: Testing
 description: >-
-  Auto-load when writing, running, or debugging tests, or doing TDD — anything touching
-  GdUnit4 suites, the shared fixtures (AbilityTestFixture / ActivationTestFixture / ISceneRunner),
-  runtime-test attributes, run commands/filters, or orphan management. SKIP for code
-  reviews of test files (use `checklists:test_quality`).
+  Use to choose, write, run, debug or curate GdUnit4 tests, do Logic-domain TDD or manage test fixtures, runtime attributes, filters and orphans. SKIP checklist-based code review of test files; use checklists:test_quality.
 ---
 
 # Testing Skill
@@ -29,17 +26,18 @@ dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedNa
 dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Tests.Sanity"
 ```
 
-Prefer `reference/running.md` §Scope-sized runs (`verify.ps1`) and §Hang-safe runs (`run_test_suite.ps1`) on Windows; the bare commands above are the cloud path.
+On Windows, use `reference/running.md` §Scope-sized runs and §Hang-safe runs for the wrappers; `change_control` §Gate cadence owns when to run them. The bare commands above are the cloud path, where each one runs under `xvfb-run --auto-servernum` (GdUnit4 needs a display).
 
-- **Full prefix `~Tests.<Suite>` is mandatory** — short `~Logic` matches only a subset, mimicking a silent skip. Canonical form: `.claude/commands/regression_gate.md`.
+- **Full prefix `~Tests.<Suite>` is mandatory** — short `~Logic` matches only a subset, mimicking a silent skip. A zero-match run is not a RED, and a unit-only pass does not cover integration. An integration regression's seam test goes RED before GREEN (`_brainstorm_shared/drive_spine.md` §Slices owns the floor rule).
+- **A filter narrower than a whole suite has no count sentinel.** Check count magnitude and duration; the TRX testName list is the arbiter (`change_control` §Green-output trust).
 - **`--filter ~` is SUBSTRING, not regex** — escaped metacharacters (`Visual\.`) match literally and hit nothing, mimicking an empty suite rather than erroring. Disambiguate sibling prefixes with a trailing plain dot (`~Tests.Integration.Visual.` excludes `Visuals`).
 - **ALWAYS `--verbosity quiet`** — the implicit rebuild otherwise floods Bash output with compiler warnings; counts and error messages survive quiet.
 - **NEVER `--no-build`** — stale DLLs silently mask broken tests after branch switches/merges; `dotnet test` rebuilds automatically.
 - **ALWAYS `--settings .runsettings`** — GODOT_BIN fallback, 30min safety timeout, `TreatNoTestsAsError`, `MaxCpuCount=1`.
-- **Bash timeout: 600000** — the 120s default kills the command but not the Godot subprocess, orphaning it against the named pipe.
+- **Start every Godot/C# test or build call with `run_in_background: true`; a gate call uses `-Detach`.** Runs can queue on locks for minutes. Keep working, then use the until-loops in `guards/any.md` for a subagent or `claude -p` child; an orchestrator waits for the wake (`CLAUDE.core.md` §Shell Discipline). `hooks/pre_bash_dispatch.py` applies the background flag to a delegate's foreground run call; plan for a task id, not inline output.
 - **NEVER pipe test output through `| tail` / `| head`** — they buffer the whole stream and hang on long runs. Use `2>&1` alone.
-- **Add `[RequireGodotRuntime]` only for tests using Godot features** (GD.Load, Nodes, scenes).
-- **Single-flight: one Godot test process per machine.** Concurrent instances crash CLR `0xc000001d` (`--headless` is no escape — the pipe server needs a display), so every suite serializes on the machine-global run-lock and Logic runs never take `-NoGodotRuntime` (~95% of Logic is `[RequireGodotRuntime]`). Per-worktree mechanisms: `reference/running.md` §Single-flight and parallel dev.
+- **Add `[RequireGodotRuntime]` to a test that builds or calls any Godot type:** nodes, scenes, `GD.Load`, and value types such as `Vector2`/`Vector3`/`StringName`. Analyzer GdUnit0501 rejects the test otherwise, even for pure math. Only plain C# types need no attribute.
+- **Runtime slots: on Windows, run suites through `run_test_suite.ps1` or `verify.ps1`, never bare `dotnet test`.** A bare run takes neither the checkout lock nor a runtime slot, so it collides with peer runs. Logic runs never take `-NoGodotRuntime` — a runtime test silent-skips without the runtime, so the suite reports green with its subjects unrun. Lock and slot mechanics, triggers and rollback: `reference/running.md` §Runtime slots and parallel dev.
 
 ## Test Domains
 
@@ -50,7 +48,7 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 | **Logic** | `Tests/Logic/` | Strict TDD (RED→GREEN→REFACTOR) — `reference/logic_tdd.md` | the Logic subsystems CLAUDE.md *Development Philosophy: Hybrid TDD* names |
 | **Gameplay** | `Tests/Integration/`, `Tests/Sanity/` | Automate deterministic, inspect feel — `reference/choosing.md` | the Gameplay subsystems CLAUDE.md *Development Philosophy: Hybrid TDD* names |
 
-**Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. A new top-level `Tests/<X>/` tree is **silently un-gated** until both the gate filters and `Tests/regression_baseline.json` are extended.
+**Gate coverage is namespace-coupled.** Namespaces mirror folder paths (`{{PROJECT_NAME}}.Tests.<Suite>.<Domain>`), and `/regression_gate` runs ONLY `~Tests.Logic` / `~Tests.Integration` / `~Tests.Sanity`. Adding a top-level `Tests/<X>/` tree is `/regression_gate` §Baseline's.
 
 **Before deferring a playtest or fingerprint list to the user, screen each item.** Such lists mix subjective items with automatable ones; `reference/choosing.md` owns the screen.
 
@@ -60,12 +58,14 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 - Failing tests obscure whether new changes introduced regressions.
 - Debug timeouts immediately — in Logic domain a timeout usually means an infinite loop, not slow execution.
 
+## Verification rules
+
+- A new integration test that drives engine lifecycle (frames, spawns, scene-tree entry and exit, awaited signals), or a change that can affect its lifecycle timing, ordering or isolation, passes twice on the same tree digest before its pass counts. A mechanical edit that changes none of these needs no second pass. Two agreeing runs are the smallest sample that can show nondeterminism; a disagreeing pair is the defect (the `debugging` skill's reproduce phase).
+- An owner-reported number (an authored value, an observed value or a verdict: a distance, a timing, a curve point) becomes a regression test of the behaviour that value produces, never an assertion of the literal authored value (`rules/test_authoring.md` #12); an observed value or verdict may be asserted. The test's `<summary>` names where the owner said it (worklog item, checklist or task record). An agent never invents the number; without one, ask, or the behaviour stays owner-checked.
+
 ## Pre-Commit Regression Gate
 
-Run `/regression_gate` before committing code changes; the command owns the procedure.
-- Run AFTER the final staged state, never from a cached previous run.
-- ALL 3 suites (Logic, Integration, Sanity) must pass — one domain is insufficient.
-- Exempt: pure meta commits (`.claude/`, skills, docs) touching no code — harness commits instead need a green `harness_tests.py` stamp (CLAUDE.md §Build & Test Commands).
+Run `/regression_gate` before committing code changes. It owns applicability, suite coverage, the verdict and the exemptions.
 
 ## See Also
 

@@ -2,11 +2,13 @@
 """
 Hook: PreToolUse - Enforce coding patterns before code is written
 
-Blocks violations of architecture rules from CLAUDE.md:
-- No GD.Print (use JmoLogger; #if TOOLS editor code exempt)
-- No GetNode in _Process (cache in _Ready)
-- No [Export] = null! without [RequiredExport]
-- No [GlobalClass] Resource missing [Tool] (edit-time half of the cascade gate)
+Applies computed attributes through PreToolUse updatedInput:
+- [RequiredExport] for non-null Export initializers
+- [Tool] for GlobalClass Resources
+
+Advises on GetNode in _Process: judge whether it runs each frame on a stable path.
+Blocks remaining violations:
+- No GD.Print / GD.PrintErr (use JmoLogger; #if TOOLS editor code exempt)
 - No dangerous shell commands (recursive deletes, format) — Bash AND PowerShell
 """
 
@@ -17,14 +19,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _claude_scope import harness_tail  # noqa: E402
-from _command_text import executable_text  # noqa: E402
-from _regenerable_clone import is_regenerable_clone, is_retired_worktree  # noqa: E402
+from _command_text import executable_text, _REDIRECTION  # noqa: E402
+from _regenerable_clone import is_regenerable_clone, is_retired_worktree, session_created_worktree  # noqa: E402
+from _owner_text import classify  # noqa: E402
 from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
 
 
 # Patterns to BLOCK (exit code 2) in code content
 CODE_BLOCKED_PATTERNS = [
-    (r'GD\.Print\s*\(', 'BLOCKED: Use JmoLogger (Debug/Info/Warning/Error) instead of GD.Print'),
+    (r'GD\.Print(?:Err)?\s*\(', 'BLOCKED (rules/csharp_patterns.md): Use JmoLogger (Debug/Info/Warning/Error) instead of GD.Print / GD.PrintErr'),
 ]
 
 # Pattern for GetNode in _Process (multi-line detection)
@@ -58,15 +61,35 @@ DANGEROUS_BASH_PATTERNS = [
 ]
 
 
-def is_editor_tooling_context(content: str, file_path: str) -> bool:
-    """Check if the content is editor-only tooling code where GD.Print is acceptable."""
-    # If the content or file contains #if TOOLS, it's editor tooling
-    if '#if TOOLS' in content:
-        return True
-    # Jmodot tool code lives in Tools/ directories
-    if 'Tools' in file_path and file_path.endswith('.cs'):
-        return True
-    return False
+_TOOLS_OPEN = re.compile(r'^[ \t]*#if[ \t]+TOOLS\b', re.MULTILINE)
+_DIRECTIVE = re.compile(r'^[ \t]*#(if|elif|else|endif)\b', re.MULTILINE)
+
+
+def editor_only_spans(content: str) -> list[tuple[int, int]]:
+    """Character spans of `#if TOOLS` bodies: each ends at its `#else`/`#elif`/`#endif`, or at the end of
+    the content when unterminated (an Edit snippet that opens the block for the code it replaces)."""
+    spans = []
+    for opener in _TOOLS_OPEN.finditer(content):
+        depth = 1
+        end = len(content)
+        for directive in _DIRECTIVE.finditer(content, opener.end()):
+            kind = directive.group(1)
+            if kind == 'if':
+                depth += 1
+            elif kind == 'endif':
+                depth -= 1
+            elif depth == 1:
+                depth = 0
+            if depth == 0:
+                end = directive.start()
+                break
+        spans.append((opener.end(), end))
+    return spans
+
+
+def is_editor_tooling_file(file_path: str) -> bool:
+    """Jmodot tool code lives in Tools/ directories, where GD.Print is acceptable."""
+    return 'Tools' in file_path and file_path.endswith('.cs')
 
 
 def is_test_fixture(file_path: str) -> bool:
@@ -76,30 +99,32 @@ def is_test_fixture(file_path: str) -> bool:
 
 
 def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
-    """Check code content for blocked patterns. Returns (blocked, message)."""
+    """Return (blocked, message); a non-blocking message is advice for the edit."""
+
+    # The rules guard C#; a Markdown or Python file may quote a violation.
+    if file_path and not file_path.lower().endswith('.cs'):
+        return False, ""
 
     # Skip test fixtures — they intentionally contain violations
     if is_test_fixture(file_path):
         return False, ""
 
-    is_editor = is_editor_tooling_context(content, file_path)
+    editor_file = is_editor_tooling_file(file_path)
+    editor_spans = editor_only_spans(content)
 
     # Check standard blocked patterns
     for pattern, message in CODE_BLOCKED_PATTERNS:
-        # Allow GD.Print in editor tooling code (#if TOOLS)
-        if 'GD.Print' in message and is_editor:
-            continue
-        if re.search(pattern, content):
+        for match in re.finditer(pattern, content):
+            # Allow GD.Print in editor tooling code: a Tools/ file, or a `#if TOOLS` body
+            if 'GD.Print' in message and (
+                    editor_file or any(lo <= match.start() < hi for lo, hi in editor_spans)):
+                continue
             return True, message
 
     # Check for GetNode inside _Process (needs multiline)
     if re.search(PROCESS_GETNODE_PATTERN, content, re.DOTALL | re.MULTILINE):
-        return True, 'BLOCKED: Never GetNode() in _Process - cache references in _Ready()'
-
-    # Check for [Export] = null! without [RequiredExport]
-    for line in content.split('\n'):
-        if '= null!' in line and '[Export' in line and 'RequiredExport' not in line:
-            return True, 'BLOCKED: [Export] with = null! must include [RequiredExport]. Use: [Export, RequiredExport]'
+        return False, ('Advisory (rules/csharp_patterns.md): GetNode in _Process — does this lookup run '
+                       'each frame on a stable path? If so, cache references in _Ready().')
 
     return False, ""
 
@@ -114,13 +139,7 @@ def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
 _CACHE_SEGMENTS = frozenset({".search-index", "__pycache__", ".pytest_cache"})
 _CACHE_PAIRS = frozenset({(".claude", ".cache"), (".claude", "logs")})
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
-_CACHE_HINT = (" Allowed, chained or through a variable assigned once: a path under the system temp"
-               " directory; a named .claude/scratch subfolder (a git clone there only if clean and pushed);"
-               " .claude/.cache, .claude/logs, .godot, .search-index, __pycache__ or .pytest_cache here or in"
-               " a .claude/worktrees/* checkout. Alone in its command: a retired .claude/worktrees/<name>"
-               " (registered, unlocked, no untracked/ignored file but .import or cache, all pushed); run"
-               " `git worktree prune` next. Never inside $(...), backticks, sudo or xargs. A justified"
-               " cleanup this blocks is a guard defect (rules/harness_tooling.md).")
+_CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders an owner AskUserQuestion pick named for removal."
 
 
 def _project_root() -> str:
@@ -143,16 +162,30 @@ def _inside_root(token: str, cwd: str | None) -> bool:
 
 
 def _cleanup_tokens(raw: str) -> list[str] | None:
-    """Shell tokens of the unblanked command: quotes removed, backslashes kept (Windows paths).
-    None when the quoting does not parse, which never allows anything."""
+    """Shell tokens of the unblanked command: quotes removed, backslashes kept (Windows paths),
+    redirections and their targets dropped (`_command_text`'s grammar), since they are plumbing,
+    never arguments. None when the quoting does not parse, which never allows anything."""
     import shlex
     lexer = shlex.shlex(raw, posix=True)
     lexer.whitespace_split = True
     lexer.escape = ""
     try:
-        return list(lexer)
+        tokens = list(lexer)
     except ValueError:
         return None
+    kept, target_next = [], False
+    for token in tokens:
+        if target_next:
+            target_next = False
+            continue
+        redirect = _REDIRECTION.match(token)
+        if redirect and redirect.end() > 0:
+            # A bare operator (`>`, `2>`) takes the next token as its target; `2>&1` and
+            # `>/dev/null` carry theirs.
+            target_next = redirect.end() == len(token) and '&' not in token.lstrip('0123456789')
+            continue
+        kept.append(token)
+    return kept
 
 
 def _is_cache_path(token: str, cwd: str | None = None) -> bool:
@@ -252,15 +285,113 @@ def _strip_double(s: str, i: int) -> tuple[str, int]:
     return " ".join(kept), i + 1
 
 
-def _is_regenerable_target(token: str, cwd: str | None) -> bool:
-    """A clean, fully pushed standalone clone under `.claude/scratch/`, or a retired worktree under
-    `.claude/worktrees/` (`_regenerable_clone`). A relative token resolves against the caller's
-    cwd, else the project root."""
+_REMOVE_LABEL_RE = re.compile(r"\b(?:remove|delete|prune)\b", re.I)
+_KEEP_LABEL_RE = re.compile(r"\b(?:keep|leave|no|not|hold|don't|dont"
+                            r"|except|but|after|once|when|until|later|unless|only)\b", re.I)
+_TRANSCRIPT_TAIL_BYTES = 8 * 1024 * 1024
+
+
+def _owner_approved_removal(token: str, transcript_path: str | None) -> bool:
+    """True when the owner's last AskUserQuestion answer whose question names this worktree picked a
+    remove option with no keep word or qualifier ("except", "after", "only"): a qualified label
+    excludes or defers part of the removal. Answers come from the transcript's `toolUseResult` rows (`_owner_text` pairs), which
+    only the owner's pick writes, so no text the agent writes can grant it."""
+    name = token.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if not transcript_path or not name:
+        return False
+    named = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", re.I)
+    try:
+        with open(transcript_path, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            fh.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
+            content = fh.read().decode("utf-8", errors="replace")
+    except (OSError, TypeError, ValueError):
+        return False
+    verdict = False
+    for line in content.splitlines():
+        try:
+            row = classify(json.loads(line), 0, raw=line)
+        except (TypeError, ValueError):
+            continue
+        if row is None or row.meta or row.sidechain or not row.pairs:
+            continue
+        for question, label in row.pairs:
+            if named.search(question):
+                verdict = bool(_REMOVE_LABEL_RE.search(label)) and not _KEEP_LABEL_RE.search(label)
+    return verdict
+
+
+def _registered_worktrees() -> list[str]:
+    """Normalized paths of the project's registered worktrees; an unreadable list holds the project root,
+    so every scratch target counts as holding one and the delete stays denied."""
+    import subprocess
     root = _project_root()
-    return is_regenerable_clone(token, cwd or root, root) or is_retired_worktree(token, cwd or root, root)
+    try:
+        out = subprocess.run(['git', '-C', root, 'worktree', 'list', '--porcelain'], capture_output=True,
+                             text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return [_norm(root)]
+    if out.returncode:
+        return [_norm(root)]
+    return [_norm(line[len('worktree '):]) for line in out.stdout.splitlines() if line.startswith('worktree ')]
 
 
-def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None) -> bool:
+def _owner_approved_scratch(token: str, target: str, transcript_path: str | None,
+                            reasons: list[str] | None = None) -> bool:
+    """A scratch entry that is no clone (a copy, a study's output) is removable once the owner's
+    AskUserQuestion answer names it with a remove pick, unless a registered worktree lies inside it."""
+    held = [wt for wt in _registered_worktrees() if wt == _norm(target) or _strictly_under(wt, _norm(target))]
+    if not _owner_approved_removal(token, transcript_path):
+        if reasons is not None:
+            reasons.append('it is no pushed clone and no owner answer approved its removal. Ask one AskUserQuestion '
+                           'naming the folder, with a delete option, then re-issue the delete; a typed reply is not '
+                           'read as approval')
+        return False
+    if held:
+        if reasons is not None:
+            reasons.append('a registered worktree lies inside it (%s): retire that worktree first' % held[0])
+        return False
+    return True
+
+
+def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
+                           reasons: list[str] | None = None) -> bool:
+    """A pushed clone or an owned/owner-approved retired worktree; optionally explain failure."""
+    root = _project_root()
+    if is_regenerable_clone(token, cwd or root, root):
+        return True
+    target = resolve_cd(cwd or root, token)
+    if _strictly_under(_norm(target), _norm(os.path.join(root, '.claude', 'scratch'))):
+        return _owner_approved_scratch(token, target, transcript_path, reasons)
+    if not (_owner_approved_removal(token, transcript_path) or session_created_worktree(target, transcript_path)):
+        if reasons is not None:
+            reasons.append('ownership not proven: this session did not create it, and no owner answer approved its '
+                           'removal. Ask one AskUserQuestion naming each worktree, with a remove option, then '
+                           're-issue the delete; a typed reply is not read as approval')
+        return False
+    return is_retired_worktree(token, cwd or root, root, allow_ignored=True, reasons=reasons)
+
+
+_SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _is_own_session_scratch(token: str, cwd: str | None, transcript_path: str | None) -> bool:
+    """A literal path under `.claude/scratch/` with a segment equal to this session's full id.
+
+    The id comes from the transcript file's name, so only this session's own scratch output
+    qualifies; a peer's id, a substring of the id, or a path outside scratch does not."""
+    sid = os.path.splitext(os.path.basename(transcript_path or ""))[0]
+    if not _SESSION_ID.match(sid) or _UNSAFE_PATH_CHARS.search(token):
+        return False
+    parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
+    if ".." in parts or sid not in parts:
+        return False
+    rel = os.path.relpath(resolve_cd(cwd or _project_root(), token), _project_root()).replace("\\", "/")
+    return rel.startswith(".claude/scratch/") and _inside_root(token, cwd)
+
+
+def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None,
+                               transcript_path: str | None = None) -> bool:
     """True only for a single (non-chained) recursive delete whose every path argument is a
     literal path at or under an allowlisted cache segment inside the repo (`_is_cache_path`) or a
     regenerable scratch clone (`_is_regenerable_target`).
@@ -277,7 +408,8 @@ def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None) -> b
     paths = [t for t in tokens
              if not t.startswith('-')
              and t.lower() not in ('rm', 'del', 'erase', 'ri', 'remove-item')]
-    return bool(paths) and all(_is_cache_path(p, cwd) or _is_regenerable_target(p, cwd) for p in paths)
+    return bool(paths) and all(_is_cache_path(p, cwd) or _is_own_session_scratch(p, cwd, transcript_path)
+                               or _is_regenerable_target(p, cwd, transcript_path) for p in paths)
 
 
 # A4: `NAME=$(mktemp -d)` (or `-t <template>` with no `/` in the template) is ownership evidence a
@@ -420,7 +552,7 @@ def _is_regenerable_or_scratch(path: str) -> bool:
     """`path` (absolute, normalized) is safe to delete recursively without asking."""
     import tempfile
     if _strictly_under(path, _norm(tempfile.gettempdir())):
-        return True
+        return not _holds_git(path)
     parts = _checkout_rel_parts(path)
     if not parts:
         return False
@@ -428,20 +560,23 @@ def _is_regenerable_or_scratch(path: str) -> bool:
     if lowered[:2] == [".claude", "scratch"]:
         if len(parts) < 3:
             return False
-        if _holds_git(path):  # a clone can hold unpushed work: only the clean, pushed test passes it
-            root = _project_root()
-            return is_regenerable_clone(path, root, root)
-        return True
+        root = _project_root()
+        return is_regenerable_clone(path, root, root)
     if lowered[:2] in ([".claude", ".cache"], [".claude", "logs"]) or lowered[0] == ".godot":
         return True
     return any(p in _CACHE_SEGMENTS for p in lowered)
 
 
-def _is_resolved_safe_cleanup(raw: str, cwd: str | None) -> bool:
+def _is_regenerable_resolved(target: str, here: str) -> bool:
+    return _is_regenerable_or_scratch(_norm(resolve_cd(here, target)))
+
+
+def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept=_is_regenerable_resolved) -> bool:
     """True when every recursive-delete segment in `raw` is a plain delete command whose targets
-    all resolve to `_is_regenerable_or_scratch` paths. A delete that does not head its segment
-    (inside `$(...)`, backticks, behind `sudo`/`xargs`) or any unresolvable target disqualifies
-    the whole command (KFM #50)."""
+    all satisfy `accept(target, base directory)`; the default admits `_is_regenerable_or_scratch` paths.
+    A delete that does not head its segment (inside `$(...)`, backticks, behind `sudo`/`xargs`), a
+    glob in a directory part or a `cd`, `~`, `%` or any unresolvable target disqualifies the whole
+    command (KFM #50). A glob in the last part is judged by its directory."""
     assignments = literal_assignments(raw)
     here = cwd or _project_root()
     found = False
@@ -465,8 +600,7 @@ def _is_resolved_safe_cleanup(raw: str, cwd: str | None) -> bool:
             head, tail = os.path.split(value.replace("\\", "/").rstrip("/"))
             if _GLOB_CHARS.search(head):
                 return False
-            target = head if _GLOB_CHARS.search(tail) else value
-            if not _is_regenerable_or_scratch(_norm(resolve_cd(here, target))):
+            if not accept(head if _GLOB_CHARS.search(tail) else value, here):
                 return False
         found = True
     return found
@@ -492,7 +626,41 @@ def _normalize_git_globals(scan: str) -> str:
     return scan
 
 
-def check_bash_command(command: str, cwd: str | None = None) -> tuple[bool, str]:
+def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
+    """Why the first worktree or scratch target this delete names is not removable, or ''."""
+    assignments = literal_assignments(raw)
+    here = cwd or _project_root()
+    home = _norm(os.path.join(_project_root(), '.claude', 'worktrees'))
+    scratch = _norm(os.path.join(_project_root(), '.claude', 'scratch'))
+    for segment in _segments_with_quotes(raw):
+        tokens = _cleanup_tokens(segment)
+        if tokens and tokens[0] == 'cd' and len(tokens) == 2:
+            moved = expand_literal(tokens[1], assignments)
+            here = resolve_cd(here, moved) if here and moved else None
+            continue
+        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or here is None:
+            continue
+        for token in tokens[1:]:
+            if token.startswith('-'):
+                continue
+            value = expand_literal(token, assignments)
+            if not value or _UNSAFE_PATH_CHARS.search(value):
+                continue
+            target = _norm(resolve_cd(here, value))
+            reasons = []
+            if target == home or _strictly_under(target, home):
+                if not _is_regenerable_target(value, here, transcript_path, reasons):
+                    return ' %s is not retired: %s.' % (value, reasons[0])
+            elif _strictly_under(target, scratch):
+                clone_reasons = []
+                if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)
+                        or _is_regenerable_target(value, here, transcript_path, reasons)):
+                    return ' %s is not removable: %s; %s.' % (value, clone_reasons[0], reasons[0])
+    return ''
+
+
+def check_bash_command(command: str, cwd: str | None = None,
+                       transcript_path: str | None = None) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
     # A heredoc body is data handed to another program, not something this command runs --
     # the same reason quoted spans blank above. Writing a script or a prompt that MENTIONS a
@@ -505,12 +673,16 @@ def check_bash_command(command: str, cwd: str | None = None) -> tuple[bool, str]
             # `NAME=$(mktemp -d)` variable this same command owns; never relax a drive-format
             # block regardless of target.
             if ('format' not in message.lower()
-                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd) or _is_owned_temp_cleanup(raw)
-                         or _is_resolved_safe_cleanup(raw, cwd))):
+                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd, transcript_path) or _is_owned_temp_cleanup(raw)
+                         or _is_resolved_safe_cleanup(raw, cwd)
+                         or _is_resolved_safe_cleanup(raw, cwd, lambda value, here: (
+                             _is_cache_path(value, here) or _is_own_session_scratch(value, here, transcript_path)
+                             or _is_regenerable_target(value, here, transcript_path))))):
                 continue
             if 'recursive' in message.lower():
-                return True, message + _CACHE_HINT
-            return True, message
+                return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
+                              + _CACHE_HINT + _delete_reason(raw, cwd, transcript_path))
+            return True, message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
     return False, ""
 
 
@@ -594,13 +766,109 @@ def check_tool_cascade(content: str, file_path: str) -> tuple[bool, str]:
                 break
         if has_gc and not has_tool:
             return True, (
-                f"BLOCKED: [GlobalClass] Resource '{name}' (: {base}) is missing [Tool]. "
+                f"BLOCKED (rules/csharp_patterns.md): [GlobalClass] Resource '{name}' (: {base}) is missing [Tool]. "
                 "Godot's [Tool] cascade requires every [GlobalClass] Resource to be [Tool] — "
                 "otherwise the editor loads instances as bare Godot.Resource and the "
                 "auto-generated setter throws InvalidCastException at load. "
                 "Use: [GlobalClass, Tool]. (Policy: Tool Attribute Audit; full detector: "
                 ".claude/hooks/tool_cascade_audit.py)")
     return False, ""
+
+
+_NON_CODE = re.compile(r'//[^\n]*|/\*.*?\*/|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
+_ATTRS_DECL = re.compile(r'(?P<attrs>(?:\[[^\]]+\]\s*)+)', re.M)
+_RESOURCE_CLASSES = frozenset(_load_resource_classes())
+
+
+def fixes(content: str, path: str) -> tuple[str, list[str]]:
+    """Compute attributes without changing optional exports, Node types or quoted examples."""
+    if not path.lower().endswith('.cs') or is_test_fixture(path):
+        return content, []
+    code = _NON_CODE.sub(lambda m: ''.join('\n' if c == '\n' else ' ' for c in m.group()), content)
+    norm = path.replace('\\', '/')
+    resource_scope = not (harness_tail(norm) is not None
+                          or any(part in norm for part in ('/Jmodot/', '/Tests/', '/addons/')))
+    edits, notes = [], []
+    for match in _ATTRS_DECL.finditer(code):
+        attrs = match.group('attrs')
+        tail = code[match.end():]
+        member = re.match(r'(?:[^;{}]|\{[^{}]*\})+', tail)
+        decl = member.group() if member else ''
+        # An accessor block with no initializer after it ends the member; the next member's `= null!` is not its own.
+        accessors = re.search(r'\{[^{}]*\}(?!\s*=)', decl)
+        if accessors:
+            decl = decl[:accessors.end()]
+        export = re.search(r'\bExport\b', attrs)
+        if (export and not re.search(r'\bRequiredExport\b', attrs)
+                and re.search(r'=\s*null\s*!', decl)
+                and not re.search(r'\?\s+\w+\s*(?:\{|=)', decl)):
+            at = match.start('attrs') + export.end()
+            # An Export argument belongs to Export, not RequiredExport.
+            if code[at:at + 1] == '(':
+                depth, pos = 1, at + 1
+                while pos < match.end('attrs') and depth:
+                    depth += (code[pos] == '(') - (code[pos] == ')')
+                    pos += 1
+                if depth:
+                    continue
+                at = pos
+            edits.append((at, ', RequiredExport'))
+            notes.append('Added RequiredExport: ValidateRequiredExports() checks this non-null export. '
+                         'Write an optional export as T? (rules/csharp_patterns.md).')
+        gc = _GC_TOK.search(attrs)
+        class_decl = _CLASS_DECL.match(decl)
+        if resource_scope and gc and not _TOOL_TOK.search(attrs) and class_decl and not class_decl.group(2):
+            base = _first_base(class_decl.group(3))
+            if base == 'Resource' or base in _RESOURCE_CLASSES:
+                edits.append((match.start('attrs') + gc.end(), ', Tool'))
+                notes.append('Added Tool to the GlobalClass Resource (rules/csharp_patterns.md).')
+    for at, text in sorted(edits, reverse=True):
+        content = content[:at] + text + content[at:]
+    return content, list(dict.fromkeys(notes))
+
+
+def _content_fix(input_data):
+    tool = input_data.get('tool_name')
+    ti = input_data.get('tool_input') or {}
+    key = 'content' if tool == 'Write' else 'new_string'
+    content = ti.get(key, '')
+    path = ti.get('file_path', '')
+    fixed, notes = fixes(content, path)
+    updated = dict(ti, **{key: fixed}) if fixed != content else None
+    if tool == 'Edit' and path.lower().endswith('.cs'):
+        try:
+            with open(path, encoding='utf-8') as handle:
+                original = handle.read()
+            old = ti.get('old_string', '')
+            count = original.count(old) if old else 0
+            if count and (count == 1 or ti.get('replace_all')):
+                candidate = original.replace(old, content, -1 if ti.get('replace_all') else 1)
+                corrected, full_notes = fixes(candidate, path)
+                if corrected != candidate:
+                    updated = dict(ti, old_string=original, new_string=corrected, replace_all=False)
+                    notes = full_notes
+        except OSError:
+            pass
+    return updated, notes
+
+
+def _edit_is_editor_only(file_path: str, old_string: str, replace_all) -> bool:
+    """True when the Edit replaces text only inside `#if TOOLS` bodies of the file on disk."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            file_content = f.read()
+    except (OSError, IOError):
+        return False
+    if not old_string:
+        return False
+    spans = editor_only_spans(file_content)
+    starts, at = [], file_content.find(old_string)
+    while at != -1:
+        starts.append(at)
+        if not replace_all:
+            break
+        at = file_content.find(old_string, at + 1)
+    return bool(starts) and all(any(lo <= at < hi for lo, hi in spans) for at in starts)
 
 
 def process(input_data):
@@ -622,36 +890,42 @@ def process(input_data):
         if blocked:
             return {"block": message}
 
-        blocked, message = check_tool_cascade(content, file_path)
-        if blocked:
-            return {"block": message}
+        updated, notes = _content_fix(input_data)
+        if message:
+            notes.insert(0, message)
+        if updated or notes:
+            result = {'context': '\n'.join(notes)}
+            if updated:
+                result['updatedInput'] = updated
+            return result
 
     elif tool_name == "Edit":
         new_string = tool_input.get("new_string", "")
         file_path = tool_input.get("file_path", "")
 
-        # For Edit, also check if the target file itself is editor tooling
-        # (the new_string snippet may not contain #if TOOLS, but the file does)
+        # The new_string snippet carries no `#if TOOLS` of its own: it is editor-only when every
+        # place it replaces sits inside a `#if TOOLS` body of the file.
         edit_context = new_string
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                file_content = f.read()
-                if '#if TOOLS' in file_content:
-                    edit_context = '#if TOOLS\n' + new_string
-        except (OSError, IOError):
-            pass
+        if _edit_is_editor_only(file_path, tool_input.get("old_string", ""), tool_input.get("replace_all")):
+            edit_context = '#if TOOLS\n' + new_string
 
         blocked, message = check_code_patterns(edit_context, file_path)
         if blocked:
             return {"block": message}
 
-        blocked, message = check_tool_cascade(new_string, file_path)
-        if blocked:
-            return {"block": message}
+        updated, notes = _content_fix(input_data)
+        if message:
+            notes.insert(0, message)
+        if updated or notes:
+            result = {'context': '\n'.join(notes)}
+            if updated:
+                result['updatedInput'] = updated
+            return result
 
     # Bash + PowerShell tools (same dangerous-command surface)
     elif tool_name in ("Bash", "PowerShell"):
-        blocked, message = check_bash_command(tool_input.get("command", ""), input_data.get("cwd"))
+        blocked, message = check_bash_command(tool_input.get("command", ""), input_data.get("cwd"),
+                                              input_data.get("transcript_path"))
         if blocked:
             return {"block": message}
 
@@ -671,6 +945,13 @@ def main():
     if result and result.get("block"):
         print(result["block"], file=sys.stderr)
         sys.exit(2)
+
+    if result:
+        out = {'hookEventName': 'PreToolUse', 'additionalContext': result['context']}
+        if result.get('updatedInput'):
+            out['updatedInput'] = result['updatedInput']
+        print(json.dumps({'hookSpecificOutput': out}))
+        sys.exit(0)
 
     # All checks passed
     print("{}")

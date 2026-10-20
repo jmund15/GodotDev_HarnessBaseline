@@ -64,11 +64,13 @@ def main():
     script = blp.preview_script("/mnt/c/w/tree", steps)
     cases.append(("the snapshot lives under $HOME, never /tmp (delete guards admit temp paths)",
                   '"$HOME/baseline-linux-preview"' in script and "/tmp" not in script))
-    cases.append(("ci-tools node and pwsh lead PATH",
-                  'PATH="$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"' in script))
+    cases.append(("ci-tools python, node and pwsh lead PATH",
+                  'PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"' in script))
     cases.append(("the snapshot excludes .git and is committed to a fresh repo, as checkout gives",
                   "--exclude=.git" in script and "git init -q -b main" in script
                   and "commit -qm snapshot" in script))
+    cases.append(("the snapshot drops drvfs's executable bits before it is committed, as checkout gives 100644 files",
+                  "chmod 644" in script and script.index("chmod 644") < script.index("git init")))
     cases.append(("each step runs under the Actions default shell flags",
                   script.count("bash --noprofile --norc -eo pipefail") == len(steps)))
     cases.append(("every step reports pass or fail by name",

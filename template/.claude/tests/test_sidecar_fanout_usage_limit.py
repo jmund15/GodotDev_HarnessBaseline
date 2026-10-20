@@ -42,6 +42,13 @@ DONE = line({"type": "result", "subtype": "success", "is_error": False, "session
 LIMIT = line({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
               "terminal_reason": "api_error", "session_id": "S1",
               "result": "API Error: Request rejected (429) · The usage limit has been reached"})
+CAPPED = line({"type": "result", "subtype": "success", "is_error": True, "terminal_reason": "api_error",
+               "session_id": "S1", "result": "API Error: Claude's response exceeded the 32000 output token maximum. "
+               "To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."})
+QUOTED = line({"type": "user", "session_id": "S1", "message": {"content": [{"type": "tool_result",
+              "content": "OUTPUT_CAP_RE matches 'exceeded the 32000 output token maximum'"}]}})
+ERRORED = line({"type": "result", "subtype": "success", "is_error": True, "terminal_reason": "api_error",
+                "session_id": "S1", "result": "API Error: 500 Internal server error"})
 SYNTH = line({"type": "result", "subtype": "provider_usage_limit", "is_error": True,
               "terminal_reason": "provider-usage-limit", "synthetic": True, "session_id": "S1",
               "result": "USAGE LIMIT"})
@@ -70,6 +77,10 @@ def run_fanout():
     planned = []
     for label, body, code in (("spent", "\n".join([INIT, WORK, RETRY, LIMIT, SYNTH]) + "\n", 10),
                               ("broken", "\n".join([INIT, WORK]) + "\n", 1),
+                              ("capped", "\n".join([INIT, WORK, CAPPED]) + "\n", 1),
+                              ("quoted", "\n".join([INIT, WORK, QUOTED] + [WORK] * 40 + [ERRORED]) + "\n", 1),
+                              ("short-quoted", "\n".join([INIT, WORK, QUOTED, ERRORED]) + "\n", 1),
+                              ("capacity", INIT + "\n", 8),
                               ("good", "\n".join([INIT, WORK, DONE]) + "\n", 0)):
         body_path = os.path.join(TMP, label + ".body")
         open(body_path, "w", encoding="utf-8").write(body)
@@ -103,7 +114,30 @@ case("an ordinary failure still reads FAIL",
      lambda: "FAIL  broken" in SUMMARY)
 case("the tally separates usage-limit from failed, and the fan-out still exits 1",
      lambda: "usage-limit: spent" in SUMMARY and "failed: broken" in SUMMARY
-     and "failed: broken, spent" not in SUMMARY and SUMMARY_CODE == 1)
+     and "spent" not in SUMMARY.split("failed:")[-1] and SUMMARY_CODE == 1)
+# 2026-10-01 (c5e168c9): six comparator jobs each owed one verdict row per group; five passed the
+# child's 32000-token output cap and read only as "the child CLI failed or stopped early".
+case("a final message past the child's output cap is named output-cap with the cap's size",
+     lambda: "output-cap" in summary_line("capped") and "32000" in summary_line("capped"))
+case("...and names the fix: the row's registry output maximum, since an unchanged rerun fails again",
+     lambda: "unchanged rerun" in SUMMARY and "max-output" in SUMMARY)
+case("...and prints the one advice constant the stream classifier owns",
+     lambda: sf.stream_check.OUTPUT_CAP_ADVICE in SUMMARY)
+case("an ordinary failure is not called output-cap", lambda: "output-cap" not in summary_line("broken"))
+case("...nor one whose stream merely quoted the cap phrase before its terminal error",
+     lambda: summary_line("quoted").startswith("FAIL") and "output-cap" not in summary_line("quoted"))
+
+
+case("a short stream's quoted cap phrase does not relabel its terminal API 500",
+     lambda: summary_line("short-quoted").startswith("FAIL")
+     and "output-cap" not in summary_line("short-quoted"))
+
+
+case("exit 8 names a capacity/band-reading failure and offers no authorization override",
+     lambda: "capacity" in summary_line("capacity") and "band" in summary_line("capacity")
+     and "NOT overridable" in summary_line("capacity")
+     and "--authorize" not in summary_line("capacity")
+     and "ceiling exceeded" not in summary_line("capacity"))
 
 
 def status_fixture():

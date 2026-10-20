@@ -37,6 +37,33 @@ def planted(files, layers, extra=()):
         return lc.scan(Path(root), layers)
 
 
+def worktree_pinned_manifest():
+    """`pinned_manifest` called on a linked worktree of a main checkout whose cache clone holds the pin."""
+    import subprocess
+
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        main, clone, tree = Path(tmp, "main"), Path(tmp, "main", ".claude", ".cache", "baseline-repo"), Path(tmp, "wt")
+        clone.mkdir(parents=True)
+        git(clone, "init", "-q")
+        (clone / "baseline.manifest.json").write_text('{"files": []}', encoding="utf-8")
+        git(clone, "add", "baseline.manifest.json")
+        git(clone, "commit", "-q", "-m", "pin")
+        sha = git(clone, "rev-parse", "HEAD")
+        (main / "README").write_text("x\n", encoding="utf-8")
+        git(main, "init", "-q")
+        git(main, "add", "README")
+        git(main, "commit", "-q", "-m", "init")
+        git(main, "worktree", "add", "-q", "--detach", str(tree))
+        try:
+            return lc.pinned_manifest(tree, {"synced_commit": sha})
+        finally:
+            git(main, "worktree", "remove", "--force", str(tree))
+
+
 def kinds(findings):
     return sorted((f.source, f.kind, f.target) for f in findings)
 
@@ -71,15 +98,58 @@ def main():
     arch = ".claude/auto-memory/archive/gotcha_local_trap.md"
     got = planted({doc: "Cite `feedback_local_rule` and (gotcha_local_trap.md).\n"}, {doc: "pure"},
                   extra=(mem, arch))
-    check("a memory slug this project alone carries fails as local-only, cited bare or backticked",
-          kinds(got) == [(doc, "local-only", "feedback_local_rule"), (doc, "local-only", "gotcha_local_trap")],
-          kinds(got))
+    check("a memory this project alone carries is evidence, not a dependency: no finding, cited bare or backticked",
+          got == [], kinds(got))
+    got = planted({doc: "Read `auto-memory/feedback_gone.md`.\n"}, {doc: "pure"})
+    check("a memory path no file holds still fails as missing",
+          kinds(got) == [(doc, "missing", "auto-memory/feedback_gone.md")], kinds(got))
 
     tool = ".claude/tools/engine_only_check.py"
     got = planted({doc: "Run `python .claude/tools/engine_only_check.py <doc> --repo <root>` first.\n",
                    tool: "x\n"}, {doc: "coding", tool: "godot"})
     check("a path inside a multi-word backticked command is a citation",
           kinds(got) == [(doc, "needs-godot", tool)], kinds(got))
+
+    sh = ".claude/scripts/lib/runner.sh"
+    helper = ".claude/tools/helper.py"
+    got = planted({sh: 'python3 "$ROOT/tools/helper.py"\n'}, {sh: "pure"}, extra=(helper,))
+    check("a shipped script executing a file no layer ships fails as local-only",
+          kinds(got) == [(sh, "local-only", "helper.py")], kinds(got))
+
+    py = ".claude/tools/caller.py"
+    got = planted({py: 'import subprocess\nsubprocess.run(["python3", "tools/helper.py"])\n'}, {py: "pure"},
+                  extra=(helper,))
+    check("a python string naming a file no layer ships fails as local-only",
+          kinds(got) == [(py, "local-only", "helper.py")], kinds(got))
+
+    got = planted({sh: 'python3 "$ROOT/tools/helper.py"\n', helper: "x\n"}, {sh: "pure", helper: "pure"})
+    check("a shipped script executing a shipped file closes", got == [], kinds(got))
+
+    test_py = ".claude/tests/test_caller.py"
+    rows = 'ROWS = ["bash tools/helper.py --x", "see helper.py (pid 1)"]\n'
+    got = planted({test_py: rows}, {test_py: "pure"}, extra=(helper,))
+    check("a test's string holding whitespace is fixture input, not a file reference", got == [], kinds(got))
+
+    got = planted({py: rows}, {py: "pure"}, extra=(helper,))
+    check("a tool's command or message string naming a file no layer ships fails as local-only",
+          kinds(got) == [(py, "local-only", "helper.py")], kinds(got))
+
+    pkg_init = ".claude/scripts/pkg/__init__.py"
+    got = planted({py: 'FOUND = ("__init__.py", "/__init__.py")\n'}, {py: "pure"}, extra=(pkg_init,))
+    check("a package marker basename names no file", got == [], kinds(got))
+
+    ps1 = ".claude/scripts/run.ps1"
+    got = planted({ps1: "<#\n.SYNOPSIS\n  Wraps tools/helper.py.\n#>\nparam([int]$N)\n<# inline helper.py #> $x = 1\n"},
+                  {ps1: "pure"}, extra=(helper,))
+    check("a file named only inside a powershell block comment is not a dependency", got == [], kinds(got))
+
+    got = planted({ps1: "$x = 1  # see tools/helper.py\n", sh: 'echo ok # runs tools/helper.py\n'},
+                  {ps1: "pure", sh: "pure"}, extra=(helper,))
+    check("a file named only in a trailing comment is not a dependency", got == [], kinds(got))
+
+    got = planted({ps1: '& python3 "$PSScriptRoot/helper.py" # call it\n'}, {ps1: "pure"}, extra=(helper,))
+    check("code before a trailing comment still counts",
+          kinds(got) == [(ps1, "local-only", "helper.py")], kinds(got))
 
     shipped_mem = ".claude/auto-memory/feedback_shared_rule.md"
     got = planted({doc: "Per feedback_shared_rule, and feedback_never_written.\n", shipped_mem: "m\n"},
@@ -130,6 +200,14 @@ def main():
                   {hook: "pure", guard: "godot", helper: "pure"})
     check("a string-named chain filtered through _optional_hooks is optional", got == [], kinds(got))
 
+    # 2026-10-08 (43c852757): a dispatcher that denies shell calls when its bootstrap imports fail imports the
+    # loader inside a try; the chain still loads by name through it.
+    guarded_loader = ("try:\n    import _optional_hooks\nexcept Exception:\n    raise SystemExit(2)\n"
+                      + chain + "CHAIN = _optional_hooks.adopted(CHAIN)\n")
+    got = planted({hook: guarded_loader, guard: "x = 1\n", helper: "def adopted(c): pass\n"},
+                  {hook: "pure", guard: "godot", helper: "pure"})
+    check("a string-named chain stays optional when the loader import is guarded", got == [], kinds(got))
+
     got = planted({hook: "# mentions tres_guard.py in a comment only\n", guard: "x = 1\n"},
                   {hook: "pure", guard: "godot"})
     check("a comment mention of a module is not a dependency", got == [], kinds(got))
@@ -145,6 +223,19 @@ def main():
     check("a seed the manifest ships counts, and a lock layer overrides the pinned one",
           got == {doc: "coding", skill: "pure"}, got)
 
+    got = worktree_pinned_manifest()
+    check("a linked worktree with no cache clone reads the pin from its main checkout's clone",
+          got == {"files": []}, got)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for rel, text in ((hook, "import tres_guard\n"), (guard, "x = 1\n")):
+            Path(tmp, rel).parent.mkdir(parents=True, exist_ok=True)
+            Path(tmp, rel).write_text(text, encoding="utf-8")
+        lock = {"files": {hook: {"status": "tracked", "layer": "pure"}, guard: {"status": "tracked", "layer": "godot"}}}
+        got = lc.lock_findings(Path(tmp), lock, {"files": []})
+    check("lock_findings scans the lock's tracked rows over the consumer view",
+          [f.render() for f in got] == [f"{hook}: needs-godot {guard}"], [f.render() for f in got])
+
     lock_path = REPO / ".claude" / "baseline.lock.json"
     if not lock_path.exists():
         print("skip live: no consumer lock in this tree (a baseline checkout runs audit_baseline instead)")
@@ -156,7 +247,7 @@ def main():
         return 2
     layers = lc.consumer_layers(lock, manifest)
     check("the consumer view holds the manifest and the lock", len(layers) > 500, len(layers))
-    found = lc.scan(REPO, layers, lc.lock_checked(lock))
+    found = lc.lock_findings(REPO, lock, manifest)
     check("live: every tracked row closes over its own layer", found == [],
           "\n  " + "\n  ".join(f.render() for f in found[:40]) + (f"\n  ... {len(found)} total" if len(found) > 40 else ""))
 
@@ -165,6 +256,8 @@ def main():
 
 def report():
     if FAILURES:
+        for failure in FAILURES:
+            print("\n" + failure)
         print(f"\n{len(FAILURES)} failure(s)")
         return 1
     print("\nall ok")

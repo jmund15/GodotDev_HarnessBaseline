@@ -34,7 +34,7 @@ Read at an `add` or `user-add` invocation, including one the CLAUDE.md auto-dete
 
 5. **Decide section.** Future Scope strong-trigger phrase (`worklog_reference` *Trigger Catalog*) OR explicit `When: future` → step **5b**. A `When: after <condition>` clause → `## Ledger > ### Domain`, step 6 (it is not ready, so it never occupies a ready-pool slot). Otherwise → `## Active > ### Domain`, step 6 — a fresh item is the newest by definition, so it belongs in the pool.
 
-   Landing above 30 is fine: report `Active is now <N> (ceiling 30) — /worklog triage rebalances.` and write anyway. **Never demote to the Ledger to hold the ceiling** — an unseen demotion is a lost item.
+   Report `Active is now <N>`; `/worklog triage` can re-evaluate readiness if the list is hard to scan.
 
 5b. **(Future Scope path) Append an `FSLINE` under `## Future Scope > ### Domain`,** inside the `> [!example]- Future Scope (N items)` collapsed callout (every line within is `> `-prefixed).
 
@@ -67,13 +67,9 @@ Read at an `add` or `user-add` invocation, including one the CLAUDE.md auto-dete
 
 10. **Confirm:** `Added.` — or `Added to Future Scope.` so the user knows the item is parked.
 
-### Invocation contexts for ADD
+### Invocation contexts
 
-| Caller | Confirm-first? | Notes |
-|--------|---------------|-------|
-| User types `/worklog add <text>` | No (already explicit) | Ask only for missing fields (class, scope, domain, context). |
-| CLAUDE.md auto-detect + user says `y` | Already done by CLAUDE.md | Execute the recipe; honor inline overrides (`y, scope 3`). |
-| `/worklog sweep` proposes an add + `y` | Already done by sweep | Same as above. |
+An explicit `add` or `user-add` command asks only for missing fields (ADD: class, scope, domain, context; USER-ADD: domain, context). An auto-detect or sweep proposal is confirmed once by its caller, so execute the recipe and honor inline overrides (`y, scope 3`, `y, domain spell`, `y, active not user-tasks`). The triage `to-user-tasks` caller skips the de-dup step, because the walker already exposed existing entries.
 
 ## Operation: USER-ADD
 
@@ -87,8 +83,8 @@ Append a `UTLINE` for items needing user judgment Claude cannot supply. Append-o
 
 2. **Compose the `UTLINE`.**
    - **Date:** today (when Claude flagged it, not the user's eventual action date).
-   - **Title:** short, imperative, ≤60 chars, no bold.
-   - **Context:** ≤80 chars on why this needs user attention.
+   - **Title:** short, imperative and distinct from existing titles, no bold.
+   - **Context:** one line that explains the owner's action.
    - **Domain:** from `worklog_reference` *Canonical domain list*.
 
 3. **Inferred-values confirmation** (auto-detect): `Route to User-Tasks: <title> — <domain>?`. `y` accepts; `y, domain spell` overrides the domain; `y, active not user-tasks` cancels this add and reroutes to `/worklog add`.
@@ -102,10 +98,4 @@ Append a `UTLINE` for items needing user judgment Claude cannot supply. Append-o
 
 6. **Confirm:** `Routed to User-Tasks.`
 
-### Invocation contexts for USER-ADD
-
-| Caller | Confirm-first? | Notes |
-|--------|---------------|-------|
-| User types `/worklog user-add <text>` | No (explicit) | Skip propose-and-confirm; ask only for missing domain + context. |
-| CLAUDE.md auto-detect (User-Tasks route) + `y` | Already done by CLAUDE.md | Execute with inferred title + domain. Honor inline overrides (`y, domain spell` / `y, active not user-tasks`). |
-| `/worklog triage` → `to-user-tasks` disposition | Already done by the triage walk | Execute from the Active item's title + Context + domain. Skip Step 1 — the walker already exposed existing entries. |
+Invocation contexts: see ADD.

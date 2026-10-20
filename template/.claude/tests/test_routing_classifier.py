@@ -7,11 +7,46 @@ the nudge and the audit row cannot disagree; the other cases pin the rules aroun
 
     python3 .claude/tests/test_routing_classifier.py
 """
+import contextlib
+import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
 from routing_classifier import classify_call, is_harness_path  # noqa: E402
+
+
+@contextlib.contextmanager
+def _planted_profile(tier, ai_worker):
+    """This machine's tier and ai-worker registration, planted for the block.
+
+    Both are read LIVE by tools/workstation_profile.py, so the variables the module documents are
+    the only lever: WORKSTATION_PROFILE_PATH for the tier, CLAUDE_CONFIG_DIR/SC_WORKDIR for the
+    registration walk. `tier=None` plants no profile file at all.
+    """
+    root = tempfile.mkdtemp(prefix="rcprofile_")
+    cfg = os.path.join(root, "cfg")
+    os.makedirs(os.path.join(cfg, "plugins"))
+    servers = {"ai-worker": {"command": "python"}} if ai_worker == "present" else {}
+    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": servers}, fh)
+    profile = os.path.join(root, "workstation_profile.json")
+    if tier is not None:
+        with open(profile, "w", encoding="utf-8") as fh:
+            json.dump({"schema": 1, "local_tier": tier}, fh)
+    planted = {"WORKSTATION_PROFILE_PATH": profile, "CLAUDE_CONFIG_DIR": cfg,
+               "SC_WORKDIR": os.path.join(root, "nowhere")}
+    saved = {k: os.environ.get(k) for k in planted}
+    os.environ.update(planted)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 READ_PATH = (
     "C:/Users/{{USER}}/Documents/ObsidianVault/DevProjects/{{PROJECT_NAME}}/"
@@ -73,6 +108,24 @@ def main():
                   c.severity == "cue-exempt" and c.rule == "native-read-bulk-copyable"
                   and "[subagent: bundling delegate]" in (c.reason or "")))
 
+    # C7: the verdict's reason names the route the nudge will print, so it must name one this
+    # machine has. The VERDICT is unchanged — the rule is the call shape, not the machine.
+    with _planted_profile("full", "absent"):
+        absent = classify_call("Read", READ, BULK_COPYABLE)
+    cases.append(("an absent ai-worker renders the verdict's reason as the local route",
+                  absent.severity == "nudge-warranted"
+                  and absent.rule == "native-read-bulk-copyable"
+                  and "mcp__ai-worker__" not in (absent.reason or "")
+                  and "bounded Read" in (absent.reason or "")))
+    with _planted_profile("full", "present"):
+        present = classify_call("Read", READ, BULK_COPYABLE)
+    cases.append(("a present ai-worker keeps the reason's worker route",
+                  "mcp__ai-worker__read_files" in (present.reason or "")))
+    with _planted_profile(None, "present"):
+        unknown = classify_call("Read", READ, BULK_COPYABLE)
+    cases.append(("no profile keeps the reason's worker route",
+                  "mcp__ai-worker__read_files" in (unknown.reason or "")))
+
     c = classify_call("Read", {"file_path": "C:/repo/.claude/Design/rule.md"}, BULK_COPYABLE)
     cases.append(("agent-runtime instructions remain direct-read only",
                   c.severity == "not-routable"))
@@ -86,15 +139,21 @@ def main():
                   c.severity == "not-routable"))
 
     obsidian = {"target": {"path": "Claude/Design/some_design_doc.md"}}
+    # Reversed 2026-09-23: the obsidian MCP server is no longer registered in this project, so the
+    # branch was dead wiring. The positive control is now the inverse — a call to the retired tool
+    # is not routable at all, whatever the prompt says (path-only and focused included).
     c = classify_call("mcp__obsidian__obsidian_get_note", obsidian, FOCUSED)
-    cases.append(("focused Obsidian read is not classified from its path",
-                  c.severity == "compliant" and c.rule is None))
+    cases.append(("the retired Obsidian read tool is not routable",
+                  c.severity == "not-routable" and c.rule is None))
     c = classify_call("mcp__obsidian__obsidian_get_note", obsidian, BULK_COPYABLE)
-    cases.append(("explicit bulk-copyable Obsidian read remains a positive control",
-                  c.severity == "nudge-warranted" and c.rule == "obsidian-read-bulk-copyable"))
+    cases.append(("a bulk-copyable prompt does not revive the retired Obsidian read branch",
+                  c.severity == "not-routable" and c.rule is None))
     c = classify_call("mcp__obsidian__obsidian_get_note", obsidian, bulk_then_edit)
-    cases.append(("an edit cue does not erase positive bulk-copyable Obsidian evidence",
-                  c.severity == "nudge-warranted" and c.rule == "obsidian-read-bulk-copyable"))
+    cases.append(("an edit cue does not revive the retired Obsidian branch",
+                  c.severity == "not-routable" and c.rule is None))
+    c = classify_call("mcp__obsidian__obsidian_search_notes", {"maxMatchesPerHit": 50}, BULK_COPYABLE)
+    cases.append(("the retired Obsidian search tool carries no broad-search advisory",
+                  c.severity == "not-routable" and c.rule is None))
 
     c = classify_call("Grep", {"pattern": "DomainCore", "glob": "*.cs"}, "", agent_id="agent0001")
     cases.append(("subagent bare-PascalCase Grep on .cs: still nudge-warranted (agent_id is read-only scope)",

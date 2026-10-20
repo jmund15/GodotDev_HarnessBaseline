@@ -1,11 +1,7 @@
 ---
 name: benchmark_design
 description: >-
-  Use when designing, building, scoring, auditing or extending any benchmark, eval or measurement
-  instrument — model comparisons, capability staircases, judge panels, regression batteries. Covers
-  the failure classes that make an instrument produce confident numbers while measuring nothing, and
-  the checks that catch each one before budget is spent. SKIP for running an existing validated
-  battery unchanged, and for ordinary test-writing (that is the testing skill).
+  Use to design, build, score, audit or extend benchmarks, evals or measurement instruments, and before running or citing a benchmark result. SKIP ordinary test-writing; use testing.
 ---
 
 # Benchmark Design
@@ -15,7 +11,8 @@ description: >-
 **For the model-effort battery, run the battery's `bench.py doctor` before
 designing or citing anything** — it reports which published scores are safe, which need only
 arithmetic, and which need a paid re-judge, plus the G4 integrity sweep. Never hand-assemble an
-answer from the data roots; `bench.py where` lists all six.
+answer from the data roots; `bench.py where` lists all six. Plan runs that add evidence for a ladder family, rung or task from `bench.py coverage`
+(every ladder family × rung × live task); `bench.py next` plans repeats of cells the board already holds.
 
 Section numbers are cited across the harness and from `scripts/benchmark_campaign/` — never renumber.
 Each section states its verdict and names the file to read at that step; read only the sections your
@@ -42,6 +39,8 @@ rung (conclusive), and the **strongest** arm must **PASS** the **easiest** one (
 conclusive). Read `reference/calibration_and_replication.md` §Two calls decide whether the sweep is
 worth running before picking the calibration arms.
 
+**Arm roster:** a campaign measures the cheapest ladder row (`cost`) on every task it could plausibly serve, bench judge seats included. An unmeasured cell is a gap to fill, never a reason to keep a pricier incumbent. Tasks scored mechanically (no LLM judge) are excluded.
+
 On a non-monotonic result or a ceiling failure, read `reference/staircase_construction.md` §A monotone
 SCALAR does not make a monotone LADDER and §A ceiling failure has TWO causes — the disposition is
 decided from the trace, never the pass rate.
@@ -49,6 +48,10 @@ decided from the trace, never the pass rate.
 ## 3. Replication — the two directions carry very different weight
 
 **One PASS is conclusive. N FAILURES are not.**
+
+Cite or campaign a task only when the TASK READINESS section of `bench doctor` reads it OK; `bench run` refuses any other task unless the campaign name starts `retest-`. OK measures signal over floor; it never shows what the rendered board prints or what the key leaves uncredited, and a plan check reads documents, not the instrument's behaviour. So before a new or edited task's key is frozen, pilot it: run two runs of one pin (the fewest that give a run-to-run band) through the real pipeline, build the board until its view check passes, and read the task as the owner would. For a recall key, also run an off-key review of a pilot cell's findings; true, relevant findings the key leaves uncredited are a key defect to fix before collection.
+
+Before editing an instrument, classify the edit as view-only (re-render), score-only (re-score stored returns) or arm-invalidating (new cells), and state the class in the plan and the commit. Take the score-only form when one reaches the same fix, since only arm-invalidating edits spend arm runs.
 
 Read `reference/calibration_and_replication.md` at the step you are on: §What zero passes in n trials
 bounds when sizing reps, §Determinism is per arm class when planning reps for a given arm, §Reading
@@ -66,8 +69,14 @@ Simulated answers whose correct score you know. **Build these as code, not as pr
 `reference/validation_probes.md` §The probes while building them, and §What probes cannot prove before
 trusting a grid.
 
-**A universal miss is a key defect, not a finding** — excluded from the conclusions until re-derived,
-and never a denominator (`reference/validation_probes.md` §A universal miss is a key defect).
+**A paid run is never a change's first check.** Exercise an instrument edit (items, key, engine) with the cheapest
+check that reaches it before any round that depends on it. `bench probes` does this: it scores each task's positive
+control (the probe expected at full marks) first and stops a task whose control misses, because its other probes then
+measure nothing.
+
+**A universal miss is an audit trigger, not a verdict** — the reachability audit keeps, rewrites or
+removes the item, and a hard-but-reachable item stays in the denominator (`reference/validation_probes.md`
+§A universal miss is an audit trigger).
 
 On an all-fail tier, or before prepending a rung beneath an existing floor, read
 `reference/controls_and_subfloor.md` §A tier where NOTHING passes needs a positive control and §A
@@ -114,6 +123,8 @@ The most repeated defect across every generation: **a runtime or configuration l
 property of the model.** Read `reference/configurations_and_outcomes.md` §Absent, degenerate and
 off-axis outcomes while building reducers and whenever a ladder stops.
 
+A clean exit does not prove engagement. Before consuming a run as evidence, run `python3 .claude/tools/void_check.py engagement <arm>.progress.jsonl --root <root> --required <input>`.
+
 ## 10. Closed-book means proving it, not asking for it
 
 Read `reference/configurations_and_outcomes.md` §Closed-book means proving it before running any
@@ -121,9 +132,17 @@ tool-equipped arm.
 
 ## 11. Reporting
 
+Describe a task to the owner by what it resolves and what it cannot (its smallest separable gap and the orderings inside its band), never as ideal or ready alone.
+
 A pin is measured, VOIDED, or unmeasured by design — three states, never two. Read
 `reference/board_publication.md` §Three states, never two at every roster end, and §Writing the board
 while writing it.
+
+A tied total across effort rungs can hide opposite failure classes: report which axis moved, not only the
+sum. More effort can buy completeness at the cost of integrity, such as forcing an out-of-scope fix through by
+editing a pre-existing test.
+
+Closing a campaign updates, in the same change, the registry row of each model it scored (roles, effort evidence) and runs `/ladder_ingest` §Board sweep for every task it scored, since a new cell can change other rows' verdicts, so routing never reads a stale row.
 
 ## 12. Delegated corpus work needs independent re-derivation
 
@@ -138,4 +157,6 @@ delegated mining pass.
 - **Don't read a bound off a flagged grid.** Report the grid.
 - **Don't trust an orderly table.** Orderliness is what a dead instrument produces.
 - **Don't fix a scorer without re-scoring collected cells** — verdicts are derived, responses are the
-  durable artifact.
+  durable artifact. Score once: settle instrument, engine and panel fixes before new cells are scored;
+  re-derive from stored returns where the engine allows; prove a change that moves only paths or labels
+  with a free parity test, never a probe re-score; state any re-judge that remains with its cost first.

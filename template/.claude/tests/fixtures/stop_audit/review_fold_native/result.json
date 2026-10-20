@@ -1,0 +1,148 @@
+{
+ "findings": [],
+ "sources": [],
+ "counts": {
+  "raw": 1,
+  "exactDuplicates": 0,
+  "rejected": 0,
+  "merged": 1,
+  "total": 1,
+  "critical": 0,
+  "fix": 1,
+  "ask": 0,
+  "plan": 0
+ },
+ "flags": [],
+ "reports": {},
+ "perAgent": [],
+ "verification": {
+  "status": "pass",
+  "counts": {
+   "VERIFIED": 1,
+   "UNVERIFIED": 0,
+   "UNCHECKED": 0
+  },
+  "report": ".claude/scratch/plan_check_69255593_spill/post_check-verify-1a0gti4.json",
+  "nonVerified": []
+ },
+ "delivery": {
+  "contract": "native-fanout-bounded/v1",
+  "engine": "review-fanout",
+  "resultMode": "bounded",
+  "status": "partial",
+  "maxResultBytes": 8192,
+  "byteLimitExceeded": true,
+  "payloadComplete": false,
+  "processedState": {
+   "mergedFindingsInline": true,
+   "engineFlagsInline": true,
+   "nonVerifiedInline": true,
+   "criticalIdsInline": false,
+   "decisionIdsInline": false
+  },
+  "counts": {
+   "raw": 1,
+   "exactDuplicates": 0,
+   "rejected": 1,
+   "merged": 1,
+   "total": 1,
+   "critical": 0,
+   "fix": 1,
+   "ask": 0,
+   "plan": 0,
+   "findings": 1,
+   "sources": 1,
+   "flags": 0,
+   "reports": 0,
+   "perAgent": 3,
+   "nonVerified": 0,
+   "decisionIds": 0,
+   "criticalIds": 0,
+   "spillMetadata": 4
+  },
+  "criticalFindingIds": [],
+  "decisionFindingIds": [],
+  "preview": {
+   "findings": {
+    "total": 37,
+    "shown": 0,
+    "omitted": 37,
+    "clipped": true,
+    "complete": false
+   },
+   "sources": {
+    "total": 41,
+    "shown": 0,
+    "omitted": 41,
+    "clipped": true,
+    "complete": false
+   },
+   "flags": {
+    "total": 4,
+    "shown": 2,
+    "omitted": 2,
+    "clipped": true,
+    "complete": false
+   },
+   "reports": {
+    "total": 0,
+    "shown": 0,
+    "omitted": 0,
+    "clipped": false,
+    "complete": true
+   },
+   "perAgent": {
+    "total": 3,
+    "shown": 0,
+    "omitted": 3,
+    "clipped": true,
+    "complete": false
+   },
+   "nonVerified": {
+    "total": 0,
+    "shown": 0,
+    "omitted": 0,
+    "clipped": false,
+    "complete": true
+   },
+   "decisionIds": {
+    "total": 19,
+    "shown": 0,
+    "omitted": 19,
+    "clipped": false,
+    "complete": false
+   },
+   "criticalIds": {
+    "total": 6,
+    "shown": 0,
+    "omitted": 6,
+    "clipped": false,
+    "complete": false
+   },
+   "spillMetadata": {
+    "total": 4,
+    "shown": 0,
+    "omitted": 4,
+    "clipped": false,
+    "complete": false
+   }
+  },
+  "archive": {
+   "source": "workflow-journal",
+   "delivered": false,
+   "relativePath": "journal.jsonl",
+   "validation": "required",
+   "transcriptDirRequired": true,
+   "selectors": "F<number>",
+   "sourceOrder": "read selectors.sourceOrder and selectors.idOrder from the workflow manifest",
+   "contains": "raw source findings, lens coverage, reports, and gaps",
+   "doesNotContain": "semantic merged views or engine validation flags; those remain inline",
+   "commands": {
+    "manifest": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-manifest",
+    "select": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-select <ID> --expect-journal-sha256 <sha256-from-manifest>",
+    "page": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-page items|lenses|reports|gaps --page <N> --page-size <N> --expect-journal-sha256 <sha256-from-manifest>",
+    "full": "python3 .claude/tools/session_digest.py --workflow-dir \"<transcriptDir-from-Workflow-result>\" --workflow-kind review --workflow-full --expect-journal-sha256 <sha256-from-manifest>"
+   }
+  }
+ }
+}

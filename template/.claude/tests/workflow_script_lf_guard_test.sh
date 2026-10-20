@@ -17,9 +17,14 @@ out=$(printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$TMP/c
 check "CRLF script rewritten to LF" 0 "$(crs "$TMP/crlf.js")"
 check "rewrite is reported to the model" 1 "$(printf '%s' "$out" | grep -c 'rewrote 2 CRLF')"
 
+# The /c/... spelling exists only where the temp dir sits under a drive letter.
+if [[ "$TMP" =~ ^[A-Za-z]: ]]; then
 printf 'export const meta = {}\r\n' > "$TMP/msys.js"
-printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$(cygpath -u "$TMP/msys.js" 2>/dev/null || echo "$TMP/msys.js")" | python3 "$HOOK" >/dev/null
+# Built by hand: cygpath -u maps a checkout under the Windows temp dir to /tmp/..., not the /c/... form under test.
+msys="/$(printf '%s' "${TMP:0:1}" | tr 'A-Z' 'a-z')${TMP:2}/msys.js"
+printf '{"tool_name":"Workflow","tool_input":{"scriptPath":"%s"}}' "$msys" | python3 "$HOOK" >/dev/null
 check "MSYS /c/ path is translated and rewritten" 0 "$(crs "$TMP/msys.js")"
+fi
 
 WT="$ROOT/worktrees/scope_probe"
 mkdir -p "$WT/.CLAUDE/Hooks"

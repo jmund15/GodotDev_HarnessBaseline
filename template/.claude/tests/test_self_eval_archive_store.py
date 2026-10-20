@@ -14,6 +14,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STORE_PATH = os.path.join(HERE, "..", "tools", "self_eval_archive_store.py")
 
 
+# Rows 16, 261, 263 of the live transcript 0db74049-9379-4d61-94b6-18b6bef3ba46.jsonl (trimmed,
+# bytes unchanged): one fable-5/high turn, the plumbed `/model` command, and the owner's
+# "continue". Counted by hand: one substantive owner row, one driver, 550 whole minutes.
+FACTS_ROWS = [
+    r"""{"parentUuid":"4a909478-c780-41dd-a505-2719f27bdeac","isSidechain":false,"message":{"model":"claude-fable-5","id":"msg_011CdLvG4KmTAnmjATe6XkEc","type":"message","role":"assistant","content":[{"type":"text","text":"I'll start by loading the refactor_procedure skill and searching memory for refactoring/submodule gotchas."}],"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":45495,"cache_read_input_tokens":28034,"output_tokens":531,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":45495,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":531,"cache_read_input_tokens":28034,"cache_creation_input_tokens":45495,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":45495},"type":"message"}],"speed":"standard"},"diagnostics":null},"requestId":"req_011CdLvG2PgoMfUftcMQhMDU","type":"assistant","uuid":"9a673795-bfbb-43ec-9cfe-1c157feaab00","timestamp":"2026-07-24T12:56:26.916Z","effort":"high","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\Users\\dev\\work\\project","sessionId":"0db74049-9379-4d61-94b6-18b6bef3ba46","version":"2.1.217","gitBranch":"main"}""",
+    r"""{"parentUuid":"bc754e63-8da4-4103-b5eb-624d4e0f9f2f","isSidechain":false,"promptId":"b2851b5a-fc43-4230-8bb5-81b3358a9e91","type":"user","message":{"role":"user","content":"<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-opus-5</command-args>"},"uuid":"91b4192a-070f-4e6d-b27b-6351811bdb2f","timestamp":"2026-07-24T22:06:47.255Z","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\Users\\dev\\work\\project","sessionId":"0db74049-9379-4d61-94b6-18b6bef3ba46","version":"2.1.219","gitBranch":"main"}""",
+    r"""{"parentUuid":"14cfc194-78b3-4611-abbd-c706e0f6f966","isSidechain":false,"promptId":"b2851b5a-fc43-4230-8bb5-81b3358a9e91","type":"user","message":{"role":"user","content":"continue"},"uuid":"9c0f90a3-e1df-47dd-8f42-e5ebed841f03","timestamp":"2026-07-24T22:06:51.736Z","permissionMode":"auto","origin":{"kind":"human"},"promptSource":"sdk","userType":"external","entrypoint":"claude-desktop","cwd":"C:\\Users\\dev\\work\\project","sessionId":"0db74049-9379-4d61-94b6-18b6bef3ba46","version":"2.1.219","gitBranch":"main"}""",
+]
+
+DERIVED_FACTS = {"driver": {"model": "claude-fable-5", "effort": "high"},
+                 "owner_prompts": 1, "duration_min": 550}
+
+
 def entry(session_id, title, outcome="clean", pattern=None):
     return {
         "session_id": session_id,
@@ -44,7 +57,8 @@ def main():
     archive = os.path.join(root, "self_evaluate_archive.json")
     legacy = {
         "description": "fixture",
-        "Self_Evaluate_Themes": {"patterns": {"A": "fixture"}},
+        "Self_Evaluate_Themes": {"patterns": {"A": "fixture", "B": "fixture", "D": "fixture",
+                                              "E": "fixture"}},
         "legacy_entries": ["legacy clean"],
         "structured_entries": [dict(entry("old-session", "old"), id=7)],
     }
@@ -159,7 +173,9 @@ def main():
 
     original_cap = store.ARCHIVE_MAX_BYTES
     original_rotations = store.ARCHIVE_MAX_ROTATIONS
-    store.ARCHIVE_MAX_BYTES = 700
+    # 900, not 700: a row now carries its store-derived `facts` (~280 B for these fixtures), and
+    # the case asserts the cap holds, not a particular row size.
+    store.ARCHIVE_MAX_BYTES = 900
     store.ARCHIVE_MAX_ROTATIONS = 2
     try:
         for index in range(8):
@@ -167,7 +183,7 @@ def main():
         paths = independent_ledger_paths(archive)
         cases.append(("ledger rotation stays within the file-count and byte caps",
                       len(paths) <= original_rotations + 1
-                      and all(os.path.getsize(path) <= 700 for path in paths)))
+                      and all(os.path.getsize(path) <= 900 for path in paths)))
         before_paths = independent_ledger_paths(archive)
         before = {path: open(path, "rb").read() for path in before_paths}
         try:
@@ -271,6 +287,107 @@ def main():
     cases.append(("cross-process writers publish every row without duplicate ids",
                   all(result[2] == 0 for result in results) and len(concurrent) == 8
                   and len({row.get("id") for row in concurrent}) == 8))
+
+    # `facts` is store-derived: the entry's own value is discarded, a missing transcript becomes a
+    # stated reason and never a silent zero, and --refresh-facts re-derives through the store's own
+    # cwd lookup. The derived numbers are counted from FACTS_ROWS by hand, not read back from it.
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import session_digest
+    facts_config = os.path.join(root, "facts-config")
+    facts_repo = os.path.join(root, "facts-repo")
+    os.makedirs(facts_repo, exist_ok=True)
+    previous_config = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = facts_config
+    try:
+        projects = session_digest.projects_dir(facts_repo)
+        os.makedirs(projects, exist_ok=True)
+        with open(os.path.join(projects, "facts-session.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write("\n".join(FACTS_ROWS) + "\n")
+        facts_archive = os.path.join(root, "facts_archive.json")
+        with open(facts_archive, "w", encoding="utf-8") as handle:
+            json.dump(legacy, handle)
+        planted = dict(entry("facts-session", "filled"),
+                       facts={"driver": {"model": "planted-lie", "effort": "max"},
+                              "owner_prompts": 999, "duration_min": 1})
+        try:
+            filled = store.upsert_entry(facts_archive, planted, projects_root=projects)["facts"]
+        except TypeError as exc:
+            filled = "upsert cannot derive facts: %s" % exc
+        cases.append(("upsert fills facts from the transcript and discards the entry's own",
+                      filled == DERIVED_FACTS))
+        try:
+            absent = store.upsert_entry(facts_archive, entry("no-transcript", "absent"),
+                                        projects_root=projects)["facts"]
+        except TypeError as exc:
+            absent = "upsert cannot derive facts: %s" % exc
+        cases.append(("a session with no transcript publishes a stated unavailable reason",
+                      isinstance(absent, dict) and set(absent) == {"unavailable"}
+                      and isinstance(absent["unavailable"], str) and absent["unavailable"].strip()))
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=facts_config)
+        refreshed = subprocess.run(
+            [sys.executable, STORE_PATH, "--archive", facts_archive,
+             "--refresh-facts", "facts-session"],
+            cwd=facts_repo, env=env, capture_output=True, text=True, timeout=120)
+        cases.append(("CLI --refresh-facts re-derives an existing row in place",
+                      refreshed.returncode == 0
+                      and json.loads(refreshed.stdout or "{}").get("facts") == DERIVED_FACTS))
+        missing = subprocess.run(
+            [sys.executable, STORE_PATH, "--archive", facts_archive,
+             "--refresh-facts", "absent-session"],
+            cwd=facts_repo, env=env, capture_output=True, text=True, timeout=120)
+        cases.append(("CLI --refresh-facts keeps an absent row distinct from a refusal",
+                      missing.returncode == 1 and not missing.stdout.strip()
+                      and not missing.stderr.strip()))
+    finally:
+        if previous_config is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = previous_config
+
+    # S4: a cause A without a not-followed/not-read rule_miss is a store WARN, never a refusal;
+    # causes B/D/E only and a rule path that exists are silent; a rule path that is not under the
+    # repo root is a WARN. The anchor row holds id 316 (= the landing RULE_FIELDS_MIN_ID), so each
+    # new row lands above the cutoff where the coupling and the path check bind.
+    warn_archive = os.path.join(root, "warn_archive.json")
+    with open(warn_archive, "w", encoding="utf-8") as handle:
+        json.dump(legacy, handle)
+    with open(store.ledger_path(warn_archive), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"id": 316, "session_id": "anchor-316", "outcome": "clean",
+                                 "pattern": "A", "spend": {"unavailable": "fixture"}}) + "\n")
+
+    def upsert_cli(candidate, name):
+        path = os.path.join(root, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(candidate, handle)
+        return subprocess.run(
+            [sys.executable, STORE_PATH, "--archive", warn_archive, "--upsert", path],
+            capture_output=True, text=True, timeout=120)
+
+    cause_a = upsert_cli(dict(entry("warn-a", "cause a", "correction", "A"),
+                              corrections=["missed a rule"], cause_counts={"A": 1},
+                              spend={"unavailable": "fixture"}), "warn-a.json")
+    cases.append(("a cause A without a rule_miss is a store WARN, never a refusal",
+                  cause_a.returncode == 0 and "WARN" in cause_a.stderr
+                  and json.loads(cause_a.stdout or "{}").get("id") == 317))
+    cause_b = upsert_cli(dict(entry("warn-b", "cause b", "correction", "B"),
+                              corrections=["missed a rule"], cause_counts={"B": 1},
+                              spend={"unavailable": "fixture"}), "warn-b.json")
+    cases.append(("causes B/D/E only are never warned at",
+                  cause_b.returncode == 0 and "WARN" not in cause_b.stderr))
+    missing_rule = upsert_cli(dict(entry("warn-c", "missing rule", "correction", "B"),
+                                   spend={"unavailable": "fixture"},
+                                   rule_misses=[{"rule": "no/such/rule.md", "kind": "not-read",
+                                                 "evidence": "no/such/rule.md was never opened"}]),
+                              "warn-c.json")
+    cases.append(("a rule_miss path that is not under the repo root is a store WARN",
+                  missing_rule.returncode == 0 and "WARN" in missing_rule.stderr))
+    present_rule = upsert_cli(dict(entry("warn-d", "present rule", "correction", "B"),
+                                   spend={"unavailable": "fixture"},
+                                   rule_misses=[{"rule": ".claude/CLAUDE.md", "kind": "not-followed",
+                                                 "evidence": "U1"}]), "warn-d.json")
+    cases.append(("a rule_miss path that exists is silent",
+                  present_rule.returncode == 0 and "WARN" not in present_rule.stderr
+                  and json.loads(present_rule.stdout or "{}").get("id") == 320))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

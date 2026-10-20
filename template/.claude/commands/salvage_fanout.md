@@ -1,6 +1,6 @@
 ---
 allowed-tools: Read, Grep, Glob, Write, Bash, SlashCommand, Workflow
-description: Recover one failed fan-out lens from its engine receipt without repeating completed work.
+description: Recover a failed fan-out lens
 ---
 
 # /salvage_fanout — transient lens recovery
@@ -40,8 +40,8 @@ path from the run receipt plus validated journal; the journal alone does not car
    report **still running** and wait for the harness notification. For a sidecar, also require its `.exit`/record and process-state answer. For a manual Agent,
    require the harness task's terminal notification.
 3. **Recover a completed payload.** Prefer the exact engine-reported spill path, then the final payload in the
-   transcript. Validate against the resolved schema: the exploration kind uses `claims`, `review` uses `findings`, and
-   `dispatch` uses its free-form job result. Write a recovered result only to the engine-reported
+   transcript. Validate against the resolved schema: the exploration kind uses `claims` (per-lens journal row, engine-reported spill sanitizer), `review` uses `findings` (preserve every source finding), and
+   `dispatch` uses its free-form job result (exact spill/digest metadata, the engine's PINS and terminal row). Never infer a result from a missing structured return; consolidation never turns a missing lens into a clean panel. Write a recovered result only to the engine-reported
    `<spillDir>/<sanitized-key>.salvaged.md` path, with the run ID, journal hash, source path, and lens key.
    A spill or payload is **recovered**, not verified; recheck every empirical claim first-party before using it.
 4. **Handle a transient reset.** If the receipt contains a real resumable session ID and that transport
@@ -50,23 +50,11 @@ path from the run receipt plus validated journal; the journal alone does not car
    Workflow child, or a missing session receipt, may use parent reconstruction only when the transcript has
    a complete tool-result for every started tool call and the mandate's required inputs/search roots show
    engagement. Recheck each reconstructed empirical claim first-party and write `.salvaged.md`.
-5. **Recover incomplete evidence once.** If complete tool results or mandate engagement are missing, do one
-   failed-lens-only dispatch over the named missing scope. First compose `orchestration` §0, §5, and §11 into
-   a **Dispatch Topology Receipt**; record its pre-dispatch half and compare the post-journal/PINS half after
+5. **Recover incomplete evidence.** If complete tool results or mandate engagement are missing, run a failed-lens-only dispatch over the named missing scope; a recovery that leaves the evidence incomplete is spine H5 non-convergence, not another dispatch. Announce the dispatch in the one line `orchestration` §Pre-Dispatch Checklist names, record it as a task-record job row (`task_record.py job`), and compare the journal's PINS rows with the announcement after
    return. Do not redispatch a completed lens or the whole panel.
 6. **Return the typed ledger.** Emit exactly one row for the selected lens with state `recovered`, `uncovered`,
    or `redispatched`, the evidence path and verification status. Always emit `accounted lenses N/N`; until
    N/N the panel remains **UNCOVERED**. A salvaged row stays uncovered until its first-party checks pass.
-
-## Engine-specific receipts
-
-- **Exploration workflow (the coding layer's engine):** use the manifest's claims schema, per-lens journal row, and engine-reported spill
-  sanitizer. Do not infer a result from a missing structured return.
-- **Workflow `review`:** use the findings schema and preserve every source finding; consolidation never turns
-  a missing lens into a clean panel.
-- **Workflow `dispatch`:** use the job's free-form result and its exact spill/digest metadata; honor the
-  engine's PINS and terminal row.
-- **Sidecar or manual Agent/session:** a documented real session ID may resume.
 
 ## Output contract
 

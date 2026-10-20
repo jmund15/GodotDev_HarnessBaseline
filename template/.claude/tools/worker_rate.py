@@ -23,8 +23,8 @@ it says rather than rendering an empty section.
   worker_rate.py show <ts> [--full]
   worker_rate.py rate <outcome> --anchor "<claim> | <file:line>" --derivation LEVEL
                                 [--note TEXT] [--ts TS]
-  worker_rate.py report [--since YYYY-MM-DD]
-  worker_rate.py unrated [--since YYYY-MM-DD] [--breadth narrow|wide] [--with-artifact]
+  worker_rate.py report [--since YYYY-MM-DD] [--server-sha SHA]
+  worker_rate.py unrated [--since YYYY-MM-DD] [--server-sha SHA] [--breadth narrow|wide] [--with-artifact]
 
 A verdict also carries WHERE it was taken. `breadth` is computed from the ledger row;
 `derivation` is rated, because no field can say whether the answer was copied or inferred.
@@ -41,6 +41,11 @@ Outcomes separate the two quality failures that matter:
 `fabricated` is the one that must never be silent: it is the only outcome that makes downstream
 work wrong rather than merely thin.
 """
+
+import sys as _cli_usage_sys
+from pathlib import Path as _cli_usage_path
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+from cli_usage import usage
 
 import argparse
 import collections
@@ -166,6 +171,51 @@ def find_row(rows, ts):
     return None
 
 
+_OUTCOME_RANK = {"fabricated": 3, "incomplete": 2, "unusable": 1, "faithful": 0}
+
+
+def collapse_repeats(rows):
+    """One row per (tool, call_key, server_sha), carrying the worst rating among its repeats.
+
+    Identical probes re-run against one worker are one observation; counting each inflates a
+    grid cell. A row with no call_key or no server_sha is never merged: an unknown worker or
+    request is not evidence of the same one. `repeats` records how many calls a row stands for.
+    """
+    groups, out = {}, []
+    for r in rows:
+        key = (r.get("tool"), r.get("call_key"), r.get("server_sha"))
+        if key[1] is None or key[2] is None:
+            out.append({**r, "repeats": 1})
+            continue
+        groups.setdefault(key, []).append(r)
+    for members in groups.values():
+        rated = [m for m in members if m.get("outcome")]
+        pick = max(rated, key=lambda m: _OUTCOME_RANK.get(m["outcome"], -1)) if rated else members[0]
+        out.append({**pick, "repeats": len(members)})
+    return sorted(out, key=lambda r: r.get("ts") or "")
+
+
+def filter_server_sha(rows, prefix):
+    return [r for r in rows if (r.get("server_sha") or "").startswith(prefix)] if prefix else rows
+
+
+def is_partial(r):
+    """Fewer paths discussed than handed over. Undefined for one path: a correct answer that
+    returns a bare value never names the file, so 0/1 reads as a miss it is not."""
+    cov, req = r.get("paths_covered"), r.get("paths_requested")
+    return cov is not None and bool(req) and req > 1 and cov < req
+
+
+def unusable_warning(r):
+    """Why `unusable` may be wrong for this row, or None. Output that is readable and not
+    degenerate is checkable on its prefix even when truncated."""
+    if r.get("error") or r.get("degenerate") or not r.get("chars"):
+        return None
+    return (f"this row has {r['chars']} chars of non-degenerate output"
+            + (" (truncated)" if r.get("truncated") else "")
+            + "; open it with `show` and rate what is checkable. `unusable` means nothing was.")
+
+
 def cmd_rate(args):
     if args.outcome in FIDELITY and not args.anchor:
         print(f"'{args.outcome}' is a fidelity verdict and needs --anchor: the claim you "
@@ -208,6 +258,11 @@ def cmd_rate(args):
         print("no matching ledger row", file=sys.stderr)
         return 2
 
+    if args.outcome == "unusable":
+        warning = unusable_warning(target)
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
+
     RATINGS.parent.mkdir(parents=True, exist_ok=True)
     with RATINGS.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({
@@ -230,7 +285,7 @@ def cmd_rate(args):
 
 
 def cmd_report(args):
-    rows = load_joined(args.since)
+    rows = collapse_repeats(filter_server_sha(load_joined(args.since), args.server_sha))
     if not rows:
         print("no calls in range")
         return 0
@@ -252,8 +307,7 @@ def cmd_report(args):
         a[r["outcome"] or "UNRATED"] += 1
         # Mechanical recall miss: fewer files discussed than were handed over. No
         # judgment involved, and no other flag detects it.
-        cov, req = r.get("paths_covered"), r.get("paths_requested")
-        if cov is not None and req and cov < req:
+        if is_partial(r):
             a["partial"] += 1
         if r.get("latency_ms"):
             lat[key].append(r["latency_ms"])
@@ -380,10 +434,12 @@ def cmd_show(args):
               f"resident={gb} @ ctx {hit.get('resident_ctx')} (measured)")
     print(f"flags     truncated={hit.get('truncated')} degenerate={hit.get('degenerate')} "
           f"error={'YES' if hit.get('error') else '-'}")
+    print(f"server    {hit.get('server_sha') or 'unrecorded (predates server_sha)'}")
     cov = hit.get("paths_covered")
     if cov is not None:
         req = hit.get("paths_requested")
-        print(f"coverage  {cov}/{req}" + ("   <-- PARTIAL" if cov < req else ""))
+        print(f"coverage  {cov}/{req}" + ("   <-- PARTIAL" if is_partial(hit) else
+              "   (single path: not a coverage signal)" if req == 1 and cov < req else ""))
     if hit.get("numerics_added"):
         print(f"numerics  {hit['numerics_added']} number(s) in the output absent from spec/references: "
               f"{hit.get('numerics_added_sample')}   <-- check each before trusting the doc")
@@ -427,7 +483,8 @@ def cmd_show(args):
 
 
 def cmd_unrated(args):
-    rows = [r for r in load_joined(args.since) if not r["outcome"]]
+    rows = [r for r in filter_server_sha(load_joined(args.since), args.server_sha)
+            if not r["outcome"]]
     if args.breadth:
         # Targeting a band is how an empty grid cell gets filled on purpose. Without this
         # the sample follows whatever traffic happened to occur, which is how a whole
@@ -436,7 +493,7 @@ def cmd_unrated(args):
     if args.with_artifact:
         rows = [r for r in rows if r.get("artifact")]
     if not rows:
-        print("nothing unrated matches" if (args.breadth or args.with_artifact)
+        print("nothing unrated matches" if (args.breadth or args.with_artifact or args.server_sha)
               else "everything in range is rated")
         return 0
     for r in rows:
@@ -448,7 +505,8 @@ def cmd_unrated(args):
         art = "" if r.get("artifact") else "  NO-ARTIFACT"
         print(f"{r.get('ts','?')[:26]}  {str(r.get('tool')):14s} "
               f"{r['breadth']:<7s} files={str(r.get('paths_requested') or '-'):>3s} "
-              f"chars={str(r.get('chars')):>6s}  flags={flags:<14s} {err}{art}")
+              f"chars={str(r.get('chars')):>6s}  flags={flags:<14s} {err}{art}"
+              f"  srv={(r.get('server_sha') or '-')[:7]}")
     print(f"\n{len(rows)} unrated")
     return 0
 
@@ -463,7 +521,7 @@ def main():
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:  # noqa: BLE001 - a stream without reconfigure is not worth failing over
             pass
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(description=usage(__doc__),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -487,10 +545,12 @@ def main():
 
     p = sub.add_parser("report", help="mechanical flags and rated outcomes, by tool+model")
     p.add_argument("--since", help="YYYY-MM-DD")
+    p.add_argument("--server-sha", help="only calls served by an ai-worker at this commit prefix")
     p.set_defaults(fn=cmd_report)
 
     p = sub.add_parser("unrated", help="calls still awaiting a verdict")
     p.add_argument("--since", help="YYYY-MM-DD")
+    p.add_argument("--server-sha", help="only calls served by an ai-worker at this commit prefix")
     p.add_argument("--breadth", choices=BREADTHS + ("?",),
                    help="only calls in one breadth band — use it to fill an empty grid cell")
     p.add_argument("--with-artifact", action="store_true",

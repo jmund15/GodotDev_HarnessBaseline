@@ -11,21 +11,37 @@ Presentation modes are deliberately separate:
       transcript parity; use --select/--evidence-page for exact machine evidence.
 
 All modes preserve the full JSON and evidence index before presentation. Workflow --workflow-full
-is a separate, hash-checked result operation and cannot be mixed with transcript presentation.
+is a separate, hash-checked result operation and cannot be mixed with transcript presentation. It
+prints the run's full processed result from the local replay (tools/workflow_replay.mjs, `source`
+"replay"); when the replay cannot reproduce the run it prints the archive pages instead (`source`
+"archive") with `replayGap` naming why, since the pages hold raw sources but no engine-derived field.
 """
+
+import sys as _cli_usage_sys
+from pathlib import Path as _cli_usage_path
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+from cli_usage import usage
+from model_registry import login_dirs
 import argparse
 import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
-from _transcript_summary import TranscriptSummaryBuilder  # noqa: E402
+from _transcript_summary import TranscriptSummaryBuilder, owner_line  # noqa: E402
 from _owner_text import classify, meta_arguments  # noqa: E402
+import _owner_text  # noqa: E402
+import _transcript_scan  # noqa: E402
+import _transcript_summary  # noqa: E402
+import review_result  # noqa: E402  -- the one `path:line` rule for a journal finding
 
 BRIEF_MAX_BYTES = 2_048
 HANDOFF_MAX_BYTES = 16_384
@@ -49,12 +65,12 @@ _SUBSTANTIVE_SLASH_RE = re.compile(r"/[\w:.-]+$")
 def is_substantive_owner_prompt(message: dict) -> bool:
     """Return the shared owner-row policy used by digest selection and compact recovery.
 
-    Interrupts, bare slash commands and client controls are session mechanics. Argument-bearing
-    feature commands and `/effort <level>` remain owner evidence even though the transcript shape
-    cannot prove whether a recovered command argument was typed or model-invoked.
+    Interrupts, bare slash commands, client controls and the arguments of a model-issued `Skill`
+    call (`issuer: model`) are not owner prompts. Argument-bearing feature commands and
+    `/effort <level>` remain owner evidence.
     """
     content = (message.get("content") or "").strip() if isinstance(message, dict) else ""
-    if not content or "interrupt" in (message.get("signals") or []):
+    if not content or "interrupt" in (message.get("signals") or []) or message.get("issuer") == "model":
         return False
     if content.startswith("(command) "):
         content = content[len("(command) "):].lstrip()
@@ -67,7 +83,47 @@ def is_substantive_owner_prompt(message: dict) -> bool:
 
 
 def projects_dir(cwd: str) -> Path:
-    return Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    """The transcript folder for `cwd` under the session's config dir (`CLAUDE_CONFIG_DIR`, a second
+    account's store; default `~/.claude`)."""
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    root = Path(os.path.expanduser(config)) if config else Path.home() / ".claude"
+    return root / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def project_dirs(cwd: str) -> list[Path]:
+    """The transcript folders of every checkout of `cwd`'s repository: `cwd` first, then the main
+    checkout and each linked worktree from `git worktree list`, which prints one set from any of them.
+
+    Claude Code keys a session's store on the directory it was launched in, which a tool running from
+    another checkout cannot derive from its own path or cwd. A directory outside git has only its own."""
+    roots = [cwd]
+    try:
+        listing = subprocess.run(["git", "-C", cwd, "worktree", "list", "--porcelain"], capture_output=True,
+                                 text=True, encoding="utf-8", timeout=15, check=True).stdout
+        roots += [line[len("worktree "):].strip() for line in listing.splitlines() if line.startswith("worktree ")]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    stores = []
+    for root in roots:
+        store = projects_dir(root)
+        if store not in stores:
+            stores.append(store)
+    return stores
+
+
+def sibling_stores(pdir: Path, cwd: str | None = None) -> list[Path]:
+    """`pdir` and, when it is a store of the repo at `cwd` (default the process cwd), the stores of that
+    repo's other checkouts. A store of any other project stands alone."""
+    stores = project_dirs(cwd or os.getcwd())
+    return [pdir] + [store for store in stores if store != pdir] if pdir in stores else [pdir]
+
+
+def session_store(cwd: str, session: str | None = None) -> Path:
+    """The folder holding `session` (default: this session, `CLAUDE_CODE_SESSION_ID`) among the stores
+    of `cwd`'s checkouts; `cwd`'s own when no store holds it."""
+    session = session or (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    stores = project_dirs(cwd)
+    return next((store for store in stores if session and (store / f"{session}.jsonl").is_file()), stores[0])
 
 
 def _rows(path: Path, kind: str, include_sidechain: bool = False):
@@ -121,8 +177,8 @@ def last_assistant_text(path: Path, min_len: int = 40) -> str:
 
 
 def recover_meta_command_prompts(path: Path) -> list[dict]:
-    """Slash-command turns `_transcript_summary.py` drops as `isMeta` that still carry real
-    user-typed text after `ARGUMENTS:`.
+    """Slash-command turns `_transcript_summary.py` drops as `isMeta` that still carry text after
+    `ARGUMENTS:`.
 
     `TranscriptSummaryBuilder._process_user_message` returns on `isMeta` before ever checking for
     that trailing argument text, so a command invoked WITH arguments is as invisible as the static
@@ -131,29 +187,42 @@ def recover_meta_command_prompts(path: Path) -> list[dict]:
     scan reporting 6 prompts where the owner typed 7. Recovered here rather than in
     `_transcript_summary.py`, which `kill_guard.py`/`transcript_backup.py`/`ladder_ingest.py` also
     read unchanged.
+
+    `issuer` is `model` when the row carries `sourceToolUseID` (the body a model `Skill` call
+    leaves), else `owner`: a typed command's body row carries none.
     """
     recovered = []
     with open(path, encoding="utf-8") as fh:
-        for i, line in enumerate(fh):
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(entry, dict) or entry.get("type") != "user":
-                continue
-            row = classify(entry, i + 1, raw=line)
-            if row is None or not row.meta or row.sidechain:
-                continue
-            for text in row.blocks:
-                found = meta_arguments(text)
-                if not found:
-                    continue  # a static skill/command body with no typed argument stays excluded
-                label, goal = found
-                recovered.append({
-                    "index": i + 1, "timestamp": entry.get("timestamp"),
-                    "content": f"{label} {goal}", "signals": [], "matched_patterns": [],
-                    "recovered": "command_arguments",
-                })
+        for i, line in enumerate(fh, 1):
+            recovered += _meta_command_rows(line, i)
+    return recovered
+
+
+def _meta_command_rows(line: str, index: int) -> list[dict]:
+    """`recover_meta_command_prompts` for one transcript line."""
+    if "ARGUMENTS:" not in line:  # `meta_arguments` needs that literal; JSON never escapes it
+        return []
+    try:
+        entry = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(entry, dict) or entry.get("type") != "user":
+        return []
+    row = classify(entry, index, raw=line)
+    if row is None or not row.meta or row.sidechain:
+        return []
+    recovered = []
+    for text in row.blocks:
+        found = meta_arguments(text)
+        if not found:
+            continue  # a static skill/command body with no typed argument stays excluded
+        label, goal = found
+        recovered.append({
+            "index": index, "timestamp": entry.get("timestamp"),
+            "content": f"{label} {goal}", "signals": [], "matched_patterns": [],
+            "recovered": "command_arguments",
+            "issuer": "model" if entry.get("sourceToolUseID") else "owner",
+        })
     return recovered
 
 
@@ -165,36 +234,43 @@ def recover_question_answers(path: Path) -> list[dict]:
     3259384b: the closeout decisions arrived only as answers). Errored and sidechain rows are not
     answers.
     """
-    asked, recovered = set(), []
+    asked, recovered = {}, []
     with open(path, encoding="utf-8") as fh:
-        for i, line in enumerate(fh):
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(entry, dict) or entry.get("isSidechain"):
-                continue
-            message = entry.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if entry.get("type") == "assistant" and block.get("type") == "tool_use" \
-                        and block.get("name") == "AskUserQuestion" and block.get("id"):
-                    asked.add(block["id"])
-            if entry.get("type") != "user":
-                continue
-            row = classify(entry, i + 1, raw=line)
-            for tool_use_id, text, is_error in (row.tool_results if row else ()):
-                if tool_use_id and tool_use_id in asked and not is_error and text.strip():
-                    recovered.append({
-                        "index": i + 1, "timestamp": entry.get("timestamp"),
-                        "content": f"(answer) {text.strip()}", "signals": [], "matched_patterns": [],
-                        "recovered": "question_answer",
-                    })
+        for i, line in enumerate(fh, 1):
+            recovered += _answer_rows(line, i, asked)
     return recovered
+
+
+def _answer_rows(line: str, index: int, asked: dict) -> list[dict]:
+    """`recover_question_answers` for one transcript line; `asked` holds the AskUserQuestion tool_use
+    ids seen so far (as keys) and gains this line's."""
+    # A row matters when it asks (names the tool) or answers (names an asked tool_use id).
+    if "AskUserQuestion" not in line and not any(tool_id in line for tool_id in asked):
+        return []
+    try:
+        entry = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(entry, dict) or entry.get("isSidechain"):
+        return []
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if entry.get("type") == "assistant" and block.get("type") == "tool_use" \
+                and block.get("name") == "AskUserQuestion" and block.get("id"):
+            asked[block["id"]] = True
+    if entry.get("type") != "user":
+        return []
+    row = classify(entry, index, raw=line)
+    return [{"index": index, "timestamp": entry.get("timestamp"),
+             "content": f"(answer) {text.strip()}", "signals": [], "matched_patterns": [],
+             "recovered": "question_answer"}
+            for tool_use_id, text, is_error in (row.tool_results if row else ())
+            if tool_use_id and tool_use_id in asked and not is_error and text.strip()]
 
 
 def merge_recovered_prompts(user_messages: list[dict], recovered: list[dict]) -> list[dict]:
@@ -224,16 +300,76 @@ def merge_recovered_prompts(user_messages: list[dict], recovered: list[dict]) ->
     return merged
 
 
-def owner_prompts(path: Path) -> list[dict]:
-    """Every owner message in transcript order: typed prompts, command arguments and question
-    answers. The one definition this digest and hooks/compact_directive_anchor.py both read."""
+def _digest_dict(path: Path) -> dict:
+    """The full builder dictionary for one transcript (`full_evidence`, so no collection is cut to
+    a preview). The digest header and `session_facts` both read it."""
     b = TranscriptSummaryBuilder(path.stem, str(path), full_evidence=True)
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             b.process_line(line)
-    d = b.finalize(backup_limits=False)
-    return merge_recovered_prompts(d.get("user_messages") or [],
-                                   recover_meta_command_prompts(path) + recover_question_answers(path))
+    return b.finalize(backup_limits=False)
+
+
+def _owner_feed(state: dict, index: int, line: str) -> None:
+    found = owner_line(line, index, full_evidence=True)
+    if found is not None and found[0] != "compaction":
+        state["messages"].append(found[1])
+    state["meta"] += _meta_command_rows(line, index)
+    state["answers"] += _answer_rows(line, index, state["asked"])
+
+
+OWNER_SCAN = _transcript_scan.Scanner(
+    "owner_prompts", lambda: {"messages": [], "meta": [], "answers": [], "asked": {}}, _owner_feed,
+    sources=[__file__, _transcript_summary.__file__, _owner_text.__file__])
+
+
+def owner_prompts(path: Path) -> list[dict]:
+    """Every owner message in transcript order: typed prompts, command arguments and question
+    answers. The one definition this digest and hooks/compact_directive_anchor.py both read. One pass
+    folds the builder's user messages and both recover passes, resumed from the transcript scan cache
+    (hooks/_transcript_scan.py); the result equals `merge_recovered_prompts` over the three cold passes."""
+    state = _transcript_scan.scan(path, OWNER_SCAN)
+    return merge_recovered_prompts(state["messages"], state["meta"] + state["answers"])
+
+
+SYNTHETIC_MODEL = "<synthetic>"
+
+
+def session_facts(path: Path) -> dict:
+    """The store-derived facts a self-evaluation row carries (`facts`, /self_evaluate §5d).
+
+    The store derives them rather than the model, so the reader has one definition of the
+    denominator and of the session's cell:
+
+    * `driver` — the `(model, effort)` pair with the most assistant turns. A `<synthetic>` turn is
+      client-generated with no model, and a sidechain turn is a subagent's, not this session's, so
+      neither is a driver. `driver_mixed` marks a session that spans more than one pair.
+    * `owner_prompts` — the shared owner-row predicate over the merged owner rows, the same list
+      `owner_prompts()` returns: harness plumbing and a bare control command are not owner prompts.
+    * `duration_min` — the digest header's `(duration_seconds or 0) // 60`, whole minutes.
+    """
+    path = Path(path)
+    d = _digest_dict(path)
+    messages = owner_prompts(path)
+    turns: dict = {}
+    for row in _rows(path, "assistant"):
+        model = (row.get("message") or {}).get("model")
+        if not isinstance(model, str) or not model.strip() or model == SYNTHETIC_MODEL:
+            continue
+        effort = row.get("effort")
+        if not isinstance(effort, str) or not effort.strip():
+            effort = None
+        turns[(model, effort)] = turns.get((model, effort), 0) + 1
+    ranked = sorted(turns.items(), key=lambda item: (-item[1], item[0][0], item[0][1] or ""))
+    model, effort = ranked[0][0] if ranked else (None, None)
+    facts = {
+        "driver": {"model": model, "effort": effort},
+        "owner_prompts": sum(1 for message in messages if is_substantive_owner_prompt(message)),
+        "duration_min": (d["metadata"]["duration_seconds"] or 0) // 60,
+    }
+    if len(turns) > 1:
+        facts["driver_mixed"] = True
+    return facts
 
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{4,}")
@@ -306,16 +442,38 @@ def list_sessions(pdir: Path, n: int) -> str:
     return "\n".join(out)
 
 
-def pick_transcript(pdir: Path, session: str | None, prompt_tail: str | None, previous: bool = False) -> Path:
-    """Use exact ownership; discovery modes never silently resolve ambiguous matches."""
+def _login_roots():
+    """Every login (config) dir the registry declares (`model_registry.login_dirs`) that exists."""
+    return [Path(p) for p in login_dirs() if Path(p).is_dir()]
+
+
+def _session_hits(files, session):
+    exact = [path for path in files if path.stem == session]
+    return exact or [path for path in files if path.stem.startswith(session)]
+
+
+def pick_transcript(pdir: Path, session: str | None, prompt_tail: str | None, previous: bool = False,
+                    cwd: str | None = None) -> Path:
+    """Use exact ownership; discovery modes never silently resolve ambiguous matches. An explicit
+    `session` with no match in `pdir` resolves in the same store of another login, or in the store of
+    another checkout of the repo `pdir` belongs to (found from `cwd`, default the process cwd), when
+    exactly one transcript there matches."""
     files = sorted(pdir.glob('*.jsonl'), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not files:
+    if not files and not session:
         sys.exit(f'no transcripts under {pdir}')
     if session:
-        exact = [path for path in files if path.stem == session]
-        hits = exact or [path for path in files if path.stem.startswith(session)]
+        hits = _session_hits(files, session)
+        if hits:
+            if len(hits) != 1:
+                sys.exit(f'{len(hits)} transcripts match {session!r}; pass an exact session id')
+            return hits[0]
+        others = [root / "projects" / store.name for root in _login_roots() for store in sibling_stores(pdir, cwd)]
+        others = [d for d in others if d.is_dir() and d.resolve() != pdir.resolve()]
+        hits = [h for d in others for h in _session_hits(sorted(d.glob('*.jsonl')), session)]
         if len(hits) != 1:
-            sys.exit(f'{len(hits)} transcripts match {session!r}; pass an exact session id')
+            stores = ", ".join(str(d) for d in [pdir, *others])
+            sys.exit(f'{len(hits)} transcripts match {session!r} under {stores}; pass an exact session id')
+        print(f'session {hits[0].stem} found in another login or checkout store: {hits[0].parent}', file=sys.stderr)
         return hits[0]
     if previous:
         active = (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
@@ -419,8 +577,7 @@ def build_evidence_index(d: dict) -> dict:
             "id": _evidence_id("U", row), "timestamp": row.get("timestamp"),
             "signals": row.get("signals") or [], "chars": len(content),
             "excerpt": clip(" ".join(content.split()), 160),
-            "attribution": ("unattributed" if row.get("recovered") == "command_arguments"
-                            else "owner"),
+            "attribution": _mode_row_attribution(row),
         })
     friction = []
     for row in d.get("friction") or []:
@@ -481,28 +638,6 @@ def _workflow_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _valid_review_finding(value: object) -> bool:
-    if not _workflow_record(value):
-        return False
-    if not (_workflow_string(value.get("agent"))
-            and value.get("action") in ("FIX", "ASK", "PLAN")
-            and value.get("category") in ("bug", "rule", "improvement")
-            and _workflow_string(value.get("description"))
-            and _workflow_string(value.get("rationale"))):
-        return False
-    if "critical" in value and not isinstance(value["critical"], bool):
-        return False
-    for key in ("file", "old", "new", "question"):
-        if key in value and value[key] is not None and not isinstance(value[key], str):
-            return False
-    for key in ("options", "scope"):
-        member = value.get(key)
-        if key in value and member is not None:
-            if not isinstance(member, list) or not all(isinstance(item, str) for item in member):
-                return False
-    return True
-
-
 def _valid_explore_claim(value: object) -> bool:
     if not _workflow_record(value):
         return False
@@ -512,9 +647,10 @@ def _valid_explore_claim(value: object) -> bool:
             and value.get("bearing") in ("premise-contradiction", "reuse-candidate", "constraint",
                                           "blast-radius", "context")):
         return False
-    for key in ("evidence", "verification", "file"):
-        if key in value and value[key] is not None and not isinstance(value[key], str):
-            return False
+    if "file" in value and value["file"] is not None and not isinstance(value["file"], str):
+        return False
+    if "evidence" in value and value["evidence"] is not None and not isinstance(value["evidence"], (str, list)):
+        return False
     return "confidence" not in value or value["confidence"] in ("verified", "unverified")
 
 
@@ -532,17 +668,73 @@ def _workflow_lens(label: str) -> str:
 
 
 def _workflow_status(lenses: list[dict]) -> str:
-    unavailable = sum(row["status"] in ("failed", "uncovered") for row in lenses)
-    if unavailable == len(lenses):
+    seats = [row for row in lenses if row["role"] == "source"]
+    unavailable = sum(row["status"] in ("failed", "uncovered") for row in seats)
+    if unavailable == len(seats):
         return "failed"
     if unavailable:
         return "uncovered"
-    if any(row["status"] == "partial" for row in lenses):
+    if any(row["status"] == "partial" for row in seats):
         return "partial"
     return "completed"
 
 
-def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dict:
+def workflow_run_record(run_dir: Path) -> dict | None:
+    """The host's run record for a Workflow transcript directory (`<session>/workflows/<run>.json`), else None."""
+    try:
+        record = json.loads((Path(run_dir).parents[2] / "workflows" / f"{Path(run_dir).name}.json")
+                            .read_text(encoding="utf-8"))
+    except (OSError, ValueError, IndexError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _review_start_order(starts: list[dict], run_dir: Path, seat_order=None) -> tuple[list[dict], str]:
+    """Review sources in the engine's `args.agents` order: the run record's, else `seat_order` (the
+    launched seats the engine hands its in-run check, which runs before the record exists)."""
+    source_slots = [index for index, row in enumerate(starts) if row["phase"] == "Review"]
+    if not source_slots:
+        return starts, "start-order"
+    if len(source_slots) == 1:
+        return starts, "engine"
+    try:
+        agents = workflow_run_record(run_dir)["args"]["agents"]
+        keys = [row["key"] for row in agents]
+    except (KeyError, TypeError):
+        if not seat_order:
+            return starts, "start-order"
+        keys = list(seat_order)
+    if (not all(_workflow_string(key) for key in keys) or len(keys) != len(set(keys))
+            or len(keys) != len(source_slots)):
+        return starts, "start-order"
+    by_label = {starts[index]["label"]: starts[index] for index in source_slots}
+    ordered = [by_label.get(f"review:{key}") for key in keys]
+    if any(row is None for row in ordered) or len(by_label) != len(source_slots):
+        return starts, "start-order"
+    result = list(starts)
+    for index, row in zip(source_slots, ordered):
+        result[index] = row
+    return result, "engine"
+
+
+def _review_candidate_ids(items: list[dict]) -> set[str]:
+    seats_by_file: dict[str, set[str]] = {}
+    for item in items:
+        finding = item["finding"]
+        file_value = finding.get("file")
+        if not isinstance(file_value, str):
+            continue
+        path = re.sub(r":[0-9]+$", "", file_value.strip())
+        seats_by_file.setdefault(path, set()).add(item["label"])
+    shared_files = {path for path, seats in seats_by_file.items() if len(seats) >= 2}
+    return {
+        item["id"] for item in items
+        if isinstance(item["finding"].get("file"), str)
+        and re.sub(r":[0-9]+$", "", item["finding"]["file"].strip()) in shared_files
+    }
+
+
+def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str, *, root=None, verify=True, seat_order=None) -> dict:
     """Validate one exact Workflow journal and index its native result bodies."""
     if workflow_kind not in ("review", "explore"):
         raise ValueError("workflow kind must be review or explore")
@@ -620,7 +812,12 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
                       if (terminals.get((start["agentId"], key)) or {}).get("type") == "result"]
         starts.append(successful[-1] if successful else attempts[-1])
 
+    id_order = "start-order"
+    if workflow_kind == "review":
+        starts, id_order = _review_start_order(starts, run_dir, seat_order)
+
     items: list[dict] = []
+    entry_count = 0  # every returned entry takes an id by place, rejected or not, as review_fanout.js does
     lenses: list[dict] = []
     reports: list[dict] = []
     gaps: list[dict] = []
@@ -636,7 +833,10 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
         terminal = terminals.get(pair)
         label = start["label"]
         lens = _workflow_lens(label)
-        role = "auxiliary" if workflow_kind == "review" and label == "review:consolidate" else "source"
+        role = ("auxiliary" if workflow_kind == "review" and start["phase"] == "Merge"
+                else "stage" if start["phase"] == "Verify" or (
+                    workflow_kind == "review" and start["phase"] == "Fold")
+                else "source")
         coverage = {
             "agentId": start["agentId"], "key": start["key"], "label": label,
             "phase": start["phase"], "lens": lens, "role": role,
@@ -662,6 +862,11 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
             coverage["issues"].append("terminal result is not an object")
             coverage["rejected"] = 1
             rejected_total += 1
+            lenses.append(coverage)
+            continue
+
+        if role == "stage":
+            coverage["status"] = "completed"
             lenses.append(coverage)
             continue
 
@@ -703,10 +908,13 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
                 continue
             item_rejected = 0
             for index, finding in enumerate(source_rows):
-                if not _valid_review_finding(finding):
+                entry_count += 1
+                problem = review_result.finding_problem(finding)
+                if problem:
                     item_rejected += 1
+                    coverage["issues"].append(f"finding F{entry_count} (entry {index}) rejected: {problem}")
                     continue
-                items.append({"id": f"F{len(items) + 1}", "lens": lens, "label": label,
+                items.append({"id": f"F{entry_count}", "lens": lens, "label": label,
                               "index": index, "finding": finding})
             metadata_rejected = 0
             report = value.get("report")
@@ -718,8 +926,6 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
             rejected = item_rejected + metadata_rejected
             coverage.update(observed=len(source_rows), valid=len(source_rows) - item_rejected,
                             rejected=rejected, status="partial" if rejected else "completed")
-            if item_rejected:
-                coverage["issues"].append("malformed finding entries were rejected")
             rejected_total += rejected
             lenses.append(coverage)
             continue
@@ -736,10 +942,11 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
         coverage["checked"] = checked
         claim_rejected = 0
         for index, claim in enumerate(source_rows):
+            entry_count += 1
             if not _valid_explore_claim(claim):
                 claim_rejected += 1
                 continue
-            items.append({"id": f"C{len(items) + 1}", "lens": lens, "label": label,
+            items.append({"id": f"C{entry_count}", "lens": lens, "label": label,
                           "index": index, "claim": claim})
         gap_rejected = 0
         source_gaps = value.get("gaps", [])
@@ -769,6 +976,7 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
 
     source_ids = [item["id"] for item in items]
     source_id_set = set(source_ids)
+    candidate_ids = (_review_candidate_ids(items) if workflow_kind == "review" else source_id_set)
     for coverage, groups in auxiliary_groups:
         flattened = []
         invalid = None
@@ -781,10 +989,14 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
             if unknown:
                 invalid = "auxiliary grouping names unknown source F-id(s): " + ", ".join(unknown)
                 break
+            non_candidates = [item for item in ids if item not in candidate_ids]
+            if non_candidates:
+                invalid = "auxiliary grouping names non-candidate source F-id(s): " + ", ".join(non_candidates)
+                break
             flattened.extend(ids)
-        if invalid is None and (len(flattened) != len(source_ids)
-                                or set(flattened) != source_id_set):
-            invalid = "auxiliary grouping does not partition source F-ids"
+        if invalid is None and (len(flattened) != len(candidate_ids)
+                                or set(flattened) != candidate_ids):
+            invalid = "auxiliary grouping does not partition candidate F-ids"
         if invalid is not None:
             coverage["status"] = "uncovered"
             coverage["issues"].append(invalid)
@@ -792,8 +1004,9 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
             rejected_total += 1
             continue
         for group in groups:
-            merges.append({"id": f"M{len(merges) + 1}",
-                           "merged_from": list(group["merged_from"])})
+            ids = group["merged_from"]
+            if len(ids) > 1:
+                merges.append({"id": f"M{len(merges) + 1}", "merged_from": list(ids)})
 
     status = _workflow_status(lenses)
     coverage_counts = {name: sum(row["status"] == name for row in lenses)
@@ -809,10 +1022,55 @@ def build_workflow_result_archive(workflow_dir: Path, workflow_kind: str) -> dic
         "auxiliaries": sum(row["role"] == "auxiliary" for row in lenses),
         **coverage_counts,
     }
+    verification = None
+    if verify:
+        import verify_claims
+        record = workflow_run_record(run_dir) or {}
+        args = record.get('args') if isinstance(record.get('args'), dict) else {}
+        subject_root = root or args.get('root') or verify_claims.REPO
+        member = 'finding' if workflow_kind == 'review' else 'claim'
+        checker_rows = [dict(id=item['id'], evidence=verify_claims.items_of(item[member]),
+                             polarity=item[member].get('polarity')) for item in items]
+        roots, unresolved_roots = {}, set()
+        if workflow_kind == 'review' and root is None and isinstance(args.get('fold'), dict):
+            import fold_check
+            fold = args['fold']
+            specs = fold.get('subjects') or ([fold] if fold.get('root') else [])
+            # Routing uses roots and files only; the archive checks current bytes, not fold snapshots.
+            subjects = [fold_check.Subject(spec['root'], spec['files'],
+                        {'kind': 'blobs', 'files': dict.fromkeys(spec['files'])}) for spec in specs
+                        if isinstance(spec, dict) and spec.get('root') and isinstance(spec.get('files'), list)]
+            routed, _unrouted, _ambiguous = fold_check.route([
+                dict(item[member], id=item['id']) for item in items], subjects)
+            roots = {key: subjects[index].root for key, index in routed.items()}
+            if specs:
+                unresolved_roots = set(_unrouted + _ambiguous)
+        verification = verify_claims.check_claims([])
+        for row in checker_rows:
+            if row['id'] in unresolved_roots:
+                verification['errors'].append(f"{row['id']}: review subject root is unrouted or ambiguous")
+                row = dict(row, evidence=[])
+            checked = verify_claims.check_claims([row], root=roots.get(row['id'], subject_root),
+                session_id=run_dir.parents[2].name if len(run_dir.parents) > 2 else None)
+            verification['verdicts'].update(checked['verdicts'])
+            verification['errors'].extend(checked['errors'])
+            for verdict, count in checked['counts'].items():
+                verification['counts'][verdict] += count
+        if verification['counts']['UNVERIFIED'] or verification['counts']['UNCHECKED'] or verification['errors']:
+            verification['status'] = 'fail'
+        for item in items:
+            verdict = verification['verdicts'][item['id']]['verdict']
+            item[member] = dict(item[member], verdict=verdict,
+                                confidence='verified' if verdict == 'VERIFIED' else 'unverified')
+        if status != 'completed':
+            verification['status'] = 'fail'
+            verification['errors'].append(f'workflow coverage is {status}')
     return {
+        "verification": verification,
         "contract": WORKFLOW_RESULT_CONTRACT,
         "workflowKind": workflow_kind,
         "workflowDir": str(run_dir),
+        "idOrder": id_order,
         "status": status,
         "delivered": status == "completed",
         "journal": {
@@ -858,7 +1116,10 @@ def workflow_result_manifest(archive: dict) -> dict:
         },
         "selectors": {
             "ids": "F<number>" if archive["workflowKind"] == "review" else "C<number>",
-            "sourceOrder": "started-agent order, then item-array order",
+            "sourceOrder": ("run-log args.agents order, then item-array order"
+                            if archive.get("idOrder") == "engine"
+                            else "started-agent order, then item-array order"),
+            "idOrder": archive.get("idOrder", "start-order"),
             "pages": list(WORKFLOW_PAGE_KINDS), "hashRequiredForEvidence": True,
         },
         "commands": _workflow_commands(archive["workflowKind"]),
@@ -921,7 +1182,40 @@ def workflow_result_page(archive: dict, kind: str, page: int, page_size: int) ->
 
 def workflow_result_full(archive: dict) -> dict:
     out = _workflow_envelope(archive)
+    out['verification'] = archive.get('verification')
     out.update({kind: archive[kind] for kind in WORKFLOW_PAGE_KINDS})
+    return out
+
+
+WORKFLOW_REPLAY = Path(__file__).resolve().parent / "workflow_replay.mjs"
+
+
+def replay_workflow_result(workflow_dir: Path) -> tuple[object, str | None]:
+    """-> (the run's full processed result, None), or (None, the gap that stopped the replay)."""
+    node = shutil.which("node")
+    if node is None:
+        return None, "local replay could not run: node is not on PATH"
+    try:
+        proc = subprocess.run([node, str(WORKFLOW_REPLAY), str(workflow_dir)], capture_output=True,
+                              text=True, encoding="utf-8", timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"local replay could not run: {exc}"
+    if proc.returncode != 0:
+        return None, proc.stderr.strip() or f"workflow_replay exited {proc.returncode}"
+    try:
+        return json.loads(proc.stdout), None
+    except ValueError:
+        return None, "workflow_replay exited 0 without a JSON result"
+
+
+def workflow_result_full_or_archive(archive: dict, workflow_dir: Path) -> dict:
+    result, gap = replay_workflow_result(workflow_dir)
+    if gap is None:
+        out = _workflow_envelope(archive)
+        out.update({"source": "replay", "result": result})
+        return out
+    out = workflow_result_full(archive)
+    out.update({"source": "archive", "replayGap": gap})
     return out
 
 
@@ -1011,14 +1305,15 @@ def _display_files(d: dict, project_dir: str = "") -> dict:
 
 
 def _prompt_count_text(d: dict) -> str:
-    """`N` or `N (+M from command arguments)`. A user-typed `/skill <args>` and a model-issued
-    `Skill` call leave the same transcript shape (tool_use → "Launching skill" → isMeta body with
-    `ARGUMENTS:`), so recovered rows cannot be attributed to the keyboard; the split keeps the
-    typed count honest instead of folding both into one number."""
-    msgs = d.get("user_messages") or []
-    recovered = sum(1 for m in msgs if isinstance(m, dict) and m.get("recovered"))
-    typed = len(msgs) - recovered
-    return f"{typed} (+{recovered} from command arguments, typed or model-invoked)" if recovered else str(typed)
+    """`N` or `N (+M from command arguments and answers[, +K model-issued commands])`. A model
+    `Skill` call's argument row (`issuer: model`) is counted apart: it is not an owner prompt."""
+    msgs = [m for m in d.get("user_messages") or [] if isinstance(m, dict)]
+    model = sum(1 for m in msgs if m.get("issuer") == "model")
+    recovered = sum(1 for m in msgs if m.get("recovered")) - model
+    typed = len(msgs) - recovered - model
+    extra = ([f"+{recovered} from command arguments and answers"] if recovered else []) + \
+        ([f"+{model} model-issued commands"] if model else [])
+    return f"{typed} ({', '.join(extra)})" if extra else str(typed)
 
 
 def _digest_head(d: dict, path: Path, sub_note: str) -> list:
@@ -1038,7 +1333,9 @@ def _retrieval_footer(d: dict) -> list:
 
 
 def _mode_row_attribution(row: dict) -> str:
-    return "unattributed" if row.get("recovered") == "command_arguments" else "owner"
+    if row.get("recovered") != "command_arguments":
+        return "owner"
+    return {"owner": "owner", "model": "model"}.get(row.get("issuer"), "unattributed")
 
 
 def _mode_row_tag(row: dict) -> str:
@@ -1130,7 +1427,7 @@ def _brief_mode_body(d: dict, path: Path, outcome: str, project_dir: str, task_r
             "", "## Latest owner input/directive",
             _mode_prompt_line(latest, latest_clip) if latest else "(none recorded)"]
     if latest_command is not None:
-        out += ["", "## Latest command request (unattributed)",
+        out += ["", f"## Latest command request ({_mode_row_attribution(latest_command)})",
                 _mode_prompt_line(latest_command, latest_clip)]
     out += ["", "## Status evidence — last substantive assistant text (not a completion verdict)",
             _excerpt(outcome, outcome_clip) or "(no assistant text)"]
@@ -1182,7 +1479,7 @@ def _handoff_mode_body(d: dict, path: Path, outcome: str, project_dir: str, task
             "", "## Latest owner input/directive",
             _mode_prompt_line(latest, latest_clip) if latest else "(none recorded)"]
     if latest_command is not None:
-        out += ["", "## Latest command request (unattributed)",
+        out += ["", f"## Latest command request ({_mode_row_attribution(latest_command)})",
                 _mode_prompt_line(latest_command, latest_clip)]
     out += ["", "## Status evidence — last substantive assistant text (not a completion verdict)",
             _excerpt(outcome, outcome_clip) or "(no assistant text)",
@@ -1348,7 +1645,7 @@ def full_export_receipt(d: dict, export_path: Path, projection: str, task_record
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--session", help="session id or unique prefix")
     ap.add_argument("--prompt-tail", help="text the session's latest real prompt must contain (e.g. session_end)")
     ap.add_argument("--project-dir", default=os.getcwd(), help="repo root the session ran in (default cwd)")
@@ -1372,7 +1669,7 @@ def main() -> None:
     workflow_op.add_argument("--workflow-page", choices=WORKFLOW_PAGE_KINDS,
                              help="print one deterministic Workflow result page")
     workflow_op.add_argument("--workflow-full", action="store_true",
-                             help="print every valid Workflow source and coverage record")
+                             help="print the full processed result by local replay, else every archived source and coverage record")
     ap.add_argument("--expect-journal-sha256", metavar="HASH",
                     help="manifest SHA-256 required before any Workflow evidence output")
     ap.add_argument("--select", action="append", metavar="ID",
@@ -1427,7 +1724,7 @@ def main() -> None:
                 elif a.workflow_page:
                     value = workflow_result_page(archive, a.workflow_page, a.page, a.page_size)
                 else:
-                    value = workflow_result_full(archive)
+                    value = workflow_result_full_or_archive(archive, Path(a.workflow_dir))
             print(json.dumps(value, indent=1, ensure_ascii=True))
         except ValueError as exc:
             ap.error(str(exc))
@@ -1452,7 +1749,7 @@ def main() -> None:
     if a.tools and not a.full:
         ap.error("--tools requires --full; read the census from the exported .full.md")
 
-    pdir = projects_dir(a.project_dir)
+    pdir = session_store(a.project_dir)
     if a.list:
         print(list_sessions(pdir, a.list))
         return
@@ -1462,7 +1759,7 @@ def main() -> None:
         print("MATCH " + "  ".join(f"{p.stem[:8]}={s:.2f}" for s, p in ranked) + "  (first is used)",
               file=sys.stderr)
     else:
-        path = pick_transcript(pdir, a.session, a.prompt_tail, a.previous)
+        path = pick_transcript(pdir, a.session, a.prompt_tail, a.previous, cwd=a.project_dir)
     b = TranscriptSummaryBuilder(path.stem, str(path), full_evidence=not a.context_only)
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -1473,8 +1770,7 @@ def main() -> None:
         outcome = last_assistant_text(path)
         d["outcome_last_assistant_text"] = outcome
         d["tool_census"] = tool_census(path)
-        d["user_messages"] = merge_recovered_prompts(
-            d.get("user_messages") or [], recover_meta_command_prompts(path) + recover_question_answers(path))
+        d["user_messages"] = owner_prompts(path)
         if isinstance(d.get("evidence_coverage"), dict):
             d["evidence_coverage"]["collected_user_messages"] = len(d["user_messages"])
     else:
@@ -1510,7 +1806,7 @@ def main() -> None:
 
 
 def task_record_block(session_id: str, project_dir: str) -> str:
-    """The session's active task record (tools/task_record.py), bounded; '' when none or unreadable."""
+    """The session's active task record, or an explicit unavailable-evidence diagnostic."""
     try:
         tools = str(Path(__file__).resolve().parent)
         if tools not in sys.path:
@@ -1519,9 +1815,27 @@ def task_record_block(session_id: str, project_dir: str) -> str:
         if not os.environ.get("HARNESS_TASK_RECORD_DIR"):
             os.environ["HARNESS_TASK_RECORD_DIR"] = str(Path(project_dir) / ".claude" / "logs" / "tasks")
         rec = task_record.active(session_id)
-        return task_record.render_block(rec["task_id"]) if rec else ""
-    except Exception:
+        if rec:
+            block = task_record.render_block(rec["task_id"])
+            if not block:
+                raise ValueError("active record could not be rendered")
+            return block
+        # active() deliberately salvages bad records and returns None on directory
+        # errors. The digest must not turn missing evidence into a no-task result.
+        directory = Path(task_record.record_dir())
+        try:
+            names = os.listdir(directory)
+        except FileNotFoundError:
+            return ""
+        for name in names:
+            if name.endswith('.json'):
+                with (directory / name).open(encoding='utf-8') as stream:
+                    record = json.load(stream)
+                if not isinstance(record, dict):
+                    raise ValueError("invalid task evidence")
         return ""
+    except Exception as exc:
+        return "Task record evidence unavailable (%s); do not infer no active task." % type(exc).__name__
 
 
 if __name__ == "__main__":

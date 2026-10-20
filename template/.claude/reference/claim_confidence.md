@@ -21,7 +21,7 @@ Every claim sits on one rung. State the rung's phrasing, not a stronger one.
 **The framing question:** *name the one fact this claim is safe because of.* Can't name it, or the fact is
 "it looked right" → the claim is rung 4 or 5 and must say so.
 
-**The rung grades evidence, not tool choice.** Which search is correct for a given file type is CLAUDE.md §Tool Routing's
+**The rung grades evidence, not tool choice.** Which search is correct for a given file type is CLAUDE.core.md §9's
 call and is unchanged by this ladder — rung 5 is where you land when you stop at the match, whatever produced
 it. A ladder read as "grep is the baseline" would invert the routing rules it sits beside.
 
@@ -37,6 +37,12 @@ that the code does not carry:
 Intent comes from a design doc, a commit message, or the person — `git log -S` is the cheap check, and it
 also separates *never present* from *removed on purpose*. Absent one of those, write what the code does and
 stop: "the guard rejects null" not "the guard rejects null to prevent the crash in X."
+
+## Configured values
+
+A causal claim about a configured value names the whole chain — where it is declared, what overrides it,
+where it is injected at runtime, and which consumer reads it — or it is labeled unmeasured. A claim that
+stops at the declaration is unmeasured, however confident it reads.
 
 ## Where this binds
 

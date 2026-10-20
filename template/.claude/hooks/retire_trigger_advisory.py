@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: PostToolUse (Write) — advises when a new memory or rules file declares malformed retirement metadata.
+Hook: PostToolUse (Write|Edit) — advises when a memory or rules file declares malformed retirement metadata.
 
 A retirement trigger is optional (`/codify` Step 6, `## Step 6 — Write, or queue`): a file with no
 declared trigger is valid and stays silent. Scope, outside `tools/rule_retirement.SKIP_DIRS`:
@@ -9,16 +9,20 @@ declared trigger is valid and stays silent. Scope, outside `tools/rule_retiremen
 - `.claude/rules/**/*.md`: `<!-- retire-when: ... -->` comments.
 Commands and skills load on demand and are out of scope here.
 
-Fires only on a Write that creates a file: the PostToolUse payload's `tool_response.type` is
-`create`. An update Write, or a missing or unknown `tool_response`, is silent, and so is the
-`MEMORY.md` index, which is not a memory file.
+A Write fires only when it creates a file: the PostToolUse payload's `tool_response.type` is
+`create`. An update Write, or a missing or unknown `tool_response`, is silent. An Edit checks only
+the evidence markers its `new_string` carries, read from the file as the Edit left it; retirement
+triggers are checked on create only. The `MEMORY.md` index is silent: it is not a memory file.
 
-Fires once per in-scope create, and only on declared metadata that is malformed:
+Fires once per in-scope create or marker-adding Edit, and only on declared metadata that is malformed:
 - memory: `rule_retirement.frontmatter_triggers` reports a structural problem (unclosed
   frontmatter, or `retire_when:` declared with no list items);
 - rules: a declared comment carries no trigger, or `rule_retirement.evaluate` puts its trigger in
   the `malformed` bucket (no known kind, unparseable version). Evidence the hook cannot see (tool
-  list, client version, census) leaves a trigger `undecidable`, which stays silent.
+  list, client version, census) leaves a trigger `undecidable`, which stays silent;
+- memory and rules: an evidence marker (`<!-- basis: ... -->`) that `rule_retirement.parse_evidence`
+  rejects. The hook checks the grammar only and never reads a marker's source, so an unreadable
+  source stays silent.
 Never blocks; fail-open on any error.
 
 Wired in: settings.json PostToolUse "Write|Edit", via post_edit_dispatch.CHAIN.
@@ -80,36 +84,61 @@ def _rule_comment_problem(content):
     return None
 
 
+def _evidence_problem(content, only_in=None):
+    """First evidence marker whose grammar `rule_retirement.parse_evidence` rejects, as text, else None.
+    `only_in` limits the check to markers whose text occurs in that string (an Edit's new text)."""
+    for inner in rule_retirement.EVIDENCE.findall(rule_retirement.prose_only(content)):
+        if only_in is not None and inner not in only_in:
+            continue
+        _spec, problem = rule_retirement.parse_evidence(inner)
+        if problem:
+            return problem
+    return None
+
+
+def _edited_text(file_path, root):
+    """The file as the finished Edit left it, or None when unreadable."""
+    try:
+        with open(os.path.join(root, file_path), encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, ValueError):
+        return None
+
+
 def process(data):
     """Dispatcher entry: `{"context": <one line>}` on malformed declared metadata, else None."""
-    if data.get("tool_name") != "Write":
-        return None
-    response = data.get("tool_response")
-    if not isinstance(response, dict) or response.get("type") != "create":
+    tool_name = data.get("tool_name")
+    if tool_name not in ("Write", "Edit"):
         return None
     tool_input = data.get("tool_input") or {}
     file_path = tool_input.get("file_path") or ""
-    content = tool_input.get("content")
-    if not file_path or not isinstance(content, str):
-        return None
     root = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    if tool_name == "Edit":
+        content, only_in = _edited_text(file_path, root), tool_input.get("new_string")
+        if not file_path or content is None or not isinstance(only_in, str):
+            return None
+    else:
+        response = data.get("tool_response")
+        if not isinstance(response, dict) or response.get("type") != "create":
+            return None
+        content, only_in = tool_input.get("content"), None
+        if not file_path or not isinstance(content, str):
+            return None
     rel = _rel_claude_path(file_path, root)
     if not rel:
         return None
     claude_rel = rel[len(".claude/"):]
     if in_rules_scope(claude_rel):
-        problem = _rule_comment_problem(content)
-        if problem:
-            return {"context": "[retire-trigger-advisory] %s: %s (codify.md Step 6)." % (rel, problem)}
+        problem = (_rule_comment_problem(content) if only_in is None else None) or _evidence_problem(content, only_in)
+    elif in_memory_scope(claude_rel):
+        malformed = []
+        if only_in is None:
+            rule_retirement.frontmatter_triggers(content, claude_rel, malformed)
+        problem = malformed[0]["problem"] if malformed else _evidence_problem(content, only_in)
+    else:
         return None
-    if not in_memory_scope(claude_rel):
-        return None
-
-    malformed = []
-    rule_retirement.frontmatter_triggers(content, claude_rel, malformed)
-    if malformed:
-        return {"context": "[retire-trigger-advisory] %s: %s (codify.md Step 6)."
-                           % (rel, malformed[0]["problem"])}
+    if problem:
+        return {"context": "[retire-trigger-advisory] %s: %s (codify.md Step 6)." % (rel, problem)}
     return None
 
 

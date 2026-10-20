@@ -27,6 +27,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _cs_files import cs_files  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 
 OUT_PATH = REPO / ".claude" / "generated" / "abstraction_families.md"
@@ -89,10 +92,7 @@ def read_lines(path):
 
 
 def production_files():
-    for path in sorted(REPO.rglob("*.cs")):
-        rel = path.relative_to(REPO)
-        if SKIP_DIRS & set(rel.parts[:-1]):
-            continue
+    for path, rel in cs_files(REPO, SKIP_DIRS):
         yield path, rel.as_posix()
 
 
@@ -196,7 +196,7 @@ def main():
         return 0
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(content, encoding="utf-8")
+    OUT_PATH.write_text(content, encoding="utf-8", newline="\n")
 
     total_impls = sum(len(impls) for _, _, impls in families)
     top = ", ".join(f"{base} ({len(impls)})" for base, _, impls in families[:5])

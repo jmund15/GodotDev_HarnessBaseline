@@ -71,24 +71,16 @@ ARCHIVE_DIR = Path("logs/routing-audit-archive")
 # === I/O =====================================================================
 
 def _load_entries(path: Path) -> list[dict]:
-    """Load all parseable entries. Skip malformed lines silently."""
-    if not path.exists():
-        return []
+    """Load complete evidence; malformed or unreadable input is unavailable, not empty."""
     entries = []
-    try:
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if isinstance(entry, dict):
-                        entries.append(entry)
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
-        return []
+    with path.open(encoding="utf-8") as f:
+        for number, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if not isinstance(entry, dict) or _parse_iso(entry.get("ts", "")) is None:
+                raise ValueError("invalid routing evidence at line %d" % number)
+            entries.append(entry)
     return entries
 
 
@@ -353,10 +345,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    entries = _load_entries(LOG_PATH)
-    if not entries:
-        print(f"(no entries in {LOG_PATH} — audit log is empty or missing)")
-        return 0
+    try:
+        entries = _load_entries(LOG_PATH)
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        print("Routing audit evidence unavailable (%s); stats not refreshed." % type(exc).__name__, file=sys.stderr)
+        return 1
 
     rotation_report = ""
     if args.rotate_older_than_days > 0:

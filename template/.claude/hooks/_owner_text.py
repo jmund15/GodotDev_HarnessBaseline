@@ -7,30 +7,41 @@ policy (which rows count) stays with the consumer. Consent must stay strict; the
 record must stay complete.
 
 Projection table (shape x consumer). `test_owner_text.py` parses this table and runs one fixture
-through all three consumers, so a projection change that is not written here fails the proof.
+through all four consumers, so a projection change that is not written here fails the proof.
 
-| shape | kill_guard | harness_growth_guard | digest |
-|---|---|---|---|
-| prompt | text | turn | text |
-| queued_prompt (mid-turn) | text | no turn | text |
-| meta | drop | no turn | drop |
-| meta ARGUMENTS | drop | no turn | label goal |
-| sidechain | drop | no turn | drop |
-| injection-prefixed | text | turn | drop |
-| envelope-only | drop | no turn | drop |
-| agent-message | drop | no turn | drop |
-| command with args | args | turn | name args |
-| empty-args command | drop | no turn | name args |
-| answer via toolUseResult | pairs | no turn | answer |
-| answer via tool_result text | drop | no turn | answer |
-| tool_result with text blocks | drop | no turn | text |
+| shape | kill_guard | harness_growth_guard | digest | provider_guard |
+|---|---|---|---|---|
+| prompt | text | turn | text | text |
+| queued_prompt (mid-turn) | text | no turn | text | text |
+| meta | drop | no turn | drop | drop |
+| meta ARGUMENTS | drop | no turn | label goal | drop |
+| sidechain | drop | no turn | drop | drop |
+| injection-prefixed | text | turn | drop | text |
+| envelope-only | drop | no turn | drop | drop |
+| agent-message | drop | no turn | drop | drop |
+| cross-session message | drop | no turn | drop | drop |
+| command with args | args | turn | name args | drop |
+| empty-args command | drop | no turn | name args | drop |
+| answer via toolUseResult | pairs | no turn | answer | drop |
+| answer via tool_result text | drop | no turn | answer | drop |
+| tool_result with text blocks | drop | no turn | text | drop |
 
 Cells:
 - kill_guard (`_consent_text`, `_answer_pairs`): `text` is `OwnerRow.text`; `args` is `command_args`, used
   whenever the text contains `<command-name>`; `pairs` is `pairs`, the strict toolUseResult source.
   Meta, sidechain and tool_result rows never give consent text.
+- git_guardrails (`_owner_approved_discard`): kill_guard's `pairs` cell for answers plus the provider_guard
+  `text` cell; the latest such row decides, so a later owner prompt revokes an answer's consent.
 - harness_growth_guard (`_starts_turn`): `turn` means the row can start a turn, keyed on `uuid`, so two
   identical prompt texts are two turns.
+- provider_guard (`owner_quote_text`): `text` is the row text a `hooks/workflow_provider_guard.py`
+  `owner:` quote is verified against -- the owner speaking. `drop` is every other row: harness
+  plumbing (meta, command, envelope, injection *into* the transcript), a peer's cross-session or
+  agent message, and tool results. A quote found only in a dropped row does not lift a deny, so a
+  peer quoting the owner's words cannot name the transport. `tools/verify_claims.py` owner items read
+  this projection plus answer rows through `owner_turns`, to bind a recorded owner quote to its turn's
+  uuid. Task conditions use `classify` with the separate `tools/task_record.py::_owner_turns`
+  projection, which also includes typed command arguments.
 - digest (`TranscriptSummaryBuilder._process_user_message` with `full_evidence=True`, plus
   `session_digest.recover_meta_command_prompts` and `recover_question_answers`, merged by
   `session_digest.owner_prompts`): `text` is the row's text blocks joined with a space; `name args` is
@@ -123,6 +134,8 @@ def _pairs(entry, message, tool_results):
     for item in questions:
         question = item.get("question") if isinstance(item, dict) else None
         label = answers.get(question) if isinstance(question, str) else None
+        if isinstance(label, list) and label and all(isinstance(x, str) for x in label):
+            label = ",".join(label)  # a multiSelect answer stores its picked labels as a list
         if not question or not isinstance(label, str) or not label.strip():
             return None
         pairs.append((question, label))
@@ -156,6 +169,84 @@ def queued_owner_prompt(entry):
         return None
     prompt = attachment.get("prompt")
     return prompt if isinstance(prompt, str) and prompt.strip() else None
+
+
+def owner_quote_text(row):
+    """The text a provider guard `owner:` quote is verified against, or None: the projection's last
+    column. A statement about routing is the owner speaking: a prompt, a mid-turn queued prompt, or
+    a prompt behind a leading injection block. Meta, sidechain, envelope (cross-session and agent
+    messages), command and tool-result rows are plumbing, a peer, or a recorded action -- a quote
+    found only there is not the owner naming a transport."""
+    if row is None or row.meta or row.sidechain or row.envelope or row.tool_results:
+        return None
+    if row.kind not in ("prompt", "queued_prompt") or not row.text:
+        return None
+    return row.text
+
+
+def owner_answer_text(row):
+    """The owner's picked labels of an AskUserQuestion answer (one per line), or None: the words an answer
+    carries are the owner's, the question beside them is the assistant's. Only the strict `toolUseResult`
+    pairing counts; an answer visible only as tool_result text cannot be told from any other tool output."""
+    if row is None or row.meta or row.sidechain or row.kind != "answer" or not row.pairs:
+        return None
+    return "\n".join(label for _, label in row.pairs)
+
+
+def _rows(path):
+    """Every classifiable row of a transcript file, in order; None when it cannot be read. A malformed row is
+    not an owner statement, and never a crash."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return None
+    rows = []
+    for index, line in enumerate(lines):
+        try:
+            rows.append(classify(json.loads(line), index + 1, raw=line))
+        except Exception:
+            continue
+    return rows
+
+
+def _turns(path, answers):
+    rows = _rows(path)
+    if rows is None:
+        return None
+    out = []
+    for row in rows:
+        text = owner_quote_text(row) or (owner_answer_text(row) if answers else None)
+        if text:
+            out.append((row.uuid, text))
+    return out
+
+
+def owner_turns(path):
+    """`(OwnerRow.uuid, text)` for every turn the owner spoke, in order: each `owner_quote_text` row and each
+    AskUserQuestion answer (`owner_answer_text`). None when the file cannot be read.
+
+    An unreadable transcript must not read like one that carries nothing: both deny, but a reader of
+    this proof has to be able to tell the two apart. `tools/verify_claims.py` reads the owner through
+    this; the provider guard reads `owner_quote_rows`, which drops answers.
+    """
+    return _turns(path, True)
+
+
+def owner_answer_pairs(path):
+    """`(OwnerRow.uuid, ((question, label), ...))` for every AskUserQuestion answer of a transcript file, in
+    order; None when it cannot be read. A picked label means what the question asked, so a consumer that
+    verifies a label also checks its question."""
+    rows = _rows(path)
+    if rows is None:
+        return None
+    return [(row.uuid, tuple(row.pairs)) for row in rows if owner_answer_text(row)]
+
+
+def owner_quote_rows(path):
+    """`owner_quote_text` for every owner row of a transcript file, in order; None when it cannot be read."""
+    turns = _turns(path, False)
+    return None if turns is None else [text for _, text in turns]
 
 
 def classify(entry, index, raw=None):

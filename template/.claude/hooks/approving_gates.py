@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Canonical-shape approval for harness actions the owner authorized by class: read-only
-sidecar launches and digests, and the scratch-message `git commit`."""
+sidecar launches and digests, read-only git searches piped through text filters, the
+scratch-message `git commit`, a submodule PR merge, and deleting a merged PR's remote branch.
+Process class: an unmet contract falls through to the classifier, never a deny."""
 import json
 import os
 import re
@@ -301,18 +303,296 @@ def _commit_shape(argv, root):
     return True, ""
 
 
+_GITMODULES_REPO = re.compile(r"^\s*url\s*=\s*(?:\S+?[:/])?([\w.-]+/[\w.-]+?)(?:\.git)?\s*$", re.M)
+
+
+def _submodule_repos(root):
+    """`owner/name` of every repo the project's `.gitmodules` names; empty when it has none."""
+    try:
+        with open(os.path.join(root, ".gitmodules"), encoding="utf-8") as handle:
+            return frozenset(_GITMODULES_REPO.findall(handle.read()))
+    except OSError:
+        return frozenset()
+
+
+def _submodule_merge_shape(argv, root):
+    """A numbered PR of a repo the project's `.gitmodules` names, merged by merge commit. Every other
+    merge, the project's own repo included, stays with the classifier."""
+    if argv[:3] != ["gh", "pr", "merge"] or len(argv) < 4 or not argv[3].isdigit():
+        return False, "the command is not `gh pr merge <number>`"
+    rest, repo, method, index = argv[4:], None, None, 0
+    while index < len(rest):
+        flag = rest[index]
+        if flag == "--repo" and repo is None and index + 1 < len(rest):
+            repo, index = rest[index + 1], index + 2
+        elif flag == "--match-head-commit" and index + 1 < len(rest) \
+                and re.fullmatch(r"[0-9a-f]{7,40}", rest[index + 1]):
+            index += 2
+        elif flag == "--merge" and method is None:
+            method, index = flag, index + 1
+        elif flag == "--delete-branch":
+            index += 1
+        else:
+            return False, "an unreviewed merge flag `%s`" % flag
+    repos = _submodule_repos(root)
+    if repo not in repos:
+        return False, "`--repo` must be one of the .gitmodules repos: %s" % (", ".join(sorted(repos)) or "none")
+    if method is None:
+        return False, "the merge method must be `--merge`"
+    return True, ""
+
+
+_BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+_PROTECTED_BRANCHES = frozenset({"main", "master", "HEAD"})
+
+
+def _merged_pr_head(branch):
+    """(state, head oid) of the newest PR whose head is `branch`; OPEN when any is open; None on failure."""
+    try:
+        out = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "all",
+                              "--json", "state,headRefOid", "--limit", "20"],
+                             capture_output=True, text=True, timeout=20)
+        prs = json.loads(out.stdout) if out.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not prs:
+        return None
+    if any(pr.get("state") == "OPEN" for pr in prs):
+        return ("OPEN", "")
+    merged = [pr for pr in prs if pr.get("state") == "MERGED"]
+    return ("MERGED", merged[0].get("headRefOid", "")) if merged else None
+
+
+def _remote_tip(branch):
+    try:
+        out = subprocess.run(["git", "ls-remote", "--heads", "origin", "refs/heads/" + branch],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = out.stdout.split() if out.returncode == 0 else []
+    return fields[0] if fields else None
+
+
+def _merged_branch_delete_shape(argv, _root):
+    """`git push origin --delete <branch>` for one branch whose PR merged and whose remote tip is still
+    that PR's head. An open PR, a later commit or a failed lookup leaves the call to the classifier."""
+    if argv[:2] != ["git", "push"]:
+        return False, "the command is not `git push`"
+    rest = argv[2:]
+    if len(rest) != 3 or rest[:2] not in (["origin", "--delete"], ["--delete", "origin"]):
+        return False, "the shape must be `git push origin --delete <one branch>`"
+    branch = rest[2]
+    if not _BRANCH_NAME.fullmatch(branch) or branch in _PROTECTED_BRANCHES:
+        return False, "`%s` is not a deletable branch name" % branch
+    found = _merged_pr_head(branch)
+    if not found or found[0] != "MERGED":
+        return False, "branch `%s` has no merged PR, or has an open one" % branch
+    tip = _remote_tip(branch)
+    if not tip or tip != found[1]:
+        return False, "branch `%s` moved past its merged PR's head" % branch
+    return True, ""
+
+
 def _git_commit_args(argv):
     """`_git_commit.git_invocation` for an argv whose subcommand is `commit`, else None."""
     parsed = _git_commit.git_invocation(shlex.join(argv))
     return parsed if parsed is not None and parsed[0][:1] == ["commit"] else None
 
 
+_PROBE_SUBCOMMANDS = frozenset({"grep", "log", "show", "diff", "ls-files", "status", "rev-parse", "rev-list",
+                                "ls-tree", "describe", "blame", "branch", "worktree"})
+_PROBE_BOOL_LONG = frozenset(
+    "oneline stat shortstat numstat name-only name-status porcelain short branch all no-merges merges "
+    "first-parent reverse graph decorate no-decorate count cached staged others untracked exclude-standard "
+    "ignored deleted modified full-name line-number ignore-case extended-regexp basic-regexp fixed-strings "
+    "perl-regexp word-regexp files-with-matches files-without-match only-matching invert-match null heading "
+    "break show-current abbrev-commit patch no-patch pickaxe-all follow full-history simplify-by-decoration "
+    "is-inside-work-tree show-toplevel git-dir show-prefix verify quiet no-color all-match and or not "
+    "remotes list no-abbrev-commit".split())
+_PROBE_VALUE_LONG = frozenset(
+    "since until after before author committer grep max-count skip diff-filter max-depth".split())
+_PROBE_OPTIONAL_LONG = frozenset({"merged", "no-merged", "contains", "points-at"})
+_PROBE_EQUALS_LONG = frozenset({"format", "pretty", "date", "abbrev", "stat", "color"})
+_BRANCH_FLAGS = frozenset({"-r", "-a", "-v", "-l", "--list", "--all", "--remotes", "--show-current",
+                           "--merged", "--no-merged", "--contains", "--points-at", "--format"})
+# Filter spec: (bool short letters, value short letters, positional operands; None = one pattern unless -e).
+_PROBE_FILTERS = {
+    "head": ("q", "nc", 0),
+    "tail": ("q", "nc", 0),
+    "cut": ("sz", "dfcb", 0),
+    "wc": ("lwcmL", "", 0),
+    "sort": ("rnufhVbdi", "kt", 0),
+    "uniq": ("cdui", "fsw", 0),
+    "grep": ("ivcEFwnoqx", "emABC", None),
+}
+_PROBE_MAX_STAGES = 6
+
+
+def _probe_spec(sub):
+    if sub == "grep":
+        return "ivwIHhEFGlLcozaqpPn", "eABC"
+    return "ivwlLcozaqprsmdufC", "SGn"
+
+
+def _parse_probe_args(args, bool_short, value_short, long_sets):
+    """Return (positionals, flags, why). A flag is accepted only when listed; values are not judged."""
+    bool_long, value_long, optional_long, equals_long = long_sets
+    positionals, flags, index = [], [], 0
+    while index < len(args):
+        token = args[index]
+        index += 1
+        if token == "--":
+            positionals.extend(args[index:])
+            break
+        if token.startswith("--"):
+            name, has_eq, _value = token[2:].partition("=")
+            if name in bool_long and not has_eq:
+                flags.append("--" + name)
+            elif name in equals_long:
+                flags.append("--" + name)
+            elif name in value_long:
+                flags.append("--" + name)
+                if not has_eq:
+                    if index >= len(args):
+                        return None, None, "flag `%s` is missing its value" % token
+                    index += 1
+            elif name in optional_long:
+                flags.append("--" + name)
+                if not has_eq and index < len(args) and not args[index].startswith("-"):
+                    index += 1
+            else:
+                return None, None, "flag `%s` is not approved" % token
+        elif token.startswith("-") and len(token) > 1:
+            if token[1:].isdigit():
+                flags.append("-N")
+                continue
+            body, position = token[1:], 0
+            while position < len(body):
+                letter = body[position]
+                position += 1
+                if letter in bool_short:
+                    flags.append("-" + letter)
+                elif letter in value_short:
+                    flags.append("-" + letter)
+                    if position < len(body):
+                        position = len(body)
+                    elif index < len(args):
+                        index += 1
+                    else:
+                        return None, None, "flag `-%s` is missing its value" % letter
+                else:
+                    return None, None, "flag `-%s` is not approved" % letter
+        else:
+            positionals.append(token)
+    return positionals, flags, ""
+
+
+def _probe_subcommand(argv, root=None):
+    """(subcommand index, why) after the only approved global options, `-C <project root>` and `--no-pager`."""
+    index = 1
+    while index < len(argv):
+        if argv[index] == "--no-pager":
+            index += 1
+        elif argv[index] == "-C" and index + 1 < len(argv):
+            if root is not None:
+                target = Path(argv[index + 1])
+                if not target.is_absolute() or os.path.normcase(str(target.resolve())) != os.path.normcase(
+                        str(Path(root).resolve())):
+                    return None, "`git -C` must name the project root"
+            index += 2
+        else:
+            break
+    if index >= len(argv) or argv[index] not in _PROBE_SUBCOMMANDS:
+        return None, "the git subcommand is not a reviewed read-only one"
+    return index, ""
+
+
+def _probe_git_stage(argv, root):
+    if not argv or argv[0] != "git":
+        return False, "the first stage must be `git`"
+    index, why = _probe_subcommand(argv, root)
+    if index is None:
+        return False, why
+    sub, args = argv[index], argv[index + 1:]
+    if sub == "worktree":
+        if args[:1] != ["list"] or any(a not in ("--porcelain", "-z") for a in args[1:]):
+            return False, "`git worktree` may only be `list [--porcelain]`"
+        return True, ""
+    bool_short, value_short = _probe_spec(sub)
+    positionals, flags, why = _parse_probe_args(
+        args, bool_short, value_short,
+        (_PROBE_BOOL_LONG, _PROBE_VALUE_LONG, _PROBE_OPTIONAL_LONG, _PROBE_EQUALS_LONG))
+    if positionals is None:
+        return False, why
+    if sub == "branch" and (positionals or any(flag not in _BRANCH_FLAGS for flag in flags)):
+        return False, "`git branch` may only list: reviewed list flags, no branch name"
+    return True, ""
+
+
+def _probe_filter_stage(argv):
+    spec = _PROBE_FILTERS.get(argv[0]) if argv else None
+    if spec is None:
+        return False, "`%s` is not a reviewed output filter" % (argv[0] if argv else "")
+    bool_short, value_short, operands = spec
+    empty = frozenset()
+    positionals, flags, why = _parse_probe_args(argv[1:], bool_short, value_short, (empty, empty, empty, empty))
+    if positionals is None:
+        return False, why
+    if operands is None:
+        operands = 0 if "-e" in flags else 1
+    if len(positionals) != operands:
+        return False, "`%s` filters standard input and takes no file operand" % argv[0]
+    return True, ""
+
+
+def _split_pipeline(command):
+    pieces, quote, start = [], None, 0
+    for index, char in enumerate(command):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "|":
+            if command[index:index + 2] == "||" or command[index - 1:index] == "|":
+                return None
+            pieces.append(command[start:index])
+            start = index + 1
+    pieces.append(command[start:])
+    return pieces
+
+
+def readonly_probe_shape(command, root):
+    """`git <read-only subcommand> ...` optionally piped through reviewed text filters, nothing else."""
+    if not isinstance(command, str):
+        return False, "an empty command"
+    pieces = _split_pipeline(command)
+    if pieces is None:
+        return False, "an `||` operator"
+    if len(pieces) > _PROBE_MAX_STAGES:
+        return False, "more pipeline stages than a probe needs"
+    for number, piece in enumerate(pieces):
+        argv, why = simple_argv(piece)
+        if argv is None:
+            return False, why
+        ok, why = _probe_git_stage(argv, root) if number == 0 else _probe_filter_stage(argv)
+        if not ok:
+            return False, why
+    return True, ""
+
+
 def owning_contract(argv, root):
     if not argv:
         return None
     root = Path(root).resolve()
+    if argv[:3] == ["gh", "pr", "merge"]:
+        return next(c for c in CONTRACTS if c.name == "submodule-pr-merge")
+    if argv[:2] == ["git", "push"] and "--delete" in argv:
+        return next(c for c in CONTRACTS if c.name == "merged-branch-delete")
     if argv[0] == "git" and _git_commit_args(argv) is not None:
         return next(c for c in CONTRACTS if c.name == "git-commit")
+    if argv[0] == "git" and _probe_subcommand(argv)[0] is not None:
+        return next(c for c in CONTRACTS if c.name == "readonly-probe")
     if argv[0] == "bash" and len(argv) > 1:
         script = _resolve(root, argv[1].replace("\\", "/"))
         if script is not None and _inside(script, root):
@@ -375,6 +655,43 @@ def sidecar_launch_shape(command, root):
     return True, ""
 
 
+def sidecar_bash_ask_shape(command, root):
+    """A whole, project-contained review command whose sole extra grant is Bash."""
+    argv, why = simple_argv(command)
+    if argv is None:
+        return False, why
+    if len(argv) < 2 or argv[0] != "bash":
+        return False, "the launcher is not a simple Bash command"
+    import sidecar_argv
+    try:
+        pairs, operand_index = sidecar_argv.sidecar_flag_pairs(argv[2:])
+    except Exception:
+        return False, "the sidecar flags could not be parsed"
+    if operand_index != len(argv) - 2:
+        return False, "an operand follows the sidecar flags"
+    required = set("meDGtfSRPld")
+    allowed = required | {"C"}
+    seen = {}
+    for letter, value in pairs:
+        if letter not in allowed or not isinstance(value, str) or not value:
+            return False, "an unreviewed sidecar flag or value"
+        if letter != "C" and letter in seen:
+            return False, "a sidecar flag is repeated"
+        seen[letter] = value
+    if set(seen) != required and set(seen) != allowed:
+        return False, "the review needs a model, effort, shape, prompt, schema, record and progress"
+    if seen["t"] != "+Bash" or seen["G"] != "review" or seen["D"] != "full":
+        return False, "only a full review with exactly +Bash can request consent"
+    root = Path(root).resolve()
+    if os.path.normcase(str(Path(seen["d"]).resolve())) != os.path.normcase(str(root)):
+        return False, "the review workdir must be the project root"
+    ordinary = argv[:2]
+    for letter, value in pairs:
+        if letter != "t":
+            ordinary.extend(("-" + letter, value))
+    return sidecar_launch_shape(shlex.join(ordinary), root)
+
+
 def _candidate_contracts(command, root):
     import sidecar_argv
     candidates = []
@@ -412,7 +729,9 @@ def explain(payload):
     if contract is None:
         return None
     argv, shape_why = simple_argv(command)
-    if argv is None:
+    if contract.name == "readonly-probe" and root is not None:
+        why = readonly_probe_shape(command, root)[1]
+    elif argv is None:
         why = shape_why
     elif root is None:
         why = "the shell's working directory is not the project root; run it from the project root"
@@ -433,6 +752,9 @@ def main():
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     root = trusted_root(payload)
     if root is None:
+        return
+    if readonly_probe_shape(command, root)[0]:
+        sys.stdout.write(json.dumps({"hookSpecificOutput": allow("readonly-probe: read-only git search")}))
         return
     argv, _why = simple_argv(command)
     if argv is None:
@@ -455,8 +777,20 @@ CONTRACTS = (
     Contract("session-digest", _digest_shape,
              "`python3 .claude/tools/session_digest.py` with reviewed options and rooted paths",
              "approving_gates"),
+    Contract("readonly-probe", lambda argv, root: _probe_git_stage(argv, root),
+             "`git [-C <project root>] grep|log|show|diff|ls-files|status|rev-parse|rev-list|ls-tree|describe|"
+             "blame|branch (list only)|worktree list` with reviewed flags, piped through head, tail, cut, wc, "
+             "sort, uniq or grep on standard input",
+             "approving_gates"),
     Contract("git-commit", _commit_shape,
              "`git commit [-q] -F .claude/scratch/<msg> [-- <in-project paths>]`, from the project root",
+             "approving_gates"),
+    Contract("submodule-pr-merge", _submodule_merge_shape,
+             "`gh pr merge <number> --repo <a repo named in .gitmodules> --merge [--delete-branch] "
+             "[--match-head-commit <sha>]`",
+             "approving_gates"),
+    Contract("merged-branch-delete", _merged_branch_delete_shape,
+             "`git push origin --delete <branch>` for one branch whose PR merged, its remote tip unchanged",
              "approving_gates"),
 )
 

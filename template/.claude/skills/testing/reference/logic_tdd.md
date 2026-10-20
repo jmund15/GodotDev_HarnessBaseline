@@ -15,11 +15,7 @@ Read before writing or changing Logic-Domain production code; named from `SKILL.
 
 ## The Iron Law (Logic Domain only)
 
-```
-NO PRODUCTION LOGIC-DOMAIN CODE WITHOUT A FAILING TEST FIRST
-```
-
-Production logic-domain code written before the test: **delete it and start over.** Don't "adapt" it while writing tests — you will rationalize back into the existing implementation.
+CLAUDE.md *Development Philosophy: Hybrid TDD* owns the Iron Law. Production logic-domain code written before the test: **delete it and start over.** Don't "adapt" it while writing tests — you will rationalize back into the existing implementation.
 
 **Retroactive trigger:** phrasing implying code already exists — **STOP**. The Iron Law fires retroactively; delete the implementation before any test work begins.
 

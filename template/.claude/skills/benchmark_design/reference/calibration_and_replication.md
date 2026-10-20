@@ -28,12 +28,8 @@ clearable, so the ceiling is below the field. 0 passes in *n* trials only bounds
 | 10 | ~26% |
 
 So **n=1 refutes a ceiling but never establishes one**. Treat 3 as the floor for a calibration claim
-and say what the number does *not* prove. A single failure reported as "the arm cannot do this" is the
-most inviting overstatement in this discipline.
-
+and say what the number does *not* prove.
 ## Determinism is per arm class
-
-A rep that changes nothing is theatre.
 
 - **Local, fixed seed, single-shot — NOT byte-identical on a GPU. Verify it; never assume it.** A seed
   fixes the SAMPLER'S DRAWS, not the DISTRIBUTION: GPU reduction order, quantised KV-cache (`q8_0`)

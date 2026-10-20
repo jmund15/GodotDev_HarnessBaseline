@@ -71,6 +71,25 @@ class ProbeIdentityTests(unittest.TestCase):
             }), encoding='utf-8', newline='\n')
             self.assertEqual(probe.attest(100, MINE), ('my-model', 'max'))
 
+    def test_native_server_compaction_trigger_does_not_replace_run_attestation(self):
+        """The adapter's native server compaction ends its input with a `compaction_trigger` item and sends no tools
+        (captured 2026-09-30, sol seat 63ca90e5: 64 task requests at max, 11 trigger requests at low). A trigger
+        request is compaction traffic, so the run's attestation is still its newest task request."""
+        with tempfile.TemporaryDirectory() as root, patch.object(probe, 'TRAFFIC_ROOT', root):
+            self.capture(root, MINE, 'my-model', 150, prefix='003')
+            newest = self.capture(root, MINE, 'my-model', 200, prefix='004')
+            newest.write_text(json.dumps({
+                'model': 'my-model',
+                'reasoning': {'effort': 'low'},
+                'input': [
+                    {'type': 'function_call_output', 'call_id': 'fixture', 'output': 'ok'},
+                    {'type': 'message', 'role': 'developer',
+                     'content': [{'type': 'input_text', 'text': 'context for the summary'}]},
+                    {'type': 'compaction_trigger'},
+                ],
+            }), encoding='utf-8', newline='\n')
+            self.assertEqual(probe.attest(100, MINE), ('my-model', 'max'))
+
     def test_g11_quoted_compaction_words_in_user_or_tool_input_are_not_skipped(self):
         quoted = (probe.COMPACT_MESSAGE_PREFIX + ' ' + probe.COMPACT_MESSAGE_TASK)
         for item in (

@@ -5,10 +5,10 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: fda900c8-fd6a-47da-a5ad-4d19c68e3402
-  modified: 2026-09-23T02:19:43.717Z
+  modified: 2026-09-27T00:34:09.312Z
 ---
 
-**Rule home:** `rules/harness_authoring.md` *A correction takes the scope of its evidence*; `/codify` Step 2 gates on it.
+**Rule home:** `instruction_quality` §3 *A correction takes the scope of its evidence*; `/codify` Step 2 gates on it.
 
 **Owner's words (2026-09-22):** keep the harness optimal, "remain model agnostic for general use, while also containing model/archetype-specific guidance if needed". The examples were hypothetical: GPT may loop more, Sonnet may need more explicit instructions, Opus may drift from orchestration instructions. "We're not overcorrecting for every model when only one or two specific models have that issue."
 
@@ -22,6 +22,6 @@ metadata:
 - Delegate selection: the ladder `±` cell.
 Every note carries an `evidenceRef`, and `model_registry.py --check` rejects one without it.
 
-**Still open:** sidecar delegates always read `detailed`, because no sidecar row has earned a `railTier`. Workflow scripts outside the four fan-out engines still pin model names. The 2026-09-22 audit (F1–F10) produced this list.
+Current model pins and rail tiers are live registry/ladder facts, not this 2026-09-22 feedback's standing claims.
 
 Related: [[feedback_one_observation_licenses_a_hypothesis_never_a_scope_decision]], [[feedback_orchestration_skill_model_agnostic]], [[gotcha-long-context-gpt-sessions-cost-by-context-size]].

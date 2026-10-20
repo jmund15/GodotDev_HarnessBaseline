@@ -1,0 +1,10 @@
+{"version": 1, "items": [
+ {"id": "statusline", "kind": "file", "src": "statusline.py", "dest": "~/.claude/statusline.py",
+  "register": {"setting": "statusLine", "value": {"type": "command", "command": "python {dest}", "refreshInterval": 30}},
+  "note": "refreshInterval keeps the cc-cachestat capture under the 600-second age limit tools/usage_samples.py enforces while a session is idle; 30 is the owner's operating value, any interval under 600 satisfies the limit"},
+ {"id": "ollama-healthcheck", "kind": "file", "src": "hooks/ollama_healthcheck.py", "dest": "~/.claude/hooks/ollama_healthcheck.py",
+  "register": {"hook": {"event": "SessionStart", "command": "python {dest}"}}},
+ {"id": "large-read-reminder", "kind": "file", "src": "hooks/large_read_reminder.py", "dest": "~/.claude/hooks/large_read_reminder.py",
+  "register": {"hook": {"event": "PostToolUse", "matcher": "Read", "command": "python {dest}"}},
+  "note": "its 400-line threshold is the owner's operating value, unmeasured"}
+]}

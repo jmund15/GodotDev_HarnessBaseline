@@ -6,7 +6,7 @@ Read at Phase 3 of [`../SKILL.md`](../SKILL.md).
 
 ## Find working examples
 
-- LSP `findReferences` on the type/method to find every consumer ([`rules/csharp_lsp.md`](../../../rules/csharp_lsp.md)).
+- Every consumer of the type/method, via the C# navigation route — [`rules/csharp_lsp.md`](../../../rules/csharp_lsp.md) and CLAUDE.godot.md *Godot Docs and C# Navigation*.
 - `Grep` for similar patterns (other spells calling the same method without failing).
 - Diff: what does the working call site do that the failing one doesn't?
 

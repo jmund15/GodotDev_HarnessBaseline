@@ -14,6 +14,8 @@ import hashlib, pathlib, shutil, subprocess, sys, tempfile
 TESTS = pathlib.Path(__file__).resolve().parent
 TOOL = TESTS.parent / "tools" / "worker_rate.py"
 SUITE = TESTS / "test_worker_rate_difficulty.py"
+# Sibling modules the copied tool imports at module scope; without them the copy cannot import.
+DEPS = ("cli_usage.py",)
 
 MUTATIONS = [
     ("guard removed (no verdict needs characterising)",
@@ -36,6 +38,8 @@ with tempfile.TemporaryDirectory(prefix="worker_rate_mutations_") as tmp:
     tmp_tests.mkdir(parents=True)
     tmp_tools.mkdir(parents=True)
     shutil.copyfile(SUITE, tmp_tests / SUITE.name)
+    for name in DEPS:
+        shutil.copyfile(TOOL.parent / name, tmp_tools / name)
 
     def run_suite(text):
         (tmp_tools / TOOL.name).write_bytes(text.encode("utf-8"))

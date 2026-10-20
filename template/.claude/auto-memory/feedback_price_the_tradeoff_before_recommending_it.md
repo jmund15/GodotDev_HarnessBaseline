@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 40a30e2c-3efb-4fd4-ad4d-3a6ee32ba28f
-  modified: 2026-08-21T03:06:59.129Z
+  modified: 2026-09-24T21:59:32.541Z
 ---
 
 # Measure the cost side before you recommend the trade, not after approval
@@ -36,8 +36,18 @@ gating measurement took two minutes and could have run before the sentence was w
   one axis the incumbent had been selected on, which made the case look one-sided when it was not.
   When a component was chosen deliberately, find *why* before proposing to replace it — the
   selection rationale is usually written down next to the pin.
+- **A cost is measured, never inferred.** An estimate model or a list-price ratio is a guess;
+  compare two options' cost only from paired runs on identical inputs, reading token types apart
+  (cache reads can dominate and price alike). A quoted spend names its source. Concrete
+  (2026-09-24): "Sonnet judges cost more" came from an estimate; paired probes put Sonnet 13% cheaper.
+- **Price a reuse seam over its expected uses, not one.** "Building X costs more than it saves"
+  assumes the case never recurs; where defects keep recurring, count the next fixes too.
 - **An unresolved benefit against a measured cost is not a close call.** p=0.21 against a certain
   33% is a decision, not a judgement call.
+- **A rule offered as an option is run against every live instance it will govern, not only the
+  case that motivated it.** Concrete (2026-09-24): "the manifest decides hook ownership" was tested
+  only on the consumer being upgraded; applied to this project's own settings it dropped ten opt-in
+  guard registrations, and the owner had already approved it.
 
 Related: [[feedback_recommended_fix_means_implement]] — once a recommendation IS made and accepted,
 it is work to do, which is exactly why the bar for making it is this high.

@@ -3,12 +3,14 @@
 """
 Hook: PreToolUse dispatcher for the read/search tool family.
 
-One settings entry runs four checks in order:
-  1. indexed_reference_guard.process — indexed whole-file Read → block
-  2. semantic_search_scope_guard.process — invalid search scope → block
+One settings entry runs five checks in order:
+  1. indexed_reference_guard.process — indexed whole-file Read → advise the main session, block a delegate
+  2. semantic_search_scope_guard.process — a scope its values settle → corrected via `updatedInput`;
+     one that leaves the project → block
   3. file_size_preblock.process — large unbounded Read → clamped to a line limit via
      `updatedInput`, or blocked when its first line alone exceeds the budget
   4. tool_routing_nudge.process — optional hard block or advisory
+  5. video_read_hint.advisory — a Read of a video or GIF → advisory naming the contact-sheet tool
 
 Checks 1, 2 and 4 ship in the coding layer; each runs only where its file exists.
 A dispatched subagent skips only the file-size block because its context is discarded after the
@@ -20,28 +22,38 @@ Output contract:
 - A block writes stderr and exits 2.
 - An advisory emits `hookSpecificOutput.additionalContext` and exits 0.
 - Each sub-hook self-gates on `tool_name`.
-- One sub-hook fault stays fail-open and does not disable later checks.
+- One sub-hook fault stays fail-open and does not disable later checks. A present member's
+  import fault names the lost check and repair in `additionalContext`; an absent optional member is silent.
 
 Wired in: settings.json hooks.PreToolUse with matcher
-"Read|Grep|Glob|mcp__obsidian__obsidian_get_note|mcp__obsidian__obsidian_search_notes|mcp__plugin_semantic-search_semantic-search__search".
+"Read|Grep|Glob|mcp__plugin_semantic-search_semantic-search__search".
 The sub-hooks keep their own `main()` for standalone proofs.
 """
 
+import importlib
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import file_size_preblock
-try:  # project-local (rail battery); absent in projects that sync only the baseline
-    import rail_probe_guard
-except ImportError:
-    rail_probe_guard = None
 import _optional_hooks
 
-indexed_reference_guard, semantic_search_scope_guard, tool_routing_nudge = _optional_hooks.load(
-    "indexed_reference_guard", "semantic_search_scope_guard", "tool_routing_nudge")
+_IMPORT_ERRORS = {}
+
+
+def _failed_import(name, exc):
+    _IMPORT_ERRORS[name] = '%s: %s' % (type(exc).__name__, exc)
+    return None
+
+
+try:
+    file_size_preblock = importlib.import_module('file_size_preblock')
+except Exception as exc:
+    file_size_preblock = _failed_import('file_size_preblock', exc)
+rail_probe_guard, indexed_reference_guard, semantic_search_scope_guard, tool_routing_nudge, video_read_hint = (
+    _optional_hooks.load('rail_probe_guard', 'indexed_reference_guard', 'semantic_search_scope_guard',
+                         'tool_routing_nudge', 'video_read_hint', on_error=_failed_import))
 
 
 def _is_subagent(input_data) -> bool:
@@ -98,29 +110,35 @@ def main() -> None:
     except Exception:
         pass
 
-    # 0. Index-served reference block. NOT subagent-exempt: the cost it prevents is per-agent
-    # input spend multiplied across a fan-out, which a discarded context does not recover.
+    # 0. Index-served references: advise the main session and block delegates. NOT subagent-exempt:
+    # per-agent input spend multiplies across a fan-out, and a discarded context does not recover it.
+    index_advisory = None
     try:
-        block_msg = indexed_reference_guard.process(input_data) if indexed_reference_guard else None
-        if block_msg:
-            sys.stderr.write(block_msg + "\n")
+        result = indexed_reference_guard.process(input_data) if indexed_reference_guard else None
+        if result and result.get("block"):
+            sys.stderr.write(str(result["block"]) + "\n")
             sys.exit(2)
+        if result:
+            index_advisory = result.get("advisory")
     except Exception:
         pass
 
     # 0b. Semantic-search scope guard. NOT subagent-exempt: an out-of-root searchDir costs the same
     # index rebuild whoever calls it, unlike the orchestrator-context cost the exemption targets.
+    rewrite, rewrite_note = None, None
     try:
         result = semantic_search_scope_guard.process(input_data) if semantic_search_scope_guard else None
         if result and result.get("deny"):
             sys.stderr.write(str(result["deny"]) + "\n")
             sys.exit(2)
+        if result and result.get("rewrite"):
+            rewrite, rewrite_note = result["rewrite"], result.get("note")
     except Exception:
         pass
 
     # 1. Large file: clamp the read to the lines that fit, or block when no line range fits.
     clamp = None
-    if not subagent:
+    if not subagent and file_size_preblock is not None:
         try:
             result = file_size_preblock.process(input_data)
             if isinstance(result, dict):
@@ -141,11 +159,21 @@ def main() -> None:
     except Exception:
         pass
 
-    context = "\n".join(c for c in ((clamp or {}).get("additionalContext"), nudge) if c)
-    if clamp or context:
+    video = None
+    try:
+        video = video_read_hint.advisory(input_data) if video_read_hint else None
+    except Exception:
+        pass
+
+    faults = ['%s failed to import (%s); its checks do not run. Repair hooks/%s.py.' % (name, error, name)
+              for name, error in _IMPORT_ERRORS.items()]
+    context = "\n".join(c for c in (*faults, index_advisory, rewrite_note, (clamp or {}).get("additionalContext"), nudge, video) if c)
+    if clamp or rewrite or context:
         output = {"hookEventName": "PreToolUse"}
         if clamp:
             output["updatedInput"] = clamp["updatedInput"]
+        if rewrite:
+            output["updatedInput"] = dict(output.get("updatedInput") or {}, **rewrite)
         if context:
             output["additionalContext"] = context
         sys.stdout.write(json.dumps({"hookSpecificOutput": output}))

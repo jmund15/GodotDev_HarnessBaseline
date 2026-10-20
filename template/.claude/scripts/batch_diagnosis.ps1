@@ -1,16 +1,15 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-  Hang / budget classification for run_integration_batched.ps1. Dot-sourced by the runner;
+  Hang / reservation classification for Integration batches. Dot-sourced by IntegrationBatches.ps1;
   callers get Test-BatchNeedsDiagnosis (trigger) + Get-BatchDiagnosis (classify). Run
   directly with -SelfTest for the synthetic case table.
 
 .CLASSIFICATION
-  BUDGET_CLASS           The batch's honest work fills its reservation (wall/reservation >= 0.9,
-                         or the batch was budget-skipped while upstream consumed the global
-                         budget). The reservation/budget was wrong, not a wedge. Action names
-                         the exact change: raise expectedSec, move a dominant segment to a
-                         lighter batch, or find what slowed the run before raising BudgetMargin.
+  BUDGET_CLASS           The batch's honest work fills its reservation (wall/reservation >= 0.9).
+                         The reservation was wrong, not a wedge. Action names the exact change:
+                         raise expectedSec, or split a dominant segment (the batcher never
+                         splits one) or raise -TargetBatchSec.
   TEST_CLASS             The batch died before its honest time AND the captured output names a
                          last test. Action: run that test standalone — passes-alone-vs-suite-only
                          separates a wedge from batch composition (AttachedDeathFling lesson).
@@ -18,11 +17,10 @@
                          missing and the exact enabling change — never guesses a suspect.
 
 .TRIGGER (Test-BatchNeedsDiagnosis)
-  HANG / SILENT_SKIP persisted after the retry pass; SKIPPED_BUDGET with consecutive_failures
-  >= 2 (manifest v3 ledger); GREEN with workWall >= 1.5x reservation and reservation >= 60s
+  HANG / SILENT_SKIP persisted after the retry pass; GREEN with workWall >= 1.5x reservation and reservation >= 60s
   (advisory — catches a batch running 4x its expectation without tripping the hang cap, e.g.
   Integration_B5's 239.7s-vs-59.9s run). RED (adjudicated) and LOCKED (machine contention) are
-  not hang/budget signals and never trigger.
+  not hang signals and never trigger.
 #>
 [CmdletBinding()]
 param(
@@ -47,7 +45,6 @@ function Test-BatchNeedsDiagnosis {
     switch ($Batch.status) {
         'HANG'            { return $true }
         'SILENT_SKIP'     { return $true }
-        'SKIPPED_BUDGET'  { return $Counter -ge 2 }
         'GREEN'           { return ($Batch.workWall -ge 1.5 * $ReservationSec) -and ($ReservationSec -ge 60) }
         default           { return $false }
     }
@@ -64,23 +61,15 @@ function Get-BatchDiagnosis {
     )
     $ratio = if ($ReservationSec -gt 0) { $WorkWallSec / $ReservationSec } else { 0.0 }
 
-    if ($Batch.status -eq 'SKIPPED_BUDGET') {
-        return [pscustomobject]@{
-            verdict  = 'BUDGET_CLASS'
-            evidence = "skipped before running (global budget exhausted upstream); last_wall=${WorkWallSec}s reservation=${ReservationSec}s"
-            action   = 'the run was slower than its measured reservations x BudgetMargin (run_integration_batched.ps1): find what slowed the run before raising BudgetMargin — the batch itself never got to run'
-        }
-    }
-
     if ($ratio -ge 0.9) {
-        # Honest work filling the reservation -> the reservation/budget was wrong, not a wedge.
+        # Honest work filling the reservation -> the reservation was wrong, not a wedge.
         $total = [math]::Max(0.001, [double]$Batch.expectedSec)
         $dom = $null; $domSec = 0.0
         foreach ($s in $Batch.segs) {
             if ($UnitSecs.ContainsKey($s) -and [double]$UnitSecs[$s] -gt $domSec) { $domSec = [double]$UnitSecs[$s]; $dom = $s }
         }
         $action = if ($dom -and $Batch.segs.Count -gt 1 -and ($domSec / $total) -ge 0.5) {
-            "move segment $dom (${domSec}s of $total) to a lighter batch in Tests/integration_batch_durations.json"
+            "segment $dom alone is ${domSec}s of the ${ReservationSec}s reservation; the batcher never splits a segment, so split its tests into sub-namespaces or raise -TargetBatchSec"
         } else {
             "raise expectedSec for $($Batch.label) in Tests/integration_batch_durations.json (the reservation self-corrects; rebalance if this recurs)"
         }
@@ -140,9 +129,6 @@ if ($SelfTest) {
     Test-Expect 'HANG always triggers' (Test-BatchNeedsDiagnosis -Batch $hang -Counter 0 -ReservationSec 100) 'HANG must diagnose'
     $silent = [pscustomobject]@{ label = 'B2'; status = 'SILENT_SKIP'; segs = @('AI'); expectedSec = 12.5; workWall = 0 }
     Test-Expect 'SILENT_SKIP triggers' (Test-BatchNeedsDiagnosis -Batch $silent -Counter 0 -ReservationSec 60) 'persisted silent-skip must diagnose'
-    $skip1 = [pscustomobject]@{ label = 'B3'; status = 'SKIPPED_BUDGET'; segs = @('AI'); expectedSec = 12.5; workWall = 0 }
-    Test-Expect 'SKIPPED_BUDGET counter 1 does not trigger' (-not (Test-BatchNeedsDiagnosis -Batch $skip1 -Counter 1 -ReservationSec 60)) 'first skip is informational'
-    Test-Expect 'SKIPPED_BUDGET counter 2 triggers' (Test-BatchNeedsDiagnosis -Batch $skip1 -Counter 2 -ReservationSec 60) 'second consecutive skip must diagnose'
     $greenSlow = [pscustomobject]@{ label = 'B5'; status = 'GREEN'; segs = @('Casting'); expectedSec = 49.4; workWall = 160 }
     Test-Expect 'GREEN 1.6x reservation triggers' (Test-BatchNeedsDiagnosis -Batch $greenSlow -Counter 0 -ReservationSec 100) 'green-but-4x must diagnose'
     $greenOk = [pscustomobject]@{ label = 'B4'; status = 'GREEN'; segs = @('AI'); expectedSec = 12.5; workWall = 110 }
@@ -167,7 +153,10 @@ if ($SelfTest) {
 
     $dom = [pscustomobject]@{ label = 'B1'; status = 'HANG'; segs = @('Enemies', 'AI'); expectedSec = 42.5; workWall = 95 }
     $d4 = Get-BatchDiagnosis -Batch $dom -ReservationSec 100 -WorkWallSec 95 -LastOutput $plainOut -UnitSecs $unitSecs -UnitTests $unitTests
-    Test-Expect 'dominant segment named in action' ($d4.action -match 'move segment Enemies') "got $($d4.action)"
+    Test-Expect 'dominant segment action names splitting it, not a batch edit' (
+        $d4.action -match 'segment Enemies alone is 30s of the 100s reservation' -and $d4.action -match 'never splits a segment' -and
+        $d4.action -match 'split its tests into sub-namespaces or raise -TargetBatchSec' -and
+        $d4.action -notmatch 'move segment' -and $d4.action -notmatch 'integration_batch_durations') "got $($d4.action)"
 
     $bal = [pscustomobject]@{ label = 'B1'; status = 'HANG'; segs = @('A', 'B', 'C'); expectedSec = 27.0; workWall = 95 }
     $d5 = Get-BatchDiagnosis -Batch $bal -ReservationSec 100 -WorkWallSec 95 -LastOutput $plainOut -UnitSecs $unitSecs -UnitTests $unitTests
@@ -176,8 +165,6 @@ if ($SelfTest) {
     $d6 = Get-BatchDiagnosis -Batch $hang -ReservationSec 100 -WorkWallSec 40 -LastOutput $plainOut -UnitSecs $unitSecs -UnitTests $unitTests
     Test-Expect 'INSUFFICIENT_EVIDENCE without test lines' ($d6.verdict -eq 'INSUFFICIENT_EVIDENCE' -and $d6.action -match 'Verbosity') "got $($d6.verdict) / $($d6.action)"
 
-    $d7 = Get-BatchDiagnosis -Batch $skip1 -ReservationSec 60 -WorkWallSec 12.5 -LastOutput '' -UnitSecs $unitSecs -UnitTests $unitTests
-    Test-Expect 'SKIPPED_BUDGET classifies BUDGET_CLASS' ($d7.verdict -eq 'BUDGET_CLASS' -and $d7.action -match 'BudgetMargin') "got $($d7.verdict)"
 
     $lines | ForEach-Object { Write-Output $_ }
     if ($lines.Count -eq 0) { Write-Output 'SELFTEST_ERROR no cases executed — a zero-case self-test is a no-op, not a pass'; exit 1 }

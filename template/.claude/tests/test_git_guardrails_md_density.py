@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Proof for git_guardrails._md_density_verdict — the commit-time §5 density gate.
+"""Proof for git_guardrails._md_density_verdict — the commit-time §5 density advisory.
 
 WHY IT EXISTS HERE and not in harness_growth_guard: that guard is a PostToolUse hook matching
 `Write|Edit`. A `.md` authored through Bash — a python patch script, a heredoc, `sed -i` — never
@@ -150,10 +150,10 @@ def c_names_the_fix():
     d = repo()
     write(d, ".claude/skills/x.md", "# X\n\n" + OVER + "\n")
     v = verdict(d, ".claude/skills/x.md") or ""
-    return "§6" in v and "auto-memory/archive" in v and gg.BYPASS_VAR in v
+    return "§5" in v and "§6" in v and "never a cap" in v
 
 
-for n, f in (("a NEW over-cap unit on a loaded surface is BLOCKED", c_new_over),
+for n, f in (("a NEW over-cap unit on a loaded surface is flagged", c_new_over),
              ("a new under-cap unit passes", c_new_under),
              ("a pre-existing dense unit is not this commit's fault", c_preexisting_dense_untouched),
              ("SHRINKING a dense unit is not 'adding' one", c_preexisting_dense_shrunk),
@@ -163,7 +163,7 @@ for n, f in (("a NEW over-cap unit on a loaded surface is BLOCKED", c_new_over),
              ("a benchmark judge rubric (sealed instrument text) is exempt", c_judge_rubric_exempt),
              ("the benchmark campaign README still fires", c_benchmark_readme_still_fires),
              ("a non-.md staged path is ignored", c_non_md_ignored),
-             ("the refusal names the §6 fix, the evidence home and the bypass", c_names_the_fix)):
+             ("the advisory names §5's split test and §6's cuts, and calls the size a trigger", c_names_the_fix)):
     case(n, f)
 
 

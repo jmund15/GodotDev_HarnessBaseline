@@ -37,7 +37,7 @@ Every topic folder owns a `decisions.md` beside its design docs — the durable 
 **Schema** — six sections, all present from creation (an empty section reads as *nothing here yet*; a missing one reads as *never considered*). Bullets, not prose:
 
 ```markdown
-## Destination     <- one or two lines: what this topic is for. Every session orients here first.
+## Destination     <- concise statement of what this topic is for. Every session orients here first.
 ## Decided         <- one line per resolved fork + wikilink to the doc section carrying the detail
 ## Frontier        <- open, unblocked questions, each with its recommended answer
 ## Blocked         <- open question + the named question(s) that must resolve first
@@ -45,7 +45,9 @@ Every topic folder owns a `decisions.md` beside its design docs — the durable 
 ## Out of scope    <- consciously ruled out + why; never graduates back
 ```
 
-**Append-on-classify.** An entry lands in the SAME turn its fork is classified — a taste-fork batched per [`design_contract`](design_contract.md) clause 2, an open question raised in a frontier round (§9), an out-of-scope call. Never batched to design-lock or doc-save: a batch living only in session context is a batch a dead session loses.
+**Entry format.** A `## Decided` entry reads `- <resolved fork> — <source and one-line rationale> — [[<design doc>#<doc section>]]`, with a nested bullet when a concrete commitment needs its own line. Record unresolved follow-ups in `## Frontier` or `## Blocked`, never in `## Decided`.
+
+**Append-on-classify.** An entry lands in the SAME turn its fork is classified — a taste-fork batched per [`design_contract`](design_contract.md) clause 2, an open question raised in a frontier round (§9), an out-of-scope call; `/idea_brainstorm` records each cluster's commitments when settled and `/architecture_brainstorm` each agreed commitment as it is resolved. Never batched to design-lock or doc-save: a batch living only in session context is a batch a dead session loses. Per-skill bullet schemas live in each SKILL's authoring procedure.
 
 **Fog litmus:** a question belongs in `## Frontier` only if it can be stated precisely NOW — *not* whether it can be answered now. Can't state it → `## Fog`, carrying the fact-gathering step (an `/explore` lens, a code read, a playtest) that would sharpen it into a Frontier question.
 
@@ -53,17 +55,15 @@ Every topic folder owns a `decisions.md` beside its design docs — the durable 
 
 **Out-of-scope is a scoping act, not a step on the route** — it stays out of `## Decided`, which records the route actually walked. Its section exists so the next session doesn't re-litigate it.
 
-**Per-skill `## Decided` cadence** (on top of append-on-classify): `/idea_brainstorm` appends one block per cluster after user acknowledgement; `/architecture_brainstorm` one per design section after approval. Per-skill bullet schemas live in each SKILL's authoring step (idea Step 3 phase 6 / arch Step 5).
-
-**Consumption:** the final `write_doc` call (idea Step 5 / arch Step 6) passes it as `reference_files=[<path>]` so the worker recovers commitment detail lost from chat memory. The design doc's `## Decision Ledger` is a link to this file's `## Decided`, never a second copy — one home per authored value.
+**Consumption:** the design doc's `## Decision Ledger` is a link to this file's `## Decided`, never a second copy — one home per authored value. The design doc is a judgment-dense doc, written by direct `Write`; where its prose is delegated, the `write_doc` spec carries the commitments, because `reference_files` passes structure and voice only.
 
 ---
 
 ## §9. Interview mechanic — frontier rounds
 
-**Default for a fork BATCH: one round, every unblocked fork.** Number them; each carries a recommended answer and a one-line consequence of taking it. The user answers any subset; unanswered forks carry to the next round alongside whatever the answers unblocked. A fork whose answer depends on another fork still open in this round belongs to a LATER round.
+Present the unblocked judgment forks together. Carry unanswered or dependent forks forward only until their prerequisites settle. Number them; each is a packet (`CLAUDE.core.md` §Preferences), and each option states its consequence in one line.
 
-**Delivery:** ≤4 forks with enumerable options → `AskUserQuestion` (recommended option first, per that tool's convention). Otherwise a numbered prose round.
+**Delivery:** forks with enumerable options → `AskUserQuestion`, ≤4 per call, only the live options (two when two are live), recommended first. Each question defines its concept and what each option buys; an undefined term hides a premise the user may reject. An answer resting on a wrong premise gets a one-line correction and a re-ask of that fork. A fork without enumerable options goes in a numbered prose round.
 
 **One question per turn is still right for a single DEEP fork** — one whose answer reshapes what the next question even is. Rounds own batches; single-question turns own depth.
 
@@ -71,4 +71,4 @@ Every topic folder owns a `decisions.md` beside its design docs — the durable 
 
 **The round IS the frontier.** Every fork in it was appended to `decisions.md` `## Frontier` when it was classified (§8); answers move entries to `## Decided` in the turn they arrive. Composing a round is reading the frontier, not re-deriving it.
 
-Every option offered must be live per the `architecture_brainstorm` Step 4 *live-option litmus* — filler options train rubber-stamping.
+Every option offered must be live per the live-option litmus in the `architecture_brainstorm` skill's Socratic-and-approaches Step 4 procedure — filler options train rubber-stamping.

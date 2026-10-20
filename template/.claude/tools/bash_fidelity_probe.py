@@ -13,7 +13,8 @@ Each argument measures one run class:
 - argument 1: `x\y` means a run not followed by `"` collapsed (`collapses: true`); `x\\y` means intact;
 - argument 2: `x\"y` means a run followed by `"` collapsed (`collapses_before_quote: true`); `x\\"y`
   means intact.
-Any other shape, a missing or malformed `--client-version`, or an unknown flag exits 2 and writes
+Any other shape, a missing or malformed `--client-version`, a version flag not supplied as the final
+ two argv tokens (`--client-version <version>`), or an unknown flag exits 2 and writes
 nothing. The record `<version>|<sys.platform>` is merged into `.claude/cache/bash_backslash_fidelity.json`
 under `_hook_state.update_json_locked` (atomic replace) and printed.
 
@@ -59,14 +60,10 @@ def parse(argv):
             sys.stdout.write(USAGE)
             return 0
         if arg == "--client-version":
-            if i + 1 >= len(argv):
-                return _reject("--client-version needs a value")
+            if i != len(argv) - 2:
+                return _reject("--client-version <version> must be the final two arguments")
             version = argv[i + 1]
             i += 2
-            continue
-        if arg.startswith("--client-version="):
-            version = arg.split("=", 1)[1]
-            i += 1
             continue
         if arg.startswith("-"):
             return _reject("unknown flag %r" % arg)

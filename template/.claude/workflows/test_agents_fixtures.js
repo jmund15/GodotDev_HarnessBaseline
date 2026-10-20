@@ -1,12 +1,16 @@
 export const meta = {
   name: 'test-agents-fixtures',
-  description: 'Run synthetic agent integration fixtures: assemble CONTEXT+prompt deterministically, dispatch each review/audit agent, apply the 5-clause assertion matcher as code, then PASS-only independent validation',
+  description: 'Run synthetic review and audit agent fixtures',
   phases: [
     { title: 'Dispatch', detail: 'assemble CONTEXT+prompt from structured args; spawn each fixture agent (parallel)' },
     { title: 'Assert', detail: 'extract JSON findings (malformed = FAIL); run the 5-clause matcher' },
     { title: 'Validate', detail: 'validator review on PASS-only; REJECTED overrides to FAIL' },
   ],
 }
+// POST-CHECK exempt (fixture self-scoring): it scores its own fixtures' output.
+// Args: {fixtures: [{id, agent, model, effort?, ...}], effort?, checklists, agentTemplates, findingSchema, validator: {model, effort}}.
+// Every fixture pins its own model, and its effort or the call's args.effort when the transport declares efforts.
+// args.validator pins the validator that starts on each PASS; it is required and validated before any agent starts.
 
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
@@ -18,9 +22,17 @@ try {
   return { error: 'test-agents-fixtures: args must be JSON-serializable {fixtures: [...]}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
 
-// Endpoint vocabulary -- hooks/workflow_provider_guard.py injects __transport off-Anthropic:
-// {name, ids}. Nothing translates a pin any more: on a provider session that transport's own
-// registry ids are the legal vocabulary and a role name is DENIED before this script runs.
+// Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
+// every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
+// call the guard did not rewrite fails closed. Inlined per script because the Workflow sandbox has
+// no require/import.
+const TRANSPORT = A.__transport
+const validStringList = (value) => Array.isArray(value) && value.length > 0
+  && value.every(item => typeof item === 'string' && item.trim())
+if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
+  || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
+  return { error: 'test-agents-fixtures: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
+}
 const PIN = (m) => m
 const EFF = (e) => e
 const fixtures = Array.isArray(A.fixtures) ? A.fixtures : []
@@ -46,6 +58,9 @@ const ARCH_RULES = [
   '- Test helpers: Must be wrapped in #if TOOLS / #endif.',
 ].join('\n')
 const TEST_MODE = 'IMPORTANT TEST MODE: All context is provided below. Do NOT use Read, Grep, or Glob tools to access project files — analyze ONLY the provided context. Return your findings as a JSON array and nothing else.'
+// The platform relays the triggering user message to every agent as authoritative; an agent under test
+// whose fixture prompt looks unrelated can answer that message instead of its prompt.
+const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 
 const VALIDATE_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -96,7 +111,7 @@ function buildPrompt(fx) {
   for (const k of Object.keys(repl)) { body = body.split(k).join(repl[k]) }
   // If the template lacked a {{CONTEXT}} slot, append context so the agent still has it.
   if (!template.includes('{{CONTEXT}}')) { body = body + '\n\n' + context }
-  return TEST_MODE + '\n\n' + body
+  return TEST_MODE + '\n\n' + body + '\n\n' + RELAY_LINE
 }
 
 function extractFindings(text) {
@@ -161,18 +176,51 @@ function validatorPrompt(fx, findings) {
     '',
     'Evaluate: (1) Do the findings correctly identify the planted violation (not a different issue)? (2) Are they well-formed (proper action/category, sensible rationale)? (3) If a FIX tier, is the fix suggestion actually correct?',
     'Set validated=true only if the findings genuinely identify the planted violation.',
+    RELAY_LINE,
   ].join('\n')
 }
 
-const VALID_MODELS = ['opus', 'sonnet', 'haiku']
+// Every fixture pins its own model, and its own effort when the transport declares an effort vocabulary.
+const VALID_MODELS = TRANSPORT.ids
+const VALID_EFFORTS = TRANSPORT.efforts
+const pinVocab = 'model in [' + VALID_MODELS.join('|') + ']' + (VALID_EFFORTS ? ' and effort in [' + VALID_EFFORTS.join('|') + ']' : '')
+for (const fx of fixtures) {
+  if (!fx || typeof fx !== 'object') {
+    return { error: 'test-agents-fixtures: every fixture must be an object.' }
+  }
+}
+// A fixture without its own effort takes the call's args.effort: both are the caller's pins.
+for (const fx of fixtures) if (fx && fx.effort === undefined && A.effort !== undefined) fx.effort = A.effort
+const unpinned = fixtures.filter(fx => !VALID_MODELS.includes(fx.model) || (VALID_EFFORTS !== undefined && !VALID_EFFORTS.includes(fx.effort)))
+if (unpinned.length > 0) {
+  return { error: 'test-agents-fixtures: pin model and effort on every job (orchestration §5). Unpinned or illegal: '
+    + unpinned.map(fx => fx.id || 'fixture').join(', ') + '. Each fixture needs ' + pinVocab + '.',
+  badJobs: unpinned.map(fx => fx.id || 'fixture') }
+}
+// Each PASS starts the validator (validate:<id>), so with any fixture present its pin is required before the first dispatch.
+// The validator judges every PASS, so the caller pins it (args.validator); it never takes the guard-filled args.checker.
+const validatorOk = !!A.validator && typeof A.validator === 'object' && VALID_MODELS.includes(A.validator.model)
+  && (VALID_EFFORTS === undefined || VALID_EFFORTS.includes(A.validator.effort))
+if (!validatorOk) {
+  return { error: 'test-agents-fixtures: pin model and effort on every job (orchestration §5). args.validator = {model, effort} is required because the validator starts on every PASS; it must pin ' + pinVocab + '. Refusing before any fixture starts.' }
+}
+
+// TOOL PROFILES — the inventory each dispatched agent-under-test and each validator launches with. A
+// native child INHERITS the session's MCP set, so every entry is `inherited` with effectiveMcp
+// unknown, never a strict claim of enforcement. A validator whose fixture never PASSes is listed but
+// never spawned; that is the same set the engine can reach.
+const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
+const tpOf = (label) => TOOLP.d[label] || TOOLP.f['review'] || null
+log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(
+  fixtures.flatMap(fx => ['dispatch:' + fx.id, 'validate:' + fx.id]).map(l => [l, tpOf(l)]))))
 
 // ---- pipeline: dispatch -> assert -> PASS-only validate ----
 const results = await pipeline(
   fixtures,
   // stage 1: dispatch the agent under test (model from fixture; NO schema — must catch malformed JSON as FAIL)
   (fx) => {
-    const model = VALID_MODELS.includes(fx.model) ? fx.model : 'sonnet'
-    return agent(buildPrompt(fx), { label: 'dispatch:' + fx.id, phase: 'Dispatch', model: PIN(model) })
+    const pinned = fx.effort !== undefined ? { effort: EFF(fx.effort) } : {}
+    return agent(buildPrompt(fx), { label: 'dispatch:' + fx.id, phase: 'Dispatch', model: PIN(fx.model), ...pinned })
       .then(response => ({ response }))
   },
   // stage 2: extract findings + 5-clause matcher (pure deterministic code)
@@ -187,7 +235,7 @@ const results = await pipeline(
   // stage 3: validation on PASS-only; REJECTED overrides to FAIL
   async (prev, fx) => {
     if (!prev.pass) { return prev }
-    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: PIN('sonnet'), effort: EFF('medium'), schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: PIN(A.validator.model), ...(A.validator.effort !== undefined ? { effort: EFF(A.validator.effort) } : {}), schema: VALIDATE_SCHEMA })
     if (!v.validated) {
       return { ...prev, pass: false, reason: 'Validator REJECTED: ' + v.reason, validated: false }
     }

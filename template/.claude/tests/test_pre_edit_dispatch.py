@@ -3,7 +3,7 @@
 
 Four separate settings.json commands became one dispatcher. Consolidation is only safe if
 every sub-hook keeps the channel it had: pattern_enforcer blocks with exit 2 + stderr,
-harness_edit_skill_reminder denies with a permissionDecision, readonly_lens_write_guard
+harness_edit_skill_reminder advises through additionalContext, readonly_lens_write_guard
 writes an audit note to stderr without blocking, and running_script_edit_guard advises
 through additionalContext. Each case below feeds a real PreToolUse payload by subprocess
 and asserts on the emitted channel.
@@ -138,6 +138,61 @@ def live_script_instance(tmp):
     return script, proc
 
 
+def test_s13_non_floor_fault_advises_and_preserves_later_output():
+    module = load_dispatch_module()
+
+    def boom(_payload):
+        raise RuntimeError("planted non-floor fault")
+
+    rc, out, err = module.dispatch(edit("C:/repo/Game.cs", "x"), chain=(
+        ("pattern_enforcer", boom),
+        ("later", lambda _p: {"context": "later output"}),
+    ))
+    decision, ctx = hook_output(out)
+    assert rc == 0 and decision is None
+    assert "pattern_enforcer" in ctx and "RuntimeError" in ctx and "later output" in ctx
+    assert "planted non-floor fault" in err
+
+
+def test_s13_floor_fault_blocks_in_both_dispatchers():
+    module = load_dispatch_module()
+
+    def boom(_payload):
+        raise RuntimeError("planted floor fault")
+
+    boom.FAIL_CLOSED = True
+    rc, out, err = module.dispatch(edit("C:/repo/Game.cs", "x"), chain=(("floor", boom),))
+    assert rc == 2 and not out and "floor" in err
+    import pre_bash_dispatch as bash_dispatch
+    import types
+    from unittest.mock import patch
+    floor = types.SimpleNamespace(__name__="planted_floor", FAIL_CLOSED=True)
+
+    def bash_boom():
+        raise RuntimeError("planted floor fault")
+
+    floor.main = bash_boom
+    with patch.object(bash_dispatch.run_call_router, "route", return_value=({}, [])):
+        rc, out, err = bash_dispatch.dispatch(json.dumps({"tool_name": "Bash", "tool_input": {
+            "command": "git status --short"}}), hooks=((floor, []),))
+    assert rc == 2 and not out and "planted_floor" in err
+
+
+def test_actual_pattern_edit_fault_stays_advisory(monkeypatch):
+    module = load_dispatch_module()
+    import pattern_enforcer
+    def boom(_payload):
+        raise RuntimeError('planted actual edit fault')
+    monkeypatch.setattr(pattern_enforcer, 'process', boom)
+    rc, out, err = module.dispatch(edit('C:/repo/Game.cs', 'x'), chain=(
+        ('pattern_enforcer', 'enforcement'),
+        ('later', lambda _p: {'context': 'later edit check ran'}),
+    ))
+    decision, context = hook_output(out)
+    assert rc == 0 and decision is None
+    assert 'planted actual edit fault' in context and 'later edit check ran' in context
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="pre_edit_dispatch_")
     home = os.path.join(tmp, "home")
@@ -146,6 +201,13 @@ def main():
     env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
                CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8")
     cases = list(registration_cases())
+    for proof in (test_s13_non_floor_fault_advises_and_preserves_later_output,
+                  test_s13_floor_fault_blocks_in_both_dispatchers):
+        try:
+            proof()
+            cases.append((proof.__name__, True))
+        except Exception as exc:
+            cases.append((proof.__name__ + ": " + repr(exc), False))
 
     game_cs = os.path.join(ROOT, "Scripts", "Spells", "SpellInstance.cs")
 
@@ -155,7 +217,7 @@ def main():
                   rc == 0 and out in ("", "{}") and err == ""))
 
     # --- pattern_enforcer: hard block, first in the chain ------------------
-    rc, out, err = run(edit(game_cs, EXPORT_NULL_VIOLATION), env)
+    rc, out, err = run(edit(game_cs, 'GD.' + 'Print("x");'), env)
     cases.append(("pattern_enforcer still blocks with exit 2 + stderr",
                   rc == 2 and "BLOCKED" in err))
     cases.append(("a blocked call emits no advisory on stdout", out in ("", "{}")))
@@ -164,10 +226,13 @@ def main():
     harness_md = os.path.join(CLAUDE, "commands", "explore.md")
     rc, out, err = run(edit(harness_md, "text", session="predeny1"), env)
     decision, ctx = hook_output(out)
-    cases.append(("harness_edit_skill_reminder still denies an unguarded harness edit",
-                  rc == 0 and decision == "deny"))
+    cases.append(("harness_edit_skill_reminder denies a harness edit while the skill is not in context",
+                  rc == 0 and decision == "deny" and "instruction_quality" in out))
 
-    write_state(state_dir, "preload1", {"skills_loaded": ["instruction_quality"]})
+    subprocess.run([sys.executable, os.path.join(HOOKS, "skill_load_marker.py")],
+                   input=json.dumps({"tool_name": "Skill", "session_id": "preload1",
+                                     "tool_input": {"skill": "instruction_quality"}}),
+                   capture_output=True, text=True, timeout=60, env=env)
     rc, out, err = run(edit(harness_md, "text", session="preload1"), env)
     decision, ctx = hook_output(out)
     cases.append(("with the skill loaded the reminder advises instead of denying",
@@ -232,8 +297,9 @@ def main():
 
     rc, out, err = module.dispatch(payload, chain=(("pattern_enforcer", boom), noisy))
     decision, ctx = hook_output(out)
-    cases.append(("E4: an enforcement runtime fault fails closed and names its hook",
-                  rc == 0 and decision == "deny" and "pattern_enforcer" in err))
+    cases.append(("S13: a non-floor runtime fault allows and names its hook in context",
+                  rc == 0 and decision is None and "pattern_enforcer" in ctx
+                  and "advisory-from-noisy" in ctx))
 
     rc, out, err = module.dispatch(payload, chain=(noisy, ("running_script_edit_guard", boom)))
     decision, ctx = hook_output(out)
@@ -246,8 +312,8 @@ def main():
         chain=(("pattern_enforcer", lambda payload: "invalid result"),),
     )
     decision, ctx = hook_output(out)
-    cases.append(("E4: a malformed enforcement result fails closed and names its hook",
-                  rc == 0 and decision == "deny" and "pattern_enforcer" in err))
+    cases.append(("S13: a malformed non-floor result allows and names its hook in context",
+                  rc == 0 and decision is None and "pattern_enforcer" in ctx))
 
     original_import_module = module.importlib.import_module
 
@@ -262,8 +328,8 @@ def main():
     finally:
         module.importlib.import_module = original_import_module
     decision, ctx = hook_output(out)
-    cases.append(("E4: an enforcement import fault fails closed and names its hook",
-                  rc == 0 and decision == "deny" and "pattern_enforcer" in err))
+    cases.append(("S13: a non-floor import fault allows and names its hook in context",
+                  rc == 0 and decision is None and "pattern_enforcer" in ctx))
 
     # A faulted guard that denied every edit would also deny the edit that repairs it.
     repair = edit(os.path.join(HOOKS, "pattern_enforcer.py"), "repaired = True")
@@ -302,6 +368,29 @@ def main():
     cases.append(("E4: an advisory import fault preserves later output and names its hook",
                   rc == 0 and "advisory-from-noisy" in (ctx or "")
                   and "running_script_edit_guard" in err))
+
+    cases.append(("S7: the harness skill reminder has advisory fault posture",
+                  dict(module.CHAIN)["harness_edit_skill_reminder"] == "advisory"))
+    rc, out, err = module.dispatch(payload, chain=(("harness_edit_skill_reminder", boom), noisy))
+    decision, ctx = hook_output(out)
+    cases.append(("S7: a reminder fault does not deny the edit",
+                  decision is None and "advisory-from-noisy" in ctx))
+    rewritten = dict(payload["tool_input"], new_string="fixed")
+    seen = []
+    rc, out, err = module.dispatch(payload, chain=(
+        ("fixer", lambda p: {"updatedInput": rewritten, "context": "fixed note"}),
+        ("observer", lambda p: seen.append(p["tool_input"]["new_string"])),
+    ))
+    cases.append(("S11: the rewrite reaches later hooks and stdout",
+                  rc == 0 and json.loads(out)["hookSpecificOutput"]["updatedInput"] == rewritten
+                  and seen == ["fixed"] and "fixed note" in out))
+
+    resource_input = {"file_path": os.path.join(tmp, 'new.tres'),
+                      "content": '[gd_resource load_steps=9 type="Resource" format=3]\n\n[resource]\n'}
+    rc, out, err = module.dispatch({'tool_name': 'Write', 'tool_input': resource_input})
+    resource_updated = (json.loads(out).get('hookSpecificOutput') or {}).get('updatedInput') if out else None
+    cases.append(('S12: resource normalization reaches PreToolUse stdout',
+                  rc == 0 and resource_updated and 'load_steps' not in resource_updated['content']))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

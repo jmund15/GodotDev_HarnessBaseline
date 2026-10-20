@@ -1,6 +1,7 @@
 ---
 description: Generate the full doc suite for a system — usage, architecture, and retrospective.
 disable-model-invocation: true
+allowed-tools: Workflow
 ---
 
 Generate the full documentation suite for a system (usage + architecture + retrospective).
@@ -34,7 +35,7 @@ Read `agents/documentation_structure.md` (folder structure) and the `obsidian_co
 
 ## Phase 2 — Parallel Documentation
 
-Dispatch all 3 agents in one `dispatch.js` run (`orchestration` §0 — every fan-out is a Workflow): write each brief to `.claude/scratch/doc_full/prompt_<label>.md` and pass `jobs: [{ label, promptPath, model: "<executor>", effort: "medium", agentType: "general-purpose" }, …]`. The executor tier for creative and technical depth; `medium` because the folder structure is supplied and the prose is not. Results return together when the run completes; never poll.
+Dispatch all 3 agents as one fan-out through `/delegate`: write each brief to `.claude/scratch/doc_full/prompt_<label>.md` and pass `jobs: [{ label, promptPath, model: "<executor>", effort: "<resolved effort>" }, …]`. Pin the executor tier for creative and technical depth, at its ladder cell for directed work: the folder structure is supplied and the prose is not. Results return together when the run completes; never poll.
 
 **`write_doc` availability:** Check it live. If unavailable, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
 

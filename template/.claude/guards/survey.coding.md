@@ -4,7 +4,7 @@
 
 ## detailed
 
-- A code identifier: anchor its declaration, then navigate; never a bare Grep of the name alone. **Under a concurrent dispatch (any fan-out of 2+) the language server is BANNED: anchor with a Grep on the declaration, then Read.** A serialized single-agent dispatch continues from the anchor with LSP `documentSymbol`/`findReferences`. [CLAUDE.coding.md §Semantic Search MCP]
+- A code identifier: anchor its declaration, then navigate; never a bare Grep of the name alone. Under a concurrent dispatch, anchor with a Grep on the declaration, then Read; the single-flight bar in `any.md` names language servers. A serialized single-agent dispatch continues from the anchor with LSP `documentSymbol`/`findReferences`. [CLAUDE.coding.md §Semantic Search MCP]
 
 ## condensed
 

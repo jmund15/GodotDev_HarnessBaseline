@@ -1,0 +1,777 @@
+#!/usr/bin/env python3
+"""Proof for `provider_bands.room` and `provider_bands.pick`: the currency pick ranks plan windows by room.
+
+Room is the share of a window's allowance left over the share of its time left. Every case plants
+the registry rows (a dict, never the live registry) and the capacity readings (a reader function),
+so no case depends on this machine's quota. The CLI case plants a fresh capacity cache for the
+live registry's plan-quota transports and runs `provider_bands.py pick executor` as a process.
+A Console credit plan (S5) is one more plan-quota window: its `credit_cycle` window takes the room
+formula unchanged, and its dollars travel in `quota.credits`.
+
+    python3 .claude/tests/test_provider_bands_pick.py
+"""
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+from _display_words import banned_in
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOOL = os.path.join(HERE, "..", "tools", "provider_bands.py")
+spec = importlib.util.spec_from_file_location("pb_pick", TOOL)
+pb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pb)
+
+NOW = 1_800_000_000.0
+WEEK_MIN = 7 * 24 * 60
+
+
+def reading(transport, used, left, window="seven_day", minutes=WEEK_MIN, status="available",
+            cost="plan-quota"):
+    """A normalized reading whose routing window has `used`% spent and `left` of its time to go."""
+    win = {"name": window, "usedPercent": used, "resetsAt": NOW + left * minutes * 60,
+           "windowDurationMins": minutes, "pressure": 1.0, "band": "Hot"}
+    return {"schemaVersion": 1, "transport": transport, "costModel": cost, "sourceKind": "live",
+            "observedAt": "2027-01-15T08:00:00Z", "status": status,
+            "quota": {"windows": [win], "routingWindow": window, "bindingWindow": window,
+                      "routingBand": "Hot", "dispatchBand": "Hot"}}
+
+
+def registry(plans, pay=("paid",), tier="executor"):
+    """Plan-quota transports `plans` and marginal-usd transports `pay`, one `tier` row each."""
+    transports = {n: {"costModel": "plan-quota"} for n in plans}
+    transports.update({n: {"costModel": "marginal-usd"} for n in pay})
+    models = [{"transport": n, "id": n + "-model-1", "alias": n + "-m", "roles": [tier]}
+              for n in list(plans) + list(pay)]
+    return {"transports": transports, "models": models}
+
+
+def reader(readings):
+    def read(transport, _data=None):
+        value = readings.get(transport)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    return read
+
+
+def main():
+    cases = []
+    reasons = []
+    real_pick = pb.pick
+
+    def recorded_pick(*args, **kwargs):
+        got = real_pick(*args, **kwargs)
+        reasons.append(got["reason"])
+        return got
+
+    pb.pick = recorded_pick
+
+    def case(name, ok, detail=""):
+        cases.append((name, bool(ok), detail))
+
+    has_pick = hasattr(pb, "pick") and hasattr(pb, "room")
+    case("provider_bands exposes room and pick", has_pick)
+    if not has_pick:
+        return report(cases)
+
+    # D1: today's readings (2026-09-28): Anthropic 22% used 6.1d left, Go 30% 6.3d, Codex 77% 5.1d.
+    today = {"anthropic": reading("anthropic", 22, 6.1 / 7),
+             "go": reading("go", 30, 6.3 / 7),
+             "codex": reading("codex", 77, 5.1 / 7)}
+    data = registry(["anthropic", "go", "codex"], pay=("deepseek",))
+    got = pb.pick("executor", "anthropic", data=data, read=reader(today), now=NOW)
+    rooms = {r["transport"]: r.get("room") for r in got.get("ranked") or []}
+    case("today's readings pick anthropic at room 0.90",
+         got.get("transport") == "anthropic" and round(got.get("room") or 0, 2) == 0.90, repr(got))
+    case("go ranks second at 0.78 and codex last near 0.31",
+         [r["transport"] for r in got["ranked"]] == ["anthropic", "go", "codex"]
+         and round(rooms["go"], 2) == 0.78 and 0.30 <= rooms["codex"] <= 0.32, repr(rooms))
+    case("the reason is one checkable line in rank order",
+         got.get("reason", "").startswith("anthropic Hot: 7d 78% left, 87% to go, resets ")
+         and " | go Hot: 7d 70% left, 90% to go, resets " in got["reason"]
+         and " | codex Hot: 7d 23% left, 73% to go, resets " in got["reason"]
+         and not banned_in(got["reason"])
+         and "\n" not in got.get("reason", ""), repr(got.get("reason")))
+    case("a plan pick leaves no pay options", got.get("payOptions") == [], repr(got.get("payOptions")))
+
+    # A reading that names its plan size shows it in the reason, so two plans of one route differ.
+    sized = {"anthropic": dict(reading("anthropic", 22, 6.1 / 7), planType="max_20x"),
+             "second": dict(reading("second", 30, 6.1 / 7), planType="max_5x")}
+    got = pb.pick("executor", "anthropic", data=registry(["anthropic", "second"]), read=reader(sized), now=NOW)
+    case("the reason names each plan's size when its reading carries planType",
+         "anthropic (max_20x) Hot: 7d 78% left" in got["reason"] and "second (max_5x) Hot: 7d 70% left, 87% to go" in got["reason"],
+         repr(got.get("reason")))
+
+    odd = {"anthropic": reading("anthropic", 22, 6.1 / 7)}
+    odd["anthropic"]["quota"]["windows"][0]["band"] = "Mystery"
+    try:
+        shown = pb.display_windows(odd["anthropic"], NOW)
+    except Exception as exc:  # noqa: BLE001
+        shown = repr(exc)
+    case("a cached band the ladder does not know sorts without raising", isinstance(shown, list) and shown, repr(shown))
+    spent_w = {"band": "Hot", "resetsAt": NOW + 3600}
+    case("reset_clause names a Hot window's reset and nothing for a cooler one",
+         hasattr(pb, "reset_clause") and pb.reset_clause(spent_w, NOW).startswith("resets ")
+         and pb.reset_clause(dict(spent_w, band="Surplus"), NOW) is None
+         and pb.reset_clause({"band": "Hot"}, NOW) is None, repr(getattr(pb, "reset_clause", None)))
+
+    # D1: an early burst is not punished; room reads what is left against the time left.
+    burst = {"burst": reading("burst", 20, 0.95), "ahead": reading("ahead", 80, 0.40)}
+    got = pb.pick("executor", None, data=registry(["burst", "ahead"]), read=reader(burst), now=NOW)
+    case("an early burst (20% used, 95% left) outranks a plan with 20% left and 40% of its window",
+         got.get("transport") == "burst" and round(got.get("room"), 2) == 0.84
+         and round(next(r["room"] for r in got["ranked"] if r["transport"] == "ahead"), 2) == 0.5, repr(got))
+
+    # D2.2: exhausted and unreadable plans drop out, named with why; unreadable is never roomy.
+    mixed = {"full": reading("full", 100, 0.5), "spent": reading("spent", 60, 0.5, status="exhausted"),
+             "blind": None, "broken": RuntimeError("probe failed"), "ok": reading("ok", 50, 0.5)}
+    got = pb.pick("executor", None, data=registry(list(mixed)), read=reader(mixed), now=NOW)
+    why = {r["transport"]: r.get("why") for r in got["ranked"] if r.get("room") is None}
+    case("only the readable plan with allowance left is picked", got.get("transport") == "ok", repr(got))
+    case("a 100%-used window and an exhausted status drop as exhausted",
+         "exhausted" in str(why.get("full")) and "exhausted" in str(why.get("spent")), repr(why))
+    case("a missing reading and a raising reader drop as unreadable",
+         "unreadable" in str(why.get("blind")) and "unreadable" in str(why.get("broken")), repr(why))
+    case("dropped plans are named in the reason", all(n in got["reason"] for n in ("full", "blind")),
+         got["reason"])
+    case("a spent window keeps its plain figures in the human reason",
+         "full Exhausted: 7d 0% left, 50% to go, resets " in got["reason"], got["reason"])
+    case("pick reasons contain no retired display dialect and each plan has one entry",
+         not banned_in(got["reason"])
+         and got["reason"].count("full Exhausted:") == 1, got["reason"])
+    named = [pb.window_figures({"name": "thirty_day", "windowDurationMins": 43200, "left": 35, "timeLeft": 69}),
+             pb.window_figures({"name": "five_hour", "left": 18, "timeLeft": 20})]
+    case("a window is named by its length, any provider's; a known name without a length still reads short",
+         named == ["30d 35% left, 69% to go", "5h 18% left, 20% to go"], repr(named))
+
+    # A reset more than a day out carries its date: "resets 19:26Z" on a 30d window read as today.
+    soon, far = NOW + 3 * 3600, NOW + 20 * 86400
+    stamps = [pb.reset_text(soon, NOW), pb.reset_text(far, NOW)]
+    case("a reset within a day reads HH:MMZ; one further out carries its date",
+         stamps == [time.strftime("%H:%MZ", time.gmtime(soon)), time.strftime("%b %d %H:%MZ", time.gmtime(far))],
+         repr(stamps))
+    hot = pb.window_figures({"name": "thirty_day", "windowDurationMins": 43200, "left": 35, "timeLeft": 67,
+                             "band": "Hot", "resetsAt": far}, now=NOW)
+    case("a Hot window's far reset shows its date in the figures",
+         hot.endswith(", resets " + time.strftime("%b %d %H:%MZ", time.gmtime(far))), hot)
+
+    # D2 / C2: a plan with its own window name ranks with no code change.
+    four = dict(today, fortnight=reading("fortnight", 10, 0.9, window="fortnight", minutes=2 * WEEK_MIN))
+    got = pb.pick("executor", "anthropic", data=registry(list(four), pay=()), read=reader(four), now=NOW)
+    case("a fourth plan whose routing window is named `fortnight` ranks by its own room",
+         got.get("transport") == "fortnight" and round(got.get("room"), 2) == 1.0, repr(got.get("reason")))
+
+    # D2.1: the ladder decides fitness; a plan with no row claiming the tier is no candidate.
+    fit = registry(["anthropic"], pay=("deepseek",))
+    fit["transports"]["idle"] = {"costModel": "plan-quota"}
+    fit["models"].append({"transport": "idle", "id": "idle-1", "alias": "idle-m", "roles": ["scout"]})
+    got = pb.pick("executor", "anthropic", data=fit,
+                  read=reader({"anthropic": reading("anthropic", 90, 0.9), "idle": reading("idle", 0, 0.9)}),
+                  now=NOW)
+    case("a plan with no row serving the tier is not ranked",
+         [r["transport"] for r in got["ranked"]] == ["anthropic"], repr(got["ranked"]))
+
+    # D2.4: no plan left -> pay options, transport null.
+    got = pb.pick("executor", "anthropic", data=registry(["anthropic"], pay=("deepseek",)),
+                  read=reader({"anthropic": reading("anthropic", 100, 0.5)}), now=NOW)
+    case("with no plan left the pick names the fit marginal-usd rows and no transport",
+         got.get("transport") is None and [p.get("alias") for p in got.get("payOptions") or []] == ["deepseek-m"],
+         repr(got))
+
+    # D2.3: the session's own plan is a candidate like any other, and wins a tie.
+    tie = {"a": reading("a", 50, 0.5), "b": reading("b", 50, 0.5)}
+    got = pb.pick("executor", "b", data=registry(["a", "b"]), read=reader(tie), now=NOW)
+    case("equal rooms rank the session's own plan first", got.get("transport") == "b", repr(got["ranked"]))
+
+    # A list of tiers takes the union of their fit rows (a job whose shape implies no tier).
+    multi = registry(["x"], pay=())
+    multi["transports"]["y"] = {"costModel": "plan-quota"}
+    multi["models"].append({"transport": "y", "id": "y-1", "alias": "y-m", "roles": ["fanout"]})
+    got = pb.pick(["executor", "fanout"], None, data=multi,
+                  read=reader({"x": reading("x", 50, 0.5), "y": reading("y", 10, 0.5)}), now=NOW)
+    case("a tier list ranks every plan serving any of them", got.get("transport") == "y", repr(got))
+
+    # D1: room itself, on the window fields a probe emits.
+    win = {"usedPercent": 22, "resetsAt": NOW + 6.1 * 86400, "windowDurationMins": WEEK_MIN}
+    case("room reads (100 - used) / (100 x fraction left)", round(pb.room(win, NOW), 2) == 0.90,
+         repr(pb.room(win, NOW)))
+    case("a window with no length has no room",
+         pb.room({"usedPercent": 10, "resetsAt": NOW + 3600}, NOW) is None)
+    case("a window whose reset has passed has no room (the reading predates the reset)",
+         pb.room({"usedPercent": 10, "resetsAt": NOW - 60, "windowDurationMins": 300}, NOW) is None)
+
+    # Spare: the share of the window that even-pace spending leaves at the reset, left x (1 - 1/room).
+    has_spare = hasattr(pb, "spare")
+    case("provider_bands exposes spare", has_spare)
+    if has_spare:
+        case("room 3.0 with 60% left spares 40% of the window",
+             round(pb.spare({"room": 3.0, "left": 60.0}), 2) == 40.0,
+             repr(pb.spare({"room": 3.0, "left": 60.0})))
+        case("room at or below even pace spares nothing",
+             pb.spare({"room": 1.0, "left": 90.0}) is None and pb.spare({"room": 0.6, "left": 30.0}) is None)
+        case("an unreadable plan spares nothing",
+             pb.spare({"room": None, "why": "exhausted"}) is None)
+
+    # A short window binds the pick: a plan with weekly room but a nearly spent 5-hour window
+    # cannot carry a job that starts now (observed: 83% of the 5-hour window used, 46% of its time left).
+    five = 5 * 60
+
+    def with_short(row, used, left):
+        row["quota"]["windows"].append({"name": "five_hour", "usedPercent": used,
+                                        "resetsAt": NOW + left * five * 60, "windowDurationMins": five})
+        return row
+
+    tight = {"secondary": with_short(reading("secondary", 32, 0.6), 83, 0.46),
+             "codex": reading("codex", 40, 0.59)}   # weekly room 1.02, below the secondary's 1.13
+    tight["secondary"]["quota"]["windows"][0]["band"] = "Surplus"
+    got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(tight), now=NOW)
+    sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
+    case("a nearly spent 5-hour window ranks its plan below one with weekly room only",
+         got.get("transport") == "codex" and sec.get("binding") == "five_hour"
+         and round(sec.get("bindingRoom") or 0, 2) == 0.37, repr(got))
+    case("the weekly room stays the plan's room, so the ahead-of-pace share still reads the weekly window",
+         round(sec.get("room") or 0, 2) == 1.13, repr(sec))
+    case("the pick's reason names the binding window",
+         "5h 17% left, 46% to go" in (got.get("reason") or ""), got.get("reason"))
+    full = {"secondary": with_short(reading("secondary", 32, 0.6), 100, 0.3),
+            "codex": reading("codex", 90, 0.59)}
+    got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(full), now=NOW)
+    sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
+    case("a spent 5-hour window drops its plan as exhausted",
+         got.get("transport") == "codex" and sec.get("room") is None and "five_hour" in (sec.get("why") or ""),
+         repr(got))
+
+    credited = {'secondary': with_short(reading('secondary', 32, 0.6), 100, 0.3),
+                'codex': reading('codex', 90, 0.59)}
+    credited['secondary']['quota']['credits'] = {'unlimited': True}
+    try:
+        got = pb.pick('executor', None, data=registry(list(credited)), read=reader(credited), now=NOW)
+        sec = next(r for r in got['ranked'] if r['transport'] == 'secondary')
+        ok = got['transport'] == 'codex' and sec.get('bindingRoom') == 0 and sec.get('binding') == 'five_hour'
+        detail = repr(got)
+    except Exception as exc:
+        ok, detail = False, repr(exc)
+    case('a zero-room short window with credits gates the plan without raising', ok, detail)
+
+    # A short window at or above even pace constrains nothing (observed 2026-10-05: a dormant
+    # five_hour window held a plan with 32% weekly left and 0.39d to reset below codex at 1.29).
+    def with_dormant(row):
+        row["quota"]["windows"].append({"name": "five_hour", "usedPercent": 0, "windowDurationMins": five})
+        return row
+
+    for label, short in (("dormant", with_dormant), ("exactly even", lambda r: with_short(r, 50, 0.5))):
+        expiring = {"secondary": short(reading("secondary", 68, 32 / 568)), "codex": reading("codex", 29, 0.55)}
+        got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(expiring), now=NOW)
+        sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
+        case("a plan at room 5.68 with a %s 5-hour window outranks a plan at 1.29" % label,
+             got.get("transport") == "secondary" and round(got.get("room") or 0, 2) == 5.68
+             and sec.get("binding") is None, repr(got))
+    below = {"secondary": with_short(reading("secondary", 68, 32 / 568), 70, 0.5), "codex": reading("codex", 29, 0.55)}
+    got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(below), now=NOW)
+    sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
+    case("a 5-hour window below even pace (0.6) still ranks its plan by 0.6",
+         got.get("transport") == "codex" and round(sec.get("bindingRoom") or 0, 2) == 0.6, repr(got))
+
+    # A short window within the reading's whole-percent resolution of even pace gates nothing
+    # (observed 2026-10-05: five_hour rooms 0.98 at 58% used and 0.994 bound a plan at 5.87/5.94
+    # under codex at 1.30, while its weekly share expired unused within hours).
+    for label, used, short_room in (("0.98 at 58% used", 58, 0.98), ("0.994", 50, 0.994)):
+        near = {"secondary": with_short(reading("secondary", 68, 32 / 587), used, (100 - used) / (100 * short_room)),
+                "codex": reading("codex", 35, 0.5)}
+        got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(near), now=NOW)
+        sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
+        case("a plan at room 5.87 with a 5-hour room of %s outranks a plan at 1.30" % label,
+             got.get("transport") == "secondary" and round(got.get("room") or 0, 2) == 5.87
+             and sec.get("binding") is None and "bound by" not in (got.get("reason") or ""), repr(got))
+    late = {"secondary": with_short(reading("secondary", 68, 32 / 587), 83, 0.2), "codex": reading("codex", 35, 0.5)}
+    got = pb.pick("executor", "anthropic", data=registry(["secondary", "codex"]), read=reader(late), now=NOW)
+    sec = next((r for r in got.get("ranked") or [] if r["transport"] == "secondary"), {})
+    case("a 5-hour window 83% used with an hour to reset gates its plan below a plan at 1.30",
+         got.get("transport") == "codex" and sec.get("binding") == "five_hour"
+         and round(sec.get("bindingRoom") or 0, 2) == 0.85, repr(got))
+
+    plan_cases(case)
+    credit_cases(case)
+    names = [pb.window_name(w) for w in ({"windowDurationMins": 43200}, {"windowDurationMins": 300},
+                                         {"windowDurationMins": 90, "name": "ninety"}, {"name": "seven_day"},
+                                         {"name": "five_hour"}, {"name": "odd"}, {})]
+    case("window_name reads a whole-day or whole-hour length, else the known short name, else the name",
+         names == ["30d", "5h", "ninety", "7d", "5h", "odd", "window"], repr(names))
+    try:
+        pb._lead({"transport": "codex", "planType": "pro"})
+        lead_default = True
+    except TypeError:
+        lead_default = False
+    case("a ranked row's lead line cannot be built without its capacity, so it never claims a cold cache",
+         not lead_default)
+    case("the window helpers state that left and timeLeft are percents from 0 to 100",
+         all("0 to 100" in (fn.__doc__ or "")
+             for fn in (pb.plan_entry, pb.window_figures, pb.display_windows)))
+    cli_case(case)
+    cli_plan_case(case)
+    lean_cases(case)
+    lean_cli_case(case)
+    case("every generated pick reason avoids the retired display dialects",
+         all(not banned_in(reason) for reason in reasons), reasons)
+    pb.pick = real_pick
+    return report(cases)
+
+
+def cli_plan_case(case):
+    """From a `~/.claude-secondary` session, the CLI's tie goes to the secondary plan: the session
+    PLAN, not the route, is the pick's seat. Registry and cache are planted copies."""
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import model_registry
+    folder = tempfile.mkdtemp(prefix="pick_cli_plan_")
+    reg = os.path.join(folder, "external_models.json")
+    data = model_registry.load()
+    data["transports"]["anthropic-secondary"]["status"] = {"state": "available"}
+    with open(reg, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(data, fh)
+    now = time.time()
+    blob = {}
+    for name, cfg in data["transports"].items():
+        if cfg.get("costModel") != "plan-quota":
+            continue
+        used, left = (22, 6.1 / 7) if name.startswith("anthropic") else (99, 0.5)
+        entry = reading(name, used, left)
+        entry["quota"]["windows"][0]["resetsAt"] = now + left * WEEK_MIN * 60
+        entry["observedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        entry.update(error=None, liveFailure=None, balance=None)
+        blob[name] = entry
+    cache = os.path.join(folder, "provider_capacity.json")
+    with open(cache, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(blob, fh)
+    env = dict(os.environ, PROVIDER_CAPACITY_CACHE=cache, HARNESS_MODEL_REGISTRY=reg,
+               CLAUDE_CONFIG_DIR=os.path.join(os.path.expanduser("~"), ".claude-secondary"))
+    env.pop("ANTHROPIC_BASE_URL", None)
+    env.pop("CLAUDE_CODE_TRANSPORT", None)
+    r = subprocess.run([sys.executable, TOOL, "pick", "executor", "--json"], capture_output=True,
+                       text=True, encoding="utf-8", timeout=120, env=env)
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        got = {}
+    case("CLI `pick` from a secondary session gives the secondary plan the tie",
+         got.get("transport") == "anthropic-secondary", (r.stdout + r.stderr)[-400:])
+
+
+def plan_registry(secondary_state="available"):
+    """anthropic rows paid by either Anthropic plan; `anthropic-secondary` owns no rows (planOf)."""
+    data = registry(["anthropic", "go"], pay=())
+    data["transports"]["anthropic"]["launcher"] = ".claude/scripts/anthropic_sidecar.sh"
+    data["transports"]["anthropic-secondary"] = {
+        "costModel": "plan-quota", "planOf": "anthropic",
+        "launcher": ".claude/scripts/anthropic_secondary_sidecar.sh",
+        "status": {"state": secondary_state, "reason": "planted"}}
+    return data
+
+
+def plan_cases(case):
+    """Slice 1 of the second-plan contract: a plan sharing another transport's rows ranks by its own room."""
+    roomier = {"anthropic": reading("anthropic", 80, 0.9), "anthropic-secondary": reading("anthropic-secondary", 10, 0.9),
+               "go": reading("go", 70, 0.9)}
+    got = pb.pick("executor", "anthropic", data=plan_registry(), read=reader(roomier), now=NOW)
+    case("a roomier secondary plan wins an executor pick from a primary session",
+         got.get("transport") == "anthropic-secondary"
+         and [r["transport"] for r in got["ranked"]][:1] == ["anthropic-secondary"], repr(got.get("reason")))
+
+    even = {"anthropic": reading("anthropic", 50, 0.5), "anthropic-secondary": reading("anthropic-secondary", 50, 0.5)}
+    got = pb.pick("executor", "anthropic", data=plan_registry(), read=reader(even), now=NOW)
+    back = pb.pick("executor", "anthropic-secondary", data=plan_registry(), read=reader(even), now=NOW)
+    case("equal rooms go to the session plan, from either Anthropic seat",
+         got.get("transport") == "anthropic" and back.get("transport") == "anthropic-secondary",
+         repr((got.get("reason"), back.get("reason"))))
+
+    spent = dict(roomier, **{"anthropic-secondary": reading("anthropic-secondary", 60, 0.5, status="exhausted")})
+    got = pb.pick("executor", "anthropic", data=plan_registry(), read=reader(spent), now=NOW)
+    why = {r["transport"]: r.get("why") for r in got["ranked"] if r.get("room") is None}
+    case("an exhausted secondary drops out named with why",
+         got.get("transport") != "anthropic-secondary" and why.get("anthropic-secondary") == "exhausted"
+         and "anthropic-secondary Exhausted:" in got["reason"], repr(got))
+
+    got = pb.pick("executor", "anthropic", data=plan_registry("unavailable"), read=reader(roomier), now=NOW)
+    case("an unavailable secondary is no candidate",
+         "anthropic-secondary" not in [r["transport"] for r in got["ranked"]], repr(got["ranked"]))
+
+    case("plan_quota_transports lists a live plan and omits an unavailable one",
+         "anthropic-secondary" in pb.plan_quota_transports(plan_registry())
+         and "anthropic-secondary" not in pb.plan_quota_transports(plan_registry("unavailable")),
+         repr((pb.plan_quota_transports(plan_registry()), pb.plan_quota_transports(plan_registry("unavailable")))))
+
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import model_registry
+    import shutil
+    tmp = os.path.join(tempfile.mkdtemp(prefix="pick_plan_"), "external_models.json")
+    shutil.copyfile(str(model_registry.find_registry()), tmp)
+    try:
+        model_registry.set_transport_state("anthropic-secondary", "available", path=tmp)
+        on = pb.pick("executor", "anthropic", data=model_registry.load(tmp), read=reader(roomier), now=NOW)
+        model_registry.set_transport_state("anthropic-secondary", "unavailable", path=tmp, reason="planted")
+        off = pb.pick("executor", "anthropic", data=model_registry.load(tmp), read=reader(roomier), now=NOW)
+        ok = (on.get("transport") == "anthropic-secondary"
+              and "anthropic-secondary" not in [r["transport"] for r in off["ranked"]])
+        detail = repr((on.get("reason"), off.get("reason")))
+    except Exception as exc:
+        ok, detail = False, "raised %s: %s" % (type(exc).__name__, exc)
+    case("`set-status anthropic-secondary unavailable` on the shipped registry removes it from the pick", ok, detail)
+
+
+CONSOLE = "anthropic-console"
+CONSOLE_SECOND = "anthropic-console-secondary"
+CYCLE_MIN = 10 * 24 * 60
+
+
+def credit_reading(transport, used, left_days, days=10, status="available", has_credits=True,
+                   balance=None):
+    """A reading in the shape `scripts/console_credit_probe.py` emits: the credit cycle is the plan's
+    ONE window and the dollars left ride in `credits` beside it."""
+    win = {"name": "credit_cycle", "usedPercent": used, "resetsAt": NOW + left_days * 86400,
+           "windowDurationMins": days * 24 * 60, "pressure": 1.0, "band": "Hot", "runoutRatio": 1.0}
+    return {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota", "sourceKind": "live",
+            "observedAt": "2027-01-15T08:00:00Z", "status": status,
+            "quota": {"windows": [win], "routingWindow": "credit_cycle",
+                      "bindingWindow": "credit_cycle", "routingBand": "Hot", "dispatchBand": "Hot",
+                      "credits": {"enabled": True, "available": has_credits,
+                                  "hasCredits": has_credits,
+                                  "balance": 100.0 if balance is None else balance}}}
+
+
+def unknown_reading(transport):
+    """The probe's fail-closed reading: no anchor, a stale cycle or unaccounted spend."""
+    return {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota", "sourceKind": "live",
+            "observedAt": "2027-01-15T08:00:00Z", "status": "malformed", "quota": None, "balance": None,
+            "error": {"kind": "malformed", "message": "no anchor recorded"}, "liveFailure": None}
+
+
+def credit_registry(status="available"):
+    """The anthropic route with both Console credit plans beside the login plan, plus Go."""
+    data = registry(["anthropic", "go"], pay=())
+    data["transports"]["anthropic"]["launcher"] = ".claude/scripts/anthropic_sidecar.sh"
+    for name, launcher in ((CONSOLE, ".claude/scripts/anthropic_console_sidecar.sh"),
+                           (CONSOLE_SECOND, ".claude/scripts/anthropic_console_secondary_sidecar.sh")):
+        data["transports"][name] = {"costModel": "plan-quota", "planOf": "anthropic",
+                                    "launcher": launcher, "status": {"state": status}}
+    return data
+
+
+def credit_cases(case):
+    """S5: a Console credit reading enters the pick as one more plan-quota window, with no
+    credit-specific rank -- room decides, and a spent or unreadable credit drops out like any other."""
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import model_registry
+    import quota_dashboard
+
+    def with_credit(value, base=None):
+        rows = dict(base or {"anthropic": reading("anthropic", 22, 6.1 / 7),
+                             "go": reading("go", 30, 6.3 / 7)})
+        rows[CONSOLE] = value
+        return rows
+
+    # A credit a day from its reset with 97% of a 10-day grant left: room 97 / (100 x 0.1) = 9.7.
+    near = with_credit(credit_reading(CONSOLE, 3, 1.0))
+    got = pb.pick("executor", "anthropic", data=credit_registry(), read=reader(near), now=NOW)
+    rooms = {r["transport"]: r.get("room") for r in got.get("ranked") or []}
+    case("a credit a day from its reset with 97% of its grant left outranks a Max week at 0.90",
+         got.get("transport") == CONSOLE and round(got.get("room") or 0, 1) == 9.7
+         and round(rooms.get("anthropic") or 0, 2) == 0.90 and rooms.get("go") is not None,
+         repr(got))
+    case("the reason names the credit window by its length and figures, like any other window",
+         "anthropic-console Hot: 10d 97% left, 10% to go" in (got.get("reason") or ""),
+         got.get("reason"))
+
+    for label, spent in (("a spent status", credit_reading(CONSOLE, 60, 1.0, status="exhausted")),
+                         ("a spent grant", credit_reading(CONSOLE, 100, 1.0, has_credits=False,
+                                                          balance=0.0))):
+        got = pb.pick("executor", "anthropic", data=credit_registry(),
+                      read=reader(with_credit(spent)), now=NOW)
+        why = {r["transport"]: r.get("why") for r in got.get("ranked") or [] if r.get("room") is None}
+        case("a credit plan dropped by %s leaves the pick, named with why" % label,
+             got.get("transport") == "anthropic" and why.get(CONSOLE) == "exhausted", repr(got))
+
+    got = pb.pick("executor", "anthropic", data=credit_registry(),
+                  read=reader(with_credit(unknown_reading(CONSOLE))), now=NOW)
+    why = {r["transport"]: r.get("why") for r in got.get("ranked") or [] if r.get("room") is None}
+    case("an unanchored credit reading drops out as unreadable, never ranked as room",
+         got.get("transport") == "anthropic" and "unreadable" in str(why.get(CONSOLE)), repr(got))
+
+    case("the shipped registry offers both Console credit plans to the pick",
+         all(n in model_registry.plans_of("anthropic") for n in (CONSOLE, CONSOLE_SECOND))
+         and all(n in pb.plan_quota_transports() for n in (CONSOLE, CONSOLE_SECOND)),
+         repr(pb.plan_quota_transports()))
+
+    # The owner-facing view: both credits are plans in the table, in registry order, with no rank.
+    dash = credit_registry()
+    view = quota_dashboard.build(data=dash, read=reader(near), session_plan="anthropic", now=NOW)
+    text = quota_dashboard.render(view)
+    order = pb.plan_quota_transports(dash)
+    credit_row = next((p for p in view["plans"] if p["plan"] == CONSOLE), {})
+    case("the master view lists both credit plans in registry order, with no ranking column",
+         [p["plan"] for p in view["plans"]] == order
+         and all(p["plan"] in text for p in view["plans"])
+         and CONSOLE in text and CONSOLE_SECOND in text
+         and [w.get("left") for w in credit_row.get("windows") or []] == [97.0],
+         repr(order) + " / " + repr([p["plan"] for p in view["plans"]]))
+
+
+def cli_case(case):
+    """`provider_bands.py room|pick executor` on the live registry against a planted fresh cache."""
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import model_registry
+    now = time.time()
+    shares = {"anthropic": (22, 6.1 / 7), "go": (30, 6.3 / 7), "codex": (77, 5.1 / 7)}
+    blob = {}
+    for name, cfg in (model_registry.load().get("transports") or {}).items():
+        if cfg.get("costModel") != "plan-quota":
+            continue
+        used, left = shares.get(name, (99, 0.5))
+        entry = reading(name, used, left)
+        win = entry["quota"]["windows"][0]
+        win["resetsAt"] = now + left * WEEK_MIN * 60
+        entry["observedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        entry.update(error=None, liveFailure=None, balance=None)
+        blob[name] = entry
+    folder = tempfile.mkdtemp(prefix="pick_cli_")
+    cache = os.path.join(folder, "provider_capacity.json")
+    with open(cache, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(blob, fh)
+    env = dict(os.environ, PROVIDER_CAPACITY_CACHE=cache, CLAUDE_CODE_TRANSPORT="anthropic")
+    env.pop("ANTHROPIC_BASE_URL", None)
+    r = subprocess.run([sys.executable, TOOL, "room", "executor"], capture_output=True, text=True,
+                       encoding="utf-8", timeout=120, env=env)
+    crashed = r.returncode not in (0, 2) or "Traceback" in (r.stderr or "")
+    lines = r.stdout.splitlines()
+    case("CLI `room executor` prints one entry per plan and never a pick", not crashed and r.returncode == 0
+         and any(l.startswith("anthropic Hot: 7d 78% left, 87% to go") for l in lines)
+         and any(l.startswith("go Hot: 7d 70% left, 90% to go") for l in lines)
+         and "pick" not in r.stdout.lower(), (r.stdout + r.stderr)[-400:])
+    r = subprocess.run([sys.executable, TOOL, "room", "executor", "--json"], capture_output=True,
+                       text=True, encoding="utf-8", timeout=120, env=env)
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        got = {}
+    case("CLI `room executor --json` gives the plans' facts and `low`, no chosen transport",
+         got.get("low") is False and isinstance(got.get("plans"), list) and "transport" not in got,
+         (r.stdout + r.stderr)[-400:])
+    r = subprocess.run([sys.executable, TOOL, "pick", "executor", "--json"], capture_output=True,
+                       text=True, encoding="utf-8", timeout=120, env=env)
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        got = {}
+    case("CLI `pick executor --json` still serves a tool choosing a plan for a fixed row",
+         got.get("transport") == "anthropic" and isinstance(got.get("ranked"), list), (r.stdout + r.stderr)[-400:])
+    r = subprocess.run([sys.executable, TOOL, "pick", "executor"], capture_output=True, text=True,
+                       encoding="utf-8", timeout=120, env=env)
+    case("CLI `pick` without --json prints no pick for a reader", r.returncode == 2 and not r.stdout.strip(),
+         (r.stdout + r.stderr)[-300:])
+    r = subprocess.run([sys.executable, TOOL, "room", "bogus"], capture_output=True, text=True,
+                       encoding="utf-8", timeout=120, env=env)
+    case("CLI `room` with an unknown tier exits 2 naming the legal tiers",
+         r.returncode == 2 and "executor" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:])
+
+
+LEAN_LADDER = """## Role guidance
+
+| model | cost | effort | ± |
+|---|---|---|---|
+| opus | 5 | `high` to start | + the strongest architect; − the most expensive |
+| sonnet | 7 | `xhigh` for a plan review | + the cheap architect; − not the best |
+| go-m | 8 | `medium` | − no design verdicts |
+| paid-m | 1 | `low` | − pay per token |
+"""
+
+
+def lean_registry():
+    """Anthropic and its secondary plan, Go, and a marginal-usd API route, each with an architect row. `ghost` has
+    no ladder row, so its cost is unknown."""
+    return {"transports": {"anthropic": {"costModel": "plan-quota"},
+                           "anthropic-secondary": {"costModel": "plan-quota", "planOf": "anthropic"},
+                           "go": {"costModel": "plan-quota"},
+                           "paid": {"costModel": "marginal-usd"}},
+            "models": [
+                {"id": "opus-id", "alias": "opus", "transport": "anthropic", "roles": ["architect"],
+                 "probation": [{"tier": "architect", "text": "planted mark", "evidenceRef": "planted"}]},
+                {"id": "go-model", "alias": "go-m", "transport": "go", "roles": ["architect"]},
+                {"id": "sonnet-id", "alias": "sonnet", "transport": "anthropic", "roles": ["architect", "executor"],
+                 "probation": [{"tier": "executor", "text": "other tier", "evidenceRef": "planted"}]},
+                {"id": "paid-id", "alias": "paid-m", "transport": "paid", "roles": ["architect"]},
+                {"id": "ghost-id", "alias": "ghost", "transport": "go", "roles": ["architect"]}]}
+
+
+def lean_cases(case):
+    """S2: `lean_candidates` states every row claiming a tier, per route, with its cost, `±` cell, effort cell, owner
+    probation mark and each plan's room, in registry order. It never picks one, and an unknown seat is refused."""
+    lean = getattr(pb, "lean_candidates", None)
+    case("provider_bands exposes lean_candidates", callable(lean))
+    if not callable(lean):
+        return
+    folder = tempfile.mkdtemp(prefix="lean_ladder_")
+    ladder = os.path.join(folder, "model_ladder_evidence.md")
+    with open(ladder, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(LEAN_LADDER)
+    data = lean_registry()
+    rooms = {"anthropic": reading("anthropic", 22, 6.1 / 7),
+             "anthropic-secondary": reading("anthropic-secondary", 60, 0.5, status="exhausted"),
+             "go": reading("go", 30, 6.3 / 7)}
+    got = lean("architect", "anthropic", data=data, read=reader(rooms), now=NOW, ladder=ladder)
+    routes = got.get("routes") or {}
+    ids = {t: [r["id"] for r in rows] for t, rows in routes.items()}
+    case("routes group by route with the session's route first, rows in registry order",
+         list(routes) == ["anthropic", "go"] and ids.get("anthropic") == ["opus-id", "sonnet-id"]
+         and ids.get("go") == ["go-model", "ghost-id"], repr(ids))
+    flipped = lean("architect", "go", data=data, read=reader(rooms), now=NOW, ladder=ladder)
+    case("the session's route leads when the session sits on the other route",
+         list(flipped.get("routes") or {}) == ["go", "anthropic"], repr(list(flipped.get("routes") or {})))
+
+    rows = {r["alias"]: r for rs in routes.values() for r in rs}
+    opus = rows.get("opus", {})
+    case("a row carries its ladder cost, ± cell, effort cell and the owner's mark for this tier",
+         opus.get("cost") == 5 and "+ the strongest architect" in (opus.get("minus") or "")
+         and opus.get("effort") == "`high` to start" and opus.get("probation") == "planted mark", repr(opus))
+    case("a probation mark for another tier is not reported for this one",
+         rows.get("sonnet", {}).get("probation") is None and rows.get("sonnet", {}).get("cost") == 7,
+         repr(rows.get("sonnet")))
+    ghost = rows.get("ghost", {})
+    case("a row with no ladder cell is listed with cost None, never dropped",
+         "ghost" in rows and ghost.get("cost") is None and ghost.get("minus") is None, repr(ghost))
+    plans = [(p["plan"], None if p["room"] is None else round(p["room"], 2)) for p in opus.get("plans") or []]
+    case("each row lists every plan of its route with its room, a dropped plan with room None",
+         plans == [("anthropic", 0.9), ("anthropic-secondary", None)], repr(plans))
+    case("a candidate set names no transport or room of its own, so it never picks",
+         "transport" not in got and "room" not in got and not got.get("refused"), repr(sorted(got)))
+    case("marginal-usd rows stay out of routes while a plan has room, and no pay option is offered",
+         "paid" not in routes and got.get("payOptions") == [], repr(got.get("payOptions")))
+
+    spent = {"anthropic": reading("anthropic", 100, 0.5, status="exhausted"),
+             "anthropic-secondary": reading("anthropic-secondary", 60, 0.5, status="exhausted"),
+             "go": reading("go", 100, 0.5, status="exhausted")}
+    dry = lean("architect", "anthropic", data=data, read=reader(spent), now=NOW, ladder=ladder)
+    case("marginal-usd rows appear only under payOptions, and only when no plan has room",
+         dry.get("payOptions") == [{"alias": "paid-m", "id": "paid-id", "transport": "paid", "supplementary": False}]
+         and "paid" not in (dry.get("routes") or {}), repr(dry.get("payOptions")))
+
+    supp_data = lean_registry()
+    supp_data["models"] += [
+        {"id": "supp-id", "alias": "supp", "transport": "anthropic", "roles": ["fanout"], "supplementary": ["architect"]},
+        {"id": "supp-go-id", "alias": "supp-go", "transport": "go", "roles": ["fanout"], "supplementary": ["architect"]}]
+    for row in supp_data["models"]:
+        if row["alias"] in ("sonnet", "paid-m"):
+            row["supplementary"] = ["architect"]
+    mixed = lean("architect", "anthropic", data=supp_data, read=reader(rooms), now=NOW, ladder=ladder)
+    mixed_ids = {t: [r["id"] for r in rs] for t, rs in (mixed.get("routes") or {}).items()}
+    case("a supplementary-only row is left out of routes: lean never offers it for a lone seat or authoring",
+         "supp-id" not in sum(mixed_ids.values(), []) and "supp-go-id" not in sum(mixed_ids.values(), []),
+         repr(mixed_ids))
+    listed = {t: [r["id"] for r in rs] for t, rs in (mixed.get("supplementary") or {}).items()}
+    case("a supplementary-only row is listed under `supplementary`, per route, in registry order",
+         listed == {"anthropic": ["supp-id"], "go": ["supp-go-id"]}, repr(listed))
+    case("a plain claimant that also holds the tier as supplementary stays in routes, flagged supplementary: true",
+         {r["alias"]: r.get("supplementary") for rs in mixed["routes"].values() for r in rs}
+         == {"opus": False, "sonnet": True, "go-m": False, "ghost": False}, repr(mixed["routes"]))
+    case("a plain+supplementary row is not listed under `supplementary` (it is already a claimant)",
+         "sonnet-id" not in sum(listed.values(), []), repr(listed))
+    supp_dry = lean("architect", "anthropic", data=supp_data, read=reader(spent), now=NOW, ladder=ladder)
+    alone = lean_registry()
+    alone["transports"]["extra"] = {"costModel": "plan-quota"}
+    alone["models"].append({"id": "supp-extra-id", "alias": "supp-extra", "transport": "extra",
+                            "roles": ["fanout"], "supplementary": ["architect"]})
+    for row in alone["models"]:
+        if row["alias"] == "paid-m":
+            row["supplementary"] = ["architect"]
+    stranded = dict(spent, extra=reading("extra", 10, 0.9))
+    lone_dry = lean("architect", "anthropic", data=alone, read=reader(stranded), now=NOW, ladder=ladder)
+    case("a supplementary-only row on a route with room does not hide payOptions: room is judged over claimant routes",
+         [r["alias"] for r in lone_dry.get("payOptions") or []] == ["paid-m"]
+         and list(lone_dry.get("supplementary") or {}) == ["extra"], repr(lone_dry.get("payOptions")))
+    case("payOptions flags a plain+supplementary row supplementary: true",
+         supp_dry.get("payOptions") == [{"alias": "paid-m", "id": "paid-id", "transport": "paid", "supplementary": True}],
+         repr(supp_dry.get("payOptions")))
+    case("a candidate set with no supplementary rows carries an empty `supplementary`",
+         got.get("supplementary") == {}, repr(got.get("supplementary")))
+
+    stranger = lean("architect", "nowhere", data=data, read=reader(rooms), now=NOW, ladder=ladder)
+    case("an unknown seat sets refused and returns no routes or pay options",
+         bool(stranger.get("refused")) and stranger.get("routes") == {} and stranger.get("payOptions") == [],
+         repr(stranger))
+
+
+def lean_cli_case(case):
+    """`provider_bands.py lean <tier>`: a copy of the live registry with a login dir on the Anthropic plan, the live
+    ladder beside it, and a fresh capacity cache. Asserts invariants only, never a live value."""
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import model_registry
+    import shutil
+    folder = tempfile.mkdtemp(prefix="lean_cli_")
+    login = os.path.join(folder, "login-anthropic")
+    reg = os.path.join(folder, "a", "b", "external_models.json")
+    ladder_copy = os.path.join(folder, ".claude", "reference", "model_ladder_evidence.md")
+    data = model_registry.load()
+    data["transports"]["anthropic"]["configDir"] = login
+    os.makedirs(os.path.dirname(reg))
+    with open(reg, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(data, fh)
+    os.makedirs(os.path.dirname(ladder_copy))
+    shutil.copyfile(str(model_registry.ladder_path()), ladder_copy)
+    now = time.time()
+    blob = {}
+    for name, cfg in data["transports"].items():
+        if cfg.get("costModel") != "plan-quota":
+            continue
+        entry = reading(name, 22 if name == "anthropic" else 50, 0.5)
+        entry["quota"]["windows"][0]["resetsAt"] = now + 0.5 * WEEK_MIN * 60
+        entry["observedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        entry.update(error=None, liveFailure=None, balance=None)
+        blob[name] = entry
+    cache = os.path.join(folder, "provider_capacity.json")
+    with open(cache, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(blob, fh)
+    base = dict(os.environ, PROVIDER_CAPACITY_CACHE=cache, HARNESS_MODEL_REGISTRY=reg)
+    base.pop("ANTHROPIC_BASE_URL", None)
+    base.pop("CLAUDE_CODE_TRANSPORT", None)
+
+    def run(argv, config_dir):
+        env = dict(base, CLAUDE_CONFIG_DIR=config_dir)
+        return subprocess.run([sys.executable, TOOL, *argv], capture_output=True, text=True,
+                              encoding="utf-8", timeout=120, env=env)
+
+    r = run(["lean", "architect"], login)
+    lines = r.stdout.splitlines()
+    case("CLI `lean architect` prints the session's route first, each row with its cost, plans, effort and ± cell",
+         r.returncode == 0 and "Traceback" not in r.stderr and lines[:1] == ["anthropic"]
+         and "cost" in r.stdout and "effort" in r.stdout, (r.stdout + r.stderr)[-400:])
+    r = run(["lean", "architect", "--json"], login)
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        got = {}
+    case("CLI `lean architect --json` names the seat, leads with its route, and picks no transport",
+         r.returncode == 0 and got.get("seat") == "anthropic" and not got.get("refused")
+         and list(got.get("routes") or {})[:1] == ["anthropic"] and "transport" not in got,
+         (r.stdout + r.stderr)[-400:])
+    r = run(["lean", "architect"], os.path.join(folder, "nowhere"))
+    case("CLI `lean` from an unknown session exits 2 naming CLAUDE_CONFIG_DIR, with no stdout",
+         r.returncode == 2 and "CLAUDE_CONFIG_DIR" in r.stderr and "Traceback" not in r.stderr
+         and not r.stdout.strip(), (r.stdout + r.stderr)[-300:])
+    r = run(["lean", "bogus"], login)
+    case("CLI `lean` with an unknown tier exits 2 naming the legal tiers",
+         r.returncode == 2 and "executor" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:])
+
+
+def report(cases):
+    failed = [n for n, ok, _d in cases if not ok]
+    for name, ok, detail in cases:
+        print(("ok   " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % detail[:500]))
+    print("\n%d/%d passed" % (len(cases) - len(failed), len(cases)))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

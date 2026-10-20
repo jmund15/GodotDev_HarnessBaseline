@@ -26,6 +26,11 @@ rows; SessionStart rails lines live in `attachment` rows).
 contract; `tools/ladder_prose_check.py` enforces its mechanical half, and the judge brief asks for
 tendencies for the same reason.
 """
+
+import sys as _cli_usage_sys
+from pathlib import Path as _cli_usage_path
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+from cli_usage import usage
 import argparse
 import hashlib
 import json
@@ -78,7 +83,7 @@ JUDGE_SCHEMA = {
         "ladderClause": {
             "type": "string",
             "description": "one clause for a ± cell: what the model TENDS to do, never what this "
-                           "run did. No numbers, dates, arm counts or wall-clock. Empty is valid "
+                           "run did. No numbers, dates, arm counts, wall-clock or effort rungs. Empty is valid "
                            "when nothing here would recur.",
         },
         "orchestrationNote": {
@@ -358,7 +363,7 @@ that n=1 per arm on one prompt supports a hypothesis, never a model ranking.
 `ladderClause` is one clause for a ± cell on the affected ladder row, stating what the
 model TENDS to do — never what it did in this run. "exhaustive over a diff, slow" is a
 tendency; "found 26 defects on the 5-lens audit" is a run description and is rejected.
-No numbers, no dates, no arm counts, no wall-clock, no reference to this comparison.
+No numbers, no dates, no arm counts, no wall-clock, no reference to this comparison, no effort rung.
 If nothing here would recur, return an empty `ladderClause` and say why in `doesNotShow`
 — an ingest that adds no clause is a correct outcome, not a failed one.
 `orchestrationNote` is empty unless the finding is about delegation behaviour.
@@ -458,7 +463,7 @@ def apply_judge(comparison: Path, result: dict) -> tuple[str, str]:
 
 
 def resolve(pdir: Path, prefix: str) -> Path:
-    hits = sorted(p for p in pdir.glob("*.jsonl") if p.stem.startswith(prefix))
+    hits = sorted(p for store in digest.sibling_stores(pdir) for p in store.glob("*.jsonl") if p.stem.startswith(prefix))
     if not hits:
         sys.exit("no transcript starts with %r under %s" % (prefix, pdir))
     if len(hits) > 1:
@@ -625,7 +630,7 @@ def arm_infos(token: str, pdir: Path) -> list[dict]:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(description=usage(__doc__),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("prefix", nargs="*", help="session id prefixes to compare")
     ap.add_argument("--out", required=True, help="output root; files go under <out>/<slug>/")
@@ -645,7 +650,7 @@ def main(argv=None) -> int:
     if slug in (".", "..") or slug != os.path.basename(slug.replace("\\", "/")):
         sys.exit("--slug %r names this run's output folder: no path separator and no `..`" % a.slug)
     outdir = Path(a.out) / slug
-    pdir = Path(a.projects_dir) if a.projects_dir else digest.projects_dir(os.getcwd())
+    pdir = Path(a.projects_dir) if a.projects_dir else digest.session_store(os.getcwd())
 
     if a.apply:
         comparison = outdir / "COMPARISON.md"

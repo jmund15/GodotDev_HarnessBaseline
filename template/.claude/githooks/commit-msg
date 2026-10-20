@@ -1,0 +1,16 @@
+#!/bin/sh
+# Installed by `git config core.hooksPath .claude/githooks`. Re-runs the peer-revert check at the moment git
+# writes the commit: the PreToolUse commit guard judged the index before the commit hooks ran, and a peer's
+# commit can land in between (git_guardrails.py commit_msg_hook). A floor guard: a missing prerequisite refuses
+# the commit.
+root=$(git rev-parse --show-toplevel) || { echo "BLOCKED commit: the commit-msg hook cannot find the repository root to run the peer-revert guard." >&2; exit 1; }
+guard="$root/.claude/hooks/git_guardrails.py"
+if [ ! -f "$guard" ]; then
+    echo "BLOCKED commit: the peer-revert guard .claude/hooks/git_guardrails.py is missing. Restore it (git checkout HEAD -- .claude/hooks/git_guardrails.py), then commit again." >&2
+    exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "BLOCKED commit: the commit-msg hook cannot find python3 on PATH to run the peer-revert guard. Put python3 on PATH, then commit again." >&2
+    exit 1
+fi
+exec python3 "$guard" --commit-msg "$1"

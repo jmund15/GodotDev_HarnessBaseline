@@ -7,7 +7,11 @@ Due when any holds:
   - `<root>/orchestration_candidates.json` is more than 7 days old, including absent;
   - 5 or more `review-by` triggers in the review scope (CLAUDE.md, `rules/**`, top-level
     `auto-memory/`) have passed, per `rule_retirement.review_due`. `/autolearn`'s retirement
-    pass proposes keep, retire or demote for each.
+    pass proposes keep, retire or demote for each;
+  - one or more evidence markers (`<!-- basis: ... -->`, grammar in `rule_retirement.py`) in a tracked
+    `.claude/**/*.md` file have fired or are malformed, per `rule_retirement.evidence_due`. The
+    author chose each marker's count, so one crossing is due; `/autolearn` proposes confirm,
+    revise or retire for each.
 
 Row counting uses `self_eval_archive_store.effective_entries`, the store's cheap
 identity-deduped ledger view — never `analyze_eval_archive.py`'s full legacy-classification
@@ -116,14 +120,30 @@ def reviews_due(root, today):
     return False, "%d instruction reviews past their review-by date (< %d)" % (count, REVIEW_THRESHOLD)
 
 
-def due_line(root, today, rows=None, candidates=None, reviews=None):
-    """The single advisory line, or '' when nothing is due. `rows`, `candidates` and `reviews`
-    take already-computed results so a caller loads the archive once. Each reason carries the
-    command that clears it."""
+def markers_due(root):
+    """(due: bool, reason: str). A scan that cannot import or raises is due with its error, as
+    `reviews_due` is."""
+    try:
+        import rule_retirement
+        found = rule_retirement.evidence_due(root)
+    except Exception as exc:  # advisory: report the unknown instead of hiding it
+        return True, "evidence scan failed (%s)" % exc.__class__.__name__
+    fired = sum(1 for row in found if row["bucket"] == "fired")
+    malformed = len(found) - fired
+    if found:
+        return True, "%d evidence markers fired, %d malformed" % (fired, malformed)
+    return False, "no evidence markers fired or malformed"
+
+
+def due_line(root, today, rows=None, candidates=None, reviews=None, markers=None):
+    """The single advisory line, or '' when nothing is due. `rows`, `candidates`, `reviews` and
+    `markers` take already-computed results so a caller loads the archive once. Each reason
+    carries the command that clears it."""
     checks = (
         (rows if rows is not None else rows_due(root), "/eval_dashboard"),
         (candidates if candidates is not None else candidates_due(root, today), "/eval_dashboard"),
         (reviews if reviews is not None else reviews_due(root, today), "/autolearn"),
+        (markers if markers is not None else markers_due(root), "/autolearn"),
     )
     parts = ["%s (run %s)" % (reason, command) for (due, reason), command in checks if due]
     if not parts:
@@ -170,10 +190,12 @@ def main(argv=None):
     row_is_due, row_reason = rows_due(args.root)
     cand_is_due, cand_reason = candidates_due(args.root, today)
     rev_is_due, rev_reason = reviews_due(args.root, today)
+    mark_is_due, mark_reason = markers_due(args.root)
 
     if args.line:
         line = due_line(args.root, today, rows=(row_is_due, row_reason),
-                        candidates=(cand_is_due, cand_reason), reviews=(rev_is_due, rev_reason))
+                        candidates=(cand_is_due, cand_reason), reviews=(rev_is_due, rev_reason),
+                        markers=(mark_is_due, mark_reason))
         if line:
             print(line)
         return 0
@@ -182,7 +204,8 @@ def main(argv=None):
     print("rows:       %-5s %s" % ("DUE" if row_is_due else "live", row_reason))
     print("candidates: %-5s %s" % ("DUE" if cand_is_due else "live", cand_reason))
     print("reviews:    %-5s %s" % ("DUE" if rev_is_due else "live", rev_reason))
-    print("due: %s" % (row_is_due or cand_is_due or rev_is_due))
+    print("evidence:   %-5s %s" % ("DUE" if mark_is_due else "live", mark_reason))
+    print("due: %s" % (row_is_due or cand_is_due or rev_is_due or mark_is_due))
     return 0
 
 

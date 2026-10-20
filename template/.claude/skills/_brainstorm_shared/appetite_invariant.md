@@ -18,4 +18,4 @@ An **analytical** (model-answerable) finding has a single correct answer *given 
 
 The whole point of the brainstorm → plan pipeline is that the *human* owns appetite and the *agent* owns rigor. An agent that silently resolves a taste-fork to reach convergence (or to "harden" a design) has invented a design decision the user never made — and downstream Parts inherit it as if it were chosen. Surfacing a taste-fork is never a failure state; a converged plan or a hardened design that still carries **N open, batched taste-forks is a SUCCESS state**, not an incomplete one.
 
-> A stated evolution direction is NOT a taste-fork to re-litigate — it is a settled appetite (CLAUDE.md Core Principle 8, *Modular when direction is known*). Only flag speculation the user did **not** state.
+> A stated evolution direction is NOT a taste-fork to re-litigate — it is a settled appetite (`CLAUDE.coding.md` *Modular when direction is known*). Only flag speculation the user did **not** state.

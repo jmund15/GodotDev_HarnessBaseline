@@ -18,7 +18,8 @@ Catches:
 State fingerprint (schema is parameterized by WATCHED_SUBMODULES below):
   branch | head_sha | staged | unstaged | untracked | ahead | behind [| <sub>_head | <sub>_sync]*
 
-Cache: .claude/.cache/git-state-{cwd_hash}.txt (per worktree, gitignored).
+Cache: .claude/.cache/git-state-{cwd_hash}.txt (per worktree, gitignored); `HARNESS_GIT_STATE_CACHE_DIR`
+names another directory (a proof that runs the hook keeps its writes under its own temp root).
 
 Failure mode: every error path exits 0 with no output. This hook must NEVER
 block a user prompt from being processed.
@@ -192,7 +193,7 @@ def _capture_state(repo_root: str) -> dict[str, str]:
     succeeds — so a transient git failure won't trigger spurious deltas.
     """
     porcelain_out = _run(
-        ["git", "status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
+        ["git", "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
         cwd=repo_root,
     )
     if porcelain_out:
@@ -219,7 +220,7 @@ def _capture_state(repo_root: str) -> dict[str, str]:
         for name in WATCHED_SUBMODULES:
             state[f"sub_{name}_head"] = ""
             state[f"sub_{name}_sync"] = ""
-        for line in _run(["git", "submodule", "status"], cwd=repo_root).splitlines():
+        for line in _run(["git", "--no-optional-locks", "submodule", "status"], cwd=repo_root).splitlines():
             # Match on the sha, not a fixed column: _run() strips, which eats the
             # in-sync entry's leading-space prefix and shifts every offset by one.
             match = _SUBMODULE_RE.match(line.strip())
@@ -254,7 +255,7 @@ def _parse_fingerprint(fp: str) -> dict[str, str] | None:
 def _cache_path(repo_root: str, cwd: str) -> Path:
     """One cache file per CWD so worktrees don't trample each other's state."""
     cwd_hash = hashlib.sha1(cwd.encode("utf-8")).hexdigest()[:12]
-    cache_dir = Path(repo_root) / ".claude" / ".cache"
+    cache_dir = Path(os.environ.get("HARNESS_GIT_STATE_CACHE_DIR") or Path(repo_root) / ".claude" / ".cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / f"git-state-{cwd_hash}.txt"
 

@@ -42,7 +42,23 @@ import json
 import os
 import sys
 
-from _claude_scope import harness_tail
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from _claude_scope import harness_tail  # noqa: E402
+
+
+def _ai_worker_absent() -> bool:
+    """Is ai-worker registered on this machine? `False` whenever that cannot be read.
+
+    `tools/workstation_profile.py` owns the walk and returns `None` for unknown; unknown is NOT
+    absent, because the message's authored route is the safe delivery and narrowing it on a guess
+    would drop a route that works. Every message below names a route this machine actually has.
+    """
+    try:
+        import workstation_profile
+        return workstation_profile.ai_worker() == "absent"
+    except Exception:
+        return False
+
 
 # --- Tunables ------------------------------------------------------------
 
@@ -172,14 +188,23 @@ def _build_block_message(file_path: str, size_bytes: int) -> str:
         return (
             f"[file-size-block] {file_path} is a log (~{size_kb} KB, ~{est_tokens} tokens) — "
             f"above {LOG_BYTE_THRESHOLD // 1024} KB, logs are grep-shaped. "
-            "Recover: `Grep(pattern='error CS|Failed|FATAL', path=<file>)` for the lines you need, "
+            "(CLAUDE.core.md §9) Recover: `Grep(pattern='error CS|Failed|FATAL', path=<file>)` for the lines you need, "
             "or bounded `Read(file_path=..., offset=N, limit=M)` around one hit."
         )
     threshold_kb = LARGE_FILE_BYTE_THRESHOLD // 1024
-    return (
+    head = (
         f"[file-size-block] {file_path} is ~{size_kb} KB (~{est_tokens} tokens) "
         f"— above {threshold_kb} KB threshold for unbounded reads. "
-        f"Recover: bounded `Read(file_path=..., offset=N, limit=M)` "
+    )
+    if _ai_worker_absent():
+        # No worker on this machine to route the file to, so the bounded Read stops being the
+        # fallback and becomes the recovery — plus a subagent, which is the other route that
+        # needs no local worker.
+        return head + ("(CLAUDE.core.md §9) Recover: bounded `Read(file_path=..., offset=N, "
+                       "limit=M)`, or hand the extraction to a subagent — ai-worker is not installed "
+                       "on this machine.")
+    return head + (
+        f"(CLAUDE.core.md §9) Recover: bounded `Read(file_path=..., offset=N, limit=M)` "
         f"or `mcp__ai-worker__read_files(paths=[\"{file_path}\"], question=<...>)`. "
         "If ai-worker is absent this session, use the bounded Read — it always passes this gate."
     )
@@ -242,9 +267,13 @@ def _clamp(file_path: str, tool_input: dict, size_bytes: int, budget: int) -> di
     if lines == 0:
         return None
     total_kb = size_bytes // 1024
-    tail = ("Grep it for the lines you need, or page on with offset=%d." % (lines + 1)
-            if _is_log_file(file_path) else
-            "Page on with offset=%d, or ask mcp__ai-worker__read_files for a digest." % (lines + 1))
+    if _is_log_file(file_path):
+        tail = "Grep it for the lines you need, or page on with offset=%d." % (lines + 1)
+    elif _ai_worker_absent():
+        tail = "Page on with offset=%d, or hand the extraction to a subagent." % (lines + 1)
+    else:
+        tail = ("Page on with offset=%d, or ask mcp__ai-worker__read_files for a digest."
+                % (lines + 1))
     return {
         "updatedInput": dict(tool_input, limit=lines),
         "additionalContext": "[file-size] %s is ~%d KB; this read shows lines 1-%d. %s"

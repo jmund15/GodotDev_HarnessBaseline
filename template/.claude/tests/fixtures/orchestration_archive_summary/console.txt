@@ -1,0 +1,22 @@
+Groups are served model x requested effort; observed effort is stored separately and may be unknown.
+model                            effort  route          n clean defects rework discarded unrated other qcost/agent  q_n   $/agent  $_n
+m-one                            low     sc:2           2     2       0      0         0       0     0                     1.5000    1
+m-two                            high    sc:1           1     0       1      0         0       0     0                     3.0000    1
+proof-model                      low     wf:3           3     1       0      1         0       1     0        1.0k    3
+proof-model                      medium  wf:3           3     1       1      0         0       1     0        1.0k    2
+proof-model                      high    wf:3           3     1       0      0         0       0     2        4.0k    3
+
+9 archived agents across 7 runs. (1 ignored-run sentinel(s) excluded.)
+1 unrated row(s) were sampled out (saturated lens), not forgotten.
+
+-- Task totals (tools/task_record.py joins; quota cost and USD are separate columns) --
+task                                  rows      qcost       USD no-cost
+task-a                                   2      11.0k      0.00       0
+rows without a task: 10 of 12; rows without any cost: 2 of 12
+
+-- Model x role tier (rated rows by served registry row and the tier recorded at launch; counts only) --
+no cell yet: no rated row carries both a role tier and a served model.
+buckets: unrated 2 (of which sampled-out 1), no outcome 1, outcome unparseable 1, tier absent 8, tier unparseable 0, requested-only 0, mixed 0, off-role measurement 0, cell members 0; total 12
+verdict constants: MIN_ROWS 8, MIN_SESSIONS 3, CONTRADICT_MIN_FALSIFIED 2, CONTRADICT_MIN_SHARE 0.2
+
+No over-pin candidates (2 falsification event(s) in the archive). Zero candidates does not prove the table is calibrated.

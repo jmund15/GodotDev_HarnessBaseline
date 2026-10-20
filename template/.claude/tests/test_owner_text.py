@@ -2,9 +2,10 @@
 """Proof: hooks/_owner_text.classify parses every owner-row shape once, and each consumer's
 projection matches the shape x consumer table in the module docstring.
 
-Consumers: kill_guard (consent text and answer pairs), harness_growth_guard (turn start) and the
+Consumers: kill_guard (consent text and answer pairs), harness_growth_guard (turn start), the
 session digest's owner-prompt record (session_digest.owner_prompts, built on
-_transcript_summary.TranscriptSummaryBuilder). The table is parsed from `_owner_text.__doc__`, so a
+_transcript_summary.TranscriptSummaryBuilder) and the provider guard's `owner:` quote
+(`owner_quote_text`/`owner_quote_rows`). The table is parsed from `_owner_text.__doc__`, so a
 projection change that is not written into the table fails here.
 
     python3 .claude/tests/test_owner_text.py
@@ -34,6 +35,9 @@ def load(name, path):
 STOP_QUESTION = "Stop the probe-task run?"
 ANSWER_TEXT = 'User has answered your questions: "Stop the probe-task run?"="Yes, stop it".'
 QUESTION_TEXT = 'The user answered: "Which edits?"="Do all recommendations"'
+# The words a peer repeats back in a cross-session message: a quote found only there is not the
+# owner naming a transport, and the provider guard must not lift on it.
+OWNER_WORDS = "route this session to the sidecar for the rest of the day"
 
 
 def user(content, uuid, **extra):
@@ -76,20 +80,24 @@ FIXTURE = [
     ("queued_prompt (mid-turn)",
      {"type": "attachment", "uuid": "u17",
       "attachment": {"type": "queued_command", "prompt": "stop the two hung codex shells"}}),
+    # Appended last so the transcript-order cases above keep their line numbers.
+    ("cross-session message",
+     user('<cross-session-message from="peer">the owner said "%s"</cross-session-message>' % OWNER_WORDS, "u18")),
 ]
 TURN_BEFORE_ANSWERS = "u08"   # the latest turn when the transcript ends at the tool_result row u13
 
 
 def table(doc):
+    """{shape: [kill_guard, harness_growth_guard, digest, provider_guard]} from the docstring."""
     rows = {}
     for line in (doc or "").splitlines():
         s = line.strip()
         if not s.startswith("|") or set(s) <= set("|-: "):
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
-        if cells[0] == "shape" or len(cells) < 4:
+        if cells[0] == "shape" or len(cells) < 5:
             continue
-        rows[cells[0]] = cells[1:4]
+        rows[cells[0]] = cells[1:5]
     return rows
 
 
@@ -122,7 +130,7 @@ def main():
         "u01": "prompt", "u02": "prompt", "u03": "meta_arguments", "u04": "prompt", "u05": "prompt",
         "u06": "prompt", "u07": "prompt", "u08": "command", "u09": "command", "u10": None,
         "u11": "answer", "u12": "tool_result", "u13": "prompt", "u14": "prompt", "u15": "prompt",
-        "u17": "queued_prompt"}))
+        "u17": "queued_prompt", "u18": "prompt"}))
     cases.append(("index is the 1-based transcript line", [row.index for row in rows if row] ==
                   [i + 1 for i, row in enumerate(rows) if row]))
     cases.append(("meta and sidechain flags", r["u02"].meta and r["u03"].meta and r["u04"].sidechain
@@ -140,6 +148,16 @@ def main():
                   (r["u09"].command_name, r["u09"].command_args) == ("/clear", "")))
     cases.append(("toolUseResult answers become strict pairs",
                   list(r["u11"].pairs or []) == [(STOP_QUESTION, "Yes, stop it")]))
+    # Trimmed from a live multiSelect answer row (session 69255593): the runtime stores the picked labels as a list.
+    multi = user([{"type": "tool_result", "tool_use_id": "toolu_m1",
+                   "content": "Your questions have been answered: \"Prune which? G1: close-probe\"=\"Remove G1 orphans,Remove G3 twins\"."}],
+                 "u31", toolUseResult={"questions": [{"header": "Prune", "multiSelect": True, "question": "Prune which? G1: close-probe",
+                                                      "options": [{"label": "Remove G1 orphans"}, {"label": "Remove G3 twins"}]}],
+                                       "answers": {"Prune which? G1: close-probe": ["Remove G1 orphans", "Remove G3 twins"]}})
+    got = ot.classify(multi, 0)
+    cases.append(("a multiSelect answer's picked labels become one pair, joined as the runtime shows them",
+                  got.kind == "answer" and list(got.pairs or []) == [("Prune which? G1: close-probe",
+                                                                     "Remove G1 orphans,Remove G3 twins")]))
     cases.append(("a tool_result without toolUseResult has no pairs but keeps its result text",
                   r["u12"].pairs is None and list(r["u12"].tool_results) == [("toolu_q2", QUESTION_TEXT, False)]))
     cases.append(("tool_result beside text keeps both", r["u13"].text == "text typed beside a tool result"
@@ -172,12 +190,16 @@ def main():
         head.write_text("\n".join(lines[:13]) + "\n", encoding="utf-8")
         latest_full = gg._latest_turn_key(str(path))
         latest_head = gg._latest_turn_key(str(head))
+        quotes = ot.owner_quote_rows(str(path))
+        missing_file = ot.owner_quote_rows(str(Path(tmp) / "absent.jsonl"))
+        turns = ot.owner_turns(str(path)) if hasattr(ot, "owner_turns") else None
+        missing_turns = ot.owner_turns(str(Path(tmp) / "absent.jsonl")) if hasattr(ot, "owner_turns") else "absent"
 
     starts_turn = getattr(gg, "_starts_turn", None)
     for (label, entry), row in zip(FIXTURE, rows):
         if not label or label not in expected:
             continue
-        k_cell, g_cell, s_cell = expected[label]
+        k_cell, g_cell, s_cell, q_cell = expected[label]
         name = "%s [%s]" % (label, entry["uuid"])
         text, pairs = kg._message_text(entry), kg._askuserquestion_answers(entry)
         k_ok = {"drop": text is None and pairs is None,
@@ -195,9 +217,41 @@ def main():
                 "answer": got == "(answer) " + row.tool_results[0][1].strip() if row.tool_results else False,
                 }.get(s_cell)
         cases.append(("digest %s: %s (got %r)" % (s_cell, name, got), bool(s_ok)))
+        q_ok = {"drop": ot.owner_quote_text(row) is None,
+                "text": ot.owner_quote_text(row) == row.text}.get(q_cell)
+        cases.append(("provider_guard %s: %s" % (q_cell, name), bool(q_ok)))
 
     cases.append(("growth turn key is the latest turn row's uuid", latest_full == "u15"))
     cases.append(("growth skips no-turn rows back to the last turn row", latest_head == TURN_BEFORE_ANSWERS))
+
+    # The provider guard's projection over a real transcript file: what an `owner:` quote can find.
+    if quotes is None:
+        cases.append(("owner_quote_rows reads the planted transcript", False))
+    else:
+        def quoted(needle):
+            return any(needle in text for text in quotes)
+        cases.append(("an owner prompt is quotable", quoted("Ship the owner text parser.")))
+        cases.append(("a mid-turn queued prompt is quotable", quoted("stop the two hung codex shells")))
+        cases.append(("an injection-prefixed prompt is quotable", quoted("Please keep going with the plan.")))
+        cases.append(("a cross-session message quoting the owner's words does not lift",
+                      not quoted(OWNER_WORDS)))
+        cases.append(("...nor does an agent message, a meta row or a command's args",
+                      not quoted("Peer update for the owner.") and not quoted("Canonical route for delegation.")
+                      and not quoted("finish the wave")))
+    cases.append(("an unreadable transcript is not an empty one", missing_file is None))
+    expected_turns = [(row.uuid, ot.owner_quote_text(row)) for row in rows if row and ot.owner_quote_text(row)]
+    prompt_turns = [(uuid, text) for uuid, text in turns or [] if uuid != "u11"]
+    cases.append(("owner_turns yields the owner_quote_rows texts, each with its row uuid",
+                  prompt_turns == expected_turns and [text for _, text in prompt_turns] == quotes
+                  and [uuid for uuid, _ in turns or []][:2] == ["u01", "u05"]))
+    cases.append(("owner_turns reads an AskUserQuestion answer as the owner's picked label, in order",
+                  [t for t in turns or [] if t[0] == "u11"] == [("u11", "Yes, stop it")]
+                  and [uuid for uuid, _ in turns or []].index("u11") == [uuid for uuid, _ in turns or []].index("u05") + 1))
+    cases.append(("an answer carried only by tool_result text has no pairs and is not an owner turn",
+                  "u12" not in [uuid for uuid, _ in turns or []]))
+    cases.append(("owner_quote_rows still drops answers (the provider_guard column)",
+                  not any("Yes, stop it" in text for text in quotes or [])))
+    cases.append(("an unreadable transcript is not an empty one for owner_turns", missing_turns is None))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

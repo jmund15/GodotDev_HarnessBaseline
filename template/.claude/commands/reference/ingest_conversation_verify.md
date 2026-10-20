@@ -43,9 +43,22 @@ Quality is a gate question, so it goes to the owner at step 6.
 Different work at a different cost is a different approval — the same reason step 7 keeps
 design-shaped actions staged rather than run.
 
+**Video source: compare each practice.** A video mostly recommends ways of working, and each one is
+a premise that the project lacks or does worse. Tag each practice-shaped candidate by domain
+(`harness`, `product` or `both`); a `product` or `both` candidate reads the project's vision owner
+before it is judged. Find the project's counterpart with the same cheap checks, then give one verdict:
+
+| verdict | meaning | consequence |
+|---|---|---|
+| `adopt` | the project has no counterpart | the candidate proceeds as new work |
+| `ours-better` | the project's counterpart covers more; cite it and say why | the candidate closes as `no-route` with that citation |
+| `hybrid` | each side holds something the other lacks | re-scope the candidate to the combined form, naming what comes from each |
+| `n/a` | the practice does not fit this project | `no-route` with the reason |
+
 **Done when:** every premise-shaped claim carries `holds` / `stale → <what the repo shows>` /
-`unverifiable → <what would settle it>` with its evidence, `## Premise checks` records them, and
-every `stale` verdict has re-scoped its candidate before step 4 classifies it.
+`unverifiable → <what would settle it>` with its evidence, every video practice carries its domain
+and comparison verdict, `## Premise checks` records them, and every `stale` or `hybrid` verdict has
+re-scoped its candidate before step 4 classifies it.
 
 ## Step 3.7 — Outside read (session + one blind dispatch)
 
@@ -55,15 +68,16 @@ adjectival: something reasons about each problem before seeing the chosen answer
 
 1. **Assemble the contention set:** topics tagged `diverging` / `unresolved friction`, open
    questions, and any decision adopted with no competing alternative voiced in the transcript —
-   cheap convergence is where blind spots hide. **Empty set → no dispatch**: write the section with
+   cheap convergence is where blind spots hide. For a video source the set is the `adopt` and
+   `hybrid` verdicts, since those are where the project would change. **Empty set → no dispatch**: write the section with
    its provenance header and a 2–3 sentence session-inline read.
 2. **Write solution-stripped briefs** — one per item, one scratch file: the problem as posed,
    verbatim constraints both parties stated, premise-check repo facts. The participants' chosen
    answers are REMOVED — the blind brief is the de-biasing mechanism (the `--design_panel`
    blind-attempt structure).
-3. **Dispatch ONE blind job** via dispatch.js — pin the architect tier — `medium` for interpersonal/process contention, `high` when a brief
-   turns on repo facts the arm must discover — **never the default fan-out tier** (it fabricates on open judgment —
-   per the ladder, `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
+3. **Dispatch ONE blind job** through `/delegate` at the architect tier: its lowest ladder rung for interpersonal or process contention,
+   a higher rung when a brief turns on repo facts the arm must discover. **Never use a fanout-tier row**: those fabricate
+   on open judgment (their `±` cells in `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
    per brief with tradeoffs. Record the pin in the run report.
 4. **Compare and write `## Outside read`** (session): delegate directions vs what was concluded vs
    the repo. Entry tiers: `missed direction` / `misframe` / `unpriced risk` /

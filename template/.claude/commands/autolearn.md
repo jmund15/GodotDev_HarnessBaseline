@@ -1,8 +1,8 @@
 ---
-description: Detect this session's corrections and preferences; propose minimal Skill/memory edits.
+description: Find session learning signals; use /codify for a known item
 ---
 
-Phase 2 of `/session_end`. Detect corrections and recurring preferences from the session; propose minimal reversible edits to active Skills or auto-memory. Filter for quality and overfit before proposing.
+Phase 2 of `/session_end`. This command owns discovery, the retirement pass and the packet; `/codify` owns every decision and landing.
 
 ## When to activate
 
@@ -29,17 +29,17 @@ python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-pag
 ```
 
 The digest rebuilds the whole session from the live transcript (append-only across compactions). JSON at
-`logs/session_digest_<sid8>.json`; older pre-compaction backups (`logs/pre_compact.json` → `.summary.json`) are
-the same schema and only needed if the live transcript is gone. Recovered command-argument rows stay in the
-index as `unattributed`; they are excluded only from the task-anchor choice.
+`logs/session_digest_<sid8>.json`; older pre-compaction backups (`logs/pre_compact.json` and its summary companion) are
+the same schema and only needed if the live transcript is gone. Recovered command-argument rows follow the
+`unattributed` rule in `session_digest.md` §Caveats.
 
-**Nuance recall (conditional):** if the digest shows 3+ compactions or the session had redesigns/go-backs, run [Transcript Nuance Recall](agents/transcript_nuance_recall.md) for the implicit signals a regex misses. Candidates enter at MEDIUM confidence through the normal filter.
+The pass is done when it states whether early corrections held across compaction segments.
+
+**Nuance recall (conditional):** apply [Transcript Nuance Recall](agents/transcript_nuance_recall.md), which owns the gate, the quote check and the cached pass. Candidates enter at MEDIUM confidence through the normal filter. `/self_evaluate` reads this pass instead of repeating it.
 
 ## Surface routing
 
-Route each surviving signal through [`/codify`](codify.md) §Step 4 — the ordered table over all six surfaces (`rules/` + `paths:`, cold memory, `commands/`, hooks, skills, always-loaded), with §Step 5's admission and audit on the always-loaded rows. Decide the surface there, not here; the two mapping sections below carry only the mechanics once a surface is chosen.
-
-One constraint routing does not cover: never store large code blocks in auto-memory — link to source instead.
+Run each surviving signal through [`/codify`](codify.md) §Steps 0–5, its `/autolearn` caller contract, and decide its surface there, not here. A signal its §Step 0 rules no change gets no packet row.
 
 ## Retirement pass (runs beside signal detection)
 
@@ -52,38 +52,32 @@ python3 .claude/tools/rule_retirement.py --client-version <this client's version
   --census .claude/logs/load_census.json --json logs/rule_retirement.json
 ```
 
-Each `fired` row becomes one proposed retirement in the same review flow as the additions, naming the rule, its trigger and the reason it fired. A fired `review-by` row is proposed as keep (renew the date to today + 180 days), retire, or demote to `archive/`, citing the file's citing-session count from `memory_hit_counts` in `/tmp/eval_out/stats.json` (`tools/analyze_eval_archive.py`; memory files) and `git log -1 --format=%cs -- <path>`. Each `malformed` row becomes a proposed trigger repair — a trigger no kind matches retires nothing. Report the `undecidable` count with the evidence that was not supplied; do not read it as "still needed".
+Each `fired` row becomes one proposed retirement in the review packet, naming the rule, its trigger and the reason it fired. A fired `review-by` row is proposed as keep (renew the date to when the rule's evidence could next plausibly change, stating that reason in the renewal row), retire, or demote to `.claude/auto-memory/archive/`, citing the file's citing-session count from `memory_hit_counts` in `/tmp/eval_out/stats.json` (`tools/analyze_eval_archive.py`; memory files) and `git log -1 --format=%cs -- <path>`. A fired `evidence` row is proposed as confirm (delete the marker), revise (rewrite the rule and re-date `since:`), or retire, citing the rows `rule_retirement.py` counted. Each `malformed` row becomes a proposed trigger repair — a trigger no kind matches retires nothing. Report the `undecidable` count with the evidence that was not supplied; do not read it as "still needed".
 
 ## Signal detection
 
 Scan the session for:
 
-**Corrections** (highest value)
-- "No, use X instead of Y"
-- "We always do it this way"
-- "Don't do X in this codebase"
-
-**Repeated patterns** (high value)
-- Same feedback given 2+ times
-- Consistent naming/structure choices across multiple files
-
-**Approvals** (supporting evidence)
-- "Yes, that's right"
-- "Perfect, keep doing it this way"
+**Corrections** (highest value) — a user statement that changes what you do next.
+**Repeated patterns** (high value) — the same feedback or choice recurring across files or prompts.
+**Approvals** (supporting evidence) — a user statement confirming an approach.
 
 **Missed delegation** (orchestrator-tier sessions)
 - `DELEGATION:` entries in the self-evaluate archive, or user feedback about work that should have been dispatched
-- Each carries a rationalization + proposed harness edit (per `/self_evaluate` step 5); when the same rationalization recurs across sessions, propose the named edit against the ladder (`reference/model_ladder_evidence.md`) or the grain/litmus rules (`orchestration` §5/§11) (or the recording session's proposed file) rather than re-describing the failure
+- Each carries a rationalization + proposed harness edit (per `/self_evaluate`'s delegation calibration); when the same rationalization recurs across sessions, propose the named edit against the ladder (`reference/model_ladder_evidence.md`) or the grain/litmus rules (`orchestration` §5/§11) (or the recording session's proposed file) rather than re-describing the failure
 
 **Friction** (mandatory disposition — the class that is otherwise glossed over and never fixed)
 - Every digest friction row: a denied tool call, an error that needed a workaround, a blocking wait, a user interrupt, a user complaint about process ("this used to not happen", "why do you keep…")
-- Each row → `fixed` / `harness` (name the file and the edit shape: allow rule, hook fix, skill line, launcher flag) / `worklog` / `accepted: <why>`. Same friction twice in the digest, or already in a prior archive entry → `harness`, never `accepted`
+- Each row → `fixed` / `harness` (name the file and the edit shape: allow rule, hook fix, skill line, launcher flag) / `worklog` / `accepted: <class>: <why>` (`guard-working` | `outside` | `owner-held` | `one-off`). Friction that recurred in this digest, or that already sits in a prior archive entry, routes to `harness` unless `/codify` §Step 0 rules no change; then it is `accepted` with the target's quoted text
 - Unlike corrections, friction needs no user words to count: the tool error is the signal
 
-**Ignore:**
-- Context-specific one-offs ("use X here" without "always")
-- Ambiguous feedback
-- Contradictory signals (ask for clarification instead)
+**Fixed defects** — each commit this session made whose subject starts `fix` (`git log -F --grep='<this session's Claude-Session URL>' --format='%h %s'`) is a signal with no correction or friction row needed: `/codify` §Step 0 names the choice upstream of the defect, and the commit is its `Signal:` evidence.
+
+**Predecessor tail** — when this session resumed another session's work (a handoff, `/overnight_review`, a digest pickup), that session's friction rows after its own `/autolearn` ran are signals here, because its run could not see them.
+
+**Packet outcomes** — run `python3 .claude/tools/autolearn_outcomes.py lookup --target <target>` before proposing: a declined row whose reason and signal still hold is not proposed again.
+
+**Ignore:** context-specific one-offs ("use X here" without "always"), ambiguous feedback, and contradictory signals (ask for clarification instead).
 
 ## Signal quality filter
 
@@ -91,219 +85,17 @@ Before proposing any change, ask:
 1. Was this correction repeated, or stated as a general rule?
 2. Would this apply to future sessions, or just this task?
 3. Is it specific enough to be actionable?
-4. Is this **new information** I wouldn't already know?
-5. **Falsifiable mechanism claim?** If the entry asserts how a tool/engine/API *behaves* ("X isolates Y", "Z is case-sensitive", "A causes B") — not a preference or observed event — it needs **direct evidence that isolated it**. A fix that changed >1 thing, or a single observation, is NOT verification. Run the 30-second falsification check now, or save only the observed fact — never the inferred mechanism. A saved mechanism claim MUST carry a `**Verified:** <the check that confirmed it>` line; a mechanism entry lacking it is a defect (greppable by the memory-claim audit).
+4. Is this **new information** I wouldn't already know? Advice you would give any project does not belong here.
+5. **Falsifiable mechanism claim?** If the entry asserts how a tool/engine/API *behaves* ("X isolates Y", "Z is case-sensitive", "A causes B") — not a preference or observed event — it needs **direct evidence that isolated it**. A fix that changed more than one thing cannot isolate a mechanism (isolation means varying one factor), and a single observation is NOT verification. Run the falsification check now, or save only the observed fact — never the inferred mechanism. A saved mechanism claim MUST carry a `**Verified:** <the check that confirmed it>` line; a mechanism entry lacking it is a defect (greppable by the memory-claim audit).
 
-Only propose changes that pass all five.
+Only propose changes that pass all five, then `/codify` §Step 2's generalization gates.
 
-### Anti-pattern: Redesign vs Execute
-When a procedure fails, diagnose execution before redesigning. Check:
-1. Did I actually follow all steps of the existing procedure?
-2. Does the infrastructure (hooks, logs, summaries) exist and work?
-3. Is the failure in the procedure itself, or in my adherence to it?
+## Review packet
 
-Only redesign if the procedure is fundamentally flawed. If execution skipped a step, the fix is emphasis/clarity on that step, not a rewrite.
+Proposals reach the owner as one packet (`CLAUDE.core.md` §Preferences), retirements included. Each row names its target file and section, the change (a memory entry's text; a skill's current and proposed text), the signal quote, its confidence and recommendation; recommended rows come first. It also carries `/codify`'s §Step 0 verdict with the target's quoted text and its §Step 2 model scope. It prices the trade: what each occurrence cost and how often it recurs, against the edit's cost in loaded bytes, new code, its proof and any state its guard would need recorded. Recommend a row only when that benefit is larger (`feedback_price_the_tradeoff_before_recommending_it`). Ask once: apply the recommended rows, choose rows, or apply none. Under an armed `/overnight`, each row becomes a `Q` row parked `owner-domain` in its Close doc, and `/overnight_review` applies the answers.
 
-### Anti-pattern: Overfit-to-Specific
+## Applying changes
 
-A captured rule that names a specific file path, PR number, spell name, commit SHA, or session date is overfit. The rule will not survive being re-read in 6 months when those details are stale. **Rewrite as a principle, or revert.**
+Run `/codify` §Steps 6–7 on each approved row, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing: it lands the change and proves it fires. Commit as `chore(autolearn): <brief description>` and report what changed.
 
-The concrete details still have value as **evidence** — keep them in the `Signal:` line of the proposal (and as `Concrete:` / `Source:` / `Why:` lines on the resulting memory entry), where they prove the principle was observed in the wild. They do not belong in the principle itself.
-
-**Litmus test before saving:**
-1. Does the rule name a specific file, function, PR, spell, or commit?
-2. Could a reader from another project apply this rule without that name?
-3. If the answer is "no, only {{PROJECT_NAME}}'s `<thing>`" — rewrite or skip.
-
-**Worked example.** A correction "don't run the regression gate after touching `burn_effect.tres`" is overfit (`burn_effect.tres` is one file). Rewrite as "treat `.tres` files that affect Logic Domain behavior as code for the regression gate" — applies to every future `.tres`, and the original `burn_effect.tres` incident becomes the `Signal:` evidence line.
-
-**Why this matters here.** Special-case rules accumulate faster than they age out, and each one that names a specific thing instead of a class of things is a future search miss — a semantic-search for "data file" or "Logic Domain" should surface the rule; a title that only says `burn_effect.tres` won't.
-
-This same gate is applied retroactively to existing entries by `/memory_audit`'s overfit lens (lens 2).
-
-### What counts as "new information"
-
-**Worth capturing:**
-- Project-specific conventions ("we use `NodeExts` here")
-- Custom component/utility locations ("buttons are in `res://components/ui`")
-- Team preferences that differ from defaults
-- Domain-specific terminology or patterns
-- Non-obvious architectural decisions
-- Integrations and quirks specific to this stack
-
-**NOT worth capturing (I already know this):**
-- General best practices (DRY, separation of concerns)
-- Language/framework conventions (.NET and Godot basics)
-- Common library usage (standard C# classes, typical Godot patterns)
-- Standard accessibility guidelines
-
-If I'd give the same advice to any project, it doesn't belong in a skill.
-
-## Rules & Constraints for ALL Additions
-
-- Stay within the **brevity budget** below — bloat compounds across compactions.
-- Never delete existing rules without explicit instruction
-- Prefer additive changes over rewrites, unless you notice redundancy.
-- One concept per change (easy to revert)
-- Preserve existing file structure and tone
-- When uncertain, downgrade to MEDIUM confidence and ask
-
-### Brevity budget (audit thresholds)
-
-The `MEMORY.md` index auto-loads into every session (first 200 lines / 25KB), and a hot topic file is read whenever its index line is followed — bloat there is paid repeatedly. Start concise and inside the measured budget, then run the focused audit after the addition; never delete a required condition or an evidence-bearing explanation to balance bytes. Cold `archive/` files are search-only, so length matters far less there.
-
-| Where | Target | Hard cap |
-|---|---|---|
-| MEMORY.md index entry | ≤ 120 chars | 150 |
-| Links on ONE index line | ≤ 3 | 4 = merge the cluster (Step 1) |
-| Comma-labels on ONE index line | ≤ 3 | 4 = split into one line per rule |
-| Hot topic file body (rule + Why + How) | as short as the rule allows | ~500 chars |
-| Cold archive file body | as long as the reference genuinely needs | n/a |
-
-A budget violation on a hot entry is an audit signal: merge genuinely redundant principles, demote bulk detail to `archive/`, or keep a larger faithful rule with a recorded reason. Over 500 characters in a hot topic body signals a split or review, not proof that information must be removed.
-
-The per-line link cap is the one budget that binds in *aggregate* rather than per-entry: the index hits its byte cap through link count, not through any single entry being too long, so a store of individually-compliant entries can still blow it. Bytes bind before the 200-line budget does — a dense index reaches 25KB at ~90 lines.
-
-### Anti-patterns in memory-entry prose
-
-Don't write observations that look like any of these — each is a shape a compaction pass has had to rewrite or delete:
-
-- **Stacked errata.** "CORRECTION 2026-04-30 (supersedes obs #1 + #3): ..." — *consume* the correction by editing obs 1+3 in place; never leave both versions.
-- **Incremental followups.** "EXPANDED PATTERN (2026-04-26 followup): the int-Export bug ALSO bites bool fields ..." — *merge* into one general rule covering all variants the day the second variant lands.
-- **Narrative timelines in the headline.** "BT-TREE-RESTART HOT LOOP gotcha (Phase 1e.3 B9.3 playtest, 2026-04-21): ..." — phase IDs, dates, commits belong on a single `Concrete:` line at the bottom, not spliced through the rule prose.
-- **Restatement loop.** "RULE: ... RECOMMENDATION: ... LESSON: ... RULE: ..." stating the same principle four ways. Pick the strongest sentence; delete the rest.
-- **Multi-paragraph observations.** A gotcha is one paragraph + (optional) one `Concrete:` line. If you find yourself writing "Furthermore," or starting a second paragraph, you have two observations.
-- **Inline implementation tour.** "Root cause is in src/metrics/symbol-match.ts where COLUMN_WEIGHTS aggregation can only amplify existing scoring ..." — code-internal reasoning belongs in source comments or commit messages, not memory. The memory entry is the *consumer-facing rule*.
-- **Symptom + Detection + Fix + Recovery + Prevention sections.** This is documentation, not a memory observation. If a gotcha needs all five, it's a runbook — write it as a cold `archive/` memory file or a skill section, then a one-line `MEMORY.md` pointer if it warrants hot-tier surfacing.
-- **"Discovered 2026-04-25 in PR #59 — wizard.tscn line 2110 ...".** PR # / line number / file path in the rule itself is overfit (existing Anti-pattern: Overfit-to-Specific). Move to `Concrete:`.
-
-Litmus before saving: *would a future-me searching for this rule benefit from any of those extra words, or would they just have to skim past them?* If the latter, cut.
-
-## Mapping signals to Memory
-
-When `/codify` §Step 4 routes the signal to **auto-memory** (`.claude/auto-memory/`):
-
-**Step 1: Extend an existing topic file, or create one — in that order**
-
-**Default to extending. Search before you create.** Semantic-search the store for the concern, and
-read the `MEMORY.md` line your pointer would join. A new file is correct only when no existing topic
-file owns this concern.
-
-**The index line is the tell.** If your pointer would join a line already carrying **≥3 links**, that
-line is a *cluster* — a topic that fragmented one incident at a time. Append your rule as a numbered
-entry in that cluster's topic file instead of adding a fourth link. Creating a sibling file there is
-how an index reaches its byte cap while every individual entry remains correct and every individual
-decision was defensible — the failure is only visible in aggregate, which is why it has to be caught
-at write time. (Retroactive cleanup: `/memory_audit` lens 5.)
-
-- Extends an existing topic file → append to its body; **no new `MEMORY.md` link**.
-- Genuinely new concept → create `<slug>.md` (frontmatter: `name`, `description`, `metadata.type` of
-  user|feedback|project|reference).
-- **Default tier is COLD** (`archive/`, no pointer). Hot requires, written in the save report: the decision the pointer pre-empts AND why it fires before any search would run (CLAUDE.md §2 *Admission, not headroom*). Absent either → cold. Hot add → one-line `MEMORY.md` pointer in the *same turn*; the save report records the pre-trigger decision, byte delta and focused audit result.
-- **Placement gate — three-way routing, `instruction_quality` §5 standard, destinations at [`/codify`](codify.md) §Step 4:**
-  no trigger, pre-existing → hot topic file + `MEMORY.md` pointer in the *same turn*; decided with a file
-  of a prefix-anchored class open → split — the rule to `rules/<name>.md` + `paths:`, the evidence file
-  stays under `auto-memory/` (source not deleted); a `reference/memory_domains.md` domain-entry trigger
-  exists → `archive/`, no pointer.
-
-**Step 2: Link related memories**
-- Cross-link related topic files with `[[other-file-slug]]` wikilinks in the body.
-- A `[[name]]` that doesn't resolve yet is fine — it marks a future memory worth writing.
-- Wikilinks improve discoverability — they connect a found memory to its neighbors.
-
-**Step 3: Catalog the failure mode (if applicable)**
-When the new entity codifies a **recurring failure pattern** (regression class, bug shape, mistake-shape with detection signal), propose a corresponding entry in [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md). The catalog is the **detection-pattern layer** that critic agents fetch per entry on demand, such as the coding layer's plan-review `plc-memory-alignment` and explore `exp-memory` lenses. Append the entry to `.claude/reference/known_failure_modes_entries.md` with an ID from `python3 .claude/tools/kfm.py next-id`; that is the whole maintenance job — the selector index is generated, never stored.
-
-Trigger: the new entity describes a *bug class* (not a *preference* or *fact*). Litmus — would another future occurrence of this class be catchable by a grep regex, LSP query, or structural pattern? If yes, the catalog entry adds value.
-
-Entry format and placement: [`checklists/known_failure_modes.md`](checklists/known_failure_modes.md) §How to add — `kfm.py` parses the five lines, so a malformed entry silently vanishes from the index.
-
-If no concrete detection signal exists, the entry isn't ready — defer to the next pass when the pattern surfaces a second time and the signal becomes clearer. Catalog entries are append-only; manual sweeps are not part of normal autolearn flow.
-
-## Proposing memory changes
-
-For each proposed edit, provide a human readable format of the memory additions and updates.
-
-Present HIGH confidence changes first.
-
-### Review flow
-
-Always present changes for review before applying. Format:
-
-```
-## autolearning memory summary
-
-Detected [N] durable preferences from this session to update auto-memory.
-
-### HIGH confidence (recommended to apply)
-- [change 1]
-- [change 2]
-
-### MEDIUM confidence (review carefully)
-- [change 3]
-
-### Retirements (rules past their trigger)
-- [rule] — [trigger] — [why it fired]
-
-Apply high confidence changes? [y/n/selective]
-```
-
-## Mapping signals to Skills
-
-When `/codify` §Step 4 routes the signal to a **skill**: skill updates have a larger impact than memory additions, so the workflow here is longer.
-
-Match each signal to the Skill that was active and relevant during the session:
-
-- If the signal relates to a Skill that was used, update that Skill's `SKILL.md`
-- If 3+ related signals don't fit any active Skill, propose a new Skill
-- Ignore signals that don't map to any Skill used in the session
-
-### Proposing SKILL changes
-
-For each proposed edit, provide:
-
-```
-File: path/to/SKILL.md
-Section: [existing section or "new section: X"]
-Confidence: HIGH | MEDIUM
-
-Signal: "[exact user quote or paraphrase]"
-
-Current text (if modifying):
-> existing content
-
-Proposed text:
-> updated content
-
-Rationale: [one sentence]
-```
-
-Group proposals by file. Present HIGH confidence changes first.
-
-### Review flow
-
-Always present changes for review before applying. Format:
-
-```
-## autolearning skill summary
-
-Detected [N] durable rules from this session.
-
-### HIGH confidence (recommended to apply)
-- [change 1]
-- [change 2]
-
-### MEDIUM confidence (review carefully)
-- [change 3]
-
-Apply high confidence changes? [y/n/selective]
-```
-
-Wait for explicit approval before editing any file.
-
-### Applying changes
-
-When approved:
-1. Edit the target file with minimal, focused changes
-2. If git is available, commit with message: `chore(autolearn): [brief description]`
-3. Report what was changed
+Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --row <R#> --target <target> --signal <signal> --recommended <apply|choose> --outcome applied|declined --reason <text>`, with the owner's stated reason or `none given`. The tool rejects a malformed row and caps the file.

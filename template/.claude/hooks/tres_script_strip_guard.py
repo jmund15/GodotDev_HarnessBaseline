@@ -24,13 +24,14 @@ Modes:
                                              # from HEAD (keeps the editor's normalization -- the
                                              # fixed-point repair; a git-restore re-plants old-format
                                              # and re-arms the dirty-flag bomb)
-    tres_script_strip_guard.py --worktree --revert  # git checkout each stripped file (last resort:
-                                             # re-plants old-format, strip recurs at next save)
     tres_script_strip_guard.py --editor-check  # warn when a Godot editor runs on an assembly newer
                                              # than its boot (the preventable bind-failure window)
 
 Escape hatch (rare intentional removal of a genuinely-deleted scripted sub-resource):
 set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 in the environment.
+
+Commit scope is `hooks/_commit_scope.py`: it names the invocations that publish the index and the
+paths a merge authors.
 """
 import json
 import os
@@ -38,6 +39,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _commit_scope import authored_paths, publishes_index  # noqa: E402
 
 # Windows pipes default to cp1252 through Python 3.14; git diff text now decodes as real
 # UTF-8, so a non-ASCII .tres string payload or path would raise UnicodeEncodeError on write.
@@ -82,6 +86,14 @@ def diff_lines(range_arg, worktree=False):
                           env=_GIT_ENV).stdout.splitlines()
 
 
+def _authored(findings, repo, git_env):
+    """Keep only the rows whose path THIS commit wrote. A merge diffs the index against HEAD, so a
+    parent's own .tres edit reads as this commit's; it was judged on that parent's ref. Outside a
+    merge `authored_paths` returns every path, so an ordinary commit is judged as before."""
+    keep = set(authored_paths(sorted({row[0] for row in findings}), repo, git_env))
+    return [row for row in findings if row[0] in keep]
+
+
 def find_strips(range_arg, worktree=False):
     """Return [(path, removed, added)] for files with a net script-binding loss."""
     per_file = {}
@@ -118,8 +130,8 @@ def report(findings):
         "\nA custom-Resource .tres that loses its `script = ExtResource(...)` line loads as a "
         "bare Godot.Resource -> casts to its C# type throw at runtime with a green build (the "
         "stale-registry editor-resave strip; gotcha_godot_editor_resave_hazards). "
-        "Restore the binding (e.g. `git checkout <pre-resave>^ -- <file>`), or if you genuinely "
-        "deleted a scripted sub-resource, set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1.",
+        "Restore the binding with `tres_script_strip_guard.py --worktree --repair-inplace`, "
+        "or if you genuinely deleted a scripted sub-resource, set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1.",
         file=sys.stderr,
     )
 
@@ -146,7 +158,8 @@ def hook():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from _git_commit import commit_invocations, bypass_declared, git_environ, git_invocation, segments
     cmd = data.get("tool_input", {}).get("command", "")
-    commits = [c for c in commit_invocations(cmd, data.get("cwd") or ".") if c.sub == "commit"]
+    commits = [c for c in commit_invocations(cmd, data.get("cwd") or ".")
+               if publishes_index(c.sub, c.rest)]
     if commits:
         commit = commits[-1]
         global _GIT_ENV
@@ -159,14 +172,14 @@ def hook():
         except OSError:
             pass
 
-        findings = find_strips(None)
+        findings = _authored(find_strips(None), commit.cwd, commit.git_env)
         if not findings:
             print("{}")
             return 0
 
         report(findings)  # surfaced in the transcript alongside the deny
         reason = (
-            f"Blocked: {len(findings)} staged .tres lost a `script = ExtResource(...)` binding "
+            f"Blocked (rules/godot_files.md): {len(findings)} staged .tres lost a `script = ExtResource(...)` binding "
             "(editor-resave script strip -> bare-Resource load / InvalidCastException). Restore the "
             "binding, or set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 if the removal is intentional."
         )
@@ -276,8 +289,7 @@ def worktree_scan(revert, repair=False):
         print(
             "Fix now: verify each diff is a strip (not an intentional removal), then "
             "`tres_script_strip_guard.py --worktree --repair-inplace` (keeps the editor's "
-            "normalization, re-adds bindings from HEAD) or `git restore -- <file>` (re-plants "
-            "old-format: last resort only). See gotcha_godot_editor_resave_hazards."
+            "normalization, re-adds bindings from HEAD). See gotcha_godot_editor_resave_hazards."
         )
     return 0
 

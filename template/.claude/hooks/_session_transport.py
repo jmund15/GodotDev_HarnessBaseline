@@ -13,9 +13,15 @@ TWO SIGNALS, IN ORDER:
      that works for a LOOPBACK PROXY: the codex transport's endpoint is `http://127.0.0.1:<port>`,
      which carries no vendor name and whose port changes per session. A transport that cannot be
      identified from its URL must declare itself.
-  2. The registry's `baseUrl` HOST, for transports that have one. Host, never substring: a URL
-     mentioning a transport name in its path or query is not that transport, and a `in url` test
-     matches the noun rather than the endpoint (`rules/harness_tooling.md`).
+  2. The registry's `baseUrl` endpoint. Match scheme, host, port and path exactly when two
+     transports share a host (`opencode` and `go`). A host-only signal on that host is ambiguous
+     and fails closed. A host belonging to only one transport keeps the older host-match behavior;
+     a transport name in another host's path or query never identifies the endpoint.
+
+ROUTE AND PLAN. `resolve()` answers the ROUTE: which model ids and efforts are legal. A declared
+plan name (a transport with `planOf`) resolves to its route. `session_plan()` answers who PAYS:
+pick, capacity gates, launcher lookup. `python3 _session_transport.py --plan` prints it for shell
+callers.
 
 FAIL CLOSED. `unknown` is a return value, not an error, and callers DENY on it. An unreadable
 registry also returns `unknown` — never `anthropic`. A hook that cannot read the roster must not
@@ -63,6 +69,21 @@ def _host(url):
         return None
 
 
+def _endpoint(url):
+    """Comparable scheme/host/port/path/query for an endpoint; None for malformed input."""
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url if "://" in url else "https://" + url)
+        host = (parts.hostname or "").lower()
+        if not host:
+            return None
+        port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+        return parts.scheme.lower(), host, port, parts.path.rstrip("/") or "/", parts.query
+    except ValueError:
+        return None
+
+
 def resolve(env=None, data=None):
     """(transport, source). source is one of env | baseUrl | default | unmatched |
     registry-unreadable, and exists so a message can say HOW the session was identified —
@@ -78,8 +99,10 @@ def resolve(env=None, data=None):
     if declared:
         # An unrecognized name fails closed rather than being trusted: a typo'd launcher export
         # would otherwise name a transport with no roster, and every pin would resolve against
-        # an empty legal set.
-        return (declared, "env") if declared in transports else (UNKNOWN, "unmatched")
+        # an empty legal set. A declared plan name resolves to its route (`planOf`).
+        if declared not in transports:
+            return UNKNOWN, "unmatched"
+        return ((transports[declared] or {}).get("planOf") or declared), "env"
 
     base = (env.get("ANTHROPIC_BASE_URL") or "").strip()
     if not base:
@@ -89,12 +112,49 @@ def resolve(env=None, data=None):
     if host == ANTHROPIC_API_HOST:
         return HOST_TRANSPORT, "baseUrl"
 
-    if host:
-        for name, cfg in transports.items():
-            cfg_host = _host((cfg or {}).get("baseUrl"))
-            if cfg_host and cfg_host == host:
-                return name, "baseUrl"
+    endpoint = _endpoint(base)
+    if endpoint:
+        host_matches = [(name, _endpoint((cfg or {}).get("baseUrl")))
+                        for name, cfg in transports.items()]
+        host_matches = [(name, registered) for name, registered in host_matches
+                        if registered and registered[1] == endpoint[1]]
+        exact = [name for name, registered in host_matches if registered == endpoint]
+        if len(exact) == 1:
+            return exact[0], "baseUrl"
+        if len(host_matches) == 1:
+            return host_matches[0][0], "baseUrl"
     return UNKNOWN, "unmatched"
+
+
+def session_plan(env=None, data=None):
+    """The plan paying for THIS session: a declared plan name (`CLAUDE_CODE_TRANSPORT`), else the
+    plan of the session's route whose `configDir` is `CLAUDE_CONFIG_DIR` (unset: `~/.claude`).
+    A route none of whose plans names a `configDir` is its own plan. `unknown` when the route is
+    unknown or the directory matches no plan; callers deny native dispatch on it.
+
+    Every plan entry counts, whatever its status: which account pays is identity, and a plan's
+    availability decides only whether other sessions may route to it."""
+    env = os.environ if env is None else env
+    data = _registry() if data is None else data
+    route, _source = resolve(env=env, data=data)
+    if route == UNKNOWN:
+        return UNKNOWN
+    transports = data.get("transports") or {}
+    declared = (env.get("CLAUDE_CODE_TRANSPORT") or "").strip().lower()
+    if declared in transports and (transports[declared] or {}).get("planOf"):
+        return declared
+    plans = [route] + sorted(n for n, c in transports.items()
+                             if isinstance(c, dict) and c.get("planOf") == route)
+    dirs = {n: (transports.get(n) or {}).get("configDir") for n in plans}
+    if not any(dirs.values()):
+        return route
+    try:
+        import model_registry
+        observed = model_registry.login_dir(env.get("CLAUDE_CONFIG_DIR") or model_registry.DEFAULT_LOGIN_DIR)
+        found = [n for n, d in dirs.items() if d and model_registry.login_dir(d) == observed]
+    except Exception:
+        return UNKNOWN
+    return found[0] if len(found) == 1 else UNKNOWN
 
 
 def _dispatchable_rows(transport, data, seat):
@@ -168,5 +228,8 @@ def roster(transport, data=None, seat=None):
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.argv[1:] == ["--plan"]:
+        print(session_plan())
+        sys.exit(0)
     t, s = resolve()
     print("%s\t%s" % (t, s))

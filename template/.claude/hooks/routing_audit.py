@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 Hook: PostToolUse routing-audit log — continuous classification of every
-tool call against CLAUDE.md §Tool Routing routing rules. Persists silent-misses + cue-
+tool call against CLAUDE.core.md §9 routing rules. Persists silent-misses + cue-
 exempt overrides to logs/routing_audit.jsonl for /eval_dashboard aggregation.
 
 Why this exists:
-- The existing PostToolUse/PreToolUse nudge hooks (`tool_routing_post_grep.py`,
-  `tool_routing_nudge.py`) fire real-time advisories but do NOT persist
+- The PreToolUse nudge hook (`tool_routing_nudge.py`) fires real-time
+  advisories but does NOT persist
   per-call classifications. Drift across sessions is invisible until a periodic
-  /routing_battery surfaces it. Reddit thread (2026-05-04) load-bearing claim:
+  synthetic routing battery surfaces it. Reddit thread (2026-05-04) load-bearing claim:
   "without the log i would have assumed the rule was working — caught 4-5
   mechanical things a week routing the wrong way."
 - This hook fills that gap. It runs after every routing-relevant tool call,
@@ -21,13 +21,14 @@ What gets logged (and what doesn't):
 - CUE_EXEMPT       : append. Confirms K1/L6/audit-shape carve-outs are firing
                      correctly — counts as "compliant override" in the dashboard.
 - COMPLIANT        : skip. Routine routing wins, not interesting.
-- ADVISORY_APP.    : skip. Soft-nudge categories (memory_search, broad obsidian
-                     search) — too noisy to log every one.
+- ADVISORY_APP.    : skip. Soft-nudge categories (memory_search, read_web below
+                     the synthesis floor) — too noisy to log every one.
 - NOT_ROUTABLE     : skip. Tool has no §Tool Routing routing rules.
 
 Each entry also records `nudge_fired: bool` — whether the existing nudge
-channel (`tool_routing_post_grep.py` / `tool_routing_nudge.py`) actually
-reached the agent. Cross-references the per-session state file's pre/post receipts.
+channel (`tool_routing_nudge.py`) actually
+reached the agent. Cross-references the per-session state file's current pre-call
+receipts and legacy post-call receipts.
 The dashboard splits:
    silent-miss = NUDGE_WARRANTED + nudge_fired=false   ← the gap to close
    nudged      = NUDGE_WARRANTED + nudge_fired=true    ← channel works
@@ -116,9 +117,9 @@ def _detect_nudge_fired(
     Sources of truth:
     - `pre_nudges_fired_this_turn` — written by `tool_routing_nudge.py` for every
       delivered PreToolUse advisory, keyed by classification rule.
-    - `post_grep_nudges_fired_this_turn` — written by
-      `tool_routing_post_grep.py` when its fallback emits, keyed by Grep pattern.
-    Both hooks write session-level state, so subagent calls also consult that file.
+    - `post_grep_nudges_fired_this_turn` — legacy fallback receipts from before
+      its retirement, keyed by Grep pattern.
+    Receipts live in session-level state, so subagent calls also consult that file.
     """
     if classification.severity != "nudge-warranted":
         return False
