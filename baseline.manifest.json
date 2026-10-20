@@ -1917,11 +1917,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/hooks/gate_queue_surface.py",
-      "layer": "godot",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/hooks/generate_family_manifest.py",
       "layer": "godot",
       "sync": "auto"
@@ -2517,11 +2512,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/scripts/GateQueue.ps1",
-      "layer": "godot",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/scripts/GodotProcess.ps1",
       "layer": "godot",
       "sync": "auto"
@@ -2669,11 +2659,6 @@
     {
       "path": ".claude/scripts/fetch_source.sh",
       "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/scripts/gate_queue_watcher.ps1",
-      "layer": "godot",
       "sync": "auto"
     },
     {
