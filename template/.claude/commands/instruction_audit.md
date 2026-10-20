@@ -3,7 +3,7 @@ description: Audit a skill, command, hook, or CLAUDE.md against instruction-load
 disable-model-invocation: true
 ---
 
-Static structural review — sibling to `/claudemd_compact`. Does NOT measure trigger accuracy (unowned — Claude Code dropped its bundled `skill-creator`).
+Static structural review — sibling to `/claudemd_compact`.
 
 ## Argument
 
@@ -13,11 +13,11 @@ Static structural review — sibling to `/claudemd_compact`. Does NOT measure tr
 - A hook file: `.claude/hooks/<name>.py` (or just `<name>` — auto-resolves)
 - The CLAUDE.md file: `.claude/CLAUDE.md` (whole-file audit; for compression, prefer `/claudemd_compact`)
 
-**No argument:** Print usage and the 3 most-recently-modified skill/command files as suggested targets.
+**No argument:** Print usage and suggest the most recently modified skill/command files as targets.
 
 **Multi-target:** `/instruction_audit <path> <path> ...` or `--all` (every skill + command). Fan the mechanical phases (Phase B quantitative inputs, C, C.5, C.75) out to parallel read-only verification agents per the `orchestration` skill — one agent per target cluster, with the claims to verify pushed into each prompt. Phase-B principle verdicts and the report stay with the orchestrator; agents return evidence, not verdicts.
 
-**Malformed argument:** If path doesn't resolve, search for skills/commands with names containing the string and offer up to 3 matches.
+**Malformed argument:** If path doesn't resolve, search for skills/commands with names containing the string and offer the name matches.
 
 ## Procedure
 
@@ -30,13 +30,15 @@ Static structural review — sibling to `/claudemd_compact`. Does NOT measure tr
    - In `.claude/skills/` (or has YAML frontmatter with `description:` outside the dirs below) → skill
    - In `.claude/hooks/` → hook (sub-classify: event hook = registered in settings.json `hooks`; library = imported by other hooks; CLI = invoked by a command — grep `.claude/` for consumers)
    - Equals `.claude/CLAUDE.md` → claudemd
-4. **Invoke `Skill(instruction_quality)`** to load the principle checklist. MANDATORY tool call — do not paraphrase the checklist from memory or skip this step on the grounds of "I recall the principles." The skill is the single source of truth; section numbers and carve-outs drift between sessions.
+4. **Invoke `Skill(instruction_quality)`** to load the principle checklist. MANDATORY tool call — do not paraphrase the checklist from memory or skip this step on the grounds of "I recall the principles." The skill is the single source of truth; section numbers and carve-outs drift between sessions. Then Read in full the `skills/instruction_quality/reference/` file its §7–§18 pointers name for the target's class.
 
 ### Phase B — Audit (principle-by-principle)
 
 Run each applicable principle from the checklist against the target. Apply only what's applicable: skill-specific principles skipped for commands; command-specific principles skipped for skills; both apply to CLAUDE.md only as relevant; hooks get the hook-specific principles plus universal principles applied to their docstrings. (Exact section numbers come from the loaded `instruction_quality` skill — do not hardcode them here; they drift.)
 
-**Compute the quantitative inputs first** (so the size/length principles gate on numbers, not eyeballing): line count of the target; for a skill, the `description` char count AND its word count vs. the median word count of sibling `description:` fields in the same `.claude/skills/` directory (Glob the siblings, count); for a command, whether frontmatter carries a non-empty single-line `description:` at all, and its char count against the ~90-char target. Feed these into the size-proportional, description-as-trigger, and frontmatter-convention findings.
+**Compute the quantitative inputs first** (so the size/length principles gate on numbers, not eyeballing): line count of the target; for a skill, the `description` char count AND its word count vs. the median word count of sibling `description:` fields in the same `.claude/skills/` directory (Glob the siblings, count); for a command, whether frontmatter carries a non-empty single-line `description:` at all, and its listed-text UTF-8 byte count against the `instruction_quality` §8 cap. Feed these into the size-proportional, description-as-trigger, and frontmatter-convention findings.
+
+**Number basis (skill, command and CLAUDE.md targets).** Run `python3 .claude/tools/extract_numbers.py list <target>`: each token without a row, and each rule row whose basis is absent, is a finding under the loaded skill's specificity principle (its number-basis rule).
 
 **Em-dash density — a readout, not a gate.** Also compute, per target: em-dash count (`grep -o $'—' <file> | wc -l`), word count (`wc -w <file>`), and the derived `1 per N words` — frontmatter and fenced code included, so the number is reproducible. Print it beside the prose-engineering norm the `instruction_quality` prose-engineering principle cites (do not restate the figure here; read it from the loaded skill). **Emit no verdict on it.** Density reduction is not in this command's scope, and a permanently-red flag trains its readers to ignore the whole report.
 
@@ -83,9 +85,9 @@ Each is one mechanical check. Only *semantic* outbound rot (a cite whose meaning
 
 ### Phase C.5 — Orchestration-contract scan (conditional)
 
-Run ONLY if the target's procedure invokes `Workflow`, parallel `Agent()`, or a fan-out engine (`Grep` the target for `Workflow(`, `Agent(`, `scriptPath`, `review_fanout`). This operationalizes §12 from the `instruction_quality` skill.
+For a command target, first run `python3 .claude/tools/tool_profiles.py command-coverage <command.md> [--include <linked procedure file>]`, which exits 1 on any gap, and report each gap as a C12 capability finding. `allowed-tools` pre-approves tools and never bounds actions inside them. The rest of this phase runs ONLY if the target's procedure invokes `Workflow`, parallel `Agent()`, or a fan-out engine (`Grep` the target for `Workflow(`, `Agent(`, `scriptPath`, `review_fanout`). This operationalizes §12 from the `instruction_quality` skill.
 
-1. **Resolve the invoked artifact.** For `Workflow({scriptPath: X})`, Read X. Identify its arg contract (the `args` parse-guard / destructuring — e.g. `review_fanout.js` reads `A.agents = [{key, prompt, model?}]` + `A.contextPrefix`) and any enforced output schema.
+1. **Resolve the invoked artifact.** For `Workflow({scriptPath: X})`, Read X. Identify its arg contract (the `args` parse-guard / destructuring — e.g. `review_fanout.js` reads `A.agents = [{key, mustRead, prompt, model, effort}]` + `A.contextPrefix`) and any enforced output schema.
 2. **Diff the invocation shape.** Does the target build exactly the keys the script consumes? Flag missing/misnamed keys (silent no-op, not a warning) and schema-required mandate fields the target's prompt omits.
 3. **Gotcha screen.** `semantic-search(query="workflow agent args fan-out failure", restrictToDir=".claude/auto-memory")`. For each load-bearing hit (`gotcha_workflow_args_generation_fidelity`, `gotcha_workflow_fanout_search_false_absence`, machine-wide single-flight tools), judge whether the target's design matches the failure shape. If it does and the procedure neither cites the gotcha nor prescribes its mitigation → ❌ Fail (§12).
 4. Emit findings in the same ✅/⚠️/❌ format as Phase B, tagged §12.
@@ -94,8 +96,8 @@ Run ONLY if the target's procedure invokes `Workflow`, parallel `Agent()`, or a 
 
 Run when the target asserts codebase or harness facts: file paths a procedure writes to, type/member names it instantiates, test-tree locations, data-file conventions, tool contracts, concurrency caps, capability negations ("X is not possible"). Most reference skills qualify. Operationalizes the *Claim freshness* principle from the loaded `instruction_quality` skill.
 
-1. Extract up to ~10 load-bearing verifiable claims.
-2. Verify each with one mechanical call (Glob the path / Grep the type name / check the current tool schema). Empty Glob/Grep ≠ absence — confirm with `ls` before flagging.
+1. Extract each verifiable claim that routes work: a wrong path, name, tool contract or capability negation would send a reader to the wrong place.
+2. Verify each with one mechanical call (Glob the path / Grep the type name / check the current tool schema). Prove an absence with a git-aware enumeration before flagging.
 3. Emit ✅/⚠️/❌ findings tagged with the principle. A claim that routes work to a nonexistent location (e.g. a dead test tree) is ❌ regardless of how clean the prose reads.
 
 ### Phase D — Report
@@ -115,7 +117,8 @@ Em dashes: <count> in <words> words = 1 per <N> (norm per instruction_quality pr
 3. ❌ §4 Cross-reference durability: line 12 cites "CLAUDE.md §7" but §7 was extracted to .claude/rules/csharp_lsp.md — update reference
 ...
 
-### Orchestration contract (Phase C.5 — only if the target dispatches Workflow/Agent)
+### Orchestration contract (Phase C.5 — capability gaps for a command target; the rest only if the target dispatches Workflow/Agent)
+- C12 capability findings from `command-coverage`, one per gap
 - §12 invocation-shape / output-schema / gotcha-screen findings, ✅/⚠️/❌
 
 ### Claim freshness (Phase C.75 — only if the target asserts code/harness facts)
@@ -131,34 +134,24 @@ Em dashes: <count> in <words> words = 1 per <N> (norm per instruction_quality pr
 3. ...
 ```
 
-### Phase E — Do NOT auto-apply
+### Phase E — Apply mechanical findings
 
-The command is **advisory**. Surface findings; user decides which to act on.
+The invoking session applies findings whose evidence is mechanical (a dead path, a stale citation, a duplicated sentence) and reports what it changed. It sends judgment findings to the owner as one question packet.
 
 ## When to invoke
 
-- After major edits to a skill or command (catches drift before it ships).
-- Before promoting a skill to broader use (catches description-trigger issues).
-- Periodic hygiene: spot-check 1–2 skills/commands per session_end run.
-- When a skill seems to misfire (audit description before reaching for `skill-creator` evals — the structural fix often resolves the trigger issue).
+- A target's text changed this session and its edits are done (catches drift before it ships).
+- A skill is about to be promoted to broader use (catches description-trigger issues).
+- A skill misfired (audit the description before reaching for `skill-creator` evals — the structural fix often resolves the trigger issue).
 
 ## Don'ts
 
-- **Don't audit trigger accuracy here.** Use `skill-creator` (Anthropic-shipped) — it has actual eval tooling.
+- **Don't audit trigger accuracy here.** Use the `skill-creator` plugin from the `claude-plugins-official` marketplace; it has actual eval tooling.
 - **Don't audit adversarial content resistance here.** Use `/test_skill`.
 - **Don't audit a target actively being edited in this session.** Diff churn produces false positives.
-- **Don't apply CLAUDE.md size principles to skills.** The 200-line cap is for always-loaded content; skills load on description match — different threshold.
-- **Don't auto-apply findings.**
 
 ## Pairs with
 
 - `/claudemd_compact` — applies these principles + CLAUDE.md-specific compression. Both reference `instruction_quality` skill for shared principles.
 - `instruction_quality` skill — the shared checklist (single source of truth).
-- `skill-creator` (Anthropic) — runs trigger-accuracy evals; complementary, not overlapping.
-- `/test_skill` — runs adversarial pressure tests; complementary, not overlapping.
 - `/rule_consistency` — audits cross-SURFACE drift (this command is per-FILE); complementary, not overlapping.
-
-## Future extensions (not in v1)
-
-- `--apply <finding-id>` flag: apply a specific finding directly (skip the manual pass).
-- Session-close integration: if a session edited skills/commands, optionally run `/instruction_audit` on each at session end.

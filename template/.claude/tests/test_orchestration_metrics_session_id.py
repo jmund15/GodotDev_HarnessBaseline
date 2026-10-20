@@ -59,12 +59,15 @@ def build_home(home):
     return session
 
 
-def run_cli(home, *args, cwd=None):
+def run_cli(home, *args, cwd=None, config_dir=None):
     # CLAUDE_PROJECT_DIR anchors the archive and verdicts files: a report run archives what it
     # collects, so without this the proof's fake run lands in the real project archive.
     env = dict(os.environ, HOME=home, USERPROFILE=home, CLAUDE_PROJECT_DIR=home,
                PYTHONIOENCODING="utf-8")
     env.pop("CLAUDE_CODE_SESSION_ID", None)
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
     r = subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True, env=env,
                        cwd=cwd, encoding="utf-8", errors="replace", timeout=120)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
@@ -78,16 +81,26 @@ class SessionIdResolutionTests(unittest.TestCase):
         self.session = build_home(self.home)
 
     def test_pending_with_a_session_id_counts_its_unrated_agent(self):
-        rc, out = run_cli(self.home, "--pending", "--session", SID, "--no-sidecar")
+        rc, out = run_cli(self.home, "--pending", "--session", SID)
         self.assertEqual(0, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn("unrated dispatches: 1", out, out)
         self.assertIn(LABEL, out, out)
-        self.assertNotIn("sidecar:", out, out)
-        self.assertNotIn("fanout launch", out, out)
+
+    def test_a_session_under_claude_config_dir_is_found(self):
+        # A second account's sessions live under CLAUDE_CONFIG_DIR, not ~/.claude.
+        other = os.path.join(self.home, "other-home")
+        cfg_home = os.path.join(self.home, "cfg-home")
+        build_session(cfg_home, "0a1b2c3d-cfgd-4a6b-8c7d-config-dir-proof", "config-dir-proof:lane")
+        os.makedirs(other)
+        rc, out = run_cli(other, "--session", "0a1b2c3d-cfgd-4a6b-8c7d-config-dir-proof",
+                          config_dir=os.path.join(cfg_home, ".claude"))
+        self.assertEqual(0, rc, out)
+        self.assertNotIn("Traceback", out, out)
+        self.assertIn("config-dir-proof:lane", out, out)
 
     def test_report_with_a_session_id_finds_its_runs(self):
-        rc, out = run_cli(self.home, "--session", SID, "--no-sidecar")
+        rc, out = run_cli(self.home, "--session", SID)
         self.assertEqual(0, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertNotIn("No Workflow runs found", out, out)
@@ -97,7 +110,7 @@ class SessionIdResolutionTests(unittest.TestCase):
         with open(os.path.join(self.home, ".claude", "orchestration_verdicts.json"), "w",
                   encoding="utf-8") as fh:
             json.dump({LABEL + "@wf_proof-001": "clean"}, fh)
-        rc, out = run_cli(self.home, "--pending", "--session", SID, "--no-sidecar")
+        rc, out = run_cli(self.home, "--pending", "--session", SID)
         self.assertEqual(0, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn("unrated dispatches: 1", out, out)
@@ -105,25 +118,25 @@ class SessionIdResolutionTests(unittest.TestCase):
         self.assertIn("wf_proof-001:" + LABEL, out, out)
 
     def test_existing_absolute_and_relative_session_directories_are_accepted(self):
-        rc, out = run_cli(self.home, "--session", self.session, "--no-sidecar")
+        rc, out = run_cli(self.home, "--session", self.session)
         self.assertEqual(0, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn(LABEL, out, out)
 
         relative = os.path.relpath(self.session, self.home)
-        rc, out = run_cli(self.home, "--session", relative, "--no-sidecar", cwd=self.home)
+        rc, out = run_cli(self.home, "--session", relative, cwd=self.home)
         self.assertEqual(0, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn(LABEL, out, out)
 
     def test_a_unique_session_id_prefix_is_accepted(self):
-        rc, out = run_cli(self.home, "--pending", "--session", SID[:12], "--no-sidecar")
+        rc, out = run_cli(self.home, "--pending", "--session", SID[:12])
         self.assertEqual(0, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn(LABEL, out, out)
 
     def test_an_ambiguous_session_id_prefix_resolves_to_nothing(self):
-        rc, out = run_cli(self.home, "--pending", "--session", SID[:8], "--no-sidecar")
+        rc, out = run_cli(self.home, "--pending", "--session", SID[:8])
         self.assertEqual(1, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn("Could not locate a session directory", out, out)
@@ -146,7 +159,7 @@ class SessionIdResolutionTests(unittest.TestCase):
         self.assertFalse(os.path.exists(output), out)
 
     def test_an_unknown_session_id_says_so(self):
-        rc, out = run_cli(self.home, "--pending", "--session", "no-such-session", "--no-sidecar")
+        rc, out = run_cli(self.home, "--pending", "--session", "no-such-session")
         self.assertEqual(1, rc, out)
         self.assertNotIn("Traceback", out, out)
         self.assertIn("Could not locate a session directory", out, out)

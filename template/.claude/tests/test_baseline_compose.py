@@ -218,7 +218,7 @@ def main() -> int:
     claude2 = root2 / ".claude"
     (claude2 / "hooks").mkdir(parents=True)
     (claude2 / "tools").mkdir(parents=True)
-    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py"):
+    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
         shutil.copy(_TOOLS_DIR / name, claude2 / "tools" / name)
     base_settings = {"permissions": {"allow": ["A"]}, "hooks": {}}
     project_settings = {"permissions": {"allow": ["B"]}, "hooks": {}}
@@ -291,7 +291,7 @@ def main() -> int:
     claude3 = root3 / ".claude"
     (claude3 / "hooks").mkdir(parents=True)
     (claude3 / "tools").mkdir(parents=True)
-    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py"):
+    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
         shutil.copy(_TOOLS_DIR / name, claude3 / "tools" / name)
     base_settings = {"permissions": {"allow": ["A"]}, "hooks": {}}
     project_settings = {"permissions": {"allow": ["B"]}, "hooks": {}}

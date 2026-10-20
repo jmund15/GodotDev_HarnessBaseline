@@ -11,8 +11,9 @@ Read at step 7 (and at step 5 for the profile, when the profile does not yet exi
 ````markdown
 ---
 date: YYYY-MM-DD
-participants: <owner>, <other participants>
-source: voice-note | call | live
+participants: <owner>, <other participants>   # video: the channel
+source: voice-note | call | live | video
+url: <video URL; video source only>
 topics: <comma-separated slugs>
 ---
 

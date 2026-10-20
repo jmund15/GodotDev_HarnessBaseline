@@ -10,6 +10,9 @@ Purpose:
 - Backups stored in logs/transcript_backups/ with timestamps
 - Re-arms the cadence hooks' per-compaction gates (`_hook_state.clear_compaction_keys`)
 
+A subagent's PreCompact payload carries the parent's session_id and transcript_path; that compaction
+is not the parent's, so the hook exits without any of the above (`_hook_state.is_subagent_payload`).
+
 Note: This hook cannot block compaction, only log/backup before it happens.
 """
 
@@ -20,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import clear_compaction_keys
+from _hook_state import clear_compaction_keys, is_subagent_payload, log_path
 
 # Import summary builder (local module with underscore prefix)
 try:
@@ -67,7 +70,7 @@ def backup_transcript_with_summary(
         if not source.exists():
             return None, None
 
-        backup_dir = Path.cwd() / "logs" / "transcript_backups"
+        backup_dir = Path(log_path("transcript_backups"))
         backup_dir.mkdir(parents=True, exist_ok=True)
 
         # Retention sweep BEFORE adding the new backup — an unpruned dir grows
@@ -114,9 +117,8 @@ def backup_transcript_with_summary(
 def log_compaction_event(input_data: dict, backup_path: str | None, summary_path: str | None = None):
     """Log the compaction event to a JSON file."""
     try:
-        log_dir = Path.cwd() / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "pre_compact.json"
+        log_file = Path(log_path("pre_compact.json"))
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
         existing = []
         if log_file.exists():
@@ -131,7 +133,7 @@ def log_compaction_event(input_data: dict, backup_path: str | None, summary_path
             "trigger": input_data.get("trigger", "unknown"),
             "backup_path": backup_path,
             "summary_path": summary_path,
-            "had_transcript": input_data.get("transcript_path") is not None
+            "had_transcript": input_data.get("transcript_path") is not None,
         }
         existing.append(entry)
 
@@ -159,7 +161,7 @@ def update_session_manifest(session_id: str, summary_path: str | None):
 
         summary = json.loads(summary_file.read_text(encoding="utf-8"))
 
-        manifest_dir = Path.cwd() / "logs" / "session_files"
+        manifest_dir = Path(log_path("session_files"))
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / f"{session_id}.json"
 
@@ -191,6 +193,9 @@ def main():
         input_data = json.load(sys.stdin)
     except json.JSONDecodeError:
         print("{}")
+        sys.exit(0)
+
+    if is_subagent_payload(input_data):
         sys.exit(0)
 
     session_id = input_data.get("session_id", "")

@@ -26,8 +26,8 @@ from contextlib import redirect_stderr
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REAL_SCRIPTS = os.path.join(HERE, "..", "scripts")
-REAL_HOOKS = os.path.join(HERE, "..", "hooks")
-REAL_TOOLS = os.path.join(HERE, "..", "tools")
+sys.path.insert(0, HERE)
+from _runner_fixture import copy_runner_deps  # noqa: E402
 
 _counter = [0]
 
@@ -49,8 +49,7 @@ def make_scratch(runner_source_path, seed=None):
     for d in (scripts_dir, hooks_dir, tools_dir, skill_dir, tests_dir):
         os.makedirs(d, exist_ok=True)
     shutil.copy(runner_source_path, os.path.join(scripts_dir, "harness_tests.py"))
-    shutil.copy(os.path.join(REAL_HOOKS, "_hook_state.py"), os.path.join(hooks_dir, "_hook_state.py"))
-    shutil.copy(os.path.join(REAL_TOOLS, "adaptation.py"), os.path.join(tools_dir, "adaptation.py"))
+    copy_runner_deps(tmp)
     if seed is not None:
         with open(os.path.join(skill_dir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(seed if isinstance(seed, str) else json.dumps(seed))
@@ -98,6 +97,31 @@ def main():
         cases.append(("present adaptation.json: proof_timeouts merges into _PROOF_TIMEOUTS",
                       mod._PROOF_TIMEOUTS.get("test_slow_thing.py") == 600))
         cases.append(("present adaptation.json: no stderr on valid entries", err == ""))
+
+        # --- proof_heavy merges into HEAVY; a wrong-typed value leaves it empty ----------------
+        tmp = make_scratch(real_runner, seed={"proof_heavy": {"test_slow_suite.mjs": "5 min, real backends"}})
+        scratches.append(tmp)
+        mod, err = import_fresh(tmp)
+        cases.append(("present adaptation.json: proof_heavy merges into HEAVY",
+                      getattr(mod, "HEAVY", {}).get("test_slow_suite.mjs") == "5 min, real backends" and err == ""))
+        tmp = make_scratch(real_runner, seed={"proof_heavy": ["not", "a", "dict"]})
+        scratches.append(tmp)
+        mod, err = import_fresh(tmp)
+        cases.append(("wrong-typed proof_heavy: HEAVY stays empty with one stderr line naming the key",
+                      getattr(mod, "HEAVY", None) == {} and err.count("\n") == 1 and "proof_heavy" in err))
+
+        # --- proof_corpus keys a project's corpus-scanning proof beside the built-in table ------
+        tmp = make_scratch(real_runner, seed={"proof_corpus": {
+            "test_project_scan.py": [".claude/commands", ".claude/skills"], "test_bad_corpus.py": ".claude/rules"}})
+        scratches.append(tmp)
+        mod, err = import_fresh(tmp)
+        corpus = getattr(mod, "_corpus_dirs", lambda _n: None)
+        cases.append(("present adaptation.json: proof_corpus names a project proof's scanned directories",
+                      corpus("test_project_scan.py") == (".claude/commands", ".claude/skills")))
+        cases.append(("proof_corpus leaves the built-in corpus table in force",
+                      corpus("test_hook_state.py") == (".claude/hooks",)))
+        cases.append(("a proof_corpus entry that is not a list of directories is skipped with one stderr line",
+                      corpus("test_bad_corpus.py") == () and err.count("\n") == 1 and "test_bad_corpus.py" in err))
 
         # --- wrong-typed: proof_excluded is not a dict --------------------------------------
         tmp = make_scratch(real_runner, seed={"proof_excluded": ["not", "a", "dict"]})

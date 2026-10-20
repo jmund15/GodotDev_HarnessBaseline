@@ -8,13 +8,13 @@ Read at Steps 6 through 9 of [`update_roadmap.md`](../update_roadmap.md). Not au
 
 ## Step 6 — Compose revision log entry
 
-**One line per transition — one statement, ≤25 words. A hard cap, not a soft target.** A second sentence, or a third `;`-joined clause, means you're writing a postmortem — not the *navigational audit trail* this is. Record WHAT transitioned + the single WHY a reader needs to reconstruct current state; everything else lives where it's authoritative — git, commit message, plan/arch doc, Parts table, derived views.
+**One audit line per transition.** State what changed and the one reason or commit reference needed to reconstruct the state. Put implementation detail in the source doc or commit.
 
-**Keep (load-bearing):** the transition itself (Part + state change, or rename/split/spawn/retire) plus AT MOST ONE qualifier — a commit ref OR a ≤6-word why, never both, never a what-shipped manifest. Cross-roadmap/text-only edits: the Part + the one value that changed.
+**Keep (load-bearing):** one line per transition. Include the changed Part/state or rename/split/spawn/retire and one short reason or commit reference. Cross-roadmap/text-only edits name the Part and the one value that changed.
 
 **Cut (derivable elsewhere — never in the log):** test/gate counts (`Logic X / Integration Y`), file-by-file shipped manifests, plan divergences/deviations, `session_audit` findings, auto-memory pins, "Mermaid reclassed `:::complete`" (mechanical — always happens), unblock-cascade narration ("now Currently-ready" — the derived views already show readiness), multi-sentence design rationale (belongs in the arch doc).
 
-**Format:** `- YYYY-MM-DD — <Part>: <old-state> → <new-state> (<commit-ref OR ≤6-word why>).`
+**Format:** `- YYYY-MM-DD — <Part>: <old-state> → <new-state> (<commit-ref OR concise why>).`
 
 **Idiomatic forms:**
 - `- 2026-05-13 — Initial roadmap from arch.md. 7 Parts sequenced (Pos 1–7), 12 un-sequenced.`
@@ -24,7 +24,7 @@ Read at Steps 6 through 9 of [`update_roadmap.md`](../update_roadmap.md). Not au
 - `- 2026-05-15 — Renamed Part `<old>` → `<new>` (N Deps + M MVP wikilinks rewritten).`
 - `- 2026-05-15 — Split Part `<old>` into `<new-1>`, `<new-2>`. Deps redistributed.`
 
-Append to the `## Revision Log` section.
+Append to the `## Revision Log` section of the rendered document; the generator never touches the log.
 
 | Rationalization | Reality |
 |---|---|
@@ -34,7 +34,7 @@ Append to the `## Revision Log` section.
 
 ## Step 7 — Present batch diff
 
-Show the user the proposed diff covering:
+Show the user the proposed diff — `roadmap.md` against the rendered document (the candidate when there is no generator) — covering:
 1. Frontmatter changes (only `last_revised` typically)
 2. Parts table updates (additions, transitions, splits, renames)
 3. Mermaid block regeneration
@@ -42,16 +42,16 @@ Show the user the proposed diff covering:
 5. Spawned sub-brainstorms section updates (if new spawn this session)
 6. MVP recompute (if a `## MVP Checkpoints` section exists): changed check-marks + Status transitions. **Surface a playtest prompt** for any MVP that flipped to `🧪 Ready for playtest` this run — name it, and name any remaining `user-owned` Required Part the user must finish first (e.g. *"MVP-2 ready for playtest, except user-owned Part: Room scene art"*). Surface any `✅ Verified`→downgrade regression flag.
 7. New Revision Log line(s)
-8. Validator warnings from Step 3 (if any)
+8. Validator warnings from Step 3 (if any), the generator's included
 9. Atlas regeneration (Step 9) — always listed, so the single approval covers it
 
-The user can redirect ("revise Mermaid", "split this transition into two log lines", "skip the spawn entry — it's the same folder") — adjust diff, re-present.
+The user can redirect ("revise Mermaid", "split this transition into two log lines", "skip the spawn entry — it's the same folder") — adjust diff, re-present; a redirect that changes the Parts reruns Steps 2 through 6.
 
 ## Step 8 — Apply
 
 If the batch diff (Step 7) is empty — proposed edits reduce to no changes — report *"No roadmap changes needed"* and skip to Step 9 without prompting for approval.
 
-Otherwise: `Edit` (or `Write` if creating) `roadmap.md` with the approved diff. Bump `last_revised: YYYY-MM-DD` in frontmatter to today.
+Otherwise: replace `roadmap.md` with the approved document (create it when new); the approved bytes are the applied bytes. `last_revised` was bumped to today at Step 2.
 
 ## Step 9 — Regenerate the cross-roadmap index
 

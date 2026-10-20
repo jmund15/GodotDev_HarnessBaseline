@@ -42,6 +42,29 @@ def main():
         ("unknown status refuses",
          "unknown" in (guard.refusal("codex", reader=reader("mystery")) or "").lower()),
     ]
+    windowed = lambda _transport, data=None: {
+        "status": "exhausted", "sourceKind": "live",
+        "quota": {"dispatchBand": "Exhausted", "bindingWindow": "five_hour",
+                  "windows": [{"name": "five_hour", "usedPercent": 98.0, "resetsAt": 1790280000},
+                              {"name": "seven_day", "usedPercent": 56.0, "resetsAt": 1790532000}]}}
+    reason = guard.refusal("anthropic", reader=windowed) or ""
+    cases.append(("an exhausted refusal names the window, its use and its reset, so the caller knows when to retry",
+                  "five_hour" in reason and "98" in reason and "resets" in reason.lower()))
+    limited = lambda _transport, data=None: {
+        "status": "network-error", "sourceKind": "live", "quota": None, "balance": None,
+        "error": {"kind": "rate-limit", "message": "rate limited until 2027-01-15T09:00:00Z"}}
+    fallback = lambda _transport, data=None: {
+        "status": "network-error", "sourceKind": "live", "quota": None, "balance": None,
+        "error": None, "liveFailure": {"kind": "rate-limit", "message": "rate limited until 12:00Z"}}
+    reason = guard.refusal("anthropic", reader=limited) or ""
+    cases.append(("a rate-limit reading names the rate limit and carries its cooldown end",
+                  "rate limited" in reason and "2027-01-15T09:00:00Z" in reason and "network" not in reason.lower()))
+    reason = guard.refusal("anthropic", reader=fallback) or ""
+    cases.append(("a rate-limit liveFailure names the rate limit too",
+                  "rate limited" in reason and "12:00Z" in reason))
+    cases.append(("a plain network error keeps the old text",
+                  guard.refusal("codex", reader=reader("network-error"))
+                  == "Provider network capacity check failed for codex with no valid fallback"))
     failed = [name for name, ok in cases if not ok]
     for name, ok in cases:
         print(("ok   " if ok else "FAIL ") + name)

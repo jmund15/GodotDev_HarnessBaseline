@@ -33,7 +33,7 @@ Cross-doc move: the `BLOCK` leaves `Worklog.md` and an `XLINE` lands in `Worklog
 
 6. **`FM()` on BOTH `Worklog.md` and `Worklog-Archive.md`.**
 
-7. **Patch the mirror (incremental).** Remove the completed item's line from `.claude/worklog-titles.md` — and its `### <category>` heading if that was the category's last item in its `## Active`/`## Ledger` supersection — then `Write` back. Do NOT re-read `Worklog.md`. Set `Last synced:` to today.
+7. **Patch the mirror (incremental).** Remove the completed item's line from `.claude/worklog-titles.md` — and its `### <category>` heading if that was the category's last item in its `## Active`/`## Ledger` supersection — then `Write` back. Follow the mirror rule in `commands/worklog.md` if the copy is stale or a concurrent change prevents an accurate patch. Set `Last synced:` to today.
 
 8. **Confirm:** `Marked complete.`
 

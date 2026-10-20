@@ -1,0 +1,99 @@
+=== DEDUP RESULTS ===
+Raw structured entries: 10
+Unique structured entries: 10
+Superseded-row rate: 0.0%
+
+=== LEGACY (heuristic) ===
+Total legacy sessions: 3
+  Clean:       1
+  Correction:  1
+  Failure:     0
+  Unknown:     1
+
+=== STRUCTURED OUTCOMES ===
+  clean: 6
+  correction: 2
+  failure: 2
+
+=== STRUCTURED PATTERNS (raw) ===
+  None: 6
+  A: 2
+  B: 1
+  C: 1
+=== STRUCTURED PATTERNS (normalized: null+clean -> C) ===
+  C: 7
+  A: 2
+  B: 1
+
+=== COMBINED OVERVIEW ===
+Status: partial
+Total sessions: 13
+Clean:       7 (53.8%)
+Correction:  3 (23.1%)
+Failure:     2 (15.4%)
+Unknown:     1
+
+=== DOMAIN PERFORMANCE (structured) ===
+Domain                Tot  Cln  Cor  Fal  Unk    Cln%
+meta                    8    5    1    2    0   62.5%
+godot                   5    3    2    0    0   60.0%
+
+=== SKILL PERFORMANCE (>=3 loads) ===
+Skill                         Tot  Cln  Cor  Fal  Unk    Cln%
+testing                         8    5    1    2    0   62.5%
+wizard                          3    2    1    0    0   66.7%
+
+=== TREND (recent 10 vs prior 10, structured) ===
+Date range: 2026-07-03 - 2026-09-20
+Recent window: clean=6/10 known, population=10, unknown=0
+Prior window:  clean=0/0 known, population=0, unknown=0
+
+Per-skill trend:
+  testing                      rec=5/8(62.5%) prior=0/0(unknown) UNKNOWN
+  wizard                       rec=2/3(66.7%) prior=0/0(unknown) UNKNOWN (low N)
+
+=== TOP MEMORY ENTITIES (>=3 hits, structured) ===
+  gotcha_1: 3
+  gotcha_2: 3
+  gotcha_0: 3
+
+=== STREAKS (structured only) ===
+Current clean streak: 0
+Longest clean streak: 2
+
+=== RECENT 10 STRUCTURED SESSIONS ===
+  #501 2026-07-03 clean      P?  Golden entry 001
+  #502 2026-07-09 correction PA  Golden entry 002
+  #503 2026-08-02 clean      P?  Golden entry 003
+  #504 2026-08-12 failure    PB  Golden entry 004
+  #505 2026-08-20 clean      P?  Golden entry 005
+  #506 2026-09-01 clean      P?  Golden entry 006
+  #507 2026-09-04 correction PA  Golden entry 007
+  #508 2026-09-08 clean      P?  Golden entry 008
+  #509 2026-09-15 clean      P?  Golden entry 009
+  #510 2026-09-20 failure    PC  Golden entry 010
+
+=== ALL CORRECTION/FAILURE (structured, deduped) ===
+  #502 2026-07-09 correction PA  corrs=1 | Golden entry 002
+  #504 2026-08-12 failure    PB  corrs=1 | Golden entry 004
+  #507 2026-09-04 correction PA  corrs=1 | Golden entry 007
+  #510 2026-09-20 failure    PC  corrs=1 | Golden entry 010
+
+=== TIMELINE (chronological, structured) ===
+  2026-07-03 clean      count=1
+  2026-07-09 correction count=1
+  2026-08-02 clean      count=1
+  2026-08-12 failure    count=1
+  2026-08-20 clean      count=1
+  2026-09-01 clean      count=1
+  2026-09-04 correction count=1
+  2026-09-08 clean      count=1
+  2026-09-15 clean      count=1
+  2026-09-20 failure    count=1
+
+=== DATE COVERAGE ===
+Earliest: 2026-07-03
+Latest:   2026-09-20
+Distinct dates: 10
+
+Stats written to <OUT>/stats.json

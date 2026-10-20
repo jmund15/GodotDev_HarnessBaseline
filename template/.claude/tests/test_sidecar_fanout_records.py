@@ -126,6 +126,52 @@ case("a job with no -P stream does not crash the post-run bounding step",
              and _read(_out_nop) == STREAM_BODY)
 
 
+def memory_retry(detached=False):
+    from pathlib import Path
+    from unittest.mock import patch
+    import launch_memory
+    folder = Path(TMP) / ('memory-detached' if detached else 'memory'); folder.mkdir()
+    stub = folder / 'stub.py'
+    stub.write_text("import sys\nfrom pathlib import Path\np=Path(sys.argv[1])\n"
+                    "n=int(p.read_text())+1 if p.exists() else 1\np.write_text(str(n))\n"
+                    "if '-X' in sys.argv:\n"
+                    " r=Path(sys.argv[sys.argv.index('-R')+1])\n"
+                    " assert not Path(str(r)+'.exit').exists()\n"
+                    " Path(str(r)+'.exit').write_text('12' if n == 1 else '0')\n"
+                    " Path(str(r)+'.out').write_text('done')\n"
+                    " sys.exit(0)\n"
+                    "print('done')\nsys.exit(12 if n == 1 else 0)\n", encoding='utf-8')
+    events = []
+    real_call = sf.subprocess.call
+    def launch(*a, **kw):
+        events.append('launch')
+        return real_call(*a, **kw)
+    def wait(argv, **kw):
+        events.append('wait')
+        assert argv[-2:] == ['--label', 'memory']
+        assert launch_memory.main(argv[2:]) == 0
+        import subprocess
+        return subprocess.CompletedProcess(argv, 0)
+    with patch.dict(os.environ, {'LAUNCH_MIN_COMMIT_GIB': '0', 'LAUNCH_MIN_PHYSICAL_GIB': '0'}), \
+            patch.object(sf.subprocess, 'call', launch), patch.object(sf.subprocess, 'run', wait):
+        argv = [sys.executable, str(stub), str(folder / 'count')]
+        if detached:
+            argv += ['-X', '-R', str(folder / 'memory.record.json')]
+        result = sf.run_jobs([('memory', argv, str(folder / 'out.json'))], 1, folder)['memory']
+    if detached:
+        import json
+        old = folder / 'memory.record.json.exit'
+        new = folder / 'memory.attempt2.record.json.exit'
+        inventory = json.loads(next(folder.glob('*.inventory.json')).read_text())
+        assert old.read_text() == '12' and new.read_text() == '0'
+        assert inventory['jobs'][0]['recordPath'] == os.path.abspath(str(new).removesuffix('.exit'))
+    return result['exit'] == 0 and events == ['wait', 'launch', 'wait', 'launch']
+
+
+case('memory exit 12 waits before each attempt and completes the job', memory_retry)
+case('detached memory refusal keeps attempt 1 and completes on a new record', lambda: memory_retry(True))
+
+
 def main():
     failed = 0
     total = 0

@@ -1,19 +1,10 @@
 ---
 name: Refactor Procedure
 description: >-
-  Procedure for refactoring, moving, renaming, deprecating, or migrating C# classes/files
-  in {{PROJECT_NAME}} when scene/resource references must be kept in sync — including
-  unifying or consolidating duplicated patterns. SKIP for pure logic refactors with no
-  scene/resource impact (just edit + test), or architectural redesigns (use
-  `architecture_brainstorm` first).
+  Use to refactor, move, rename, deprecate, migrate or consolidate C# when scene/resource references must stay in sync. SKIP architectural redesign; use architecture_brainstorm first.
 ---
 
 # Refactor Procedure
-
-## Pre-Workflow Check
-- [ ] **auto-memory** searched for refactor-related gotchas (`refactor`, `disposal`, `lifecycle`).
-- [ ] **Plan check** considered if this touches 3+ files, introduces a new top-level type, refactors a 2+ subclass family, OR deletes/replaces existing files — see CLAUDE.md *Planning Phase Checklist* (`/plan_check`).
-- [ ] **Refactor parity audit committed to** — line-by-line behavior diff old→new before merge; "deferred/stub/TODO" markers are merge-blockers (`feedback_refactor_parity_audit.md`).
 
 ## Procedure
 
@@ -25,17 +16,17 @@ description: >-
     *   Node names if convention changed (e.g., `CauldronUI` → `PotionUI`)
     *   Node path references in properties
     *   *Caution:* Preserve existing UIDs when file moved (same UID, new path). Remove `metadata/_custom_type_script` when script path changes (auto-regenerated).
-5.  **Verify:** Fix ALL scene references BEFORE running Godot `update_project_uids` tool.
+5.  **Verify:** Fix ALL scene references BEFORE running a headless import: `bash .claude/scripts/godot_bin.sh --headless --path . --import`. Inspect the asset diffs the import rewrites before continuing.
 6.  **Verify Legacy Data:** When deprecating/refactoring exported fields:
     *   Search `.tres` and `.tscn` files for references to the old pattern
     *   Ensure legacy `[Export]` fields still function (not just present in code)
     *   Test with existing data files to catch silent breaking changes
-7.  **Build:** `dotnet build`.
-8.  **Regression gate:** `/regression_gate` is mandatory for `.cs` changes — see CLAUDE.md *Build & Test Commands*.
+    *   Parity can preserve defects: read each relocation destination as well as its source, and verify deletion and migration coverage
+7.  **Regression gate:** each slice runs its items' targeted tests, the refactor's close runs `verify -Scope` once, and the drive's close gate backs the commits (`change_control` §Gate cadence).
 
 ## Cross-references
 
-- [`testing`](../testing/SKILL.md) — `/regression_gate` step 8; legacy-data tests for step 6.
+- [`testing`](../testing/SKILL.md) — `/regression_gate` step 7; legacy-data tests for step 6.
 - [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — Deletion Test before refactoring; *Consume new APIs or migration is incomplete*.
 - `.claude/rules/scene_authoring.md` (auto-loads on `**/*.tscn`, `project.godot`, `UI/**/*.cs`) — scene-vs-programmatic construction, teardown anti-patterns.
 - `.claude/rules/csharp_lsp.md` (auto-loads on `**/*.cs`) — LSP-first call-site enumeration for step 1.

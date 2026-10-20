@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Decide whether a finished `claude -p` sidecar run should be RESUMED, and say why.
 
-Supersedes `sidecar_compact_end.py`, which detected one of the two resumable endings. Prints
-`<session_id>\\t<reason>` when the run should be resumed, and nothing otherwise.
+Prints `<session_id>\\t<reason>` when the run should be resumed, and nothing otherwise.
 
 RESUME IS NOT RETRY, and the distinction is what keeps this inside the standing rule against
 auto-retrying a billed call. `--resume <sid>` continues the same session: every turn already paid
@@ -32,7 +31,9 @@ provider usage limit.
 Usage:  sidecar_resume_check.py < stream.jsonl   (or a path as argv[1])
         sidecar_resume_check.py --watch <path|-> <offset> <run> <limit>
             fold the complete lines after byte <offset>; prints
-            <new_offset>\\t<work 0|1>\\t<429 run>\\t<usage_limited 0|1>\\t<resets_at>\\t<session_id>
+            <new_offset>\\t<work 0|1>\\t<429 run>\\t<usage_limited 0|1>\\t<resets_at>\\t<session_id>\\t<result>
+            where <result> is the chunk's terminal result (0 success, 1 error) or empty
+        sidecar_resume_check.py --work < stream.jsonl   (tool calls in this attempt)
         sidecar_resume_check.py --selftest
 """
 import json
@@ -68,8 +69,19 @@ NEVER_RESUME = re.compile(
     re.I,
 )
 
-USAGE_LIMIT = re.compile(r"(?:usage|weekly)[ _-]?limit", re.I)
+USAGE_LIMIT = re.compile(r"(?:usage|weekly|session)[ _-]?limit", re.I)
 USAGE_LIMIT_REASON = "provider-usage-limit"
+# The Claude CLI's own resume prompt after a reply hits CLAUDE_CODE_MAX_OUTPUT_TOKENS (client 2.1.x).
+OUTPUT_CAP_RESUME = "Output token limit hit."
+OUTPUT_CAP_RE = re.compile(r"exceeded the (\d+) output token maximum")
+OUTPUT_CAP_ADVICE = ("the cap sits below this job's replies: check the row's maxOutputTokens (model_registry.py "
+                     "max-output, reference/sidecar_runs.md); an unchanged rerun fails the same way")
+
+
+def output_cap(text):
+    """The output-token cap a terminal message says a reply ran past; None for any other text."""
+    m = OUTPUT_CAP_RE.search(text) if isinstance(text, str) else None
+    return m.group(1) if m else None
 
 
 def _events(lines):
@@ -83,6 +95,11 @@ def _events(lines):
             continue
         if isinstance(d, dict):
             yield d
+
+
+def _blocks(d):
+    content = (d.get("message") or {}).get("content")
+    return content if isinstance(content, list) else []
 
 
 def event_kind(d):
@@ -102,8 +119,10 @@ def is_usage_limit_result(d):
         return False
     if d.get("terminal_reason") == USAGE_LIMIT_REASON:
         return True
+    if not d.get("is_error"):
+        return False
     text = d.get("result")
-    return bool(d.get("is_error")) and isinstance(text, str) and bool(USAGE_LIMIT.search(text))
+    return d.get("api_error_status") == 429 or (isinstance(text, str) and bool(USAGE_LIMIT.search(text)))
 
 
 def reset_epoch(d):
@@ -146,6 +165,16 @@ def watch(lines, run=0, limit=10):
     return work, run, limited, resets, sid
 
 
+def terminal_result(lines):
+    """1 for an error result, 0 for a success result, None for no result: the last result in `lines`
+    that is not a usage limit (`watch` owns that one). The launcher ends a child still alive past it."""
+    found = None
+    for d in _events(lines):
+        if d.get("type") == "result" and not is_usage_limit_result(d):
+            found = 1 if d.get("is_error") else 0
+    return found
+
+
 def _watch_cli(args):
     if len(args) != 4:
         return 2
@@ -164,32 +193,71 @@ def _watch_cli(args):
         consumed = offset + end
         lines = raw[:end].decode("utf-8", "replace").splitlines()
     work, run, limited, resets, sid = watch(lines, run, limit)
-    print("%d\t%d\t%d\t%d\t%s\t%s" % (consumed, work, run, limited, resets or "", sid or ""))
+    ended = terminal_result(lines)
+    print("%d\t%d\t%d\t%d\t%s\t%s\t%s" % (consumed, work, run, limited, resets or "", sid or "",
+                                          "" if ended is None else ended))
     return 0
 
 
-def stream_status(path, now, stall_sec=900, limit=10):
-    """-> (state, detail) for a job's -P stream: working | retrying | stalled | finished | usage-limit."""
-    try:
-        size, mtime = os.path.getsize(path), os.path.getmtime(path)
-        with open(path, "rb") as fh:
-            fh.seek(max(0, size - 262144))
-            raw = fh.read().decode("utf-8", "replace")
-    except OSError as err:
-        return "stalled", "stream unreadable: %s" % err
+# Seconds a live run's stream may sit on its terminal result before watch_records.py and
+# sidecar_fanout.py --status call the run lingering: above the launcher's default
+# SIDECAR_RESULT_GRACE_SEC (30) plus one 10 s watch poll and the record write, so a run the
+# launcher is ending never reads lingering.
+RESULT_LINGER_S = 120
+
+
+def _tail_events(path):
+    """(events in the stream's last 256 KiB, mtime); OSError when unreadable."""
+    size, mtime = os.path.getsize(path), os.path.getmtime(path)
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - 262144))
+        raw = fh.read().decode("utf-8", "replace")
     lines = raw.splitlines()
     if size > 262144 and lines:
         lines = lines[1:]
-    events = list(_events(lines))
+    return list(_events(lines)), mtime
+
+
+def _ending_result(events):
+    """The result the stream ends on, or None. System events after it (claude -p's background-task
+    bookkeeping while it waits) do not end it; a retry or work event does."""
+    for d in reversed(events):
+        kind = event_kind(d)
+        if kind != "system":
+            return d if kind == "result" else None
+    return None
+
+
+def terminal_result_age(path, now):
+    """Seconds since the stream's last write when it ends on a result; None otherwise or unreadable."""
+    try:
+        events, mtime = _tail_events(path)
+    except OSError:
+        return None
+    return None if _ending_result(events) is None else max(0, now - mtime)
+
+
+def stream_status(path, now, stall_sec=900, limit=10):
+    """-> (state, detail) for a job's -P stream: working | retrying | stalled | finished | usage-limit |
+    output-cap. `output-cap` is a live job the client resumed past its output-token cap, or a job whose final
+    message outgrew the cap: each cut costs the reasoning in flight, so the cap sits below the job's replies.
+    It replaces only working and retrying; a stall or a 429 run outranks it."""
+    try:
+        events, mtime = _tail_events(path)
+    except OSError as err:
+        return "stalled", "stream unreadable: %s" % err
     age = int(now - mtime)
     if len(events) == 1 and "seeAlso" in events[0]:
         return "finished", "stream bounded after exit; see %s" % events[0]["seeAlso"]
-    if events and event_kind(events[-1]) == "result":
-        last = events[-1]
+    last = _ending_result(events)
+    if last is not None:
         if is_usage_limit_result(last):
             return "usage-limit", "terminal usage-limit result"
         if last.get("terminal_reason") == "stall":
-            return "stalled", "the watchdog killed the child"
+            return "stalled", "a stall result from the retired watchdog kill (a pre-3d10e5c33 stream)"
+        cap = output_cap(last.get("result"))
+        if last.get("is_error") and cap:
+            return "output-cap", "the final message outgrew the %s-token output cap: %s" % (cap, OUTPUT_CAP_ADVICE)
         return "finished", "result %s" % (last.get("terminal_reason") or last.get("subtype") or "")
     last_work = max((i for i, d in enumerate(events) if event_kind(d) == "work"), default=-1)
     trailing = events[last_work + 1:]
@@ -201,10 +269,25 @@ def stream_status(path, now, stall_sec=900, limit=10):
         return "usage-limit", "%d consecutive 429 retries with no work" % run
     if age >= stall_sec:
         return "stalled", "no write for %ds (limit %ds)" % (age, stall_sec)
+    cuts = sum(1 for d in events if d.get("type") == "user" and any(
+        isinstance(b, dict) and b.get("type") == "text" and str(b.get("text", "")).startswith(OUTPUT_CAP_RESUME)
+        for b in _blocks(d)))
+    if cuts:
+        return "output-cap", "the client resumed past the output-token cap %d time(s), last write %ds ago: %s" % (
+            cuts, age, OUTPUT_CAP_ADVICE)
     if retries:
         return "retrying", "%d retries since the last work event (last status %s), last write %ds ago" % (
             len(retries), retries[-1].get("error_status"), age)
     return "working", "last write %ds ago" % age
+
+
+def recovery_work(stream):
+    """Tool calls in this attempt, including those before its next compact boundary.
+
+    Init, boundaries, continuation summaries and result envelopes do not establish new work.
+    """
+    return sum(1 for d in _events(stream) if d.get('type') == 'assistant'
+               for block in _blocks(d) if isinstance(block, dict) and block.get('type') == 'tool_use')
 
 
 def classify(stream):
@@ -213,6 +296,7 @@ def classify(stream):
     work_after = 0
     sid = None
     result_text = ""
+    result_status = None
     is_error = False
     terminal = None
     saw_result = False
@@ -240,13 +324,15 @@ def classify(stream):
             sid = d.get("session_id") or sid
             r = d.get("result", "")
             result_text = r if isinstance(r, str) else ""
+            result_status = d.get("api_error_status")
             is_error = bool(d.get("is_error"))
             terminal = d.get("terminal_reason")
 
     if not saw_result or not sid:
         return None, None
 
-    if NEVER_RESUME.search(result_text):
+    # Structured rejection status outranks transport wording, even when the text omits the code.
+    if str(result_status) in {"400", "401", "403", "404", "429"} or NEVER_RESUME.search(result_text):
         return None, None
 
     if is_error and TRANSIENT.search(result_text):
@@ -314,6 +400,9 @@ def main() -> int:
         return _selftest()
     if len(sys.argv) > 1 and sys.argv[1] == "--watch":
         return _watch_cli(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "--work":
+        print(recovery_work(sys.stdin))
+        return 0
     src = open(sys.argv[1], encoding="utf-8") if len(sys.argv) > 1 else sys.stdin
     sid, reason = classify(src)
     if sid:

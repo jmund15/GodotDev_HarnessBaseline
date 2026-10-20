@@ -17,8 +17,8 @@ occurred in the session this guard was written in. A guard that cannot tell whos
 write it is does not deny writes. Revisit only if the runtime exposes a run-scoped
 field.
 
-The marker is armed by `.claude/hooks/readonly_marker_arm.py`, a PreToolUse hook on
-the `Workflow` matcher — a Workflow script cannot arm it itself (no filesystem, no
+The marker is armed by `.claude/hooks/readonly_marker_arm.py`, which
+`pre_workflow_dispatch.py` runs on an allowed `Workflow` call — a Workflow script cannot arm it itself (no filesystem, no
 `require`, no clock, no session id). There is no disarm hook: `Workflow` returns as
 soon as the run backgrounds, so the TTL is the disarm.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Re-runnable proof for hooks/indexed_reference_guard.py — a whole-file Read of an index-served
-reference is blocked (exit 2 + stderr); bounded reads, other files and other tools pass.
+reference advises the main session and blocks a delegate; bounded reads and other tools pass.
 
     python3 .claude/tests/test_indexed_reference_guard.py
 """
@@ -12,6 +12,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 HOOK = os.path.join(ROOT, ".claude", "hooks", "indexed_reference_guard.py")
+DISPATCH = os.path.join(ROOT, ".claude", "hooks", "pre_read_dispatch.py")
 sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
 import indexed_reference_guard as guard  # noqa: E402
 
@@ -25,22 +26,65 @@ def run(payload):
     return r.returncode, r.stderr or ""
 
 
+def run_dispatch(payload):
+    raw = json.dumps(payload)
+    r = subprocess.run([sys.executable, DISPATCH], input=raw, capture_output=True,
+                       text=True, encoding="utf-8", timeout=60)
+    return r.returncode, r.stdout or "", r.stderr or ""
+
+
 def main():
     cases = []
-    rc, err = run({"tool_name": "Read", "tool_input": {"file_path": CATALOG}})
-    cases.append(("whole-file Read of an indexed catalog is blocked on the real channel (exit 2 + stderr)",
+    rc, err = run({"tool_name": "Read", "agent_id": "delegate-proof",
+                   "tool_input": {"file_path": CATALOG}})
+    cases.append(("delegate whole-file Read is blocked with the accessor on the real channel",
                   rc == 2 and "BLOCKED" in err and "lens.py" in err))
+    rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": CATALOG}})
+    try:
+        advisory = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    except (KeyError, ValueError):
+        advisory = ""
+    cases.append(("main-session Read proceeds with accessor advisory on the model channel",
+                  rc == 0 and not err and "lens.py get --shared" in advisory))
+    rc, out, err = run_dispatch({"tool_name": "Read", "agent_id": "delegate-proof",
+                                  "tool_input": {"file_path": CATALOG}})
+    cases.append(("delegate deny cites guards/any.md and routes through the accessor",
+                  rc == 2 and "guards/any.md" in err
+                  and "read a catalog with an accessor through it" in err
+                  and "lens.py get --shared" in err))
+    for actor, extra in (("main", {}), ("delegate", {"agent_id": "delegate-proof"})):
+        rc, out, err = run_dispatch({"tool_name": "Read", **extra,
+                                     "tool_input": {"file_path": CATALOG, "offset": 10, "limit": 40}})
+        cases.append((f"bounded Read passes for {actor}", rc == 0 and not err))
+    for suffix, (accessor, _gives) in guard.INDEXED_REFERENCES.items():
+        path = os.path.join(ROOT, ".claude", suffix.replace("/", os.sep))
+        rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": path}})
+        try:
+            advice = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        except (KeyError, ValueError):
+            advice = ""
+        cases.append((f"main advisory names accessor for {suffix}",
+                      rc == 0 and not err and accessor in advice))
+        rc, out, err = run_dispatch({"tool_name": "Read", "agent_id": "delegate-proof",
+                                     "tool_input": {"file_path": path}})
+        cases.append((f"delegate block cites rail and accessor for {suffix}",
+                      rc == 2 and "guards/any.md" in err
+                      and "read a catalog with an accessor through it" in err
+                      and accessor in err))
+
     rc, err = run({"tool_name": "Read", "tool_input": {"file_path": CATALOG, "offset": 10, "limit": 40}})
     cases.append(("bounded Read of the same catalog passes", rc == 0 and not err))
     rc, err = run({"tool_name": "Read", "tool_input": {"file_path": os.path.join(ROOT, ".claude", "CLAUDE.md")}})
     cases.append(("a non-indexed file passes", rc == 0 and not err))
     rc, err = run({"tool_name": "Grep", "tool_input": {"pattern": "plc-", "path": CATALOG}})
     cases.append(("another tool on the catalog passes", rc == 0 and not err))
-    rc, err = run({"tool_name": "Read", "tool_input": {"file_path": CATALOG.replace("\\", "/")}})
-    cases.append(("forward-slash path still matches the suffix", rc == 2))
+    rc, err = run({"tool_name": "Read", "agent_id": "delegate-proof",
+                   "tool_input": {"file_path": CATALOG.replace("\\", "/")}})
+    cases.append(("forward-slash path still matches the delegate block", rc == 2))
     variant = os.path.join(ROOT, ".CLAUDE", "commands", "agents", "..", "agents",
                            "PLAN_CHECK_AGENTS.MD")
-    rc, err = run({"tool_name": "Read", "tool_input": {"file_path": variant}})
+    rc, err = run({"tool_name": "Read", "agent_id": "delegate-proof",
+                   "tool_input": {"file_path": variant}})
     cases.append(("Windows case and dot-segment variants cannot bypass the same indexed file",
                   rc == 2 and "BLOCKED" in err))
     rc, err = run("{not json")

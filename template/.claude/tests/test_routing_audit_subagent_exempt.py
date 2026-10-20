@@ -148,7 +148,9 @@ def run_nudge_agrees():
     state = json.load(open(_state_path(state_dir, "sessnud1"), encoding="utf-8"))
 
     label = "PreToolUse advice and audit use the same bulk-copyable rule and subagent exemption"
-    ok = bool(main_msg and "read_files" in main_msg and not sub_msg
+    # The route the advice names is a per-machine fact (ai-worker registered or not); the case is
+    # about the rule and the exemption, so it accepts either rendering.
+    ok = bool(main_msg and ("read_files" in main_msg or "bounded Read" in main_msg) and not sub_msg
               and "native-read-bulk-copyable" in state.get("pre_nudges_fired_this_turn", []))
     reason = "" if ok else "main=%r sub=%r state=%r" % (main_msg, sub_msg, state)
     print("%-4s %s" % ("ok" if ok else "FAIL", label))

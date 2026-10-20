@@ -4,8 +4,10 @@
 #   A  a child retrying 429 forever is stopped: rc 10, stopReason recorded, marker written, no resume
 #   B  the terminal usage-limit result is not resumed, even when the child lingers after it
 #   C  a transient 429 that later succeeds keeps running and finishes normally
-#   D  api_retry lines are not progress: the stall watchdog still fires
+#   D  api_retry lines are not progress: the stall marker still fires, and nothing is killed
 #   E  a live marker refuses a launch even with -A; an expired marker allows it
+#   F  the first 429 retry writes <record>.usage (the session's wake signal) while the run keeps
+#      retrying; later retries leave it as written, and a stale marker from an earlier launch is replaced
 # Planted children only; nothing reaches a provider. Every case must produce output.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +17,7 @@ LIB="$R/scripts/lib/sidecar_common.sh"
 SC_TRANSPORT="codex"
 # shellcheck source=../scripts/lib/sidecar_common.sh
 . "$LIB"
+sc_check_launch_memory() { :; }
 SC_ROOT="$R"
 SC_FORMAT="stream-json"
 EXTRA_ARGS=()
@@ -36,7 +39,7 @@ resume_stub() { echo x >> "$CNT"; printf '{"type":"result","session_id":"S-X","r
 calls() { [ -f "$CNT" ] && wc -l < "$CNT" | tr -d ' ' || echo 0; }
 
 reset_run() { # <label>
-  SC_STALLED=0; SC_USAGE_LIMITED=0; SC_USAGE_LIMIT_RESET=""; OUTPUT=""; rc=""; SC_RESUME_SID=""
+  SC_USAGE_LIMITED=0; SC_USAGE_LIMIT_RESET=""; OUTPUT=""; rc=""; SC_RESUME_SID=""
   SC_LAUNCH_ID=""; SC_LAUNCH_PREPARED=0; SC_INVENTORY=""
   SC_LABEL="$1"; SC_RECORD="$TMPD/$1.record.json"; SC_LEDGER="$TMPD/$1.ledger.jsonl"
   P="$TMPD/$1.stream"; : > "$P"; : > "$CNT"
@@ -106,6 +109,39 @@ sc_write_record "$OUTPUT" "$rc" 2>/dev/null
 [ -f "$MARKER" ] && [ "$(marker_field expiresAt)" = "$RESET" ] && ok "B4 the marker expires at the stream's reset time" \
   || bad "B4 the marker expires at the stream's reset time" "expiresAt=$(marker_field expiresAt) want=$RESET"
 
+usage_field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1],encoding="utf-8")).get(sys.argv[2]); print("" if v is None else v)' "$(sc_to_native "${SC_RECORD}.usage")" "$1" 2>/dev/null; }
+[ -f "${SC_RECORD}.usage" ] && [ "$(usage_field transport)" = codex ] && [ "$(usage_field resetsAt)" = "$RESET" ] \
+  && [ -n "$(usage_field firstSeen)" ] \
+  && ok "B5 the usage-limit hit writes <record>.usage with the transport and the stream's reset time" \
+  || bad "B5 the usage-limit hit writes <record>.usage" "exists=$([ -f "${SC_RECORD}.usage" ] && echo yes || echo no) transport=$(usage_field transport) resetsAt=$(usage_field resetsAt) want=$RESET"
+
+# --- F: the FIRST retry writes <record>.usage while the run keeps going; later retries leave it
+slow_retries() {
+  init_line S-F; work_line S-F
+  retry_line 1 429 S-F; sleep 3
+  retry_line 2 429 S-F; sleep 3
+  work_line S-F
+  printf '{"type":"result","subtype":"success","is_error":false,"session_id":"S-F","result":"the deliverable"}\n'
+}
+reset_run ul-f; rm -rf "$SIDECAR_EXHAUSTED_DIR"
+printf '{"firstSeen":"stale"}\n' > "${SC_RECORD}.usage"
+( sc_run_watched slow_retries "$P" 2>/dev/null; printf '%s' "$rc" > "$TMPD/ul-f.rc" ) &
+bg=$!
+first=""; waited=0
+while kill -0 "$bg" 2>/dev/null && [ "$waited" -lt 80 ]; do
+  if [ -f "${SC_RECORD}.usage" ] && [ "$(usage_field firstSeen)" != stale ]; then first="$(cat "${SC_RECORD}.usage")"; break; fi
+  sleep 0.25; waited=$((waited + 1))
+done
+alive=no; kill -0 "$bg" 2>/dev/null && alive=yes
+wait "$bg"; rc="$(cat "$TMPD/ul-f.rc" 2>/dev/null)"
+[ -n "$first" ] && [ "$alive" = yes ] && [ "$(usage_field retries)" = 1 ] && [ -z "$(usage_field resetsAt)" ] \
+  && ok "F1 the first 429 retry writes <record>.usage (retries=1, reset unknown) while the run is live" \
+  || bad "F1 the first 429 retry writes <record>.usage while the run is live" "first=${first:-none} alive=$alive retries=$(usage_field retries)"
+[ -n "$first" ] && [ "$(cat "${SC_RECORD}.usage" 2>/dev/null)" = "$first" ] \
+  && ok "F2 the second retry does not rewrite the marker" \
+  || bad "F2 the second retry does not rewrite the marker" "first=${first:-none} now=$(cat "${SC_RECORD}.usage" 2>/dev/null)"
+[ "$rc" = 0 ] && ok "F3 the run keeps retrying and finishes normally (rc=0)" || bad "F3 the run keeps retrying and finishes normally" "rc=$rc"
+
 # --- C: transient 429s that clear keep running
 transient_then_success() {
   init_line S-C
@@ -119,16 +155,27 @@ sc_run_watched transient_then_success "$P" 2>/dev/null
   && ok "C1 transient 429s separated by work finish normally with no marker" \
   || bad "C1 transient 429s separated by work finish normally with no marker" "rc=$rc limited=${SC_USAGE_LIMITED:-unset} marker=$([ -f "$MARKER" ] && echo yes || echo no)"
 
-# --- D: retry lines are not progress
+# --- D: retry lines are not progress — the marker fires and the run keeps going
 retry_non429() {
   init_line S-D; work_line S-D
-  local i; for i in $(seq 1 40); do retry_line "$i" 529 S-D; printf '{"type":"system","subtype":"thinking_tokens","session_id":"S-D"}\n'; sleep 0.5; done
+  local i; for i in $(seq 1 20); do retry_line "$i" 529 S-D; printf '{"type":"system","subtype":"thinking_tokens","session_id":"S-D"}\n'; sleep 0.5; done
   printf '{"type":"result","session_id":"S-D","is_error":false,"result":"never stalled"}\n'
 }
 reset_run ul-d; SC_STALL_SEC=4
-t0=$(date +%s); sc_run_watched retry_non429 "$P" 2>/dev/null; t1=$(date +%s)
-[ "$rc" = 9 ] && [ $((t1 - t0)) -lt 18 ] && ok "D1 api_retry and system lines do not reset the stall watchdog (rc=9 after $((t1 - t0))s)" \
-  || bad "D1 api_retry and system lines do not reset the stall watchdog" "rc=$rc elapsed=$((t1 - t0))s"
+# The run must be observed WHILE it is silent, so it goes in a subshell that reports its own rc.
+( sc_run_watched retry_non429 "$P" 2>/dev/null; printf '%s' "$rc" > "$TMPD/ul-d.rc"; printf '%s' "$OUTPUT" > "$TMPD/ul-d.out" ) &
+bg=$!
+# Watch for the whole run: the mark lands one poll after SC_STALL_SEC idle, plus each poll's python start.
+marked=no; waited=0
+while kill -0 "$bg" 2>/dev/null; do
+  if [ -f "${SC_RECORD}.stall" ]; then marked=yes; break; fi
+  sleep 0.25; waited=$((waited + 1))
+done
+wait "$bg"; rc="$(cat "$TMPD/ul-d.rc" 2>/dev/null)"
+[ "$marked" = yes ] && [ "$rc" = 0 ] && grep -q 'never stalled' "$TMPD/ul-d.out" \
+  && [ ! -f "${SC_RECORD}.stall" ] && [ ! -s "$CNT" ] \
+  && ok "D1 api_retry and system lines do not reset the stall marker (marked, then the run finished rc=0)" \
+  || bad "D1 api_retry and system lines do not reset the stall marker" "marked=$marked waited=${waited} rc=$rc"
 SC_STALL_SEC=900
 
 # --- E: the marker gate

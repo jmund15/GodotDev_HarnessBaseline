@@ -85,28 +85,6 @@ def is_high_risk(prompt: str) -> bool:
     return False
 
 
-# Conversational / meta patterns — no memory search needed
-CONVERSATIONAL_PATTERNS = [
-    r"\b(is|are|do|does|can|could|should|would|will)\b.*\b(you|we|it|this|that)\b.*\?",  # questions about process
-    r"\b(what do you think|how about|thoughts on|opinion on)\b",
-    r"\b(hook|skill|command|setting|config|permission|memory|compact)s?\b.*\b(useful|helpful|worth|valuable|deprecated|hurting|redundant|beneficial|bloat|bloating|oversteer|oversteering|overkill|excessive|necessary|noise)\b",
-    r"\b(let'?s|go ahead|go forward|proceed|sounds good|I agree|I like)\b",
-    r"\b(explain|tell me|walk me through|help me understand)\b",
-]
-
-
-def is_conversational(prompt: str) -> bool:
-    """Check if prompt is conversational/meta rather than a task."""
-    prompt_lower = prompt.lower()
-    # Must not also match high-risk (task takes priority)
-    if is_high_risk(prompt):
-        return False
-    for pattern in CONVERSATIONAL_PATTERNS:
-        if re.search(pattern, prompt_lower):
-            return True
-    return False
-
-
 # Execution patterns — directives to carry out already-scoped, prior-agreed work
 # ("apply the refinements", "do it", "go ahead and commit"). The domain-gotcha
 # search already happened when the work was scoped, so a fresh MEMORY CHECK is a
@@ -153,7 +131,7 @@ def get_drive_reminder(prompt: str) -> str:
         "<drive-memory-obligation>",
         f"{command} runs plan-then-execute with no approval gate before code — the Memory pass is MANDATORY and yours to run:",
         "1. Search auto-memory for each inferred domain's gotchas (semantic-search if connected, else Grep).",
-        "2. Record the constraint claims + their evidence in the plan file under Constraints — an unrecorded pass did not happen.",
+        "2. Record each constraint in the plan file under Constraints by its /explore dossier claim id, or with its evidence quote when no dossier holds it — an unrecorded pass did not happen.",
     ]
     if argument:
         lines.append(f"Infer domains from: {argument[:200]}")
@@ -290,14 +268,6 @@ PLAN-PERMISSION MODE — gather context first: search auto-memory for gotchas, p
         print("""<user-prompt-submit-hook>
 HIGH-RISK TASK — search auto-memory first (semantic-search if connected, else Grep, restrictToDir=.claude/auto-memory); identify domain(s) from CLAUDE.md, load matching Skills. Report: Skills: [invoked|auto-rules|N/A] | Memory: [query]. Re-search if scope grows.
 </user-prompt-submit-hook>""")
-
-    # === CONVERSATIONAL / META (no memory needed) ===
-    elif is_conversational(prompt):
-        # Lightweight — no memory search instruction
-        print("""<user-prompt-submit-hook>
-Avoid reflexive agreement. Instead, provide substantive technical analysis.
-</user-prompt-submit-hook>""")
-        sys.exit(0)
 
     # === EXECUTION MODE (Standard) ===
     else:

@@ -13,6 +13,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = ROOT / ".claude" / "commands" / "delegate.md"
+MODEL_EVIDENCE = ROOT / ".claude" / "skills" / "orchestration" / "reference" / "model_evidence.md"
+COMPARISON_RULE = r"Same-task comparisons need an explicit request, named arms, frozen inputs and a finite budget"
 
 REQUIRED = {
     "one-line command description": r"^---\n(?:[^\n]+\n)*description: [^\n]+\n(?:[^\n]+\n)*---$",
@@ -22,16 +24,15 @@ REQUIRED = {
     "hold preflight": r"`HOLD`:.*required.*missing",
     "abort preflight": r"`ABORT`:.*authorization.*forbids",
     "route and guard shape stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+shape[\s\S]+any\|survey\|review\|author",
-    "native executor owners": r"dispatch\.js[\s\S]+dispatch_chains\.js[\s\S]+review_fanout\.js",
-    "cross-transport owner": r"alias[\s\S]+promptFile[\s\S]+sidecar_fanout\.py",
+    "native engine owner": r"Native `Workflow` runs only an engine the fan-out lacks: `review_fanout\.js`",
+    "fan-out owner": r"`sidecar_fanout\.py` runs the file[^\n]+picks each job's paying plan",
     "specialized command refusal": r"own coverage contract[\s\S]+exploration, plan drafting or plan review",
-    "one arm per delivery job": r"One suitable arm per independently needed job, including review lenses",
-    "provider availability cannot add jobs": r"Adding an available provider does not add jobs",
-    "comparison is explicit and bounded": r"explicit comparison request[\s\S]+named arms, frozen inputs and a finite budget",
+    "jobs defer to the orchestration owner": r"Jobs follow `orchestration` §0; a review lens is one mandate",
+    "comparison defers to its orchestration owner": r"Same-task comparisons follow `orchestration` reference `model_evidence\.md`",
     "manifest finalization": r"--manifest-seed[\s\S]+--manifest-out[\s\S]+--session",
-    "outcomes recorded before manifest": r"orchestration_verdicts\.json[\s\S]+manifest",
+    "outcomes recorded before manifest": r"--rate[\s\S]+manifest",
     "exact label count": r"seed count is the required result count",
-    "review mapping retains agentType": r"Native review[^\n]+agents:[^\n]+agentType",
+    "review mapping retains agentType": r"review_fanout\.js[^\n]+agents:[^\n]+agentType",
     "review manifest label matches workflow": r"review:<key>",
 }
 
@@ -79,6 +80,8 @@ def main():
         violations_real = violations(text)
         cases.append(("all required branches are present", not missing_real, str(missing_real)))
         cases.append(("no prohibited shortcut is present", not violations_real, str(violations_real)))
+        cases.append(("model_evidence states the bounded-comparison rule delegate points at",
+                      bool(re.search(COMPARISON_RULE, MODEL_EVIDENCE.read_text(encoding="utf-8"))), str(MODEL_EVIDENCE)))
         for name, pattern in REQUIRED.items():
             mutant = re.sub(pattern, '', text, flags=re.MULTILINE)
             cases.append((f"removing contract is detected: {name}", name in missing(mutant), name))

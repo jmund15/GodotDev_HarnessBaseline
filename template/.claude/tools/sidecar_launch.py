@@ -16,6 +16,8 @@ import os
 import shutil
 import subprocess
 
+from _supervised_launch import launch as supervised_launch
+
 # Git Bash, in install-order preference. `bin/bash.exe` is the wrapper Git intends callers to
 # use; `usr/bin/bash.exe` is the raw MSYS binary and is the fallback, not the default.
 _GIT_BASH_CANDIDATES = (
@@ -48,7 +50,7 @@ def git_bash():
 
 
 def run_launcher(launcher, args, cwd, timeout=1800, env=None):
-    """Run a sidecar launcher and return the CompletedProcess.
+    """Wait for memory, retry exit 12, and return the final CompletedProcess.
 
     `launcher` and `cwd` are paths as the OS sees them; bash receives the launcher as a plain
     argument, so forward slashes work either way.
@@ -57,8 +59,21 @@ def run_launcher(launcher, args, cwd, timeout=1800, env=None):
     merged = dict(os.environ)
     if env:
         merged.update(env)
-    return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                          timeout=timeout, env=merged)
+    label = os.path.basename(str(launcher))
+    for index in range(2, len(cmd) - 1):
+        if cmd[index] == '-l':
+            label = cmd[index + 1]
+            break
+    result = None
+
+    def child():
+        nonlocal result
+        result = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                                timeout=timeout, env=merged)
+        return result.returncode
+
+    supervised_launch(label, child, merged)
+    return result
 
 
 if __name__ == "__main__":

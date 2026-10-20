@@ -30,6 +30,172 @@
   (Win32_Process). `. (Join-Path $PSScriptRoot 'GodotProcess.ps1')`
 #>
 
+function Set-AgentEngineUserData {
+    param([Parameter(Mandatory)] [string] $Repo)
+    $json = & python3 (Join-Path $PSScriptRoot 'engine_userdata.py') --repo $Repo
+    if ($LASTEXITCODE -ne 0) { throw 'Engine user data isolation failed; refusing engine launch' }
+    $values = $json | ConvertFrom-Json -AsHashtable
+    foreach ($key in $values.Keys) { [Environment]::SetEnvironmentVariable($key, $values[$key], 'Process') }
+    [Console]::Error.WriteLine("USERDIR=$($values.USERDIR)")
+}
+
+# --- Detached launch -------------------------------------------------------------------
+# Start-Process with -RedirectStandard* spawns with handle inheritance on, so the child also holds
+# the CALLER's stdout: `regression_gate.ps1 -Detach | grep` blocked until the gate finished. Here the
+# child redirects its own streams, and Start-Process (no redirection) hands it no handle.
+# -Arguments: a token like `-Name` stays a parameter name; every other token is quoted as a value.
+function Start-DetachedPwshScript {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptPath,
+        [string[]] $Arguments = @(),
+        [Parameter(Mandatory)] [string] $OutPath,
+        [Parameter(Mandatory)] [string] $ErrPath
+    )
+    $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
+    $tokens = foreach ($a in $Arguments) { if ($a -match '^-[A-Za-z][A-Za-z0-9]*$') { $a } else { & $q $a } }
+    $command = "& $(& $q $ScriptPath) $($tokens -join ' ') 1> $(& $q $OutPath) 2> $(& $q $ErrPath); exit `$LASTEXITCODE"
+    Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru `
+        -ArgumentList @('-NoProfile', '-Command', $command)
+}
+
+# Native redirection inside an isolated pwsh keeps Start-Process's inherited handles away from the
+# wrapper caller. Do not invoke the native command with `& ... > file`: PowerShell then waits on
+# its native stdout reader after the native root exits, until a lingering grandchild closes it.
+function Start-IsolatedNativeProcess {
+    param([string] $FilePath, [string[]] $Arguments, [string] $OutPath, [string] $ErrPath)
+    $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
+    $tokens = @($Arguments | ForEach-Object { & $q ('"' + ($_ -replace '"', '\"') + '"') }) -join ','
+    $command = "`$p = Start-Process -FilePath $(& $q $FilePath) -ArgumentList @($tokens) -NoNewWindow -PassThru " +
+        "-RedirectStandardOutput $(& $q $OutPath) -RedirectStandardError $(& $q $ErrPath); " +
+        '$null = $p.Handle; while (-not $p.WaitForExit(500)) { }; exit $p.ExitCode'
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-EncodedCommand', $encoded)
+}
+
+function Resolve-TestRepo {
+    param([string] $Repo = '', [Parameter(Mandatory)] [string] $ScriptsRoot)
+    if ($Repo) { return (Resolve-Path -LiteralPath $Repo -ErrorAction Stop).Path }
+    $root = & git -C (Get-Location).Path rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -eq 0 -and $root -and (Test-Path -LiteralPath (Join-Path ([string] $root) 'project.godot'))) {
+        return [IO.Path]::GetFullPath([string] $root)
+    }
+    (Get-Item -LiteralPath $ScriptsRoot).Parent.Parent.FullName
+}
+
+# A project that pins a runner build able to skip the held recompile declares it in GateTargetPin.ps1, which
+# defines Test-GdUnitRecompileSkipSupport -Repo and Get-GateTargetPinRequirement. Without that file no target is
+# barred and every standalone run recompiles.
+$script:GateTargetPinFile = Join-Path $PSScriptRoot 'GateTargetPin.ps1'
+if (Test-Path -LiteralPath $script:GateTargetPinFile) {
+    . $script:GateTargetPinFile
+} else {
+    function Test-GdUnitRecompileSkipSupport {
+        param([Parameter(Mandatory)] [string] $Repo)
+        return $false
+    }
+}
+
+function Assert-GateTargetCompatible {
+    param([Parameter(Mandatory)] [string] $Repo)
+    if (-not (Test-Path -LiteralPath $script:GateTargetPinFile)) { return }
+    if (-not (Test-GdUnitRecompileSkipSupport -Repo $Repo)) {
+        Write-Output "VERDICT=BLOCKED reason=target requires $(Get-GateTargetPinRequirement) (held recompile skip); merge main first  repo=$Repo"
+        exit 4
+    }
+}
+
+# Healthy first-test observations span 7–66 s (cadence_godot2_report F4/F6). A 90 s runtime-log
+# boot window leaves 24 s beyond that cold-reimport maximum; the attempt still retries once.
+$script:SuiteBootTimeoutMs = 90000
+# A short healthy run costs up to 66 s before its first test; the 150 s floor leaves build/reimport
+# room. Known duration bodies get 1.5x headroom plus 90 s boot/build; a last-green wall gets 1.5x + 30 s.
+$script:SuiteTimeoutFloorMs = 150000
+$script:SuiteDurationHeadroomFactor = 1.5
+$script:SuiteLastGreenExtraMs = 30000
+$script:SuiteDurationExtraMs = 90000
+function Get-HeadroomMs {
+    param([double] $ExpectedSec, [double] $ExtraMs)
+    [int][math]::Ceiling([math]::Max($script:SuiteTimeoutFloorMs, ($ExpectedSec * $script:SuiteDurationHeadroomFactor * 1000 + $ExtraMs)))
+}
+function Get-SuiteTimeoutMs {
+    param([string] $Repo, [string] $Filter, [string] $LastGreen = '')
+    $expected = 0.0
+    try {
+        if ($LastGreen -and (Test-Path -LiteralPath $LastGreen)) {
+            $green = Get-Content -LiteralPath $LastGreen -Raw | ConvertFrom-Json
+            if ($green.filter -ceq $Filter -and [double] $green.elapsedSec -gt 0) {
+                return Get-HeadroomMs -ExpectedSec ([double] $green.elapsedSec) -ExtraMs $script:SuiteLastGreenExtraMs
+            }
+        }
+        # A tier sub-filter takes its whole tier's duration, an upper bound; a part naming no known tier or
+        # unit adds nothing, so a mixed filter keeps the headroom of the parts it can estimate.
+        # `&` joins a selection to its exclusions; a conjunction runs at most its widest part, so each part
+        # estimates alone and a `!~` exclusion, which selects nothing, adds nothing.
+        $parts = @($Filter -replace '[()]', '' -split '[|&]' | Where-Object { $_ -notmatch '!' })
+        $tiers = @{}
+        $chosen = @{}
+        $man = $null
+        foreach ($part in $parts) {
+            # vstest reads an operator-less part as FullyQualifiedName~<part>.
+            if ($part -match '^[\w.]+$') { $part = "FullyQualifiedName~$part" }
+            # A class name, bare or dotted (Folder.Class, Class.Test), stands for the tier or unit its test
+            # file lives in: the rightmost segment that names a test file is the class.
+            if ($part -match '^FullyQualifiedName~([\w.]+)$' -and $Matches[1] -notmatch '^Tests(\.|$)') {
+                $testsRoot = (Get-Item -LiteralPath (Join-Path $Repo 'Tests')).FullName.TrimEnd('\', '/')
+                $segments = @($Matches[1].Trim('.') -split '\.')
+                [array]::Reverse($segments)
+                $file = $null
+                foreach ($segment in $segments) {
+                    $file = Get-ChildItem -LiteralPath $testsRoot -Recurse -File -Filter "$segment.cs" -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($file) { break }
+                }
+                if (-not $file) { continue }
+                $rel = $file.FullName.Substring($testsRoot.Length + 1) -replace '\\', '/'
+                $part = 'FullyQualifiedName~Tests.' + (($rel -split '/' | Select-Object -SkipLast 1) -join '.')
+            }
+            if ($part -match '^FullyQualifiedName~Tests\.(Logic|Sanity)(?:\.[\w.]*)?$') { $tiers[$Matches[1]] = $true; continue }
+            if ($part -notmatch '^FullyQualifiedName~Tests\.Integration(?:\.([\w]+)(?:\.[\w.]*)?)?$') { continue }
+            $segment = $Matches[1]
+            if (-not $man) { $man = Get-Content -LiteralPath (Join-Path $Repo 'Tests/integration_batch_durations.json') -Raw | ConvertFrom-Json }
+            $names = @($man.units.PSObject.Properties.Name | Where-Object { -not $segment -or $_ -eq $segment })
+            foreach ($name in $names) { $chosen[$name] = [double] $man.units.$name.seconds }
+        }
+        if (-not $tiers.Count -and -not $chosen.Count) { return $script:SuiteTimeoutFloorMs }
+        if ($tiers.Count) {
+            $baseline = Get-Content -LiteralPath (Join-Path $Repo 'Tests/regression_baseline.json') -Raw | ConvertFrom-Json
+            foreach ($tier in $tiers.Keys) { $expected += [double] $baseline.suites.$tier.duration_sec }
+        }
+        foreach ($value in $chosen.Values) { $expected += $value }
+    } catch { return $script:SuiteTimeoutFloorMs }
+    Get-HeadroomMs -ExpectedSec $expected -ExtraMs $script:SuiteDurationExtraMs
+}
+
+function Wait-SuiteAttempt {
+    param($Process, [int] $TimeoutMs, [string] $GodotLog, [switch] $NoGodotRuntime,
+          [int] $BootTimeoutMs = $script:SuiteBootTimeoutMs, [int] $PollMs = 500)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $bootAt = -1L
+    $connected = $false
+    while ($true) {
+        $remaining = $TimeoutMs - $clock.ElapsedMilliseconds
+        if ($remaining -le 0) { return 'cap-hang' }
+        if ($Process.WaitForExit([int][math]::Min($PollMs, $remaining))) { return 'exited' }
+        if (-not $NoGodotRuntime -and -not $connected -and (Test-Path -LiteralPath $GodotLog)) {
+            if ($bootAt -lt 0) { $bootAt = $clock.ElapsedMilliseconds }
+            $connected = [bool](Select-String -LiteralPath $GodotLog -SimpleMatch 'Waiting for client connecting' -Quiet -ErrorAction SilentlyContinue)
+            if (-not $connected -and $clock.ElapsedMilliseconds - $bootAt -ge $BootTimeoutMs) { return 'boot-hang' }
+        }
+    }
+}
+
+function Save-HungGodotLog {
+    param([string] $GodotLog, [int] $Attempt)
+    $path = Join-Path (Split-Path $GodotLog) "godot_test.hang$Attempt.log"
+    if (Test-Path -LiteralPath $GodotLog) { Copy-Item -LiteralPath $GodotLog -Destination $path -Force }
+    else { Set-Content -LiteralPath $path -Value 'No runtime Godot log was created by this attempt.' }
+    Write-Host "HANG_LOG=$path"
+}
+
 # --- Worktree attribution --------------------------------------------------------------
 # Every worktree builds its OWN testhost.exe under <worktree>\.godot\mono\temp\bin\, so
 # testhost/vstest carry the worktree root in ExecutablePath/CommandLine. The headless Godot
@@ -40,6 +206,57 @@ function Get-WorktreeId {
     $norm  = $Path.TrimEnd('\', '/').ToLowerInvariant()
     $bytes = [System.Security.Cryptography.SHA1]::HashData([System.Text.Encoding]::UTF8.GetBytes($norm))
     return [System.Convert]::ToHexString($bytes).ToLowerInvariant().Substring(0, 8)
+}
+
+# The forked gdUnit4.api truncates GDUNIT4_PIPE_SUFFIX past this length:
+# GodotRuntimeTestRunner.cs:42 `PIPE_SUFFIX_MAX_LENGTH = 16`.
+$PipeSuffixMax = 16
+
+# Leading hex of the label's SHA-256. The default length fills the pipe suffix `<worktreeId>-<tag>` exactly.
+function Get-RunTag {
+    param([Parameter(Mandatory)] [string] $Label, [ValidateRange(1, 64)] [int] $Chars = ($PipeSuffixMax - (Get-WorktreeId 'x').Length - 1))
+    $hash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($Label)))
+    return $hash.Substring(0, $Chars)
+}
+
+# Where run_test_suite.ps1 writes its per-label .log and .err.log.
+function Get-SuiteLogDir {
+    param([Parameter(Mandatory)] [string] $Repo)
+    Join-Path $Repo '.claude\scratch\test_runs'
+}
+
+# The one label-to-dir rule: a run's dir (and TRX and log file) name. The label, sanitized, capped to the room the
+# longest names written from it leave under MAX_PATH (`<safe>.err.log` in the log dir; `<safe>\<safe>.trx` under
+# -ResultsRoot), keeping a prefix plus a 12-hex Get-RunTag of the whole label. The wrapper names its run dir with it and
+# the run pool its wrapper.out, so the two always share one dir.
+function Get-SafeRunLabel {
+    param([Parameter(Mandatory)] [string] $Label, [Parameter(Mandatory)] [string] $Repo, [string] $ResultsRoot = '')
+    $pathLimit = 259      # Windows' MAX_PATH is 260 characters, the last of them the terminating NUL
+    $hashChars = 12       # 48 bits of the label's SHA-256, so truncated labels do not collide
+    $cap = $pathLimit - (Get-SuiteLogDir -Repo $Repo).Length - 1 - '.err.log'.Length
+    if ($ResultsRoot) {
+        $runRoot = [System.IO.Path]::GetFullPath($ResultsRoot, $Repo)
+        $cap = [math]::Min($cap, [int][math]::Floor(($pathLimit - $runRoot.Length - 6) / 2))
+    }
+    $safe = $Label -replace '[^\w.-]', '_'
+    if ($safe.Length -gt $cap) { $safe = $safe.Substring(0, $cap - $hashChars - 1) + '_' + (Get-RunTag -Label $Label -Chars $hashChars) }
+    $safe
+}
+
+# A run_test_suite.ps1 run's bounds from its -TimeoutMs: the lock wait and the attempts (one retry on a hang or a
+# silent skip). The lock wait outlasts the longest hold of the holder the run can queue behind (every attempt at the
+# longest suite cap, plus a buffer for that holder to finish), whatever this run's own cap: a short unit bounded by its
+# own cap starved behind longer ones. LifetimeMs is the longest a healthy wrapper lives before pre-work and teardown,
+# which the run pool's backstop sits above.
+$script:SuiteLockWaitExtraMs = 120000
+# The gate's longest fixed unit (Logic). Dynamic standalone caps can be larger; their own bound
+# still widens the wait through Max below.
+$script:SuiteLockWaitFloorMs = 480000
+function Get-SuiteRunBounds {
+    param([Parameter(Mandatory)] [int64] $TimeoutMs)
+    $attempts = 2
+    $lockWait = $attempts * [math]::Max($TimeoutMs, $script:SuiteLockWaitFloorMs) + $script:SuiteLockWaitExtraMs
+    [pscustomobject] @{ LockWaitMs = $lockWait; MaxAttempts = $attempts; LifetimeMs = $lockWait + $attempts * $TimeoutMs }
 }
 
 function Get-ProcSnapshot {
@@ -266,6 +483,19 @@ function Test-ChainReachesPid {
     return $false
 }
 
+# Godot processes whose command line names a path under $RunDir (a pool child's --log-file points into its run dir),
+# whatever their parent chain: the one attribution that still finds a run's Godot after its test host exited. The
+# trailing separator keeps a runId that shares this one's prefix, and a nested worktree's run dir, out.
+function Get-RunDirGodot {
+    param([Parameter(Mandatory)] [string] $RunDir, [hashtable] $Map)
+    if (-not $Map) { $Map = Get-ProcSnapshot }
+    $needle = ([System.IO.Path]::GetFullPath($RunDir).TrimEnd('\', '/') -replace '\\', '/') + '/'
+    @($Map.Values | Where-Object {
+        [string] $_.Name -like 'Godot*' -and
+        ([string] $_.CommandLine -replace '\\', '/').IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+}
+
 <#
   Processes safe to kill, per the two-axis policy in the file header.
     WITHOUT -OwnRootPid (PREFLIGHT scope): role Orphan only, attributed to $Checkout or
@@ -320,6 +550,14 @@ function Get-LiveEditor {
         [hashtable] $Map,
         [string[]] $CandidateRoots
     )
+    # HARNESS_LIVE_EDITOR_CHECKOUTS (path-separated roots) plants the answer for proofs and unattended routing checks.
+    if ($null -ne $env:HARNESS_LIVE_EDITOR_CHECKOUTS) {
+        $planted = @($env:HARNESS_LIVE_EDITOR_CHECKOUTS -split [IO.Path]::PathSeparator | Where-Object { $_ } |
+            ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\', '/') })
+        $want = if ($Checkout) { [IO.Path]::GetFullPath($Checkout).TrimEnd('\', '/') } else { $null }
+        return @($planted | Where-Object { -not $want -or $_ -ieq $want } |
+            ForEach-Object { [pscustomobject]@{ ProcessId = 0; Name = 'planted'; CommandLine = $_ } })
+    }
     if (-not $Map) { $Map = Get-ProcSnapshot }
     if (-not $CandidateRoots -and $Checkout) { $CandidateRoots = @($Checkout) }
     $target = if ($Checkout) { Resolve-RootPath $Checkout } else { $null }

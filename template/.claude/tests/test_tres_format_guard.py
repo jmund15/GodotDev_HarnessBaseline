@@ -1,163 +1,110 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for hooks/tres_format_guard.py.
-
-Covers both the dispatcher `process(payload)` entry point (in-process) and the
-standalone `--hook` stdin->stdout channel (subprocess), with clean, planted-violation
-and restored-clean cases plus a malformed-payload crash guard.
-
-    python3 .claude/tests/test_tres_format_guard.py
-"""
+"""PreToolUse canonical .tres fixes, ordered references, and standalone channel."""
 import importlib.util
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
-ROOT = os.path.abspath(os.path.join(CLAUDE, ".."))
-HOOK = os.path.join(CLAUDE, "hooks", "tres_format_guard.py")
-
-# Same fixture as test_post_edit_dispatch.py's BAD_TRES: load_steps mismatch is
-# load_steps_validator's case, missing script_class= is this guard's case.
-BAD_TRES = """[gd_resource type="Resource" load_steps=9 format=3]
+HOOK = Path(__file__).resolve().parents[1] / 'hooks' / 'tres_format_guard.py'
+spec = importlib.util.spec_from_file_location('tres_format_proof', HOOK)
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+BAD = '''[gd_resource uid="uid://own" load_steps=9 type="Resource" format=3]
 
 [ext_resource type="Script" path="res://Scripts/Probe.cs" id="1_probe"]
 
 [resource]
 script = ExtResource("1_probe")
 value = 1
-"""
+'''
+CLEAN = '''[gd_resource type="Resource" script_class="Probe" format=3 uid="uid://own"]
 
-CLEAN_TRES = """[gd_resource type="Resource" script_class="Probe" load_steps=2 format=3]
-
-[ext_resource type="Script" path="res://Scripts/Probe.cs" id="1_probe"]
+[ext_resource type="Script" uid="uid://probe" path="res://Scripts/Probe.cs" id="1_probe"]
 
 [resource]
 script = ExtResource("1_probe")
 value = 1
-"""
+'''
 
 
-def load_module():
-    spec = importlib.util.spec_from_file_location("tres_format_guard_probe", HOOK)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def plant(path, text):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text)
-    return path
-
-
-def written(path, content, session="tresfmt0001", tool="Write"):
-    return {"hook_event_name": "PostToolUse", "tool_name": tool, "session_id": session,
-            "tool_input": {"file_path": path, "content": content},
-            "tool_response": {"filePath": path}}
-
-
-def run_hook(text, env):
-    r = subprocess.run([sys.executable, HOOK, "--hook"], input=text,
-                        capture_output=True, text=True, timeout=60, env=env,
-                        encoding="utf-8", errors="replace")
-    return r.returncode, (r.stdout or "").strip(), (r.stderr or "")
-
-
-def context_from_stdout(stdout):
-    if not stdout or stdout == "{}":
-        return ""
-    data = json.loads(stdout)
-    specific = data.get("hookSpecificOutput") or {}
-    assert specific.get("hookEventName") == "PostToolUse", specific
-    return specific.get("additionalContext") or ""
+def payload(path, content, tool='Write', **extra):
+    return {'tool_name': tool, 'hook_event_name': 'PreToolUse', 'tool_input':
+            dict(file_path=str(path), content=content, **extra)}
 
 
 def main():
-    tmp = tempfile.mkdtemp(prefix="tres_format_guard_")
-    home = os.path.join(tmp, "home")
-    state_dir = os.path.join(home, ".claude", ".routing_state")
-    os.makedirs(state_dir, exist_ok=True)
-    env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
-               CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8")
-
-    module = load_module()
     cases = []
-
-    # --- (a) clean payload via process() -> no emission --------------------
-    clean_path = plant(os.path.join(tmp, "repo", "Data", "clean.tres"), CLEAN_TRES)
-    result = module.process(written(clean_path, CLEAN_TRES))
-    cases.append(("clean .tres via process() emits nothing", result is None))
-
-    # --- (b) planted violation via process() -> expected channel/content ---
-    bad_path = plant(os.path.join(tmp, "repo", "Data", "bad.tres"), BAD_TRES)
-    result = module.process(written(bad_path, BAD_TRES))
-    cases.append(("planted violation via process() returns a context dict",
-                  isinstance(result, dict) and "[tres-format-guard]" in (result.get("context") or "")
-                  and "script_class=" in result.get("context", "")))
-
-    # --- (c) restored clean via process() -> no emission again -------------
-    plant(bad_path, CLEAN_TRES)
-    result = module.process(written(bad_path, CLEAN_TRES))
-    cases.append(("restoring the same path to canonical form emits nothing", result is None))
-
-    # non-.tres/.tscn path is ignored outright
-    cs_path = plant(os.path.join(tmp, "repo", "Scripts", "Probe.cs"),
-                    "public class Probe {}\n")
-    result = module.process(written(cs_path, "public class Probe {}"))
-    cases.append(("a .cs path is ignored by process()", result is None))
-
-    # --- (d) standalone --hook channel via subprocess -----------------------
-    bad2_path = plant(os.path.join(tmp, "repo", "Data", "bad2.tres"), BAD_TRES)
-    rc, out, err = run_hook(json.dumps(written(bad2_path, BAD_TRES, session="tresfmt0002")), env)
-    if rc not in (0, 2) or "Traceback" in err:
-        cases.append(("--hook on planted violation: CRASH", False))
-    else:
-        ctx = context_from_stdout(out)
-        cases.append(("--hook on planted violation reports the guard's channel",
-                      rc == 0 and "[tres-format-guard]" in ctx))
-
-    clean2_path = plant(os.path.join(tmp, "repo", "Data", "clean2.tres"), CLEAN_TRES)
-    rc, out, err = run_hook(json.dumps(written(clean2_path, CLEAN_TRES, session="tresfmt0003")), env)
-    if rc not in (0, 2) or "Traceback" in err:
-        cases.append(("--hook on clean payload: CRASH", False))
-    else:
-        cases.append(("--hook on clean payload emits nothing",
-                      rc == 0 and out in ("", "{}")))
-
-    # --- (e) malformed / non-dict payload does not crash --------------------
-    rc, out, err = run_hook("not json at all", env)
-    if rc not in (0, 2) or "Traceback" in err:
-        cases.append(("--hook on malformed stdin: CRASH", False))
-    else:
-        cases.append(("--hook on malformed stdin exits clean with no output",
-                      rc == 0 and out in ("", "{}")))
-
-    # process() with a non-dict tool_input / missing keys should not crash
-    try:
-        result = module.process({"tool_input": {}})
-        cases.append(("process() with an empty tool_input does not crash", result is None))
-    except Exception as e:
-        cases.append((f"process() with empty tool_input CRASHED: {e!r}", False))
-
-    try:
-        result = module.process({})
-        cases.append(("process() with an empty payload does not crash", result is None))
-    except Exception as e:
-        cases.append((f"process() with empty payload CRASHED: {e!r}", False))
-
-    failed = [name for name, ok in cases if not ok]
-    for name, ok in cases:
-        print(f"{'PASS' if ok else 'FAIL'}: {name}")
-    print(f"\n{len(cases) - len(failed)}/{len(cases)} passed")
-    if failed:
-        print("FAILED:", *failed, sep="\n  - ")
-        return 1
-    return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / 'Scripts').mkdir()
+        (root / 'Scripts/Probe.cs').write_text('public partial class Probe : Resource {}')
+        (root / 'Scripts/Probe.cs.uid').write_text('uid://probe\n')
+        (root / 'project.godot').write_text('[application]\n')
+        path = root / 'probe.tres'
+        result = g.process(payload(path, BAD)) or {}
+        cases.append(('Write canonicalizes header and target uid',
+                      (result.get('updatedInput') or {}).get('content') == CLEAN))
+        cases.append(('computed fixes are silent', not result.get('context')))
+        cases.append(('canonical input emits nothing', g.process(payload(path, CLEAN)) is None))
+        wrong_uid = CLEAN.replace('uid://probe', 'uid://stale')
+        result = g.process(payload(path, wrong_uid)) or {}
+        cases.append(('stale ext uid is replaced from companion',
+                      (result.get('updatedInput') or {}).get('content') == CLEAN))
+        path.write_text(BAD)
+        ti = {'file_path': str(path), 'old_string': 'value = 1', 'new_string': 'value = 2'}
+        result = g.process({'tool_name': 'Edit', 'tool_input': ti}) or {}
+        updated = result.get('updatedInput') or {}
+        cases.append(('Edit candidate canonicalized outside fragment',
+                      updated.get('old_string') == BAD and updated.get('new_string') == CLEAN.replace('value = 1', 'value = 2')))
+        cases.append(('input is not mutated', ti['old_string'] == 'value = 1'))
+        real_read, reads = Path.read_text, []
+        def racing_read(target, *args, **kwargs):
+            if target == path:
+                reads.append(1)
+                return BAD if len(reads) == 1 else BAD.replace('value = 1', 'value = 99')
+            return real_read(target, *args, **kwargs)
+        Path.read_text = racing_read
+        try:
+            result = g.process({'tool_name': 'Edit', 'tool_input': ti}) or {}
+        finally:
+            Path.read_text = real_read
+        cases.append(('Edit binds the candidate to the same disk snapshot',
+                      result.get('updatedInput', {}).get('old_string') == BAD and len(reads) == 1))
+        forward = '[gd_resource type="Resource" format=3]\n\n[sub_resource type="Resource" id="A"]\nx = SubResource("B")\n[sub_resource type="Resource" id="B"]\n[resource]\nx = ExtResource("gone")\n'
+        result = g.process(payload(path, forward)) or {}
+        ctx = result.get('context', '')
+        cases.append(('forward SubResource and dangling ExtResource reported',
+                      'forward SubResource("B")' in ctx and 'dangling ExtResource("gone")' in ctx))
+        backward = forward.replace('x = SubResource("B")\n', '').replace('x = ExtResource("gone")', 'x = SubResource("B")')
+        cases.append(('declared references pass', g.process(payload(path, backward)) is None))
+        foreign = CLEAN.replace('Scripts/Probe.cs', 'Jmodot/Probe.cs').replace(' uid="uid://probe"', '')
+        cases.append(('foreign uids stay path-only', g.process(payload(path, foreign)) is None))
+        # Captured from craft_idle_to_menu_transition.tres: cache-authored foreign uid.
+        carried_foreign = '[gd_resource type="Resource" format=3]\n\n[ext_resource type="Script" uid="uid://bkqo1i81ek0je" path="res://Jmodot/Core/AI/HSM/TransitionCondition.cs" id="1_cond_base"]\n\n[resource]\n'
+        cases.append(('existing foreign uid is not stripped without cache evidence',
+                      g.process(payload(path, carried_foreign)) is None))
+        result = g.process(payload(path, CLEAN.replace('Scripts/Probe.cs', 'Scripts/Missing.cs'))) or {}
+        cases.append(('unreadable target gets context', 'Missing.cs' in result.get('context', '')))
+        cases.append(('adjacent source path ignored', g.process(payload(root / 'probe.cs', BAD)) is None))
+        cases.append(('PostToolUse is not a second writer', g.process(dict(payload(path, BAD), hook_event_name='PostToolUse')) is None))
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+        proc = subprocess.run([sys.executable, str(HOOK), '--hook'], input=json.dumps(payload(path, BAD)),
+                              capture_output=True, text=True, encoding='utf-8', env=env, timeout=60)
+        out = (json.loads(proc.stdout).get('hookSpecificOutput') or {}) if proc.stdout else {}
+        cases.append(('standalone PreToolUse emits updatedInput only', proc.returncode == 0 and
+                      out.get('hookEventName') == 'PreToolUse' and out.get('updatedInput', {}).get('content') == CLEAN
+                      and 'additionalContext' not in out))
+        proc = subprocess.run([sys.executable, str(HOOK), '--hook'], input='bad json', capture_output=True, text=True, timeout=60)
+        cases.append(('malformed input does not crash', proc.returncode == 0 and proc.stdout.strip() == '{}'))
+    for label, ok in cases:
+        print(('PASS: ' if ok else 'FAIL: ') + label)
+    failures = sum(not ok for _, ok in cases)
+    print('%d/%d passed' % (len(cases) - failures, len(cases)))
+    return bool(failures)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())

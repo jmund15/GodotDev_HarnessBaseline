@@ -16,9 +16,11 @@ Cases:
 - a command whose only pair sits before `"` needs no repair and emits nothing;
 - collapses:false, a record without `collapses_before_quote`, an unrecorded version, an unreadable
   transcript and a tail with no version row each emit no updatedInput; the unrecorded cases advise
-  once per compaction window, naming the two-argument probe command;
+  once per client version and platform, machine-wide, naming the two-argument probe command;
+- an unrecorded version with a complete row recorded on this platform repairs with the newest such
+  row (by `observed`) on every call and advises once per window, naming both versions;
 - a two-argument probe invocation is never doubled: it gains `--client-version <version>`, or passes
-  unchanged when no version is readable; the retired one-argument form is not a probe invocation;
+  unchanged when no version is readable; other executing forms are denied with PROBE_COMMAND;
 - a command that only mentions the probe path is rewritten normally;
 - a probe run without `--client-version` exits 2;
 - the reaper's PostToolUse matcher equals the anchored string exactly;
@@ -136,6 +138,32 @@ def payload(command, transcript, tool="Bash", sid=None, extra=None):
             "cwd": REPO, "tool_input": ti}
 
 
+def test_s9_colon_operands(tmp_path):
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state'),
+               HARNESS_BASH_FIDELITY_RECORD=str(tmp_path / 'absent.json'))
+    for command in ('git show HEAD:.claude/CLAUDE.core.md | head -1',
+                    'git -C /repo show refs/heads/main:folder/file',
+                    'gh api repos/owner/repo/contents/HEAD:README.md'):
+        p, out, crashed = run(HOOK, payload(command, ''), env)
+        assert not crashed and p.returncode == 0
+        assert out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
+        p, again, crashed = run(HOOK, payload(out['updatedInput']['command'], ''), env)
+        assert not crashed and 'updatedInput' not in again
+    command = 'cd /repo && git show HEAD:README.md'
+    p, out, crashed = run(HOOK, payload(command, ''), env)
+    assert not crashed and out['updatedInput']['command'] == 'cd /repo && MSYS_NO_PATHCONV=1 git show HEAD:README.md'
+    command = 'git show HEAD:README.md; git show HEAD:README.md'
+    p, out, crashed = run(HOOK, payload(command, ''), env)
+    assert not crashed and out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 git show HEAD:README.md; MSYS_NO_PATHCONV=1 git show HEAD:README.md'
+    command = 'git show :.claude/baseline.lock.json'
+    p, out, crashed = run(HOOK, payload(command, ''), env)
+    assert not crashed and out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
+    for command in ('git status', 'git -C C:/repo status', 'git remote add x https://example.invalid/repo',
+                    "printf '%s' 'git show HEAD:path'", "python3 - <<'EOF'\nprint('git show HEAD:path')\nEOF"):
+        p, out, crashed = run(HOOK, payload(command, ''), env)
+        assert not crashed and p.returncode == 0 and 'updatedInput' not in out
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="bbf_")
     transcript = os.path.join(tmp, "t.jsonl")
@@ -191,6 +219,7 @@ def main():
     # --- unrecorded version: no rewrite, advise once ---------------------------------------------
     with open(record, "w", encoding="utf-8") as fh:
         json.dump({"other|plat": {"collapses": True, "collapses_before_quote": False, "observed": "2026-09-15"}}, fh)
+    base_env['HARNESS_HOOK_STATE_DIR'] = os.path.join(tmp, 'unrecorded-state')
     sid = "bbfonce" + uuid.uuid4().hex[:4]
     p1, h1, c1 = run(HOOK, payload(PROBE_STRINGS[0], transcript, sid=sid), base_env)
     p2, h2, c2 = run(HOOK, payload(PROBE_STRINGS[0], transcript, sid=sid), base_env)
@@ -198,8 +227,31 @@ def main():
     check("unrecorded version emits no updatedInput", not c1 and "updatedInput" not in h1, p1.stdout + p1.stderr)
     check("unrecorded version advises, naming the version and the probe command",
           VERSION in ctx and "bash_fidelity_probe.py 'x" + PAIR + "y' 'x" + PAIR + DQ + "y'" in ctx, ctx)
-    check("unrecorded version advises once per compaction window",
+    check("unrecorded version advises once per client version and platform, machine-wide",
           not c2 and not p2.stdout.strip(), p2.stdout + p2.stderr)
+
+    # --- unrecorded version, a recorded row on this platform: the newest one carries forward ------
+    with open(record, "w", encoding="utf-8") as fh:
+        json.dump({"1.0.0|" + sys.platform: {"collapses": False, "collapses_before_quote": False,
+                                             "observed": "2026-09-01"},
+                   "1.0.1|" + sys.platform: {"collapses": True, "collapses_before_quote": False,
+                                             "observed": "2026-09-20"},
+                   "1.0.2|" + sys.platform: {"collapses": True, "observed": "2026-09-25"},
+                   "other|plat": {"collapses": False, "collapses_before_quote": False, "observed": "2026-09-29"}},
+                  fh)
+    base_env['HARNESS_HOOK_STATE_DIR'] = os.path.join(tmp, 'carried-state')
+    sid = "bbfcarry" + uuid.uuid4().hex[:4]
+    p1, h1, c1 = run(HOOK, payload(PROBE_STRINGS[0], transcript, sid=sid), base_env)
+    p2, h2, c2 = run(HOOK, payload(PROBE_STRINGS[0], transcript, sid=sid), base_env)
+    upd1 = (h1.get("updatedInput") or {}).get("command", "")
+    upd2 = (h2.get("updatedInput") or {}).get("command", "")
+    ctx = h1.get("additionalContext", "")
+    check("unrecorded version repairs with the newest complete row recorded on this platform",
+          not c1 and client(upd1) == PROBE_STRINGS[0] and upd1 != PROBE_STRINGS[0], p1.stdout + p1.stderr)
+    check("the carried-forward repair advises, naming both versions and the probe command",
+          VERSION in ctx and "1.0.1" in ctx and "bash_fidelity_probe.py 'x" + PAIR + "y'" in ctx, ctx)
+    check("the carried-forward repair repeats every call; its advisory fires once per window",
+          not c2 and client(upd2) == PROBE_STRINGS[0] and "additionalContext" not in h2, p2.stdout + p2.stderr)
 
     # --- unreadable record ---------------------------------------------------------------------
     with open(record, "w", encoding="utf-8") as fh:
@@ -231,8 +283,9 @@ def main():
     one_arg = "python3 .claude/tools/bash_fidelity_probe.py 'x" + PAIR + "y'"
     p, hso, crashed = run(HOOK, payload(one_arg, transcript), base_env)
     upd = (hso.get("updatedInput") or {}).get("command", "")
-    check("the retired one-argument probe form is not a probe invocation",
-          not crashed and "--client-version" not in upd and client(upd) == one_arg, repr(upd))
+    check("the retired one-argument probe execution is denied",
+          not crashed and hso.get("permissionDecision") == "deny"
+          and probe_cmd in hso.get("permissionDecisionReason", ""), hso)
 
     mention = "grep -n 'x" + PAIR + "y' .claude/tools/bash_fidelity_probe.py"
     p, hso, crashed = run(HOOK, payload(mention, transcript), base_env)
@@ -242,8 +295,27 @@ def main():
     chained = probe_cmd + " && echo done"
     p, hso, crashed = run(HOOK, payload(chained, transcript), base_env)
     upd = (hso.get("updatedInput") or {}).get("command", "")
-    check("a probe call inside a larger command is not a probe invocation",
-          not crashed and "--client-version" not in upd and client(upd) == chained, repr(upd))
+    check("a probe call inside a larger command is denied",
+          not crashed and hso.get("permissionDecision") == "deny"
+          and probe_cmd in hso.get("permissionDecisionReason", ""), hso)
+    observed = ('cd "<repo>" && ' + probe_cmd.replace(
+        'bash_fidelity_probe.py ', 'bash_fidelity_probe.py --client-version 2.1.290 ')
+        + ' 2>&1 | tail -1; git grep bash_fidelity_probe.py')
+    for command in (observed, probe_cmd + ' | tail -1',
+                    '/usr/bin/python3 .claude/tools/bash_fidelity_probe.py x y',
+                    'python3 -u .claude/tools/bash_fidelity_probe.py x y'):
+        p, hso, crashed = run(HOOK, payload(command, transcript), base_env)
+        check("noncanonical probe execution denied: " + command[:60],
+              not crashed and hso.get("permissionDecision") == "deny"
+              and probe_cmd in hso.get("permissionDecisionReason", "")
+              and "updatedInput" not in hso, hso)
+    for command in ('git grep -n bash_fidelity_probe.py',
+                    "cat <<'EOF'\npython3 .claude/tools/bash_fidelity_probe.py x y\nEOF",
+                    "printf '%s' 'python3 .claude/tools/bash_fidelity_probe.py x y'",
+                    'python3 editor.py .claude/tools/bash_fidelity_probe.py'):
+        p, hso, crashed = run(HOOK, payload(command, transcript), base_env)
+        check("probe mention passes unchanged: " + command[:60],
+              not crashed and not hso, hso)
 
     # --- probe without --client-version exits 2 ----------------------------------------------------
     if os.path.isfile(PROBE):
@@ -303,4 +375,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    legacy_rc = main()
+    import pytest
+    pytest_rc = pytest.main([__file__, '-q', '-s'])
+    sys.exit(legacy_rc or pytest_rc)

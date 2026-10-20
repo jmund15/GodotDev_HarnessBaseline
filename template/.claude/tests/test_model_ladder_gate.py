@@ -103,5 +103,127 @@ def main():
     return 1 if failed else 0
 
 
+def test_unread_ladder_is_unmet_on_every_dispatch_until_a_compaction_clears_it(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    gate = load('model_ladder_gate')
+    hooks_state = load('_hook_state')
+    payload = {'session_id': 'cadence1', 'cwd': str(tmp_path)}
+    hooks_state.mark_skill_in_context('cadence1', 'orchestration')
+    for _ in range(2):
+        reason, fault = gate.doctrine_check(payload)
+        assert fault is None and 'model_ladder_evidence.md' in reason and 'Skill(skill="orchestration")' not in reason
+    hooks_state.clear_compaction_keys('cadence1')
+    reason, _ = gate.doctrine_check(payload)
+    assert 'Skill(skill="orchestration")' in reason and 'model_ladder_evidence.md' in reason
+    # One load route per document, and the step after the load is a re-check, never an unchanged retry.
+    assert 'SKILL.md' not in reason and 're-issue' in reason and 'unchanged' not in reason, reason
+
+
+def test_bounded_full_read_meets_the_ladder_precondition(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    gate = load('model_ladder_gate')
+    hooks_state = load('_hook_state')
+    # Coverage fields captured from ffd4976e's successful full ladder Read.
+    payload = {'session_id': 'bounded1', 'tool_name': 'Read', 'tool_input': {
+        'file_path': gate.expected_path({}), 'limit': 100}, 'tool_response': {
+        'file': {'startLine': 1, 'numLines': 68, 'totalLines': 68}}}
+    assert gate.mark_loaded(payload) is True
+    assert gate.claim_loaded('bounded1') is True
+    hooks_state.mark_skill_in_context('bounded1', 'orchestration')
+    assert gate.doctrine_check(payload) == (None, None)
+
+
+def test_partial_or_failed_bounded_read_leaves_the_ladder_unmet(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    gate = load('model_ladder_gate')
+    payload = {'session_id': 'partial1', 'tool_name': 'Read', 'tool_input': {
+        'file_path': gate.expected_path({}), 'limit': 20}, 'tool_response': {
+        'file': {'startLine': 1, 'numLines': 20, 'totalLines': 68}}}
+    assert gate.mark_loaded(payload) is False
+    assert 'model_ladder_evidence.md' in gate.doctrine_check(payload)[0]
+    payload['tool_response'] = {'is_error': True, 'file': {'startLine': 1, 'numLines': 68, 'totalLines': 68}}
+    assert gate.mark_loaded(payload) is False
+
+
+def test_unwritable_state_fails_open_with_a_fault_note(tmp_path, monkeypatch):
+    # A process guard never blocks on its own fault (instruction_quality §16): a state file the lock cannot
+    # write would otherwise deny every dispatch, since no load could ever be recorded.
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    gate = load('model_ladder_gate')
+    monkeypatch.setattr(gate, 'update_json_locked', lambda path, updater: (False, None))
+    reason, fault = gate.doctrine_check({'session_id': 'fault001', 'cwd': str(tmp_path)})
+    assert reason is None and 'could not read its session state' in fault and 'model_ladder_gate' in fault
+
+
+SLICE_CMD = 'python3 .claude/tools/model_registry.py ladder-slice'
+
+
+def _sliced_session(tmp_path, monkeypatch, sid, covered, skill=True):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    gate = load('model_ladder_gate')
+    hooks_state = load('_hook_state')
+    if skill:
+        hooks_state.mark_skill_in_context(sid, 'orchestration')
+    if covered:
+        assert hooks_state.mark_ladder_slice(sid, covered)
+    return gate, hooks_state, {'session_id': sid, 'cwd': str(tmp_path)}
+
+
+def test_a_slice_covering_the_calls_tiers_meets_the_ladder_precondition(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice001', ['architect'])
+    assert gate.doctrine_check(payload, tiers=lambda: ['architect']) == (None, None)
+
+
+def test_a_slice_covers_every_tier_the_call_implies(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice002', ['architect', 'fanout'])
+    assert gate.doctrine_check(payload, tiers=lambda: ['fanout', 'architect']) == (None, None)
+
+
+def test_a_slice_missing_a_pinned_tier_denies_naming_the_command_for_that_tier(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice003', ['architect'])
+    reason, fault = gate.doctrine_check(payload, tiers=lambda: ['architect', 'executor'])
+    assert fault is None and '%s executor' % SLICE_CMD in reason, reason
+    assert 'architect' not in reason.split(SLICE_CMD)[1].split('.')[0], reason
+    assert 're-issue' in reason
+
+
+def test_a_full_read_still_passes_whatever_tiers_the_call_implies(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice004', [])
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    read = {'session_id': 'slice004', 'tool_name': 'Read', 'tool_input': {'file_path': gate.expected_path({})}}
+    assert gate.mark_loaded(read) is True
+    assert gate.doctrine_check(payload, tiers=lambda: ['architect', 'scout']) == (None, None)
+
+
+def test_a_call_whose_tiers_cannot_be_read_falls_back_to_the_full_read(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice005', ['architect'])
+    for tiers in (None, lambda: None, lambda: [], lambda: (_ for _ in ()).throw(RuntimeError('x'))):
+        reason, _ = gate.doctrine_check(payload, tiers=tiers)
+        assert 'model_ladder_evidence.md' in reason and SLICE_CMD not in reason, reason
+
+
+def test_a_compaction_clears_the_slice(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'slice006', ['architect'])
+    hooks_state.clear_compaction_keys('slice006')
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'])
+    assert '%s architect' % SLICE_CMD in reason, reason
+
+
+def test_one_deny_names_the_skill_and_the_slice_together(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice007', [], skill=False)
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'])
+    assert 'Skill(skill="orchestration")' in reason and '%s architect' % SLICE_CMD in reason, reason
+
+
+def test_the_slice_record_is_per_session(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'slice008', ['architect'])
+    other = dict(payload, session_id='slice009')
+    hooks_state.mark_skill_in_context('slice009', 'orchestration')
+    assert gate.doctrine_check(other, tiers=lambda: ['architect'])[0] is not None
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -8,76 +8,56 @@ disable-model-invocation: true
 
 Use this procedure to determine which files belong to this session vs pre-existing dirty state.
 
-## Step 1: Live Transcript Digest (Primary Source)
+## Step 1: Session Scope (Primary Source)
 
-List every file the session edited from the live transcript, which is append-only across compactions:
+Refresh the digest first, because the scope reads the saved digest file and an earlier run in this session leaves it stale:
 
 ```
-python3 .claude/tools/session_digest.py --digest-file logs/session_digest_<sid8>.json --evidence-page files --page <N>
+python3 .claude/tools/session_digest.py --prompt-tail <command>
 ```
 
-Page until the response's `page` equals `pages`. Run `session_digest.py --prompt-tail <command>` first if the digest file is absent. Proceed to Step 3 for cross-verification.
+Then write the session's scope, the commits and changed files every close surface reads:
 
-`logs/session_files/<session_id>.json` is written by the PreCompact hook only, so it stops at the last compaction and omits every later edit. Use it, with Step 2, only when the live transcript is unavailable.
+```
+python3 .claude/tools/close_predicates.py --session <id> --scope --json .claude/scratch/session_end/<sid>/scope.json
+```
 
-## Step 2: Compaction Recovery (MANDATORY)
+Its `commits` are the full hashes of the session's commits and its `files` the repo-relative files those commits, the digest's Edit/Write counter and the live transcript's named dirty paths changed; the tool's docstring owns the identity rules. Exit 1 means `files` is null and `error` names why. When the error is `transcript not found`, use Step 2. Any other error (unmatched commit invocations, a failing git call) is an unknown scope: report it, and never treat it as an empty one.
 
-**Always check for compaction data** — do not skip this step regardless of whether you think compaction has occurred.
+## Step 2: Compaction Recovery (Fallback)
+
+Use this step only when Step 1 reports `transcript not found`.
+
+`logs/session_files/<session_id>.json` is written by the PreCompact hook only, so it stops at the last compaction and omits every later edit.
 
 1. Check `logs/pre_compact.json` for entries matching the current session ID
 2. No match (or the file is missing — this harness's compaction hook writes `logs/transcript_backups/` instead): check `logs/transcript_backups/transcript_<session-id>_*.summary.json` — the transcript-backup summary carries the same machine-generated `files_modified` field
-3. For each entry with a `summary_path` (or each matched backup summary), read the `.summary.json` file
-4. Check the `files_modified` field (sorted list of file paths edited before compaction)
-5. Union these with files from your conversation memory
+3. Read the LATEST `.summary.json` and check its `files_modified` field (sorted list of file paths edited before compaction). Summaries are cumulative — each later summary is a superset of all earlier ones.
+4. **If `files_modified` is absent** (older summary format, schema <1.1): fall back to `todo_final_state` and `last_user_request` for clues, plus git history.
 
-**WARNING — Narrative summaries are NOT file lists:** The "Summary:" block injected into conversation after compaction is a narrative for context resumption, NOT an authoritative file list. Only `.summary.json` `files_modified` fields are machine-generated and authoritative — they capture every Edit/Write tool call from the pre-compaction window.
+**Narrative summaries are NOT file lists:** The "Summary:" block injected into conversation after compaction is a narrative for context resumption, NOT an authoritative file list. Only `.summary.json` `files_modified` fields are machine-generated and authoritative — they capture every Edit/Write tool call from the pre-compaction window.
 
-**If `files_modified` is absent** (older summary format, schema <1.1): fall back to `todo_final_state` and `last_user_request` for clues, plus git history.
+## Step 3: Dirty State
 
-**Multiple compactions:** Summaries are cumulative — each later summary is a superset of all earlier ones. The LATEST `.summary.json` for the session ID contains the complete file list. You can read just the latest one instead of unioning all.
-
-**No compactions found:** If neither `logs/pre_compact.json` nor `logs/transcript_backups/transcript_<session-id>_*.summary.json` exists for this session ID:
-```
-⚠️ WARNING: No compaction data found for this session.
-This is unusual for /session_end and /session_audit — these commands almost never run
-without at least one compaction. File identification will rely on conversation memory
-and git status only, which may be incomplete.
-```
-
-## Step 3: Conversation Context (Current Window)
-
-List all files you know you created or modified during this session from your conversation memory.
-
-**CRITICAL:** After compaction, conversation memory only covers the POST-compaction window. Steps 1-2 cover the pre-compaction window.
-
-## Step 4: Git Verification (Secondary)
-
-Cross-reference with git to catch anything missed:
+List the checkout's uncommitted files:
 ```bash
-git diff --name-only HEAD
-git diff --cached --name-only HEAD
-git ls-files --others --exclude-standard
+git status --porcelain=v1 --untracked-files=all
 ```
 
-**Mega-session fallback:** If the session has intermediate commits (check `git log main..HEAD --oneline`), the above `git diff HEAD` only shows uncommitted changes. Use the full session diff:
-```bash
-git diff --name-only main...HEAD
-```
+The list holds every dirty file on the checkout, other sessions' included, so it classifies files and never adds one to the session's set.
 
-**Multi-session branches:** `git diff` captures ALL dirty files on the branch, not just this session's. Use git only to cross-reference Steps 1-3, NOT as the primary source.
+## Step 4: Reconcile & Verify
 
-## Step 5: Reconcile & Verify
-
-- **Session files** = Union of Steps 1 (or 2) + 3, verified against Step 4
-- **Pre-existing dirty** = Files in `git status` that appear in NONE of Steps 1, 2, or 3
-- If uncertain about a file, the `.summary.json` `files_modified` field is **machine-generated and authoritative** for the pre-compaction window — trust it over your own memory
+- **Session files** = Step 1's `files`, or the Step 2 summary when the transcript was unavailable
+- **Pre-existing dirty** = Step 3 entries outside the session files. After the Step 2 fallback, the summary omits every edit since the last compaction, so an entry outside it is **unattributed**, not pre-existing; report it separately and never exclude it from closeout scope.
 
 **Output verification** — After reconciliation, report:
 ```
 Session File Identification Results:
-  Source: [manifest | compaction summaries (N found) | conversation only]
+  Source: [scope (<identity>) | compaction summary]
   Session files: X total (Y .cs, Z .tres, W other)
   Pre-existing dirty (excluded): [list or "none"]
+  Unattributed (Step 2 fallback only): [list or "none"]
 ```
 
 **Callers may apply extension filters** (e.g., `*.cs *.tres` for audit) after this procedure completes.

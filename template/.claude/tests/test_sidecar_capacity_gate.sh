@@ -44,7 +44,7 @@ gate() { # <status> <band> <source> <cost> <floorBalance> [authorized] [mode]
     . "$LIB" >/dev/null 2>&1
     set -u
     SC_ROOT="$ROOT"; SC_TRANSPORT=fake; SC_ALIAS=fake; SC_MODEL=fake-model
-    SC_COST_MODEL="$cost"; SC_MIN_BAND=Surplus; SC_MAX_PROVIDER_BAND=Ahead
+    SC_COST_MODEL="$cost"; SC_MIN_BAND=Surplus
     SC_MIN_BALANCE="$floor"; SC_AUTHORIZED="$authorized"; SC_CREDENTIAL=""
     CAP_JSON="$payload" CAP_MODE="$mode" sc_gate_capacity
   ) >"$dir/out" 2>"$err"
@@ -63,7 +63,7 @@ host_gate() { # <status> <band> <floor> [authorized] [mode]
     . "$LIB" >/dev/null 2>&1
     set -u
     SC_ROOT="$ROOT"; SC_TRANSPORT=deepseek; SC_ALIAS=fake; SC_MODEL=fake-model
-    SC_COST_MODEL=marginal-usd; SC_MIN_BAND="$floor"; SC_MAX_PROVIDER_BAND=Ahead
+    SC_COST_MODEL=marginal-usd; SC_MIN_BAND="$floor"
     SC_MIN_BALANCE=0; SC_AUTHORIZED="$authorized"; SC_CREDENTIAL=""
     CLAUDE_CODE_TRANSPORT=fake CAP_JSON="$payload" CAP_MODE="$mode" sc_gate_band
   ) >"$dir/out" 2>"$err"
@@ -82,10 +82,41 @@ expect_rc "network failure refuses with 8" 8 network-error "On pace" live plan-q
 expect_rc "malformed provider result refuses with 8" 8 malformed "On pace" live plan-quota 0
 expect_rc "unsupported amount passes at zero floor" 0 unsupported "On pace" unsupported marginal-usd 0
 expect_rc "unsupported amount refuses at positive floor" 8 unsupported "On pace" unsupported marginal-usd 1
-expect_rc "known over-ceiling band refuses with 8" 8 available Hot live plan-quota 0
-expect_rc "-A overrides only known over-ceiling band" 0 available Hot live plan-quota 0 1
+# One plan-quota rule for every window: exhausted (10) or an unreadable band (8), never a per-row
+# band ceiling. A Hot codex window is the case the retired ceiling refused while the native route
+# kept taking work at the same pressure.
+expect_rc "a Hot plan-quota band passes: no per-row ceiling" 0 available Hot live plan-quota 0
+expect_rc "...with or without -A: the ceiling it overrode is gone" 0 available Hot live plan-quota 0 1
+expect_rc "a plan-quota window with no readable band refuses with 8" 8 available "" live plan-quota 0
 expect_rc "runner failure refuses with 8" 8 available "On pace" live plan-quota 0 0 runner-fail
 expect_rc "invalid JSON refuses with 8" 8 available "On pace" live plan-quota 0 0 invalid
+
+# A launcher `--check` itself: sc_check_gates runs the same refusal gates a dispatch runs, with the
+# REAL registry resolving a codex row and the planted runner answering capacity. The exhausted-marker
+# dir is pointed at an empty one so a live marker on this machine cannot decide the case.
+check_gates() { # <status> <band> [authorized]
+  local status="$1" band="$2" authorized="${3:-0}"
+  local payload dir err rc
+  payload="$(result "$status" "$band" live)"
+  dir="$(mktemp -d)"; err="$dir/err"
+  ( set +u
+    . "$LIB" >/dev/null 2>&1
+    set -u
+    # SC_TRANSPORT is what the codex launcher sets for itself; everything else comes from the
+    # REAL registry row through sc_resolve_model.
+    SC_ROOT="$ROOT"; SC_TRANSPORT=codex; SC_MODEL=sol
+    SC_AUTHORIZED="$authorized"; SC_CREDENTIAL=""
+    SC_UNSUSPEND=0; SIDECAR_EXHAUSTED_DIR="$dir/no-marker"; CLAUDE_CODE_TRANSPORT=anthropic
+    CAP_JSON="$payload" CAP_MODE=available sc_check_gates
+  ) >"$dir/out" 2>"$err"
+  rc=$?
+  printf '%s|%s' "$rc" "$(cat "$err")"
+}
+expect_check_rc() { local label="$1" want="$2"; shift 2; local got; got="$(check_gates "$@")"; [ "${got%%|*}" = "$want" ] && ok "$label" || bad "$label" "$got"; }
+
+expect_check_rc "codex --check with a Hot planted band passes" 0 available Hot
+expect_check_rc "codex --check with a planted exhausted window refuses with 10" 10 exhausted Exhausted
+expect_check_rc "...and -A does not lift exhaustion either" 10 exhausted Exhausted 1
 
 expect_host_rc "live host Hot band satisfies a paid floor" 0 available Hot "On pace"
 expect_host_rc "live host Surplus band refuses a paid floor" 5 available Surplus "On pace"

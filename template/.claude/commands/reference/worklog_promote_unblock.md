@@ -61,13 +61,13 @@ Proceed? (y/n)
 ```
 No matches: `No items found with When: after <condition>.` — check for typos, suggest alternatives if any `after` items exist.
 
-### Step 2 — Strip the When: line for each matched item
+### Step 2 — Move each matched block to Active and strip its gate
 
-`SR(Worklog.md, search: "  - When: after <condition>\n", replace: "")`. Use the exact `When:` line text from the item, not the argument verbatim — fuzzy match may have differed.
+For each confirmed match, remove its exact `BLOCK` from `## Ledger`, remove its exact `When: after <condition>` line, and insert the remaining full `BLOCK` at the top of the matching `## Active > ### Domain`. Use the item's exact `When:` line, not the argument verbatim; fuzzy matching may differ. Preserve every other sub-bullet.
 
 ### Step 3 — Bump frontmatter + patch mirror
 
-`FM(Worklog.md)`, then **incrementally** strip the ` [after: <condition>]` suffix from the matched lines in `.claude/worklog-titles.md`. Do NOT re-read the source.
+`FM(Worklog.md)`, then update the mirror in the same operation: move each line from `## Ledger` to `## Active`, strip the ` [after: <condition>]` suffix, and patch both supersection counts. Do NOT re-read the source except under `worklog_mirror.md`'s stale-mirror rule.
 
 ### Step 4 — Confirm
 

@@ -11,11 +11,14 @@ PID resolution is stubbed: the real one shells out to CIM, which no proof should
 Run: python3 .claude/tests/test_kill_guard.py
 """
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
+from unittest.mock import patch
 
 import _settings_probe
 
@@ -23,6 +26,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(HERE, "..", "hooks", "kill_guard.py")
+PROJECT = os.path.normpath(os.path.join(HERE, "..", ".."))
 SETTINGS = _settings_probe.settings_path(os.path.join(HERE, ".."))
 spec = importlib.util.spec_from_file_location("kg", HOOK)
 kg = importlib.util.module_from_spec(spec)
@@ -59,7 +63,7 @@ def v(cmd, env=None):
     return kg.verdict(cmd, env or {})
 
 
-def taskstop(*messages, transcript_path=None, task_id="agent-123", rows=None):
+def taskstop(*messages, transcript_path=None, task_id="agent-123", rows=None, cwd=None, table=None):
     with tempfile.TemporaryDirectory(prefix="taskstop_guard_") as tmp:
         path = transcript_path or os.path.join(tmp, "session.jsonl")
         if transcript_path is None:
@@ -74,25 +78,52 @@ def taskstop(*messages, transcript_path=None, task_id="agent-123", rows=None):
             "tool_name": "TaskStop",
             "transcript_path": path,
             "tool_input": {"task_id": task_id},
-        })
+            **({"cwd": cwd} if cwd else {}),
+        }, table=table)
 
 
-def taskstop_payload(payload):
+EMPTY_TABLE = os.path.join(tempfile.mkdtemp(prefix="kg_table_"), "table.json")
+with open(EMPTY_TABLE, "w", encoding="utf-8") as _fh:
+    _fh.write("{}")
+
+
+def taskstop_payload(payload, table=None):
+    """`table`: a planted process table file; by default an empty one, so no case reads the live machine."""
     result = subprocess.run(
         [sys.executable, HOOK],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         timeout=60,
+        env=dict(os.environ, KILL_GUARD_PROCESS_TABLE=table or EMPTY_TABLE),
     )
     if result.returncode != 0 or "Traceback" in (result.stderr or ""):
         raise RuntimeError(result.stderr or "kill_guard crashed")
     output = (result.stdout or "").strip()
     if not output:
         return None
-    return (json.loads(output).get("hookSpecificOutput") or {}).get(
-        "permissionDecisionReason"
-    )
+    hook = json.loads(output).get("hookSpecificOutput") or {}
+    decision = hook.get("permissionDecision")
+    if decision is None:
+        return None
+    return hook.get("permissionDecisionReason") or "<%s without a reason>" % decision
+
+
+@case("the TaskStop helper reads a deny without a reason as a deny, not as allow")
+def c_helper_reads_decision():
+    real = subprocess.run
+
+    def planted(stdout):
+        return lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout, "")
+
+    try:
+        subprocess.run = planted(json.dumps({"hookSpecificOutput": {"permissionDecision": "deny"}}))
+        bare_deny = taskstop_payload({})
+        subprocess.run = planted(json.dumps({"hookSpecificOutput": {"additionalContext": "note"}}))
+        context_only = taskstop_payload({})
+    finally:
+        subprocess.run = real
+    return bare_deny is not None and context_only is None
 
 
 @case("THE INCIDENT: killing a sidecar fan-out is blocked and NAMES it")
@@ -135,6 +166,23 @@ def c_notakill():
 def c_unresolvable():
     r = v("taskkill /PID 4242 /T /F") or ""
     return "could not resolve" in r
+
+
+@case("unverified target deny cites Shell Discipline and routes through the reaper")
+def c_unverified_channel():
+    payload = {"tool_name": "Bash", "tool_input": {"command": "taskkill /PID 4242 /T /F"}}
+    output = io.StringIO()
+    with patch.object(kg, "commandline", return_value=None), \
+            patch.object(kg.sys, "stdin", io.StringIO(json.dumps(payload))), \
+            patch.object(kg.sys, "stdout", output):
+        kg.main()
+    try:
+        hook = json.loads(output.getvalue())["hookSpecificOutput"]
+        reason = hook["permissionDecisionReason"]
+    except (KeyError, ValueError):
+        return False
+    return (hook.get("permissionDecision") == "deny" and "CLAUDE.core.md §Shell Discipline" in reason
+            and "python3 .claude/tools/reap.py --help" in reason)
 
 
 @case("an ALREADY-GONE pid is refused as stale rather than passed")
@@ -212,6 +260,12 @@ def c_taskstop_generic_allowed():
                                "Kill the background job now."))
 
 
+@case("a stop naming the task as the duplicate or copy authorizes it")
+def c_taskstop_duplicate_allowed():
+    return all(taskstop(message, task_id="task-b") is None
+               for message in ("Yes, and stop duplicate", "Stop the duplicate.", "stop the old copy"))
+
+
 @case("owner decision 2026-09-14: a generic stop still blocks when it names a different task")
 def c_taskstop_generic_names_other():
     return "does not name" in (taskstop("Stop the task named task-a.", task_id="task-b") or "")
@@ -284,9 +338,13 @@ def c_taskstop_unreadable():
     return "cannot verify" in (taskstop(transcript_path=missing) or "")
 
 
-@case("E5: a non-object TaskStop payload fails closed")
+@case("E5: a non-object TaskStop payload fails closed with plumbing recovery")
 def c_taskstop_array_payload():
-    return "cannot verify" in (taskstop_payload([]) or "")
+    reason = taskstop_payload([]) or ""
+    return ("hook could not read its input" in reason
+            and "Re-issue the same call" in reason
+            and "if it repeats, report it" in reason
+            and "skill" not in reason.lower())
 
 
 @case("kill_guard is registered for TaskStop")
@@ -413,8 +471,8 @@ def _launch_rows(task_id, command, *, name="Bash", background=True, sidechain=Fa
     ]
 
 
-def _script(text):
-    fd, path = tempfile.mkstemp(prefix="kg_script_", suffix=".sh")
+def _script(text, suffix=".sh"):
+    fd, path = tempfile.mkstemp(prefix="kg_script_", suffix=suffix)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     return path.replace("\\", "/")
@@ -424,6 +482,20 @@ def _script(text):
 def c_taskstop_own_quiet_loop():
     rows = _launch_rows("bgpoll1", "while :; do grep -q DONE grid.log && exit 0; sleep 120; done")
     return taskstop(rows=rows, task_id="bgpoll1") is None
+
+
+@case("own foreground shell that timed out into the background: TaskStop allowed")
+def c_taskstop_own_timed_out_shell():
+    rows = _launch_rows("bgtimeout1", "git clone -q https://example.invalid/repo.git repo", background=False)
+    rows[2]["toolUseResult"].update(backgroundTaskId="bgtimeout1", timedOutAfterMs=300000)
+    return taskstop(rows=rows, task_id="bgtimeout1") is None
+
+
+@case("a timed-out shell running a protected job is still blocked")
+def c_taskstop_own_timed_out_protected():
+    rows = _launch_rows("bgtimeout2", "pwsh -File .claude/scripts/gate_chain.ps1", background=False)
+    rows[2]["toolUseResult"].update(backgroundTaskId="bgtimeout2", timedOutAfterMs=300000)
+    return taskstop(rows=rows, task_id="bgtimeout2") is not None
 
 
 @case("own Monitor poll loop: TaskStop allowed with no owner stop wording")
@@ -483,16 +555,155 @@ def c_taskstop_own_script_calls_sidecar():
         os.unlink(path)
 
 
-@case("own background harness proof run still needs owner consent")
-def c_taskstop_own_harness_tests_blocked():
+# A stop kills the shell's live process tree. A script that only NAMES a launcher (an env value it hands a
+# detached job) holds no billed arm, so the live tree decides when it can be read.
+def _queue_script():
+    return _script("#!/usr/bin/env bash\nSCORE_DAEMON_LAUNCHER=anthropic_console_sidecar.sh python3 bench.py succession t12\n")
+
+
+def _planted_table(rows):
+    fd, path = tempfile.mkstemp(prefix="kg_table_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({str(pid): {"pid": pid, "ppid": ppid, "name": "x.exe", "cmd": cmd} for pid, ppid, cmd in rows}, fh)
+    return path
+
+
+def _wrapper(command):
+    return "\"C:\\Program Files\\Git\\bin\\bash.exe\" -c \"eval '%s' < /dev/null\"" % command.replace('"', '\\"')
+
+
+@case("own shell whose script only names a launcher, nothing billed live in its tree: allowed")
+def c_taskstop_live_tree_names_launcher_only():
+    path = _queue_script()
+    table = _planted_table([(100, 1, _wrapper("bash " + path)), (101, 100, "python3 bench.py succession t12"),
+                            (300, 2, "bash anthropic_console_sidecar.sh -m planted")])
+    try:
+        return taskstop(rows=_launch_rows("bgq1", "bash " + path), task_id="bgq1", table=table) is None
+    finally:
+        os.unlink(path)
+        os.unlink(table)
+
+
+@case("NEGATIVE: the same shell with a sidecar launcher live under it is blocked")
+def c_taskstop_live_tree_runs_launcher():
+    path = _queue_script()
+    table = _planted_table([(100, 1, _wrapper("bash " + path)), (101, 100, "python3 bench.py succession t12"),
+                            (102, 101, "bash anthropic_console_sidecar.sh -m planted")])
+    try:
+        return "does not name" in (taskstop(rows=_launch_rows("bgq2", "bash " + path), task_id="bgq2", table=table) or "")
+    finally:
+        os.unlink(path)
+        os.unlink(table)
+
+
+@case("NEGATIVE: a table that holds no process carrying the launch falls back to the script text: blocked")
+def c_taskstop_live_tree_not_found():
+    path = _queue_script()
+    table = _planted_table([(300, 2, "python3 something_else.py")])
+    try:
+        return "does not name" in (taskstop(rows=_launch_rows("bgq3", "bash " + path), task_id="bgq3", table=table) or "")
+    finally:
+        os.unlink(path)
+        os.unlink(table)
+
+
+@case("NEGATIVE: a launch command that itself names a launcher stays blocked whatever is live")
+def c_taskstop_live_tree_command_names_launcher():
+    command = "bash .claude/scripts/deepseek_sidecar.sh -m planted -f brief.txt"
+    table = _planted_table([(100, 1, _wrapper(command))])
+    try:
+        return "does not name" in (taskstop(rows=_launch_rows("bgq4", command), task_id="bgq4", table=table) or "")
+    finally:
+        os.unlink(table)
+
+
+@case("own background harness proof run is stoppable without owner wording: it bills nothing")
+def c_taskstop_own_harness_tests_allowed():
     rows = _launch_rows("bgtest1", "python3 .claude/scripts/harness_tests.py")
-    return "does not name" in (taskstop(rows=rows, task_id="bgtest1") or "")
+    return taskstop(rows=rows, task_id="bgtest1", cwd=PROJECT) is None
 
 
 @case("own background benchmark grid (billed in-flight cell) still needs owner consent")
 def c_taskstop_own_grid_blocked():
     rows = _launch_rows("bggrid1", "bash .claude/scripts/benchmark_campaign/run_grid.sh deepseek-v41-flash flash:1")
     return "does not name" in (taskstop(rows=rows, task_id="bggrid1") or "")
+
+
+def _aged(rows, age_s):
+    """Stamp the launch rows as written `age_s` seconds ago, as the transcript records them."""
+    import datetime
+    stamp = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age_s)).isoformat().replace("+00:00", "Z")
+    for row in rows[1:]:
+        row["timestamp"] = stamp
+    return rows
+
+
+@case("THE INCIDENT: a local run this session mis-launched 41 s ago is stoppable without owner wording")
+def c_taskstop_own_local_mislaunch_allowed():
+    path = _script("#!/usr/bin/env bash\npwsh -NoProfile -File local_suite.ps1 -Filter x  # local_check.ps1 calls this\n")
+    try:
+        rows = _aged(_launch_rows("bgmis1", "bash " + path), 41)
+        return taskstop(rows=rows, task_id="bgmis1") is None
+    finally:
+        os.unlink(path)
+
+
+@case("a script's full-line comment naming a billed job is not a run of it")
+def c_taskstop_comment_is_not_a_run():
+    path = _script("#!/usr/bin/env bash\n# The Claude Code process that owns this shell\n# bash codex_proxy_sidecar.sh is NOT called here\nsleep 60\n")
+    try:
+        rows = _aged(_launch_rows("bgmis6", "bash " + path), 900)
+        return taskstop(rows=rows, task_id="bgmis6") is None
+    finally:
+        os.unlink(path)
+
+
+@case("a billed call after a one-line <# #> block in a .ps1 is still a run of it")
+def c_taskstop_ps1_code_after_block_comment_blocked():
+    path = _script("<# helper #> bash .claude/scripts/codex_proxy_sidecar.sh -m luna -f b.txt\n", ".ps1")
+    try:
+        rows = _aged(_launch_rows("bgmis7", "pwsh -File " + path), 900)
+        return taskstop(rows=rows, task_id="bgmis7") is not None
+    finally:
+        os.unlink(path)
+
+
+@case("a multi-line <# #> block in a .ps1 naming a billed job is not a run of it")
+def c_taskstop_ps1_block_comment_is_not_a_run():
+    path = _script("<#\n.SYNOPSIS\n  Never calls bash codex_proxy_sidecar.sh.\n#>\nStart-Sleep 60\n", ".ps1")
+    try:
+        rows = _aged(_launch_rows("bgmis8", "pwsh -File " + path), 900)
+        return taskstop(rows=rows, task_id="bgmis8") is None
+    finally:
+        os.unlink(path)
+
+
+@case("THE INCIDENT 2: an own local run launched 70 min ago is stoppable without owner wording")
+def c_taskstop_own_local_old_allowed():
+    rows = _aged(_launch_rows("bgmis2", "python3 .claude/scripts/harness_tests.py --close --base origin/x"), 4192)
+    return taskstop(rows=rows, task_id="bgmis2", cwd=PROJECT) is None
+
+
+@case("an own local run whose launch time is unreadable is stoppable: its age decides nothing")
+def c_taskstop_own_local_no_stamp_allowed():
+    rows = _launch_rows("bgmis3", "dotnet test --settings .runsettings --filter Pooling")
+    return taskstop(rows=rows, task_id="bgmis3") is None
+
+
+@case("a billed sidecar launched 10 s ago still needs owner consent (the window is local-only)")
+def c_taskstop_own_billed_young_blocked():
+    rows = _aged(_launch_rows("bgmis4", "bash .claude/scripts/deepseek_sidecar.sh -m x -f brief.txt"), 10)
+    return "does not name" in (taskstop(rows=rows, task_id="bgmis4") or "")
+
+
+@case("a young local script that also calls a sidecar still needs owner consent")
+def c_taskstop_own_local_calls_billed_blocked():
+    path = _script("#!/usr/bin/env bash\npwsh -File local_check.ps1\nbash .claude/scripts/codex_proxy_sidecar.sh -m x -f b.txt\n")
+    try:
+        rows = _aged(_launch_rows("bgmis5", "bash " + path), 10)
+        return "does not name" in (taskstop(rows=rows, task_id="bgmis5") or "")
+    finally:
+        os.unlink(path)
 
 
 @case("killing a benchmark grid process by pid is blocked and names it")
@@ -574,6 +785,52 @@ def c_taskstop_block_names_quiet_shell_reason():
     return "Quiet-shell exception not applied" in r and "sidecar" in r
 
 
+
+@case("a script a command passes as an argument is data it reads, not a script it runs")
+def c_taskstop_data_argument_not_read():
+    fixture = _script("LAUNCHER = '.claude/scripts/anthropic_sidecar.sh'\n", ".py")
+    runner = _script("import sys\n", ".py")
+    try:
+        rows = _aged(_launch_rows("bgdata1", "python3 %s --for %s > out.log 2>&1" % (runner, fixture)), 900)
+        return taskstop(rows=rows, task_id="bgdata1") is None
+    finally:
+        os.unlink(fixture)
+        os.unlink(runner)
+
+
+def _stale_rows(task_id, named, out=None):
+    command = "python3 .claude/scripts/harness_tests.py --for %s" % named
+    return _aged(_launch_rows(task_id, command + (" > %s 2>&1" % out if out else "")), 900)
+
+
+@case("an own local run whose named file changed after launch is stoppable")
+def c_taskstop_stale_local_run_allowed():
+    named = _script("x = 1\n", ".py")
+    try:
+        return taskstop(rows=_stale_rows("bgstale1", named), task_id="bgstale1", cwd=PROJECT) is None
+    finally:
+        os.unlink(named)
+
+
+@case("an own local run whose named files predate the launch is stoppable: a local stop costs only machine time")
+def c_taskstop_unchanged_local_run_allowed():
+    named, out = _script("x = 1\n", ".py"), _script("", ".log")
+    old = time.time() - 2000
+    os.utime(named, (old, old))
+    # The command names the runner too; a planted backdated runner keeps a live edit to the real one out.
+    with tempfile.TemporaryDirectory(prefix="kg_root_") as root:
+        runner = os.path.join(root, ".claude", "scripts", "harness_tests.py")
+        os.makedirs(os.path.dirname(runner))
+        with open(runner, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("x = 1\n")
+        os.utime(runner, (old, old))
+        try:
+            return taskstop(rows=_stale_rows("bgstale2", named, out), task_id="bgstale2", cwd=root) is None
+        finally:
+            os.unlink(named)
+            os.unlink(out)
+
+
 def _with_resolvers(cim, winpid):
     saved = (kg._cim_commandline, kg._ps_winpid)
     kg._cim_commandline, kg._ps_winpid = cim, winpid
@@ -604,6 +861,161 @@ def c_kill_budget_exhausted_unresolvable():
         return REAL_COMMANDLINE("777", deadline=kg._now() - 1) is None
     finally:
         kg._cim_commandline, kg._ps_winpid = saved
+
+
+WINDOW_CLOSERS = {
+    "a SendMessageTimeout SC_CLOSE sweep": 'python3 - <<EOF\nu.SendMessageTimeoutW(h, 0x112, 0xF060, 0, 2, 2000, None)\nEOF',
+    "a PostMessage WM_CLOSE": "powershell -Command \"[W]::PostMessage($h, 0x10, 0, 0)\"",
+    "CloseMainWindow": "powershell -Command \"Get-Process python | ForEach-Object { $_.CloseMainWindow() }\"",
+    "Stop-Process -Name WindowsTerminal": "powershell -Command \"Stop-Process -Name WindowsTerminal -Force\"",
+    "taskkill /IM WindowsTerminal.exe": "taskkill /IM WindowsTerminal.exe /F",
+    "Get-Process piped to Stop-Process": "powershell -Command \"Get-Process OpenConsole | Stop-Process\"",
+}
+
+
+@case("closing terminal windows by handle, title or host process is denied (the 2026-10-05 bulk close)")
+def c_window_close_denied():
+    return all(kg.window_close_verdict(cmd) for cmd in WINDOW_CLOSERS.values())
+
+
+@case("window-close deny names the owner as the closer and offers no self-written override")
+def c_window_close_names_next_step():
+    why = kg.window_close_verdict(WINDOW_CLOSERS["taskkill /IM WindowsTerminal.exe"])
+    return "Ask the owner" in why and "HARNESS_ALLOW_WINDOW_CLOSE" not in why
+
+
+@case("a self-written HARNESS_ALLOW_WINDOW_CLOSE reason never passes a handle, title or host close")
+def c_window_close_reason_is_not_a_pass():
+    return all(kg.window_close_verdict(c) for c in (
+        "HARNESS_ALLOW_WINDOW_CLOSE=mine " + WINDOW_CLOSERS["taskkill /IM WindowsTerminal.exe"],
+        "HARNESS_ALLOW_WINDOW_CLOSE=mine " + WINDOW_CLOSERS["CloseMainWindow"],
+        "HARNESS_ALLOW_WINDOW_CLOSE='quoted reason' powershell -Command \"Stop-Process -Name WindowsTerminal\""))
+
+
+@case("window-close negatives: listing windows and adjacent process work pass")
+def c_window_close_negatives():
+    ok = ("powershell -Command \"Get-Process WindowsTerminal | Select-Object Id,MainWindowTitle\"",
+          "taskkill /PID 9001 /T /F", "python3 .claude/tests/test_kill_guard.py", "git log --oneline -5")
+    return all(kg.window_close_verdict(c) is None for c in ok)
+
+
+@case("must-allow: grep, rg, cat, git show and Select-String that only mention a close API or closer script pass")
+def c_window_close_read_only_mentions():
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = os.path.join(tmp, ".claude", "scratch")
+        os.makedirs(scratch)
+        with open(os.path.join(scratch, "closer.py"), "w", encoding="utf-8") as fh:
+            fh.write("u.SendMessageTimeoutW(h, 0x112, 0xF060, 0, 2, 2000, None)\n")
+        reads = ("grep -n 'WM_CLOSE' .claude/hooks/kill_guard.py",
+                 'grep -n "CloseMainWindow" .claude/hooks/kill_guard.py | head -5',
+                 "rg -n 'taskkill /IM WindowsTerminal' .claude",
+                 "cat .claude/scratch/closer.py",
+                 "git show HEAD:.claude/scratch/closer.py",
+                 "Select-String -Pattern 'Stop-Process -Name WindowsTerminal' -Path .claude/hooks/kill_guard.py")
+        bad = [c for c in reads if kg.window_close_verdict(c, tmp)]
+        return not bad and bool(kg.window_close_verdict("python3 .claude/scratch/closer.py", tmp))
+
+
+@case("must-allow: quoted pipes, semicolons and literal substitutions are reader arguments")
+def c_window_close_quoted_readers():
+    commands = (
+        'grep -E "CloseMainWindow|WM_CLOSE" .claude/hooks/kill_guard.py',
+        "grep -n 'foo; WM_CLOSE' .claude/hooks/kill_guard.py",
+        "grep -n '$(powershell -c CloseMainWindow)' x.py",
+        "grep -n '`powershell -c CloseMainWindow`' x.py",
+        'grep -n "foo; WM_CLOSE" x.py | head -5',
+        'grep -n "CloseMainWindow\\\"|WM_CLOSE" x.py',
+    )
+    return all(taskstop_payload({"tool_name": "Bash", "tool_input": {"command": cmd}}) is None
+               for cmd in commands)
+
+
+@case("substitutions inside readers execute, including backticks and double-quoted arguments")
+def c_window_close_reader_substitutions():
+    commands = (
+        'cat $(powershell -c "(Get-Process WindowsTerminal).CloseMainWindow()")',
+        'cat "$(powershell -Command \'Stop-Process -Name WindowsTerminal\')"',
+        'cat `powershell -c "Stop-Process -Name WindowsTerminal"`',
+        'cat "`powershell -c \'Stop-Process -Name WindowsTerminal\'`"',
+        'cat "$(cat "$(powershell -c \'Stop-Process -Name WindowsTerminal\')")"',
+    )
+    return all(taskstop_payload({"tool_name": "Bash", "tool_input": {"command": cmd}}) is not None
+               for cmd in commands)
+
+
+@case("git shell aliases and sed execution are not reader stages; rm is not a reader")
+def c_window_close_argument_execution():
+    return ("rm" not in kg.READ_ONLY_VERBS and all(kg.window_close_verdict(cmd) for cmd in (
+        "git -c alias.x='!powershell -c \"Stop-Process -Name WindowsTerminal\"' x",
+        "sed '1e powershell -c \"Stop-Process -Name WindowsTerminal\"' input.txt")))
+
+
+@case("every executed scratch script in a pipeline is inspected, not the first named file")
+def c_window_close_later_pipeline_script():
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = os.path.join(tmp, ".claude", "scratch")
+        os.makedirs(scratch)
+        for name, body in (("input.py", "print('input')\n"),
+                           ("closer.py", "u.PostMessageW(h, 0x10, 0, 0)\n")):
+            with open(os.path.join(scratch, name), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(body)
+        commands = (
+            "cat .claude/scratch/input.py | python .claude/scratch/closer.py",
+            "python .claude/scratch/input.py | python .claude/scratch/closer.py",
+            'cat "$(python .claude/scratch/closer.py)"',
+        )
+        return all(taskstop_payload({"tool_name": "Bash", "cwd": tmp,
+                                    "tool_input": {"command": cmd}}) is not None for cmd in commands)
+
+
+@case("unquoted host pipelines and balanced parentheses in substitutions still deny")
+def c_window_close_unquoted_execution():
+    return all(kg.window_close_verdict(cmd) for cmd in (
+        "Get-Process WindowsTerminal | Stop-Process",
+        "cat $(powershell -c (Get-Process WindowsTerminal).CloseMainWindow())",
+    ))
+
+
+@case("a reader naming a closer beside an executing stage still reads only")
+def c_window_close_pipeline_data_argument():
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = os.path.join(tmp, ".claude", "scratch")
+        os.makedirs(scratch)
+        with open(os.path.join(scratch, "closer.py"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("CloseMainWindow()\n")
+        return kg.window_close_verdict("cat .claude/scratch/closer.py | python safe.py", tmp) is None
+
+
+@case("an executed close still denies after a read-only segment in the same command")
+def c_window_close_read_then_execute():
+    return bool(kg.window_close_verdict("grep -n WM_CLOSE x.py; " + WINDOW_CLOSERS["Stop-Process -Name WindowsTerminal"]))
+
+
+@case("a scratch script that closes windows is read and denied; a non-scratch script is not scanned")
+def c_window_close_scratch_script():
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = os.path.join(tmp, ".claude", "scratch")
+        tests = os.path.join(tmp, ".claude", "tests")
+        os.makedirs(scratch)
+        os.makedirs(tests)
+        for folder in (scratch, tests):
+            with open(os.path.join(folder, "closer.ps1"), "w", encoding="utf-8") as fh:
+                fh.write("SendMessageTimeout(h, 0x112, 0xF060)\n")
+        return (bool(kg.window_close_verdict("powershell -File .claude/scratch/closer.ps1", tmp))
+                and kg.window_close_verdict("powershell -File .claude/tests/closer.ps1", tmp) is None)
+
+
+@case("main() routes a Bash window close through the deny channel")
+def c_window_close_main_channel():
+    def channel(cmd):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        r = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True, timeout=30)
+        return r.returncode, r.stdout
+    deny = [channel(c) for c in (WINDOW_CLOSERS["taskkill /IM WindowsTerminal.exe"],
+                                 "HARNESS_ALLOW_WINDOW_CLOSE=x taskkill /IM WindowsTerminal.exe /F")]
+    allow = channel("grep -n 'CloseMainWindow' .claude/hooks/kill_guard.py")
+    return (all(rc == 0 and '"permissionDecision": "deny"' in out for rc, out in deny)
+            and allow[0] == 0 and "deny" not in allow[1])
 
 
 def main():

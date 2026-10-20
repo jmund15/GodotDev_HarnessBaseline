@@ -27,7 +27,7 @@ Show the user a clear table:
 | Permission | Source | Status |
 |---|---|---|
 | `Bash(cd:*)` | local | NEW — not in settings.json |
-| `mcp__godot__get_uid` | local | Already tracked |
+| `mcp__godot__check_project` | local | Already tracked |
 
 Only show NEW entries (ones missing from `settings.json`).
 

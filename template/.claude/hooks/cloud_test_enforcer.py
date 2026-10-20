@@ -12,8 +12,9 @@ xvfb-run handles display + auth setup correctly (creates temp Xauthority,
 starts Xvfb with -auth, sets both DISPLAY and XAUTHORITY). A background
 Xvfb daemon without XAUTHORITY management causes auth failures.
 
-This hook blocks bare `dotnet test` commands on cloud and tells the agent
-to prefix with `xvfb-run --auto-servernum`.
+This hook rewrites executing bare `dotnet test` segments on cloud to put
+`xvfb-run --auto-servernum` directly before `dotnet test`, adding `--settings .runsettings`
+when that invocation has none. Quoted mentions and non-shell heredoc bodies stay unchanged.
 """
 
 import json
@@ -48,27 +49,34 @@ def main():
 
     command = tool_input.get("command", "")
 
-    # Check if this is a dotnet test command (not dotnet build, clean, etc.)
-    if "dotnet test" not in command:
-        print("{}")
+    from _command_text import executable_spans, command_words, executable_word
+    replacements = []
+    for at, end, segment in executable_spans(command):
+        parsed = command_words(segment)
+        if parsed is None:
+            continue
+        source_words, _ = parsed
+        head = executable_word(source_words, segment)
+        words = [word.value for word in source_words[head:]]
+        if words[:2] != ['dotnet', 'test']:
+            continue
+        settings = '' if '--settings' in words or any(w.startswith('--settings=') for w in words) else ' --settings .runsettings'
+        start = source_words[head].start
+        test_end = source_words[head + 1].end
+        replacement = ('xvfb-run --auto-servernum ' + segment[start:test_end] + settings)
+        replacements.append((at + start, at + test_end, replacement))
+    if not replacements:
+        print('{}')
         sys.exit(0)
-
-    # Already has xvfb-run — allow through
-    if "xvfb-run" in command:
-        print("{}")
-        sys.exit(0)
-
-    # Block and provide the corrected command
-    corrected = f"xvfb-run --auto-servernum {command}"
-    message = (
-        f"BLOCKED: Cloud environment requires xvfb-run for GdUnit4 tests.\n"
-        f"GdUnit4 uses .NET Named Pipes (Unix domain sockets). Godot needs "
-        f"a properly authenticated X display to start, or the pipe server "
-        f"never initializes (10+ min timeout).\n"
-        f"Rewrite as:\n  {corrected}"
-    )
-    print(message, file=sys.stderr)
-    sys.exit(2)
+    corrected = command
+    for start, end, replacement in reversed(replacements):
+        corrected = corrected[:start] + replacement + corrected[end:]
+    print(json.dumps({'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'updatedInput': dict(tool_input, command=corrected),
+        'additionalContext': '[cloud-test] Added xvfb-run and any missing .runsettings for the authenticated display (testing §Quick Start).',
+    }}))
+    sys.exit(0)
 
 
 if __name__ == "__main__":

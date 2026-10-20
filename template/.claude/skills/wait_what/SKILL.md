@@ -1,10 +1,7 @@
 ---
 name: wait_what
 description: >-
-  Load when the user signals the previous answer lost them — "wait, what?", "huh?",
-  "I don't follow", "you've lost me", or any equivalent that reports comprehension
-  failed rather than asking a new question. SKIP when the user is disputing the
-  content (that is an objection — diagnose it) or asking a genuine follow-up question.
+  Use when the user says the prior answer lost them ("wait, what?", "huh?", "I don't follow"), rather than disputing it or asking a new question.
 ---
 
 The signal names the listener's state, not your output length: comprehension failed

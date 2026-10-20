@@ -53,34 +53,25 @@ example.
 
 ## Verified sources
 
-Endpoints below were fetched live and confirmed **2026-08-12**; counts are from those responses.
-Re-verify before treating a count or a filter as current — this table is a snapshot.
 
-| Source | Endpoint | License posture | Verified |
-|---|---|---|---|
-| Poly Haven | `api.polyhaven.com/assets?t=textures` | CC0-1.0 | 200, **847** texture assets |
-| ambientCG | `ambientcg.com/api/v2/full_json` | CC0-1.0 | 200, **2,877** results; paginate via `nextPageHttp` |
-| Freesound | `freesound.org/apiv2/` (free API key) | Mixed — filter required | 200; `license` is an exact-match string |
-| OpenGameArt | `opengameart.org` | Mixed, per-asset | 200 |
-| EchoThief | `echothief.com` | CC0 impulse responses | 200 |
-| Free Music Archive | `freemusicarchive.org` | Mixed, per-track | 200 |
-| Sonniss GDC bundles | `archive.org/details/sonniss.com-gdc-game-audio-bundles` | ⚠ prose terms only — see below | 200, 82 files |
+| Source | Endpoint | License posture |
+|---|---|---|
+| Poly Haven | `api.polyhaven.com/assets?t=textures` | CC0-1.0 |
+| ambientCG | `ambientcg.com/api/v2/full_json` (follow `nextPageHttp`) | CC0-1.0 |
+| Freesound | `freesound.org/apiv2/` (free API key) | Mixed — filter required |
+| OpenGameArt | `opengameart.org` | Mixed, per-asset |
+| EchoThief | `echothief.com` | CC0 impulse responses |
+| Free Music Archive | `freemusicarchive.org` | Mixed, per-track |
+| Sonniss GDC bundles | `archive.org/details/sonniss.com-gdc-game-audio-bundles` | Prose terms only |
 
 **Freesound is mixed-license, so the filter is load-bearing:**
 `filter=license:"Creative Commons 0"`. The API's `license` field takes exactly `"Attribution"`,
 `"Attribution NonCommercial"`, or `"Creative Commons 0"` — an unfiltered search returns
-attribution-bearing sounds indistinguishable from CC0 ones at download time. The API also exposes
-`gen_ai_preference`, an uploader-set flag on generative-AI training use; it does not affect game
-use, but it is the field to read if that ever matters.
+attribution-bearing sounds indistinguishable from CC0 ones at download time.
+**Sonniss is the worked example of rule 1.** For Sonniss, record `vendor-EULA:Sonniss-GDC` with the archive URL; do not record `CC0-1.0`. `sonniss.com` blocks headless fetches; use the archive.org mirror.
 
-**Sonniss is the worked example of rule 1.** The archive item's metadata has **no `licenseurl`
-field**. Its terms exist only as prose in the description — *"royalty free and commercially usable.
-No attribution is required"*. That is a claim about a license, not a license. It is usable, but the
-ledger entry records `vendor-EULA:Sonniss-GDC` with the archive URL, never `CC0-1.0`.
+Dead ends, not to be re-investigated: ShapeNet, Poly Pizza, BlenderKit, BBC Sound Effects, AMASS.
 
-Named dead ends, so they are not re-investigated: ShapeNet, Poly Pizza, BlenderKit, BBC Sound
-Effects, AMASS. Sonniss's own `sonniss.com` links Cloudflare-block headless fetches — use the
-archive.org mirror above.
 
 Endpoint and metadata checks go through `.claude/scripts/fetch_source.sh` (CLAUDE.md §4 fetch
 order): a login wall or bot challenge returns a **200 body** that reads as content to anything that
@@ -88,14 +79,8 @@ does not inspect it, and refusing those is the one guarantee this table depends 
 
 ## Reading the license — match the instrument URL, not the prose
 
-A keyword scan of the page misreads it in both directions. Measured against three
-correctly-licensed OpenGameArt items: a pattern for `CC0 1.0` matched none of them (the page renders
-bare `CC0`), and a scan for licence words matched "Attribution" out of a *collection name*, flagging
-a CC0 asset as attribution-bearing.
-
-Match the canonical instrument URL, which is unambiguous where the prose is not:
+Verify the asset's license on its page by matching the canonical instrument URL, not listing keywords or search filters:
 `creativecommons.org/publicdomain/zero/1.0/` (CC0), `creativecommons.org/licenses/by/4.0/` (CC-BY).
-A search filter that surfaced the page is not evidence either — verify on the item itself.
 
 ## Access and formats
 
@@ -109,14 +94,11 @@ curl -H "Authorization: Token $(cat ~/.config/freesound/api_key)" \
 ```
 
 Request `fields=` explicitly — it returns every ledger field plus `tags` and `duration` in one call,
-which is why Freesound beats scraping an HTML listing. **Query terms AND together**: three or more
-words routinely returns `count: 0`. Start with two and widen the duration filter, not the wording.
+which is why Freesound beats scraping an HTML listing. Keep query terms short; widen the duration filter before adding terms.
 
 **Archives and audio formats:**
 
-- `7z.exe` is installed at `C:\Program Files\7-Zip\7z.exe` but is **not on `PATH`** — `command -v 7z`
-  reports it absent, which reads as "cannot extract" and silently drops every `.7z` candidate. Call
-  it by full path.
+- `7z.exe` is at `C:\Program Files\7-Zip\7z.exe` and is not on `PATH`; call it by full path.
 - **Godot 4 imports WAV, Ogg Vorbis, and MP3 — not FLAC.** A FLAC pack needs conversion before use,
   and that conversion is a rule-3 transform, not a free step.
 - **`AudioStreamPlayer3D` spatializes mono.** A stereo source does not pan positionally, so any

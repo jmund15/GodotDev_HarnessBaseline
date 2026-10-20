@@ -18,19 +18,15 @@ The next step depends on an external fact: engine or library behavior, a version
 
 ### 1a. Write the question list
 
-1–5 **answerable** questions, each one API, one behavior, or one version claim — `does Node.Reparent keep the global transform?`, not `research Godot signals`. Store as `QUESTIONS`. A topic without answerable questions is refused the way `/explore` 1a refuses a vague `TOPIC`: ask for the questions rather than dispatching. The list is also the stopping criterion, so a missing question is a dimension nobody will cover.
+**Bounded questions.** List every external fact the next step consumes, one API, one behavior, or one version claim each, and drop questions nothing consumes — `does Node.Reparent keep the global transform?`, not `research Godot signals`. Store as `QUESTIONS`. A topic without answerable questions is refused the way `/explore` 1a refuses a vague `TOPIC`: ask for the questions rather than dispatching. The list is also the stopping criterion, so a missing question is a dimension nobody will cover.
 
-### 1b. Read the budget band FIRST
-
-Find the most recent `[budget-posture]` line; absent one, read `<TEMP>/cc-cachestat-<session_id>.json`. Record the band. **Surplus → Shape A only**: a three-lens fan-out for a fact lookup is not worth plan quota either. Shape B unlocks at On-pace.
-
-### 1c. Pick the shape
+### 1b. Pick the shape
 
 **Shape A (default)** — the questions are settled-fact lookups against P1 sources.
 
-**Shape B (`--wide`)** — pick it only when one of these holds, and name which in the report: the question is version-contested; P1 and P3 are expected to disagree (an engine bug, "docs say X but everyone hits Y"); the answer moves an architectural decision; or Shape A returned `unclear`.
+**Shape B (`--wide`)** — pick it only when [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Mandate admission admits it, and name the fired fact in the report.
 
-### 1d. Choose the URL set yourself
+### 1c. Choose the URL set yourself
 
 Name the pages before dispatching, seeded from the P1 lists in `source_trust.md` and its stack sibling file. Orchestrator-chosen URLs are what keep this cheap — an agent that discovers its own reading list has no bound.
 
@@ -52,10 +48,12 @@ If that route is unavailable, choose another eligible route explicitly or report
 
 ```
 Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {
-  lenses: [{key, promptPath, model, effort, agentType: "general-purpose"}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
+  lenses: [{key, promptPath, model, effort, tier, agentType: "general-purpose"}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
 ```
 
-Write each resolved mandate below to its own scratchpad file and pass `promptPath`. The CONTEXT file carries `QUESTIONS`, the 1d URL set, and the version pins (engine per `.claude/reference/project_stack.md`, .NET 9) — seeds, never caps.
+Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5, except that Phase 3 step 1 rules UNCHECKED external claims.
+
+Write each resolved mandate below to its own scratchpad file and pass `promptPath`. Each lens's `tier` is the model tier its pin serves (`orchestration` §5), not the source-class tier in the table. The CONTEXT file carries `QUESTIONS`, the 1d URL set, and the version pins (engine per `.claude/reference/project_stack.md`, .NET 9) — seeds, never caps.
 
 | Lens | Source class | Tier |
 |---|---|---|
@@ -137,7 +135,7 @@ You are res-field. You establish what practitioners REPORT — issues, proposals
 
 ## Phase 3: Verify & Record
 
-1. **Audit the citations.** Run `python .claude/tools/verify_claims.py <claims.json> --manifest <manifest.tsv>` over the Phase 2 fetch manifest. VERIFIED needs nothing further. **UNVERIFIED is escalate-and-read, never auto-gap** — a composed or cross-element quote fails a substring test exactly as a fabrication does, so open that artifact yourself and settle it. NOT-APPLICABLE (context7, WebSearch, no local artifact) is out of scope, not a defect. A citation that lands on a summary of the thing rather than the thing means the run failed at its one job — re-dispatch, do not report.
+1. **Audit the citations.** Run `python .claude/tools/verify_claims.py <claims.json> --manifest <manifest.tsv>` over the Phase 2 fetch manifest. VERIFIED needs nothing further. **UNVERIFIED is escalate-and-read, never auto-gap** — a composed or cross-element quote fails a substring test exactly as a fabrication does, so open that artifact yourself and settle it. UNCHECKED (context7, WebSearch, no local artifact) has no machine verdict and is not a defect; it is never VERIFIED either (`reference/evidence_contract.md`). A citation that lands on a summary of the thing rather than the thing means the run failed at its one job — re-dispatch, do not report.
 2. **Adjudicate contradictions.** Read both sides, settle first-party, and name the losing lens. Tier breaks the tie: a P1 quote beats any number of P3 reports, and a P3 that survives contradiction by P1 is a gap, not a winner.
 3. **Check the stopping criterion.** Every question in `QUESTIONS` is P1/P2-answered or recorded as a gap. An unanswered question that is neither is the failure this command exists to prevent.
 
@@ -156,6 +154,6 @@ A research doc is **stale the moment its `expires-with` version moves** — re-r
 ## Constraints
 
 - **Full pages stay in fetched artifacts.** Read the exact spans needed to verify claims; return a bounded claims array or digest, not whole pages.
-- **Hard caps: ≤8 URLs per lens, ≤3 lenses, one round.** A follow-up round needs the user, not a self-decision. Lenses are read-only and spawn nothing, so a run cannot re-trigger itself.
+- **Pages own questions.** Give each lens only pages that own a listed question; drop a page that answers none. A second round runs only for a listed question still gapped that a named new source can close. Lenses never spawn, so a run cannot re-trigger itself.
 - **The allowlist is the guardrail.** Sources outside the P1 lists of `source_trust.md` and its stack sibling get used only when the report names why.
 - **No verdict, no gate.** `/research` reports facts and gaps. What to do about them belongs to the caller.

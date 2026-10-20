@@ -12,11 +12,17 @@ must still be BLOCKED. Without the second arm a matcher that never fires also pa
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
+
+PLAIN_TEMP = tempfile.TemporaryDirectory(prefix='pe_plain_temp_')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, "hooks"))
+HOOKS = os.path.join(ROOT, "hooks")
+HOOK = os.path.join(HOOKS, "pattern_enforcer.py")
+sys.path.insert(0, HOOKS)
 
 import pattern_enforcer as pe  # noqa: E402
 
@@ -91,6 +97,12 @@ MUST_BLOCK = [
     # A quoted flag is still a flag — the shell sees `rm -r build/`.
     'rm "-r" build/',
     "rm '-rf' build/",
+    # Scratch evidence is not recoverable merely because this session made it (S15).
+    "rm -rf .claude/scratch/ladder_audit/fanout && echo ok",
+    "P=.claude/scratch/recompact_probe; rm -rf $P/out",
+    'R="."; rm -rf "$R/.claude/scratch/commitmsg"',
+    "rm -rf .claude/scratch/fmt_test/*",
+    'Remove-Item -Recurse -Force ".claude/scratch/old_probe" -Confirm:$false',
 ]
 
 # Recovered denial #8 used to sit in MUST_BLOCK above as "correctly blocked". A4 (2026-09-14)
@@ -117,19 +129,13 @@ MUST_PASS = [
     # Quote-blanking must still exempt a quoted MENTION of a delete — unwrapping is
     # flag-tokens-only, so this stays a search string, not a command.
     'grep "rm -rf" notes.md',
-    # Resolved-target allow: temp paths, named scratch subdirectories and regenerable caches in
-    # any checkout, chained or through a variable assigned once in the same command. These are
-    # the measured denials from the 2026-09 transcript scan.
-    "cd /tmp && rm -rf gt && mkdir gt && cd gt && git init -q",
-    "cd /tmp && rm -rf junk",
-    "rm -rf /tmp/red_check",
-    "rm -rf .claude/scratch/ladder_audit/fanout && echo ok",
-    "P=.claude/scratch/recompact_probe; rm -rf $P/out",
-    'R="."; rm -rf "$R/.claude/scratch/commitmsg"',
+    # Plain temp paths and regenerable caches remain recoverable cleanup targets.
+    'cd "' + PLAIN_TEMP.name.replace('\\', '/') + '" && rm -rf gt && mkdir gt && cd gt && git init -q',
+    # The runner points TMP at a private directory inside /tmp, so /tmp itself is only a temp path off the runner.
+    'cd "' + PLAIN_TEMP.name.replace('\\', '/') + '" && rm -rf junk',
+    "rm -rf " + PLAIN_TEMP.name.replace('\\', '/') + "/red_check",
     "rm -rf .claude/worktrees/uid-header-backfill/.godot",
     "rm -rf .godot && echo reimport",
-    "rm -rf .claude/scratch/fmt_test/*",
-    'Remove-Item -Recurse -Force ".claude/scratch/old_probe" -Confirm:$false',
 ]
 
 fails = 0
@@ -158,17 +164,53 @@ for cmd in MUST_PASS:
 if not fails:
     print(f"  PASS all {len(MUST_PASS)} safe deletes allowed")
 
-# The deny hint advertises only what the resolver admits: a retired worktree goes alone in its
-# command (`_is_resolved_safe_cleanup` never admits it chained or through a variable).
+# The deny hint never advertises a shape the resolver refuses: a retired worktree goes alone in its
+# command (`_is_resolved_safe_cleanup` never admits it chained), so the hint offers no chaining and
+# points to `orchestration` reference `worktrees.md`, which states the alone-then-prune recipe.
 hint = pe._CACHE_HINT
-chained = hint.split("Alone in its command", 1)[0]
-if "Alone in its command" not in hint or ".claude/worktrees/<name>" not in hint.split("Alone in its command", 1)[1] \
-        or "retired" in chained:
+if "chained" in hint or "variable" in hint or "retired worktrees (`orchestration` reference `worktrees.md`)" not in hint:
     print("  FAIL deny hint offers a retired-worktree delete chained or through a variable")
     fails += 1
 if len(hint.encode("utf-8")) > 600:
     print(f"  FAIL deny hint is {len(hint.encode('utf-8'))} B; keep it under 600")
     fails += 1
+
+DANGEROUS_COMMANDS = [
+    ("del /s /q C:\\temp\\x", True),
+    ("rd /s /q C:\\temp\\x", True),
+    ("rmdir /s /q C:\\temp\\x", True),
+    ("format C:", False),
+    ("Remove-Item -Recurse -Force C:\\temp\\x", True),
+    ("rm -rf /important", True),
+    ("rm --recursive /important", True),
+]
+for command, has_cache_hint in DANGEROUS_COMMANDS:
+    result = subprocess.run([sys.executable, HOOK],
+                            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+                            capture_output=True, text=True, timeout=60)
+    ok = (result.returncode == 2 and not result.stdout.strip()
+          and "CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first" in result.stderr
+          and (not has_cache_hint or ("Allowed: caches, temp dirs" in result.stderr
+                                       and "Never in $(...)" not in result.stderr)))
+    if not ok:
+        print(f"  FAIL dangerous command deny cite/cache hint: {command} -> {result.stderr[:180]!r}")
+        fails += 1
+    else:
+        print(f"  PASS dangerous command deny cites go-ahead: {command}")
+
+# A `cd` into a glob lands in a directory the guard cannot resolve, so the delete after it must be blocked
+# even when its own target is an owned scratch path; the lone owned delete stays allowed.
+_SID = "12345678-1234-1234-1234-123456789abc"
+_TRANSCRIPT = os.path.join(PLAIN_TEMP.name, _SID + ".jsonl")
+for command, want_blocked in (
+        (f"rm -rf .claude/scratch/{_SID}/x", False),
+        (f"cd .claude/scratch/{_SID}/* && rm -rf .claude/logs/x", True)):
+    got = pe.check_bash_command(command, None, _TRANSCRIPT)[0]
+    if got != want_blocked:
+        print(f"  FAIL resolved-delete walker blocked={got}, want {want_blocked}: {command}")
+        fails += 1
+    else:
+        print(f"  PASS resolved-delete walker blocked={got}: {command}")
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

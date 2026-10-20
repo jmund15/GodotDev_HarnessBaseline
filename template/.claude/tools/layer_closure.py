@@ -9,14 +9,19 @@ Dependencies read per file type:
 - markdown: backticked `/command`, `skill`, `path/file.md` and `file.py` tokens, and relative
   `[text](path)` links resolved against the file's own directory, and memory slugs, bare or
   backticked, that name a file in the memory store or its archive;
-- python: imports outside a `try` that catches ImportError, string literals naming a shipped
-  `.py`/`.sh`/`.js`/`.ps1` file, and bare string literals naming a sibling module (a sub-hook chain
-  imported by name). A file importing `_optional_hooks` loads by name through it, so its names count
-  as optional;
-- shell, javascript, powershell: shipped script paths outside comments.
+- python: imports outside a `try` that catches ImportError, string literals naming a `.py`/`.sh`/
+  `.js`/`.ps1` file (in a test, only whitespace-free ones: a test's command line is fixture input), and bare
+  string literals naming a sibling module (a sub-hook chain imported by name). A file importing
+  `_optional_hooks` loads by name through it, so its names count as optional;
+- shell, javascript, powershell: script paths outside comments (`#` lines and trailing `# ...`, and
+  PowerShell `<# #>` blocks).
+
+A script name resolves to the shipped files with that basename, else the unshipped ones; a package
+marker (`__init__.py`) names no file.
 
 A bare word is a citation only when it names a shipped or local skill, command or memory. A path-shaped
-token under a `.claude/` directory that nothing ships and no file on disk holds is `missing`.
+token under a `.claude/` directory that nothing ships and no file on disk holds is `missing`. A cite
+that resolves only to a local memory file is evidence a consumer may lack, never a dependency: no finding.
 Runtime state the harness writes (GENERATED) is exempt.
 
     python3 .claude/tools/layer_closure.py --lock .claude/baseline.lock.json [--root .]
@@ -41,6 +46,7 @@ LAYERS = ("pure", "coding", "godot")
 ORDER = {name: rank for rank, name in enumerate(LAYERS)}
 PREFIXES = tuple(LAYERS[:n] for n in range(1, len(LAYERS) + 1))
 SHIPPED_STATUSES = {"tracked", "forked", "keep-tracked"}
+MEMORY_DIR = ".claude/auto-memory/"
 CLAUDE_DIRS = {"agents", "auto-memory", "commands", "guards", "hooks", "reference", "rules", "schemas",
                "scripts", "skills", "templates", "tests", "tools", "workflows"}
 SCRIPT_SUFFIXES = (".py", ".sh", ".js", ".ps1")
@@ -49,7 +55,7 @@ DOC_SUFFIXES = (".md", ".json") + SCRIPT_SUFFIXES
 # runs the writer, so citing them is not a dangling reference.
 GENERATED = (
     "baseline.lock.json", "settings.json", "settings.local.json", "worklog-pending.md",
-    "pending_harness_edits.md", "orchestration_verdicts.json", "orchestration_candidates.json",
+    "pending_harness_edits.md", "orchestration_verdicts.json", "orchestration_candidates.json", "eval_history.json",
     "self_evaluate_archive.json", "logs/*", "scratch/*", ".cache/*", "cache/*", "worktrees/*",
     "sessions/*", "state/*", "generated/*", "reference/godot_class_index.md",
 )
@@ -87,10 +93,23 @@ def consumer_layers(lock: dict, manifest: dict | None) -> dict[str, str]:
     return out
 
 
+def _cache_clone(root: Path) -> Path:
+    """The sync engine's cache clone for `root`. A linked worktree has none of its own (the cache is
+    gitignored), so it reads its main checkout's: the read is pinned by sha, so either clone serves the
+    same bytes."""
+    import subprocess
+    rel = Path(".claude") / ".cache" / "baseline-repo"
+    if (Path(root) / rel).is_dir():
+        return Path(root) / rel
+    common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True, encoding="utf-8")
+    return Path(common.stdout.strip()).parent / rel if common.returncode == 0 else Path(root) / rel
+
+
 def pinned_manifest(root: Path, lock: dict) -> dict | None:
     """The manifest at the lock's pinned baseline commit, read from the sync engine's cache clone."""
     import subprocess
-    clone = Path(root) / ".claude" / ".cache" / "baseline-repo"
+    clone = _cache_clone(root)
     sha = lock.get("synced_commit")
     if not sha or not clone.is_dir():
         return None
@@ -167,6 +186,8 @@ def _judge(tree: Tree, source: str, candidates, display: str, *, path_shaped: bo
             return Finding(source, "needs-" + LAYERS[best], target)
         return None
     if exists:
+        if all(c.startswith(MEMORY_DIR) for c in candidates if tree.on_disk(c)):
+            return None
         return Finding(source, "local-only", display)
     if path_shaped:
         return Finding(source, "missing", display)
@@ -269,7 +290,8 @@ def _catches_import_error(handler: ast.ExceptHandler) -> bool:
 
 
 def _python_deps(text: str):
-    """(module names imported unguarded, string literals outside docstrings, optional names)."""
+    """(module names imported unguarded, string literals outside docstrings, optional names, whether the
+    file imports OPTIONAL_LOADER at all: a guarded loader import still loads its chain by name)."""
     tree = ast.parse(text)
     guarded: set[int] = set()
     for node in ast.walk(tree):
@@ -284,7 +306,10 @@ def _python_deps(text: str):
             if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
                 docstrings.add(id(body[0].value))
     imports, strings, optional = set(), [], set()
+    loader = False
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(alias.name == OPTIONAL_LOADER for alias in node.names):
+            loader = True
         if isinstance(node, ast.Import) and id(node) not in guarded:
             imports.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level and id(node) not in guarded:
@@ -295,25 +320,26 @@ def _python_deps(text: str):
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings \
                 and id(node) not in guarded:
             strings.append(node.value)
-    return imports, strings, optional
+    return imports, strings, optional, loader or OPTIONAL_LOADER in imports
 
 
 SCRIPT_REF = re.compile(r"([\w./${}-]*?)([A-Za-z_][\w-]*(?:\.py|\.sh|\.js|\.ps1))\b")
+DUNDER = re.compile(r"__\w+__\.py")
 
 
 def _script_refs(tree: Tree, source: str, text: str, skip: set[str]):
     for match in SCRIPT_REF.finditer(text):
         base = match.group(2)
-        if base in skip or base == posixpath.basename(source):
+        if base in skip or base == posixpath.basename(source) or DUNDER.fullmatch(base):
             continue
-        cands = tree.by_base.get(base)
+        cands = tree.by_base.get(base) or tree.local_with_suffix("/" + base)
         if cands:
             yield base, cands
 
 
 def _scan_python(tree: Tree, source: str, text: str):
     try:
-        imports, strings, optional = _python_deps(text)
+        imports, strings, optional, loader = _python_deps(text)
     except SyntaxError:
         return
     seen = set()
@@ -324,7 +350,7 @@ def _scan_python(tree: Tree, source: str, text: str):
             found = _judge(tree, source, cands, name + ".py", path_shaped=False)
             if found:
                 yield found
-    if OPTIONAL_LOADER not in imports:
+    if not loader:
         source_dir = posixpath.dirname(source)
         for value in strings:
             sibling = f"{source_dir}/{value}.py"
@@ -334,7 +360,9 @@ def _scan_python(tree: Tree, source: str, text: str):
                 if found:
                     yield found
     skip = {n + ".py" for n in optional} | {n + ".py" for n in seen}
-    for base, cands in _script_refs(tree, source, "\n".join(strings), skip):
+    fixtures = source.startswith(".claude/tests/")
+    paths = "\n".join(value for value in strings if not (fixtures and re.search(r"\s", value)))
+    for base, cands in _script_refs(tree, source, paths, skip):
         if base not in seen:
             seen.add(base)
             found = _judge(tree, source, cands, base, path_shaped=False)
@@ -344,7 +372,9 @@ def _scan_python(tree: Tree, source: str, text: str):
 
 def _strip_comments(text: str, suffix: str) -> str:
     if suffix in (".sh", ".ps1"):
-        return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        if suffix == ".ps1":
+            text = re.sub(r"<#.*?#>", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+        return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     return "\n".join(re.sub(r"(^|\s)//.*$", "", line) for line in text.splitlines())
 
@@ -380,6 +410,11 @@ def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> l
     return findings
 
 
+def lock_findings(root: Path, lock: dict, manifest: dict | None) -> list[Finding]:
+    """Findings for a consumer's tracked lock rows over what its consumers receive: `consumer_layers(lock, manifest)`."""
+    return scan(Path(root), consumer_layers(lock, manifest), lock_checked(lock))
+
+
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
@@ -401,7 +436,7 @@ def main(argv=None) -> int:
             print("layer_closure: the pinned baseline manifest is unreadable; run "
                   "`baseline_sync.py check` to refresh the cache clone", file=sys.stderr)
             return 2
-        findings = scan(Path(args.root), consumer_layers(data, manifest), lock_checked(data))
+        findings = lock_findings(Path(args.root), data, manifest)
     else:
         findings = scan(Path(args.root), manifest_layers(data))
     if args.json:

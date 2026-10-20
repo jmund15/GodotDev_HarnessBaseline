@@ -34,15 +34,18 @@ import _session_transport  # noqa: E402
 # Which transport to verify. A hardcoded `deepseek` default was permissive on the exact axis
 # _session_transport declares fail-closed: an unlabelled call from a codex session reported
 # DeepSeek's status as if it were the session's, with nothing in the output to tell them apart.
-# THIS session's transport is the default; `--transport` overrides. Never a fixed vendor.
-TRANSPORT = _session_transport.resolve()[0]
+# THIS session's plan is the default; `--transport` overrides. Never a fixed vendor. A plan
+# (`planOf`) owns its status and launcher; its route owns the model rows it pays for.
+TRANSPORT = _session_transport.session_plan()
+ROUTE = TRANSPORT
 SIDECAR = ""
 
 
 def set_transport(name):
     """Repoint the module at `name`. Called from main() once argparse has read the flag."""
-    global TRANSPORT, SIDECAR
+    global TRANSPORT, ROUTE, SIDECAR
     TRANSPORT = name
+    ROUTE = model_registry.route_of(name) if name in model_registry.transports() else name
     cfg = model_registry.transport_meta(name) or {}
     SIDECAR = str((ROOT.parent / cfg["launcher"]).as_posix()) if cfg.get("launcher") else ""
 
@@ -87,7 +90,12 @@ def surfaces(state):
     import session_model_rails
     importlib.reload(budget_posture)
     importlib.reload(session_model_rails)
-    out["posture_advertises_sidecar"] = budget_posture.sidecar_available()
+    # The posture's roster-wide advertisement is the plan-quota rows it would print, so the question
+    # is asked of the function the line is composed from. `sidecar_available()` -- deleted by
+    # e614306d8, whose replacement `currency_clause` was itself retired by 0674cf31c when the line
+    # stopped naming a pick -- was the last one-line query of the roster; the row builder below is
+    # what is left that answers "does the line name an off-quota currency?".
+    out["posture_advertises_off_quota"] = bool(budget_posture.other_quota_bits(TRANSPORT))
     return out
 
 
@@ -101,7 +109,7 @@ def assert_state(state):
               f"exit {s['sidecar_check_rc']}")
         check(f"[{state}] sidecar --check says UNAVAILABLE",
               "UNAVAILABLE" in s["sidecar_check_txt"])
-        for alias in sorted(m["alias"] for m in model_registry.models_for(TRANSPORT)):
+        for alias in sorted(m["alias"] for m in model_registry.models_for(ROUTE)):
             rc, _txt = sh(["-m", alias, "probe"])
             check(f"[{state}] dispatch -m {alias} exits 7", rc == 7, f"exit {rc}")
         # The advisory surfaces STOP ADVERTISING it rather than explaining it. An option that cannot
@@ -112,16 +120,16 @@ def assert_state(state):
         # to assert the clause disappears whenever THIS transport goes out, which was indistinguishable
         # from the roster-wide question while deepseek was the only row and became a false failure the
         # moment a second transport landed.
-        others = [m for m in model_registry.available_models() if m["transport"] != TRANSPORT]
+        others = [m for m in model_registry.available_models() if m["transport"] != ROUTE]
         check(f"[{state}] posture clause tracks the ROSTER, not this transport",
-              s["posture_advertises_sidecar"] == bool(others),
-              f"advertises={s['posture_advertises_sidecar']}, other available={[m['id'] for m in others]}")
+              s["posture_advertises_off_quota"] == bool(others),
+              f"advertises={s['posture_advertises_off_quota']}, other available={[m['id'] for m in others]}")
     else:
         check(f"[{state}] sidecar --check exits 0", s["sidecar_check_rc"] == 0,
               f"exit {s['sidecar_check_rc']}")
         check(f"[{state}] sidecar --check says OK", "OK (" in s["sidecar_check_txt"])
-        check(f"[{state}] posture line advertises the sidecar again",
-              s["posture_advertises_sidecar"])
+        check(f"[{state}] posture line advertises the off-quota roster again",
+              s["posture_advertises_off_quota"])
 
 
 def assert_no_prescribed_substitute():
@@ -136,7 +144,7 @@ def assert_no_prescribed_substitute():
     blob = json.dumps(reg)
     for banned in ("routeInstead", "substituteRule", "suspendedRouteTo"):
         check(f"registry carries no '{banned}'", banned not in blob)
-    _aliases = sorted(m["alias"] for m in model_registry.models_for(TRANSPORT))
+    _aliases = sorted(m["alias"] for m in model_registry.models_for(ROUTE))
     rc, txt = sh(["-m", _aliases[0], "probe"]) if _aliases else (0, "")
     for banned in ("sonnet", "opus", "haiku"):
         check(f"refusal does not prescribe '{banned}'", banned not in txt.lower(),
@@ -155,16 +163,22 @@ def transport_model_ids(only_selectable=False):
     so "every registered id is selectable" is the wrong assertion for the available branch --
     it fails for the correct reason and reads as a surface disagreement.
     """
-    ids = {m["id"] for m in model_registry.models_for(TRANSPORT)}
+    ids = {m["id"] for m in model_registry.models_for(ROUTE)}
     if only_selectable:
         ids &= {m["id"] for m in model_registry.available_models()}
     return ids
 
 
 def assert_roster(state):
-    """The mechanism itself: an excluded model is ABSENT from the selectable set."""
+    """The mechanism itself: an excluded model is ABSENT from the selectable set. A plan's status
+    gates the plan, not its route's rows: an unavailable plan is absent from plans_of(route)."""
     import importlib
     importlib.reload(model_registry)
+    if ROUTE != TRANSPORT:
+        live = TRANSPORT in model_registry.plans_of(ROUTE)
+        check(f"[{state}] plan {TRANSPORT} {'absent from' if state == 'unavailable' else 'in'} "
+              f"plans_of({ROUTE})", live == (state != "unavailable"), f"plans_of: {model_registry.plans_of(ROUTE)}")
+        return
     ids = {m["id"] for m in model_registry.available_models()}
     # unavailable: NO row of this transport may be selectable, excluded ones included.
     # available:   every row not INDIVIDUALLY excluded must be selectable.
@@ -181,7 +195,7 @@ def assert_roster(state):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--transport", default=None,
-                    help="transport to verify (default: this session's, per hooks/_session_transport.py)")
+                    help="transport or plan to verify (default: this session's plan, per hooks/_session_transport.py)")
     ap.add_argument("--both", action="store_true",
                     help="flip through both states and restore (mutates the registry)")
     args = ap.parse_args()
@@ -203,7 +217,7 @@ def main():
         ap.error("--both writes registry state; name the target explicitly with --transport "
                  "rather than inheriting this session's (%s)." % TRANSPORT)
 
-    original = REGISTRY.read_text(encoding="utf-8")
+    original = REGISTRY.read_bytes()
     current = model_registry.transport_status(TRANSPORT)["state"]
     try:
         if current == "unavailable":
@@ -220,9 +234,9 @@ def main():
                 TRANSPORT, current, reason="verify_transport_status --both: restoring")
             assert_state(current)
     finally:
-        REGISTRY.write_text(original, encoding="utf-8")
-        check("registry restored byte-for-byte",
-              REGISTRY.read_text(encoding="utf-8") == original)
+        if args.both:
+            REGISTRY.write_bytes(original)
+        check("registry restored byte-for-byte", REGISTRY.read_bytes() == original)
 
     width = max(len(n) for n, _o, _d in results) + 2
     ok = sum(1 for _n, o, _d in results if o)

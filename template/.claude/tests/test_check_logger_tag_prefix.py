@@ -32,7 +32,7 @@ def load_hook_module():
 def written(content, path="Scripts/Probe.cs", tool="Write"):
     return {"hook_event_name": "PostToolUse", "tool_name": tool, "session_id": "probe0001",
             "tool_input": {"file_path": path, "content": content},
-            "tool_response": {"filePath": path}}
+            "tool_response": {"filePath": path, "type": "create"}}
 
 
 def run_standalone(payload, env):
@@ -130,5 +130,30 @@ def main():
     return 1 if failed else 0
 
 
+def test_write_reports_only_net_new_lines():
+    module = load_hook_module()
+    before = 'JmoLogger.Info(this, "old plain message");\n'
+    event = written(before + 'var unrelated = 1;\n')
+    event['tool_response']['originalFile'] = before
+    assert module.process(event) is None
+    event['tool_input']['content'] += 'JmoLogger.Debug(this, "new plain message");\n'
+    result = module.process(event)
+    assert result and 'new plain message' in result['context'] and 'old plain message' not in result['context']
+
+
+def test_edit_retained_context_is_not_a_new_call():
+    module = load_hook_module()
+    before = 'JmoLogger.Info(this, "old plain message");\nvar unrelated = 1;'
+    event = {'tool_name': 'Edit', 'tool_input': {'file_path': 'Scripts/Probe.cs',
+             'old_string': before, 'new_string': before.replace('= 1', '= 2')}}
+    assert module.process(event) is None
+    event['tool_input']['new_string'] += '\nJmoLogger.Debug(this, "new plain message");'
+    result = module.process(event)
+    assert result and 'new plain message' in result['context'] and 'old plain message' not in result['context']
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = main()
+    test_write_reports_only_net_new_lines()
+    test_edit_retained_context_is_not_a_new_call()
+    sys.exit(rc)

@@ -5,13 +5,14 @@ Hook: SessionStart - Worktree setup + development context loader
 
 On every session start:
 1. Detects if running in a git worktree or cloud environment
-2. On cloud: runs cloud-install.sh if dependencies are missing
+2. On cloud: runs cloud-setup.sh if the toolchain is missing, and fills the Godot docs cache
 3. Initializes empty submodules; reports and preserves existing divergent checkouts
 4. Generates .runsettings from template if missing (worktree/cloud)
 5. Regenerates .godot import cache if missing (headless)
 6. Runs dotnet build to verify compilation health (startup/clear only; resume/compact report the stored verify)
 7. Injects git context (branch, commits, submodule status)
-8. On cloud: persists env vars via CLAUDE_ENV_FILE
+8. On cloud: persists env vars via CLAUDE_ENV_FILE and injects the cloud contract + memory index
+9. On a local machine: reports this checkout's setup stamp (workstation OK / STALE / UNAUDITED)
 """
 
 import json
@@ -20,9 +21,13 @@ import platform
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _bounded_run import run_bounded
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -48,11 +53,11 @@ def persist_cloud_env(godot_bin: str):
         return
     lines = []
     if godot_bin:
-        lines.append(f"GODOT_BIN={godot_bin}")
-    dotnet_root = os.environ.get("DOTNET_ROOT", "")
+        lines.append(f"export GODOT_BIN={godot_bin}")
+    dotnet_root = os.environ.get("DOTNET_ROOT", "") or adopt_cloud_dotnet()
     if dotnet_root:
-        lines.append(f"DOTNET_ROOT={dotnet_root}")
-        lines.append(f"PATH={dotnet_root}:$PATH")
+        lines.append(f"export DOTNET_ROOT={dotnet_root}")
+        lines.append(f"export PATH={dotnet_root}:$PATH")
     if lines:
         with open(env_file, "a") as f:
             f.write("\n".join(lines) + "\n")
@@ -61,6 +66,20 @@ def persist_cloud_env(godot_bin: str):
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+
+# cloud-setup.sh installs under /opt as root, else under ~/.local.
+CLOUD_DOTNET_ROOTS = (Path("/opt/dotnet"), Path.home() / ".local/dotnet", Path.home() / ".dotnet")
+
+
+def adopt_cloud_dotnet() -> str:
+    """Point DOTNET_ROOT and the front of PATH at the first installed CLOUD_DOTNET_ROOTS entry."""
+    for d in CLOUD_DOTNET_ROOTS:
+        if (d / "dotnet").exists():
+            os.environ["DOTNET_ROOT"] = str(d)
+            if str(d) not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+            return str(d)
+    return ""
 
 # Update on every Godot engine upgrade — both platform fallback paths use this.
 GODOT_VERSION = "4.7.1-stable"
@@ -73,7 +92,9 @@ def get_godot_bin() -> str:
         return env
     # Platform-specific fallback locations
     if platform.system() == "Linux":
-        fallback = Path.home() / f".local/godot/Godot_v{GODOT_VERSION}_mono_linux_x86_64/Godot_v{GODOT_VERSION}_mono_linux.x86_64"
+        leaf = f"Godot_v{GODOT_VERSION}_mono_linux_x86_64/Godot_v{GODOT_VERSION}_mono_linux.x86_64"
+        fallback = next((p for p in (Path("/opt/godot") / leaf, Path.home() / ".local/godot" / leaf) if p.exists()),
+                        Path.home() / ".local/godot" / leaf)
     else:
         fallback = Path.home() / f"Game_Dev/Godot_Installs/Godot_v{GODOT_VERSION}_mono_win64/Godot_v{GODOT_VERSION}_mono_win64.exe"
     if fallback.exists():
@@ -121,12 +142,10 @@ def is_worktree() -> bool:
 # ---------------------------------------------------------------------------
 
 def submodule_status(root: Path) -> list[tuple[str, str, str]] | None:
-    """[(prefix, sha, path)]; None means the probe failed, [] means no submodules."""
+    """[(prefix, sha, path)]; None means the probe failed or ran past its deadline, [] means no
+    submodules."""
     try:
-        result = subprocess.run(
-            ["git", "submodule", "status", "--recursive"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=str(root)
-        )
+        result = run_bounded(["git", "--no-optional-locks", "submodule", "status", "--recursive"], 15, cwd=str(root))
         if result.returncode != 0:
             return None
         entries = []
@@ -146,7 +165,7 @@ def _submodule_is_dirty(root: Path, sub_path: str) -> bool | None:
     """Dirty state, or None when the working tree cannot be inspected."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(root / sub_path), "status", "--porcelain"],
+            ["git", "--no-optional-locks", "-C", str(root / sub_path), "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
         )
         return bool(result.stdout.strip()) if result.returncode == 0 else None
@@ -154,13 +173,35 @@ def _submodule_is_dirty(root: Path, sub_path: str) -> bool | None:
         return None
 
 
+def _advance_behind_pin(root: Path, sub_path: str, sha: str) -> bool:
+    """Move a clean checkout that is a strict ancestor of the recorded pin onto the pin: it holds no
+    independent work (`rules/jmodot_submodule.md` 7). A branch fast-forwards; a detached HEAD detaches."""
+    def git(cwd: Path, *args: str):
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+    try:
+        pin = git(root, "rev-parse", "--verify", "-q", f":{sub_path}").stdout.strip()
+        sub = root / sub_path
+        if not pin or _submodule_is_dirty(root, sub_path) is not False:
+            return False
+        if git(sub, "merge-base", "--is-ancestor", sha, pin).returncode != 0:
+            return False
+        on_branch = git(sub, "symbolic-ref", "-q", "HEAD").returncode == 0
+        move = git(sub, "merge", "--ff-only", pin) if on_branch else git(sub, "checkout", "--detach", pin)
+        return move.returncode == 0
+    except Exception:
+        return False
+
+
 def setup_submodule(root: Path) -> str:
-    """Initialize empty submodules; preserve existing checkouts, including clean divergence."""
+    """Initialize empty submodules and advance clean ones that sit behind their pin; preserve every
+    other existing checkout, including dirty, ahead or diverged ones."""
     entries = submodule_status(root)
     if entries is None:
         return "UNKNOWN (submodule status failed; no automatic changes)"
 
     actionable = []
+    advanced = []
     blocked = []
     for prefix, sha, path in entries:
         if prefix == " ":
@@ -175,35 +216,41 @@ def setup_submodule(root: Path) -> str:
             except OSError:
                 blocked.append(f"{path}: cannot inspect directory; preserved")
         elif prefix == "+":
-            blocked.append(f"{path}: checkout {sha[:8]} differs from recorded pointer; preserved")
+            if _advance_behind_pin(root, path, sha):
+                advanced.append(path)
+            else:
+                blocked.append(f"{path}: checkout {sha[:8]} differs from recorded pointer; preserved")
         else:
             blocked.append(f"{path}: conflict or unknown state; preserved")
 
     preserved = "; ".join(blocked)
-    if not actionable:
+    if not actionable and not advanced:
         return "BROKEN (not auto-fixed): " + preserved if blocked else "OK"
 
-    try:
-        result = subprocess.run(
-            ["git", "submodule", "update", "--init", "--recursive", "--", *actionable],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, cwd=str(root)
-        )
-        if result.returncode != 0:
-            return f"FAILED: {result.stderr.strip()[:120]}"
-    except subprocess.TimeoutExpired:
-        return "FAILED: timeout"
-    except Exception as exc:
-        return f"FAILED: {exc}"
+    if actionable:
+        try:
+            result = subprocess.run(
+                ["git", "submodule", "update", "--init", "--recursive", "--", *actionable],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, cwd=str(root)
+            )
+            if result.returncode != 0:
+                return f"FAILED: {result.stderr.strip()[:120]}"
+        except subprocess.TimeoutExpired:
+            return "FAILED: timeout"
+        except Exception as exc:
+            return f"FAILED: {exc}"
 
     after = submodule_status(root)
     if after is None:
-        return "UNKNOWN (initialization returned success; follow-up status failed)"
-    if not set(actionable).issubset({path for prefix, _, path in after if prefix == " "}):
-        return "BROKEN (initialization did not establish the recorded checkout)" + ("; " + preserved if blocked else "")
-    initialized = "initialized " + ", ".join(actionable)
+        return "UNKNOWN (update returned success; follow-up status failed)"
+    if not set(actionable + advanced).issubset({path for prefix, _, path in after if prefix == " "}):
+        return "BROKEN (update did not establish the recorded checkout)" + ("; " + preserved if blocked else "")
+    done = ", ".join(part for part in (
+        "initialized " + ", ".join(actionable) if actionable else "",
+        "advanced " + ", ".join(advanced) if advanced else "") if part)
     if blocked or any(prefix != " " for prefix, _, _ in after):
-        return "BROKEN (" + initialized + "); " + (preserved or "other submodules are not at the recorded checkout")
-    return "FIXED (" + initialized + ")"
+        return "BROKEN (" + done + "); " + (preserved or "other submodules are not at the recorded checkout")
+    return "FIXED (" + done + ")"
 
 
 def setup_runsettings(root: Path) -> str:
@@ -265,16 +312,27 @@ def resolve_bash() -> str | None:
 
 
 def sidecar_launchers(registry, seat: str):
-    """Launchers worth probing from this seat."""
-    available = {m.get("transport") for m in registry.available_models()}
+    """One available model alias per plan other than the session's `seat` plan, even when launchers
+    share a script. A plan (`planOf`) probes one of its route's rows through its own launcher; a
+    plan whose own status is unavailable is not listed."""
+    models = registry.available_models()
+    route_of = getattr(registry, "route_of", lambda name: name)
     launchers = []
     for transport in registry.transports():
-        if transport == seat or transport not in available:
+        if transport == seat:
             continue
         config = registry.transport_meta(transport) or {}
+        if (config.get("status") or {}).get("state") == "unavailable":
+            continue
+        route = route_of(transport)
+        rows = [m for m in models if m.get("transport") == route and m.get("alias")]
+        if not rows:
+            continue
         launcher = config.get("launcher")
         if launcher:
-            launchers.append((transport, os.path.basename(launcher)))
+            rows.sort(key=lambda m: (m.get("lifecycle") != "current", not bool(m.get("roles")),
+                                     m.get("order", 9999)))
+            launchers.append((transport, os.path.basename(launcher), rows[0]["alias"]))
     return launchers
 
 
@@ -283,33 +341,92 @@ def roster_health(root: Path) -> str:
 
     A roster in a wait loop and one killed by a reboot leave the same silent log; the pid file separates
     them (2026-09-11: two rosters died at a reboot and nothing said so for five days). Discovery failure
-    stays UNKNOWN -- an absent BenchmarkArms tree is not a clean one."""
+    stays UNKNOWN -- an absent BenchmarkArms tree is not a clean one. The arms root comes from the suite's roots
+    table (core/roots.py), so its BENCH_ROOTS override reaches this banner too."""
     try:
-        sys.path.insert(0, os.path.join(root, ".claude", "scripts", "benchmark_campaign", "scoring"))
+        bench = os.path.join(root, ".claude", "scripts", "benchmark_campaign")
+        sys.path[:0] = [bench, os.path.join(bench, "scoring")]
+        from core import roots
         import bench_lib
-        _arms, logs, _vault, _scripts, _ = bench_lib.resolve_tree(
-            os.path.join(root, ".claude", "scripts", "benchmark_campaign", "lib.sh"))
+        logs = roots.logs_dir()
         if not os.path.isdir(logs):
             return "UNKNOWN (no logs dir at %s)" % logs
         return bench_lib.roster_summary(logs)
     except Exception as error:
-        return f"UNKNOWN ({type(error).__name__})"
+        return f"UNKNOWN ({type(error).__name__}: {error})"
+
+
+def free_catalog_line(root: Path, source: str) -> str:
+    """`free catalog: +<id> -<id>` when the live opencode catalog differs from the free pool's registry rows
+    (free_pool.catalog_line), else "". The live read takes seconds, so only an owner's fresh session (startup or
+    /clear) pays it: a delegate, a resume and a compaction print nothing. A failed read prints its own line; this
+    never raises."""
+    if source not in ("startup", "clear") or _sidecar_delegate():
+        return ""
+    try:
+        sys.path.insert(0, str(root / ".claude" / "tools"))
+        import free_pool
+        return free_pool.catalog_line()
+    except Exception as err:
+        return f"free catalog: check failed ({err})"
+
+
+def _sidecar_delegate() -> bool:
+    """A sidecar child (CLAUDE_CODE_SIDECAR, set by its launcher) executes a brief; owner-facing banners skip it."""
+    return bool(os.environ.get("CLAUDE_CODE_SIDECAR"))
+
+
+def ladder_banner(root: Path) -> str:
+    """One line when a board task has cells the model ladder was not swept for, or a ladder row's model version moved since its clauses were audited; empty when current or in a delegate."""
+    if _sidecar_delegate():
+        return ""
+    try:
+        bench = os.path.join(root, ".claude", "scripts", "benchmark_campaign")
+        if not os.path.isfile(os.path.join(bench, "scoring", "ladder_lag.py")):
+            return ""  # a project without the battery has no board to lag
+        sys.path[:0] = [bench, os.path.join(bench, "scoring")]
+        import ladder_lag
+        return " | ".join(filter(None, (ladder_lag.banner(), ladder_lag.audit_banner())))
+    except Exception as error:
+        return f"ladder: UNKNOWN ({type(error).__name__}: {error})"
+
+
+def skill_listing_banner(root: Path, input_data: dict) -> str:
+    """One line naming skill-listing entries no file of ours authors and no ruling keeps; empty when none or in a delegate."""
+    transcript = input_data.get("transcript_path")
+    if not transcript or _sidecar_delegate():
+        return ""
+    try:
+        sys.path.insert(0, os.path.join(root, ".claude", "tools"))
+        import skill_listing_review
+        return skill_listing_review.banner(Path(transcript).parent, Path(root) / ".claude")
+    except Exception as error:
+        return f"skill-listing: UNKNOWN ({type(error).__name__}: {error})"
 
 
 def sidecar_health(root: Path) -> dict[str, str]:
-    """Only the current registry selects launchers; discovery failure stays unknown."""
+    """Only the current registry selects launchers; discovery failure stays unknown. The launchers are
+    checked at once, so the whole block costs one check's deadline, not one per launcher."""
     try:
         sys.path.insert(0, os.path.join(root, ".claude", "tools"))
         import model_registry as registry
         import _session_transport as transport
-        launchers = sidecar_launchers(registry, transport.resolve()[0])
+        launchers = sidecar_launchers(registry, transport.session_plan())
     except Exception as error:
         return {"sidecar_registry": f"UNKNOWN ({type(error).__name__})"}
-    return {"sidecar-" + name: verify_sidecar(root, launcher) for name, launcher in launchers}
+    if not launchers:
+        return {}
+    with ThreadPoolExecutor(max_workers=len(launchers)) as pool:
+        results = list(pool.map(lambda item: verify_sidecar(root, item[1], item[2]), launchers))
+    return {"sidecar-" + name: result for (name, _launcher, _alias), result in zip(launchers, results)}
 
 
-def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
-    """Report whether a sidecar launcher can dispatch on this workstation.
+# Matches the dispatch preflight's deadline; live capacity probes inside a check cap at 35 s.
+CHECK_SECONDS = 45
+
+
+def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh", alias: str | None = None) -> str:
+    """Probe one named model's availability; do not infer every row from a launcher check.
 
     Delegates to `<launcher>.sh --check` rather than reimplementing the
     preconditions, so availability has ONE definition and the hook cannot drift
@@ -329,27 +446,27 @@ def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh") -> str:
         # Absolute POSIX form: bash strips Windows backslashes, which would make
         # the probe report UNAVAILABLE on every Windows session — a false negative
         # that silently routes all delegation back to Anthropic quota.
-        proc = subprocess.run(
-            [bash, script.resolve().as_posix(), "--check"],
-            # 45 s matches dispatch preflight; normalized live capacity probes cap at 35 s.
-            capture_output=True, text=True, timeout=45, cwd=str(root),
-            env=dict(os.environ, PROVIDER_CAPACITY_ADVISORY="1"),
-        )
+        command = [bash, script.resolve().as_posix(), "--check"]
+        if alias:
+            command.extend(("-m", alias))
+        proc = run_bounded(command, CHECK_SECONDS, cwd=str(root))
     except FileNotFoundError:
         return "UNAVAILABLE (bash not on PATH)"
-    except subprocess.TimeoutExpired:
-        return "UNKNOWN (--check timed out)"
     except OSError as exc:
         return f"UNKNOWN (--check failed to launch: {exc})"
+    if proc.returncode is None:
+        return "UNKNOWN (--check timed out)"
     emitted = (proc.stdout or "").strip() or (proc.stderr or "").strip()
     if not emitted:
         return f"UNKNOWN (--check exit {proc.returncode}, no output)"
     lines = [line.strip() for line in emitted.splitlines() if line.strip()]
     if proc.returncode == 0:
-        return lines[-1]
-    # A refusal's last line is its override hint; the reason is the REFUSING line above it.
-    reason = next((line for line in lines if "REFUSING" in line), None)
-    return lines[-1] if reason is None or reason == lines[-1] else f"{reason} {lines[-1]}"
+        result = lines[-1]
+    else:
+        # A refusal's last line is its override hint; the reason is the REFUSING line above it.
+        reason = next((line for line in lines if "REFUSING" in line), None)
+        result = lines[-1] if reason is None or reason == lines[-1] else f"{reason} {lines[-1]}"
+    return f"{alias}: {result}" if alias else result
 
 
 def verify_lsp_plugin() -> str:
@@ -461,15 +578,19 @@ def setup_import_cache(root: Path) -> str:
         godot_bin = get_godot_bin()
         if not godot_bin:
             return "SKIPPED (godot binary not found)"
+        from runpy import run_path
+        resolve = run_path(str(Path(__file__).resolve().parents[1] / 'scripts/engine_userdata.py'))['isolation']
+        values = resolve(root)
         result = subprocess.run(
             [godot_bin, "--headless", "--path", str(root), "--import", "--quit"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root),
+            env=dict(os.environ, **values), stdin=subprocess.DEVNULL
         )
         if result.returncode != 0:
-            return f"FAILED: import exit {result.returncode} (partial resources are not success)"
+            return f"FAILED: import exit {result.returncode} (partial resources are not success; USERDIR={values['USERDIR']})"
         if imported_dir.exists() and any(imported_dir.iterdir()):
-            return "FIXED (regenerated)"
-        return "FAILED: import returned success but produced no imported resources"
+            return f"FIXED (regenerated; USERDIR={values['USERDIR']})"
+        return f"FAILED: import returned success but produced no imported resources (USERDIR={values['USERDIR']})"
     except subprocess.TimeoutExpired:
         return "FAILED: timeout (>120s)"
     except Exception as error:
@@ -646,7 +767,7 @@ def find_stray_search_indexes(root: Path) -> list[Path]:
     `.search-index` paths, so its size follows the strays rather than every ignored file."""
     try:
         result = subprocess.run(
-            ["git", "status", "--ignored", "--untracked-files=all", "--porcelain", "--", _SWEEP_PATHSPEC],
+            ["git", "--no-optional-locks", "status", "--ignored", "--untracked-files=all", "--porcelain", "--", _SWEEP_PATHSPEC],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_SWEEP_GIT_STATUS_TIMEOUT, cwd=str(root)
         )
@@ -737,13 +858,33 @@ def get_git_branch() -> str:
 def get_uncommitted_count() -> int | None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "--no-optional-locks", "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
         )
         if result.returncode != 0:
             return None
         lines = [l for l in result.stdout.strip().split("\n") if l]
         return len(lines)
+    except Exception:
+        return None
+
+
+def get_upstream_drift() -> tuple[int, int, float] | None:
+    """(ahead, behind, hours since the oldest unpushed commit) against the branch's upstream as last fetched, or None
+    when there is no upstream or git fails."""
+    try:
+        counts = subprocess.run(
+            ["git", "--no-optional-locks", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        if counts.returncode != 0:
+            return None
+        ahead, behind = (int(x) for x in counts.stdout.split())
+        oldest = 0.0
+        if ahead:
+            times = subprocess.run(["git", "log", "--format=%ct", "@{u}..HEAD"], capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=5).stdout.split()
+            oldest = (time.time() - min(int(t) for t in times)) / 3600 if times else 0.0
+        return ahead, behind, oldest
     except Exception:
         return None
 
@@ -771,42 +912,130 @@ def get_jmodot_commits(root: Path, count: int = 3) -> list[str]:
 # Main
 # ---------------------------------------------------------------------------
 
-def run_cloud_install(root: Path) -> str:
-    """Run cloud-install.sh if on cloud and dependencies are missing."""
+# cloud-setup.sh measured 29-32 s; the ceiling leaves the rest of the 600 s SessionStart budget
+# to submodule init, import and build.
+CLOUD_SETUP_TIMEOUT_S = 300
+DOCS_CACHE_TIMEOUT_S = 60
+
+
+def _load_workstation_profile(root: Path):
+    """`tools/workstation_profile.py` from this checkout, loaded by path.
+
+    By path rather than by import: a hook and a tool share no sys.path, and a proof plants a copy
+    under a fixture root so the whole read is exercised through main().
+    """
+    import importlib.util
+    for path in (root / ".claude" / "tools" / "workstation_profile.py",
+                 Path(__file__).resolve().parent.parent / "tools" / "workstation_profile.py"):
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("workstation_profile", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise OSError("workstation_profile.py not found")
+
+
+def workstation_status(root: Path) -> str | None:
+    """This checkout's setup stamp — OK, UNAUDITED or STALE — or None to omit the step.
+
+    The tool owns the comparison and the wording. Any failure omits the step: an unreadable profile
+    must cost the session nothing, which is also why this is local-only (a cloud clone has no
+    `/workstation_setup` run of its own).
+    """
+    try:
+        return _load_workstation_profile(root).setup_status(root)
+    except Exception:
+        return None
+
+
+def cloud_setup_current(root: Path) -> bool:
+    """True unless the script that built this snapshot is known to differ from the repo's copy.
+
+    True when nothing can tell: re-running cloud-setup.sh on an unknown costs ~30 s of every
+    session start, which is the cost the environment snapshot exists to avoid.
+    """
+    try:
+        return _load_workstation_profile(root).cloud_setup_current(root)
+    except Exception:
+        return True
+
+
+def _install_cloud_toolchain(root: Path) -> str:
+    """The toolchain status: OK, FIXED after running cloud-setup.sh, or FAILED."""
+    adopt_cloud_dotnet()
+    ready = _cmd_exists("dotnet") and bool(get_godot_bin()) and _cmd_exists("xvfb-run")
+    stale = not cloud_setup_current(root)
+    status = "OK (toolchain present)"
+    if not ready or stale:
+        script = root / ".claude" / "cloud-setup.sh"
+        if not script.exists():
+            return "FAILED (cloud-setup.sh not found)"
+        started = time.time()
+        try:
+            result = subprocess.run(["bash", str(script)], capture_output=True, text=True, encoding="utf-8",
+                                    errors="replace", timeout=CLOUD_SETUP_TIMEOUT_S, cwd=str(root))
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return f"FAILED: cloud-setup.sh did not finish ({type(exc).__name__})"
+        adopt_cloud_dotnet()
+        lines = (result.stdout or "").strip().splitlines()
+        failed = [line for line in lines if "FAILED" in line]
+        took = int(time.time() - started)
+        if failed or not get_godot_bin():
+            return "FAILED (%s)" % ("; ".join(failed) if failed else (lines or ["no output"])[-1])
+        if ready:
+            status = (f"FIXED (snapshot script is stale; ran the repo copy in {took}s; "
+                      "paste .claude/cloud-setup.sh into the environment Setup script)")
+        else:
+            status = (f"FIXED (cloud-setup.sh took {took}s; paste .claude/cloud-setup.sh into the "
+                      "environment's Setup script so the snapshot carries it)")
+    return status
+
+
+def run_cloud_setup(root: Path) -> str:
+    """Install the cloud toolchain when the environment's setup script did not, then the docs cache.
+
+    The environment setup script (cloud-setup.sh pasted into claude.ai) is snapshotted; this
+    fallback reinstalls on every new session, so its cost is reported rather than hidden. A present
+    toolchain whose snapshot script no longer matches the repo's heals the same way, because a
+    snapshot from an older paste never gets the script's newer steps. The docs cache builds after a
+    failed install too, since it needs only GitHub. A docs cache failure surfaces through
+    godot_docs_cache_issue(), not this status.
+    """
     if not is_cloud():
         return ""
+    status = _install_cloud_toolchain(root)
+    docs = root / ".claude" / "scripts" / "godot_docs_cache.sh"
+    if docs.exists():
+        try:
+            subprocess.run(["bash", str(docs)], capture_output=True, timeout=DOCS_CACHE_TIMEOUT_S, cwd=str(root))
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    return status
 
-    # Check if deps are already installed
+
+def cloud_session_blocks(root: Path) -> list[str]:
+    """The cloud capability contract and memory index, which a cloud VM cannot load otherwise.
+
+    rules/cloud_dev.md is path-scoped, and the in-repo memory index reaches the model only through
+    autoMemoryDirectory in settings.local.json, which a cloud clone does not carry.
+    """
+    lines = []
+    contract = root / ".claude" / "rules" / "cloud_dev.md"
     try:
-        dotnet_ok = _cmd_exists("dotnet") and subprocess.run(
-            ["dotnet", "--version"], capture_output=True, timeout=5
-        ).returncode == 0
-    except Exception:
-        dotnet_ok = False
-
-    godot_bin = get_godot_bin()
-
-    if dotnet_ok and godot_bin:
-        return "OK (deps already installed)"
-
-    install_script = root / ".claude" / "cloud-install.sh"
-    if not install_script.exists():
-        return "SKIPPED (cloud-install.sh not found)"
-
+        text = contract.read_text(encoding="utf-8", errors="replace")
+        parts = text.split("---", 2) if text.startswith("---") else []
+        if len(parts) == 3:
+            text = parts[2]
+        lines += ["", "<cloud-session>", text.strip(), "</cloud-session>"]
+    except OSError:
+        lines += ["", "<cloud-session>Cloud contract missing: .claude/rules/cloud_dev.md</cloud-session>"]
+    index = root / ".claude" / "auto-memory" / "MEMORY.md"
     try:
-        result = subprocess.run(
-            ["bash", str(install_script)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=540, cwd=str(root)
-        )
-        if result.returncode == 0:
-            # Re-source env vars that the install script set
-            _load_cloud_env_from_output(result.stdout)
-            return "FIXED (installed dependencies)"
-        return f"FAILED (exit {result.returncode}): {result.stderr.strip()[-200:]}"
-    except subprocess.TimeoutExpired:
-        return "FAILED: timeout (>540s)"
-    except Exception as e:
-        return f"FAILED: {e}"
+        body = index.read_text(encoding="utf-8", errors="replace").strip()
+        lines += ["", "<auto-memory-index dir=\".claude/auto-memory/\">", body, "</auto-memory-index>"]
+    except OSError:
+        pass
+    return lines
 
 
 def _cmd_exists(cmd: str) -> bool:
@@ -819,25 +1048,6 @@ def _cmd_exists(cmd: str) -> bool:
         return result.returncode == 0
     except Exception:
         return False
-
-
-def _load_cloud_env_from_output(output: str):
-    """Parse cloud-install.sh output for env var exports and apply them."""
-    for line in output.splitlines():
-        line = line.strip()
-        # Look for lines like GODOT_BIN=/path or DOTNET_ROOT=/path
-        if line.startswith("GODOT_BIN=") or line.startswith("DOTNET_ROOT="):
-            key, _, value = line.partition("=")
-            os.environ[key] = value
-            # Propagate DOTNET_ROOT to PATH so dotnet is discoverable
-            if key == "DOTNET_ROOT" and value and value not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = f"{value}:{os.environ.get('PATH', '')}"
-        # Also look for export statements
-        if line.startswith("export ") and "=" in line:
-            assignment = line[len("export "):]
-            key, _, value = assignment.partition("=")
-            value = value.strip('"').strip("'")
-            os.environ[key] = value
 
 
 def main():
@@ -859,7 +1069,7 @@ def main():
     # --- Cloud auto-install (before any other setup) ---
     setup_results = {}
     if cloud:
-        setup_results["cloud_install"] = run_cloud_install(root)
+        setup_results["cloud_setup"] = run_cloud_setup(root)
 
     # --- Worktree/cloud setup (runs for ALL sessions, idempotent) ---
     setup_results["submodule"] = setup_submodule(root)
@@ -871,18 +1081,30 @@ def main():
     setup_results["build"] = build_status(
         root, str(input_data.get("source") or "startup"), submodule_ready)
 
+    # --- Setup stamp (local only) ---
+    if not cloud:
+        station_status = workstation_status(root)
+        if station_status:
+            setup_results["workstation"] = station_status
+
     # --- LSP plugin health check (local only) ---
     if not cloud:
         setup_results["lsp_plugin"] = verify_lsp_plugin()
 
-    setup_results.update(sidecar_health(root))
-    setup_results["rosters"] = roster_health(root)
+    if not cloud:  # sidecars and benchmark rosters live on the workstation only
+        setup_results.update(sidecar_health(root))
+        setup_results["rosters"] = roster_health(root)
 
     # --- Git context ---
     branch = get_git_branch()
     uncommitted = get_uncommitted_count()
     uncommitted_str = ("working tree UNKNOWN" if uncommitted is None else
                        f"{uncommitted} uncommitted" if uncommitted > 0 else "clean")
+    drift = get_upstream_drift()
+    if drift and (drift[0] or drift[1]):
+        uncommitted_str += f" | {drift[0]} ahead, {drift[1]} behind upstream as last fetched"
+        if drift[0]:
+            uncommitted_str += f" (oldest unpushed {drift[2]:.0f}h)"
 
     main_commits = get_recent_commits(1)
     jmodot_commits = get_jmodot_commits(root, 1)
@@ -908,13 +1130,28 @@ def main():
     env_parts = []
     any_fixed = False
     for step, status in setup_results.items():
+        # A healthy sidecar's probe detail (endpoint, key, credential path) informs no routing choice;
+        # its model and any fact after the detail (a pricing window) do.
+        healthy_sidecar = re.match(r"(\S+): OK \([^)]*\)\s*(.*)$", status) if step.startswith("sidecar-") else None
         if status.startswith("OK"):
             env_parts.append(f"{step} OK")
+        elif healthy_sidecar:
+            env_parts.append(" ".join(filter(None, (f"{step}: {healthy_sidecar[1]} OK", healthy_sidecar[2]))))
         else:
             env_parts.append(f"{step}: {status}")
             if "FIXED" in status:
                 any_fixed = True
     output_lines.append("Env: " + " | ".join(env_parts))
+    if not cloud:
+        ladder_line = ladder_banner(root)
+        if ladder_line:
+            output_lines.append(ladder_line)
+        catalog_line = free_catalog_line(root, str(input_data.get("source") or "startup"))
+        if catalog_line:
+            output_lines.append(catalog_line)
+    listing_line = skill_listing_banner(root, input_data)
+    if listing_line:
+        output_lines.append(listing_line)
 
     # GODOT_BIN for test commands (Bash sessions don't inherit setx env vars)
     if godot_bin:
@@ -987,22 +1224,8 @@ def main():
         )
         output_lines.append("</lsp-early-load>")
 
-    # Semantic-search early-load nudge (cloud only). LSP is unavailable on cloud,
-    # so semantic-search is the primary code-discovery tool — but a DISCOVERY one
-    # (NL/intent/concept), NOT an LSP-precision substitute: C# symbol resolution
-    # degrades to Grep-anchored navigation (see .claude/rules/cloud_dev.md).
     if cloud:
-        output_lines.append("")
-        output_lines.append("<semantic-search-early-load>")
-        output_lines.append(
-            "Cloud session: csharp-lsp is disabled. Load semantic-search as one of your "
-            "first actions: ToolSearch(query=\"select:mcp__plugin_semantic-search_semantic-search__search\", "
-            "max_results=1). Use it for \"where is X\" / prior-art / concept queries when you don't "
-            "know symbol names yet. It is DISCOVERY-only on cloud (no C# symbol-tree precision) — for "
-            "exact callers/definitions, anchor with Grep('class FooBar\\b' -g '*.cs') then navigate. "
-            "If results come back empty, run /reindex_search first (.search-index/ is gitignored)."
-        )
-        output_lines.append("</semantic-search-early-load>")
+        output_lines.extend(cloud_session_blocks(root))
 
     # Cloud-worklog replay surface (local only). When a cloud session has queued
     # worklog mutations to .claude/worklog-pending.md (Unit D), flag the live count
@@ -1041,36 +1264,27 @@ def main():
         output_lines.append("")
         output_lines.append(due_line)
 
-    # Queued-gate result surfacing — a gate queued behind an open editor can finish
-    # between sessions. Seen-state and formatting live in gate_queue_surface.py, shared
-    # with activity_registry.py (the mid-session reader), so a result is announced once
-    # per session by whichever hook observes it first. Fail-open.
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from gate_queue_surface import surface_lines
-
-        queue_lines = surface_lines(root, input_data.get("session_id", "unknown"))
-        if queue_lines:
-            output_lines.append("")
-            output_lines.extend(queue_lines)
-    except Exception:
-        pass
-
-    # Continuation reminder
-    output_lines.append("")
-    output_lines.append("<context-reload-reminder>")
-    output_lines.append("If resuming from compaction: search auto-memory (semantic-search) for task-relevant gotchas.")
-    output_lines.append("Picking up another session's work (after /clear, a handoff, or a parallel session): "
-                        "use `python3 .claude/tools/session_digest.py --session <id-prefix> --handoff` for the "
-                        "bounded resume packet. `--brief` is only an identity card and is not enough to resume "
-                        "non-trivial work. `--full` is an offline human-readable export, not model context. "
-                        "Holding a pasted message from the session, use `--match-file <paste.txt>` to find the "
-                        "transcript. Read the documents its prompts supplied as inputs, not only its digest.")
-    output_lines.append("</context-reload-reminder>")
+    # Compaction drops the gotchas a session had loaded. Picking up another session's work is the
+    # /session_digest command's, whose listing reaches every session.
+    if input_data.get("source") == "compact":
+        output_lines.append("")
+        output_lines.append("<context-reload-reminder>")
+        output_lines.append("Resumed from compaction: search auto-memory (%s) for task-relevant gotchas."
+                            % ("Grep over .claude/auto-memory/" if cloud else "semantic-search"))
+        output_lines.append("</context-reload-reminder>")
 
     print("\n".join(output_lines))
     sys.exit(0)
 
 
+def runsettings_cli(argv: list[str]) -> int:
+    """`--setup-runsettings <checkout>`: print setup_runsettings' status; exit 0 unless no .runsettings results."""
+    status = setup_runsettings(Path(argv[0]))
+    print(status)
+    return 0 if status == "OK" or status.startswith("FIXED") else 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--setup-runsettings":
+        sys.exit(runsettings_cli(sys.argv[2:]))
     main()

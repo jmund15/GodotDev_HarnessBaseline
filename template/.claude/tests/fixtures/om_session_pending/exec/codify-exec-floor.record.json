@@ -1,0 +1,20 @@
+{
+ "launchId": "f77c3b58-07a8-4af4-bf72-a6ca42f3fe3f",
+ "parentSessionId": "30b7e19d-8945-4de9-ab38-4b02699ef340",
+ "label": "codify-exec-floor",
+ "transport": "codex",
+ "costModel": "plan-quota",
+ "servedModel": "gpt-6.1-sol",
+ "requestedModel": "gpt-6.1-sol",
+ "effort": "medium",
+ "pinBasis": "cell,judged",
+ "inputTokens": 286702,
+ "outputTokens": 33934,
+ "cacheReadTokens": 17228928,
+ "cacheWriteTokens": 0,
+ "numTurns": 140,
+ "durationMs": 1086137,
+ "costUSD": 2.635637,
+ "exitCode": 0,
+ "timestamp": "2026-10-18T17:56:30Z"
+}

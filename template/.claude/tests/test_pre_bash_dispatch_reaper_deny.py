@@ -50,7 +50,7 @@ def main():
         code, out, _err = pre_bash_dispatch.dispatch(raw, hooks=(deny,))
         hso = json.loads(out)["hookSpecificOutput"] if out else {}
         check("denied payload returns the deny", code == 0 and hso.get("permissionDecision") == "deny"
-              and hso.get("permissionDecisionReason") == "planted deny", out)
+              and hso.get("permissionDecisionReason", "").startswith("planted deny"), out)
         check("denied payload never calls the reaper", calls == [], "calls=%d" % len(calls))
         check("denied payload carries no reaper line", "planted line" not in out, out)
 

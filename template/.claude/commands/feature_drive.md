@@ -1,48 +1,31 @@
 ---
-description: Drive a design resolved in conversation to shipped code — no roadmap Part required. Design capture → in-session plan → plan_check convergence → execute → regression_gate → commits.
+allowed-tools: Workflow, Agent
+description: Ship one-plan work with no roadmap Part, its design settled or open only on technical choices; use /part_drive for a Part, /design_drive for multi-Part design
 ---
 
-# /feature_drive — Ad-Hoc Feature Drive (Conversation Design → Ship)
+# /feature_drive — One-Plan Drive (Design Capture → Ship)
 
-The entry point between inline edits and [`/part_drive`](part_drive.md): the design surface is **the current conversation** (analysis + user rulings), not a roadmap Part. The invocation is the execution directive (`feedback_honor_execution_directive`); the entry gate and halt valves below are the only legitimate pauses.
+**Input:** work of size below parts (`execution_depth.md` §Fields), its design settled in the conversation or open on technical decisions: `/feature_drive [<scope statement>]`, where no argument makes the conversation's scope the input. With no candidate approach, or at size = parts, exit and route per `execution_depth.md` §Entry routing.
+**Enters at:** ground (design capture), then plan.
+**Owner stop:** remaining owner forks batched at entry through `AskUserQuestion`, because the owner just spoke and this is the batching point `/part_drive` lacks; a fork found mid-run follows spine H3.
 
-**Invocation:** `/feature_drive [<scope statement>]` — with no argument, the resolved design in the current conversation is the scope.
+Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what a one-plan drive adds.
 
-Use `/part_drive` when the work IS a roadmap Part. Use `/architecture_brainstorm` or `/design_drive` when the design is NOT yet resolved (open approach questions, large/novel scope). Logged worklog items route to `/worklog drive`, which owns selection and the same depth ladder.
+Which entry command fits a piece of work follows [`_brainstorm_shared/execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Entry routing.
 
-## Entry gate
+## Design capture
 
-1. **A resolved design must exist** in-conversation or in the argument. Neither → exit and route per the sibling table above; never improvise a design inside this command.
-2. **Batch remaining taste forks NOW** via `AskUserQuestion` — the user just spoke; this is the batching point `/part_drive` lacks. A load-bearing fork discovered mid-run also routes to `AskUserQuestion`, never a silent default.
-3. **Scope litmus** — if planning reveals the work is roadmap-shaped (new system, crosses subsystems beyond the conversation design, file list won't bound), halt and propose promotion to `/architecture_brainstorm` or a roadmap Part instead of driving on.
-4. **Assess the ladder tier** of the captured design against [`_brainstorm_shared/execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md), and run the flow at that depth. Tier 1–2 takes the ladder's reduced path — no plan file at tier 1, an in-conversation plan at tier 2 (a plan *file* only when the executor is dispatched cold), and `/explore` using its own trigger table — with the ladder's rule-1 litmuses binding throughout: any pass `/plan_check`'s litmus, CLAUDE.md's planning threshold, the project's regression gate (`change_control` §Gate cadence names it), or `/explore`'s SKIP litmus mandates still runs. Tier 3 runs steps 1–7 as written. Tier 4 is rule 3's promotion case.
+When `execution_depth.md` §Admission table's Grounding row admits it, dispatch [`/explore`](explore.md) at capture, before drafting. `TOPIC` is the conversation's resolved design. Then:
 
-## Dispatch topology receipt
+1. Ground every captured claim per [`design_contract`](../skills/_brainstorm_shared/design_contract.md) clause 1: cite documentation for authored intent, and verify shipped-behavior claims in code. The rest of that contract governs autonomous design and does not bind here.
+2. When decisions the conversation left open are technical, with no fork that needs the owner's taste, dispatch one architect-tier pass over them with the `/explore` dossier and the owner's settled rulings. Its brief opens with the simpler-path question (`execution_depth.md` §Simpler-path probe). Its decisions enter the capture with their evidence; a fork it finds that needs taste goes to the owner stop. When `orchestration` reference `drive_dispatch.md` *Plan drafts* routes the plan draft to an architect arm, this pass drafts the plan from its decisions.
+3. Check fit against `architecture_philosophy` (modular, data-driven, deletion-test, §Orthogonal axis, §Authored-Data Integrity). The conversation resolved taste, so this step verifies the design is non-redundant and extension-shaped.
+4. Distill the design into the plan file at `.claude/plans/<slug>.md`, context-free per [*Plan-file format*](../skills/_brainstorm_shared/plan_file_format.md): decisions as fact, rationale inline, and owner rulings recorded as constraints, so an executor never needs the transcript. When the captured work carries a harness deliverable that stands on its own beside the production change, partition into one plan per `PLAN_SHAPE` per that file and audit them in one `/plan_check` invocation. Inseparable mixed plans use the code lenses plus the meta lenses `/plan_check` requires.
+5. Set the header `**Roadmap:** ad-hoc — /feature_drive`, which keeps `/session_end` drift detection from hunting a Part.
+6. Read `Claude/Meta/Development-Focus.md` and name any misalignment between the captured design and the current focus in the design-capture summary, per [*Plan-file format*](../skills/_brainstorm_shared/plan_file_format.md)'s focus-note rule.
 
-Before every dispatch stage, compose `orchestration` §0, §5, and §11 into one **Dispatch Topology Receipt**. Its pre-dispatch half names independent outputs, risks, fixed seats, contained-job deduplication, width, role floor, effort, and currency. Its post-journal/PINS half compares actual rows, pins, and coverage with that receipt. This call site adds no role or model table.
+The drive then enters the spine at plan. A `/plan_check` non-convergence that resolves to a taste fork routes to the owner stop above instead of halting.
 
-## The flow
+## Close
 
-Steps 2–6 are `/part_drive` steps 2–6 verbatim (plan in-session → `/plan_check` converge → execute → gate → commits); only steps 1 and 7 differ:
-
-1. **Design capture (replaces the roadmap brief)** — close context gaps before distilling: dispatch [`/explore`](explore.md) HERE, at capture, where a finding can still reshape the design rather than invalidate a written plan. `TOPIC` is the conversation's resolved design. Its floor lenses are `exp-memory`, the mandatory memory pass, and `exp-prior-art`, the existing-abstraction inventory at introduction granularity (families own exports/params/flags, not just types — `rules/design_litmus.md` #1). A `premise-contradiction` claim is a design correction to absorb before distilling, never a note to carry forward; an UNCOVERED dimension is closed before proceeding. Then ground every captured claim per [`design_contract`](../skills/_brainstorm_shared/design_contract.md) clause 1 (documentation is a claim to check, never a source to cite — the rest of that contract governs autonomous *design* and does not bind here), and check fit against `architecture_philosophy` (modular, data-driven, deletion-test, §Orthogonal axis, §Authored-Data Integrity — the conversation resolved taste; this step verifies the design is non-redundant and extension-shaped). Then distill into the plan file at `.claude/plans/<slug>.md`, context-free per [*Plan-file format*](../skills/_brainstorm_shared/plan_file_format.md): decisions as fact, rationale inline, user rulings recorded as constraints (an executor must not need the transcript). One design can still be mixed-shape: when the captured work carries a harness deliverable that stands on its own alongside the production change, partition into one plan per `PLAN_SHAPE` per that file — inseparable mixed plans use the code lenses plus the two meta lenses required by `/plan_check`. Header: `**Roadmap:** ad-hoc — /feature_drive` (keeps `/session_end` drift detection from hunting a Part). Read `Claude/Meta/Development-Focus.md`; name any misalignment between the captured design and the current focus in the design-capture summary — advisory, never a gate.
-2. Plan in-session — `/part_drive` step 2, with the ad-hoc header above.
-3. Audit & converge — `/part_drive` step 3, except taste forks route per entry-gate rule 2 rather than halting.
-4. Execute — `/part_drive` step 4 verbatim (TDD per slice, strict in Logic; dispatch shape free per the `orchestration` skill, including its Workflow authorization; spec authorship, diff review, gate adjudication, and commits stay at the driving session).
-5. Gate — `/part_drive` step 5 (the project's full regression gate, single-flight).
-6. Commits — `/part_drive` step 6 (categorical split, submodule-first, index hygiene, no push).
-7. **Close out (no roadmap)** — no `/update_roadmap`. Instead: surface any tracked-roadmap-topic touchpoints in the final report; route deferrals through `/worklog`; offer `/pr_ready` on feature branches.
-
-## Halt valves
-
-`/part_drive` valves (a)–(e) and (g) apply unchanged. Valve (f) is replaced by entry-gate rule 2 (a (g) non-convergence that resolves to a taste fork routes there too).
-
-## Anti-patterns
-
-| Rationalization | Reality |
-|---|---|
-| "The design is in the conversation — skip the plan file." | The plan file is the `/plan_check` audit surface and the context-free record; conversation context dies at compaction. Write it at tier 3+, and at tier 1–2 per entry-gate rule 4. |
-| "We discussed it thoroughly — skip `/plan_check`." | Resolved design ≠ audited plan. Convergence is step 3, not an option. The tier-1/2 reduction changes plan artifacts, not required lens coverage or the litmus: if `/plan_check`'s own litmus trips (3+ files, new types, deletions), it runs at every tier. |
-| "It grew, but we're mid-drive — keep going." | Roadmap-shaped scope discovered mid-run is entry-gate rule 3: halt, propose promotion. |
-| "It's ad-hoc, so relax TDD / the gate." | The domain split and the project's regression gate (`change_control` §Gate cadence names it) bind on provenance-blind rules — every gated change, no carve-outs. |
-| "It's ad-hoc, so relax TDD / the gate." | Domain split and the project's regression gate bind on provenance-blind rules — every change class the gate covers, no carve-outs. |
+No roadmap flip. Report any touchpoints with tracked roadmap topics in the final report, and route deferrals through `/worklog`.

@@ -36,8 +36,7 @@ SEED = {"memory_domains": [
 ]}
 
 SID = "pml00001"
-# Standard-execution prompts: past the 20-char floor, no high-risk / conversational /
-# execution cue, so each lands on the branch this test governs.
+# Standard-execution prompts: past the 20-char floor, no high-risk / execution cue, so each lands on the branch this test governs.
 WIDGET = "Add a new widget tier to the gizmo roster"
 WIDGET_AGAIN = "Add one more widget beside that gizmo tier"
 PIPELINE = "Attach the conveyor onto the new pipeline stage"
@@ -163,7 +162,8 @@ def main():
 
     # PreCompact through the real hook, not a hand-written state edit: the wiring is
     # what this case is for.
-    run(PRECOMPACT, {"session_id": SID, "trigger": "auto"}, env)
+    run(PRECOMPACT, {"session_id": SID, "trigger": "auto"},
+        dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
     out = prompt(WIDGET)
     cases.append(("the full text lands again after a compaction",
                   "MEMORY CHECK" in out))
@@ -229,6 +229,18 @@ def main():
     cases.append(("valid non-object JSON payloads are advisory no-ops",
                   all(r.returncode == 0 and (r.stdout or "").strip() in ("", "{}")
                       and not (r.stderr or "").strip() for r in raw_results)))
+
+    # A decision question is not chit-chat: it earns the same domain nudge as a task, and no
+    # branch prints constant text (CLAUDE.core.md owns the anti-agreement rule).
+    plant_tier(tmp, "pml00013", "condensed")
+    out = prompt("Should we turn the widget tier on for the gizmo roster?", session="pml00013")
+    cases.append(("a decision question naming a domain gets the MEMORY CHECK",
+                  "MEMORY CHECK" in out))
+    cases.append(("no prompt branch prints the constant anti-agreement line",
+                  "reflexive agreement" not in out))
+    out = prompt("What do you think about the column headers in that listing?", session="pml00013")
+    cases.append(("a chat-shaped prompt with no domain is silent after the generic delivery",
+                  "reflexive agreement" not in out))
 
     fx.rm(scratch)
     for label, ok in cases:

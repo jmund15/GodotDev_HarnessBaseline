@@ -1,0 +1,1 @@
+Run wf_f3dd6fc8-968 (session ae2238a9, 2026-10-07): fold-less review_fanout, args.spillDir set; in-run check read the archive (F1..F5).

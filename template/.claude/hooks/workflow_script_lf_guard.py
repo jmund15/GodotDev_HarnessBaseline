@@ -11,6 +11,7 @@ import os
 import sys
 
 from _claude_scope import harness_tail
+from _win_path import native_path
 
 
 def main() -> int:
@@ -19,8 +20,7 @@ def main() -> int:
         if payload.get("tool_name") != "Workflow":
             return 0
         path = str((payload.get("tool_input") or {}).get("scriptPath") or "")
-        if len(path) > 3 and path[0] == "/" and path[2] == "/" and path[1].isalpha():
-            path = path[1].upper() + ":" + path[2:]  # MSYS /c/... -> C:/... (Windows Python cannot open the former)
+        path = native_path(path)
         if not path or not os.path.isfile(path):
             return 0
         if harness_tail(path) is None:

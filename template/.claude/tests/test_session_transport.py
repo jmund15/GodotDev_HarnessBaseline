@@ -31,6 +31,7 @@ DATA = {
         },
         "deepseek": {"baseUrl": "https://api.deepseek.com/anthropic"},
         "opencode": {"baseUrl": "https://opencode.ai/zen/v1"},
+        "go": {"baseUrl": "https://opencode.ai/zen/go/v1"},
     },
     "models": [
         {"transport": "codex", "id": "gpt-5.6-terra", "alias": "terra"},
@@ -70,8 +71,18 @@ CASES = [
     ("env is case-insensitive", {"CLAUDE_CODE_TRANSPORT": "CODEX"}, "codex", "env"),
     ("base URL host match", {"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"},
      "deepseek", "baseUrl"),
-    ("base URL host match, different path",
-     {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/v1/messages"}, "opencode", "baseUrl"),
+    ("the OpenCode base URL selects opencode on its shared host",
+     {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/v1"}, "opencode", "baseUrl"),
+    ("the Go base URL selects go on the same host",
+     {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/go/v1"}, "go", "baseUrl"),
+    ("a one-transport host still tolerates a different path",
+     {"ANTHROPIC_BASE_URL": "https://api.deepseek.com/v1/messages"}, "deepseek", "baseUrl"),
+    ("a shared host without a registered path fails closed",
+     {"ANTHROPIC_BASE_URL": "https://opencode.ai"}, "unknown", "unmatched"),
+    ("a shared host with an unknown path fails closed",
+     {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/v2"}, "unknown", "unmatched"),
+    ("a query-changing shared endpoint does not take another transport's identity",
+     {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/v1?route=go"}, "unknown", "unmatched"),
     ("no signal at all is the host transport", {}, "anthropic", "default"),
     ("empty base URL is the host transport", {"ANTHROPIC_BASE_URL": ""}, "anthropic", "default"),
     ("the literal Anthropic API host is the host transport, despite no baseUrl on its own row",
@@ -93,6 +104,79 @@ CASES = [
      {"ANTHROPIC_BASE_URL": "https://api.deepseek.com.evil.test/anthropic"},
      "unknown", "unmatched"),
 ]
+
+
+# A route with a second plan (`planOf`): the session plan comes from CLAUDE_CONFIG_DIR, or from a
+# declared plan name. The secondary is unavailable on purpose: identity is not availability.
+PLANS = {
+    "transports": {
+        "anthropic": {"configDir": "~/.claude", "costModel": "plan-quota"},
+        "anthropic-secondary": {"planOf": "anthropic", "configDir": "~/.claude-secondary",
+                                "costModel": "plan-quota",
+                                "status": {"state": "unavailable", "reason": "planted"}},
+        "codex": {"launcher": ".claude/scripts/codex_proxy_sidecar.sh"},
+    },
+    "models": [
+        {"transport": "anthropic", "id": "claude-opus-5", "alias": "opus"},
+        {"transport": "codex", "id": "gpt-5.6-luna", "alias": "luna"},
+    ],
+}
+
+
+def plan_cases(check):
+    home = os.path.expanduser("~")
+    win = home.replace("/", "\\")
+    posix = home.replace("\\", "/")
+    bash = ("/" + posix[0].lower() + posix[2:]) if len(posix) > 1 and posix[1] == ":" else posix
+    rows = [
+        ("unset CLAUDE_CONFIG_DIR is the ~/.claude plan", {}, "anthropic"),
+        ("~/.claude", {"CLAUDE_CONFIG_DIR": "~/.claude"}, "anthropic"),
+        ("~/.claude-secondary", {"CLAUDE_CONFIG_DIR": "~/.claude-secondary"}, "anthropic-secondary"),
+        ("Windows form of the secondary dir",
+         {"CLAUDE_CONFIG_DIR": win + "\\.claude-secondary"}, "anthropic-secondary"),
+        ("Windows form of the primary dir (claude-primary's export)",
+         {"CLAUDE_CONFIG_DIR": win + "\\.claude"}, "anthropic"),
+        ("Git Bash form of the secondary dir",
+         {"CLAUDE_CONFIG_DIR": bash + "/.claude-secondary"}, "anthropic-secondary"),
+        ("trailing separator", {"CLAUDE_CONFIG_DIR": posix + "/.claude-secondary/"}, "anthropic-secondary"),
+        ("$HOME form", {"CLAUDE_CONFIG_DIR": "$HOME/.claude-secondary"}, "anthropic-secondary"),
+        ("an unknown dir on an Anthropic seat fails closed",
+         {"CLAUDE_CONFIG_DIR": posix + "/.claude-elsewhere"}, "unknown"),
+        ("a declared plan name is the plan", {"CLAUDE_CODE_TRANSPORT": "anthropic-secondary"},
+         "anthropic-secondary"),
+        ("a transport with no plans ignores CLAUDE_CONFIG_DIR",
+         {"CLAUDE_CODE_TRANSPORT": "codex", "CLAUDE_CONFIG_DIR": posix + "/.claude-elsewhere"}, "codex"),
+        ("an unmatched transport declaration is unknown", {"CLAUDE_CODE_TRANSPORT": "codexx"}, "unknown"),
+    ]
+    if os.name == "nt":
+        rows.append(("case variant on Windows",
+                     {"CLAUDE_CONFIG_DIR": win.upper() + "\\.CLAUDE-SECONDARY"}, "anthropic-secondary"))
+    n = 0
+    for name, env, want in rows:
+        got = st.session_plan(env=env, data=PLANS) if hasattr(st, "session_plan") else "<no session_plan>"
+        check(got == want, "session_plan %s: want %s, got %s" % (name, want, got))
+        n += 1
+
+    got = st.resolve(env={"CLAUDE_CODE_TRANSPORT": "anthropic-secondary"}, data=PLANS)
+    check(got == ("anthropic", "env"),
+          "resolve() maps a declared plan name to its route: got %r" % (got,))
+    got = st.legal_model_ids(st.resolve(env={"CLAUDE_CODE_TRANSPORT": "anthropic-secondary"},
+                                        data=PLANS)[0], data=PLANS, seat="anthropic")
+    check("opus" in got, "a declared plan's pins are its route's: got %r" % (got,))
+    got = st.session_plan(env={}, data={}) if hasattr(st, "session_plan") else "<no session_plan>"
+    check(got == "unknown", "an unreadable registry is an unknown plan: got %s" % got)
+    n += 3
+
+    import subprocess
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=posix + "/.claude-secondary")
+    env.pop("CLAUDE_CODE_TRANSPORT", None)
+    env.pop("ANTHROPIC_BASE_URL", None)
+    out = subprocess.run([sys.executable, MOD, "--plan"], env=env, capture_output=True, text=True,
+                         timeout=60)
+    check(out.returncode == 0 and out.stdout.strip() == "anthropic-secondary",
+          "--plan prints the live registry's plan for the secondary dir: rc=%s out=%r"
+          % (out.returncode, out.stdout.strip()[:200]))
+    return n + 1
 
 
 def main():
@@ -210,9 +294,11 @@ def main():
         check("luna" not in ids and "gpt-5.6-luna" not in ids,
               "a dispatchability exception excludes that row instead of re-admitting it")
 
+    plan_checks = plan_cases(check)
+
     failed = nonlocal_failed[0]
 
-    total = len(CASES) + 4 + 16
+    total = len(CASES) + 4 + 16 + plan_checks
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

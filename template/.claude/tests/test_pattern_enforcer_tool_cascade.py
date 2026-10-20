@@ -2,6 +2,8 @@
 """The `[Tool]` cascade check must fire for a production `.cs` reached through a
 worktree checkout, and must still skip the harness's own and vendored trees.
 
+Violation samples are assembled from fragments: this proof is not an exempt
+fixture path, so a literal pattern in its own source would block edits to it.
 The first arm is the positive control: without it, a check that never fires would
 also pass. The last arm is the negative that must survive the fix.
 
@@ -39,6 +41,16 @@ def case(label):
         CASES.append((label, fn))
         return fn
     return wrap
+
+
+@case("a violation written to a proof file's own path is blocked, not exempt")
+def _proof_path_not_exempt():
+    content = "class Fixture { void Go() { " + "GD" + ".Print(1); } }"
+    result = _run_live({"tool_name": "Write", "tool_input": {
+        "file_path": os.path.join(HERE, "ProofFixture.cs"),
+        "content": content}})
+    return (result is not None and result.returncode == 2
+            and "Use JmoLogger" in result.stderr)
 
 
 @case("a production .cs missing [Tool] is blocked")
@@ -83,7 +95,7 @@ def _run_live(payload):
     return result
 
 
-@case("the live PreToolUse Write channel blocks the production violation")
+@case("the live PreToolUse Write channel applies [GlobalClass, Tool]")
 def _live_positive():
     result = _run_live({
         "hook_event_name": "PreToolUse",
@@ -92,8 +104,57 @@ def _live_positive():
         "tool_input": {"file_path": "C:/repo/Spells/Tuning/BogusResource.cs",
                        "content": MISSING_TOOL},
     })
+    if result is None or result.returncode != 0 or result.stderr:
+        return False
+    out = json.loads(result.stdout)["hookSpecificOutput"]
+    return (out.get("permissionDecision") is None
+            and out["updatedInput"]["content"] == HAS_TOOL)
+
+
+@case("GD.Print is blocked on the live channel with csharp rule and logger next step")
+def _gd_print():
+    result = _run_live({"tool_name": "Write", "tool_input": {
+        "file_path": "C:/repo/Spells/Bad.cs",
+        "content": "class Bad { void Go() { " + "GD" + ".Print(1); } }"}})
     return (result is not None and result.returncode == 2
-            and "missing [Tool]" in result.stderr and result.stdout.strip() == "")
+            and "rules/csharp_patterns.md" in result.stderr
+            and "Use JmoLogger" in result.stderr and result.stdout.strip() == "")
+
+
+@case("GD.PrintErr is blocked on the live channel like GD.Print")
+def _gd_print_err():
+    result = _run_live({"tool_name": "Write", "tool_input": {
+        "file_path": "C:/repo/Spells/Bad.cs",
+        "content": "class Bad { void Go() { " + "GD" + ".PrintErr(1); } }"}})
+    return (result is not None and result.returncode == 2
+            and "rules/csharp_patterns.md" in result.stderr
+            and "Use JmoLogger" in result.stderr and result.stdout.strip() == "")
+
+
+@case("RequiredExport is applied on the live channel")
+def _required_export():
+    result = _run_live({"tool_name": "Write", "tool_input": {
+        "file_path": "C:/repo/Spells/Bad.cs",
+        "content": ("class Bad { [Export] public string Name "
+                    + "= " + "null!" + "; }")}})
+    if result is None or result.returncode != 0 or result.stderr:
+        return False
+    out = json.loads(result.stdout)["hookSpecificOutput"]
+    return (out.get("permissionDecision") is None
+            and "[Export, RequiredExport]" in out["updatedInput"]["content"])
+
+
+@case("GetNode in _Process advises through the live channel")
+def _getnode_process():
+    result = _run_live({"tool_name": "Write", "tool_input": {
+        "file_path": "C:/repo/Spells/Bad.cs",
+        "content": "public override void _Process(double delta) { "
+                   + "Get" + "Node<Node>(\"X\"); }"}})
+    if result is None or result.returncode != 0 or result.stderr:
+        return False
+    out = json.loads(result.stdout)["hookSpecificOutput"]
+    return (out.get("permissionDecision") is None
+            and "each frame on a stable path" in out["additionalContext"])
 
 
 @case("the live PreToolUse Write channel allows the harness path")

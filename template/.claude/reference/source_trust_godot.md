@@ -26,5 +26,6 @@ The Godot-stack sources and exceptions for `reference/source_trust.md`, whose ti
 ## Version exceptions
 
 - This harness has no reliable built-in knowledge of Godot 4.7.1, GdUnit4, or .NET 9 (rule 1).
+- The class reference documents the engine type system, not the C# binding (`Packed*Array` types and `Script.New` are GDScript-only). A compile error on a name the docs show is not proof of a version removal: check the binding (`GodotSharp.xml`) before blaming a version.
 - A doc page for another engine version answers a different question — measured: `Node.reparent` gained a `physics_interpolation` warning between 4.4 and 4.7.1, and this project runs Jolt.
 - **GdUnit4 is the exception that must be stated, never assumed:** its P1 URLs above are `master`/`latest` while this repo may run a patched fork (check the `GdUnit4` package version in `{{PROJECT_NAME}}.csproj`). A GdUnit4 claim names the fork and that the cited page is unversioned upstream, or it is P3.

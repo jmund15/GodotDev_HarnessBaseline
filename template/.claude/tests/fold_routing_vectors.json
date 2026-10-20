@@ -1,0 +1,35 @@
+{
+  "about": "Shared fold-routing vectors: tools/fold_check.py route() (test_fold_check.py) and review_fanout.js routedTo (review_fanout_spill_test.js) must both give each expected result. Each plan is one subject holding that one file, rooted at the case's `subjectRoot` (default \".\"). expect is a subject index, \"unrouted\" or \"ambiguous\". `<root>` in a case's file is the absolute repository root each consumer substitutes (fold_check's real checkout root; the engine's args.fold.repoRoot): an absolute citation routes only when it is exactly <root>/<subjectRoot>/<file>, never by suffix. `paths` holds the code/test path predicates fold_check.is_code_path and is_test_path (test_fold_check.py).",
+  "plans": [".claude/plans/a.md", ".claude/plans/b.md"],
+  "cases": [
+    {"file": ".claude/plans/a.md:3", "expect": 0},
+    {"file": ".claude\\plans\\b.md:9", "expect": 1},
+    {"file": "a.md:3", "expect": 0},
+    {"file": "plans/b.md:5", "expect": 1},
+    {"file": "./plans/b.md:4", "expect": 1},
+    {"file": "Plans/B.md:5", "expect": 1},
+    {"file": ".claude/Plans/A.md:3", "expect": 0},
+    {"file": ".claude/plans/./a.md:3", "expect": 0},
+    {"file": "x/../plans/b.md:2", "expect": 1},
+    {"file": "src/other.js:1", "expect": "unrouted"},
+    {"file": "an.md:1", "expect": "unrouted"},
+    {"file": "/elsewhere/a.md:1", "expect": "unrouted"},
+    {"file": "<root>/.claude/plans/a.md:3", "expect": 0},
+    {"file": "<root>\\.claude\\plans\\b.md:9", "expect": 1},
+    {"file": "<root>/.CLAUDE/Plans/A.md:3", "expect": 0},
+    {"file": "<root>/.claude/plans/./b.md:2", "expect": 1},
+    {"file": "<root>/.claude/worktrees/x/.claude/plans/a.md:3", "expect": "unrouted"},
+    {"file": "<root>/plans/b.md:5", "expect": "unrouted"},
+    {"file": "<root>/../elsewhere/.claude/plans/a.md:3", "expect": "unrouted"},
+    {"file": "<root>/.claude/worktrees/x/Scripts/A.cs:5", "subjectRoot": ".claude/worktrees/x", "plans": ["Scripts/A.cs"], "expect": 0},
+    {"file": "<root>/Scripts/A.cs:5", "subjectRoot": ".claude/worktrees/x", "plans": ["Scripts/A.cs"], "expect": "unrouted"},
+    {"file": ".claude/plans/:1", "expect": "unrouted"},
+    {"file": "b.md:2", "plans": [".claude/plans/b.md", ".claude/other/b.md"], "expect": "ambiguous"}
+  ],
+  "paths": {
+    "test": ["Tests/Logic/A.cs", ".claude/tests/test_x.py", "Tests/x.json"],
+    "notTest": ["Scripts/A.cs", ".claude/tools/x.py", "src/Tests.md", "lib/Tests/A.cs"],
+    "code": ["Scripts/A.cs", ".claude/tools/fold_check.py", ".claude/hooks/x.py", ".claude/skills/parameterized_asset_pipeline/gen.py", ".claude/settings.json", ".claude/workflows/x.js"],
+    "notCode": [".claude/plans/p.md", ".claude/commands/x.md", "Tests/Logic/A.cs", ".claude/tests/test_x.py", "Docs/a.json", "README.md"]
+  }
+}

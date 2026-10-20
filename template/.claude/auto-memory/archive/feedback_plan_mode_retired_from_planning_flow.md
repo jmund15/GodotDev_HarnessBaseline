@@ -13,7 +13,7 @@ metadata:
 **What survives unchanged — do not let the retirement erode any of it:**
 
 - **Plan files are still mandatory.** `.claude/plans/<slug>.md` remains the plan-review command's audit surface, the parity ledger for deletions, the Decision-record home, and what `/session_end` drift-detects on. "No Plan Mode ⇒ no plan file" is the rationalization to refuse.
-- **Every gate stays.** Plan review, the regression gate, the halt valves, the appetite invariant, roadmap state flips. Retirement removed a *mode*, not a *gate*.
+- **Every gate stays.** Plan review, the regression gate, the spine's halts, the appetite invariant, roadmap state flips. Retirement removed a *mode*, not a *gate*.
 - **The human approval gate stays; only its mechanism changed.** It is the user's explicit go-ahead on the finished plan file, presented in conversation — never inferred from convergence, from "0 critical", or from silence.
 
 **The one real loss: Plan Mode was the only TOOL-ENFORCED write lock during planning, and nothing replaces it.** `/part_drive --plan-only`'s *Write surface* constraint is now prose, not a wall — verified: `settings.json` has empty `permissions.deny`/`ask`, no `defaultMode`, and no PreToolUse hook gates writes on a planning phase. So an edit to production code during a planning loop is a self-inflicted defect that nothing will stop. Treat the constraint as binding precisely because it is unenforced.

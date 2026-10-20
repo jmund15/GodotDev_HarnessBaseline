@@ -64,8 +64,8 @@ def main():
     script = blp.preview_script("/mnt/c/w/tree", steps)
     cases.append(("the snapshot lives under $HOME, never /tmp (delete guards admit temp paths)",
                   '"$HOME/baseline-linux-preview"' in script and "/tmp" not in script))
-    cases.append(("ci-tools node and pwsh lead PATH",
-                  'PATH="$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"' in script))
+    cases.append(("ci-tools python, node and pwsh lead PATH",
+                  'PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"' in script))
     cases.append(("the snapshot excludes .git and is committed to a fresh repo, as checkout gives",
                   "--exclude=.git" in script and "git init -q -b main" in script
                   and "commit -qm snapshot" in script))

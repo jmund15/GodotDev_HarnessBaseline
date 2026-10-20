@@ -41,6 +41,10 @@ def test_scratch_md_over_threshold_blocks_and_bounded_passes():
         big = _file(d, ".claude/scratch/review.md", mod.LARGE_FILE_BYTE_THRESHOLD + 1)
         assert mod.process(_read(big)) is not None
         assert mod.process(_read(big, limit=100)) is None
+        blocked = _run_hook(_read(big))
+        assert blocked.returncode == 2 and not blocked.stdout
+        assert "CLAUDE.core.md §9" in blocked.stderr
+        assert "bounded `Read" in blocked.stderr
 
 
 def test_instruction_dirs_and_claude_md_pass_at_any_size():
@@ -58,6 +62,10 @@ def test_log_blocks_above_log_threshold_only():
         msg = mod.process(_read(big))
         assert msg is not None and "grep-shaped" in msg
         assert mod.process(_read(big, offset=10, limit=50)) is None
+        blocked = _run_hook(_read(big))
+        assert blocked.returncode == 2 and not blocked.stdout
+        assert "CLAUDE.core.md §9" in blocked.stderr
+        assert "Recover: `Grep" in blocked.stderr
 
 
 def test_worktree_checkout_measures_against_its_own_dot_claude():
@@ -101,6 +109,63 @@ def _lines_file(dirpath, rel, size, line=b"0123456789" * 7 + b"\n"):
     with open(p, "wb") as fh:
         fh.write(line * (size // len(line) + 1))
     return p
+
+
+def _profile_env(tier, ai_worker):
+    """Environment where this machine's tier and ai-worker registration read as planted."""
+    root = tempfile.mkdtemp(prefix="fsp_profile_")
+    cfg = os.path.join(root, "cfg")
+    os.makedirs(os.path.join(cfg, "plugins"))
+    servers = {"ai-worker": {"command": "python"}} if ai_worker == "present" else {}
+    with open(os.path.join(cfg, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": servers}, fh)
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg, SC_WORKDIR=os.path.join(root, "nowhere"),
+               WORKSTATION_PROFILE_PATH=os.path.join(root, "workstation_profile.json"))
+    if tier is not None:
+        with open(env["WORKSTATION_PROFILE_PATH"], "w", encoding="utf-8") as fh:
+            json.dump({"schema": 1, "local_tier": tier}, fh)
+    return env
+
+
+def _with_env(env, fn):
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        return fn()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_block_message_names_a_route_this_machine_actually_has():
+    """C7: `guards/any.md` and this message both route bulk copyable I/O to ai-worker; on a machine
+    where it is not registered the message must name the route that IS there (bounded Read or a
+    subagent), and it must not lose the bounded Read that always passes this gate."""
+    with tempfile.TemporaryDirectory() as d:
+        big = _file(d, ".claude/scratch/review.md", mod.LARGE_FILE_BYTE_THRESHOLD + 1)
+
+        absent = _with_env(_profile_env("full", "absent"), lambda: mod.process(_read(big)))
+        assert "read_files" not in absent, absent
+        assert "bounded `Read" in absent and "subagent" in absent, absent
+
+        present = _with_env(_profile_env("full", "present"), lambda: mod.process(_read(big)))
+        assert "mcp__ai-worker__read_files" in present, present
+
+        unknown = _with_env(_profile_env(None, "present"), lambda: mod.process(_read(big)))
+        assert unknown == present, (unknown, present)
+
+
+def test_clamp_tail_names_a_route_this_machine_actually_has():
+    with tempfile.TemporaryDirectory() as d:
+        big = _lines_file(d, ".claude/scratch/review.md", 2 * mod.LARGE_FILE_BYTE_THRESHOLD)
+        absent = _with_env(_profile_env("full", "absent"), lambda: mod.process(_read(big)))
+        assert "read_files" not in absent["additionalContext"], absent
+        assert "subagent" in absent["additionalContext"], absent
+        assert "offset=%d" % (absent["updatedInput"]["limit"] + 1) in absent["additionalContext"]
+
+        present = _with_env(_profile_env("full", "present"), lambda: mod.process(_read(big)))
+        assert "mcp__ai-worker__read_files" in present["additionalContext"], present
 
 
 def test_multiline_oversized_read_is_clamped_not_denied():

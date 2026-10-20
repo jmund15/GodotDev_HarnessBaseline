@@ -43,7 +43,12 @@
 #   -e  effort level        low|high|max — the rungs the registry's effortValues says DeepSeek serves
 #       (medium/xhigh would run as high under a false label, so they exit 2). Default: unset —
 #       provider default (thinking on, high)
-#   -t  --allowedTools CSV  (default: Read,Glob,Grep — read-only)
+#   -t  tools CSV. EMPTY BY DEFAULT: the -G shape's row in guards/tool_profiles.json supplies the
+#       built-ins and the MCP servers (a read-only survey is Read,Glob,Grep + the servers its row
+#       names). Three grammars: all-signed is a DELTA against that row (+Bash,-Grep,+mcp:godot);
+#       all-unsigned is the old absolute list (Read,Glob,Grep), recorded overrideMode
+#       legacy-replace; mixing the two exits 2. `mcp:<server>` names a LOGICAL server, resolved to
+#       its registered key; an unregistered one exits 2 before any spend.
 #   -n  max turns           (default: UNCAPPED — never cap benchmark/delegate turns,
 #       a cap discards completed work; -T wall-clock is the runaway guard)
 #   -o  output format: json|text|stream-json  (default: json)
@@ -209,7 +214,11 @@ shift "$SC_SHIFT"
 [ "${1:-}" = "--" ] && shift
 sc_read_prompt "$@"
 
-SC_CLAUDE="$(sc_claude_bin)" || { echo "claude CLI not found (set CLAUDE_BIN)" >&2; exit 4; }
+SC_CLAUDE="$(sc_claude_bin)" || sc_die 4 "claude CLI not found (set CLAUDE_BIN)"
+
+# The child reads this scope's MCP registrations, so the profile resolver must read the same ones
+# (sc_resolve_tools) — a server registered only there is resolvable here and nowhere else.
+SC_MCP_CONFIG_DIR="${DS_CONFIG_DIR:-}"
 
 sc_resolve_model
 sc_gate_availability
@@ -217,11 +226,11 @@ sc_validate_common
 
 # Credential BEFORE the band gate: a missing key is a configuration fault, and reporting a
 # band refusal for a machine that could never have dispatched sends the reader to the wrong fix.
-[ -f "$ENV_FILE" ] || { echo "credential file missing: $ENV_FILE" >&2; exit 3; }
+[ -f "$ENV_FILE" ] || sc_die 3 "credential file missing: $ENV_FILE"
 SC_CREDENTIAL="$(ds_read_key)"
 case "$SC_CREDENTIAL" in
   ""|"<redacted>"|"your-key-here"|"sk-xxx"*)
-    echo "DEEPSEEK_API_KEY not populated in $ENV_FILE" >&2; exit 3 ;;
+    sc_die 3 "DEEPSEEK_API_KEY not populated in $ENV_FILE" ;;
 esac
 
 sc_gate_band
@@ -234,11 +243,10 @@ sc_validate_effort
 # the same number the registry already carried for this model, so the two could drift with
 # nothing to catch it. MAX_CONTEXT_TOKENS still overrides for a one-off.
 SC_CONTEXT_TOKENS="$(python3 "$SC_REGISTRY_CLI" context-window "$SC_MODEL" 2>/dev/null)"
+SC_MAX_OUTPUT="$(sc_max_output "${MAX_CONTEXT_TOKENS:-}")"
 
 EFFORT_ARGS=()
-# `max` is permitted here. The CLAUDE.md ban on `max` is an Anthropic cost finding; it has
-# never been measured on DeepSeek, whose output is ~500x cheaper, so the ban does not carry over.
-[ -n "$SC_EFFORT" ] && EFFORT_ARGS=(--effort "$SC_EFFORT")
+[ -n "$SC_EFFORT" ] && [ "$SC_EFFORT" != none ] && EFFORT_ARGS=(--effort "$SC_EFFORT")
 
 VERBOSE_ARGS=()
 [ "$SC_FORMAT" = "stream-json" ] && VERBOSE_ARGS=(--verbose)  # CLI requires it with --print
@@ -275,21 +283,27 @@ run_claude() {
     CLAUDE_CODE_SUBAGENT_MODEL="$SC_MODEL" \
     CLAUDE_CODE_SIDECAR="$SC_TRANSPORT" \
     CLAUDE_CODE_MAX_CONTEXT_TOKENS="${MAX_CONTEXT_TOKENS:-$SC_CONTEXT_TOKENS}" \
+    ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
     ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
-    "$SC_CLAUDE" -p "$SC_PROMPT" \
+    "$SC_CLAUDE" -p \
       --model "$SC_MODEL" \
       ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} \
       --output-format "$SC_FORMAT" \
       ${VERBOSE_ARGS[@]+"${VERBOSE_ARGS[@]}"} \
-      --allowedTools "$SC_TOOLS" \
+      --allowedTools "${SC_ALLOWED_TOOLS:-$SC_TOOLS}" \
+      --tools "$(sc_builtin_tools "${SC_RESOLVED_BUILTINS:-$SC_TOOLS}")" \
+      --strict-mcp-config --mcp-config "$(sc_mcp_config "${SC_RESOLVED_TOOL_SPEC:-$SC_TOOLS}" "${SC_MCP_CONFIG_DIR:-}")" \
       ${SC_DISALLOWED:+--disallowedTools "$SC_DISALLOWED"} \
       ${SC_APPEND_ARGS[@]+"${SC_APPEND_ARGS[@]}"} \
       ${SC_MAX_TURNS:+--max-turns "$SC_MAX_TURNS"} \
       ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
       ${SC_RESUME_SID:+--resume} ${SC_RESUME_SID:+"$SC_RESUME_SID"} \
       --add-dir "$SC_WORKDIR" \
-      ${SC_ADD_DIRS[@]+"${SC_ADD_DIRS[@]}"}
+      ${SC_ADD_DIRS[@]+"${SC_ADD_DIRS[@]}"} \
+      <<< "$SC_PROMPT"
+  # Prompt rides STDIN, never argv: Windows caps a command line near 32 KB, and a larger brief
+  # died at spawn with `Argument list too long` (exit 126), as codex_proxy_sidecar.sh records.
 }
 
 [ -n "$SC_PROGRESS" ] && : > "$SC_PROGRESS"

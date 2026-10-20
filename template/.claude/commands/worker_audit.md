@@ -6,7 +6,7 @@ allowed-tools: Bash(python3 *worker_rate.py*:*), Read, Grep, Glob
 
 Sample recent `mcp__ai-worker__*` calls, verify their claims against the actual files, and record a verdict with an anchor. This is the only source of ground-truth data on the worker; every other signal it produces is mechanical.
 
-**What the mechanical signals already cover — do not re-derive them here.** `degenerate`, `truncated` and `error` detect a call that COLLAPSED; `paths_covered` vs `paths_requested` detects a coherent answer that silently discussed fewer files than it was handed. All are on the ledger row and need no judgment. This command exists for the one failure none of them can see: **a fluent, well-formed digest that is wrong about the code.**
+**What the mechanical signals already cover — do not re-derive them here.** `degenerate`, `truncated` and `error` detect a call that COLLAPSED; `paths_covered` vs `paths_requested` detects a coherent answer that silently discussed fewer files than it was handed (two or more paths; a single-path call reads no signal). All are on the ledger row and need no judgment. This command exists for the one failure none of them can see: **a fluent, well-formed digest that is wrong about the code.**
 
 ## Arguments
 
@@ -21,6 +21,8 @@ Sample recent `mcp__ai-worker__*` calls, verify their claims against the actual 
    python3 .claude/tools/worker_rate.py unrated --since <date>
    ```
    Skip rows the tool reports as having no artifact — they predate capture and cannot be audited (`--with-artifact` filters them). Prefer calls whose output was actually acted on; a digest nobody used teaches you nothing about the risk you carry.
+
+   **Sample rows the current worker served.** Each row carries `server_sha`, the ai-worker commit the server ran from (`show` prints it, `unrated` prints `srv=`, `--server-sha <prefix>` filters). State the sha range of the sample before reporting. Audit rows from an older sha only to test whether a fix worked; they measure a worker that no longer runs. A row with no `server_sha` predates the field.
 
    **Sample toward the empty cells `report` names, not toward whatever traffic happened to occur.** `--breadth wide` finds the harder half. Coverage that climbs inside one already-measured cell buys nothing.
 
@@ -45,7 +47,7 @@ Sample recent `mcp__ai-worker__*` calls, verify their claims against the actual 
    | `faithful` | every claim you checked held |
    | `incomplete` | what it said was right, but it omitted material it was asked for |
    | `fabricated` | it asserted something the source does not support |
-   | `unusable` | it collapsed — nothing was checkable (needs no anchor or derivation) |
+   | `unusable` | you opened the row and nothing was checkable: empty, all-zero or looping output (needs no anchor or derivation). A `truncated` flag alone is not this; rate its prefix |
 
    One rating per call, set by the worst outcome among the claims checked. A single fabrication outranks two faithful claims: the digest is unsafe to act on either way.
 
@@ -74,6 +76,6 @@ Sample recent `mcp__ai-worker__*` calls, verify their claims against the actual 
 
 **A config change resets the baseline.** `ollama_num_ctx`, `max_completion_tokens`, the model alias and `OLLAMA_KV_CACHE_TYPE` all change what is being measured. Ratings taken across such a change describe two different workers.
 
-`report` enforces this for the KV quant: it is part of the grouping key, so q4_0 and q8_0 rows never pool into one rate. Read the `kv` column as a coordinate of the measurement, not a footnote — comparing a q4_0 fabrication rate against a q8_0 one is a comparison of two instruments. The other three knobs are not yet on the row; state them yourself when reporting a run that spans a change.
+`report` enforces this for the KV quant: it is part of the grouping key, so q4_0 and q8_0 rows never pool into one rate. Read the `kv` column as a coordinate of the measurement, not a footnote — comparing a q4_0 fabrication rate against a q8_0 one is a comparison of two instruments. `server_sha` is on the row for the worker code. The other three knobs are not; state them yourself when reporting a run that spans a change. `report` counts exact repeats (same request, same `server_sha`) once, at the worst outcome, so a probe re-run ten times is one observation.
 
 **On a disagreement between declared and measured, the footprint wins.** `show` prints both: `kv=` is what `OLLAMA_KV_CACHE_TYPE` said at call time, `resident=` is the actual GPU footprint. The variable is read *only* when the Ollama server starts and cannot be read back from its API, so flipping it without restarting Ollama makes every subsequent row declare a quant that is not serving. Discriminator for Ridge: **~13.3 GB at ctx 65536 is q4_0**; q8_0 runs ~2.5 GB heavier and usually spills off the GPU. A row with `kv = -` predates runtime capture — its quant is unrecoverable, so it groups separately rather than being assumed.

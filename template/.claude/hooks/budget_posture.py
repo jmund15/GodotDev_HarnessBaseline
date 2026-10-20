@@ -4,29 +4,35 @@
 Bridges the Max plan's rate-limit telemetry (captured by ~/.claude/statusline.py
 into its per-session state file) to the model-visible channel. Emits a posture
 line on stdout (exit 0) telling the session model how delegation routing should
-lean, keyed on BURN RATE against the reset clock, not raw utilization.
+lean, keyed on QUOTA RISK: burn rate against the reset clock, raised when what is
+left will not survive to that reset. Raw utilization alone says neither.
 
 The pressure formula and the band table are NOT defined here: they live in
 .claude/tools/quota_bands.py, which is their SSOT, because a plan-quota provider's
 own usage endpoint reduces through the same arithmetic and a second copy of the
-thresholds would drift from the gate enforcing them. This module is one of two
-CALLERS — Claude's own telemetry is its data source; codex_quota_probe.py is the other.
+thresholds would drift from the gate enforcing them. This module is one of its
+CALLERS -- Claude's own telemetry is its data source; the provider probes are the
+others.
 
 The two windows govern different decisions and are never collapsed:
-  seven_day  -> provider choice (Anthropic tier vs paid/plan-quota sidecar)
-  five_hour  -> fan-out width (concurrent agents per dispatch)
+  seven_day  -> the routing band used by policy
+  five_hour  -> the session's live native jobs: above quota_bands.FIVE_HOUR_NARROW_PRESSURE,
+                workflow_provider_guard admits a dispatch only if the session then holds at most
+                one live native job, counting the dispatch's own jobs
 
-What each band opens to the sidecar lives in quota_bands.BANDS and nowhere else — an
-earlier version of this docstring reproduced that column "so the mapping is checkable in
-one read" and had drifted from BANDS by two clauses before anyone noticed.
+Each plan's room is a fact on the line, never a pick: which row and plan pay is the session's
+choice (the model ladder's selection line). Plans are read from provider_capacity's cache only
+(this hook never starts a probe itself). A plan with no fresh cached reading reads `unknown`; the
+hook then starts one detached `provider_bands.py warm` for the cold plans, at most once per plan
+per provider_capacity.CACHE_TTL_SECONDS, and prints `<transport> warming`.
+HARNESS_CAPACITY_WARM=0 starts nothing (proofs set it). Each plan entry shows quota left and time
+left for its worst-band window, and both windows when their bands differ.
 
 Never delegated at ANY pressure: orchestration itself, the ideal-design verdict,
-gate decisions, cross-system seams. Bands widen the delegatable set; they never
-shrink the reserved one -- with ONE narrow exception, enforced rather than
-advisory: agent-initiated SIDECAR dispatch of a model marked `gated` in
-.claude/reference/external_models.json is refused below its gate.minBand
-(deepseek_sidecar.sh exit 5, `-A` override). A Workflow fan-out is NOT gated;
-launching a DeepSeek session is itself the authorization. Policy home:
+gate decisions, cross-system seams. No quota reading moves the reserved set.
+One band gate is enforced rather than advisory: agent-initiated SIDECAR dispatch of a
+model marked `gated` in .claude/reference/external_models.json is refused below its
+gate.minBand (deepseek_sidecar.sh exit 5, `-A` override). Policy home:
 skills/orchestration/SKILL.md section 5.
 
 Fail open, always: missing file, absent rate_limits, malformed JSON, or a
@@ -34,130 +40,117 @@ resets_at in the past all exit 0 silently. Advisory telemetry must never block
 a prompt. The `--band` CLI mode below is the one exception to fail-open: it is a
 gate INPUT, so an unreadable band exits 3 rather than pretending to a value.
 
-Emission is deduped: first turn of the session, first turn after a compaction, a band
-change, or a ±0.15 pressure crossing. An unchanged posture is never re-injected.
+Delegates are silent. The first posture speaks at the session's first prompt, so the plan rooms reach the
+session before its first dispatch; the hook reads no transcript to decide that. After that it is deduped: first turn after a compaction, a band
+change, a ±0.15 pressure crossing, a window reaching its dispatch floor, or the free pool's ready count moving. An other-plan band
+change on the prompt a plan goes cold re-emits nothing: a reading aged past the cache TTL reads
+`unknown` until its warm lands. An unchanged posture is never re-injected. The floor belongs in that key because the reading that most
+needs saying moves nothing else: 98.9% to 99% is the same band at the same pace.
+
+Plan-usage sampling. After the posture step, on every prompt whether or not the line was deduped,
+`sample_usage` appends both Anthropic windows of the capture ({ts: captured_at, provider, window,
+used, resets_at}) through tools/usage_samples.py, which skips a capture older than 10 minutes or
+no newer than the last sample. The samples file is HARNESS_USAGE_SAMPLES, else
+~/.claude/usage_samples.jsonl; tools/plan_usage_calc.py reads it. Samples land only at prompts.
+The sampler runs in its own try/except and prints nothing: a failure costs only the sample.
+
+Spend line. The owner's lean condition (tools/spend_mode.py) prints on its own path, ahead of the rate_limits
+early return: `spend: lean (owner, <scope>, until <time>)` while lean is set, `spend: lean expired <time>` once
+after its expiry, and `spend: lean available — owner only` while the session's own plan is Hot or worse and spend
+is normal. Its last value is the dedupe key `spend`; normal with a plan that is not Hot says nothing.
 """
 
 import glob
 import json
+import math
 import os
+import subprocess
 import sys
 import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import fire_once_since_compaction  # noqa: E402
+from _hook_state import fire_once_since_compaction, read_json_salvage, state_path, update_json_locked  # noqa: E402
 import _session_transport  # noqa: E402 - HOST_TRANSPORT/UNKNOWN are read in main()
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
 # The formula and the band table, imported rather than restated. quota_bands imports nothing
 # from this package, so this direction is safe where the model_registry import below is not.
 import quota_bands  # noqa: E402
-from quota_bands import BANDS, ELAPSED_FLOOR, band_for  # noqa: E402,F401 - re-exported
+from quota_bands import BANDS, band_for  # noqa: E402,F401 - re-exported
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+# The per-window dispatch floor comes from the probe that enforces it: the warning below is about
+# that probe's refusal, and a second copy of 98/99% would drift from the gate it describes. The
+# import is guarded because an advisory must not cost the turn; an unreadable floor warns nothing.
+try:
+    from anthropic_capacity_probe import DISPATCH_FLOOR_PERCENT  # noqa: E402
+except Exception:
+    DISPATCH_FLOOR_PERCENT = None
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
 
 SEVEN_DAY_SECONDS = 7 * 24 * 3600
-FIVE_HOUR_SECONDS = 5 * 3600
+FIVE_HOUR_SECONDS = quota_bands.FIVE_HOUR_SECONDS
 PRESSURE_DELTA = 0.15         # within-band re-emit threshold
-
 # The reserved floor and the tier policy are constant, so the line points at their owner rather
 # than restating them every prompt.
-POLICY = "reserved floor + tier policy: orchestration §5/§5b"
-
-# Tier-within-quota, emitted beside the band because a band name alone is inert: it says how
-# much room is left, never what to spend it on. That gap is total while the sidecar is out of
-# the roster -- provider choice is moot, so the tier is the ONLY thing the band still governs.
-#
-# Deliberately a separate map rather than a 4th BANDS field: model_registry unpacks BANDS as
-# 3-tuples, and the sidecar-delegatable set and the tier default are different concerns that
-# happen to share a key. Role names only, never models (orchestration SKILL names roles).
-#
-# This is the DEFAULT. The by-dispatch-shape refinement -- which lenses stay at the executor
-# tier even under pressure -- is the orchestration SKILL's Tier-within-quota table, which is
-# strictly more information rather than a second copy of this one.
-# Conserving is GRADED, and it never names what an external model is good for.
-#
-# Graded, because the conserving moves cost DIFFERENT currencies and there are three, not two:
-# Anthropic quota, a provider's own plan quota, and real dollars. Trading the Anthropic tier down
-# spends quota already bought; a dollar-billed transport spends money; a plan-quota transport
-# spends a second prepaid allowance that ALSO expires unused. That third case is a band-vs-band
-# comparison rather than a spend decision -- route to whichever allowance is going to waste faster.
-# It stays a COST tiebreaker: it ranks below intelligence and taste, so a slack provider band never
-# promotes a model into work it cannot do.
-#
-# At Ahead the weekly window is not actually in danger, so a dollar move is a preference, not a
-# default; at Hot Anthropic quota is the expensive currency and off-quota leads.
-#
-# Agnostic, because WHICH work belongs off-quota is a property of the roster, not of this file.
-# Every registry row carries a `roles` array, so a model claiming a role IS the off-quota route
-# for that role -- including roles this file would never have guessed. Naming work classes here
-# ("send execution to the sidecar") freezes today's roster into doctrine and silently blocks a
-# future model that is strong somewhere else. Read the roster instead:
-#   .claude/tools/model_registry.py available   ->  roles, effort rungs, price
-_ROSTER = "roster: model_registry.py available"
-TIER_SPEND = (
-    "tier: spend - converged-spec execution and closed lenses stay executor-tier at low; "
-    "the rest keep their ladder rung"
-)
-TIER_LEAN = (
-    "tier: conserve - converged-spec execution and closed lenses to fan-out tier at medium; "
-    "favor off-quota for a role a roster model claims; weigh a plan-quota transport's band "
-    "against this one (dollar billing stays a spend decision)"
-)
-TIER_OFFQUOTA_FIRST = (
-    "tier: off-quota FIRST - route each role a roster model claims off-quota, preferring the "
-    "slackest plan-quota band; trade the Anthropic tier down only for unclaimed roles"
-)
-TIER_NO_TRANSPORT = (
-    "tier: conserve, no off-quota transport - converged-spec execution and closed lenses to "
-    "fan-out tier at medium"
-)
-# Band-independent and stated in both conserving lines because it is the one route that spends
-# NEITHER currency. Legality is COPYABLE-vs-DERIVED, never budget pressure.
-LOCAL = "copyable I/O to the free local tier"
+POLICY = "rules: orchestration §5/§5b"
+TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
 
 
-def tier_for(band, off_quota_available=None):
-    """The band's default dispatch advice, graded by band and by what the roster actually holds.
+def cold_plans():
+    """The plan-quota transports with no fresh cached reading, from provider_capacity's cache only."""
+    try:
+        sys.path.insert(0, TOOLS)
+        import model_registry
+        import provider_bands
+        import provider_capacity
+        data = model_registry.load()
+        return sorted(t for t in provider_bands.plan_quota_transports(data)
+                      if provider_capacity.cached(t, data=data) is None)
+    except Exception:
+        return []
 
-    Never the whole answer: the by-dispatch-shape refinement is the orchestration SKILL's
-    Tier-within-quota table, and what each available model is FOR is the registry's `roles`.
+
+def start_warm(transports):
+    """Start one detached `provider_bands.py warm <transports>`; True when it started.
+
+    HARNESS_CAPACITY_WARM=0 starts nothing. The warm process writes provider_capacity's cache,
+    which the next prompt reads; this hook never waits on it.
     """
-    if band not in ("Ahead", "Hot"):
-        return TIER_SPEND
-    if off_quota_available is None:
-        off_quota_available = sidecar_available()
-    if not off_quota_available:
-        return f"{TIER_NO_TRANSPORT}; {LOCAL}"
-    lead = TIER_OFFQUOTA_FIRST if band == "Hot" else TIER_LEAN
-    return f"{lead}; {LOCAL}; {_ROSTER}"
+    if os.environ.get("HARNESS_CAPACITY_WARM") == "0" or not transports:
+        return False
+    try:
+        from _bounded_run import detach_options
+        subprocess.Popen([sys.executable, os.path.join(TOOLS, "provider_bands.py"), "warm", *transports],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True, **detach_options())
+    except Exception:
+        return False
+    return True
 
 
-def sidecar_available():
-    """Is ANY off-quota transport selectable? Unknown counts as available (fail open).
+def warming(cold, dstate, now):
+    """The cold transports a warm is in flight for; starts one warm for those not warmed lately.
 
-    Asks the roster rather than naming a transport. An earlier version checked `deepseek` by
-    name, which was indistinguishable from the general question while deepseek was the only
-    row -- and became a false negative the moment a second transport landed, in the one band
-    where the answer changes what gets dispatched.
-
-    Read from the registry rather than restated here, so the advisory cannot disagree with the
-    gate that enforces it. The import is late and guarded because an advisory hook must fail
-    OPEN: an unreadable registry should cost a routing hint, never the turn.
+    A transport counts as warming for provider_capacity.CACHE_TTL_SECONDS after its warm started:
+    a warm that fails (auth, network) writes no cache, and re-spawning it every prompt would
+    probe on every turn.
     """
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-        import model_registry  # noqa: WPS433 - deliberate late import, see above
-
-        # OFF-QUOTA means "not this seat's own currency". The registry gained the four
-        # `anthropic` host rows on 2026-09-04, so a bare `any available row` test became
-        # unconditionally true and the no-transport branch below went dead.
-        seat = seat_transport()
-        return any(m.get("transport") != seat for m in model_registry.available_models())
+        sys.path.insert(0, TOOLS)
+        import provider_capacity
+        ttl = provider_capacity.CACHE_TTL_SECONDS
     except Exception:
-        return True
+        return []
+    started = dict(dstate.get("warmAt") or {})
+    due = [t for t in cold if now - float(started.get(t) or 0) > ttl]
+    if due and start_warm(due):
+        started.update({t: now for t in due})
+    dstate["warmAt"] = {t: at for t, at in started.items() if now - float(at) <= ttl}
+    return [t for t in cold if t in dstate["warmAt"]]
 
 
 def pressure_for(window, window_seconds, now):
@@ -171,6 +164,45 @@ def pressure_for(window, window_seconds, now):
         return None
     return quota_bands.pressure_for(
         window.get("used_percentage"), window.get("resets_at"), window_seconds, now)
+
+
+def headroom_ratio(seven, now):
+    """The weekly row's projected run-out ratio when it is a HEADROOM fact, else None.
+
+    Only a ratio below 1 is headroom: at or above it the allowance outlasts its own reset, which
+    raw pace has already said, so there is nothing for a routing comparison or a warning to add.
+    `quota_bands.runout_ratio_for` owns the arithmetic and every numeric guard behind it.
+    """
+    ratio = quota_bands.runout_ratio_for(seven.get("used_percentage"), seven.get("resets_at"),
+                                         SEVEN_DAY_SECONDS, now)
+    if ratio is None or not math.isfinite(ratio) or ratio >= 1.0:
+        return None
+    return ratio
+
+
+def dispatch_floor(rl, now):
+    """`(window, used_percentage)` for a window at or past its dispatch floor, or None.
+
+    The floor belongs to `anthropic_capacity_probe.DISPATCH_FLOOR_PERCENT`, whose live probe
+    refuses dispatch at those numbers. This hook only says a capture has reached one: a capture
+    cannot show whether extra credit is available, so availability stays the live probe's call.
+    A window whose reset clock is unreadable is skipped -- a floor, like a band, is a statement
+    about the window now current, and an expired capture makes none.
+    """
+    if not DISPATCH_FLOOR_PERCENT:
+        return None
+    for window, seconds in (("five_hour", FIVE_HOUR_SECONDS), ("seven_day", SEVEN_DAY_SECONDS)):
+        floor = DISPATCH_FLOOR_PERCENT.get(window)
+        row = rl.get(window) if isinstance(rl, dict) else None
+        if floor is None or not isinstance(row, dict):
+            continue
+        used = row.get("used_percentage")
+        if (not isinstance(used, (int, float)) or isinstance(used, bool)
+                or quota_bands.pressure_for(used, row.get("resets_at"), seconds, now) is None):
+            continue
+        if used >= floor:
+            return window, used
+    return None
 
 
 # Entrypoints whose statusline payload carries no `rate_limits` block at all. The band is
@@ -222,11 +254,8 @@ def emit_gap_notice(session_id):
     seat = seat_transport()
     own = ""
     if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
-        band, pressure = provider_band(seat)
-        if band:
-            own = (f" {seat}'s OWN band is {band}"
-                   + (f" (pressure {pressure:.2f})" if isinstance(pressure, (int, float)) else "")
-                   + "; route on it.")
+        if provider_band(seat):
+            own = " " + provider_entry(seat, label="this session") + "; route on it."
         else:
             own = (f" {seat}'s band is uncached; read it with "
                    f"`python3 .claude/tools/provider_bands.py list`, never call it unknown.")
@@ -264,30 +293,6 @@ def dedupe_path(session_id):
     return os.path.join(tempfile.gettempdir(), f"cc-budgetposture-{safe or 'unknown'}.json")
 
 
-def pending_debt_count(session_id=None):
-    """This session's unrated-dispatch count for the [rating-debt] clause, or -1 when unknown.
-    `session_id` is the payload's — without it the metrics module falls back to an mtime scan
-    that can pick a concurrent peer's session.
-
-    HARNESS_PENDING_COUNT short-circuits the orchestration_metrics import -- a proof can drive N
-    without a real session dir; unset in production. Import or call failure is silent: advisory
-    telemetry must never block a prompt.
-    """
-    seam = os.environ.get("HARNESS_PENDING_COUNT")
-    if seam is not None:
-        try:
-            return int(seam)
-        except ValueError:
-            return -1
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-        from orchestration_metrics import pending_count
-
-        return pending_count(session_id=session_id)
-    except Exception:
-        return -1
-
-
 def prune_stale(keep_days=7):
     """One dedupe file per session accumulates otherwise; swept on each
     session's first write, mirroring statusline.py's cc-cachestat sweep."""
@@ -321,8 +326,22 @@ def seat_transport():
         return _session_transport.UNKNOWN
 
 
+def seat_plan():
+    """The plan paying for this session (`_session_transport.session_plan`), or UNKNOWN.
+
+    `seat_transport` answers whether the capture's rate_limits are this session's own (any plan of
+    the host route); this answers who pays, which the other-plan clauses key on.
+    """
+    try:
+        return _session_transport.session_plan()
+    except Exception:
+        return _session_transport.UNKNOWN
+
+
 def provider_band(transport):
-    """(band, pressure) from provider_capacity's fresh CACHE ONLY, or (None, None).
+    """The band from provider_capacity's fresh CACHE ONLY, or None.
+
+    Model-facing plan entries use `provider_entry`, which prints the plan's windows, not this name.
 
     The UserPromptSubmit hook has a five-second deadline, so it never starts a provider request.
     Live dispatch preflight owns authority; this advisory names a cold cache as unknown.
@@ -331,46 +350,103 @@ def provider_band(transport):
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
         import provider_capacity
-        r = provider_capacity.cached(transport) or {}
-        quota = r.get("quota") or {}
-        band = "Exhausted" if r.get("status") == "exhausted" else quota.get("routingBand")
-        windows = quota.get("windows") or []
-        routing = next((w for w in windows if w.get("name") == "seven_day"), None)
-        binding = next((w for w in windows if w.get("name") == quota.get("bindingWindow")), None)
-        return band, (routing or binding or {}).get("pressure")
+        view = provider_capacity.routing_view(provider_capacity.cached(transport) or {})
+        return view["band"] if view else None
     except Exception:
-        return None, None
+        return None
 
 
 QUOTA_CLAUSE_CAP = 4
 
 
-def other_quota_bits(seat):
-    """One clause per OTHER plan-quota transport the roster knows, from cache only.
+def binding_fingerprint(transport, band):
+    """Legacy emission fingerprint only; never printed. Preserve the existing re-emit conditions."""
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import provider_capacity
+        view = provider_capacity.routing_view(provider_capacity.cached(transport) or {}) or {}
+        binding, routing = view.get("binding") or {}, view.get("routing") or {}
+        if not binding.get("band") or binding.get("name") == routing.get("name"):
+            return ""
+        if quota_bands.band_rank(binding["band"]) <= quota_bands.band_rank(band):
+            return ""
+        reset = binding.get("resetsAt")
+        when = time.strftime("%H:%MZ", time.gmtime(float(reset))) if reset else "unknown"
+        return " (%s %s %d%%, resets %s)" % (binding.get("name"), binding["band"],
+                                             round(float(binding.get("usedPercent") or 0)), when)
+    except Exception:
+        return ""
 
-    A plan-quota transport a session can sidecar to is a currency it may spend, and naming only the
-    seat and anthropic leaves a spent one invisible. Cache only, for the same 5s-budget reason
+
+def other_quota_bits(plan):
+    """One row per OTHER live plan-quota plan, from cache only: `{"name", "band", "fingerprint"}`, with
+    `band` None on a cold cache. A list longer than `QUOTA_CLAUSE_CAP` ends in `{"more": <count>}`.
+    `quota_key` is a row's emission key and `quota_clause` its printed clause.
+
+    A plan a session can sidecar to is a currency it may spend, and naming only the session's own
+    plan leaves a spent one invisible. The session's plan is left out; so is `anthropic` when the
+    session's route is another transport, since that seat prints the capture as the hop's band. Cache only, for the same 5s-budget reason
     `provider_band` is: this hook must never spawn a probe.
 
     A cold cache says `unknown` and NAMES the transport rather than omitting the clause — an absent
     clause reads as "no such currency", which is the failure mode this prevents.
+
+    A plan with room is named before one that is spent or unreadable. The cap is what keeps the line
+    short, and a slot spent on a currency nobody can spend is exactly the trade the line must not
+    make: with the Console plans in the roster, `go` -- warmed, with room, and the plan the router
+    reaches for -- was the row that fell behind `+N more` while an Exhausted `codex` was named. The
+    split is stable, so registry order still decides WITHIN each group; only the group moves.
     """
     try:
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
         import model_registry
-        names = sorted(t for t in model_registry.transports()
-                       if t not in (seat, "anthropic")
-                       and model_registry.cost_model_for(t) == "plan-quota")
+        import provider_bands
+        data = model_registry.load()
+        route = model_registry.route_of(plan, data)
+        skip = {plan} if route == _session_transport.HOST_TRANSPORT else {plan, _session_transport.HOST_TRANSPORT}
+        names = [t for t in provider_bands.plan_quota_transports(data) if t not in skip]
     except Exception:
         return []
-    out = []
-    for name in names[:QUOTA_CLAUSE_CAP]:
-        band, _p = provider_band(name)
-        out.append(f"{name} {band} band" if band else f"{name} band unknown (cache cold)")
+    rows = [{"name": name, "band": provider_band(name)} for name in names]
+    rows.sort(key=lambda row: 0 if row["band"] and row["band"] not in
+              (quota_bands.EXHAUSTED_BAND, "Dispatch floor") else 1)
+    out = [{"name": row["name"], "band": row["band"],
+            "fingerprint": binding_fingerprint(row["name"], row["band"]) if row["band"] else ""}
+           for row in rows[:QUOTA_CLAUSE_CAP]]
     if len(names) > QUOTA_CLAUSE_CAP:
-        out.append(f"+{len(names) - QUOTA_CLAUSE_CAP} more plan-quota transports")
+        out.append({"more": len(names) - QUOTA_CLAUSE_CAP})
     return out
+
+
+def quota_key(row):
+    """The row's emission-dedupe text. Its wording is the key a running session already saved."""
+    if "more" in row:
+        return f"+{row['more']} more plan-quota transports"
+    if row["band"]:
+        return f"{row['name']} {row['band']} band{row['fingerprint']}"
+    return f"{row['name']} band unknown (cache cold; python3 .claude/tools/provider_bands.py reads and warms it)"
+
+
+def quota_clause(row, warm, now):
+    """The posture line's clause for one `other_quota_bits` row; `warm` names the plans a warm is running for."""
+    if "more" in row:
+        return quota_key(row)
+    if row["band"] is None:
+        return f"{row['name']} band unknown (cache cold)" + ("; warming" if row["name"] in warm else "")
+    return provider_entry(row["name"], now=now)
+
+
+def free_pool_text():
+    """The `free pool: <ready>/<members> ready` clause (free_pool.ready_text), or None when the pool cannot be
+    read: an advisory clause never costs the posture line."""
+    try:
+        sys.path.insert(0, TOOLS)
+        import free_pool
+        return free_pool.ready_text()
+    except Exception:
+        return None
 
 
 def provider_band_live(transport):
@@ -404,43 +480,30 @@ def registered_transports():
         return None
 
 
-def currency_bits(seat, p7, band, delegatable, off_quota):
-    """(clauses, own_band) for a NON-host seat: its own currency first, the hop's second.
+def provider_entry(plan, *, capacity=None, now=None, label=None):
+    """`provider_bands.plan_entry` for `plan`, from `capacity` or else the plan's cached reading.
 
-    A provider session's in-harness dispatches spend the PROVIDER's allowance; the Anthropic band
-    the host path prints is the currency of a sidecar hop, not of anything this seat dispatches.
-    Printing one number under one label is what makes a provider seat read the wrong budget.
+    The printed `left` and `timeLeft` figures are percents from 0 to 100.
     """
-    # Named from the registry's `costModel`, never assumed to be quota: the shipped `opencode` seat
-    # is `marginal-usd`, and telling it to "spend its allowance first, it expires" advises spending
-    # dollars on the grounds that they would otherwise go to waste.
-    spend = "its own quota"
-    try:
-        sys.path.insert(0, os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-        import model_registry            # late + guarded, as everywhere else in this hook
-        if (model_registry.transport_meta(seat) or {}).get("costModel") == "marginal-usd":
-            spend = "marginal dollars"
-    except Exception:
-        pass
-    bits = [f"seat: {seat} (Workflow/Agent dispatch spends {spend})"]
-    own_band, own_p = provider_band(seat)
-    if own_band:
-        # `pressure` is optional in a probe's reading; an unguarded format here raises into
-        # main()'s blanket `except`, which deletes the entire posture line rather than one clause.
-        shown = f"pressure {own_p:.2f} -> " if isinstance(own_p, (int, float)) else ""
-        bits.append(f"{seat} {shown}{own_band} band (governs THIS seat)")
-    else:
-        bits.append(f"{seat} band unknown (cache cold; preflight probes before spend)")
-    # The Anthropic side is a real currency here too -- it is what `anthropic_sidecar.sh` spends --
-    # but it is the HOP's, so it is labelled rather than left to read as this seat's.
-    if p7 is not None:
-        hop = f"anthropic pressure {p7:.2f} -> {band} band (CROSS-HOP currency"
-        hop += f"; sidecar: {delegatable})" if off_quota else ")"
-        bits.append(hop)
-    else:
-        bits.append("anthropic band unknown (cache cold; preflight probes before a cross-hop)")
-    return bits, own_band
+    import provider_bands
+    import provider_capacity
+    return provider_bands.plan_entry(plan, capacity if capacity is not None else
+                                     provider_capacity.cached(plan), now, label)
+
+
+def capture_capacity(rl, now):
+    """A provider-capacity reading of the session's own capture: one window per readable `seven_day` and
+    `five_hour` row, `usedPercent` the capture's used percent from 0 to 100."""
+    windows = []
+    for name, seconds in (("seven_day", SEVEN_DAY_SECONDS), ("five_hour", FIVE_HOUR_SECONDS)):
+        row = rl.get(name) or {}
+        _, band = quota_bands.compute_band(row.get("used_percentage"), row.get("resets_at"), seconds, now)
+        if band:
+            windows.append({"name": name, "usedPercent": row["used_percentage"],
+                            "resetsAt": row["resets_at"], "windowDurationMins": seconds / 60,
+                            "band": band})
+    return {"quota": {"windows": windows, "routingWindow": "seven_day"}}
+
 
 
 def band_cli():
@@ -456,13 +519,31 @@ def band_cli():
     findable. Exit 3 is NOT a band — a gate treats it as not-satisfied, and says the
     band was unreadable rather than low.
 
+    `--band --session <id>` reads that session's own capture first and falls back to the
+    newest one: the fallback lists all of TEMP, which on a crowded TEMP took past the provider
+    guard's 10-second budget.
+
     `--band --pressure` additionally prints the raw pressure as a second
     tab-separated field. Band NAMES are counterintuitive on their own: they are
-    ordered by burn rate, so `Surplus` is the LOW-pressure band ("plan quota is
-    going unused - spend it, don't delegate") and `Ahead` is a HIGH-pressure one
-    ("quota is tight - delegating to paid transport is now the cheaper currency").
+    ordered by quota risk, the pace band raised when the projected run-out falls
+    before reset, so `Surplus` is the LOW-risk band (plan quota is going unused)
+    and `Ahead` is a HIGH-risk one (the window is spending faster than it lasts). Which
+    plan pays is weighed from room, never from the band name. The pressure field
+    stays the raw pace, so a headroom-raised band can print beside a modest pace.
     A refusal message quoting only the name reads as though a low band meant
     plenty of room; quoting the number with it removes the ambiguity.
+
+    `--used` after `--five-hour` adds a sixth field, the 5h window's used percent (0 to 100, one decimal),
+    after a fifth that is empty unless the weekly run-out ratio is present. The pace formula stays with
+    `quota_bands`; a caller that prints the window's quota left reads this field and never inverts the pace.
+
+    `--band --pressure --five-hour` prints four tab-separated fields: band, 7d
+    pressure, 5h pressure, 5h `resets_at` (epoch seconds), and appends a fifth
+    carrying the weekly run-out ratio when it is headroom (below 1: the week will
+    not last to its own reset). An unreadable 5h window leaves its two fields
+    empty; an unreadable 7d window prints `unknown` with an empty pressure and still
+    exits 3, with the 5h fields filled when they are readable. A 100%-used week
+    prints `Exhausted` rather than the pace band its burn rate alone would grade.
     """
     # `--band --transport <name>` reads that transport's OWN band. Bare `--band` keeps its
     # contract exactly: sc_gate_band gates ANTHROPIC-currency spend and must keep reading the
@@ -487,44 +568,165 @@ def band_cli():
         print(f"{b}\t{p:.2f}" if "--pressure" in argv and p is not None else b)
         return 0
 
-    state_file = find_state(None)
+    session = argv[argv.index("--session") + 1] if "--session" in argv[:-1] else None
+    five = "--five-hour" in argv
+    state_file = find_state(session)
     if not state_file:
-        print("unknown")
+        print("unknown\t\t\t" if five else "unknown")
         return 3
+    now = time.time()
+    rl = None
     try:
         with open(state_file, encoding="utf-8") as fh:
             rl = (json.load(fh) or {}).get("rate_limits")
-        p7 = pressure_for(rl.get("seven_day"), SEVEN_DAY_SECONDS, time.time())
     except Exception:
-        p7 = None
+        rl = None
+    seven = rl.get("seven_day") if isinstance(rl, dict) else None
+    seven = seven if isinstance(seven, dict) else {}
+    try:
+        p7, band = quota_bands.compute_band(seven.get("used_percentage"), seven.get("resets_at"),
+                                            SEVEN_DAY_SECONDS, now)
+        ratio = headroom_ratio(seven, now)
+    except Exception:
+        p7, band, ratio = None, None, None
+    if p7 is not None and quota_bands.is_exhausted(seven.get("used_percentage")):
+        # A spent week grades mid-band late in its window, so the pace band reads as room left.
+        # The gate is told Exhausted, which is what the injected line says too.
+        band = quota_bands.EXHAUSTED_BAND
+    tail = ""
+    if five:
+        window = rl.get("five_hour") if isinstance(rl, dict) else None
+        try:
+            p5 = pressure_for(window, FIVE_HOUR_SECONDS, now)
+        except Exception:
+            p5 = None
+        reset = window.get("resets_at") if p5 is not None else None
+        tail = f"\t{p5:.2f}\t{int(reset)}" if p5 is not None else "\t\t"
+        # Field 5 is the SAME comparison input the guard needs, so a caller cannot be handed a
+        # band raised by headroom with no way to weigh it. Absent when the week lasts to its reset,
+        # which keeps the four-field shape every other consumer parses.
+        if ratio is not None:
+            tail += f"\t{ratio:.4f}"
+        if "--used" in argv:
+            used = float(window["used_percentage"]) if p5 is not None else None
+            tail += ("\t" if ratio is None else "") + (f"\t{used:.1f}" if used is not None else "\t")
     if p7 is None:
-        print("unknown")
+        print("unknown\t" + tail if five else "unknown")
         return 3
-    if "--pressure" in sys.argv[1:]:
-        print(f"{band_for(p7)[0]}\t{p7:.2f}")
+    if "--pressure" in argv or five:
+        print(f"{band}\t{p7:.2f}{tail}")
     else:
-        print(band_for(p7)[0])
+        print(band)
     return 0
+
+
+USAGE_WINDOWS = ("five_hour", "seven_day")
+
+
+def sample_usage(rl, now):
+    """Append this capture's Anthropic windows to the plan-usage samples (tools/usage_samples.py)."""
+    import usage_samples  # noqa: WPS433 - late, so a broken sampler costs only the sample
+
+    samples = []
+    for window in USAGE_WINDOWS:
+        w = rl.get(window)
+        if isinstance(w, dict) and w.get("used_percentage") is not None:
+            samples.append({"ts": rl.get("captured_at"), "provider": "anthropic", "window": window,
+                            "used": w.get("used_percentage"), "resets_at": w.get("resets_at")})
+    usage_samples.record(samples, now)
+
+
+def _scan_dispatch(path):
+    import sidecar_argv
+    with open(path, encoding='utf-8') as fh:
+        for raw in fh:
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            if row.get('type') != 'assistant':
+                continue
+            content = (row.get('message') or {}).get('content') or []
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get('type') != 'tool_use':
+                    continue
+                name = item.get('name') or ''
+                if name in ('Agent', 'Workflow') or name.endswith('__Workflow'):
+                    return True
+                if name in ('Bash', 'PowerShell') and sidecar_argv.launcher_invocations(
+                        (item.get('input') or {}).get('command') or ''):
+                    return True
+    return False
+
+
+def dispatch_seen(payload):
+    """Cache actual dispatch sightings, including misses, until the transcript changes."""
+    try:
+        path = os.path.abspath(payload.get('transcript_path') or '')
+        stat = os.stat(path)
+        fingerprint = [path, stat.st_size, stat.st_mtime_ns]
+        cache_path = state_path(payload.get('session_id') or '')
+        cached = read_json_salvage(cache_path).get('budget_dispatch_cache')
+        if (isinstance(cached, dict) and cached.get('fingerprint') == fingerprint
+                and isinstance(cached.get('seen'), bool)):
+            return cached['seen']
+        seen = _scan_dispatch(path)
+        update_json_locked(cache_path, lambda state: state.update(
+            budget_dispatch_cache={'fingerprint': fingerprint, 'seen': seen}))
+        return seen
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def spend_posture(session_id):
+    """This session's spend posture (`spend_mode.current`). Normal when it cannot be read: a posture that
+    cannot be read is never lean."""
+    try:
+        import spend_mode
+        return spend_mode.current(session_id)
+    except Exception:
+        return {"mode": "normal", "scope": None, "until": None, "expired": False}
+
+
+def spend_line(posture, own_band):
+    """The owner's spend line for a posture, or None when it says nothing. `own_band` is the session's own plan band."""
+    if posture.get("mode") == "lean":
+        return ("spend: lean (owner, %s, until %s) — pin rule: orchestration reference spend_lean.md; "
+                "rows: provider_bands.py lean <tier>" % (posture.get("scope"), posture.get("until")))
+    if posture.get("expired"):
+        return "spend: lean expired %s" % posture.get("until")
+    if own_band in (quota_bands.EXHAUSTED_BAND, "Dispatch floor", "Hot"):
+        return "spend: lean available — owner only"
+    return None
+
+
+def emit_spend(session_id, dstate, dpath, own_band):
+    """Print the spend line when it changed since the last prompt. Its last value is `dstate["spend"]`, so a set,
+    an expiry or a band change re-injects once, with or without rate_limits telemetry."""
+    line = spend_line(spend_posture(session_id), own_band)
+    previous = dstate.get("spend")
+    if previous == line:
+        return
+    dstate["spend"] = line
+    if str(previous or "").startswith("spend: lean (") and not str(line or "").startswith("spend: lean"):
+        # The lean line already in context would keep steering pins; a clear says so once.
+        print("[budget-posture] spend: normal (lean cleared)")
+
+    def updater(state):
+        state["spend"] = line
+
+    update_json_locked(dpath, updater)
+    if line:
+        print("[budget-posture] " + line)
 
 
 def main():
     payload = json.load(sys.stdin)
+    if payload.get('agent_id') or os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'sdk-cli':
+        return
     session_id = payload.get("session_id", "unknown")
-
-    state_file = find_state(session_id)
-    rl = None
-    if state_file:
-        with open(state_file, encoding="utf-8") as fh:
-            rl = (json.load(fh) or {}).get("rate_limits")
-    if not isinstance(rl, dict):
-        emit_gap_notice(session_id)
-        return
-
-    now = time.time()
-    p7 = pressure_for(rl.get("seven_day"), SEVEN_DAY_SECONDS, now)
-    p5 = pressure_for(rl.get("five_hour"), FIVE_HOUR_SECONDS, now)
-    if p7 is None and p5 is None:
-        return
 
     # Dedupe state — per session, same lifecycle as the capture files.
     dpath = dedupe_path(session_id)
@@ -535,10 +737,41 @@ def main():
             dstate = json.load(fh)
     except Exception:
         dstate = {}
-    band = None
-    delegatable = None
-    if p7 is not None:
-        band, delegatable = band_for(p7)
+
+    state_file = find_state(session_id)
+    rl = None
+    if state_file:
+        with open(state_file, encoding="utf-8") as fh:
+            rl = (json.load(fh) or {}).get("rate_limits")
+    has_rl = isinstance(rl, dict)
+    now = time.time()
+    seven = rl.get("seven_day") if has_rl and isinstance(rl.get("seven_day"), dict) else {}
+    # The band comes from the shared risk reduction, not from the pace alone: a week whose
+    # projected run-out will not reach its reset is the case the pace number understates.
+    p7, band = (quota_bands.compute_band(seven.get("used_percentage"), seven.get("resets_at"),
+                                         SEVEN_DAY_SECONDS, now) if has_rl else (None, None))
+    # A spent allowance grades mid-band late in its window, so pressure alone would print a pace
+    # band while every native dispatch is refused. Exhaustion overrides the band, as it already
+    # does for every other transport's clause -- but only from a weekly row whose reset clock is
+    # readable, because an expired capture cannot prove that anything is spent now.
+    exhausted = band is not None and quota_bands.is_exhausted(seven.get("used_percentage"))
+    if exhausted:
+        band = quota_bands.EXHAUSTED_BAND
+    # The spend line speaks on its own path, ahead of the rate_limits early return: its "available"
+    # offer reads the session's own band, which on a provider seat is the seat's and elsewhere the capture's.
+    seat = seat_transport()
+    on_seat = seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN)
+    seat_band = provider_band(seat) if on_seat else None
+    emit_spend(session_id, dstate, dpath, seat_band if on_seat else band)
+    if not has_rl:
+        if dispatch_seen(payload):
+            emit_gap_notice(session_id)
+        return
+
+    p5 = pressure_for(rl.get("five_hour"), FIVE_HOUR_SECONDS, now)
+    if p7 is None and p5 is None:
+        return
+    floor = dispatch_floor(rl, now)
 
     # Emit when the posture is NEW to the model: first time this session, again after a
     # compaction dropped it, and whenever the band or the pressure actually moved. A
@@ -549,21 +782,35 @@ def main():
     last_p7 = dstate.get("p7")
     if p7 is not None and isinstance(last_p7, (int, float)) and abs(p7 - last_p7) >= PRESSURE_DELTA:
         should_emit = True
+    # A window reaching its dispatch floor is its own reason to speak: 98.9% -> 99% moves neither
+    # band nor pace by a printable amount, and it is the reading a session about to launch work on
+    # that currency has to see.
+    if dstate.get("floor") != (floor[0] if floor else None):
+        should_emit = True
     # On a provider seat the band that GOVERNS dispatch is the seat's own, and it was absent from
     # the dedupe key: the seat could cross from Surplus into Hot and this hook stayed silent
     # because the Anthropic hop band had not moved. Cache-read only, same as the emission path.
-    seat = seat_transport()
-    seat_band = None
-    if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
-        seat_band = provider_band(seat)[0]
-        if dstate.get("seatBand") != seat_band:
-            should_emit = True
+    if on_seat and dstate.get("seatBand") != seat_band:
+        should_emit = True
     # The OTHER spendable plan-quota transports belong in the key for the same reason seatBand
     # does: one of them can cross into Exhausted while the Anthropic hop has not moved, and then
     # nothing would say so -- which is exactly how a fully spent Codex account stayed invisible.
-    quota = other_quota_bits(seat)
-    if dstate.get("quota") != quota:
+    plan = seat_plan()
+    quota_rows = other_quota_bits(plan)
+    quota = [quota_key(row) for row in quota_rows]
+    # A plan whose cached reading just aged out reads `unknown` until its warm lands; that moves the
+    # key and says nothing new.
+    cold = cold_plans()
+    went_cold = set(cold) - set(dstate.get("cold") or [])
+    dstate["cold"] = cold
+    if not went_cold and dstate.get("quota") != quota:
         should_emit = True
+    # The free pool's ready count is in the key too: a member's cooldown ends on the clock, and nothing
+    # else in this hook would say the pool grew back.
+    pool = free_pool_text()
+    if dstate.get("pool") != pool:
+        should_emit = True
+    warm = warming(cold, dstate, now)
 
     if should_emit:
         captured = rl.get("captured_at")
@@ -571,70 +818,57 @@ def main():
         age_txt = f"capture {age_min:.0f}m old" if age_min is not None else "capture age unknown"
         if age_min is not None and age_min > 120:
             age_txt += " (stale: a hint only)"
-        bits = ["[budget-posture]"]
-        # The band's delegatable list describes what the SIDECAR takes, so it is dropped when the
-        # sidecar is not in the roster. Dropped, not annotated: an option that cannot be chosen costs
-        # attention every turn it is explained, and the band itself is still true and still governs
-        # fan-out width.
-        # Resolved once and threaded into tier_for: it decides both whether the delegatable
-        # set is worth printing and which conserving move is actually available.
-        off_quota = sidecar_available()
-        if p7 is not None and off_quota:
-            bits.append(f"7d pressure {p7:.2f} -> {band} band (sidecar: {delegatable})")
-        elif p7 is not None:
-            bits.append(f"7d pressure {p7:.2f} -> {band} band")
-        # The tier default rides with the band in BOTH cases. It is the only thing the band
-        # still governs once the sidecar leaves the roster, and it is what makes the band name
-        # actionable without loading a skill.
-        if band is not None:
-            bits.append(tier_for(band, off_quota))
-        if p5 is not None:
-            bits.append(f"5h pressure {p5:.2f} (>1.3: narrow fan-out)")
-        # Every OTHER spendable plan-quota transport, on BOTH paths: a host session can sidecar to
-        # Codex just as a Codex session can hop to Anthropic, and the incident was a spent account
-        # no session could see. New information, not a second copy of a figure already printed.
-        bits.extend(quota)
-        # A NON-host seat gets both currencies, each labelled. This branch ADDS the seat's own
-        # currency and re-labels the host's 7d clause; it does not change what the host path
-        # already emitted, and the clause above is the only part both paths share.
-        if seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN):
-            cur, own_band = currency_bits(seat, p7, band, delegatable, off_quota)
-            # Drop the host 7d clause: `currency_bits` already printed that number, labelled as the
-            # HOP's currency. Two clauses carrying one figure under two names is how a seat reads
-            # the wrong budget -- the exact defect this slice removes.
-            tail = [b for b in bits[1:] if not b.startswith("7d pressure")]
-            # Tier follows the band that governs THIS seat's dispatches. Tiering off the Anthropic
-            # band would advise spending an allowance a Workflow pin here cannot reach.
-            if own_band:
-                tail = [f"{tier_for(own_band, off_quota)} (from the {seat} band)"
-                        if b.startswith("tier: ") else b for b in tail]
-            else:
-                # No band governs this seat, so no tier default does either. An Anthropic-derived
-                # tier left in place reads as advice for a currency this seat cannot spend.
-                tail = [b for b in tail if not b.startswith("tier: ")]
-            # The 5h window is Anthropic's too. It still governs a HOP's width, so it stays --
-            # labelled, which is the whole point of the per-currency split.
-            tail = [f"anthropic {b} [cross-hop]" if b.startswith("5h pressure") else b
-                    for b in tail]
-            bits = ["[budget-posture]"] + cur + tail
-        elif seat == _session_transport.UNKNOWN:
-            bits.append("seat UNIDENTIFIED (the 7d band is Anthropic's; it may not be this "
-                        "session's currency)")
+        own_capacity = capture_capacity(rl, now)
+        on_provider_seat = seat not in (_session_transport.HOST_TRANSPORT, _session_transport.UNKNOWN)
+        if on_provider_seat:
+            bits = [provider_entry(plan, now=now, label="this session"),
+                    provider_entry("anthropic", capacity=own_capacity, now=now, label="hop")]
+        else:
+            host_plan = plan if plan != _session_transport.UNKNOWN else "anthropic"
+            bits = [provider_entry(host_plan, capacity=own_capacity, now=now, label="this session")]
+        bits += [quota_clause(row, warm, now) for row in quota_rows]
+        if pool:
+            bits.append(pool)
+        if on_provider_seat:
+            own_blocked = seat_band in (quota_bands.EXHAUSTED_BAND, "Dispatch floor")
+        else:
+            import provider_bands
+            own_windows = provider_bands.display_windows(own_capacity, now)
+            own_blocked = bool(own_windows) and own_windows[0]["band"] == quota_bands.EXHAUSTED_BAND
+        if own_blocked:
+            bits.append("native Workflow/Agent dispatch is blocked until the reset; route each job to "
+                        "another plan serving its tier (orchestration §5b)")
+        if p5 is not None and p5 > quota_bands.FIVE_HOUR_NARROW_PRESSURE:
+            trigger = ("5h used faster than its time: one native job at a time; the next waits for it or goes to "
+                       "a row on another plan (orchestration §5b)")
+            if on_provider_seat:
+                trigger += " [cross-hop]"
+            bits.append(trigger)
+        if _session_transport.UNKNOWN in (seat, plan):
+            bits.append("seat UNIDENTIFIED (the Anthropic band may not be this session's currency)")
+        # A capture can reach a hard dispatch floor while the risk band still reads as spendable,
+        # and a capture cannot say whether extra credit would cover the job. An exhausted week
+        # already says more than this, so the warning fires only where nothing else does;
+        # availability stays the live probe's call.
+        if floor and not exhausted:
+            bits.append(f"preflight: anthropic {floor[0]} at the "
+                        f"{DISPATCH_FLOOR_PERCENT[floor[0]]:g}% dispatch floor ({floor[1]:.1f}% used); "
+                        "live capacity preflight decides - the capture cannot prove extra-credit "
+                        "availability")
         bits.append(POLICY)
         bits.append(age_txt)
-        print(bits[0] + " " + "; ".join(bits[1:]))
-        # keep `unrated`: the debt clause dedupes on it
-        dstate.update({"band": band, "p7": p7, "seatBand": seat_band, "quota": quota})
-
-    n = pending_debt_count(session_id)
-    if n > 0 and n != dstate.get("unrated"):
-        print(f"[rating-debt] unrated dispatches: {n} — record verdicts in "
-              ".claude/orchestration_verdicts.json (/orchestration_metrics §Incremental rating)")
-        dstate["unrated"] = n
+        print("[budget-posture] " + " | ".join(bits))
+        dstate.update({"band": band, "p7": p7, "seatBand": seat_band, "quota": quota, "pool": pool,
+                       "floor": floor[0] if floor else None})
 
     try:
         with open(dpath, "w", encoding="utf-8") as fh:
             json.dump(dstate, fh)
+    except Exception:
+        pass
+
+    try:
+        sample_usage(rl, now)
     except Exception:
         pass
 

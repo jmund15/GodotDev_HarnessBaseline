@@ -18,6 +18,29 @@ def check(label, ok, detail=""):
         FAILURES.append(f"{label} :: {detail}")
 
 
+def test_import_fault_isolated_per_member(monkeypatch, tmp_path):
+    sys.path.insert(0, str(HOOKS))
+    import _optional_hooks as loader
+    monkeypatch.setattr(loader, 'HOOKS_DIR', tmp_path)
+    for name in ('broken', 'healthy'):
+        (tmp_path / (name + '.py')).write_text('', encoding='utf-8')
+    real_import = importlib.import_module
+    def planted(name):
+        if name == 'broken':
+            raise RuntimeError('planted import fault')
+        if name == 'healthy':
+            return 'healthy member'
+        return real_import(name)
+    monkeypatch.setattr(loader.importlib, 'import_module', planted)
+    faults = []
+    def recover(name, exc):
+        faults.append((name, str(exc)))
+        return 'fault stub'
+    assert loader.load('broken', 'healthy', 'absent', on_error=recover) == (
+        'fault stub', 'healthy member', None)
+    assert faults == [('broken', 'planted import fault')]
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         hooks = Path(tmp)

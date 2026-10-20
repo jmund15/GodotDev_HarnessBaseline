@@ -6,6 +6,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _runner_fixture import copy_runner_deps  # noqa: E402
+
 RUNNER = Path(__file__).resolve().parents[1] / "scripts" / "harness_tests.py"
 
 
@@ -24,14 +27,7 @@ def _case(label, body, row, code, needle=None):
         scripts.mkdir(parents=True)
         tests.mkdir(parents=True)
         (scripts / "harness_tests.py").write_bytes(RUNNER.read_bytes())
-        (root / ".claude/hooks").mkdir(parents=True)
-        (root / ".claude/hooks/_hook_state.py").write_bytes(
-            (RUNNER.parents[1] / "hooks/_hook_state.py").read_bytes()
-        )
-        (root / ".claude/tools").mkdir(parents=True)
-        (root / ".claude/tools/adaptation.py").write_bytes(
-            (RUNNER.parents[1] / "tools/adaptation.py").read_bytes()
-        )
+        copy_runner_deps(root / ".claude")
         (root / ".claude/skills/project_subsystems").mkdir(parents=True)
         proof = tests / "test_bound.py"
         proof.write_text(body, encoding="utf-8")

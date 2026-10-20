@@ -13,6 +13,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$HERE/../scripts"
 LIB="$SCRIPTS/lib/sidecar_common.sh"
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+SIDECAR_LEDGER_PATH="$WORK/ledger.jsonl"; export SIDECAR_LEDGER_PATH
 [ -f "$LIB" ] || { echo "FAIL: lib missing at $LIB"; exit 1; }
 PEAK="2026-09-16T02:00:00Z"
 OFF="2026-09-16T05:00:00Z"
@@ -105,7 +107,8 @@ payload='{"type":"result","session_id":"s","num_turns":1,"result":"ok","modelUsa
 fields="$(python3 -c 'import json,sys
 r=json.load(open(sys.argv[1],encoding="utf-8"))
 print(r.get("priceWindow"), r.get("priceMultiplier"), r.get("modelVersion"), r.get("costUSD"))' "$(cygpath -w "$rec" 2>/dev/null || echo "$rec")" 2>&1)"
-expect "record: window, multiplier, version, off-peak cost" "off-peak 0.5 DeepSeek-V4.1-Flash 0.75" "$fields"
+flash_version="$(python3 "$SCRIPTS/../tools/model_registry.py" resolve flash --field version 2>&1)"
+expect "record: window, multiplier, version, off-peak cost" "off-peak 0.5 $flash_version 0.75" "$fields"
 rm -rf "$tmpd"
 
 # ---- 6. call sites -----------------------------------------------------------------------------
@@ -130,9 +133,9 @@ expect "sc_check_gates runs host band, target capacity, then price window" \
 # hooks/sidecar_dispatch_context.py runs `<launcher> --check <dispatch args>` before every launch; a
 # --check that ignores -W denies a user-authorized peak dispatch before the launcher ever runs.
 expect "sc_check_model_override -W sets peak authorization" "1" \
-  "$( ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1; sc_check_model_override --check -m flash -W; printf '%s' "$SC_PEAK_AUTHORIZED" ) )"
+  "$( ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1; sc_check_model_override --check -m flash -W >/dev/null; printf '%s' "$SC_PEAK_AUTHORIZED" ) )"
 chk_w="$( ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1
-           sc_check_model_override --check -m flash -W; sc_resolve_model >/dev/null 2>&1
+           sc_check_model_override --check -m flash -W >/dev/null; sc_resolve_model >/dev/null 2>&1
            SC_CHECK_MODE=1 SC_PRICE_AT="$PEAK" sc_gate_price_window >/dev/null 2>&1 ); echo "rc=$?" )"
 expect "check mode at peak WITH -W passes" "rc=0" "$chk_w"
 ds_check="$(awk '/^if \[ "\$\{1:-\}" = "--check" \]; then/{f=1} f&&/^fi/{exit} f' "$SCRIPTS/deepseek_sidecar.sh" \
@@ -148,8 +151,39 @@ out="$( ( SC_TRANSPORT=deepseek; . "$LIB" >/dev/null 2>&1
 rm -f "$stubcli"
 case "$out" in *"rc=2") ok "effort-values lookup failure refuses (exit 2), never reads as unrestricted" ;; *) bad "effort lookup failure: $out" ;; esac
 
-# 20 fixed cases plus one per launcher this tree ships (4 in a consumer, 3 upstream).
-_expected=$((20 + _launchers))
+# ---- 10. a rung the row's evidence marks wasteful (effort.avoid) is refused unless the driver declares a comparison (SC_COMPARISON); free-text SC_MEASUREMENT never lifts it ----
+avoid_probe() {  # $1 model, $2 effort, $3 SC_COMPARISON (may be empty) -> "<output>rc=<n>"
+  ( SC_TRANSPORT=anthropic; . "$LIB" >/dev/null 2>&1
+    sc_parse_flags -m "$1" -e "$2" >/dev/null 2>&1; sc_resolve_model >/dev/null 2>&1
+    SC_MEASUREMENT="a long free-text measurement declaration"; export SC_MEASUREMENT
+    SC_COMPARISON="$3"; export SC_COMPARISON
+    sc_validate_effort ) 2>&1; echo "rc=$?"
+}
+avoided="$(python3 "$SCRIPTS/../tools/model_registry.py" effort-avoid sonnet max 2>&1)"
+out="$(avoid_probe sonnet max "")"
+case "$out" in
+  *"effort.avoid"*"$avoided"*"rc=2") ok "an avoided rung without a comparison exits 2 (free-text SC_MEASUREMENT set) naming effort.avoid and the row's evidence" ;;
+  *) bad "avoided rung without a comparison: $out" ;;
+esac
+case "$(avoid_probe sonnet max "1")" in *"rc=0") ok "... and a driver-declared comparison lets it through" ;; *) bad "avoided rung under a comparison" ;; esac
+case "$(avoid_probe haiku max "")" in *"rc=0") ok "a row that does not avoid the route's rung passes without one" ;; *) bad "unavoided rung refused" ;; esac
+case "$(avoid_probe sonnet xhigh "")" in *"rc=0") ok "an avoiding row's other rungs pass" ;; *) bad "other rung refused" ;; esac
+stubcli="$(mktemp --suffix=.py)"
+cat > "$stubcli" <<'PY'
+import sys
+if sys.argv[1] == "effort-values":
+    print('["low", "max"]')
+    sys.exit(0)
+sys.exit(3)
+PY
+out="$( ( SC_TRANSPORT=anthropic; . "$LIB" >/dev/null 2>&1
+         sc_parse_flags -m sonnet -e max >/dev/null 2>&1; SC_REGISTRY_CLI="$stubcli"
+         sc_validate_effort ) 2>&1; echo "rc=$?")"
+rm -f "$stubcli"
+case "$out" in *"rc=2") ok "an unreadable avoid lookup refuses (exit 2), never reads as nothing avoided" ;; *) bad "avoid lookup failure: $out" ;; esac
+
+# 25 fixed cases plus one per launcher this tree ships (4 in a consumer, 3 upstream).
+_expected=$((25 + _launchers))
 [ "$ran" -eq "$_expected" ] || { echo "FAIL expected $_expected cases, ran $ran"; fail=1; }
 [ "$fail" = 0 ] && echo "PASS test_sidecar_price_window" || echo "FAIL test_sidecar_price_window"
 exit "$fail"

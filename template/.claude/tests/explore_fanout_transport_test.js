@@ -1,10 +1,58 @@
 #!/usr/bin/env node
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
+const { spawnSync } = require('child_process')
+const { isDeepStrictEqual } = require('util')
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'explore_fanout.js'), 'utf8')
-const body = src.replace(/^export const meta = \{[\s\S]*?^\}\r?\n/m, '')
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+// Writes the run as Claude Code records it (<session>/workflows/<runId>.json beside the transcript directory's
+// journal.jsonl, one started and one result row per agent call, the result stored as JSON text) and replays it.
+function replayBoundedRun(ran, returned) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'explore-g8-'))
+  try {
+    const runId = 'wf_g8replay-000'
+    const transcriptDir = path.join(root, 'subagents', 'workflows', runId)
+    fs.mkdirSync(transcriptDir, { recursive: true })
+    fs.mkdirSync(path.join(root, 'workflows'))
+    fs.writeFileSync(path.join(root, 'workflows', runId + '.json'),
+      JSON.stringify({ runId, script: src, args: ran.args, result: ran.result }))
+    const rows = [{ type: 'launched' }]
+    ran.calls.forEach((opts, index) => {
+      const identity = { key: 'v2:g8-' + index, agentId: 'ag8' + index }
+      rows.push({ type: 'started', ...identity, label: opts.label, phase: opts.phase })
+      rows.push({ type: 'result', ...identity, result: JSON.stringify(returned(ran.prompts[index], opts)) })
+    })
+    fs.writeFileSync(path.join(transcriptDir, 'journal.jsonl'), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    return spawnSync(process.execPath, [path.join(__dirname, '..', 'tools', 'workflow_replay.mjs'), transcriptDir],
+      { encoding: 'utf8', maxBuffer: 64 << 20 })
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}
+
+function fieldDifferences(expected, actual, prefix = '') {
+  if (isDeepStrictEqual(expected, actual)) return []
+  if (expected === null || actual === null || typeof expected !== 'object' || typeof actual !== 'object') return [prefix]
+  return [...new Set([...Object.keys(expected), ...Object.keys(actual)])].flatMap(key =>
+    fieldDifferences(expected[key], actual[key], prefix ? prefix + '.' + key : key))
+}
+
+const engineRun = require('./_engine_run')
+
+const EXPLORE = path.join(__dirname, '..', 'workflows', 'explore_fanout.js')
+const src = fs.readFileSync(EXPLORE, 'utf8')
+const engine = engineRun.load(EXPLORE)
+// The vocabulary the provider guard injects on every Workflow call; the engine holds none of its own.
+const HOST_TRANSPORT = { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable'] }
+// The explore run starts its closeCheck verifier, so every run carries args.checker. The test pins it from the
+// transport under test (its first id, and medium when the transport declares it); the engine never picks one.
+const pinnedChecker = (transport) => {
+  if (!transport || !Array.isArray(transport.ids) || !transport.ids.length) return undefined
+  const checker = { model: transport.ids[0] }
+  if (Array.isArray(transport.efforts) && transport.efforts.length) checker.effort = transport.efforts.includes('medium') ? 'medium' : transport.efforts[0]
+  return checker
+}
+const withHost = args => engineRun.withHost(args, HOST_TRANSPORT)
 
 let passed = 0
 let failed = 0
@@ -38,44 +86,45 @@ async function run(args, returned = {
     return typeof returned === 'function' ? returned(prompt, opts) : returned
   }
   const parallel = async thunks => Promise.all(thunks.map(fn => fn()))
-  const fn = new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body)
-  const result = await fn({ resultMode: 'full', ...args }, agent, parallel, () => {}, line => logs.push(line))
-  return { result, calls, logs, prompts }
+  const transport = Object.prototype.hasOwnProperty.call(args, '__transport') ? args.__transport : HOST_TRANSPORT
+  const passedArgs = withHost({ resultMode: 'full', checker: pinnedChecker(transport), ...args })
+  const result = await engine(passedArgs, agent, parallel, () => {}, line => logs.push(line))
+  return { result, calls, logs, prompts, args: passedArgs }
 }
 
 ;(async () => {
-  const anthropic = await run({
-    lenses: [lens({ key: 'anthropic', model: 'opus', effort: 'xhigh' })],
+  const absent = await run({ __transport: undefined, lenses: [lens({ key: 'absent', model: 'opus', effort: 'low' })] })
+  check('no injected vocabulary fails closed naming __transport',
+    String(absent.result.error || '').includes('__transport') && absent.calls.length === 0, JSON.stringify(absent.result))
+  const host = await run({
+    lenses: [lens({ key: 'host', model: 'opus', effort: 'xhigh', tier: 'architect' })],
   })
-  check('Anthropic fallback keeps role and effort vocabulary',
-    !anthropic.result.error && anthropic.calls[0] && anthropic.calls[0].model === 'opus'
-      && anthropic.calls[0].effort === 'xhigh',
-    JSON.stringify({ result: anthropic.result, calls: anthropic.calls }))
+  check('an injected transport with no declared efforts keeps its ids and the native rungs',
+    !host.result.error && host.calls[0] && host.calls[0].model === 'opus'
+      && host.calls[0].effort === 'xhigh',
+    JSON.stringify({ result: host.result, calls: host.calls }))
+  check('PINS logs the declared tier beside the pin', host.logs.some(l => String(l).startsWith('PINS ') && String(l).includes('tier:architect')), JSON.stringify(host.logs))
 
   const codex = await run({
     __transport: {
-      name: 'codex', ids: ['gpt-5.6-luna'], default: 'gpt-5.6-luna',
+      name: 'codex', ids: ['gpt-5.6-luna'],
       efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     },
     lenses: [lens({ key: 'codex', model: 'gpt-5.6-luna', effort: 'max' })],
   })
-  check('provider ids and native max effort replace Anthropic vocabulary',
+  check('provider ids and native max effort are the vocabulary',
     !codex.result.error && codex.calls[0] && codex.calls[0].model === 'gpt-5.6-luna'
       && codex.calls[0].effort === 'max',
     JSON.stringify({ result: codex.result, calls: codex.calls }))
 
   const invalidTransports = [
-    ['missing ids', { name: 'codex', default: 'gpt-test', efforts: ['max'] }],
-    ['empty ids', { name: 'codex', ids: [], default: 'gpt-test', efforts: ['max'] }],
-    ['malformed ids', { name: 'codex', ids: 'gpt-test', default: 'gpt-test', efforts: ['max'] }],
-    ['non-string ids', { name: 'codex', ids: ['gpt-test', null], default: 'gpt-test', efforts: ['max'] }],
-    ['missing efforts', { name: 'codex', ids: ['gpt-test'], default: 'gpt-test' }],
-    ['empty efforts', { name: 'codex', ids: ['gpt-test'], default: 'gpt-test', efforts: [] }],
-    ['malformed efforts', { name: 'codex', ids: ['gpt-test'], default: 'gpt-test', efforts: 'max' }],
-    ['non-string efforts', { name: 'codex', ids: ['gpt-test'], default: 'gpt-test', efforts: ['max', null] }],
-    ['missing default', { name: 'codex', ids: ['gpt-test'], efforts: ['max'] }],
-    ['empty default', { name: 'codex', ids: ['gpt-test'], default: '', efforts: ['max'] }],
-    ['default outside ids', { name: 'codex', ids: ['gpt-test'], default: 'other', efforts: ['max'] }],
+    ['missing ids', { name: 'codex', efforts: ['max'] }],
+    ['empty ids', { name: 'codex', ids: [], efforts: ['max'] }],
+    ['malformed ids', { name: 'codex', ids: 'gpt-test', efforts: ['max'] }],
+    ['non-string ids', { name: 'codex', ids: ['gpt-test', null], efforts: ['max'] }],
+    ['empty efforts', { name: 'codex', ids: ['gpt-test'], efforts: [] }],
+    ['malformed efforts', { name: 'codex', ids: ['gpt-test'], efforts: 'max' }],
+    ['non-string efforts', { name: 'codex', ids: ['gpt-test'], efforts: ['max', null] }],
   ]
   for (const [label, __transport] of invalidTransports) {
     const invalidTransport = await run({
@@ -90,11 +139,12 @@ async function run(args, returned = {
   const omitted = await run({
     lenses: [lens({ key: 'default', model: 'opus', effort: undefined })],
   })
-  check('omitted effort takes the medium default',
-    !omitted.result.error && omitted.calls[0] && omitted.calls[0].effort === 'medium',
+  check('omitted effort is not defaulted to medium where the transport declares no efforts',
+    !omitted.result.error && omitted.calls[0] && omitted.calls[0].effort === undefined,
     JSON.stringify({ result: omitted.result, calls: omitted.calls }))
 
   const invalid = await run({
+    __transport: { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable'], efforts: ['low', 'medium', 'high', 'xhigh'] },
     lenses: [lens({ key: 'invalid', model: 'opus', effort: 'max' })],
   })
   check('present unsupported effort fails before dispatch',
@@ -103,12 +153,12 @@ async function run(args, returned = {
 
   const wrongProvider = await run({
     __transport: {
-      name: 'codex', ids: ['gpt-5.6-luna'], default: 'gpt-5.6-luna',
+      name: 'codex', ids: ['gpt-5.6-luna'],
       efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     },
     lenses: [lens({ key: 'wrong', model: 'opus', effort: 'low' })],
   })
-  check('provider selector rejects Anthropic aliases',
+  check('provider selector rejects another transport\'s names',
     !!wrongProvider.result.error && wrongProvider.calls.length === 0,
     JSON.stringify(wrongProvider.result))
 
@@ -187,6 +237,10 @@ async function run(args, returned = {
       && boundedWriterSpill.result.delivery.preview.spillMetadata.omitted === 2,
     JSON.stringify({ full: writerSpill.result, bounded: boundedWriterSpill.result }))
 
+  check('every explore result carries unavailable verification without a verifier profile',
+    [host, writerSpill, boundedWriterSpill].every(r => r.result.verification.status === 'unavailable' && !('postCheck' in r.result)),
+    JSON.stringify([host.result.verification, writerSpill.result.verification, boundedWriterSpill.result.verification]))
+
   for (const spillDir of ['reports/explore', '.claude/scratch/../../outside', 'C:/repo/.claude/scratch/explore']) {
     const escaped = await run({ spillDir, lenses: [lens({ key: 'writer' })] })
     check('spillDir outside repository scratch fails before dispatch: ' + spillDir,
@@ -220,7 +274,7 @@ async function run(args, returned = {
       && archive.commands.select.includes('--workflow-select <ID> --expect-journal-sha256 <sha256-from-manifest>')
       && archive.commands.page.includes('--workflow-page items|lenses|reports|gaps')
       && archive.commands.full.includes('--workflow-full --expect-journal-sha256 <sha256-from-manifest>')
-      && Object.keys(preview).sort().join(',') === 'claims,contradictions,flags,gaps,perLens'
+      && Object.keys(preview).sort().join(',') === 'claims,contradictions,flags,gaps,nonVerified,perLens'
       && Object.values(preview).every(row => row.shown + row.omitted === row.total),
     JSON.stringify({ archive, preview }))
 
@@ -237,12 +291,10 @@ async function run(args, returned = {
       && shedRun.result.flags.length > 0
       && shedRun.result.perLens[0].rejected === manyInvalidEntries.length,
     'bytes=' + shedBytes)
-  check('a bounded run that sheds state names the resume recovery path beside the journal path',
+  check('a bounded run that sheds state offers no resume and keeps the archive retrieval commands',
     shedRun.result.delivery.payloadComplete === false
-      && !!shedRun.result.delivery.resume
-      && shedRun.result.delivery.resume.costsNewModelSpend === false
-      && /resultMode.*full/.test(shedRun.result.delivery.resume.how)
-      && !!shedRun.result.delivery.resume.contains,
+      && !Object.prototype.hasOwnProperty.call(shedRun.result.delivery, 'resume')
+      && Object.keys(shedRun.result.delivery.archive.commands).sort().join(',') === 'full,manifest,page,select',
     JSON.stringify(shedRun.result.delivery))
   const smallComplete = await run({ resultMode: 'bounded', lenses: [lens({ key: 'small' })] }, {
     claims: [claim(1)],
@@ -253,7 +305,7 @@ async function run(args, returned = {
       && !Object.prototype.hasOwnProperty.call(smallComplete.result.delivery, 'resume'),
     JSON.stringify(smallComplete.result.delivery))
 
-  const subjects = Array.from({length: 8}, (_, i) => 'shared-' + i)
+  const subjects = Array.from({length: 8}, (_, i) => 'shared-' + i + '-' + '界'.repeat(200))
   const processedReturned = (_prompt, opts) => {
     const key = opts.label.slice('explore:'.length)
     const claims = subjects.map((subject, i) => key === 'b' ? {
@@ -293,9 +345,24 @@ async function run(args, returned = {
       && processedBounded.result.delivery.counts.contradictions === processedFull.result.contradictions.length
       && processedBounded.result.delivery.counts.flags === processedFull.result.flags.length
       && Object.values(processedBounded.result.delivery.preview).every(row => row.shown + row.omitted === row.total)
-      && (processedBounded.result.delivery.payloadComplete
-        || (!!processedBounded.result.delivery.resume && processedBounded.result.delivery.resume.costsNewModelSpend === false)),
+      && !Object.prototype.hasOwnProperty.call(processedBounded.result.delivery, 'resume'),
     'bytes=' + processedBytes + ' ' + JSON.stringify(processedBounded.result.delivery))
+
+  // The archive pages hold only raw lens returns, so engine-derived fields (downgraded confidence, contested and
+  // corroborated tags, contradictions, flag details) come back by local replay of the bounded run.
+  const retained = processedBounded.result
+  const replayed = replayBoundedRun(processedBounded, processedReturned)
+  let differences = ['(replay exited ' + replayed.status + ': ' + String(replayed.stderr || replayed.error || '').slice(0, 300) + ')']
+  if (replayed.status === 0) {
+    differences = fieldDifferences(JSON.parse(JSON.stringify(processedFull.result)), JSON.parse(replayed.stdout))
+  }
+  check('G8c the local replay of the bounded run recovers every processed field of the full result',
+    differences.length === 0 && retained.delivery.payloadComplete === false,
+    JSON.stringify({differentFields: differences.length, first: differences.slice(0, 24),
+      fullClaims: processedFull.result.claims.length, retainedClaims: retained.claims.length,
+      fullContradictions: processedFull.result.contradictions.length, retainedContradictions: retained.contradictions.length,
+      fullFlags: processedFull.result.flags.length, retainedFlags: retained.flags.length,
+      longFlagDetails: processedFull.result.flags.filter(row => row.detail.length > 120).length}))
 
   const fullClaims = [claim(1), claim(2)]
   const full = await run({ resultMode: 'full', lenses: [lens({ key: 'full' })] }, {
@@ -323,6 +390,12 @@ async function run(args, returned = {
   check('invalid resultMode fails before dispatch',
     !!invalidMode.result.error && invalidMode.calls.length === 0,
     JSON.stringify(invalidMode.result))
+
+  check('engine header documents the argument schema the command no longer lists',
+    /^\/\/ Args: \{lenses: \[\{key, promptPath, model, effort, agentType, tier\}\], contextPrefixPath/m.test(src))
+  const rendered = await run({ lenses: [lens()] })
+  check('a rendered lens prompt carries no character-count target',
+    rendered.prompts.length > 0 && rendered.prompts.every(p => !/chars target/.test(p)))
 
   console.log(`explore_fanout transport: ${passed} passed, ${failed} failed`)
   process.exit(failed ? 1 : 0)

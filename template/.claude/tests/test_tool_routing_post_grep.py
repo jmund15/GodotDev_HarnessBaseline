@@ -48,8 +48,7 @@ def main():
     env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
                HARNESS_ROUTING_AUDIT_LOG_PATH=os.path.join(tmp, "routing.jsonl"),
                HARNESS_MEMORY_HITS_LOG=os.path.join(tmp, "memory.jsonl"),
-               CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8",
-               HARNESS_ROUTING_HARD_BLOCK_CS_GREP="false")
+               CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8")
     sid = "trgrep01"
     with open(os.path.join(state_dir, sid[:8] + ".json"), "w", encoding="utf-8") as fh:
         json.dump({"last_prompt": "Locate the SpellFactory declaration and callers."}, fh)
@@ -68,8 +67,7 @@ def main():
         audit_rows = [json.loads(line) for line in fh if line.strip()]
     main_audit = [row for row in audit_rows if row.get("session_id") == sid[:8]]
 
-    # Positive control for the fallback channel: if no pre-call receipt exists,
-    # the post hook still emits once through PostToolUse additionalContext.
+    # Missing pre-call receipts must not revive the retired fallback.
     fallback_sid = "trgrep02"
     with open(os.path.join(state_dir, fallback_sid[:8] + ".json"), "w", encoding="utf-8") as fh:
         json.dump({"last_prompt": "Locate the SpellFactory declaration and callers."}, fh)
@@ -93,10 +91,10 @@ def main():
         ("routing audit records the delivered pre-call Grep advisory",
          bool(main_audit and main_audit[-1].get("classification") == "nudge-warranted"
               and main_audit[-1].get("nudge_fired") is True)),
-        ("post-call fallback still uses the registered additionalContext channel",
-         fallback.returncode == 0 and "NEXT PascalCase lookup" in fallback_context),
-        ("verified-unique only exempts C# and does not suppress indexed-resource fallback",
-         indexed.returncode == 0 and "semantic-search" in indexed_context),
+        ("missing pre-call receipt does not revive retroactive advice",
+         fallback.returncode == 0 and fallback_context == ''),
+        ("indexed resources get no retroactive advice either",
+         indexed.returncode == 0 and indexed_context == ''),
         ("all advisory routes stay off stderr",
          not before.stderr.strip() and not after.stderr.strip() and not fallback.stderr.strip()
          and not indexed.stderr.strip()),

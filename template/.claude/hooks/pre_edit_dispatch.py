@@ -3,37 +3,39 @@
 """
 Hook: PreToolUse dispatcher for the Write|Edit tool family.
 
-One settings.json entry replacing four separate hook commands (pattern_enforcer.py,
-harness_edit_skill_reminder.py, readonly_lens_write_guard.py,
-running_script_edit_guard.py). One interpreter spawn per matched call instead of four,
-and deterministic in-process ordering instead of relying on matcher-block conventions
-(per docs, matching hooks run in parallel), which is what the two blocks below need:
-an advisory must never be emitted for a call that is about to be denied.
+One settings.json entry runs the edit chain in one interpreter, in a deterministic
+order. A content normalizer feeds its updatedInput to later checks; no advisory
+or rewrite is emitted for a call that is denied.
 
-Order (blocks before advisories; the first block wins and short-circuits):
-  1. pattern_enforcer.process            — dangerous content/command → exit 2 + stderr
-  2. composed_output_guard.process       — direct edit of a composed file → exit 2 + stderr
+Order (the first block wins; advisories emit after all checks):
+  1. pattern_enforcer.process            — .cs computed attributes; dangerous content/command → block
+     tres_format_guard.process           — scene and resource file normalization and unresolved-reference advice
+  2. composed_output_guard.process       — direct edit of composed or generated text → exit 2 + stderr
   3. provenance_label_guard.process      — provenance label added to loaded guidance → exit 2
-  4. harness_edit_skill_reminder.process — harness edit without the skill → deny;
-                                           otherwise the once-per-session advisory
-  5. readonly_lens_write_guard.process   — off-lens subagent write → stderr note, no block
-  6. running_script_edit_guard.process   — live script instance → advisory
+  4. model_name_guard.process            — model name added to a mechanism-layer file → deny;
+                                           fails open (advisory posture) so a fault never blocks
+  5. harness_edit_skill_reminder.process — harness edit → deny until instruction_quality is in context,
+                                           then a once-per-compaction advisory
+  6. readonly_lens_write_guard.process   — off-lens subagent write → stderr note, no block
+  7. running_script_edit_guard.process   — live script instance → advisory
 
 Sub-hook contract: `process(payload)` returns one of
   {"block": <message>}   hard block — stderr + exit 2, the tool call is aborted
   {"deny": <reason>}     permissionDecision deny — stdout JSON + exit 0, also aborts
   {"context": <text>}    model-visible advisory, merged into ONE additionalContext
   {"stderr": <text>}     non-blocking note on stderr
+  {"updatedInput": ...} corrected tool input, forwarded to later hooks and the client
   None                   nothing to say
+Only one content writer matches a call: pattern_enforcer for .cs; tres_format_guard for .tres.
 Each sub-hook self-gates on tool_name, so the union matcher is safe, and each keeps its
 own main() for standalone runs and for pre_bash_dispatch.py's in-process use.
 
 Output contract:
   - Advisories merge into one hookSpecificOutput.additionalContext payload (exit 0) —
     the only model-visible advisory channel on PreToolUse (archive_hook_gotchas.md).
-  - Each sub-hook imports and runs alone. Enforcement faults deny the edit, except an edit under
-    `.claude/hooks/`, which proceeds with an advisory so the broken guard can be repaired.
-    Advisory faults stay non-blocking. Both name the faulted sub-hook on stderr.
+  - A sub-hook fault blocks only when its module sets `FAIL_CLOSED = True` (floor),
+    the same contract as pre_bash_dispatch. Other faults allow with additionalContext
+    naming the fault and preserve later checks. No edit sub-hook is floor today.
 
 Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 """
@@ -47,8 +49,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _optional_hooks  # noqa: E402
 
-ENFORCEMENT = frozenset({"pattern_enforcer", "harness_edit_skill_reminder", "composed_output_guard",
-                         "provenance_label_guard"})
 # Project-local (rail battery): chained only where the module exists; blocks only in an armed run.
 try:
     _HAS_RAIL_GUARD = importlib.util.find_spec("rail_probe_guard") is not None
@@ -57,9 +57,11 @@ except Exception:
 CHAIN = (("rail_probe_guard", "advisory"),) if _HAS_RAIL_GUARD else ()
 CHAIN += (
     ("pattern_enforcer", "enforcement"),
+    ("tres_format_guard", "advisory"),
     ("composed_output_guard", "enforcement"),
     ("provenance_label_guard", "enforcement"),
-    ("harness_edit_skill_reminder", "enforcement"),
+    ("model_name_guard", "advisory"),
+    ("harness_edit_skill_reminder", "advisory"),
     ("readonly_lens_write_guard", "advisory"),
     ("running_script_edit_guard", "advisory"),
 )
@@ -74,67 +76,40 @@ def _fault(name, phase, exc):
     return f"[pre-edit-dispatch] {name} {phase} fault: {type(exc).__name__}: {exc}\n"
 
 
-def _repairs_hook(input_data):
-    """True when the edit targets `.claude/hooks/`, where a faulted guard gets repaired."""
-    tool_input = input_data.get("tool_input") if isinstance(input_data, dict) else None
-    path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
-    if not isinstance(path, str):
-        return False
-    normalized = path.replace("\\", "/").lower()
-    return normalized.startswith(".claude/hooks/") or "/.claude/hooks/" in normalized
-
-
-def _enforcement_fault(input_data, name, detail, contexts, notes):
-    """The deny result for a faulted enforcement sub-hook, or None for an edit that repairs a hook.
-
-    Denying every edit would also deny the edit that repairs the guard, so an edit under
-    `.claude/hooks/` proceeds with an advisory naming the fault."""
-    if _repairs_hook(input_data):
-        contexts.append(f"Enforcement sub-hook {name} {detail}; its checks did not run on this hook edit. "
-                        f"Repair .claude/hooks/{name}.py.")
-        return None
-    return 0, _payload(
-        permissionDecision="deny",
-        permissionDecisionReason=(
-            f"Edit denied because enforcement sub-hook {name} {detail}. Repair .claude/hooks/{name}.py "
-            f"first; edits under .claude/hooks/ stay allowed while it is broken."
-        ),
-    ), "".join(notes)
+def _member_fault(name, phase, exc, fail_closed, contexts, notes):
+    fault = _fault(name, phase, exc)
+    notes.append(fault)
+    if fail_closed:
+        return 2, "", "".join(notes) + f"{name} is a floor guard; repair it before editing.\n"
+    contexts.append(fault.strip() + f"; its checks did not run. Repair .claude/hooks/{name}.py.")
+    return None
 
 
 def dispatch(input_data, chain=None):
     """Run the chain over one payload. Returns (exit_code, stdout_text, stderr_text)."""
     contexts, notes = [], []
+    updated = None
     for entry in (chain if chain is not None else CHAIN):
         name, second = entry
-        if callable(second):
-            posture, process = ("enforcement" if name in ENFORCEMENT else "advisory"), second
-        else:
-            posture, process = second, None
-            try:
-                process = importlib.import_module(name).process
-            except Exception as exc:
-                notes.append(_fault(name, "import", exc))
-                if posture == "enforcement":
-                    denied = _enforcement_fault(input_data, name, "failed to import", contexts, notes)
-                    if denied:
-                        return denied
-                continue
+        member = second if callable(second) else None
+        try:
+            if member is None:
+                member = importlib.import_module(name)
+            process = member if callable(member) else member.process
+        except Exception as exc:
+            denied = _member_fault(name, "import", exc, getattr(member, "FAIL_CLOSED", False), contexts, notes)
+            if denied:
+                return denied
+            continue
+        fail_closed = getattr(member, "FAIL_CLOSED", False)
         try:
             result = process(input_data) or {}
+            if not isinstance(result, dict):
+                raise TypeError("process result is not an object")
         except Exception as exc:
-            notes.append(_fault(name, "runtime", exc))
-            if posture == "enforcement":
-                denied = _enforcement_fault(input_data, name, "faulted", contexts, notes)
-                if denied:
-                    return denied
-            continue
-        if not isinstance(result, dict):
-            notes.append(_fault(name, "runtime", TypeError("process result is not an object")))
-            if posture == "enforcement":
-                denied = _enforcement_fault(input_data, name, "returned an invalid result", contexts, notes)
-                if denied:
-                    return denied
+            denied = _member_fault(name, "runtime", exc, fail_closed, contexts, notes)
+            if denied:
+                return denied
             continue
 
         if result.get("block"):
@@ -142,12 +117,20 @@ def dispatch(input_data, chain=None):
         if result.get("deny"):
             return 0, _payload(permissionDecision="deny",
                                permissionDecisionReason=result["deny"]), "".join(notes)
+        if result.get("updatedInput") is not None:
+            updated = result["updatedInput"]
+            input_data = dict(input_data, tool_input=updated)
         if result.get("context"):
             contexts.append(result["context"])
         if result.get("stderr"):
             notes.append(result["stderr"])
 
-    stdout = _payload(additionalContext="\n\n".join(contexts)) if contexts else ""
+    fields = {}
+    if contexts:
+        fields["additionalContext"] = "\n\n".join(contexts)
+    if updated is not None:
+        fields["updatedInput"] = updated
+    stdout = _payload(**fields) if fields else ""
     return 0, stdout, "".join(notes)
 
 

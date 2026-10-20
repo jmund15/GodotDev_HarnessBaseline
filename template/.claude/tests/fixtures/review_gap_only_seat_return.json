@@ -1,0 +1,10 @@
+{
+  "findings": [],
+  "gaps": [{"item": "callers outside this diff", "reason": "capability"}],
+  "checked": {
+    "toolsUsed": ["Read:src/a.cs"],
+    "stoppedAt": "exhausted-leads",
+    "basis": "read every changed line of src/a.cs under both mandates",
+    "mandates": {"cq.C": "clean", "cq.D": "clean"}
+  }
+}

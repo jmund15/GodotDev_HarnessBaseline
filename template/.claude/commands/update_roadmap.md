@@ -1,12 +1,12 @@
 ---
-description: Update topic-folder roadmap.md — Parts table, mermaid regen, derived views, revision log. Brainstorm skills invoke; standalone for Part transitions.
+description: Create or update a roadmap and Part states; /mvp_plan authors MVP narratives
 ---
 
 # /update_roadmap
 
 Single executor for `roadmap.md` edits. Source of truth for the roadmap schema: [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) §6.
 
-**Mode: batch-propose.** All proposed edits assembled into one diff; single user approval applies everything (Parts table + Mermaid + derived views + Spawned sub-brainstorms + MVP check-mark/Status recompute + Revision Log). Iterative per-edit confirmation is NOT this command's job, and batch mode is single approval, never zero approval — the diff is the user's checkpoint against silent drift.
+**Mode: batch-propose.** All proposed edits assembled into one diff; single user approval applies everything (Parts table + Mermaid + derived views + Spawned sub-brainstorms + MVP check-mark/Status recompute + Revision Log). Iterative per-edit confirmation is NOT this command's job, and batch mode is single approval, never zero approval: the vault is not a git repository, so the diff is the owner's only checkpoint against silent drift, and a second approval would re-ask the same diff.
 
 **Gate inheritance:** when invoked from a flow whose own human gate just approved the exact Parts list (e.g. `/design_drive` design-lock batch answers), present the diff informationally and apply WITHOUT a second approval prompt — the upstream gate was the approval; the user redirects after the fact. Standalone/user-driven invocations keep the approval prompt.
 
@@ -32,15 +32,15 @@ Single executor for `roadmap.md` edits. Source of truth for the roadmap schema: 
 
 Read each step's reference file when you reach that step; none of them auto-load.
 
-1. **Locate `roadmap.md`** — read [`reference/update_roadmap_locate.md`](reference/update_roadmap_locate.md) §Locating or creating the roadmap, and §Child sub-roadmap creation when `architecture_brainstorm` Step 8 spawns a child subfolder.
-2. **Resolve proposed edits from inputs** — read [`reference/update_roadmap_resolve.md`](reference/update_roadmap_resolve.md) for the idea-brainstorm routing table, the arch-brainstorm state mapping, the spawn transition to `submap-pending`, and the split/re-authoring paths.
-3. **Validate the edited Parts table** — read [`reference/update_roadmap_validate.md`](reference/update_roadmap_validate.md) for the structural, Trigger-content, batch-shape, wikilink-coherence and parent-staleness checks plus their fix-recipes. Warnings surface as `⚠` markers in the Step 7 diff; the user decides apply-anyway or revise.
-4. **Render the Mermaid diagram** — read [`reference/update_roadmap_render.md`](reference/update_roadmap_render.md) §Step 4 — Render Mermaid diagram. Regenerate every run; drift is silent.
-5. **Compute derived views** — read [`reference/update_roadmap_render.md`](reference/update_roadmap_render.md) §Step 5 — Compute derived views and §Step 5 — MVP Checkpoints recompute. The MVP recompute mutates only check-marks and the non-terminal Status line; `/mvp_plan`'s narrative fields survive byte-for-byte.
-6. **Compose the revision log entry** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 6 — Compose revision log entry. One transition, one line, ≤25 words.
+1. **Locate `roadmap.md`** — read [`reference/update_roadmap_locate.md`](reference/update_roadmap_locate.md) §Locating or creating the roadmap, and §Child sub-roadmap creation when the `architecture_brainstorm` skill's Doc-and-review Step 8 spawns a child subfolder.
+2. **Resolve proposed edits from inputs** — read [`reference/update_roadmap_resolve.md`](reference/update_roadmap_resolve.md) for the idea-brainstorm routing table, the arch-brainstorm state mapping, the spawn transition to `submap-pending`, and the split/re-authoring paths. End by writing the resolved edits into a candidate: an edited copy of each target `roadmap.md` under `.claude/scratch/update_roadmap/`. Bump `last_revised` to today only in a candidate whose resolved edits change the roadmap, so a repeated invocation that resolves to no change keeps the Step 8 empty-diff path.
+3. **Run the generator, then validate the edited Parts table** — when the project's roadmap generator (§6.13) has a single-roadmap mode, run it over every candidate together, so cross-roadmap resolution sees the whole batch; the project's roadmap-index command names the invocation. It returns each rendered document and the Structural and Wikilink warnings. Then read [`reference/update_roadmap_validate.md`](reference/update_roadmap_validate.md) for the checks it does not run and the fix-recipes. Without a generator, the candidate is the working document. Warnings surface as `⚠` markers in the Step 7 diff; the user decides apply-anyway or revise.
+4. **Review the Mermaid diagram** — the Step 3 generator run rendered it; read [`reference/update_roadmap_render.md`](reference/update_roadmap_render.md) §Step 4 — Render Mermaid diagram for what to review, and how to render it by hand without a generator.
+5. **Review derived views and the MVP recompute** — the Step 3 generator run computed them; read [`reference/update_roadmap_render.md`](reference/update_roadmap_render.md) §Step 5 — Compute derived views and §Step 5 — MVP Checkpoints recompute for what to review, and how to compute them by hand without a generator.
+6. **Compose the revision log entry** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 6 — Compose revision log entry for the owning format.
 7. **Present the batch diff** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 7 — Present batch diff for the nine items the diff must cover.
-8. **Apply** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 8 — Apply, including the empty-diff no-op path.
-9. **Regenerate the cross-roadmap index** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 9 — Regenerate the cross-roadmap index. Runs on every invocation that reaches Step 8, empty diff included; non-blocking; skipped when the project has no index.
+8. **Apply** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 8 — Apply, including the empty-diff no-op path
+9. **Regenerate the cross-roadmap index** — read [`reference/update_roadmap_close.md`](reference/update_roadmap_close.md) §Step 9 — Regenerate the cross-roadmap index.
 
 ---
 
@@ -72,15 +72,12 @@ All standalone ops route through Steps 3-9 (validate, regen, present diff, apply
 
 ---
 
-## MCP-offline policy
-
-`roadmap.md` is a vault file edited with native `Read`/`Edit`/`Write`. See [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) §3.
-
----
-
 ## Cross-references
 
-- [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) — roadmap.md schema (source of truth). §6 is the schema; §6.10 is canonical for the Step 3 Trigger validators; §6.4 + §6.5 specify the heading anchors Step 4 / Step 5 replace; §6.8 governs cross-folder dep resolution; §5.1 is the spawn-placement convention informing Step 7's Spawned sub-brainstorms updates; §1.2 is stale-roadmap remediation (the caller re-runs arch Step 5 before handing the Part list here).
+- [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) — roadmap.md schema (source of truth). §6 is the schema; §6.4 + §6.5 specify the heading anchors the Step 3 generator run (Step 4 / Step 5 by hand without one) replaces; §6.8 governs cross-folder dep resolution.
+- [`_brainstorm_shared/roadmap_triggers_mvp.md`](../skills/_brainstorm_shared/roadmap_triggers_mvp.md) §6.10 is canonical for the Step 3 Trigger validators.
+- [`_brainstorm_shared/common.md`](../skills/_brainstorm_shared/common.md) §5.1 is the spawn-placement convention informing Step 7's Spawned sub-brainstorms updates.
+- [`_brainstorm_shared/existing_doc_check.md`](../skills/_brainstorm_shared/existing_doc_check.md) §1.2 is stale-roadmap remediation.
 - [`architecture_brainstorm/SKILL.md`](../skills/architecture_brainstorm/SKILL.md) — invokes this command as its final step
 - [`idea_brainstorm/SKILL.md`](../skills/idea_brainstorm/SKILL.md) — invokes this command as its final step
 - `obsidian_conventions` skill — Obsidian wikilink/anchor conventions for `Source`-column links

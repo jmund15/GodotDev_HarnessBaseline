@@ -3,27 +3,22 @@
 """
 Hook: PostToolUse dispatcher for the Write|Edit tool family.
 
-One settings.json entry replacing seven separate hook commands
-(check_logger_tag_prefix.py, plan_memory_reminder.py, design_surface_reminder.py,
-load_steps_validator.py --hook, tres_format_guard.py --hook, harness_growth_guard.py,
-self_eval_archive_guard.py). One interpreter spawn per matched call instead of seven,
-and the advisories merge into ONE additionalContext payload instead of seven competing
-ones.
+One settings.json entry runs the post-edit advisory chain in one interpreter.
+Resource normalization belongs to pre_edit_dispatch.py; post-edit advisories
+merge into one additionalContext payload.
 
 Order (cheapest text scans first, then the file-reading guards):
   1. check_logger_tag_prefix.process — untagged JmoLogger call on an added line
   2. design_surface_reminder.process — [Export] bool / null strategy arg / new abstract rung
   3. plan_memory_reminder.process    — domain reminders for a .claude/plans/*.md write
-  4. load_steps_validator.process    — engine resource load_steps header mismatch
-  5. tres_format_guard.process       — engine resource non-canonical serialization
-  6. harness_growth_guard.process    — harness markdown size/density measurement
-  7. self_eval_archive_guard.process — self-evaluation archive validity
-  8. retire_trigger_advisory.process — malformed retire_when metadata on a new memory or rules file
-  9. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
+  4. harness_growth_guard.process    — harness markdown size/density measurement
+  5. self_eval_archive_guard.process — self-evaluation archive validity
+  6. retire_trigger_advisory.process — malformed retire_when metadata on a new memory or rules file
+  7. task_brief_facts.process        — a `task` brief's row facts: route, cost, plan room, window fit
+  8. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
 
-Sub-hook contract: `process(payload)` returns `{"context": <text>}` or None; the
-dispatcher also honors `{"block": ...}` / `{"deny": ...}` / `{"stderr": ...}` so a future
-blocking sub-hook needs no dispatcher change. Each sub-hook self-gates on tool_name and
+Sub-hook contract: `process(payload)` returns `{"context": <text>}` or None;
+`{"stderr": <text>}` records diagnostics. Each sub-hook self-gates on tool_name and
 file suffix, so the union matcher is safe, and each keeps its own main()/hook() for
 standalone runs.
 
@@ -50,11 +45,10 @@ CHAIN = (
     ("check_logger_tag_prefix", "advisory"),
     ("design_surface_reminder", "advisory"),
     ("plan_memory_reminder", "advisory"),
-    ("load_steps_validator", "advisory"),
-    ("tres_format_guard", "advisory"),
     ("harness_growth_guard", "advisory"),
     ("self_eval_archive_guard", "advisory"),
     ("retire_trigger_advisory", "advisory"),
+    ("task_brief_facts", "advisory"),
     ("runaway_scan_reaper", "reaper"),
 )
 CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
@@ -117,11 +111,6 @@ def dispatch(input_data, chain=None):
         if not isinstance(result, dict):
             continue
 
-        if result.get("block"):
-            return 2, "", "".join(notes) + result["block"] + "\n"
-        if result.get("deny"):
-            return 0, _payload(permissionDecision="deny",
-                               permissionDecisionReason=result["deny"]), "".join(notes)
         if result.get("context"):
             text = str(result["context"])
             if len(text) > MAX_CONTEXT_CHARS:

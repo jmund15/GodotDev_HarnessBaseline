@@ -2,7 +2,7 @@
 """Run the baseline CI's Ubuntu lane against a publish worktree inside WSL, before the PR exists.
 
     python3 .claude/tools/baseline_linux_preview.py [<journal-id>]   # default: newest worktree
-    python3 .claude/tools/baseline_linux_preview.py --setup          # once: node 20 + pwsh, no sudo
+    python3 .claude/tools/baseline_linux_preview.py --setup          # once: python 3.x + node 20 + pwsh, no sudo
 
 Windows validation cannot see Linux-only failures: a `C:/` path is relative on POSIX, and real
 symlinks exist. Each one otherwise surfaces only as a red PR check, costing a closed PR and a
@@ -12,9 +12,9 @@ CI, it runs every step after a failure.
 
 The worktree is copied, without `.git`, to `~/baseline-linux-preview` and committed to a fresh
 repo, as `actions/checkout` gives. Never `/tmp`: the delete guards admit temp paths as safe
-targets, which flips the proofs that plant an unsafe path. `~/.local/ci-tools/{node/bin,pwsh}`
-lead PATH; `--setup` downloads Node 20 and the latest PowerShell there and checks their SHA-256.
-WSL's python3 stands in for setup-python's `3.x`.
+targets, which flips the proofs that plant an unsafe path. `~/.local/ci-tools/{py/bin,node/bin,pwsh}`
+lead PATH; `--setup` downloads the latest Python (a uv-managed venv, as setup-python's `3.x`), Node 20
+and the latest PowerShell there and checks their SHA-256.
 
 Full output: `.claude/scratch/linux_preview/<worktree>.log`. Stdout carries each step's verdict,
 FAIL lines and the battery summary.
@@ -52,6 +52,15 @@ want=$(curl -fsSL "${url%/*}/hashes.sha256" | iconv -f UTF-16 -t UTF-8 | tr -d '
 [ -n "$want" ] || { echo "no sha256 for $p" >&2; exit 1; }
 echo "$want  $p" | sha256sum -c -
 rm -rf pwsh && mkdir pwsh && tar -xzf "$p" -C pwsh && chmod +x pwsh/pwsh && rm -f "$p"
+U=https://github.com/astral-sh/uv/releases/latest/download
+q=uv-x86_64-unknown-linux-gnu.tar.gz
+curl -fsSLO "$U/$q"
+want=$(curl -fsSL "$U/$q.sha256" | awk '{print tolower($1)}')
+[ -n "$want" ] || { echo "no sha256 for $q" >&2; exit 1; }
+echo "$want  $q" | sha256sum -c -
+rm -rf uv py && mkdir uv && tar -xzf "$q" -C uv --strip-components=1 && rm -f "$q"
+UV_PYTHON_INSTALL_DIR="$T/pythons" "$T/uv/uv" venv --seed --managed-python py
+"$T/py/bin/python" --version
 "$T/node/bin/node" --version
 "$T/pwsh/pwsh" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
 """
@@ -108,7 +117,7 @@ def preview_script(src: str, steps: list[tuple[str, str]], origin: str | None = 
     `origin` becomes the snapshot's origin remote, as checkout sets it; proofs read it."""
     parts = [
         "set -u",
-        'export PATH="$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"',
+        'export PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"',
         'D="$HOME/baseline-linux-preview"',
         'rm -rf "$D" && mkdir -p "$D" && cd "$D" || exit 3',
         "tar -C %s --exclude=.git -cf - . | tar -xf - || exit 3" % _quote(src),

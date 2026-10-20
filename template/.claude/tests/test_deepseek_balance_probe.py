@@ -84,6 +84,12 @@ def main():
                       and unavailable and unavailable.get("status") == "network-error"
                       and unavailable.get("error", {}).get("kind") == "server"))
 
+        Handler.status = 429
+        limited_run, limited = run(url)
+        cases.append(("429 is a typed rate-limit outcome", limited_run.returncode == 0
+                      and limited and limited.get("status") == "network-error"
+                      and limited.get("error", {}).get("kind") == "rate-limit"))
+
         Handler.status = 200
         Handler.payload = b"not-json"
         bad_run, malformed = run(url)

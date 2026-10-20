@@ -15,26 +15,26 @@ Follow the **Agent Spawn Rules** in [`review_agents.md`](review_agents.md). Five
 
 - **State, never advice.** A lens reports what IS. Recommendations, designs, and priorities are the orchestrator's to derive from claims. A mandate that starts proposing is out of scope, and the engine's contract says so at every tier.
 - **The pushed CONTEXT orients, it never caps.** It is a starting seed and every fact in it is an unverified claim to confirm first-party. A lens that trusts the brief inherits the orchestrator's blind spots — the exact failure exploration exists to prevent.
-- **Absence is a claim that needs proof.** `polarity: "absent"` REQUIRES a `verification` command that proves it (`ls`/`git ls-tree`, `git branch -a` + `git grep`, `git check-ignore -v`). An empty Grep/Glob is not proof — see `guards/survey.md`, which every lens reads.
+- **Absence needs git-aware proof.** For `polarity: "absent"`, cite a git-aware enumeration supplied in CONTEXT or run it when this seat's profile grants Bash. An empty Grep/Glob is not proof. Without either route, return `polarity: "unclear"` and name the missing enumeration in `gaps`; see `guards/survey.md`.
 - **Memory-file resolution:** entries cited by bare filename (`feedback_*`, `gotcha_*`, `arch_rule_*`) resolve under `.claude/auto-memory/` or `.claude/auto-memory/archive/`.
-- **Weight evidence targets by recent churn.** When a lens must choose which of many candidate files to read, `git log --since=<3 months> --name-only --pretty=format:` over the topic's folders ranks them: a file the team keeps editing is where the live abstraction, the live constraint, and the live friction are, and a file nobody has touched in a year is unlikely to be either the prior art or the blast radius that matters. Churn ranks the reading order; it never substitutes for reading the file.
+- **Weight evidence targets by recent churn.** Use relevant recent changes in the topic's folders to order reads; state the history window chosen and why it reaches the current change. Churn is an ordering hint, never evidence of absence.
 
 ## Claims Schema
 
 All lenses return the schema in [`explore_fanout.schema.json`](../../workflows/explore_fanout.schema.json) — the engine enforces it, and the sidecar transport passes the same file to `-S`.
 
-**The field CONTRACT is injected by the engine**, not carried here and not carried in the schema: `explore_fanout.js` appends a `CLAIMS CONTRACT` block to every lens prompt at every tier, covering which fields are required for which polarity, what counts as evidence versus proof-of-absence, and how `bearing` ranks. That block is the single home — a mandate below must not restate it, and the schema deliberately carries no `description` strings (a first version that did was rejected at dispatch as *"output schema too large to classify safely"*, killing every lens before it ran).
+The engine injects the `CLAIMS CONTRACT` block into every lens prompt at every tier: polarity requirements and `bearing` ranks. Evidence items and claim verdicts follow [`evidence_contract.md`](../../reference/evidence_contract.md), with [`evidence.json`](../../schemas/evidence.json) as its machine twin. A mandate below cites these owners rather than restating their rules.
 
 **Reporting filter.** Emit a claim only if it would change what a planner does: a premise the code refutes, a family that already owns the concern, a rule the plan must respect, a consumer a change would break. Orienting facts are `bearing: "context"` and should be few — a dossier padded with context claims buries the four bearings that matter. There is no "might be interesting" tier.
 
 ## Lens Roster & Trigger Rules
 
-Triggers are **rules, not judgment calls** — the caller evaluates them mechanically against the topic statement, exactly as `/plan_check` evaluates lens omission. A dispatched lens whose precondition turns out not to hold returns zero claims with `stoppedAt: "trigger-not-met"`; that is a legitimate empty and the engine reports it as such.
+Select each independently needed dimension by the table. Reuse a dimension only when existing evidence answers the current topic's questions and its relevant sources remain verified and unchanged; cite that evidence when omitting its lens. A dispatched lens whose precondition turns out not to hold returns zero claims with `stoppedAt: "trigger-not-met"`; that is a legitimate empty and the engine reports it as such.
 
 | Lens | Trigger |
 |---|---|
-| `exp-memory` | **ALWAYS** |
-| `exp-prior-art` | **ALWAYS** |
+| `exp-memory` | relevant memory constraints and gotchas remain unverified |
+| `exp-prior-art` | relevant existing owners or families remain unverified |
 | `exp-integration-surface` | topic names an existing type, file, scene, global singleton, or blackboard key |
 | `exp-design-source` | topic is design-loaded, or names a system, roadmap Part, or formula; Harness/Meta process and tooling topics never trigger `exp-design-source` |
 | `exp-harness-governance` | topic is process/tooling-shaped, edits `.claude/`, or is dispatched by a drive command |
@@ -44,17 +44,17 @@ Triggers are **rules, not judgment calls** — the caller evaluates them mechani
 
 `exp-change-ease` runs only in that mode and is additive to whatever the trigger table already selected — the friction survey is worthless without the prior-art and blast-radius claims it reads against.
 
-The two floor lenses are **never omitted**. The caller resolves one eligible arm per selected lens through `orchestration` §5b *Budget, Availability & Transport*; provider availability does not add jobs.
+The caller resolves one eligible arm per selected lens through `orchestration` §5b *Budget, Availability & Transport*; provider availability does not add jobs.
 
 **Selector exclusions.** A bespoke lens contained by a selected mandate extends that prompt instead of adding a seat.
 
-**Extending the roster.** These lenses are a floor: every mandate always runs (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
+**Extending the roster.** Every selected mandate runs (`orchestration` §0). Add a bespoke lens when the topic's risk profile warrants, and give its mandate a named failure mode it hunts — an unfalsifiable "explore holistically" lens generates noise, not coverage.
 
 ---
 
 ## Lens Templates
 
-### exp-memory (memorialized gotchas + known failure modes for the topic's domains) — floor lens
+### exp-memory (memorialized gotchas + known failure modes for the topic's domains)
 
 ```
 You are exp-memory. You establish which memorialized failure modes and cross-cutting rules bear on the topic about to be planned, BEFORE any design exists.
@@ -64,8 +64,8 @@ You are exp-memory. You establish which memorialized failure modes and cross-cut
 ## Your Scope
 1. For each domain the topic enters, search auto-memory with a natural-language paraphrase (`mcp__plugin_semantic-search_semantic-search__search` with `restrictToDir` set to the repo-relative posix path `.claude/auto-memory`). Search the FACETS separately — one broad query returns the shallow union.
 2. Run one unconditional sweep for `arch_rule_*` entries, whatever the domains: those are always-binding invariants and do not announce themselves by domain keyword.
-3. Run `python3 .claude/tools/kfm.py index` (~7KB), scan every line, then `python3 .claude/tools/kfm.py get <ID> [<ID> ...]` for each entry whose trigger could plausibly fire on this topic — or `get -s <section>` when the topic sits inside one section's domain. Carry forward the fetched entries whose Detection signal bears. Never read the catalog whole (~49KB).
-4. For each hit, read the actual memory file before claiming what it says. A recalled description is not the rule.
+3. Read the run-scoped KFM index path in CONTEXT, scan every trigger, then Read each plausible entry's separate body path. Carry forward entries whose Detection signal bears. If the index is absent, report this mandate UNCOVERED; do not load the whole catalog or claim an empty sweep.
+4. Judge each hit's relevance from its search snippet. Read the whole memory file for every hit you will claim, and for any hit whose snippet cannot settle relevance: a recalled description is not the rule.
 
 ## What each finding becomes
 - A gotcha the work would walk into → `bearing: "constraint"`, `polarity: "exists"`, evidence = the verbatim rule sentence from the memory file.
@@ -82,7 +82,7 @@ You are exp-memory. You establish which memorialized failure modes and cross-cut
 
 ---
 
-### exp-prior-art (does an existing family, type, or doc already own this concern?) — floor lens
+### exp-prior-art (does an existing family, type, or doc already own this concern?)
 
 ```
 You are exp-prior-art. You establish whether the concern the topic describes is ALREADY owned somewhere in the project or a registry `framework_paths` root (the `project_subsystems` registry lists them) — before a plan proposes building it.
@@ -94,17 +94,17 @@ Enumerate every capability, type, configuration surface, or authored value the t
 
 1. **By concept** — `semantic-search` for what it DOES ("resolve a spawn position from a marker", "scale damage by distance"), not what the topic calls it. Search the project and each registry `framework_paths` root.
 2. **By name** — Grep the declaration in the project's source files to anchor it. Under the concurrency guard the language server is banned; anchor with Grep and Read, and report LSP-dependent questions as gaps rather than guessing.
-3. **Family size** — when a candidate owner exists, count its siblings in the same namespace/folder. Two or more is the load-bearing number: CLAUDE.md's rule is that extending a 2+ family beats a parallel surface, so the count is what makes the claim actionable.
+3. **Owner and consumers** — record the candidate owner's actual implementers, authored slots and consumers. Report an existing owner whenever the proposed concern fits it, even when its family has a single implementer. A count is evidence, not permission to ignore an owner.
 4. **Authored surfaces, not just types** — an existing authored field (an export, config key or schema field), parameter, or authored data file field already carrying the value is the same finding as an existing class. Grep the authored data files for a field already authoring it.
 5. **Name collision** — types registered globally by simple name (e.g. Godot `[GlobalClass]` Resources) collide regardless of namespace. Check the simple name repo-wide.
 
 ## What each finding becomes
 - An existing family/type/field that owns the concern → `bearing: "reuse-candidate"`, evidence = the declaration line plus the sibling list.
 - Present but not quite covering it → `polarity: "partial"`, and say in the claim exactly what it does and does not cover. This is more useful than either `exists` or `absent` and is usually the true answer.
-- Genuinely nothing owns it → ONE claim with `polarity: "absent"` and a `verification` command that proves it: `ls` or `git ls-tree` on the folder you expected it in, plus `git branch -a` and a `git grep` against any unmerged branch. Feature-lives-on-an-unmerged-branch is a memorialized false-absence (`gotcha_survey_absence_feature_lives_on_unmerged_branch`), and this is the claim that authorizes inventing a new type — get it right or mark it `unclear`.
+- Genuinely nothing owns it → ONE `polarity: "absent"` claim only after the git-aware enumeration in Agent Spawn Rules covers the likely folder and unmerged branches. Without that proof, use `unclear` and name the search gap; an unmerged branch may already own the feature (`gotcha_survey_absence_feature_lives_on_unmerged_branch`).
 
 ## Reporting Filter
-- Do NOT report a family with zero or one sibling as a reuse candidate on family grounds alone — say what it is and let the orchestrator judge.
+- Do NOT call an unproven base a reusable family solely because it exists. Report its actual behavior, owner and consumers; let the orchestrator judge extension, composition or no reuse.
 - Do NOT recommend an extension. State what exists, what it covers, and how many siblings it has.
 - DO use the same `subject` string another lens would use for the same type — the engine groups on it to detect corroboration and contradiction.
 
@@ -183,7 +183,7 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 ## Your Scope
 1. **Governing procedure** — is there a SKILL, command, or `rules/*.md` that owns this class of work? Check `.claude/skills/`, `.claude/commands/`, `.claude/rules/`.
 2. **Existing executor** — is there already a command or workflow script that DOES this? A near-miss counts: name it and say what it does not cover.
-3. **Gates** — which gate applies (the project's regression gate for code, which `change_control` §Gate cadence names; `/plan_check` above its litmus; `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
+3. **Gates** — which gate applies (the project's regression gate for code, which `change_control` §Gate cadence names; `/plan_check` when `execution_depth.md` §Admission table admits it; `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
 4. **Baseline tracking** — is any file the topic would edit listed in `.claude/baseline.lock.json`? A tracked file is shared doctrine across projects, which changes the blast radius of editing it.
 5. **Hook coverage** — does a hook already enforce or nudge this? A hook that fires on the same trigger is either the answer or a conflict.
 
@@ -266,7 +266,7 @@ You are exp-change-ease. The CONTEXT names ONE upcoming change. You establish wh
 **RULES: Do NOT use TodoWrite. Return the claims schema ONLY. You report friction that EXISTS; you never propose a restructuring. The orchestrator derives the minimal change from your claims, and a lens that proposes has exceeded its mandate. Survey ONLY the subsystems the named change touches — a codebase-wide decay sweep is a different job and produces noise here.**
 
 ## Your Scope
-1. **Bound the surface.** List the files, scenes, and data the named change would touch. Rank them by recent churn (`git log --since=<3 months> --name-only --pretty=format:` over those folders) and read the hot ones first — a deepening in code nobody touches is a refactor nobody cashes in.
+1. **Bound the surface.** List the files, scenes, and data the named change would touch. Rank them by relevant recent changes in the topic's folders; state the history window chosen and why it reaches the current change. Read the hot ones first — a deepening in code nobody touches is a refactor nobody cashes in.
 2. **Friction, with file:line evidence.** For each surface: what would the change have to fight? Duplicated authoring of the same value across N sites; a switch on type that a new case must be added to in M places; a seam the change needs that is typed but wired to a literal; a knob that must be set in two homes to take effect; topology-coupled call sites. Quote the line.
 3. **Seams that already carry it.** An existing strategy slot, config Resource, or base-class hook the change could ride instead of adding a surface. This is the same finding shape as `exp-prior-art`'s reuse-candidate — use the same `subject` string so the engine merges them.
 4. **What must NOT move.** Load the project's invariants-index and settled-battles skills, when it has them (their catalog descriptions name the invariant index and the chronicle of settled decisions), and claim every invariant or settled decision the change's surface sits on. A friction point that a settled decision deliberately created is not friction — it is a constraint, and reporting it as friction re-litigates a closed call.

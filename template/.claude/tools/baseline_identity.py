@@ -444,13 +444,6 @@ _SUBSYSTEM_ITEM_RE = re.compile(
     r"^[ \t]*-[ \t]*id:[ \t]*(\S+)[ \t]*\n[ \t]*paths:[ \t]*\[([^\]]*)\]",
     re.MULTILINE,
 )
-_TYPE_DECL_RE = re.compile(
-    r"^[ \t]*(?:\[[^\]]*\][ \t]*)*"
-    r"(?:public|internal|private|protected)?[ \t]*"
-    r"(?:sealed[ \t]+|abstract[ \t]+|static[ \t]+|partial[ \t]+)*"
-    r"(?:class|struct|record|interface|enum)[ \t]+(\w+)",
-    re.MULTILINE,
-)
 
 
 def parse_subsystems_yaml(text: str) -> list[dict]:
@@ -495,6 +488,11 @@ def _home_users() -> list[str]:
 
 
 def _collect_type_names(repo_root: Path, subsystem_paths: list[str]) -> list[str]:
+    tools_dir = str(Path(__file__).resolve().parent)
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    from type_decls import declared_types  # lazy: fixtures that import this module copy no sibling helper
+
     names: set[str] = set()
     for rel in subsystem_paths:
         base = repo_root / rel
@@ -507,7 +505,8 @@ def _collect_type_names(repo_root: Path, subsystem_paths: list[str]) -> list[str
                 text = p.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            names.update(_TYPE_DECL_RE.findall(text))
+            for line in text.splitlines():
+                names.update(declared_types(line))
     return sorted(names)
 
 

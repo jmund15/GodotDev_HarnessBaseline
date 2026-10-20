@@ -13,7 +13,7 @@ Type-aware C# navigation, loaded when Claude reads `.cs` files; local only — d
 
 ## Grep-shapes that are LSP-bypass smells on `.cs`
 
-- `Grep("class X")` / `Grep("interface X")` as a *terminal* step → the Grep itself IS the legitimate anchor (workflow below), but stopping there loses semantic resolution. Chain into `LSP documentSymbol` for the line number, then `findReferences` / `incomingCalls` from the anchored position. The smell is *single-Grep-and-stop*, not the Grep itself.
+- `Grep("class X")` / `Grep("interface X")` as a *terminal* step is a smell when the question needs callers or types: chain into `LSP documentSymbol`, then `findReferences` / `incomingCalls` or `hover` from the anchored position. A declaration-only question is answered by one declaration Grep.
 - `Grep(": IFoo")` / `Grep(": .*IFoo,")` to enumerate implementers → use `LSP findReferences` on the interface declaration site, which catches both `: IFoo` declarations AND consumers holding `IFoo` references.
 - `Grep("MethodName(")` to find callers → use `LSP findReferences` or `incomingCalls` on the method declaration.
 - `Grep("BareSymbolName")` (a single PascalCase identifier with no regex meta) → anchor first; `workspaceSymbol` cannot search by name.
@@ -48,7 +48,7 @@ Multi-pattern alternation (`Foo\|Bar\|Baz`), token soup LSP can't disambiguate (
 
 **Verified-unique-name carve-out:** for a single PascalCase identifier you have explicitly verified is unique — no overloads, no other class defining it, no common-verb prefix like `Apply`/`Update`/`Process`/`Get`/`Set`/`Init` — `Grep("FooBar", glob="*.cs")` returns the same set as `LSP findReferences` and saves the coordinate-trap overhead.
 
-**Two conditions must BOTH hold to invoke it:** (1) the user explicitly asserts uniqueness, OR you verified it via `Grep("class FooBar\b" -g "*.cs")` returning exactly one declaration site; AND (2) the response cites the carve-out as the reason for choosing Grep. Without both, default to anchor-then-navigate. The carve-out trades one LSP call for the risk of silently missing indirect callers (delegate references, reflection, generic-arg usages) — take that trade only when it is consciously made. Why uniqueness must be verified rather than assumed: `reference/rules/csharp_lsp_examples.md` §Why the carve-out demands verification.
+**Uniqueness must be verified to invoke it:** the user explicitly asserts uniqueness, OR you verified it via `Grep("class FooBar\b" -g "*.cs")` returning exactly one declaration site. Otherwise default to anchor-then-navigate. The carve-out trades one LSP call for the risk of silently missing indirect callers (delegate references, reflection, generic-arg usages) — take that trade only when it is consciously made. Why uniqueness must be verified rather than assumed: `reference/rules/csharp_lsp_examples.md` §Why the carve-out demands verification.
 
 ## Known-broken surface
 

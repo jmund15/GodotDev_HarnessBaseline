@@ -12,6 +12,11 @@ Brief descriptions only — including member/method name lists measured 415 KB v
 
 Usage: gen_godot_class_index.py <classes-dir> <out-md> <engine-version>
 """
+
+import sys as _cli_usage_sys
+from pathlib import Path as _cli_usage_path
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
+from cli_usage import usage
 import glob
 import os
 import re
@@ -29,7 +34,7 @@ def clean(text: str) -> str:
 
 def main() -> int:
     if len(sys.argv) != 4:
-        sys.exit(__doc__)
+        sys.exit(usage(__doc__))
     classes_dir, out_md, version = sys.argv[1], sys.argv[2], sys.argv[3]
 
     paths = sorted(glob.glob(os.path.join(classes_dir, "*.xml")))

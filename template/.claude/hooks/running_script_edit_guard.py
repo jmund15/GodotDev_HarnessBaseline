@@ -23,7 +23,8 @@ Why:
   memory file; this hook only enforces and cites it.
 
 What it does:
-- Gates on file_path: only `.claude/scripts/**` with a `.sh` / `.ps1` suffix.
+- Gates on file_path: only `.claude/scripts/**` with a `.sh` suffix. PowerShell parses
+  a running `.ps1` before executing it; an edit does not change that instance.
   Everything else exits immediately with no process scan.
 - On a match, scans live processes for a command line that INVOKES that script
   (`bash <path> …`, `timeout N bash <path> …`, or the path run directly) — never
@@ -57,14 +58,14 @@ import subprocess
 import sys
 
 SCRIPT_DIR_MARKER = "/.claude/scripts/"
-GUARDED_SUFFIXES = (".sh", ".ps1")
+GUARDED_SUFFIXES = (".sh",)
 
 # Must stay below this hook's settings.json timeout (10s).
 SCAN_TIMEOUT = 5
 
 
 def is_guarded_script(file_path: str) -> bool:
-    """True for .claude/scripts/**.{sh,ps1}. Separators normalized — Write/Edit
+    """True for .claude/scripts/**.sh. Separators normalized — Write/Edit
     may deliver either on Windows."""
     if not file_path:
         return False

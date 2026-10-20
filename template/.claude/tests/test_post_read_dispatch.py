@@ -54,6 +54,8 @@ def main():
         dispatch_source = fh.read()
     check("dispatcher no longer imports the retired cumulative counter",
           "tool_routing_cumulative" not in dispatch_source)
+    check("dispatcher no longer loads or calls the retired post-Grep fallback",
+          "tool_routing_post_grep" not in dispatch_source)
 
     # 1. A Read of an auto-memory file reaches the last sub-hook.
     r = run(json.dumps({"tool_name": "Read", "session_id": "prd00001", "agent_id": "",
@@ -105,6 +107,25 @@ def main():
     bounded = json.load(open(bounded_path, encoding="utf-8")) if os.path.exists(bounded_path) else {}
     check("bounded ladder Read does not arm the marker",
           r.returncode == 0 and "model_ladder_ready" not in bounded, repr(bounded))
+
+    # 3b. A full SKILL.md Read records that skill as loaded; a bounded one does not.
+    skill_md = os.path.join(tmp, ".claude", "skills", "instruction_quality", "SKILL.md")
+    os.makedirs(os.path.dirname(skill_md), exist_ok=True)
+    with open(skill_md, "w", encoding="utf-8") as fh:
+        fh.write("# Instruction Quality\n")
+    r = run(json.dumps({"tool_name": "Read", "session_id": "prd00006", "tool_input": {"file_path": skill_md},
+                        "tool_response": {"content": "# Instruction Quality"}}), env)
+    loaded_path = os.path.join(state_dir, "prd00006.json")
+    loaded = json.load(open(loaded_path, encoding="utf-8")) if os.path.exists(loaded_path) else {}
+    check("a full SKILL.md Read records the skill as loaded",
+          r.returncode == 0 and "instruction_quality" in (loaded.get("skills_loaded") or []), repr(loaded))
+    r = run(json.dumps({"tool_name": "Read", "session_id": "prd00007",
+                        "tool_input": {"file_path": skill_md, "limit": 5},
+                        "tool_response": {"content": "# Instruction Quality"}}), env)
+    partial_path = os.path.join(state_dir, "prd00007.json")
+    partial = json.load(open(partial_path, encoding="utf-8")) if os.path.exists(partial_path) else {}
+    check("a bounded SKILL.md Read records nothing",
+          r.returncode == 0 and not (partial.get("skills_loaded") or []), repr(partial))
 
     # 4. Malformed payload: the dispatcher fails open.
     r = run("{not json", env)

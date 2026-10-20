@@ -29,6 +29,9 @@ Modes:
 
 Escape hatch (a field genuinely made nullable, or its C# default deliberately changed):
 set HARNESS_ALLOW_TRES_NULLSTRIP=1 in the environment.
+
+Commit scope is `hooks/_commit_scope.py`: it names the invocations that publish the index and the
+paths a merge authors.
 """
 import json
 import os
@@ -37,7 +40,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _git_commit import commit_invocations, bypass_declared, git_environ  # noqa: E402
+from _git_commit import commit_invocations, bypass_declared, git_environ, run_git  # noqa: E402
+from _commit_scope import authored_paths, incoming_heads, publishes_index  # noqa: E402
 
 # Windows pipes default to cp1252 through Python 3.14; git diff text now decodes as real
 # UTF-8, so a non-ASCII .tres string payload or path would raise UnicodeEncodeError on write.
@@ -181,8 +185,26 @@ def scan_diff(range_arg, worktree=False):
     removed = {}   # path -> {field: value}
     readded = {}   # path -> {field}
     current = None
-    for line in diff_lines(range_arg, worktree):
+    removed_node = False
+    lines = diff_lines(range_arg, worktree)
+    for index, line in enumerate(lines):
         line = line.rstrip("\r")
+        if line.startswith(("@@", "diff --git", "+[", " [")):
+            removed_node = False
+        if line.startswith("-["):
+            # A removed block is whole unless a block of its kind is added after it in the hunk
+            # (a rename or re-id can hide a strip). A node re-added as an instance takes its
+            # properties from the instanced scene, so its old lines were moved, not stripped.
+            removed_node = True
+            kind = line[2:].split(" ", 1)[0].rstrip("]")
+            for following in lines[index + 1:]:
+                if following.startswith(("@@", "diff --git")):
+                    break
+                if following.startswith("+[" + kind) and "instance=" not in following:
+                    removed_node = False
+                    break
+        if removed_node and line.startswith("-"):
+            continue
         hdr = FILE_HDR.match(line)
         if hdr:
             current = hdr.group(1)
@@ -264,6 +286,52 @@ def classify_vanished(vanished, idx):
     return lost, unverified
 
 
+class _BlobLines:
+    """The stripped lines of each `ref:path` blob and the incoming refs, read once per hook run."""
+
+    def __init__(self, repo, git_env):
+        self.repo, self.git_env = repo, git_env
+        self._heads = None
+        self._lines = {}
+
+    @property
+    def heads(self):
+        if self._heads is None:
+            self._heads = incoming_heads(self.repo, self.git_env)
+        return self._heads
+
+    def count(self, ref, path, line):
+        """How often `line` appears in `ref:path`, or None when that blob is unreadable."""
+        key = (ref, path)
+        if key not in self._lines:
+            out = run_git(["show", "%s:%s" % (ref, path)], self.repo, self.git_env)
+            self._lines[key] = None if out is None else [text.strip() for text in out.splitlines()]
+        lines = self._lines[key]
+        return None if lines is None else lines.count(line)
+
+
+def _authored(findings, repo, git_env, blobs=None):
+    """Keep only the rows whose path THIS commit wrote. A merge diffs the index against HEAD, so a
+    parent's own .tres edit reads as this commit's; it was judged on that parent's ref. Outside a
+    merge `authored_paths` returns every path, so an ordinary commit is judged as before."""
+    blobs = blobs or _BlobLines(repo, git_env)
+    keep = set(authored_paths(sorted({row[0] for row in findings}), repo, git_env))
+    return [row for row in findings if row[0] in keep and not _arrived(row, blobs)]
+
+
+def _arrived(row, blobs):
+    """True when a finding's line change came from the incoming parent: the staged file holds the
+    line `Field = value` (or `Field = null`) exactly as often as MERGE_HEAD / CHERRY_PICK_HEAD /
+    REVERT_HEAD does. A path both parents edited is authored as a whole, but a line the incoming
+    side already removed or nulled was judged on that side's ref."""
+    if not blobs.heads:
+        return False
+    path, field = row[0], row[1]
+    line = "%s = %s" % (field, row[2] if len(row) > 2 else "null")
+    staged = blobs.count("", path, line)
+    return staged is not None and any(blobs.count(head, path, line) == staged for head in blobs.heads)
+
+
 def find_strips(range_arg, worktree=False):
     """Return (null_strips, lost, unverified)."""
     added_nulls, vanished = scan_diff(range_arg, worktree)
@@ -340,7 +408,7 @@ def hook():
         print("{}")
         return 0
     commits = [c for c in commit_invocations(data.get("tool_input", {}).get("command", ""),
-                                             data.get("cwd") or ".") if c.sub == "commit"]
+                                             data.get("cwd") or ".") if publishes_index(c.sub, c.rest)]
     if not commits:
         print("{}")
         return 0
@@ -356,6 +424,10 @@ def hook():
         pass
 
     null_strips, lost, unverified = find_strips(None)
+    blobs = _BlobLines(commit.cwd, commit.git_env)
+    null_strips = _authored(null_strips, commit.cwd, commit.git_env, blobs)
+    lost = _authored(lost, commit.cwd, commit.git_env, blobs)
+    unverified = _authored(unverified, commit.cwd, commit.git_env, blobs)
     if not null_strips and not lost:
         if unverified:
             report([], [], unverified)  # advisory only
@@ -371,7 +443,7 @@ def hook():
     if lost:
         parts.append(f"{len(lost)} staged scene line(s) remove an Export whose value differs from "
                      "its C# default (authored value lost -- not a 4.7.1 default omission)")
-    reason = ("Blocked: " + "; ".join(parts) +
+    reason = ("Blocked (rules/godot_files.md): " + "; ".join(parts) +
               ". Set the explicit value, or set HARNESS_ALLOW_TRES_NULLSTRIP=1 if the C# default "
               "genuinely changed.")
     print(json.dumps({"hookSpecificOutput": {

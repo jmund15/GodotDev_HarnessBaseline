@@ -9,10 +9,21 @@ applies to future dispatches and never justifies discarding work already spent.
 
 One exception needs no owner wording (owner decision 2026-09-15): a background Bash/PowerShell shell
 or a Monitor THIS session launched (not a subagent's) whose command, and the readable text of the
-local scripts it runs (MAX_SCRIPT_DEPTH levels), matches nothing in PROTECTED. A Monitor is a poll
+local scripts it runs (MAX_SCRIPT_DEPTH levels), matches nothing in PROTECTED. A stop kills the shell's live
+process tree, so when that tree can be read (the processes whose command line carries the launch command, and
+their descendants) its command lines replace the script text: a script that only names a launcher, as an
+argument or an env value it hands a detached job, runs no billed arm. In the command, each segment runs
+its first script; a script named after it is an argument, data the run reads, and its text is not scanned. A Monitor is a poll
 loop by construction; a superseded one keeps re-emitting stale lines until it is stopped. A script it cannot read, at the top level
 or built from a variable, fails the exception closed. That is a waiter, monitor or poll loop; stopping it discards no paid
-work, and demanding consent for it leaves superseded jobs running.
+work, and demanding consent for it leaves superseded jobs running. The same exception covers a shell whose only
+PROTECTED matches are class "local" (a gate, verification, test or proof run), at any age: its stop discards only
+this machine's time, and a stuck or superseded run held for consent holds its locks and slots instead. A
+"billed" match keeps the owner-wording rule.
+
+A second floor guard in the same hook (class floor: it protects peer sessions) denies a Bash/PowerShell command
+that executes a terminal-window close by handle, title or host process (`window_close_verdict`). It has no
+text override: a reason the agent writes into the call proves no ownership of the window.
 
 WHY THIS EXISTS: `shell_census.py` lists long-running shells with their command tails TRUNCATED, and
 its own text hands over `taskkill /PID <pid> /T /F`. Measured 2026-09-08: a session read that list,
@@ -33,30 +44,38 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _background_tasks  # noqa: E402
 from _owner_text import classify  # noqa: E402
+from _win_path import native_path  # noqa: E402
 
 # Killing any of these takes down work that cannot be resumed from where it stopped: a billed
 # sidecar arm, a gate/suite run, or a peer's whole session.
+# Class "billed": stopping it discards paid, unresumable work or another session's. Class "local": it
+# discards only this machine's time, so a run this session launched may be stopped with no owner wording.
 PROTECTED = (
-    (r"sidecar_fanout\.py", "a sidecar fan-out — its in-flight arms are billed and unresumable"),
-    (r"_sidecar\.sh|sidecar_launch\.py", "a sidecar launcher child — the arm dies with it"),
-    (r"harness_tests\.py", "the harness proof runner"),
-    (r"regression_gate|gate_chain|verify\.ps1", "a gate/verification run"),
-    (r"vstest|dotnet\s+test", "a test run"),
+    (r"sidecar_fanout\.py", "a sidecar fan-out — its in-flight arms are billed and unresumable", "billed"),
+    (r"_sidecar\.sh|sidecar_launch\.py", "a sidecar launcher child — the arm dies with it", "billed"),
+    (r"harness_tests\.py", "the harness proof runner", "local"),
+    (r"regression_gate|gate_chain|verify\.ps1", "a gate/verification run", "local"),
+    (r"vstest|dotnet\s+test", "a test run", "local"),
     # NOT \bclaude\b — that matches `.claude/` (present in nearly every harness command) and
     # `claude-gpt`. Match the EXECUTABLE: `claude.exe`, or `claude` standing as the command word.
     (r"(?:^|[\s/\\\"])claude\.exe|(?:^|[\s/\\\"])claude(?:\s|$)",
-     "a Claude Code session — possibly a peer's"),
-    (r"claude-code-proxy", "a transport proxy other sessions may be routing through"),
-    (r"run_grid(?:\.snapshot[\w.-]*)?\.sh", "a benchmark grid — its in-flight cell is a billed arm"),
+     "a Claude Code session — possibly a peer's", "billed"),
+    (r"claude-code-proxy", "a transport proxy other sessions may be routing through", "billed"),
+    (r"run_grid(?:\.snapshot[\w.-]*)?\.sh", "a benchmark grid — its in-flight cell is a billed arm", "billed"),
 )
-
 # Local scripts a shell command runs. Their TEXT is scanned too: a background `bash waiter.sh` that
 # calls a sidecar holds a billed arm exactly as a direct launch does.
 # Glob characters are excluded: `find -name "*.py"` names a pattern, not a script to read.
 SCRIPT_REF_RE = re.compile(r"[^\s\"'|;&<>()=*?\[\]]+\.(?:sh|py|ps1|js|cmd|bat)(?![\w.])", re.I)
+# The process-table read runs inside the hook's 20 s settings budget (HOOK_BUDGET_S below).
+TABLE_TIMEOUT_S = 10
 MAX_SCRIPT_BYTES = 512 * 1024
 MAX_SCRIPT_DEPTH = 2
+PS_BLOCK_COMMENT_RE = re.compile(r"<#.*?#>", re.S)
+FULL_LINE_COMMENT_RE = re.compile(r"\s*(?:#|//|REM\s)")
+SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n(`]|\$\(")
 
 PID_RE = re.compile(r"(?:/PID|/pid|-PID)\s+(\d+)|(?:^|\s|;|&&|\|)kill\s+(?:-\w+\s+)?(\d+)\b")
 # settings.json gives this hook 20 s. Every PID lookup runs inside one budget under it; a lookup the
@@ -79,7 +98,9 @@ TASKSTOP_DIRECTIVE_RE = re.compile(
     # An imperative appended to an earlier instruction: "also stop the codex shells". Without this
     # branch the verb matched no pattern at all and the directive was never seen, so the phrase
     # after it was never examined either.
-    r"|(?:^|[;,]|\band\b|\bbut\b)\s*(?:also|then|now|please|just)\s+" + STOP_VERB + r"\b",
+    r"|(?:^|[;,]|\band\b|\bbut\b)\s*(?:also|then|now|please|just)\s+" + STOP_VERB + r"\b"
+    # "Yes, and stop duplicate": the verb follows "and" directly.
+    r"|(?:[;,]|\band\b)\s*" + STOP_VERB + r"\b",
     re.I,
 )
 NEGATED_STOP_RE = re.compile(
@@ -92,7 +113,8 @@ TASK_NOUN = r"(?:agent|task|job|delegate|subagent|workflow|run)"
 # a different label-shaped task (`task-a`, `gap_fix`) refers to that task instead.
 GENERIC_OBJECT_RE = re.compile(
     r"\s+(?:it|that|this|them|(?:(?:the|this|that|these|those|all|any)\s+)?"
-    r"(?:(?:running|existing|background|current)\s+)?(?:agent|task|job|delegate|subagent|workflow|run|lane)s?)\b",
+    r"(?:(?:running|existing|background|current|old|extra|other)\s+)?"
+    r"(?:agent|task|job|delegate|subagent|workflow|run|lane|duplicate|copy)s?)\b",
     re.I,
 )
 BARE_TAIL_RE = re.compile(r"(?:\s*,?\s*(?:now|please|everything|all))*\s*", re.I)
@@ -325,16 +347,17 @@ def _answer_verdict(pairs, tool_input):
     return verdict
 
 
-CANNOT_VERIFY = ("BLOCKED TaskStop — cannot verify an explicit owner instruction to stop this task. "
+CANNOT_VERIFY = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — cannot verify an explicit owner instruction to stop this task. "
                  "Let it finish, or ask the owner and re-issue TaskStop after their answer.")
-NOT_NAMED = ("BLOCKED TaskStop — the owner's latest message or question answer does not name this task, "
+NOT_NAMED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — the owner's latest message or question answer does not name this task, "
              "refer to it generically (\"stop it\", \"stop that agent\") or ask for a bare stop. Let it "
              "finish and consume the result. A request naming another task, or a later keep-running "
              "instruction, grants no consent.")
 
 
 def _launch_of(transcript_path, task_id):
-    """(tool name, tool input) of the main-session call that launched background task `task_id`, else None.
+    """(tool name, tool input, launch timestamp or None) of the main-session call that launched background
+    task `task_id`, else None.
 
     The launch is the tool_result row whose `toolUseResult.backgroundTaskId` (Bash/PowerShell) or
     `toolUseResult.taskId` (Monitor) is the id; its tool_use_id names the assistant tool_use. Either row on a sidechain (a subagent) is not this session's launch."""
@@ -356,8 +379,7 @@ def _launch_of(transcript_path, task_id):
             row = json.loads(line)
         except ValueError:
             continue
-        result = row.get("toolUseResult") or {}
-        if row.get("isSidechain") or task_id not in (result.get("backgroundTaskId"), result.get("taskId")):
+        if row.get("isSidechain") or _background_tasks.launched_task_id(row) != task_id:
             continue
         for item in (row.get("message") or {}).get("content") or []:
             if isinstance(item, dict) and item.get("type") == "tool_result":
@@ -375,18 +397,85 @@ def _launch_of(transcript_path, task_id):
             return None
         for item in (row.get("message") or {}).get("content") or []:
             if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("id") == use_id:
-                return item.get("name"), item.get("input") or {}
+                return item.get("name"), item.get("input") or {}, row.get("timestamp")
     return None
+
+
+def _local_path(token, cwd):
+    path = native_path(token.strip("\"'"))
+    return path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
+
+
+def _fanout_calls(command):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    import sidecar_argv
+    return [call for call in sidecar_argv.launcher_invocations(command) if call.kind == "fanout"]
+
+
+def _shell_segments(command):
+    """Executing stages, with quoted separators preserved and substitutions visited separately."""
+    def scan(start, stop=None):
+        stages, substitutions, text, quote, depth = [], [], [], None, 0
+        i = start
+        while i < len(command):
+            char = command[i]
+            if char == "\\" and quote != "'" and i + 1 < len(command):
+                text.append(command[i:i + 2])
+                i += 2
+                continue
+            if stop == ")" and quote is None:
+                if char == "(":
+                    depth += 1
+                elif char == ")" and depth:
+                    depth -= 1
+                    text.append(char)
+                    i += 1
+                    continue
+            if char == stop and quote is None:
+                stages.append("".join(text))
+                return stages + substitutions, i + 1
+            if quote != "'" and (command.startswith("$(", i) or char == "`"):
+                backtick = char == "`"
+                nested, i = scan(i + (1 if backtick else 2), "`" if backtick else ")")
+                substitutions.extend(nested)
+                text.append("''")
+                continue
+            if char in ("'", '"'):
+                if quote == char:
+                    quote = None
+                elif quote is None:
+                    quote = char
+            boundary = SEGMENT_SPLIT_RE.match(command, i) if quote is None else None
+            # Parentheses in inline Python/PowerShell are calls, not shell stage boundaries.
+            if boundary and boundary.group() != "(":
+                if boundary.group() == "|":
+                    text.append("|")
+                stages.append("".join(text))
+                text = []
+                i = boundary.end()
+            else:
+                text.append(char)
+                i += 1
+        stages.append("".join(text))
+        return stages + substitutions, i
+
+    return [stage for stage in scan(0)[0] if stage.strip()]
+
+
+def _run_refs(command):
+    """The script each executing stage runs: its first script reference. Later ones are arguments."""
+    refs = []
+    for segment in _shell_segments(command):
+        found = [token for token in SCRIPT_REF_RE.findall(segment)
+                 if 'sidecar_fanout.py' not in token.lower() or _fanout_calls(segment)]
+        if found:
+            refs.append(found[0])
+    return refs
 
 
 def _read_script(token, cwd):
     """A referenced script's text, or None when it cannot be located and read."""
-    path = token.strip("\"'")
-    drive = re.match(r"^/([a-zA-Z])/(.*)$", path)
-    if drive and os.name == "nt":
-        path = "%s:/%s" % (drive.group(1), drive.group(2))
-    if not os.path.isabs(path):
-        path = os.path.join(cwd or os.getcwd(), path)
+    path = _local_path(token, cwd)
     try:
         if os.path.getsize(path) > MAX_SCRIPT_BYTES:
             return None
@@ -397,7 +486,8 @@ def _read_script(token, cwd):
 
 
 def _work_texts(command, cwd):
-    """(texts, unreadable): the command plus the local scripts it runs, MAX_SCRIPT_DEPTH deep.
+    """(texts, unreadable): the command plus the local scripts it runs, MAX_SCRIPT_DEPTH deep. In the command
+    those are each segment's first script (`_run_refs`); in a script's text, every script it names.
     `unreadable` names the first script that blocks the exception: one the command itself runs, or a
     nested one built from a variable (`$HERE/x.sh`), whose body could launch anything. Any other nested
     reference that cannot be read is skipped; only its name, in the parent text, meets PROTECTED."""
@@ -406,7 +496,7 @@ def _work_texts(command, cwd):
         text, depth = frontier.pop()
         if depth >= MAX_SCRIPT_DEPTH:
             continue
-        for token in SCRIPT_REF_RE.findall(text):
+        for token in (_run_refs(text) if depth == 0 else SCRIPT_REF_RE.findall(text)):
             if token in seen:
                 continue
             seen.add(token)
@@ -415,27 +505,80 @@ def _work_texts(command, cwd):
                 if depth == 0 or "$" in token:
                     return texts, token
                 continue
+            # A comment runs nothing: scanning it matches a noun ("the Claude Code process").
+            if token.lower().endswith(".ps1"):
+                body = PS_BLOCK_COMMENT_RE.sub("", body)
+            body = "\n".join(line for line in body.splitlines() if not FULL_LINE_COMMENT_RE.match(line))
             texts.append(body)
             frontier.append((body, depth + 1))
     return texts, None
 
 
+def _flat(text):
+    """Command text with quotes and backslashes dropped and whitespace collapsed: a launch command and the
+    escaped copy a shell wrapper's command line carries compare equal."""
+    return re.sub(r"\s+", " ", re.sub(r"[\\\"']", "", text or "")).strip()
+
+
+def _process_table():
+    """{pid: row} for every live process, or {} when unreadable. KILL_GUARD_PROCESS_TABLE names a planted table
+    (proofs)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    planted = os.environ.get("KILL_GUARD_PROCESS_TABLE")
+    if planted:
+        try:
+            with open(planted, encoding="utf-8") as fh:
+                return {int(pid): row for pid, row in json.load(fh).items()}
+        except (OSError, ValueError, TypeError):
+            return {}
+    try:
+        import reap
+        return reap.process_table(timeout=TABLE_TIMEOUT_S)
+    except Exception:
+        return {}
+
+
+def _live_tree(command):
+    """The command lines a stop of this shell kills: every live process whose command line carries the launch
+    command, and their descendants. None when the table is unreadable or no process carries the command."""
+    key = _flat(command)
+    table = _process_table() if key else {}
+    roots = [pid for pid, row in table.items() if key in _flat(row.get("cmd"))]
+    if not roots:
+        return None
+    import reap
+    pids = set(roots)
+    for root in roots:
+        pids.update(reap.descendants(table, root))
+    return [table[pid].get("cmd") or "" for pid in sorted(pids)]
+
+
 def quiet_shell_blocker(transcript_path, tool_input, cwd=None):
     """None when the task is a background shell this session launched that runs nothing PROTECTED;
-    otherwise the reason the quiet-shell exception does not apply."""
+    otherwise the reason the quiet-shell exception does not apply. When the shell's live process tree can be
+    read, what it runs is that tree's command lines plus the launch command; otherwise it is the launch
+    command and the text of the scripts it runs."""
     task_id = (tool_input or {}).get("task_id") if isinstance(tool_input, dict) else None
     launch = _launch_of(transcript_path, task_id)
     if not launch:
         return "not a background shell or monitor this session launched"
-    own_shell = launch[0] in ("Bash", "PowerShell") and launch[1].get("run_in_background")
+    # _launch_of matched this session's backgroundTaskId, so a Bash/PowerShell launch is a background
+    # shell whether it asked for run_in_background or timed out into the background.
+    own_shell = launch[0] in ("Bash", "PowerShell")
     own_monitor = launch[0] == "Monitor" and launch[1].get("command")
     if not (own_shell or own_monitor):
         return "not a background shell or monitor this session launched"
-    texts, unreadable = _work_texts(str(launch[1].get("command") or ""), cwd)
+    command = str(launch[1].get("command") or "")
+    live = _live_tree(command)
+    texts, unreadable = ([command] + live, None) if live is not None else _work_texts(command, cwd)
+    local = None
     for text in texts:
-        for pat, why in PROTECTED:
-            if re.search(pat, text, re.I):
-                return "it runs %s" % why
+        for pat, why, cls in PROTECTED:
+            matched = bool(_fanout_calls(text)) if pat == PROTECTED[0][0] else re.search(pat, text, re.I)
+            if matched:
+                if cls == "billed":
+                    return "it runs %s" % why
+                local = local or why
     if unreadable:
         return "script %s cannot be read, so what it runs is unknown" % unreadable
     return None
@@ -586,18 +729,63 @@ def verdict(cmd, env):
             problems.append("  PID %s: no such process — it already exited, or the number is "
                             "stale. Re-read the list before killing." % pid)
             continue
-        for pat, why in PROTECTED:
+        for pat, why, _cls in PROTECTED:
             if re.search(pat, line, re.I):
                 problems.append("  PID %s is %s\n      %s" % (pid, why, line[:160]))
                 break
     if not problems:
         return None
-    return ("BLOCKED kill — the target is not what a truncated shell list shows.\n"
+    return ("BLOCKED kill (CLAUDE.core.md §Shell Discipline) — the target is not what a truncated shell list shows.\n"
             + "\n".join(problems)
             + "\n\nStop it through the reaper (`python3 .claude/tools/reap.py --help`): ownership proof, a verified reason, a ledger row.\n"
               "A Bash-tool background task is NOT an OS process to taskkill — stop it with "
               "KillShell/TaskStop by its task id.\n"
               "Deliberate raw kill: prefix `HARNESS_ALLOW_KILL=<pid>` (naming the pid a second time).")
+
+
+# Closing terminal windows by handle, title or host process. Every Windows Terminal window belongs to
+# one WindowsTerminal.exe, and a title follows the foreground command, so a `python.exe` title is a
+# live session as often as a dead launch-error window.
+WINDOW_CLOSE_RE = re.compile(
+    r"CloseMainWindow|\bWM_CLOSE\b|\bSC_CLOSE\b|0xF060"
+    r"|\b(?:Post|Send)Message\w*\s*\([^)]*0x(?:0*10|112)\b"
+    r"|taskkill[^\n;|]*?/IM\s+['\"]?(?:WindowsTerminal|wt|OpenConsole|conhost)\b"
+    r"|Stop-Process[^\n;|]*?-Name\s+['\"]?(?:WindowsTerminal|wt|OpenConsole|conhost)\b"
+    r"|(?:WindowsTerminal|OpenConsole|conhost)\b[^\n]*\|\s*Stop-Process", re.I)
+
+
+# Reader arguments are data; _shell_segments visits their executing substitutions separately.
+READ_ONLY_VERBS = frozenset((
+    "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "less", "more", "wc", "ls", "stat", "file", "diff",
+    "select-string", "get-content", "gc"))
+
+
+def _segment_verb(segment):
+    words = [w for w in segment.split() if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+    return words[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") if words else ""
+
+
+def window_close_verdict(cmd, cwd=None):
+    """Deny terminal-window closes in executing stages and their scratch scripts, or None.
+
+    Quoted reader arguments are data; substitutions and every non-reader stage are inspected.
+    Proof and hook bodies outside `.claude/scratch/` are not scanned.
+    """
+    stages = [segment for segment in _shell_segments(cmd)
+              if _segment_verb(segment) not in READ_ONLY_VERBS]
+    texts = ["\n".join(stages)]
+    for segment in stages:
+        for token in _run_refs(segment):
+            scratch = "/.claude/scratch/" in "/" + token.replace("\\", "/").lstrip("/")
+            body = _read_script(token, cwd) if scratch else None
+            if body:
+                texts.append(body)
+    if not any(WINDOW_CLOSE_RE.search(t) for t in texts):
+        return None
+    return ("BLOCKED window close (CLAUDE.core.md §Shell Discipline) — terminal windows share one WindowsTerminal.exe, "
+            "and a window's title follows its foreground command, so no title or process name tells a dead error "
+            "window from a live session, possibly this one.\n"
+            "Ask the owner to close them.")
 
 
 def _emit_deny(reason):
@@ -613,7 +801,8 @@ def main():
     except Exception:
         payload = None
     if not isinstance(payload, dict):
-        _emit_deny("BLOCKED stop/kill — cannot verify the target because the hook payload is not an object.")
+        _emit_deny("BLOCKED stop/kill (CLAUDE.core.md §Shell Discipline) — the hook could not read its input or transcript. "
+                   "Re-issue the same call; if it repeats, report it.")
         return 0
     tool = payload.get("tool_name")
     if tool == "TaskStop":
@@ -623,7 +812,7 @@ def main():
         inline = dict(os.environ)
         for m in re.finditer(r"HARNESS_ALLOW_KILL=(\S+)", cmd):
             inline["HARNESS_ALLOW_KILL"] = inline.get("HARNESS_ALLOW_KILL", "") + " " + m.group(1)
-        why = verdict(cmd, inline)
+        why = window_close_verdict(cmd, payload.get("cwd")) or verdict(cmd, inline)
     else:
         return 0
     if why:

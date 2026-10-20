@@ -1,90 +1,82 @@
 ---
-description: Autonomously drive a design topic to an approved design doc + roadmap Parts under the design contract — process free-form per orchestration judgment, invariants fixed, one human gate at design-lock.
+allowed-tools: Workflow, Agent
+description: Drive multi-Part design work to shipped code or design-only
 ---
 
 # /design_drive — contract-driven autonomous architecture
 
+**Input:** a design topic: free text, an `arch-pending` / `arch-rework` Part name (resolved on the nearest-ancestor `roadmap.md`), an `ideation-complete` idea-bank doc or cluster, or a user-authored design doc.
+**Enters at:** ground, then design.
+**Owner stop:** design-lock (`design_contract.md` clause 8); the spine's halts apply.
+
+Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what a design topic adds.
+
 **Invocation:** `/design_drive <topic-or-part> [--design-only]`
 
-- `<topic-or-part>` — a design topic (free text), an `arch-pending` / `arch-rework` Part name (resolved on the nearest-ancestor `roadmap.md`), or a path to an `ideation-complete` idea-bank doc / cluster. No argument → ask which topic before doing anything.
-- **Default is through-implementation:** after design-lock, chain `/part_drive` per authored `plan-pending` Part in dependency order — the user asked for the feature, not a document. `--design-only` stops at the approved design + roadmap (use when the user says design/architect only, or the roadmap is handed to other sessions).
+- `<topic-or-part>`: the input above. No argument → ask which topic before doing anything.
+- **Default is through-implementation:** after design-lock, the drive carries the design to shipped code — the user asked for the feature, not a document. `--design-only` stops at the approved design and roadmap (use when the user says design/architect only, or the work is handed to other sessions).
 
-## When to use (vs. siblings)
+## Entry routing
 
-| You want | Use |
-|---|---|
-| Direct influence per decision — your taste enters continuously | `/architecture_brainstorm` (optionally `--red_team`) |
-| A well-trodden shape on an existing Part (plan → ship) | `/part_drive` — add `--plan-only` to stop at an approved plan |
-| A large or novel design run autonomously, taste batched to one gate | **this command** |
+Which entry command fits a piece of work (this one, `/architecture_brainstorm`, `/part_drive`) follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Entry routing; this command's own input is the `<topic-or-part>` above.
 
-**Preflight (before any exploration):** load `architecture_philosophy` — plus `project_subsystems` and any framework skill the project ships when the topic touches those surfaces. Contract clause 1 makes the doctrine a citable grounding source, and an unloaded skill cannot be cited. Do not treat the auto-loaded `rules/design_litmus.md` as the doctrine; it is the pointer to it. Read `Claude/Meta/Development-Focus.md`; name any misalignment between the topic and the current focus in the preflight summary — advisory, never a gate.
+**Preflight (before any exploration):** load the doctrine per [`design_contract.md`](../skills/_brainstorm_shared/design_contract.md) clause 1, so it is citable. Read `Claude/Meta/Development-Focus.md` and report topic misalignment per [`plan_file_format.md`](../skills/_brainstorm_shared/plan_file_format.md)'s focus-note rule.
 
 **Entry preconditions (halt, don't improvise):**
 
-- Candidate ideas EXIST — idea-bank doc, mature-domain canonical patterns, or the user's own framing. Greenfield with no candidates → halt and route to `/idea_brainstorm`; ideation is pure taste and has no autonomous variant by design.
-- Run the [`common.md §1`](../skills/_brainstorm_shared/common.md) existing-doc check first. That check dispatches [`/explore`](explore.md), so it doubles as this command's exploration FLOOR — one dispatch, not two. A design doc already covering the topic → halt and surface it (resume/extend per §1.1, don't re-design). Absorb every `premise-contradiction` claim before drafting: an ungroundable premise caught here is a topic reframe, caught later it is valve (a).
+- Candidate ideas EXIST — idea-bank doc, mature-domain canonical patterns, or the user's own framing. Greenfield with no candidates → halt per the Entry routing above; ideation is pure taste and has no autonomous variant by design.
+- Run the [`existing_doc_check.md §1`](../skills/_brainstorm_shared/existing_doc_check.md) existing-doc check first. That check dispatches [`/explore`](explore.md), so it doubles as this command's exploration FLOOR — one dispatch, not two. At that dispatch, record the grounding base in the drive's task record: `task_record.py add <task> decision "design-lock base <HEAD sha>"`. A design doc already covering the topic → resume or extend per §1.1, rather than re-designing. Absorb premise-contradiction claims as [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md) §Stages Ground requires: an ungroundable premise caught here is a topic reframe, caught later it is spine H1.
 
 ### User design doc intake (`<topic>` = a user-authored design doc)
 
 When the topic is a user-authored design doc — the recurring intake shape for NPCs, features, and
 systems — the preconditions above hold, with one addition: the doc IS the candidate pool, and the drive
-is refinement-plus-continuation, never ideation. Four intake steps bind before drafting:
+is refinement-plus-continuation, never ideation. Before drafting from a user-authored doc, record its commitments and open forks, establish shipped state and worklog context, verify scope-defining premises against code, and persist new user rulings when they arrive. Read in the order that exposes those facts with the least duplicate work.
 
-1. **Digest the doc first** — extract the heading outline + per-section intent + the explicit
-   decision-vs-idea-vs-open-question classification (`read_files`; the digest is the drive's working
-   surface). A user doc's sections are constraints to CONFIRM, not specifications to trust.
-2. **Establish implementation status before drafting** — a user doc rarely states what already shipped.
-   The `/explore` floor's claims carry this; additionally run the worklog-relevance check (session-once)
-   — prior drive/audit artifacts are the refinement branch's PRIMARY
-   input, not optional context.
-3. **Verify every doc premise against code** — user docs carry premise divergences as a rule: 2D
-   framing for a 3D entity, authoring conventions already superseded by shipped data, values the doc
-   marks open but code already pins. Record-don't-fight the superseded claims; the divergences reshape
-   the refinement scope.
-4. **Expect mid-drive user input** — corrections (family-maturity doubts, routing directives) arrive
-   while fan-outs run. Bank them in `decisions.md` as user-stated priors the moment they arrive; they
-   are design-shaping, never afterthoughts.
-
-## Dispatch topology receipt
-
-Before every dispatch stage, compose `orchestration` §0, §5, and §11 into one **Dispatch Topology Receipt**. Its pre-dispatch half names independent outputs, risks, fixed seats, contained-job deduplication, width, role floor, effort, and currency. Its post-journal/PINS half compares actual rows, pins, and coverage with that receipt. This call site adds no role or model table.
+A user doc's sections are constraints to CONFIRM, not specifications to trust. Use its heading outline and per-section intent to classify decisions, ideas and open questions; use `/explore` claims and the session-once worklog-relevance check to establish what shipped and what prior drive/audit artifacts say; verify each scope-defining premise against code and record superseded claims; append user corrections and routing directives to `decisions.md` when they arrive.
 
 ## Stance
 
-**The contract is fixed; the process is yours.** Satisfy every clause of [`_brainstorm_shared/design_contract.md`](../skills/_brainstorm_shared/design_contract.md). HOW you get there — what you read, what agents you spawn, exploration order and depth — is your judgment per the `orchestration` skill, **above the `/explore` floor from the entry preconditions.** The floor removes only one option: entering design with no established state at all. Everything above it stays judgment, and the dossier's evidence-backed claims are what contract clause 1 cites for codebase state. A gnarly seam deserves a comparative deep-read of the two subsystems it joins; a wide space deserves fan-out; a constrained space deserves neither. Do NOT reproduce `architecture_brainstorm` Steps 2–4 by rote: that skill's Socratic pacing exists to let a human's taste enter continuously; here taste enters at design-lock, so pace for design quality instead. The live-option litmus (`architecture_brainstorm` Step 4) still governs any options you present at the gate — filler options are enumeration theater in any mode.
+**The contract is fixed; the process is yours.** Satisfy every clause of [`_brainstorm_shared/design_contract.md`](../skills/_brainstorm_shared/design_contract.md). HOW you get there — what you read, what agents you spawn, exploration order and depth — is your judgment per the `orchestration` skill, **above the `/explore` floor from the entry preconditions.** The floor removes only one option: entering design with no established state at all. Everything above it stays judgment, and the dossier's evidence-backed claims are what contract clause 1 cites for codebase state. A gnarly seam deserves a comparative deep-read of the two subsystems it joins; a wide space deserves fan-out; a constrained space deserves neither. Do NOT reproduce `architecture_brainstorm`'s Socratic and approach procedures by rote: that skill's pacing exists to let a human's taste enter continuously; here taste enters at design-lock, so pace for design quality instead. The live-option litmus in the `architecture_brainstorm` skill's Socratic-and-approaches Step 4 procedure still governs any options you present at the gate — filler options are enumeration theater in any mode.
 
-Socratic questions the human-in-the-loop flow would ask the user are answered from canon per contract clause 1; whatever canon can't answer joins the taste-fork batch (clause 2) — appended to `decisions.md` `## Frontier` in that same turn, along with every fog entry and out-of-scope call ([`common.md §8`](../skills/_brainstorm_shared/common.md)). The frontier file is what makes this command resumable: a drive that dies mid-flight resumes from it, not from chat.
+Canon answers the Socratic questions the human-in-the-loop flow would ask (`design_contract.md` clause 1). Whatever canon cannot answer joins the taste-fork batch. Append every fork to `decisions.md` `## Frontier`, every fog entry to `## Fog` and every out-of-scope call to `## Out of scope` in the same turn, so a dead drive resumes from the file (`design_contract.md` *The batch persists as it accumulates*).
 
-This command authorizes `Workflow` for any stage shape — adversarial panel, exploration fan-out, competing design drafts + judge panel, or anything else `orchestration` judgment calls for (per-call `model` + `effort` pins per the ladder in `reference/model_ladder_evidence.md` + `orchestration` §5).
+This command authorizes `Workflow` for any stage shape: adversarial panel, exploration fan-out, competing design drafts plus a judge panel. Per-call model and effort pins follow `orchestration` §5.
 
-Where the contract binds process anyway (clause 5): Part authoring runs the sub-procedure chain of `architecture_brainstorm` Step 5, the doc self-review runs its Step 7 self-review checklist, and roadmaps route through `/update_roadmap`. Those are artifact gates, not exploration.
+Part authoring, doc self-review and roadmap routing follow `design_contract.md` clause 5.
 
-## Halt valves
+## Halts
 
-- **(a) Ungroundable scope** — a scope-defining question no canon source answers, and the design can't reach a batchable state without it.
-- **(b) Blocking taste-fork** — an appetite question (per [`appetite_invariant.md`](../skills/_brainstorm_shared/appetite_invariant.md)) the rest of the design depends on; deferring it to the batch would fabricate the answer implicitly.
-- **(c) Dead-end** — the adversarial panel returns a dead-end verdict (design invalid under stated constraints) → halt for reframe.
-- **(d) Panel integrity** — adversarial panel INCOMPLETE (missing lens / liveness failure) twice.
-- **(e) Design-lock** — always fires; the gate per contract clause 8.
+Halts are the spine's ([`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md) §Halts). Here, an ungroundable scope-defining question is H1 or H2. A blocking taste-fork, an appetite question the design depends on ([`appetite_invariant.md`](../skills/_brainstorm_shared/appetite_invariant.md)), is H3. A dead-end panel verdict is H5. Incomplete panel coverage that targeted recovery cannot close is H4, so a partial panel is never clean. Design-lock always fires as the owner stop.
 
-Accumulating N batched taste-forks is a SUCCESS state, not a valve (appetite invariant).
+N batched taste-forks are a SUCCESS state, not a halt ([`appetite_invariant.md`](../skills/_brainstorm_shared/appetite_invariant.md) §Why this is load-bearing).
+
+## Size at entry
+
+This command runs only for size = parts (`execution_depth.md` §Entry routing). Read size against the Size litmus as the first output after the `/explore` floor, before any design work, and state it in the design-lock report. A size below parts stops here and hands the dossier to `/feature_drive`, which reuses it.
 
 ## After design-lock approval
 
-**The answered batch IS the approval.** Once the user has answered every batched taste-fork, the design is approved — reconcile the doc to the answers and proceed directly. Do NOT ask a separate approve-the-design question, and do NOT re-gate the `/update_roadmap` batch (present its diff informationally and apply; the user redirects after the fact). A follow-up approval question is warranted ONLY when reconciliation introduces design content that is not a direct consequence of a batch answer, or when answers conflict and force a redesign.
+The answered batch is the approval (`design_contract.md` clause 8): reconcile the doc to the answers and proceed.
 
-1. Invoke `/update_roadmap` (clause 5 — single executor; multi-roadmap child-subfolder case per `architecture_brainstorm` Step 8's two-invocation sequence). If the Step 5 *MVP recommendation* conditions hold (`architecture_brainstorm` Step 5), surface that recommendation at design-lock — same message as the brainstorm skill, including the REQUIRED Playtest plan (common.md §6.11) — rather than silently skipping it. The user decides at the gate whether to run `/mvp_plan` now or defer.
+Run steps 1–3.
+
+1. Invoke `/update_roadmap`, present its diff informationally and apply it (clause 5 — single executor; the child-subfolder case uses the two invocations in the `architecture_brainstorm` skill's Doc-and-review Step 8 procedure). If the `architecture_brainstorm` skill's Part-authoring MVP recommendation (the three firing conditions) holds, surface it at design-lock — same message as the brainstorm skill, including the REQUIRED Playtest plan (roadmap_triggers_mvp.md §6.11) — rather than silently skipping it. The user decides at the gate whether to run `/mvp_plan` now or defer.
 2. With `--design-only`: report the recommended starting Part and stop.
-3. Otherwise: for each `plan-pending` Part in dependency order, run `/part_drive <part>`. Its valve set applies unchanged — taste-forks now halt IMMEDIATELY, not batch: reversibility drops at the implementation boundary and no batching point exists there. Chain mode pins `/part_drive` step 2's draft-delegation rule: plan DRAFTS dispatch to an architect-tier arm — over a chain the orchestrator's context is the binding constraint. A halt in any Part stops the chain; report Parts completed vs. remaining. After each `/part_drive`'s `/update_roadmap` run, if any MVP's Status flipped to `🧪 Ready for playtest`, surface it with its Playtest plan (common.md §6.11) — the drive ends at a playtestable state, and the user should playtest before `/mvp_plan verify`. If a flipped MVP has no Playtest plan, name the gap explicitly (the `/update_roadmap` Step 5 warning fires it) rather than reporting the chain clean.
+3. Otherwise: for each `plan-pending` Part in dependency order, run `/part_drive <part>`.
+   - **Halts:** the spine's Parts path and halts apply. A halt in any Part stops the chain; report Parts completed vs. remaining.
+   - **Drafts:** chain mode pins `orchestration` reference `drive_dispatch.md` *Plan drafts*.
+   - **Plan ahead:** a Part plans and runs ahead by dependency per the spine's Parts path. The chain never passes `--plan-only`: design-lock approved every Part, so a converged plan goes straight to execution.
+   - **Playtest surfacing:** after each `/part_drive`'s `/update_roadmap` run, if any MVP's Status flipped to `🧪 Ready for playtest`, surface it with its Playtest plan (roadmap_triggers_mvp.md §6.11). The drive ends at a playtestable state, and the user should playtest before `/mvp_plan verify`. If a flipped MVP has no Playtest plan, name the gap explicitly (the `/update_roadmap` Step 5 warning fires it) rather than reporting the chain clean.
 
 ## Anti-patterns
 
 | Rationalization | Reality |
 |---|---|
-| "The contract is satisfied in spirit; skip the compliance report" | The per-clause report IS the verification surface — clause 8 requires it, including what couldn't be satisfied. |
-| "I critiqued the design myself while drafting" | Clause 3: independence is the point, not the critique. Fresh dispatch or it didn't happen. |
-| "This decision is obvious; no ledger entry needed" | Obvious decisions are exactly what the ledger exists for — unlogged = unauthorized (clause 6). |
-| "I'll write the frontier up when I present at design-lock" | Append-on-classify (clause 2). A batch that exists only in session context is one crash from gone, and reconstructing it is what design-lock is too late for. |
-| "The user invoked an autonomous command, so this blocking taste-fork is my call" | Invocation delegates process, never appetite. Valve (b). |
-| "Safest to reproduce the 8-step brainstorm procedure verbatim" | Rote pipeline reproduction defeats the command — clause 5 names which gates bind; the rest is judgment. If you want the pipeline, that's `/architecture_brainstorm`. |
+| "The user invoked an autonomous command, so this blocking taste-fork is my call" | Invocation delegates process, never appetite. Spine H3. |
 | "Design-lock is a formality for this small topic — fold it into the close-out" | The blast-radius litmus scales the *depth*, never the *existence*, of the gate (clause 8). |
+| "The contract is satisfied in spirit; skip the compliance report" | Clause 8. |
+| "I critiqued the design myself while drafting" | Clause 3. |
+| "This decision is obvious; no ledger entry needed" | Clause 6. |
+| "I'll write the frontier up when I present at design-lock" | Clause 2. |
+| "Safest to reproduce the brainstorm procedure verbatim" | Clause 5. If you want the pipeline, run `/architecture_brainstorm`. |

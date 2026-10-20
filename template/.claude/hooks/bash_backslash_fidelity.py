@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-r"""pre_bash_dispatch sub-hook: repair the Bash tool's backslash collapse on verified clients.
+r"""pre_bash_dispatch sub-hook: repair Bash client-shell fidelity.
+
+An executing git/gh segment with a ref:path operand gains `MSYS_NO_PATHCONV=1` before
+that invocation, unless already present. Windows drive paths, URLs and quoted mentions are excluded.
+This repair does not depend on the client-version record.
 
 Measured on Claude Code 2.1.270, Git Bash, win32 (2026-09-14 and 2026-09-15), inside single quotes,
 double quotes and quoted heredocs alike:
@@ -21,19 +25,24 @@ applied unconditionally:
 - A probe invocation is a command whose WHOLE text is `python3 <path>/bash_fidelity_probe.py <arg>
   <arg>`. It is never doubled (the probe must see what the client delivers). With a readable version
   it gains ` --client-version <version>`; without one it passes unchanged and the probe exits 2. A
-  command that merely mentions the probe path is not a probe invocation.
+  command that merely mentions the probe path is not a probe invocation. Executing the probe in any
+  other command form is denied with its exact whole-command usage, before any rewrite.
+  This floor guard protects the fidelity record.
 - Any other Bash command containing `\\`:
     recorded -> `updatedInput` whose `command` doubles each run of a collapsing class; nothing when
                 that changes no run;
-    unrecorded key, unreadable version or record -> no rewrite, one advisory per compaction
-                window naming the version and the probe command.
+    unrecorded key with a complete row on this platform -> the same repair from the row with the
+                latest `observed` (client updates have kept the measured behavior), plus one advisory
+                per client version and platform, machine-wide naming both versions and the probe command;
+    unrecorded key with no such row, unreadable version or record -> no rewrite, one advisory per
+                compaction window naming the version and the probe command.
 - Any internal error: silent.
 
 Scope: the `command` field of Bash only. Monitor's backslash behavior is unmeasured (an excluded
 check, re-entered on the first Monitor command containing `\\`), and a `claude -p` child showed no
 PreToolUse event on a Workflow call, so repair inside such a child is unverified.
 
-Channel: hookSpecificOutput.updatedInput (no permission decision) or additionalContext.
+Channel: hookSpecificOutput.updatedInput, permissionDecision: deny, or additionalContext.
 Registered last in pre_bash_dispatch.HOOKS, so an earlier deny wins before this runs.
 Proofs: tests/test_bash_backslash_fidelity.py, tests/test_bash_fidelity_probe.py.
 """
@@ -98,14 +107,16 @@ def client_version(transcript_path):
     return None
 
 
-def lookup(key):
-    """(collapses, collapses_before_quote) for `key`, or None when unrecorded, partial or unreadable."""
+def _load_record():
     try:
         with open(record_path(), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return None
-    row = data.get(key) if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _rule(row):
     if not isinstance(row, dict):
         return None
     collapses, before_quote = row.get("collapses"), row.get("collapses_before_quote")
@@ -114,8 +125,50 @@ def lookup(key):
     return None
 
 
+def lookup(key):
+    """(collapses, collapses_before_quote) for `key`, or None when unrecorded, partial or unreadable."""
+    return _rule(_load_record().get(key))
+
+
+def newest_on_platform():
+    """(version, rule) of the complete row on this platform with the latest `observed`, or None."""
+    best = None
+    for key, row in _load_record().items():
+        version, _, platform = str(key).rpartition("|")
+        rule = _rule(row)
+        if platform != sys.platform or rule is None:
+            continue
+        rank = (str(row.get("observed") or ""), version)
+        if best is None or rank > best[0]:
+            best = (rank, version, rule)
+    return (best[1], best[2]) if best else None
+
+
 def is_probe_invocation(command):
     return bool(PROBE_INVOCATION.match(command))
+
+
+def executes_probe(command):
+    from _git_commit import segments, executable_text, _tokens
+    for segment in segments(executable_text(command)):
+        words = _tokens(segment)
+        while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+            words.pop(0)
+        if not words or not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?",
+                                        words.pop(0).replace(BS, '/').rsplit('/', 1)[-1]):
+            continue
+        while words and words[0].startswith('-') and words[0] != '-':
+            option = words.pop(0)
+            if option in ('-c', '-m', '--help', '--version'):
+                words = []
+                break
+            if option in ('-W', '-X') and words:
+                words.pop(0)
+        if words and words[0] == '--':
+            words.pop(0)
+        if words and re.fullmatch(_PROBE_PATH, words[0]):
+            return True
+    return False
 
 
 def repair(command, collapses, before_quote):
@@ -130,8 +183,7 @@ def _fire_once(payload, key):
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import _hook_state
-        return _hook_state.fire_once_since_compaction(str(payload.get("session_id") or ""),
-                                                      "bash_backslash_fidelity:" + key)
+        return _hook_state.fire_once_machine(key.replace("|", ":"))
     except Exception:
         return True
 
@@ -143,7 +195,13 @@ def advisory(version):
             % (PAIR, version or "(version unreadable)", sys.platform, PAIR, BS, PROBE_COMMAND))
 
 
-def evaluate(payload):
+def carried_advisory(version, from_version):
+    return ("[bash-fidelity] Client %s on %s has no backslash-fidelity record, so this Bash command was repaired "
+            "with the newest record on this platform (client %s). Record this client once with the whole "
+            "command: %s" % (version, sys.platform, from_version, PROBE_COMMAND))
+
+
+def _backslash_output(payload):
     """The hookSpecificOutput dict to emit, or None."""
     if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
         return None
@@ -171,9 +229,61 @@ def evaluate(payload):
         if repaired == command:
             return None
         return {"hookEventName": "PreToolUse", "updatedInput": dict(tool_input, command=repaired)}
-    if not _fire_once(payload, key):
+    carried = newest_on_platform() if version else None
+    out = {"hookEventName": "PreToolUse"}
+    if carried is not None:
+        repaired = repair(command, *carried[1])
+        if repaired != command:
+            out["updatedInput"] = dict(tool_input, command=repaired)
+    if _fire_once(payload, key):
+        out["additionalContext"] = carried_advisory(version, carried[0]) if carried else advisory(version)
+    return out if len(out) > 1 else None
+
+
+def evaluate(payload):
+    """Repair colon operands before applying the client-specific backslash repair."""
+    from _git_commit import segments, executable_text, _tokens
+    if not isinstance(payload, dict) or payload.get('tool_name') != 'Bash':
         return None
-    return {"hookEventName": "PreToolUse", "additionalContext": advisory(version)}
+    tool_input = payload.get('tool_input') or {}
+    command = tool_input.get('command')
+    if not isinstance(command, str):
+        return None
+    if not is_probe_invocation(command) and executes_probe(command):
+        return {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                'permissionDecisionReason': '[bash-fidelity] The probe must be the whole command '
+                '(tools/bash_fidelity_probe.py usage); otherwise the hook can corrupt its measurement. '
+                'Run exactly: ' + PROBE_COMMAND}
+    replacements, cursor = [], 0
+    text = executable_text(command)
+    for segment in segments(text):
+        at = command.find(segment, cursor)
+        if at < 0:
+            continue
+        cursor = at + len(segment)
+        words = _tokens(segment)
+        inline = []
+        while words and '=' in words[0] and not words[0].startswith('-'):
+            inline.append(words.pop(0))
+        if not words or words[0].replace('\\', '/').rsplit('/', 1)[-1] not in ('git', 'git.exe', 'gh', 'gh.exe'):
+            continue
+        if any(not word.startswith('-') and '=' not in word
+               and re.match(r'^(?![A-Za-z]:[/\\])[^:\s]*:(?!//)[^\s]+$', word) for word in words[1:]):
+            if 'MSYS_NO_PATHCONV=1' not in inline and (text == command or command.count(segment) == 1):
+                replacements.append(at)
+    prefixed = bool(replacements)
+    if prefixed:
+        for start in sorted(replacements, reverse=True):
+            command = command[:start] + 'MSYS_NO_PATHCONV=1 ' + command[start:]
+        payload = dict(payload, tool_input=dict(tool_input, command=command))
+    out = _backslash_output(payload)
+    if not prefixed:
+        return out
+    out = out or {'hookEventName': 'PreToolUse'}
+    out.setdefault('updatedInput', dict(tool_input, command=command))
+    note = '[bash-fidelity] Added MSYS_NO_PATHCONV=1 for git/gh ref:path operands.'
+    out['additionalContext'] = (out.get('additionalContext', '') + '\n' + note).strip()
+    return out
 
 
 def main():

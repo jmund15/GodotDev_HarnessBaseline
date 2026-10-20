@@ -100,6 +100,10 @@ def main():
         out, err = run_hook(hook, home)
         ctx = additional_context(out)
         cases.append(("present adaptation.json: custom domain matches", "SpellCraft" in ctx))
+        cases.append(("matched domains and skills are facts",
+                      ctx.startswith("Plan text names domains: SpellCraft, whose not-yet-loaded skills are spell_authoring")))
+        cases.append(("keyword matches do not command an action",
+                      all(term not in ctx for term in ("Before implementing", "semantic-search", "load skills", "read .claude"))))
         cases.append(("present adaptation.json: its rules surface in the reminder",
                       ".claude/rules/spell_rules.md" in ctx))
         cases.append(("present adaptation.json: no stderr on a valid row", err == ""))

@@ -5,7 +5,7 @@
 ## detailed
 
 - A PascalCase identifier on `.cs`: the declaration anchor is `Grep("class X\b"|"interface X\b" -g "*.cs")`; the language server here is the csharp-ls LSP. [CLAUDE.godot.md §Godot Docs and C# Navigation]
-- A PascalCase name in `.tres`/`.tscn`/`.gd`/`.godot` or other text data: route to semantic-search, not Grep. Semantic search does not index `.cs`. [CLAUDE.godot.md §Godot Docs and C# Navigation]
+- A PascalCase name in `.tres`/`.tscn`/`.gd`/`.godot` or other text data: route to semantic-search, not Grep. [CLAUDE.godot.md §Godot Docs and C# Navigation]
 
 ## condensed
 

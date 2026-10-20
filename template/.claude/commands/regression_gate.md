@@ -1,21 +1,25 @@
 ---
-description: Verify regressions before any commit or merge — the single source-of-truth gate.
-allowed-tools: Bash(pwsh:*), Bash(dotnet build:*), Bash(git:*), Monitor
+description: Gate C# commits and merges or behavior-coupled Godot data changes
+allowed-tools: Bash, Monitor
 ---
 
 ## Purpose
 
-Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, `/review_pr`; also standalone. Rationale and non-negotiables: `change_control`. All mechanics — orphan kill, engine preflight, six static guards, build, three suites, tier evaluation, headless import gate, baseline ratchet — live in `.claude/scripts/regression_gate.ps1`, whose header documents each invariant. **This file owns judgment only:** when the gate applies, failure adjudication, verdict rendering.
+Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, `/review_pr`; also standalone. Rationale and non-negotiables: `change_control`. All mechanics live in `.claude/scripts/regression_gate.ps1`, whose header documents each invariant. **This file owns judgment only:** when the gate applies, failure adjudication, verdict rendering.
+
+**Phase order:** the gate holds the checkout through its build and test phases. After the build, a headless `--import` makes the import cache current (`IMPORT_GATE`), so no suite loads resources from a stale cache. Sanity runs first, alone, with the GdUnit4 recompile pass; a red Sanity ends the gate `FAIL` before the pool. Logic and pending Integration batches then run together in one held pool. §Retry policy owns retry eligibility. Every run under the hold writes its TRX under `TestResults/runs/gate-<runId>/`, printed as `TRX_DIR=<path>`; `python3 .claude/tools/test_profile.py <TRX_DIR>` reports the run's slowest tests.
 
 ## When Required
 
-- **Code commits:** any commit touching `.cs` (Logic, Gameplay, Tests, Jmodot)
-- **Data commits with code coupling:** `.tres`/`.tscn` changes affecting Logic Domain behavior
+- **Code commits:** any commit touching `.cs` (Logic, Gameplay, Tests, Jmodot).
+- **Data commits with code coupling:** `.tres`/`.tscn` changes affecting Logic Domain behavior.
 
 ## When Exempt
 
-- Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness commits instead need a green `harness_tests.py` stamp (CLAUDE.md §Build & Test Commands)
+- Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness pushes use the close gate in `rules/harness_tooling.md`.
 - Pure configuration/asset commits with no code coupling
+
+A cloud session (`CLAUDE_CODE_REMOTE=true`) cannot run this Windows-bound gate. It runs the filtered verify in `rules/cloud_dev.md` instead, and its PR states that the local gate is still owed before merge.
 
 ## Invocation
 
@@ -23,102 +27,80 @@ Single source of truth for regression verification. Called by `/session_end`, `/
 pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
 ```
 
-**Every invocation declares its chain position** — `hooks/gate_cadence_guard.py` denies one that does not:
+**A gate run declares its chain position** — `hooks/gate_cadence_guard.py` exempts `-StaticOnly`, `-RetryOnly`, `-RouteOnly` and watch-only calls; other invocations without a marker receive an advisory:
 
 | Marker | Cap | Means |
 |---|---|---|
 | `# gate: final` | — | Drive close, before commits. |
 | `# gate: prepush` | — | Before push/PR. |
-| `# gate: checkpoint` | 2/session | Exceptionally long drive. |
+| `# gate: checkpoint` | Long-drive exception; full gate; no numerical cap. |
 
-Every position runs the same full gate; there are no tiers to choose. Between drive start and drive close the expected gate count is **zero** — commits batch to the close gate, and slice/Part verification is `verify.ps1 -Scope <domains>`, which the hook never blocks. Cadence canon: `change_control` §Gate cadence.
+Every gate invocation runs the same full gate; there are no tiers to choose. `change_control` §Gate cadence owns slice/lane verification, Part/drive close and fix re-verification. The hook never blocks `verify.ps1` or raw `-Filter` runs.
 
-**`-Detach` is mandatory from an agent session; `run_in_background: true` is not durable.** Claude Code reaps a backgrounded Bash task once the session goes idle and the whole process tree dies with it — a full gate survives only while the session keeps issuing tool calls. `-Detach` returns in ~1s with `OUT=<path>`; watch that file until a line begins `VERDICT=`, which is the only completion signal. A killed poller loses the wake-up, never the run. **The watch streams progress; a silent `until grep VERDICT` loop is forbidden** — the user must see each stage line (`GUARDS`, `BUILD`, `SUITE ...`, `VERDICT`) as it lands, or a ten-minute Integration batch is indistinguishable from a hang. Integration prints ONE `SUITE` line when all batches are done; its per-batch progress lives in `.claude/scratch/test_runs/integration_batches.json` (`label`, `status` GREEN/RED/PENDING, `passed`, `failed`, `elapsed`), so the watch also emits each batch as its status leaves PENDING. Canonical Monitor script (emits each new stage line and each finished batch, exits on the verdict):
+**`-Detach` is mandatory from an agent session.** A full gate outlives the 600 s foreground Bash ceiling, and a detached run survives a harness kill of the shell that launched it, which a `run_in_background` task does not. `-Detach` returns in ~1s with `OUT=<path>`, and the run is over only when a line begins `VERDICT=` in that file; a killed poller loses the wake-up, never the run.
+
+Watch it through the gate's own stage watcher, the supported Monitor.
 
 ```bash
-F="<OUT path>"; J=".claude/scratch/test_runs/integration_batches.json"; S=$(mktemp); P="^(REAP|PEERS|QUEUE_WAIT|ENGINE|GUARDS|BUILD|DOCS|SUITE|IMPORT_GATE|BASELINE|TREE_CHANGED|VERDICT)"
-emit() { while IFS= read -r l; do l=${l%$'\r'}; [ -n "$l" ] && ! grep -qxF -- "$l" "$S" && { echo "$l"; echo "$l" >> "$S"; }; done; }
-while true; do
-  grep -E "$P" "$F" 2>/dev/null | emit
-  python3 -c "import json;d=json.load(open('$J'));b=d if isinstance(d,list) else d.get('batches',d);[print(x['label'],x['status'],'passed='+str(x.get('passed')),'failed='+str(x.get('failed'))) for x in (b if isinstance(b,list) else b.values()) if isinstance(x,dict) and x.get('status')!='PENDING']" 2>/dev/null | emit
-  grep -q "^VERDICT=" "$F" 2>/dev/null && break; sleep 10
-done
+pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Watch -Out "<OUT path>"
 ```
-The seen-list lives in a file: a shell variable rebuilt each cycle re-emits old lines. `emit` strips `\r` because Windows Python prints CRLF and `grep` drops the CR when reading the file, so an unstripped line is never seen and re-emits every cycle.
-**Do not edit any file under test while it runs:** the gate verifies the CURRENT working tree, so a mid-run edit invalidates the result. Editing `.claude/` markdown is safe.
+
+It streams the stage lines and the finished-batch transitions with no repeat, then exits on `VERDICT=`. Integration prints ONE `SUITE` line when all batches are done; its per-batch progress lives in `.claude/scratch/test_runs/integration_batches.json` (`label`, `status` GREEN/RED/PENDING, `passed`, `failed`, `elapsed`).
+`change_control` §Gate cadence owns the digest boundary, edits during a run and current-tree validation of stored verdicts.
 
 | Flag | Use |
 |---|---|
-| *(none)* | Full gate. The default; the only form that satisfies a `.cs` commit. Queues instead of running inline when an editor is live on this checkout (Exit 7). |
-| `-Detach` | Spawn the run as a detached process and exit ~1s with `DETACHED pid=`, `OUT=`, `ERR=`. Survives the session going idle; forwards every other flag. Refused with `-FromQueue` (the watcher already detaches). |
-| `-StaticOnly` | Preflight + guards + build + `DOCS`, ~20s, no test lock; `VERDICT=STATIC_PASS` at exit 0. The right check for a pure-data commit skipping the `.cs` path. Does NOT satisfy the gate for `.cs`. |
-| `-IgnoreEditor` | Skip the editor-live check, run inline. Use only when the "editor" it sees is stale (a crashed process not yet reaped). |
-| `-QueueStatus` | List pending/completed requests in `.claude/scratch/gate_queue/`; no gate run. A result whose `treeDigest` differs from the current tree is STALE (Exit 7). |
-| `-WaitForQueue <sec>` | **Defaults to 1800.** On a queue handoff, block up to `<sec>` and exit with the queued run's verdict instead of exit 7. `0` = fire-and-forget. Expiry wakes, never cancels — the run stays queued. Forwarded through `-Detach`, where the block is free; a foreground wait hits the 600s Bash ceiling. |
-| `-RetryOnly` | Forwarded to the batched Integration runner — reruns only non-green batches. Use after `HANG`. A budget overrun retries itself once without this flag. |
-| `-NoBaselineUpdate` | Evaluate and report without writing the baseline. A recording flag, not a width flag — coverage is unchanged. `/test_compact` needs it to capture counts without ratcheting. |
-| `-NoReuse` | Force a fresh run — refuse a ledger REUSE even on a digest+mode+age match. Propagated through the queue, so a `-NoReuse` run that queues re-fires without silently re-enabling reuse. |
+| *(none)* | Full gate. The default; the only form that satisfies a `.cs` commit. When an editor is live on this checkout it runs in the checkout's twin (`TWIN=`) and copies a green run's baseline files back (`TWIN_WRITEBACK=`); a busy checkout is waited on (`WAIT`), up to `-WaitSec`, then ends `BUSY` (exit 7); when the twin cannot be synced, the editor is a holder (see exit 7). |
+| `-Detach` | Spawn the run as a detached process and exit ~1s with `DETACHED pid=`, `OUT=`, `ERR=`. Survives a kill of the launching shell; forwards every other flag. The child runs the whole wait. |
+| `-Watch -Out <path>` | Read-only: stream lines selected by the stage-prefix pattern in `Invoke-StageWatch` and matching-run finished-batch transitions without repeats. The batch state file's `runId` must match the OUT's `gate_run_<runId>.out`. Exit 0 on `VERDICT=`. With usable PID metadata, a dead process without a verdict emits `WATCH_DEAD` and exits 1: rerun the gate. Missing or unusable PID metadata gives no dead-process termination guarantee; inspect OUT, ERR and the PID sidecar before leaving a watch unattended. Takes no lock and runs no gate. `-Batches <path>` overrides the batch state file; `-WatchIntervalSec <n>` sets the poll interval. |
+| `-StaticOnly` | Preflight + guards + build + `DOCS`, ~20s; holds the checkout lease from entry through its build, so it waits behind a running gate; `VERDICT=STATIC_PASS` at exit 0. The right check for a pure-data commit skipping the `.cs` path. Does NOT satisfy the gate for `.cs`. |
+| `-RetryOnly` | Restore prior green Integration batches individually when the state digest matches and each batch's label and segment list match. Other batches run. Missing state, missing current digest or digest mismatch prints `RETRY_ONLY_IGNORED reason=<why>` and restores no greens. Composition mismatch leaves only the unmatched batches pending. The digest boundary is `change_control` §Gate cadence's. Logic and Sanity still run. |
 
-**The gate has no width knob.** `-Smoke`, `-SmokeImport`, `-Targeted` and `-SkipStatic` are deleted; the guard denies a stale invocation and names the replacement. Narrow runs are `verify.ps1 -Scope <domains>` — a different script under a different verb, so a narrow result cannot be mistaken for a gate verdict. Rationale: `change_control` §Gate cadence.
+Read [`regression_gate_reference.md`](reference/regression_gate_reference.md) §Flags for `-IgnoreEditor`, `-RouteOnly`, `-WaitSec`, `-NoBaselineUpdate` and `-NoReuse`.
 
-**`DOCS`** blocks on XML-doc defects (`CS1587|CS1574|CS1734|CS1570|CS1572|CS1711|CS0419`, vendored trees excluded), parsed from the build the gate already runs — no second build. Scope is whatever that build compiled, i.e. the changed code. CS1587 on an `[Export]` is a silently-missing Inspector tooltip, not cosmetic. Full-tree sweep: `.claude/scripts/doc_warning_check.sh`. Doctrine: `rules/csharp_patterns.md` §Core Conventions.
+**The gate has no width knob.** `-Smoke`, `-SmokeImport`, `-Targeted` and `-SkipStatic` are deleted; the guard denies a stale invocation and names the replacement. Narrow runs use `run_test_suite.ps1 -Filter "<raw>"` or `verify.ps1 -Scope <domains>` under `change_control` §Gate cadence. These are different scripts under different verbs, so a narrow result cannot be mistaken for a gate verdict.
+
+**`DOCS`** blocks on XML-doc defects (`CS1587|CS1574|CS1734|CS1570|CS1572|CS1711|CS0419`, vendored trees excluded), parsed from the build the gate already runs — no second build. Scope is the XML-doc warnings emitted by the project build, not a changed-file filter. CS1587 on an `[Export]` is a silently-missing Inspector tooltip, not cosmetic. Full-tree sweep: `.claude/scripts/doc_warning_check.sh`. Doctrine: `rules/csharp_patterns.md` §Core Conventions.
+
+## Retry policy
+
+Parsed test failures are red and never qualify for an automatic retry. Sanity retries a clean `PARTIAL` or `INVALID` result in a solo pass unless its status is `HANG`. Logic uses the same eligibility in the retry pool. Integration retries only batches left `HANG` or `SILENT_SKIP` in that pool. A clean aggregate Integration `SHORTFALL` is judged without an aggregate rerun. The code permits each eligible retry once. Its replacement result is then tiered.
 
 ## Reading the verdict
 
 Stdout is ~10 lines; detail (failing tests, guard output, remediation) spills to `.claude/scratch/test_runs/gate_last_<runId>.md`; `gate_last.md` is a latest-run pointer copy. **Read the detail file only when the verdict is not PASS.**
 
-`REAP` prints one line per reaping site — preflight, plus `site=suite:<Label>` before every suite — surfaced only on a nonzero count (all sites land in `gate_last.md`). An **ABSENT line means that site never ran**, never "nothing was killed"; `scope=orphans-only` marks a site whose candidates are orphans alone, so it cannot report spares; a peer's processes are never reaped — `PEERS` shows the gate waiting or queueing behind them.
+Preflight emits `REAP` even when it kills nothing. Suite reaper lines reach stdout only when killed or spared counts are nonzero. Their detail is retained in the run's detail file. An absent suite line does not prove the site never ran. `scope=orphans-only` marks orphan-only candidates; `PEERS` reports cross-checkout gates; `WAIT` names what this gate waits on.
 
-**`peer waiter live` in an `[activity]` line is not a blocker.** A gate parked on its own queued run re-stamps its record `kind=waiter`: it holds no build output and no runtime mutex, so nothing defers to it. Only `kind=gate` blocks.
+**`peer waiter live` in an `[activity]` line is not a blocker.** A gate waiting for its checkout stamps its record `kind=waiter`: it holds no build output and no runtime slot / checkout lock, so nothing defers to it. Only `kind=gate` blocks.
 
-```
-REAP site=preflight killed=0 scope=orphans-only
-PEERS site=preflight runners=0 gates=0 action=proceed
-PEERS site=preflight crossCheckoutGates=1 action=proceed   (another checkout's gate — this run proceeds; its runtime suites may wait)
-QUEUE_WAIT id=q20260819-112809-3948 pending=1 attempt=1 remaining=1740s   (heartbeat, every 60s while parked)
-ENGINE=OK ver=4.7.1
-GUARDS nullstrip=OK tool_cascade=OK script_strip=OK trail_seam=OK floorcell_seam=OK gate_coverage=OK dup_double=OK refcount_free=OK
-BUILD=OK
-DOCS=OK
-SUITE Logic       passed=8814 failed=0 tier=PASS delta=+0 status=DONE dur=161s
-SUITE Integration passed=1839 failed=0 tier=PASS delta=+0 completeness=OK exit=0
-SUITE Sanity      passed=48   failed=0 tier=PASS delta=+0 status=DONE dur=3s
-IMPORT_GATE=PASS
-BASELINE action=unchanged
-VERDICT=PASS
-```
+[`regression_gate_reference.md`](reference/regression_gate_reference.md) §Sample output shows a passing run's stdout, line by line.
 
-**REUSE** — a prior verdict covers this run when all three hold: content-exact tree digest match, identical mode, fresh engine probe (the toolchain is gitignored, so probed, never assumed). The gate then exits with the producer's verdict instead of running: `REUSE from=<id> mode=<mode> age=<age> session=<session>` plus `BASELINE reused=<action>`. **Report it as `PASS (reused from <id>, digest-match)`, never as a fresh run.** `-NoReuse` forces a fresh run. This definition governs every REUSE below.
+**REUSE** — the ledger selects a producer with matching tree digest and mode, an eligible status (`PASS`, `FAIL`, `WARN` or `STATIC_PASS`) and a finish time within the code's age ceiling. The current engine probe must succeed because the toolchain is gitignored. The age ceiling is enforced by `regression_gate.ps1`'s REUSE scan; inspect it when judging an older artifact. The gate then exits with the producer's verdict instead of running: `REUSE from=<id> mode=<mode> age=<age> session=<session>` plus `BASELINE reused=<action>`. **Report it as `PASS (reused from <id>, digest-match)`, never as a fresh run.** `-NoReuse` forces a fresh run. This definition governs every REUSE below.
 
-**Status vocabulary.** `TREE_CHANGED=1 phase=<phase>` — the tree changed mid-run (a peer's edit, or your own edit under test); results after the change are INVALID, never a regression. `STATUS=LOCKED` (Integration batch status, or the Logic/Sanity wrapper's `STATUS=LOCK_TIMEOUT`) — a suite could not acquire the machine-global runtime mutex; tiered `LOCKED`, never UNPARSED/INVALID/CONTENTION, and never auto-retried inline since the mutex may still be held: it queues when the busy signature holds. `BASELINE action=skipped reason=uncommitted-test-changes` — the ratchet refused a tree carrying uncommitted test changes, possibly a peer's.
+Read [`regression_gate_reference.md`](reference/regression_gate_reference.md) §Status vocabulary for `TREE_CHANGED`, `STATUS=LOCKED`, `ROLLBACK_TRIGGER` and `BASELINE action=skipped`.
 
 | Exit | Verdict | What it means / what you do |
 |---|---|---|
-| 0 | `PASS` | All tiers clear. Proceed; stage any baseline diff. |
-| 1 | `FAIL` | Real failures. **Run the adjudication below — the one step you must not automate.** |
-| 2 | `INVALID` | Silent-skip signature or below the architectural floor. Untrustworthy results, **not** a regression signal — re-run; do not interpret counts. |
-| 3 | `WARN` | Tier-2 moderate drop survived a re-run. Ask the user to acknowledge; baseline was not written. An untrusted baseline stamp is repaired by the next fully green run — it never yields WARN alone. |
+| 0 | `PASS` | All tiers clear. `BASELINE action=lowered suite=<s> drop=<n> deleted=<removed> added=<added>` clears that suite's moderate-drop WARN: committed net test deletions explain the drop, and the gate wrote the baseline itself. Proceed; stage any baseline diff. |
+| 1 | `FAIL` | Real failures. Follow §Failure handling. |
+| 2 | `INVALID` | Silent-skip signature or below the architectural floor. Untrustworthy results, **not** a regression signal — do not interpret counts; verify the affected surface per `change_control` §Gate cadence before any re-run. |
+| 3 | `WARN` | An unexplained count drop; baseline was not written. The gate lowers a clean drop of either size (WARN band or the smaller PARTIAL one) no greater than the net test attributes deleted in `updated_on_commit..HEAD`, with no failures, complete results and no uncommitted test changes. Integration lowering requires `COMPLETENESS=OK`; a below-baseline aggregate reports `SHORTFALL`, so that path cannot explain its deletion drop. Unreadable history or data-driven cases leave the drop unexplained. Investigate WARN. When committed deletion evidence explains the drop, fix any counting or ratchet defect and re-verify. Ask the user only to accept an unexplained loss of coverage; do not lower the baseline by hand. Stamp handling is `change_control` §Stamp trust's. |
 | 4 | `BLOCKED` | Preflight, guard, or build red. Fix and re-run; `gate_last.md` carries each guard's remediation. |
-| 6 | `INCOMPLETE` | Batches skipped for wall-clock budget, the automatic `-RetryOnly` pass not closing the gap, with NO machine-busy signature (no lock-wait, no `LOCKED` batches, no peer overlap) — the machine was slow. OR a watcher-fired (`-FromQueue`) run hit `LOCKED` after the watcher already waited for machine-wide quiet; it re-queues exit 6, capped. Nothing failed; partial counts prove nothing. Re-run when the machine is less loaded — prior greens are preserved. |
-| 7 | `QUEUED` | Any of: an editor live on this checkout; a live peer GATE or test run **on this checkout** not clearing in 90s; a suite's lock-wait expiring (`LOCKED`, `runtime-mutex-busy`); a budget-starved run deferring on a machine-busy signature (lock-wait, `STATUS=LOCKED`, peer overlap); an editor appearing mid-run. A peer whose mutex hold expires a lock-wait gives `LOCKED`/exit 7; only a peer kill mid-run with no lock-wait gives `CONTENTION`/exit 8. **A peer GATE counts from its first moment** (its `kind=gate` record), not from when it reaches its suites: two gates on one checkout contend for the shared build output and the runtime mutex, which produces HANG/UNPARSED suites. A gate in a DIFFERENT checkout does not queue this one — sharing only the machine-global mutex, its guards/build/Logic run in parallel and only runtime suites wait; a starved wait degrades to `LOCKED` and queues from there. The request lands in `.claude/scratch/gate_queue/`; a detached watcher fires it once the machine is quiet. **A bare exit 7 means only that the 1800s default wait expired without a verdict** — the normal path adopts the queued verdict when it lands. Resume by re-invoking with the same flags: a finished run serves from the ledger via REUSE, a pending one dedups by tree digest into the same request. Not a failure. `-IgnoreEditor` bypasses. |
-| 8 | `CONTENTION` | A suite killed or died with no `Passed!/Failed!` line AND no `STATUS=LOCK_TIMEOUT`/`LOCKED` (those route to `LOCKED` → exit 7) WHILE a live peer gate/suite record overlapped the window — a peer's run, not a regression. Auto-requeued on the queued path; re-run once inline. Never adjudicate a CONTENTION artifact as FAIL. |
-| 124 | `HANG` | A suite wedged and was tree-killed after retry. Re-run once. |
+| 6 | `INCOMPLETE` | Any of: a held child the wrapper refused (`HELD_REFUSED`) or whose recompile opt-out was ignored (`SKIP_RECOMPILE_IGNORED`); the gate itself threw (`GATE_ERROR <message>` on stdout, the exception and stack in the detail); a unit without readable results after its pool pass and any retry pass, with no machine-busy signature (a lock wait or a busy no-result unit ends `BUSY`, exit 7, instead). Nothing failed; partial counts prove nothing. `HELD_REFUSED`, `SKIP_RECOMPILE_IGNORED` and `GATE_ERROR` are harness faults (a broken held checkout, a consumed `gdUnit4.api` without the recompile opt-out, a gate defect): read the unit's `wrapper.out` or the stack named in the detail and fix the cause before a re-run. Otherwise re-run with `-RetryOnly` when the machine is less loaded. |
+| 7 | `BUSY` | No verdict, and nothing failed. A busy checkout is waited on, holding nothing: `WAIT site=entry … holder=<kind> pid=<n> … held=<s> label="…" … left=<s>` names who holds it and for how long, up to `-WaitSec` (default 1800); at expiry the gate ends here with one `BUSY site=… holder=… next="…"` line and the detail's `## Busy — no verdict`. A holder is the checkout's lock (a gate, a suite wrapper, any lock taker), a live editor, or a test run that holds no lock. Also: an editor live on this checkout whose twin could not be synced (`TWIN_SYNC_FAILED`; the editor is the holder, `site=source`); a suite's lock-wait expiring or a budget-starved run (`site=locked` / `site=starved`; the line names the runtime-slot holders and says to re-invoke with `-RetryOnly`); an editor appearing mid-run (`site=editor-midrun`; a fresh gate routes a live checkout to its twin). **Never kill a holder** — re-invoke after it ends, or raise `-WaitSec`. A gate that waited behind a peer's run re-checks REUSE once it holds the lock, so it adopts that run's verdict with no second run. A gate in a DIFFERENT checkout is no holder: the two share only the runtime slots, so guards, build and Logic run in parallel and only runtime suites wait. A peer whose lock hold expires a lock-wait gives `LOCKED`/exit 7; only a peer kill mid-run with no lock-wait gives `CONTENTION`/exit 8. Not a failure. `-IgnoreEditor` bypasses the editor holder. |
+| 8 | `CONTENTION` | A suite killed or died with no `Passed!/Failed!` line AND no `STATUS=LOCK_TIMEOUT`/`LOCKED` (those route to `LOCKED` → exit 7) WHILE a live peer gate/suite record overlapped the window — a peer's run, not a regression. Re-run once inline. Never adjudicate a CONTENTION artifact as FAIL. |
+| 124 | `HANG` | A suite wedged and was tree-killed, or an Integration unit still hung or silent-skipped after its retry pass (§Retry policy). Re-run with `-RetryOnly` (the tree is unchanged); a repeated HANG routes per `change_control` §Green-output trust. |
 
-Exits 0, 1, 3 and `STATIC_PASS` may be returned **via REUSE**. Exit **5 is the Integration runner's internal code** (`BUDGET_EXCEEDED` or a LOCKED-only completion) — the gate converts it to the automatic `-RetryOnly` pass, the queue handoff, or exit 6; never a final gate exit.
+Exits 0, 1, 3 and `STATIC_PASS` may be returned **via REUSE**. Exit **5 is not a gate path**: it is the standalone Integration runner's internal code (a LOCKED-only completion) for a bare `verify.ps1`/batcher run outside the gate. In gate mode every Integration unit is submitted at the start of one pool call, so exit 5 never arises. Retry eligibility is §Retry policy's. An Integration batch still `HANG` or `SILENT_SKIP` after its retry ends the gate `HANG` (exit 124).
 
 **On `HANG` or `INVALID`, load [testing `reference/running.md`](/.claude/skills/testing/reference/running.md)** — it owns GdUnit4 runtime troubleshooting (wedged-wrapper `taskkill` by parent chain, named-pipe exhaustion, when reboot is the terminal fix).
 
-**A second `HANG`, or counts that DROP across retries, means machine state is exhausted — stop retrying.**
+**A repeated HANG with the same machine-busy or named-pipe signature, or falling engaged-test counts across controlled retries, calls for the runtime troubleshooting owner; stop blind retries and name the evidence.**
 
-**Direct `run_test_suite.ps1` invocations refuse, they don't queue.** Called outside the gate (a documented pattern in the Testing and procgen skills), it builds into the same shared `.godot/mono/temp/bin/Debug/` and is as destructive against an open editor — so at entry it emits `STATUS=EDITOR_OPEN label=<label>` and exits **126**. `-IgnoreEditor` overrides; the gate's `-FromQueue` path forwards it so a watcher-fired run never self-blocks on the check it already passed.
+## Failure handling (exit 1)
 
-**A queued run cannot be lost — three channels, in order of immediacy.** (1) The gate **waits by default** (`-WaitForQueue`, 1800s) and exits with the queued run's real verdict; backgrounded, that process exit wakes the session. (2) Otherwise the result is announced **on the next prompt** as a `[gate-queue]` line (`hooks/activity_registry.py`) and at the next SessionStart (`hooks/session_context_loader.py`); both read `hooks/gate_queue_surface.py`, which tracks seen-state **per session**, so two sessions on one checkout are each told independently. (3) `-QueueStatus` on demand. Only a result the watcher never produced is invisible — check `.claude/scratch/gate_queue/watcher.log` if a request stays `pending` past its expected run time.
-
-**A queued/`-QueueStatus` result carries `treeDelta`.** Request-time and run-time trees can differ. The result is valid only for the tree it ran against (`head` + `treeDigest`, computed at run start); when that does not match the reader's current tree it is stamped `treeDelta: true` and must not back a bare "Verified" claim.
-
-## Failure handling (exit 1) — MANDATORY user interaction
-
-**NEVER skip, dismiss, or proceed past a failing test without explicit user direction.**
+**A FAIL blocks acceptance until repair is verified or the owner explicitly approves the named unresolved failures.**
 
 Present each failure from `gate_last.md`:
 
@@ -132,26 +114,19 @@ FAILING TESTS:
   1. [Suite] FullyQualifiedTestName — "error message summary"
 ```
 
-Then ask via `AskUserQuestion`:
-- **Fix now** — investigate and fix before continuing
-- **Known issue** — user confirms pre-existing; note it and continue (user takes responsibility)
-- **Abort** — stop the workflow entirely
+Investigate and repair in-scope causes, then re-verify under `change_control` §Gate cadence and its coverage limits. Repair needs no second owner approval. If repair is blocked, record the cause and the missing input; use the caller's unattended policy for owner-only choices.
 
-**Wait for the response.** Do NOT auto-fix, auto-skip, or auto-continue. If *Fix now*: fix, then re-run **ALL** suites, not just the fixed one. If *Known issue*: commit messages must NOT say "Verified" — use `Verified (with known failures: TestName, ...)`.
+A pre-existing failure does not waive that block. Record any approval and use `Verified (with known failures: TestName, ...)` in commit messages, never an unqualified "Verified".
 
-**A reused FAIL is adjudicated exactly like a fresh FAIL** — its detail file carries the producer's failing-test list via the `REUSE` block, and the AskUserQuestion flow applies unchanged.
+**A reused FAIL is adjudicated exactly like a fresh FAIL** — its detail file carries the producer's failing-test list via the `REUSE` block, and the failure-adjudication flow applies unchanged.
 
 ## Multi-Part drives
 
-**A mid-chain Part close does not gate and does not commit** — it verifies by `verify.ps1 -Scope` over its accumulated blast zone, and its work batches to the drive close, whose full gate backs every commit in the drive (`change_control` §Gate cadence). Every gate run is a full gate, so its trailer is a plain `Verified: Logic N/0 + Integration M/0 + Sanity K/0`; there is no qualified mid-chain trailer, since there is no narrowed gate to write one for. Post-failure re-verification after a fix (integration-local → `-RetryOnly`; domain-spanning → `verify -Scope <domains>`; shared-state → whole-tier re-run) is owned by `change_control` §Gate cadence.
-
-> **Sub-suite filtered runs have no count sentinel.** Hand-run a narrower filter than a whole suite and an executor-connect failure reports `Passed!` with only the non-runtime subset, in ms-scale time. Sanity-check count magnitude and duration; the TRX testName list is the arbiter.
+**A mid-chain Part close does not gate and does not commit** (`change_control` §Gate cadence). Every gate run is a full gate, so its trailer is a plain `Verified: Logic N/0 + Integration M/0 + Sanity K/0`; there is no qualified mid-chain trailer, since there is no narrowed gate to write one for.
 
 ## Baseline
 
-`Tests/regression_baseline.json` is **tracked data**. The script ratchets it forward on a fully green run — **skipped, baseline left at its floor, when the tree carries uncommitted test changes** (possibly a peer's; the next clean-tree green run ratchets) — never lowers it, and never writes it in a FAIL/WARN state. Stage its diff alongside whatever caused the growth, likewise `Tests/integration_batch_durations.json` and `.claude/hooks/tool_resource_classes.txt`.
-
-A negative delta is never auto-applied. If the user confirms a drop is intentional (feature and its tests removed), they ask for the update explicitly in a follow-up.
+`Tests/regression_baseline.json` is **tracked data**; its `silent_skip_sentinels` floors detect a silent skip. The script writes it on a fully green run, including the explained deletion drops in the verdict table. Uncommitted test changes skip the write; FAIL/WARN never write. Stage its diff alongside the test changes, likewise `Tests/integration_batch_durations.json` and `.claude/hooks/tool_resource_classes.txt`.
 
 **Adding a top-level `Tests/<X>/` folder** requires renaming it under `Logic|Integration|Sanity`, or gating it (a filter call in the script + a `suites.X` baseline entry + the guard's `GATED` list), or an `EXCLUDED` entry with written rationale. Guard `1f` (`test_suite_gate_coverage_guard.py`) enforces this mechanically — an ungated suite is one the three filters never run.
 
@@ -180,27 +155,21 @@ Example deltas: `[+12]`, `[unchanged]`, `[-3 — drop acknowledged]`.
 [x] Sanity suite: N passing, 0 failing  (Δ: +X / -Y)
 [x] No silent skips detected (no `GodotRuntimeExecutor failed` / `Connection timeout`)
 [x] No JmoLogger.Error fired during test runs
-[<state>] /session_audit run this session, no MERGE-BLOCKER findings
-[<state>] CLAUDE.md compliance self-check
+[<state>] /session_audit admitted coverage, no MERGE-BLOCKER findings
 [<state>] Refactor parity check (only required if files were deleted this session)
 
 Verdict: APPROVE | APPROVE WITH NOTES | REQUEST CHANGES
 ```
 
-**Checkbox states:** `[x]` verified true this session · `[ ]` applicable but NOT yet verified (user must run or override) · `[—]` not applicable this session. A suite item satisfied **via REUSE** marks `[x]`.
+**Checkbox states:** `[x]` verified true this session · `[ ]` applicable but NOT yet verified (the agent runs the check; if blocked, name the constraint and retain the unverified state) · `[—]` not applicable this session. A suite item satisfied **via REUSE** marks `[x]`.
 
-**Self-attest sources:**
-- **`/session_audit`:** `[x]` if it ran this session returning APPROVE or APPROVE WITH NOTES; `[ ]` if it didn't run, or returned unresolved REQUEST CHANGES; `[—]` only on pure-meta commits.
-- **CLAUDE.md compliance:** `[x]` if no PreToolUse pattern-enforcement violations fired AND you can cite session changes against the relevant sections (e.g. "no `GD.Print` introduced"); `[ ]` if uncertain; `[—]` on commits touching no `.cs`.
-- **Refactor parity:** `[—]` unless `git diff --diff-filter=D` shows deletions this session; `[x]` if `/session_audit` Phase 1.5b reported no parity drops; `[ ]` if files were deleted but parity wasn't checked.
+**Row sources.** The suite rows come from the gate artifact (`gate_last.md`) and its `STATUS` lines. The review and parity rows come from the review ledger (`review_ledger.py rows --task <task id>`, or `--subject session:<id>` without a task):
+- **`/session_audit`:** derive candidate width from `execution_depth.md` §Candidate width using the checked gate result. `[—]` when width is `none`; otherwise `[x]` when every admitted mandate is covered over the changed files' hashes with no MERGE-BLOCKER, and `[ ]` when admitted coverage is missing or a MERGE-BLOCKER stands. Check coverage with `review_ledger.py uncovered --files <changed paths> --mandates candidate --roster <admitted roster.json>`; `owed` lists commit summaries, not pairs. Never admit a review just to fill this row.
+- **Refactor parity:** `[—]` unless `git diff --diff-filter=D` shows deletions this session; `[x]` when the ledger holds a covering `parity` row with no drops; `[ ]` when files were deleted and no such row exists.
 
 **Verdict mapping:** `APPROVE` — all items `[x]` or `[—]`. `APPROVE WITH NOTES` — all suite items `[x]`, advisory items `[ ]` acknowledged by the user. `REQUEST CHANGES` — any suite item failing, or a blocking test-related item `[ ]`.
 
 ## Rules
 
-- **NEVER proceed past failures without user direction.** The single most important rule.
-- Never claim "Verified" without a gate run against the final staged state.
-- The gate runs against the CURRENT working tree — not a previous run's results.
-- **REUSE is the sanctioned exception to the previous two rules**, on its three conditions above; report it as reused, never as a fresh run.
 - If called from another command, the caller decides whether to proceed or block on the verdict.
 - Code-commit messages include `Verified: Logic N/0, Integration N/0, Sanity N/0`, plus a baseline note if it moved (e.g. `baseline: Logic +3`).

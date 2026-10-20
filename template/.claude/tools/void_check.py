@@ -35,6 +35,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_registry  # noqa: E402
+import review_result  # noqa: E402
 import sidecar_launch  # noqa: E402
 
 VALID, VOID, WARN = "VALID", "VOID", "WARN"
@@ -171,30 +172,20 @@ def engagement(progress_path, root, required=()):
     if own == 0:
         return VOID, f"no reference to the dispatched root {leaf!r} anywhere in the transcript"
 
-    # A tool CALL and its RESULT are separate records: in a JSONL transcript they are separate
-    # LINES, so a same-line window can never see the failure and the check silently passes the
-    # arm while reporting the input as read. Scan a small line WINDOW instead -- the call line
-    # plus the next two -- which covers the JSONL call/result pair and still works on a flat log.
-    lines = text.splitlines()
-    unread = []
-    for path in required:
-        base = os.path.basename(path)
-        hits = [i for i, ln in enumerate(lines) if base in ln]
-        if not hits:
-            unread.append(f"{base} (never referenced)")
-            continue
-        if all(re.search(r'File does not exist|no such file|could not be found',
-                         "\n".join(lines[i:i + 3]), re.IGNORECASE) for i in hits):
-            # EVERY reference to it failed. One failed read followed by a successful retry is
-            # an arm recovering, not an arm running blind -- only void when none succeeded.
-            unread.append(f"{base} (every read returned not-found)")
+    reads = review_result.called_reads(progress_path, toplevel=root)
+    called = {path.casefold() for path, _ in reads or []}
+    unread = [f"{path} (no successful read)" for path in required
+              if review_result.target_path(f"Read:{path}", toplevel=root).casefold() not in called]
     if unread:
         return VOID, ("the arm could not read input(s) the prompt directs it to: "
-                      + "; ".join(unread))
+                      + "; ".join(unread)
+                      + ("; no parseable call record for a successful read" if not reads else ""))
+    if not reads and not review_result._successful_calls(progress_path):
+        return VOID, "no parseable call record with a successful result in the progress transcript"
 
     extra = f"; {worst[1]} sibling ref(s) to {worst[0]}" if worst else ""
     return VALID, (f"engaged its own root {leaf!r} ({own} refs){extra}"
-                   + (f"; {len(required)} required input(s) read" if required else ""))
+                   + (f"; {len(required)} required input(s) have successful reads" if required else ""))
 
 
 def preflight(launcher, expect, effort=None, model=None):

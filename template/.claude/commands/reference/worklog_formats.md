@@ -13,7 +13,7 @@ disable-model-invocation: true
 - `APPEND(<Doc>, content)` = `Edit(P, old_string=<last line before the insertion point>, new_string=<same line> + content)` — append at the stated anchor
 
 **Entry formats** referenced by name below. Omit an inapplicable sub-bullet's line entirely — never leave a placeholder.
-- `BLOCK` — an Active item:
+- `BLOCK` — an open Worklog item (ready in Active or waiting in Ledger):
   ```
   - [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD
     - Context: <one-line>
@@ -23,7 +23,7 @@ disable-model-invocation: true
     - Plan doc: [[<Doc Title>]]               (scope 4 only)
     - Quick-win: flagged YYYY-MM-DD           (triage only)
   ```
-- `FSLINE` — a Future Scope one-liner, `> `-prefixed, no sub-bullets; the parenthetical replaces them and stays under 80 chars: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)``
+- `FSLINE` — a Future Scope one-liner, `> `-prefixed, no sub-bullets; the parenthetical replaces them with concise context: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)``
 - `XLINE` — an archive completion line: ``- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)``
 - `UTLINE` — a User-Tasks entry: `- YYYY-MM-DD — <Title> — <one-line context>`
 

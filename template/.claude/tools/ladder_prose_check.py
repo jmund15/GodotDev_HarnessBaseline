@@ -6,7 +6,8 @@ dates and campaign narrative live in the Obsidian boards -- but nothing enforced
 comparison appended one more "on the N-lens audit it ..." clause and the table drifted toward a
 changelog. This checks the half a machine can see: dates, wall-clock figures, arm/lens counts, and
 links to per-run write-ups. It cannot judge whether a clause reads as a tendency; that is the
-author's job, and the header states the test.
+author's job, and the header states the test. It also fails a cell naming a registry family no ladder
+row covers: a comparison must lead the reader to a row.
 
 Exit 0 clean, 1 with findings, 2 if the table cannot be read (a silent pass on an unreadable file
 would make this check indistinguishable from a clean one).
@@ -38,8 +39,32 @@ BANNED = [
      "the boards are keyed by task id and the header says so once — a ± cell citing one is "
      "repeating the trace path instead of stating the tendency"),
     ("score", r"\b\d+\s*/\s*\d+\b",
-     "a board figure; say what it means for a pin instead ('tops the board', 'a tier below')"),
+     "a board figure; state the work this row is the cheapest reliable pick for, the strongest pick for, or where it fails"),
+    ("board-point delta", r"\b\d+(?:\s*[–-]\s*\d+)?\s*points?\b",
+     "a board figure; say what it means for a pin instead"),
+    ("fraction", r"[¼½¾⅓⅔]",
+     "a measured ratio against another row; say cheap or costly for the work"),
+    ("price", r"\$\s?\d|per million tokens",
+     "registry `price` owns prices; the `cost` column carries the pick-relevant half"),
+    ("source narration", r"\bvendor|\b(?:public|independent) boards?\b|\bunconfirmed\b|\bpreliminary\b|\bpredates?\b",
+     "the `evidence` column tags the source; the cell states the tendency"),
 ]
+
+# Rungs belong to the `effort` column alone; a `±` cell that names one is a second home that drifts from
+# it, and pins a rung the reader should weigh case by case.
+RUNG = r"(?:low|medium|high|xhigh|max)"
+PM_BANNED = [
+    ("effort rung", r"`" + RUNG + r"`|·" + RUNG + r"\b|\bxhigh\b|\b" + RUNG + r"\s+effort\b",
+     "the `effort` column owns every rung; compare with another row by family and scope, not by its rung"),
+]
+
+# A result at one rung shows that rung is enough, not that the others fail.
+EFFORT_BANNED = [
+    ("absolute", r"\b(?:only|always|never)\b",
+     "a start rung and the signal that moves it; a result at one rung is not a law about the others"),
+]
+
+COLUMN_RULES = {"±": PM_BANNED, "effort": EFFORT_BANNED}
 
 TOP_LEVEL_BANNED = [
     ("authoring heading", r"Authoring an entry"),
@@ -47,6 +72,19 @@ TOP_LEVEL_BANNED = [
     ("comparison edit rule", r"comparison earns an edit"),
     ("version-pooling edit rule", r"Replacing an older cell is a normal edit"),
     ("candidate promotion rule", r"A claim reaches this file only"),
+    ("version takeover rule", r"takes over its family's row"),
+    ("owner-claim rule", r"owner's statement that a row"),
+    ("contradicting-cell rule", r"contradicts a rung"),
+    ("authority rule", r"may edit any cell"),
+    ("ingest proposal rule", r"proposes a change with its evidence"),
+    ("cost-axis scoring rule", r"counted apart"),
+]
+
+# Retired authority lines: `/ladder_ingest`'s authority rule replaced each, so none moves anywhere.
+RETIRED = [
+    ("no-row rule", r"No row means no measured capability"),
+    ("candidates file", r"ladder_candidates"),
+    ("battery gate", r"until a battery scores it"),
 ]
 
 
@@ -86,12 +124,36 @@ def cells(path):
     return out
 
 
+def dangling_names(path, data=None):
+    """(line, model, column, family) per checked cell naming a registry family no ladder row covers.
+
+    A cell may compare its row with another by family name; the name must lead the reader to a row.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import model_registry           # noqa: E402
+
+    data = data if data is not None else model_registry.load()
+    with open(path, encoding="utf-8") as fh:
+        rows = model_registry.parse_ladder_rows(fh.readlines(), ("model",) + CHECKED_COLUMNS, HEADING)
+    covered = set()
+    for row in rows:
+        covered.update(model_registry.ladder_members(row["model"]))
+        covered.update(m.get("family") for m in model_registry.ladder_rows(row["model"], data))
+    loose = {str(m.get("family", "")).lower() for m in data["models"]} - {str(c).lower() for c in covered} - {""}
+    out = []
+    for line_no, model, col, text in cells(path) or []:
+        for name in sorted(loose):
+            if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(name), text, re.I):
+                out.append((line_no, model, col, name))
+    return out
+
+
 def _has_table(lines):
     """Is there a Role guidance table at all? Distinguishes 'no rows' from 'no table'."""
     return any(raw.strip() == HEADING for raw in lines)
 
 
-def main(argv):
+def main(argv, data=None):
     path = argv[0] if argv else os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "reference", "model_ladder_evidence.md")
@@ -117,12 +179,21 @@ def main(argv):
                 bad += 1
                 print("%s:%d  top-level  %s -- move it to `.claude/commands/ladder_ingest.md`"
                       % (path, line_no, name))
+        for name, pat in RETIRED:
+            if re.search(pat, source_line, re.I):
+                bad += 1
+                print("%s:%d  retired  %s -- delete it; `/ladder_ingest`'s authority rule replaced it"
+                      % (path, line_no, name))
     for line, model, col, cell in rows:
-        for name, pat, why in BANNED:
+        for name, pat, why in BANNED + COLUMN_RULES.get(col, []):
             for m in re.finditer(pat, cell, re.I):
                 bad += 1
                 print("%s:%d  %s  [%s]  %s %r -- %s"
                       % (path, line, model.split("(")[0].strip(), col, name, m.group(0), why))
+    for line, model, col, name in dangling_names(path, data):
+        bad += 1
+        print("%s:%d  %s  [%s]  names %r, which no ladder row covers -- compare with a row the reader can find"
+              % (path, line, model.split("(")[0].strip(), col, name))
     print("\n%d cell(s) checked across %s, %d prose-contract hit(s)"
           % (len(rows), " + ".join(CHECKED_COLUMNS), bad))
     if bad:

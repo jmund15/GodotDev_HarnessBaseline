@@ -5,16 +5,16 @@
 
 ---
 
-## §2. Rationale spot-check (one-shot)
+## §2. Rationale spot-check
 
-After `write_doc` returns the structure digest, do ONE bounded `Read(file_path=..., offset=N, limit=M)` covering the architecturally load-bearing sections — typically the Approach Selected paragraphs, the Recommended-starting Part rationale (architecture skill only), and any leading-hypothesis flags. Verify:
+After `write_doc` returns the structure digest, read load-bearing sections and cited artifacts in bounded calls until their claims, preserved blocks and links can be checked. A single read is sufficient only when it covers them.
 
 - [ ] Each rejected approach names a SPECIFIC reason for rejection (not "less suitable" / "didn't fit").
 - [ ] Each architectural commitment cites a concrete invariant, file path, or class name.
 - [ ] No conversational provenance markers ("user surfaced", "per user direction") appear inline — those belong in Revision History.
-- [ ] Idea pools are sampled (target count + 5–10 entries), not exhaustively enumerated.
+- [ ] Idea pools state the target count and hold the complete pool.
 
-If any check fails, refine the spec with explicit Must-include facts addressing the gap and re-run `write_doc`. Do NOT edit the doc directly — keep the worker as single author for voice consistency.
+If any check fails on a worker-written doc, refine the spec with explicit Must-include facts addressing the gap and re-run `write_doc`; do not edit that doc directly, so the worker stays the single author for voice consistency. A directly authored doc (§3, or the design doc per `flow_and_frontier.md` §8 Consumption) is corrected by editing it.
 
 **Why this step exists:** pure structure-digest verification (per the global Documentation Delegation Rule) cannot detect rationale-density drift — compressed worker output passes structural checks while losing rejected-approach rationale.
 
@@ -24,7 +24,7 @@ If any check fails, refine the spec with explicit Must-include facts addressing 
 
 Brainstorm-doc reads (`Read`) and saves (`Write`/`Edit`) hit the vault filesystem directly. Full convention: CLAUDE.md §3 / `obsidian_conventions` skill.
 
-**ai-worker / `write_doc` offline → substitute the executor, keep the routing contract.** Per CLAUDE.md §Tool Routing *Offline fallback*, a subagent takes the bundling role (scout tier for copyable synthesis, fan-out tier when it must be derived; `orchestration` §5 picks the role). `write_doc` offline → author directly with native `Write` using the calling skill's template/frontmatter (§2 rationale checks still apply). Provenance + per-machine availability: `environment_bootstrap`.
+**`write_doc` offline:** the substitute executor follows CLAUDE.core.md §9 *Offline fallback* and `orchestration` §5. Author directly with a native `Write` from the calling skill's template; the §2 rationale checks still apply. Provenance and per-machine availability: `environment_bootstrap`.
 
 ---
 
@@ -32,6 +32,6 @@ Brainstorm-doc reads (`Read`) and saves (`Write`/`Edit`) hit the vault filesyste
 
 After the calling skill's spec-review loop passes, ask the user to review the written spec before proceeding:
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we [continue / hand off to the next skill]."
+> "Spec saved to `<path>`. Changed: <what>. Recommended next step: <continue / hand off to the next skill>. Review it and tell me any changes."
 
 If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.

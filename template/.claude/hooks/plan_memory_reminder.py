@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Hook: PostToolUse on Write/Edit of a plan file —
-Inject memory + skill + rule reminders for inferred domains.
+Report keyword-matched domains and their memory, skill and rule associations.
 
 Why:
 - CLAUDE.md mandates "search auto-memory and load relevant Skills before planning"
   but enforcement is self-discipline. The /plan_check command covers high-stakes
-  plans; this hook covers the routine plans below /plan_check's litmus.
+  plans; this hook covers the routine plans where plan check is not admitted
+  (execution_depth.md §Admission table).
 - The plan FILE is the one artifact every planning path produces, so it is the
   only reliable trigger. (Plan Mode is retired — see
   feedback_plan_mode_retired_from_planning_flow — so the former ExitPlanMode
@@ -14,7 +15,7 @@ Why:
 
 What it does:
 - Triggers on a Write/Edit whose file_path is under .claude/plans/ with a .md
-  suffix (once per plan file per session), using the written text and falling
+  suffix (once per domain set per session), using the written text and falling
   back to the plan file on disk when the edit fragment is too small to infer from.
 - Pre-processes plan text: strips "Out of scope" sections and fenced code
   blocks (their content is examples/exclusions, not scope statements).
@@ -33,7 +34,7 @@ What it does:
   matching across identifier camelcase boundaries is rejected (so "craft"
   inside "AbilityBuilder" does NOT fire the Crafting domain).
 - Emits a hookSpecificOutput.additionalContext payload listing matched domains,
-  auto-memory search queries, any Skills to load, and any rules/ files to read.
+  memory search terms, not-yet-loaded Skills, and associated rules/ paths as facts.
 
 Boundaries:
 - Never blocks. Always exits 0.
@@ -51,7 +52,7 @@ import sys
 from pathlib import Path
 
 from _claude_scope import harness_tail
-from _hook_state import state_path, update_json_locked
+from _hook_state import state_path, read_json_salvage, fire_once
 
 _TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
 if _TOOLS_DIR not in sys.path:
@@ -117,39 +118,6 @@ _append_memory_domains(DOMAINS)
 # Tunables
 MIN_WORDS = 50  # Skip trivially small plans
 MAX_PLAN_AGE_SECONDS = 60  # Plan file must have been modified within this window
-
-# Session dedupe for the Write/Edit plan-file branch. A drive command rewrites
-# its plan file many times; the reminder is worth exactly one fire per plan.
-# Shares the per-session routing-state file used by the other hooks
-# (critical_analysis_reminder, prompt_memory_loader); other fields are
-# preserved across the read-modify-write.
-PLAN_FILES_FIELD = "plan_memory_reminder_files"
-PLAN_FILES_CAP = 50  # bounded state — oldest entries drop off
-
-
-def _state_path(session_id: str) -> str:
-    return state_path(session_id)
-
-
-def _claim_plan_file(session_id: str, plan_key: str) -> bool:
-    """
-    True the first time this session emits for `plan_key`, False afterwards.
-    Best-effort: returns True on any state I/O failure (fail-open toward
-    reminding — a duplicate nudge is cheaper than a silent miss).
-    """
-    def claim(state):
-        seen = state.get(PLAN_FILES_FIELD)
-        if not isinstance(seen, list):
-            seen = []
-        if plan_key in seen:
-            return False
-        seen.append(plan_key)
-        state[PLAN_FILES_FIELD] = seen[-PLAN_FILES_CAP:]
-        return True
-
-    written, claimed = update_json_locked(_state_path(session_id), claim)
-    return claimed if written else True
-
 
 def _plan_file_key(file_path: str) -> str | None:
     """
@@ -297,7 +265,7 @@ def infer_domains(plan_text: str) -> list[tuple[str, list[str], list[str], list[
     return matched
 
 
-def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]]) -> str:
+def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]], loaded=()) -> str:
     """
     Compose the additionalContext message from matched domains.
     Deduplicates memory keywords, skill names, and rule paths across
@@ -313,19 +281,18 @@ def build_reminder(matches: list[tuple[str, list[str], list[str], list[str]]]) -
             if k not in memory_keys:
                 memory_keys.append(k)
         for s in sk:
-            if s not in skills:
+            if s not in skills and s not in loaded:
                 skills.append(s)
         for r in rl:
             if r not in rules:
                 rules.append(r)
 
-    steps = [f"semantic-search .claude/auto-memory for {' / '.join(memory_keys)}"]
-    if skills:
-        steps.append(f"load skills {', '.join(skills)}")
+    facts = [f"Plan text names domains: {', '.join(domain_names)}, whose not-yet-loaded skills are {', '.join(skills) or 'none'}"]
+    if memory_keys:
+        facts.append(f"memory search terms: {' / '.join(memory_keys)}")
     if rules:
-        steps.append(f"read {', '.join(rules)}")
-
-    return f"Plan touches {', '.join(domain_names)}. Before implementing: {'; '.join(steps)}."
+        facts.append(f"associated rules: {', '.join(rules)}")
+    return '; '.join(facts) + '.'
 
 
 def process(input_data):
@@ -371,11 +338,12 @@ def process(input_data):
     if not matches:
         return None
 
-    # Claim only an emitted reminder. A silent meta draft may later become mixed.
-    if not _claim_plan_file(input_data.get("session_id", "") or "", plan_key):
+    session_id = input_data.get("session_id") or ""
+    domains = json.dumps(sorted(m[0] for m in matches))
+    if not fire_once(session_id, "plan_memory_reminder:" + domains):
         return None
-
-    return {"context": build_reminder(matches)}
+    loaded = read_json_salvage(state_path(session_id)).get("skills_loaded") or []
+    return {"context": build_reminder(matches, loaded)}
 
 
 def main() -> None:

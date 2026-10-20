@@ -81,13 +81,16 @@ you are unsure about; when unsure, drop.
   downgrade to `adjacent` / `note-only`. This never licenses a narrow shortlist in step 1; recall is
   cheap there and irrecoverable afterward.
 - Never invent a title. Copy each title verbatim from the index or the Obsidian doc.
+- Supply each overlap's `evidence` and `checked.evidence` under `.claude/reference/evidence_contract.md`. Quote the title from the full vault source path. Provenance cites the index or vault text actually read, even for an empty result; a blocked read or triviality exit supplies an empty evidence array, never invented evidence.
 - **`checked` is mandatory and must be truthful.** An empty `overlaps` is only trustworthy if it says
   what was actually inspected: `indexRead`, `obsidianOpened` (true ONLY if you opened `Worklog.md`
   with Read), and `shortlisted` (the titles you carried out of step 1, before verification). An empty
   result with a non-empty `shortlisted` and `obsidianOpened: false` is a self-reported incomplete
   check — report it honestly rather than presenting it as "nothing overlaps".
 - `checked.stoppedAt` records where you ended: `triviality-gate` (step 0), `empty-shortlist`
-  (step 2), `verified-none` (opened the doc, nothing cleared the bar), `verified-overlaps`.
+  (step 2), `verified-none` (opened the doc, nothing cleared the bar), `verified-overlaps`, or
+  `blocked`: the index or `Worklog.md` was missing or its read denied. Retry a transient read error;
+  never retry a missing path or a denial. Name the path and the cause in `checked.basis`.
 - `checked.basis` is ONE sentence carrying the caller's confidence: name what you examined and why it
   did or did not clear the bar — e.g. *"Shortlisted 7 persistence-domain items, read each in Worklog.md;
   none touch the wave-authoring surface this scope changes."* Not *"nothing seemed relevant."* Cite
