@@ -128,14 +128,14 @@ def test_actual_advisory_import_fault_cannot_hide_floor(tmp_path):
         "import sys, runpy\n"
         "class Broken:\n"
         "    def find_spec(self, name, path=None, target=None):\n"
-        "        if name in ('hand_pricing_advisory', 'pattern_enforcer'):\n"
+        "        if name in ('hand_pricing_advisory', 'dangerous_shell_guard'):\n"
         "            raise RuntimeError('planted import fault: ' + name)\n"
         "sys.meta_path.insert(0, Broken())\n"
         f"runpy.run_path({DISPATCH!r}, run_name='__main__')\n")
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state'))
     proc = run([sys.executable, '-c', script], payload('Bash', 'rm -rf peer'), env)
     assert proc.returncode == 2, proc.stderr
-    assert 'pattern_enforcer' in proc.stderr and 'planted import fault' in proc.stderr
+    assert 'dangerous_shell_guard' in proc.stderr and 'planted import fault' in proc.stderr
     assert 'Traceback' not in proc.stderr
 
 
@@ -147,7 +147,7 @@ def test_each_actual_advisory_import_fault_preserves_git_floor(tmp_path):
                     'commit', '-qm', 'base'], check=True, capture_output=True)
     (tmp_path / 'file').write_text('peer edit\n', encoding='utf-8')
     for name in [member.__name__ for member, _ in pre_bash_dispatch.HOOKS] + ['run_call_router']:
-        if name in ('_git_commit', 'git_guardrails', 'baseline_classification_guard', 'pattern_enforcer',
+        if name in ('_git_commit', 'git_guardrails', 'baseline_classification_guard', 'dangerous_shell_guard',
                     'editor_live_build_guard'):
             continue
         script = (
@@ -168,13 +168,82 @@ def test_each_actual_advisory_import_fault_preserves_git_floor(tmp_path):
         assert name in hso(proc).get('additionalContext', ''), (name, proc.stdout)
 
 
-def test_actual_pattern_bash_fault_fails_closed(monkeypatch):
+def test_actual_destructive_member_fault_fails_closed(monkeypatch):
     def boom():
         raise RuntimeError('planted destructive member fault')
-    monkeypatch.setattr(pre_bash_dispatch.pattern_enforcer, 'main', boom)
+    monkeypatch.setattr(pre_bash_dispatch.dangerous_shell_guard, 'main', boom)
     code, out, err = pre_bash_dispatch.dispatch(payload('Bash', 'rm -rf peer'))
-    assert code == 2 and out == '' and 'pattern_enforcer' in err
+    assert code == 2 and out == '' and 'dangerous_shell_guard' in err
     assert 'planted destructive member fault' in err
+
+
+GODOT_MEMBERS = ('cloud_test_enforcer', 'editor_live_build_guard', 'gate_cadence_guard', 'pattern_enforcer',
+                 'prototype_containment_guard', 'provisional_totality_guard', 'tres_nullstrip_guard',
+                 'tres_script_strip_guard', 'wide_test_guard')
+
+
+def planted_pure_profile(tmp_path):
+    """A project root whose hooks are this tree's, with every godot-layer chain member absent."""
+    import shutil
+    root = tmp_path / 'proj'
+    hooks = root / '.claude' / 'hooks'
+    for sub in ('hooks', 'tools'):
+        shutil.copytree(os.path.join(HERE, '..', sub), root / '.claude' / sub,
+                        ignore=shutil.ignore_patterns('__pycache__'))
+    for name in GODOT_MEMBERS:
+        (hooks / (name + '.py')).unlink(missing_ok=True)
+    subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
+    return root
+
+
+def pure_dispatch(root, command, tmp_path, transcript=None):
+    data = json.loads(payload('Bash', command, str(root)))
+    if transcript:
+        data['transcript_path'] = transcript
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state'), CLAUDE_PROJECT_DIR=str(root))
+    return run([sys.executable, str(root / '.claude' / 'hooks' / 'pre_bash_dispatch.py')], json.dumps(data), env,
+               cwd=str(root))
+
+
+def test_pure_profile_denies_recursive_delete_without_godot_members(tmp_path):
+    root = planted_pure_profile(tmp_path)
+    assert not any((root / '.claude' / 'hooks' / (name + '.py')).exists() for name in GODOT_MEMBERS)
+    for command in ('rm -rf /', 'rm -rf ~/peer', 'rm -r /usr/peer', 'rm -f a && rm -rf /usr/peer',
+                    'Remove-Item -Recurse -Force ~/peer', 'format C:'):
+        proc = pure_dispatch(root, command, tmp_path)
+        assert proc.returncode == 2, (command, proc.stdout, proc.stderr)
+        assert 'failed to import' not in proc.stderr and 'Traceback' not in proc.stderr, (command, proc.stderr)
+        assert 'Dangerous recursive' in proc.stderr or 'Format drive' in proc.stderr, (command, proc.stderr)
+
+
+def test_pure_profile_destructive_import_fault_denies(tmp_path):
+    root = planted_pure_profile(tmp_path)
+    (root / '.claude' / 'hooks' / 'dangerous_shell_guard.py').write_text('raise RuntimeError("planted")\n', encoding='utf-8')
+    proc = pure_dispatch(root, 'rm -rf peer', tmp_path)
+    assert proc.returncode == 2 and 'dangerous_shell_guard' in proc.stderr and 'planted' in proc.stderr, proc.stderr
+    assert 'destructive-command check' in proc.stderr, proc.stderr
+
+
+def test_pure_profile_allows_non_destructive_and_owned_cleanup(tmp_path):
+    root = planted_pure_profile(tmp_path)
+    sid = str(uuid.uuid4())
+    scratch = root / '.claude' / 'scratch' / sid / 'out'
+    cache = root / '.claude' / '.cache' / 'regen'
+    temp = tempfile.mkdtemp(prefix='pbd_allow_')
+    for path in (scratch, cache):
+        path.mkdir(parents=True)
+    (root / 'README.md').write_text('rm -rf is documented here\n', encoding='utf-8')
+    allowed = (
+        'ls', 'git status --short', 'grep "rm -rf" README.md', "echo 'rm -rf /'", 'rm -f stale.txt',
+        'rm -rf ' + temp.replace('\\', '/'),
+        'rm -rf .claude/.cache/regen',
+        'rm -rf .claude/scratch/%s/out' % sid,
+        'D=$(mktemp -d) && touch "$D/x" && rm -rf "$D"',
+    )
+    for command in allowed:
+        proc = pure_dispatch(root, command, tmp_path, transcript=str(root / (sid + '.jsonl')))
+        assert proc.returncode == 0 and hso(proc).get('permissionDecision') != 'deny', (command, proc.stdout, proc.stderr)
+        assert 'Traceback' not in proc.stderr, (command, proc.stderr)
 
 
 def test_actual_advisory_runtime_fault_preserves_git_floor(monkeypatch, tmp_path):

@@ -169,14 +169,13 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 mandates: plc-architecture-quality
 
-preload: rules/scene_authoring.md
 preload: reference/rules/design_litmus.md
 preload: skills/architecture_philosophy/SKILL.md
 
 ```
 You are plc-architecture-quality, auditing whether a proposed plan's ARCHITECTURE is ideal — not whether it complies with requirements (other lenses own that), but whether what it builds is modular, composed, single-sourced, and designer-intuitive for the project's authoring tools. Your mandate is the design the plan SHOULD have proposed.
 
-**RULES: Do NOT use TodoWrite. Return findings ONLY. Doctrine is quoted at the end of this brief (rules/scene_authoring.md §Scene anatomy, reference/rules/design_litmus.md, architecture_philosophy §Orthogonal axis + §Authored-Data Integrity + §Component Contract, with its reference/deletion_test.md, reference/coupling_and_wiring.md and reference/extensibility_patterns.md). Judge against IT, not generic best practice.**
+**RULES: Do NOT use TodoWrite. Return findings ONLY. Doctrine is quoted at the end of this brief (every file quoted there, including any authoring-surface doctrine this project attaches to the lens; reference/rules/design_litmus.md, architecture_philosophy §Orthogonal axis + §Authored-Data Integrity + §Component Contract, with its reference/deletion_test.md, reference/coupling_and_wiring.md and reference/extensibility_patterns.md). Judge against IT, not generic best practice.**
 
 ## Your Scope — four mandated questions, each answered explicitly
 
@@ -191,7 +190,7 @@ You are plc-architecture-quality, auditing whether a proposed plan's ARCHITECTUR
 3. Action tier: **PLAN** for structural redesigns (wrong axis, wrong seam), **ASK** only for a taste fork whose answer needs an owner-held input, FIX for literal text gaps.
 
 ## Reporting Filter
-- Every finding cites a doctrine anchor (scene_authoring §Scene anatomy #N / design_litmus #N / architecture_philosophy section name). No anchor → not a finding.
+- Every finding cites a doctrine anchor (a section of the doctrine quoted at the end of this brief: design_litmus #N / architecture_philosophy section name / a project authoring-doctrine section). No anchor → not a finding.
 - Every `critical: true` finding routes to REVISE PLAN per `plan_check.md`; revise its design judgment or cover the missing mandate, then follow `/plan_check`'s Phase 3 convergence rule. Annotating a disposition without revising is not an accepted response.
 
 ## Output Format

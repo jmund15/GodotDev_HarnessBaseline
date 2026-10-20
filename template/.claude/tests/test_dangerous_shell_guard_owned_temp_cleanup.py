@@ -3,19 +3,19 @@
 assigns, exactly once and never reassigns, is allowed regardless of surrounding chaining. A literal
 path is never ownership evidence, however mktemp-shaped it looks, so it stays blocked.
 
-Friction F8303: pattern_enforcer denied the verbatim command below (transcript-probe cleanup) even
+Friction F8303: the destructive-command guard denied the verbatim command below (transcript-probe cleanup) even
 though its only delete targets `"$TMPD"`, a directory this same command created via `mktemp -d` and
 never reassigns. `_is_safe_ephemeral_cleanup` rejects ANY chaining, `$(`, or variable target by
-design (`pattern_enforcer.py:198-199`), so it can only over-block a self-owned temp-dir cleanup —
+design (`dangerous_shell_guard.py`), so it can only over-block a self-owned temp-dir cleanup —
 this is a second, narrower allow path alongside it, not a relaxation of it.
 
 Arms: the F8303 command verbatim MUST PASS. Four shapes that look similar but carry no ownership
 evidence MUST BLOCK: no mktemp assignment, a reassigned variable, an extra target and a `/..`
 suffix. A literal path under the system temp directory is judged by the resolved-target allow,
-which `test_pattern_enforcer_rm_scope.py` owns. A chained-but-unrelated second delete riding alongside
+which `test_dangerous_shell_guard_rm_scope.py` owns. A chained-but-unrelated second delete riding alongside
 an owned one MUST BLOCK (ownership is judged per delete segment, never for the whole command). The
-existing `test_pattern_enforcer_cache_cleanup.py` and `test_pattern_enforcer_rm_scope.py` batteries
-must stay green, except the one `test_pattern_enforcer_rm_scope.py` MUST_BLOCK case A4 intentionally
+existing `test_dangerous_shell_guard_cache_cleanup.py` and `test_dangerous_shell_guard_rm_scope.py` batteries
+must stay green, except the one `test_dangerous_shell_guard_rm_scope.py` MUST_BLOCK case A4 intentionally
 flips (a genuine self-owned mktemp-dir delete) — that file's own MUST_BLOCK list no longer carries it.
 """
 import json
@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "hooks"))
 
-import pattern_enforcer as pe  # noqa: E402
+import dangerous_shell_guard as dsg  # noqa: E402
 
 # The command from the plan's Measured facts A4 block with its machine paths neutralized (its `grep -E`
 # argument carries real `\[`/`\]` escapes — losing either backslash would silently change the test).
@@ -79,17 +79,17 @@ MUST_PASS = {
 
 MUST_BLOCK_TEMPLATE_SLASH = 'TMPD=$(mktemp -d -t foo/bar); rm -rf "$TMPD"'
 
-# The one case test_pattern_enforcer_rm_scope.py used to carry in its own MUST_BLOCK list — A4
+# The one case test_dangerous_shell_guard_rm_scope.py used to carry in its own MUST_BLOCK list — A4
 # explicitly authorizes this exact shape (a genuine, self-owned mktemp-dir delete).
 FLIPPED_FROM_RM_SCOPE = 'TMP=$(mktemp -d); awk "/x/" f > "$TMP/o"; rm -r' 'f "$TMP"'
 
 
 def blocked(cmd):
-    return pe.check_bash_command(cmd)[0]
+    return dsg.check_bash_command(cmd)[0]
 
 
 def channel(cmd):
-    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "pe-a4-proof",
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "dsg-a4-proof",
                "hook_event_name": "PreToolUse", "cwd": ROOT}
     proc = subprocess.run([sys.executable, os.path.join(ROOT, "hooks", "pre_bash_dispatch.py")],
                           input=json.dumps(payload), capture_output=True, text=True, timeout=60,
@@ -101,7 +101,7 @@ def channel(cmd):
 
 
 fails = 0
-print("pattern_enforcer — A4 owned-mktemp-dir recursive delete")
+print("dangerous_shell_guard — A4 owned-mktemp-dir recursive delete")
 
 if blocked(F8303_COMMAND):
     print("  FAIL F8303 verbatim command blocked")

@@ -21,16 +21,16 @@ PLAIN_TEMP = tempfile.TemporaryDirectory(prefix='pe_plain_temp_')
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 HOOKS = os.path.join(ROOT, "hooks")
-HOOK = os.path.join(HOOKS, "pattern_enforcer.py")
+HOOK = os.path.join(HOOKS, "dangerous_shell_guard.py")
 sys.path.insert(0, HOOKS)
 
-import pattern_enforcer as pe  # noqa: E402
+import dangerous_shell_guard as dsg  # noqa: E402
 
 
 def blocked(cmd):
     """The recursive-delete denial message the enforcer emits, or None. Uses the real entry
     point so the test cannot pass against internals the hook no longer consults."""
-    is_blocked, msg = pe.check_bash_command(cmd)   # returns (blocked, message)
+    is_blocked, msg = dsg.check_bash_command(cmd)   # returns (blocked, message)
     if not is_blocked:
         return None
     return msg if "recursive delete" in msg else None
@@ -108,7 +108,7 @@ MUST_BLOCK = [
 # Recovered denial #8 used to sit in MUST_BLOCK above as "correctly blocked". A4 (2026-09-14)
 # authorizes exactly this shape — a recursive delete whose only target is a variable the same
 # command assigns, once, from `$(mktemp -d)` — as ownership evidence a literal path never carries.
-# `test_pattern_enforcer_owned_temp_cleanup.py` owns this case now, plus the block shapes that
+# `test_dangerous_shell_guard_owned_temp_cleanup.py` owns this case now, plus the block shapes that
 # still deny a look-alike with no real ownership evidence.
 
 # Fixtures that are genuine recursive deletes are dropped from the false-positive arm by
@@ -139,7 +139,7 @@ MUST_PASS = [
 ]
 
 fails = 0
-print("pattern_enforcer — rm recursion matcher scope")
+print("dangerous_shell_guard — rm recursion matcher scope")
 
 for i, cmd in enumerate(FALSE_POSITIVES, 1):
     got = blocked(cmd)
@@ -167,7 +167,7 @@ if not fails:
 # The deny hint never advertises a shape the resolver refuses: a retired worktree goes alone in its
 # command (`_is_resolved_safe_cleanup` never admits it chained), so the hint offers no chaining and
 # points to `orchestration` reference `worktrees.md`, which states the alone-then-prune recipe.
-hint = pe._CACHE_HINT
+hint = dsg._CACHE_HINT
 if "chained" in hint or "variable" in hint or "retired worktrees (`orchestration` reference `worktrees.md`)" not in hint:
     print("  FAIL deny hint offers a retired-worktree delete chained or through a variable")
     fails += 1
@@ -205,7 +205,7 @@ _TRANSCRIPT = os.path.join(PLAIN_TEMP.name, _SID + ".jsonl")
 for command, want_blocked in (
         (f"rm -rf .claude/scratch/{_SID}/x", False),
         (f"cd .claude/scratch/{_SID}/* && rm -rf .claude/logs/x", True)):
-    got = pe.check_bash_command(command, None, _TRANSCRIPT)[0]
+    got = dsg.check_bash_command(command, None, _TRANSCRIPT)[0]
     if got != want_blocked:
         print(f"  FAIL resolved-delete walker blocked={got}, want {want_blocked}: {command}")
         fails += 1

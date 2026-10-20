@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for hooks/session_context_loader.py: resume/compact never spawns
-dotnet and reports the stored verify; stale startup state builds; a not-ready submodule skips;
-SessionStart probes only available off-transport sidecars. Pure in-process — no git or dotnet.
+"""Re-runnable proof for hooks/session_context_loader.py, the generic SessionStart steps: sidecar
+probes only for available off-transport routes, the due line, the git and upstream-drift context, the
+memory index, the setup stamp, and the step-module seam (an absent module is skipped, a present one is
+called, a faulty one is reported and never blocks). The engine and language-server steps are proven in
+test_session_context_loader_godot.py and test_session_context_loader_csharp.py. Pure in-process — no
+git or dotnet.
 
     python3 .claude/tests/test_session_context_loader.py
 """
@@ -13,7 +16,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
-import time
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,47 +32,6 @@ def main():
         print("%-4s %s" % ("ok" if cond else "FAIL", label))
         if not cond:
             failures.append(label + (": " + detail[:200] if detail else ""))
-
-    root = Path(tempfile.mkdtemp(prefix="scl_"))
-    scl._git_head = lambda _root: "abc123"
-    scl._submodule_is_dirty = lambda _root, _path: False
-    calls = []
-
-    def fake_verify(_root):
-        calls.append(1)
-        return "OK (0 warnings)"
-
-    # Stored FAILED verify, 3h old, HEAD moved: resume reports it, tagged, without building.
-    scl.store_build_result(root, "FAILED (6 errors, 0 warnings)")
-    cache_path = scl._build_cache_path(root)
-    data = json.loads(cache_path.read_text(encoding="utf-8"))
-    data["ts"] = time.time() - 3 * 3600
-    data["head"] = "old"
-    cache_path.write_text(json.dumps(data), encoding="utf-8")
-    for source in scl.NO_BUILD_SOURCES:
-        out = scl.build_status(root, source, True, verify=fake_verify)
-        check("%s: no dotnet spawn" % source, not calls)
-        check("%s: reports the stored FAILED verify" % source, out.startswith("PREVIOUS: FAILED (6 errors"), out)
-        check("%s: tag names age, HEAD move and the skip" % source,
-              "180m ago" in out and "HEAD moved" in out and "%s skips the build" % source in out, out)
-
-    # Startup with that stale/failed cache builds and stores the fresh result.
-    out = scl.build_status(root, "startup", True, verify=fake_verify)
-    check("startup: builds when cache is stale", len(calls) == 1 and out == "OK (0 warnings)", out)
-    check("startup: stores the fresh verify",
-          json.loads(cache_path.read_text(encoding="utf-8"))["result"] == "OK (0 warnings)")
-
-    # Startup again inside the TTL, same HEAD: served from cache, no second build.
-    out = scl.build_status(root, "startup", True, verify=fake_verify)
-    check("startup: fresh same-HEAD OK is served from cache", len(calls) == 1 and "[cached" in out, out)
-
-    # Submodule not ready wins over everything; resume with no cache says so.
-    check("submodule not ready skips", scl.build_status(root, "startup", False, verify=fake_verify)
-          .startswith("SKIPPED (submodule"))
-    cache_path.unlink()
-    out = scl.build_status(root, "compact", True, verify=fake_verify)
-    check("compact with no stored verify: SKIPPED, still no build",
-          out == "SKIPPED (compact: no stored verify)" and len(calls) == 1, out)
 
     class FakeRegistry:
         @staticmethod
@@ -112,7 +74,7 @@ def main():
     (claude_dir / "logs" / "eval_dashboard_last.json").write_text(
         json.dumps({"row_count": 2, "date": "2026-09-14"}), encoding="utf-8")
 
-    for source in scl.NO_BUILD_SOURCES:
+    for source in ("resume", "compact"):
         out = scl.self_improvement_advisory(due_root, source)
         check("%s: self-improvement advisory prints nothing on re-entry" % source, out == "", repr(out))
 
@@ -149,18 +111,31 @@ def main():
 
     # The SessionStart proof must exercise the registered script's main() output path, not only
     # inspect a helper string. Every expensive setup branch is planted so the assertion observes
-    # the continuation guidance emitted to stdout.
+    # the continuation guidance emitted to stdout. No step module is installed for these runs.
+    payload = {"source": "startup", "session_id": "main-proof"}
+
+    def run_main(main_root, patches, source="startup", step_modules=()):
+        stdout = io.StringIO()
+        scl._STEP_FAULTS.clear()
+        with contextlib.redirect_stdout(stdout), patch.dict(os.environ, {}, clear=False):
+            with contextlib.ExitStack() as stack:
+                for name, value in dict(patches, get_project_root=lambda: main_root).items():
+                    stack.enter_context(patch.object(scl, name, value))
+                stack.enter_context(patch.object(scl, "_STEP_MODULES", step_modules))
+                stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(dict(payload, source=source)))))
+                try:
+                    scl.main()
+                except SystemExit as exc:
+                    check("SessionStart main exits successfully", exc.code == 0, repr(exc.code))
+        return stdout.getvalue()
+
     with tempfile.TemporaryDirectory(prefix="scl_main_") as main_dir:
         main_root = Path(main_dir)
         patches = {
-            "get_project_root": lambda: main_root,
             "is_worktree": lambda: False,
             "is_cloud": lambda: False,
             "sweep_stray_search_indexes": lambda _root: None,
             "setup_submodule": lambda _root: "OK",
-            "setup_import_cache": lambda _root: "OK",
-            "build_status": lambda _root, _source, _ready: "OK",
-            "verify_lsp_plugin": lambda: "OK",
             "sidecar_health": lambda _root: {
                 "sidecar-a": "opus: OK (model=m endpoint=ENDPOINT-DETAIL) window=off-peak until 01:00 UTC",
                 "sidecar-b": "sol: shape rating: none exists"},
@@ -169,23 +144,9 @@ def main():
             "get_uncommitted_count": lambda: 0,
             "get_upstream_drift": lambda: (24, 3, 30.0),
             "get_recent_commits": lambda count=3, cwd=None: [],
-            "get_jmodot_commits": lambda _root, count=3: [],
-            "get_godot_bin": lambda: "",
             "self_improvement_advisory": lambda _root, _source: "",
-            "godot_docs_cache_issue": lambda _root: None,
         }
-        payload = {"source": "startup", "session_id": "main-proof", "cwd": str(main_root)}
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout), patch.dict(os.environ, {}, clear=False):
-            with contextlib.ExitStack() as stack:
-                for name, value in patches.items():
-                    stack.enter_context(patch.object(scl, name, value))
-                stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(payload))))
-                try:
-                    scl.main()
-                except SystemExit as exc:
-                    check("SessionStart main exits successfully", exc.code == 0, repr(exc.code))
-        output = stdout.getvalue()
+        output = run_main(main_root, patches)
         check("a fresh startup carries no reload reminder (the session_digest listing owns pickup)",
               "<context-reload-reminder>" not in output and "session_digest.py" not in output, output[-600:])
         check("an OK sidecar prints its model and trailing facts, not its probe detail",
@@ -196,36 +157,19 @@ def main():
         check("a local session gets no cloud contract", "<cloud-session>" not in output)
         check("the git line states how far main is from its upstream and how old the oldest unpushed commit is",
               "Git: main | clean | 24 ahead, 3 behind upstream as last fetched (oldest unpushed 30h)" in output, output[-900:])
+        check("no step module installed: no engine, Jmodot or language-server lines",
+              "GODOT_BIN" not in output and "Jmodot" not in output and "lsp-early-load" not in output
+              and "Session step modules" not in output, output[-700:])
 
-        # A cloud VM has no user or local settings, so neither path-scoped rules nor the
-        # autoMemoryDirectory index reach the model unless SessionStart injects them.
-        (main_root / ".claude" / "rules").mkdir(parents=True)
+        # A cloud VM has no user or local settings, so the autoMemoryDirectory index does not
+        # reach the model unless SessionStart injects it.
         (main_root / ".claude" / "auto-memory").mkdir(parents=True)
-        (main_root / ".claude" / "rules" / "cloud_dev.md").write_text(
-            "---\npaths:\n  - \"**/cloud-setup.sh\"\n---\n\n# Cloud\nCONTRACT-MARKER\n", encoding="utf-8")
         (main_root / ".claude" / "auto-memory" / "MEMORY.md").write_text(
             "# Memory Index\n- MEMORY-MARKER\n", encoding="utf-8")
         sidecar_probes = []
         cloud_patches = dict(patches, is_cloud=lambda: True,
-                             sidecar_health=lambda _root: sidecar_probes.append(1) or {"sidecar-x": "UNAVAILABLE"},
-                             run_cloud_setup=lambda _root: "OK (toolchain present)",
-                             setup_runsettings=lambda _root: "OK",
-                             persist_cloud_env=lambda _godot_bin: None)
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            with contextlib.ExitStack() as stack:
-                for name, value in cloud_patches.items():
-                    stack.enter_context(patch.object(scl, name, value))
-                stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(
-                    dict(payload, source="compact")))))
-                try:
-                    scl.main()
-                except SystemExit:
-                    pass
-        cloud_out = stdout.getvalue()
-        check("cloud session gets the cloud contract body", "<cloud-session>" in cloud_out
-              and "CONTRACT-MARKER" in cloud_out, cloud_out[-800:])
-        check("cloud contract drops the rule frontmatter", "paths:" not in cloud_out)
+                             sidecar_health=lambda _root: sidecar_probes.append(1) or {"sidecar-x": "UNAVAILABLE"})
+        cloud_out = run_main(main_root, cloud_patches, source="compact")
         check("cloud session gets the memory index", "MEMORY-MARKER" in cloud_out)
         check("cloud session is not told to load an unprovisioned plugin tool",
               "select:mcp__plugin_semantic-search" not in cloud_out)
@@ -233,17 +177,76 @@ def main():
               "Grep over .claude/auto-memory/" in cloud_out)
         check("cloud session probes no sidecar (the contract lists them absent) and prints no status line for one",
               not sidecar_probes and "sidecar-x" not in cloud_out, (sidecar_probes, cloud_out[:600]))
-        check("cloud status key names the setup script", "cloud_setup OK" in cloud_out, cloud_out[:600])
 
-        # An unterminated frontmatter fence or an undecodable byte must not crash SessionStart.
-        (main_root / ".claude" / "rules" / "cloud_dev.md").write_text("---\npaths: x\nBODY-MARKER\n",
-                                                                      encoding="utf-8")
+        # An undecodable byte must not crash SessionStart.
         (main_root / ".claude" / "auto-memory" / "MEMORY.md").write_bytes(b"# idx\n\xff\xfe bad\n")
         try:
             blocks = "\n".join(scl.cloud_session_blocks(main_root))
-            check("unterminated frontmatter keeps the body and does not raise", "BODY-MARKER" in blocks, blocks)
+            check("an undecodable memory index does not raise", "<auto-memory-index" in blocks, blocks)
         except Exception as exc:
-            check("unterminated frontmatter keeps the body and does not raise", False, repr(exc))
+            check("an undecodable memory index does not raise", False, repr(exc))
+
+        # The step-module seam: a present module's hooks are called in session order and add their
+        # lines; a hook that raises is reported once and never blocks the session.
+        order = []
+        step = types.SimpleNamespace(
+            early_setup=lambda root, cloud: order.append("early_setup") or {"step_early": "OK"},
+            setup=lambda root, source, worktree, cloud, ready: order.append("setup") or {"step_setup": "FIXED (x)"},
+            local_checks=lambda root: order.append("local_checks") or {"step_local": "OK"},
+            env_lines=lambda root, cloud: ["  STEP-ENV-LINE"],
+            context_lines=lambda root, recent: ["", "STEP-CONTEXT"],
+            nudge_lines=lambda results, cloud: ["", "STEP-NUDGE:" + results.get("step_local", "?")],
+            report_lines=lambda root: ["", "STEP-REPORT"],
+            persist_env=lambda root, cloud: order.append("persist_env"),
+        )
+        output = run_main(main_root, patches, step_modules=(step,))
+        check("a step module's setup statuses reach the Env: line in session order",
+              "step_early OK" in output and "step_setup: FIXED (x)" in output and "step_local OK" in output
+              and order == ["early_setup", "setup", "local_checks", "persist_env"], (order, output[:600]))
+        check("a step module's lines reach the output",
+              all(text in output for text in ("STEP-ENV-LINE", "STEP-CONTEXT", "STEP-NUDGE:OK", "STEP-REPORT")),
+              output[-600:])
+        check("a FIXED step status is summarised as auto-fixed", "Auto-fixed the items marked FIXED" in output)
+        cloud_order = []
+        step.local_checks = lambda root: cloud_order.append("local_checks") or {}
+        run_main(main_root, cloud_patches, step_modules=(step,))
+        check("local-only checks do not run on cloud", cloud_order == [], cloud_order)
+
+        def broken(*_args):
+            raise ValueError("hook bug")
+
+        step.setup = broken
+        output = run_main(main_root, patches, step_modules=(step,))
+        check("a raising hook is reported and the session context still prints",
+              "Session step modules: FAILED (setup ValueError: hook bug)" in output
+              and "Git: main |" in output and "STEP-REPORT" in output, output[-500:])
+
+        # An installed module that cannot be imported is named, and its siblings still load.
+        scl._STEP_FAULTS.clear()
+        check("an import fault is recorded by the module fault hook",
+              scl._step_fault("mod", ImportError("boom")) is None and "mod import ImportError: boom" in scl._STEP_FAULTS)
+        scl._STEP_FAULTS.clear()
+
+    # The runsettings entry point without the engine module installed generates nothing.
+    with patch.object(scl, "_STEP_MODULES", ()), contextlib.redirect_stdout(io.StringIO()) as printed:
+        code = scl.runsettings_cli(["unused"])
+    check("--setup-runsettings without the engine module prints SKIPPED and exits 1",
+          code == 1 and printed.getvalue().startswith("SKIPPED"), printed.getvalue())
+
+    # A project without the benchmark battery gets the generic context and no roster status.
+    with tempfile.TemporaryDirectory(prefix="scl_plain_") as plain_dir:
+        plain_root = Path(plain_dir)
+        check("a project without the benchmark battery reports no roster status",
+              scl.roster_health(plain_root) == "", scl.roster_health(plain_root))
+        for is_cloud_session in (False, True):
+            plain_out = run_main(plain_root, dict(patches, is_cloud=lambda: is_cloud_session,
+                                                  is_worktree=lambda: True))
+            label = "cloud" if is_cloud_session else "local"
+            check("plain %s session: no engine or language-server lines" % label,
+                  "GODOT_BIN" not in plain_out and "Jmodot" not in plain_out
+                  and "lsp-early-load" not in plain_out, plain_out[-700:])
+            check("plain %s session: the git context is still injected" % label,
+                  "Git: main |" in plain_out and "Recent {{PROJECT_NAME}} commits:" in plain_out, plain_out[-700:])
 
     # The local setup stamp reaches the model through the Env: line. The tool is copied into the
     # fixture root and the command's own frontmatter is the declaration under test, so this is the
@@ -275,16 +278,14 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("planted\n", encoding="utf-8")
         ws_profile = ws_root / "profile.json"
-        ws_patches = dict(patches, get_project_root=lambda: ws_root)
 
         def run_ws_main(env_extra, extra_patches=None):
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), patch.dict(os.environ, env_extra):
                 with contextlib.ExitStack() as stack:
-                    for name, value in ws_patches.items():
+                    for name, value in dict(patches, get_project_root=lambda: ws_root, **(extra_patches or {})).items():
                         stack.enter_context(patch.object(scl, name, value))
-                    for name, value in (extra_patches or {}).items():
-                        stack.enter_context(patch.object(scl, name, value))
+                    stack.enter_context(patch.object(scl, "_STEP_MODULES", ()))
                     stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(payload))))
                     try:
                         scl.main()
@@ -318,77 +319,6 @@ def main():
         check("a tool that cannot be loaded omits the step (fail open)",
               "workstation" not in env_line(out), env_line(out))
 
-    # run_cloud_setup branches, with the toolchain probes, the snapshot marker and the script run
-    # planted. `cloud_setup_current` is the seam for the marker: the tool's own compare is proven in
-    # test_workstation_profile.py; here it only has to reach the right branch.
-    class Done:
-        def __init__(self, out):
-            self.stdout, self.returncode = out, 0
-
-    with tempfile.TemporaryDirectory(prefix="scl_setup_") as tmp:
-        root = Path(tmp)
-        (root / ".claude").mkdir()
-        env = {"CLAUDE_CODE_REMOTE": "true"}
-        with patch.dict(os.environ, env), patch.object(scl, "_cmd_exists", lambda _c: False), \
-                patch.object(scl, "get_godot_bin", lambda: ""), \
-                patch.object(scl, "cloud_setup_current", lambda _root: True):
-            check("missing cloud-setup.sh is FAILED", scl.run_cloud_setup(root).startswith("FAILED"))
-            (root / ".claude" / "cloud-setup.sh").write_text("exit 0\n", encoding="utf-8")
-            out = ("[cloud-setup] prefix=/opt\n[cloud-setup] FAILED: apt install xvfb\n"
-                   "[cloud-setup] FAILED: .NET SDK install\n")
-            with patch.object(scl.subprocess, "run", lambda *a, **k: Done(out)):
-                status = scl.run_cloud_setup(root)
-            check("every FAILED line reaches the status",
-                  "apt install xvfb" in status and ".NET SDK install" in status, status)
-        docs_dir = root / ".claude" / "scripts"
-        docs_dir.mkdir(parents=True, exist_ok=True)
-        (docs_dir / "godot_docs_cache.sh").write_text("exit 0\n", encoding="utf-8")
-        ran = []
-
-        def record(argv, *a, **k):
-            ran.append(Path(argv[-1]).name)
-            return Done("[cloud-setup] FAILED: .NET installer download (dot.net)\n")
-
-        with patch.dict(os.environ, env), patch.object(scl, "_cmd_exists", lambda _c: False), \
-                patch.object(scl, "get_godot_bin", lambda: ""), \
-                patch.object(scl, "cloud_setup_current", lambda _root: True), \
-                patch.object(scl.subprocess, "run", record):
-            status = scl.run_cloud_setup(root)
-        check("a failed toolchain install still builds the docs cache (it needs only GitHub)",
-              status.startswith("FAILED") and "godot_docs_cache.sh" in ran, (status, ran))
-
-        for label, current, want in (("a current marker", True, "OK"),
-                                     ("a stale marker", False, "FIXED (snapshot script is stale")):
-            with patch.dict(os.environ, env), patch.object(scl, "_cmd_exists", lambda _c: True), \
-                    patch.object(scl, "get_godot_bin", lambda: "/opt/godot/g"), \
-                    patch.object(scl, "cloud_setup_current", lambda _root, c=current: c), \
-                    patch.object(scl.subprocess, "run", lambda *a, **k: Done("")):
-                status = scl.run_cloud_setup(root)
-            check("a present toolchain with %s reports %s" % (label, want),
-                  status.startswith(want), status)
-            if current:
-                check("a current marker never re-runs the script", "FIXED" not in status, status)
-            else:
-                check("a stale snapshot script says to re-paste the repo copy",
-                      "paste .claude/cloud-setup.sh" in status, status)
-
-        def unloadable(_root):
-            raise OSError("profile gone")
-
-        with patch.object(scl, "_load_workstation_profile", unloadable):
-            check("an unreadable profile keeps the toolchain probe's answer (fail open, no re-run)",
-                  scl.cloud_setup_current(root) is True, scl.cloud_setup_current(root))
-
-    # CLAUDE_ENV_FILE lines must export: a sourced plain assignment never reaches child processes.
-    with tempfile.TemporaryDirectory(prefix="scl_env_") as tmp:
-        env_file = os.path.join(tmp, "env")
-        with patch.dict(os.environ, {"CLAUDE_ENV_FILE": env_file, "DOTNET_ROOT": "/opt/dotnet"}):
-            scl.persist_cloud_env("/opt/godot/g")
-        with open(env_file, encoding="utf-8") as fh:
-            lines = [line for line in fh.read().splitlines() if line]
-        check("every persisted env line exports",
-              bool(lines) and all(line.startswith("export ") for line in lines), repr(lines))
-
     # The drift reader against a planted clone: two local commits on top of its upstream.
     with tempfile.TemporaryDirectory(prefix="scl_drift_") as tmp:
         def g(*args, cwd):
@@ -409,27 +339,6 @@ def main():
             os.chdir(cwd)
         check("the drift reader counts unpushed commits against the upstream",
               drift is not None and drift[:2] == (2, 0) and 0 <= drift[2] < 1, repr(drift))
-
-    with tempfile.TemporaryDirectory(prefix="scl_rs_") as tmp:
-        root = Path(tmp)
-        cli = [sys.executable, os.path.join(HERE, "..", "hooks", "session_context_loader.py"), "--setup-runsettings", str(root)]
-        env = dict(os.environ, GODOT_BIN=sys.executable)
-        run = lambda: subprocess.run(cli, capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
-        no_template = run()
-        check("--setup-runsettings without a template prints SKIPPED, exits 1, writes nothing",
-              no_template.returncode == 1 and no_template.stdout.startswith("SKIPPED")
-              and not (root / ".runsettings").exists(), no_template.stdout + no_template.stderr)
-        (root / ".runsettings.template").write_text("<B>{{GODOT_BIN}}</B>", encoding="utf-8")
-        made = run()
-        check("--setup-runsettings generates .runsettings from the template, exit 0",
-              made.returncode == 0 and made.stdout.startswith("FIXED")
-              and (root / ".runsettings").read_text(encoding="utf-8") == "<B>%s</B>" % sys.executable,
-              made.stdout + made.stderr)
-        (root / ".runsettings").write_text("keep", encoding="utf-8")
-        again = run()
-        check("--setup-runsettings never overwrites an existing .runsettings",
-              again.returncode == 0 and again.stdout.strip() == "OK"
-              and (root / ".runsettings").read_text(encoding="utf-8") == "keep", again.stdout)
 
     if failures:
         print("\nFAILED:\n  " + "\n  ".join(failures))

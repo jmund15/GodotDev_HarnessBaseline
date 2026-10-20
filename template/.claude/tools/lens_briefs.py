@@ -583,13 +583,7 @@ def main() -> None:
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    found: dict[str, lens.Lens] = {}
-    preambles: dict[str, str] = {}
-    for reg in lens.REGISTRIES:
-        pre, lenses = lens.parse(reg)
-        preambles[reg] = pre
-        for l in lenses:
-            found[l.key] = l
+    preambles, found = lens.catalog()
     # A key is one seat; `a+b` puts mandates together per the caller's seat map (orchestration §2).
     seats = {k: k.split("+") for k in a.keys}
     missing = [m for k in a.keys for m in seats[k] if m not in found]
