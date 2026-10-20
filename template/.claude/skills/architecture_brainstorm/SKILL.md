@@ -2,7 +2,7 @@
 name: Architecture_Brainstorm
 description: >-
   Use BEFORE new systems, 3+ file refactors, framework-boundary changes
-  (Jmodot ↔ {{PROJECT_NAME}}), or architecturally-loaded features — once candidate ideas
+  (shared framework ↔ {{PROJECT_NAME}}), or architecturally-loaded features — once candidate ideas
   exist. Triggers: "how would we approach X", "design X", "should we build
   Y", "what's the architecture for Z". Run /idea_brainstorm FIRST if
   greenfield. Produces a design doc + Parts on the topic-folder roadmap.md

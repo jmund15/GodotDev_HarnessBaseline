@@ -214,6 +214,34 @@
       ],
       "skills": [],
       "rules": []
+    },
+    {
+      "name": "Stat Modifiers",
+      "triggers": [
+        "modifier",
+        "stat",
+        "affinity"
+      ],
+      "memory_keywords": [
+        "modifier"
+      ],
+      "skills": [
+        "architecture_philosophy"
+      ],
+      "rules": []
+    },
+    {
+      "name": "Game Lore",
+      "triggers": [
+        "lore"
+      ],
+      "memory_keywords": [
+        "lore"
+      ],
+      "skills": [
+        "obsidian_conventions"
+      ],
+      "rules": []
     }
   ]
 }

@@ -733,6 +733,7 @@ PLACEHOLDER_OK = {
     ".claude/tools/baseline_sync.py",
     ".claude/tools/extract_subagent_tools.py",
     ".claude/tests/test_baseline_identity.py",
+    ".claude/tests/test_baseline_sync_doctor.py",
     ".claude/worklog-titles.md",
 }
 

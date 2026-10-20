@@ -289,6 +289,68 @@ def test_layer_closure_flags_a_pure_file_citing_a_godot_file() -> None:
         _remove(tmp)
 
 
+def _surface_findings(files: dict[str, tuple[str, str]], check: str) -> list[tuple[str, str]]:
+    """Run one domain-noun check over a planted template tree: {rel: (layer, text)} -> [(severity, path)]."""
+    audit = _load_audit()
+    tmp = Path(tempfile.mkdtemp(prefix="audit_baseline_surface_"))
+    original_template = audit.TEMPLATE
+    try:
+        for rel, (_layer, text) in files.items():
+            target = tmp / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8", newline="\n")
+        audit.TEMPLATE = tmp
+        manifest = {"files": [{"path": rel, "layer": layer, "sync": "auto"} for rel, (layer, _t) in files.items()]}
+        findings = audit.Findings()
+        getattr(audit, check)(findings, manifest)
+        return [(i["severity"], i["path"]) for i in findings.items]
+    finally:
+        audit.TEMPLATE = original_template
+        _remove(tmp)
+
+
+def test_surface_check_flags_a_game_noun_in_a_pure_skill_description() -> None:
+    noun = "play" + "test"
+    skill = ".claude/skills/demo/SKILL.md"
+    flat = f"---\nname: Demo\ndescription: Use before each {noun} of the build.\n---\n# Demo\n"
+    folded = f"---\nname: Demo\ndescription: >-\n  Use before the release.\n  Skip the {noun}.\n---\n# Demo\n"
+    neutral = "---\nname: Demo\ndescription: Use before each hands-on trial.\n---\n# Demo\n"
+    body_only = f"---\nname: Demo\ndescription: Use before each release.\n---\n# Demo\nRun the {noun}.\n"
+    got = {name: _surface_findings({skill: ("pure", text)}, "check_surface_domain_nouns")
+           for name, text in (("flat", flat), ("folded", folded), ("neutral", neutral), ("body", body_only))}
+    assert got["flat"] == [("WARN", skill)], got
+    assert got["folded"] == [("WARN", skill)], got
+    assert got["neutral"] == [] and got["body"] == [], got
+
+
+def test_surface_check_covers_claude_files_commands_and_the_coding_layer() -> None:
+    engine = "God" + "ot"
+    got = _surface_findings({
+        ".claude/CLAUDE.coding.md": ("coding", f"Runs under {engine}.\n"),
+        ".claude/commands/demo.md": ("coding", "---\ndescription: Edit one [Export] field\n---\n"),
+        ".claude/CLAUDE.core.md": ("pure", "Review the diff before the push.\n"),
+    }, "check_surface_domain_nouns")
+    assert sorted(path for _sev, path in got) == [".claude/CLAUDE.coding.md", ".claude/commands/demo.md"], got
+
+
+def test_surface_exemption_applies_to_its_own_path_only() -> None:
+    audit = _load_audit()
+    noun = "You" + "Tube"
+    exempt = next(iter(audit.SURFACE_NOUN_EXEMPT))
+    text = f"---\ndescription: Ingest a {noun} video.\n---\n"
+    got = _surface_findings({exempt: ("pure", text), ".claude/commands/other.md": ("pure", text)},
+                            "check_surface_domain_nouns")
+    assert got == [("WARN", ".claude/commands/other.md")], got
+
+
+def test_coding_file_naming_four_godot_markers_is_a_warn() -> None:
+    four = "Godot .tscn .tres JmoLogger"
+    three = "Godot .tscn .tres"
+    flagged = _surface_findings({".claude/commands/a.md": ("coding", four)}, "check_core_domain_nouns")
+    clean = _surface_findings({".claude/commands/a.md": ("coding", three)}, "check_core_domain_nouns")
+    assert flagged == [("WARN", ".claude/commands/a.md")] and clean == [], (flagged, clean)
+
+
 def test_staleness_accepts_an_offer_memory_row() -> None:
     audit = _load_audit()
     rel = next(r for _, r in audit.iter_template_files()
@@ -304,6 +366,10 @@ def test_staleness_accepts_an_offer_memory_row() -> None:
 
 def main() -> int:
     cases = [
+        test_surface_check_flags_a_game_noun_in_a_pure_skill_description,
+        test_surface_check_covers_claude_files_commands_and_the_coding_layer,
+        test_surface_exemption_applies_to_its_own_path_only,
+        test_coding_file_naming_four_godot_markers_is_a_warn,
         test_staleness_accepts_an_offer_memory_row,
         test_layer_closure_flags_a_pure_file_citing_a_godot_file,
         test_strict_exits_0_from_repo_root,

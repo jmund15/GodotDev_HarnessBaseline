@@ -992,6 +992,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/agents/review_agents_godot.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/agents/review_fold.md",
       "layer": "pure",
       "sync": "auto"
@@ -1059,6 +1064,11 @@
     {
       "path": ".claude/commands/checklists/code_quality.md",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/commands/checklists/code_quality_godot.md",
+      "layer": "godot",
       "sync": "auto"
     },
     {

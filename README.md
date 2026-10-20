@@ -207,14 +207,17 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 - [pure] `skills/worklog_reference/SKILL.md` — the domain-classification tables use example
   content domains; replace with your project's domains.
 - [pure] `reference/project_stack.md` (seed) — the toolchain version pins every other surface cites
-  (engine, runtime, test framework, build command); fill the placeholder fields at adoption.
+  (engine, runtime, test framework, build command); fill the placeholder fields at adoption. [godot] Add a
+  `Godot engine: <version>` line, which the docs-cache hook reads, and the physics engine.
 - [pure] `skills/environment_bootstrap/SKILL.md` (seed) — this machine's ground truth: binaries, vault
   root, log locations, shell and launcher differences; fill it for your machine.
 - [pure] `reference/vault_taxonomy.md` (seed) — the vault layout `obsidian_conventions` reads (project
   folders, the live design surface, legacy areas); list your vault's folders.
 - [pure] `skills/project_subsystems/SKILL.md` (seed) — the subsystem registry that
   `/sync_subsystems`, `/structure_audit`, the structure rules, the testing skill's
-  test-support path and the brainstorm scope litmus route through; fill it at adoption.
+  test-support path and the brainstorm scope litmus route through; fill it at adoption. [godot] Its
+  conventions add .godot/, addons/, bin/ and obj/ to the reserved paths, and the playtest scenario paths
+  (your scene roots) that `/pr_ready`'s playtest-route blocker reads.
   Its sibling `adaptation.json` (seed) holds the other adaptation tables this list names —
   one skill folder owns both files.
 - [godot, coding] `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —

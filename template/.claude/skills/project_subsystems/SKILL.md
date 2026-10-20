@@ -2,7 +2,7 @@
 name: Project Subsystems
 description: >-
   Auto-load when scoping work across subsystems or finding which subsystem owns a path.
-  Skip symbol lookup, file-placement rules, reusable-framework internals, and game vision.
+  Skip symbol lookup, file-placement rules, reusable-framework internals, and product direction.
 ---
 
 # {{PROJECT_NAME}} — Subsystem Registry
@@ -17,17 +17,16 @@ description: >-
 - `organization` is `feature` (subfolders are independent content units), `layer` (subfolders are
   machinery roles), `ui` (subfolders are consuming subsystems), or `hybrid` (a mix documented under
   *Subsystem Details*). A code project's structure rules own the full placement model.
-- `domain` is the default `logic`, `gameplay`, `data`, `meta`, or `framework` PR/test route; classify
-  changed behavior when a subsystem mixes domains.
+- `domain` is the default `logic`, `gameplay`, `data`, `meta`, or `framework` PR/test route; `gameplay`
+  is behavior judged by hand in the running product. Classify changed behavior when a subsystem mixes domains.
 - `summary` is one line. Put boundaries and exceptions under *Subsystem Details*.
 
 ```yaml
 conventions:
-  project_folder_case: PascalCase
+  project_folder_case: <PascalCase|snake_case|kebab-case>
   namespace_root: "{{PROJECT_NAME}}"
   framework_paths: [<FrameworkRoot/>]
-  playtest_scenario_paths: [<ScenarioRoot/>]
-  reserved_paths: [.claude/, .git/, .godot/, addons/, bin/, obj/, Tests/]
+  reserved_paths: [.claude/, .git/, Tests/, <BuildOutput/>]
 subsystems:
   - id: <subsystem-id>
     paths: [<TopLevelFolder/>, <OtherFolder/>]

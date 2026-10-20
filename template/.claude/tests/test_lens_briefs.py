@@ -35,6 +35,27 @@ def run_main(argv):
         sys.argv = saved_argv
 
 
+def companion_checks():
+    base = "---\nd: x\n---\n# Q\n\n## Compliance (C)\n\n- [ ] **a**\n\n## Robustness (R)\n\n- [ ] **r**\n"
+    godot = "---\nx: y\n---\n# G\n\n## Godot Compliance (C)\n\n- [ ] **g**\n\n## Godot Intuitiveness (I)\n\n- [ ] **i**\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        cq = Path(tmp) / "code_quality.md"
+        cq.write_text(base, encoding="utf-8")
+        alone = lens_briefs.with_companion(cq, lambda f: lens_briefs.sections(f, {"C"}))
+        check("without a companion a letter yields the base sections only",
+              "**a**" in alone and "Godot" not in alone, alone)
+        (Path(tmp) / "code_quality_godot.md").write_text(godot, encoding="utf-8")
+        merged = lens_briefs.with_companion(cq, lambda f: lens_briefs.sections(f, {"C"}))
+        check("with a companion a letter adds that companion's sections after the base",
+              merged.index("**a**") < merged.index("**g**") and "**i**" not in merged, merged)
+        only_godot = lens_briefs.with_companion(cq, lambda f: lens_briefs.sections(f, {"I"}))
+        check("a letter only the companion holds yields the companion's section alone",
+              "**i**" in only_godot and "**a**" not in only_godot, only_godot)
+        whole = lens_briefs.with_companion(cq, lambda f: lens_briefs.below_frontmatter(f.read_text(encoding="utf-8")))
+        check("the whole-file form joins both files below their frontmatter",
+              "**a**" in whole and "**g**" in whole and "x: y" not in whole and "d: x" not in whole, whole)
+
+
 def main():
     text = "# Review agents\n\n## Agent Templates\n\n### code-reviewer -- `model: \"opus\"`\nbody\n"
     with tempfile.TemporaryDirectory() as tmp:
@@ -52,6 +73,7 @@ def main():
             lens.AGENTS, lens.REGISTRIES = saved
     check("an unknown key is refused by name while another registry's file is absent",
           "no such lens: no-such-key" in outcome, outcome)
+    companion_checks()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         return 1
