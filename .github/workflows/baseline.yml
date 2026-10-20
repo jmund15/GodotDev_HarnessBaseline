@@ -42,4 +42,4 @@ jobs:
           done
 
       - name: template harness battery
-        run: python3 template/.claude/scripts/harness_tests.py --allow-cannot-run tests/platform_only.json
+        run: python3 template/.claude/scripts/harness_tests.py
