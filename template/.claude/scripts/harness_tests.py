@@ -591,10 +591,7 @@ _DIR_SCANNING = ("test_hook_state.py",)
 _CORPUS_SCANNING = {
     "test_hook_state.py": (".claude/hooks",),
     "test_claudemd_citations.py": (".claude",),
-    "test_cli_usage.py": (".claude/tools", ".claude/scripts", ".claude/hooks"),
-    "test_git_optional_locks.py": (".claude/hooks",),
     "test_guard_text.py": (".claude/guards",),
-    "test_routing_scenarios.py": (".claude/commands", ".claude/skills", ".claude/rules"),
 }
 
 

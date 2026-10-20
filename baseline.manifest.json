@@ -937,6 +937,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/cloud-setup.sh",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/agents/doc_before_writing.md",
       "layer": "pure",
       "sync": "auto"
@@ -2567,6 +2572,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/anthropic_console_secondary_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/anthropic_console_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/anthropic_quota_probe.py",
       "layer": "pure",
       "sync": "auto"
@@ -2618,6 +2633,11 @@
     },
     {
       "path": ".claude/scripts/codex_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/console_credit_audit.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3532,6 +3552,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_anthropic_console_credentials.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_anthropic_quota_probe.py",
       "layer": "pure",
       "sync": "auto"
@@ -3714,6 +3739,11 @@
     {
       "path": ".claude/tests/test_conformance_j8.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_console_credit_audit.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -4093,6 +4123,11 @@
     },
     {
       "path": ".claude/tests/test_nested_fanout_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_ollama_contention_probe.py",
       "layer": "pure",
       "sync": "auto"
     },
