@@ -514,7 +514,6 @@ PURE_PATTERNS = [
     ".claude/hooks/sidecar_recompact_reprompt.py",
     ".claude/hooks/workflow_script_lf_guard.py",
     ".claude/reference/codex_session_runbook.md",
-    ".claude/rules/harness_authoring.md",
     ".claude/scripts/lib/ccp_probe.py",
     ".claude/scripts/lib/oc_proxy_probe.py",
     ".claude/scripts/lib/text_only_shim.py",
