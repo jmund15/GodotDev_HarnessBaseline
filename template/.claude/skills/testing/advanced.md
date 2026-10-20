@@ -1,6 +1,6 @@
 # Advanced GdUnit4 Features
 
-> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. Version provenance: the `gdUnit4.api` pin in `{{PROJECT_NAME}}.csproj` (5.1.0-rc4 as of 2026-07-04); this copy may drift from upstream. If an API call misbehaves, cross-check the trusted GdUnit4 URLs in CLAUDE.md §4.
+> **Vendored GdUnit4Net docs** — offline copy of upstream API reference, not project-authored. Version provenance: the `gdUnit4.api` pin in `{{PROJECT_NAME}}.csproj`; this copy may drift from upstream. If an API call misbehaves, cross-check the trusted GdUnit4 URLs in CLAUDE.md §4.
 
 Lifecycle hooks, parameterized tests, utilities, and FAQ solutions.
 
@@ -123,11 +123,9 @@ public void Setup() { }
 
 ## Flaky Test Handling
 
-Configure in GdUnit4 Settings:
-- **Enable Flaky Test Retry:** Toggle on
-- **Max Retries:** Default 3
+GdUnit4 Settings toggle **Enable Flaky Test Retry** and set **Max Retries**; this project's setting is unmeasured.
 
-**Best Practice:** Investigate root causes (race conditions, timing) rather than relying on retries.
+**Best Practice:** Investigate root causes (race conditions, timing) rather than relying on retries. A flaky-retry pass is not green evidence — the retry hides the failure that a re-run of the same tree would expose.
 
 ---
 
@@ -177,7 +175,7 @@ var lines = ResourceAsArray("res://test_data/items.csv");
 [AfterTest]
 public void ResetPause()
 {
-    Engine.GetMainLoop().SetMeta("paused", false);
+    ((SceneTree)Engine.GetMainLoop()).Paused = false;
 }
 ```
 

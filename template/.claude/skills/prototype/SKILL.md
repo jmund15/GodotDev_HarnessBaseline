@@ -1,13 +1,12 @@
 ---
 name: Prototype
 description: >-
-  Use for one of two routes. PROBE: a design fork that turns on how something reads, behaves,
-  or responds at runtime and the question is still OPEN — throwaway variants on a
-  `prototype/<slug>` branch, answer-only. PROVISIONAL: a CLOSED design deliberately shipped
-  minimal because full implementation is deferred (named roadmap Part or explicit user
-  trigger) — inline, totality-tracked via `// PROVISIONAL(<slug>)` + `.claude/prototype_registry.md`.
-  Converged and not deferred → `/part_drive` or `/feature_drive`. SKIP for prototype-grade
-  ASSET authoring (`sprite_authoring` / `shader_authoring`) and constant-tuning a shipped system.
+  Use for an open design fork only runtime behavior can settle (PROBE: throwaway variants on a
+  `prototype/<slug>` branch, answer-only), or a closed design needing a usable minimal surface
+  while full implementation is deferred (PROVISIONAL: inline, totality-tracked via
+  `// PROVISIONAL(<slug>)` + `.claude/prototype_registry.md`). SKIP converged, non-deferred work;
+  use `/part_drive` or `/feature_drive`. SKIP measurable engine facts; use `/part_drive`.
+  SKIP sprite/shader asset authoring; use `sprite_authoring` or `shader_authoring`.
 ---
 
 # Prototype
@@ -25,6 +24,8 @@ First decision:
 
 Provisional carries full production obligations — TDD strict in the Logic domain, `/regression_gate` on `.cs` commits — because it is a disposition (architecture deferred), never a quality carve-out.
 
+An engine or runtime fact the agent can measure is a `/part_drive` spike, not a PROBE.
+
 ## Containment
 
 Both modes. Provisional code shipping from `prototypes/<slug>/` uses the two layers below via its registry row; provisional code in production folders is tracked by markers + registry row only (`## PROVISIONAL`).
@@ -35,7 +36,7 @@ Both modes. Provisional code shipping from `prototypes/<slug>/` uses the two lay
 
 **A slug that ships stays at `prototypes/<slug>/`.** Promotion does not relocate it: the path is the free signal that the code is still provisional, and both layers key off the registry row, not the location.
 
-*Consequence of 1 + 2:* a REGISTERED slug's `.cs` gates like any other. Never claim a `/regression_gate` carve-out for a prototype.
+*Consequence of 1 + 2:* a REGISTERED slug's `.cs` gates like any other; `/regression_gate` §When Required holds the no-carve-out rule.
 
 ## Probe flow
 
@@ -76,32 +77,7 @@ Different *approaches*, not tuned constants — a constant sweep is a tuning pas
 
 ### 4b. Prove it runs before handing it over
 
-Before handing over, the prototype must have been OBSERVED executing its own mechanism:
-
-- a `RunSelfCheckOnReady`-style export (default OFF) exercising **every structural variant**, not just the authored one;
-- an input-driven probe feeds a REAL input event through the pipeline, never a direct component call — `Input.ParseInputEvent(new InputEventKey(...))` against the actual InputMap action; a component self-check cannot observe HSM transition legs;
-- it emits DATA per variant (counts, hit/miss, degenerate-value checks), not prose, so the verdict is machine-readable in `get_debug_output`;
-- the whole body is exception-guarded;
-- the agent runs it and reads the output. `dotnet build` + `godot --headless --import` show only that code compiles and a class registers; "built and imported" is never the handover bar.
-
-**Verification tier — set by the question, not the probe's size.** Count driven seams and open forks. **Tier 1** (0–1 seams, no open forks) uses the bar above. **Tier 2** (2+ seams, or any open fork) adds:
-
-- a deterministic `ISceneRunner` driver per seam that reproduces the authored precondition and asserts the seam itself;
-- one driver over the real authored host that asserts the visible outcome rather than an internal state;
-- one agent-observed run of that host, with the observed state recorded from structured logs;
-- one filtered run of adjacent suites whose domains overlap the probe;
-- one independent correctness-gap pass over `QUESTION.md`, the drivers, and the host scene. Drive each uncovered path or name a user-owned check and why automation cannot cover it. Fix framework findings in the framework rather than hiding them in consumer wiring.
-
-**A bare `run_project` does not satisfy this unless the configured main scene hosts the mechanism.** A lifecycle or menu scene can boot cleanly while the probe never runs. Pass the optional `scene` argument and target the real host.
-
-| What the probe needs in order to execute at all | Route |
-|---|---|
-| Nothing beyond its own node | isolated `prototypes/<slug>/prototype.tscn` + `run_project(scene:)` |
-| World geometry to query (raycast, collision, overlap) | isolated scene CONTAINING that geometry |
-| A real subsystem to drive it (spawn pipeline, HSM transitions, damage flow) | `ISceneRunner` harness — the only route with deterministic ticks and real wiring |
-| Cross-system emergence | the real gameplay scene; self-check reports data, human judges |
-
-Row 3 is the carve-out to the auto-stop tripwire, which targets tests as DELIVERABLE, not as instrument. An isolated `prototype.tscn` is often warranted ALONGSIDE the real-scene host: isolation makes the self-check meaningful, the real host is the venue for the feel judgment.
+Before handing over, the prototype must have been OBSERVED executing its own mechanism. "Built and imported" is never the handover bar. The verification obligations, and the table of how a probe gets to execute at all, are in `reference/probe_verification.md`; the open forks and seams in `QUESTION.md` set how many apply.
 
 ### 5. Write scenario runners
 
@@ -109,7 +85,7 @@ Named scripted sequences that reset to a known state before running; without the
 
 ### 6. Capture and park
 
-`prototypes/<slug>/ANSWER.md` — the verdict **and the question it settled**. Bank it in the topic's `decisions.md` `## Decided` per `common.md §6.3` (a roadmap-borne answer then re-routes the Part via `/update_roadmap`); the real Part's plan pins it under `Constraints` citing the `ANSWER.md` path. Commit to `prototype/<slug>`, leave the pointer on the `prototype-pending` roadmap Part (worklog entry only when no Part exists), and stop.
+`prototypes/<slug>/ANSWER.md` — the verdict **and the question it settled**. Bank it in the topic's `decisions.md` `## Decided` per `roadmap_schema.md §6.3` (a roadmap-borne answer then re-routes the Part via `/update_roadmap`); the real Part's plan pins it under `Constraints` citing the `ANSWER.md` path. Commit to `prototype/<slug>`, leave the pointer on the `prototype-pending` roadmap Part (worklog entry only when no Part exists), and stop.
 
 ## Extraction
 
@@ -135,7 +111,7 @@ A probe answered its question, the owner wants the surface kept rather than rewr
 1. **Registry row** naming the condition that retires the slug, with a Surface column listing its files AND its production call sites.
 2. **`<Compile Include>` allowlist line** per converted slug in `{{PROJECT_NAME}}.csproj` — one reviewable line each, never a widened glob. The blanket `<Compile Remove>` stays.
 3. **`// PROVISIONAL(<slug>)` markers** on every converted `.cs`.
-4. **Probe scaffolding retired** — debug overlays, self-checks (a `RunSelfCheckOnReady` left true is what this catches), per-tick logging, key handlers, and any edit the probe made to shipped host content.
+4. **Probe scaffolding retired** — debug overlays, self-checks, per-tick logging, key handlers, and any edit the probe made to shipped host content.
 5. **Gates apply as normal** — TDD strict in the Logic domain, `/regression_gate` on `.cs` commits.
 
 The path stays `prototypes/<slug>/`. **A slug that does NOT convert stays a probe** — its branch is still never merged, its main-worthy commits still leave by extraction.
@@ -186,15 +162,15 @@ C# needs a rebuild per change, and building while the Godot editor is open is a 
 
 **Inline by default — no fan-out in the loop.** Only the human playing the build produces the verdict. Optional second opinion: when the verdict is judgment-heavy, dispatch ONE independent critic lens (QUESTION.md + screenshots + `[PROTO-<slug>]` logs) to test whether the evidence settles the question.
 
-**Log-first — after a playtest, mine the log before diagnosing.** Copy the configured Godot log to a stable project-local artifact before another worktree or gate run can replace it.
+**Log-first — after a playtest, mine the log before diagnosing.** Every fix starts from `/analyze_godot_logs` on the playtest log (CLAUDE.md Logs are Truth). Copy the configured Godot log to a stable project-local artifact before another worktree or gate run can replace it.
 
 ## Guardrails
 
 **Probe guardrails.**
 
 - **A prototype branch goes stale.** If the playtest surfaces a defect that smells already-fixed, check `git log main` FIRST and merge main in rather than re-implementing — then re-import (`godot --headless --import`) and re-verify the class cache before judging.
-- **One sitting.** Still building it hours later means the question was too big — split it.
-- **Round-3 circuit breaker.** A third playtest round surfacing defects in a mechanism an earlier round already "fixed" means the probe is under-instrumented, not that the next fix is close. Stop fixing; spend the round making the mechanism observable (§4b), then resume. Cheap tell: a round whose driver-and-fix lines exceed the probe's own is maintaining scaffolding.
+- **Scope litmus.** Still building it hours later means the question was too big — split it.
+- **Recurrence breaker.** A defect recurring in a mechanism an earlier playtest round already "fixed" means the probe is under-instrumented, not that the next fix is close. Stop fixing; make the mechanism observable (§4b) and follow `debugging` §The Recurrence Law. Cheap tell: a round whose driver-and-fix lines exceed the probe's own is maintaining scaffolding.
 - **Auto-stop tripwire.** Wiring real persistence (`.tres` authoring, registry entries, save state), or generalising for a case you might want later — you have stopped prototyping. Adding a test is the tripwire only for a test that would SURVIVE parking: a permanent suite pinning the prototype's behavior treats the design as settled. The Tier 2 drivers §4b mandates are the exception.
 - **Handover bar is "observed running", not "compiles".**
 - **The deliverable is an answer, never a patch.** Promoting a probe to PRODUCTION reruns the normal design→TDD path as a rewrite; never lift the branch's code. Conversion to a PROVISIONAL surface is the one route that does ship it (§Conversion).
@@ -222,7 +198,7 @@ C# needs a rebuild per change, and building while the Godot editor is open is a 
 - `.claude/prototype_registry.md` — the provisional-surface totality record.
 - `architecture_brainstorm` — files a `prototype-pending` Part on an ungrillable feel-fork; the one-line answer returns as a resolved fork.
 - `_brainstorm_shared/design_contract.md` clause 7 — the carve-out letting a feel-unknowable fork exit the Hard Gate as `prototype-pending`. PROBE-only; a provisional surface is post-design-lock implementation.
-- `_brainstorm_shared/common.md` §6.3 — Part-state vocabulary. `prototype-pending` is PROBE-scoped; the registry is the provisional tracking layer and no new roadmap state exists.
+- `_brainstorm_shared/roadmap_schema.md` §6.3 — Part-state vocabulary. `prototype-pending` is PROBE-scoped; the registry is the provisional tracking layer and no new roadmap state exists.
 - `logging_methodology` — `[PROTO-<slug>]` composition + cleanup grep.
 - `.claude/hooks/prototype_containment_guard.py` — probe containment (commit-time; advisory on non-prototype staged paths — `## Extraction`); `.claude/hooks/provisional_totality_guard.py` — provisional totality (commit-time).
 - Any project rule governing a same-named production directory — unrelated to this skill.

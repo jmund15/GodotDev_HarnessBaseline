@@ -54,8 +54,8 @@ Every `.cs` referenced as an `ext_resource` in a scene/resource has a sibling `.
 - Keep the folder-to-namespace alias table empty unless a consumer records a justified exception below.
 - If a type name equals the namespace leaf (`Example.Example`), rename the type rather than leaving it in the global namespace.
 - If a namespace shadows a framework type, qualify the framework type at the colliding call sites.
-- Namespace changes are ASK, never an automatic FIX; they can touch every consumer `using`.
-- Treat leaf-collapse and foreign namespaces as low-confidence ASK. A framework `partial class`
+- Action tier is PLAN, never an automatic FIX: a namespace rename touches every consumer `using`. `options[0]` renames the namespace to the expected one; the alternatives are renaming the folder or a colliding type.
+- Treat leaf-collapse and foreign namespaces as low-confidence PLAN. A framework `partial class`
   extension may legitimately use the framework namespace from a project-owned folder.
 - Exclude tests, dependencies, generated output, plugins, and tool-only roots listed by the consumer.
 
@@ -120,6 +120,6 @@ folder needs role subfolders or relocation. A `hybrid` subsystem follows its doc
 2. Apply R1–R5 and R13.
 3. Apply R6, R7, R8, or R10 from the declared style.
 4. For a new top-level folder, update the registry in the same change.
-5. Use ASK for ownership, namespace, hybrid-style, and growth judgments.
+5. Use ASK for ownership, hybrid-style, and growth judgments, and PLAN for a namespace change.
 
 Run the project's structure audit, where it ships one, after a structural change or as an explicit hygiene pass.

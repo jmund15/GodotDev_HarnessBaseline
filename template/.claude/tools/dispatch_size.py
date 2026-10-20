@@ -27,6 +27,10 @@ bytes) at CHARS_PER_TOKEN (the rate the orchestration Pre-Dispatch
 Checklist counts required reading at) against `model_registry.usable_window` of its `model` or `alias`
 (`window_fit`). A job over its window is named in the line. A pin the registry does not resolve is not marked.
 
+`fact_lines(spec)` adds, after that line, one line per job pinned above a cheaper claimant of its tier (executor
+included): the claimants with cost, `±` cell and the job's reading against each one's window and long-context price
+point. These are facts read before a pin is chosen; no check denies on them.
+
 `dispatch_size(jobs)` takes the jobs list or the whole jobs file / Workflow args object, is pure, and raises
 only on a spec that holds no job list. `line(spec, root)` is its one-line form, None when the spec holds no
 job or cannot be sized. `/delegate` runs it on the jobs file before launch; it informs a launch and never blocks one.
@@ -45,6 +49,11 @@ try:
     import model_registry
 except Exception:  # no registry reader: a job's window fit is simply not judged
     model_registry = None
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+try:
+    import _dispatch_checks
+except Exception:  # no claimant facts: the fact lines are simply not printed
+    _dispatch_checks = None
 
 KB = 1024
 CHARS_PER_TOKEN = 2.5
@@ -118,10 +127,15 @@ def _scan(path: str, root: Path, cache: dict) -> dict:
 
 
 def window_fit(model, total_characters: int, data=None) -> dict:
-    """`{tokens, usable, over, error}` for a job reading `total_characters` on `model`: `tokens` at CHARS_PER_TOKEN,
-    `usable` the pin's `model_registry.usable_window`, `over` the tokens past it (0 when it fits or cannot be
-    judged), `error` why the pin could not be sized, else None. No `model` is not an error."""
-    fit = {"tokens": math.ceil(total_characters / CHARS_PER_TOKEN), "usable": None, "over": 0, "error": None}
+    """`fit_tokens` of the reading `total_characters` at CHARS_PER_TOKEN."""
+    return fit_tokens(model, math.ceil(total_characters / CHARS_PER_TOKEN), data)
+
+
+def fit_tokens(model, tokens: int, data=None) -> dict:
+    """`{tokens, usable, over, error}` for a reading of `tokens` on `model`: `usable` the pin's
+    `model_registry.usable_window`, `over` the tokens past it (0 when it fits or cannot be judged), `error` why the
+    pin could not be sized, else None. No `model` is not an error."""
+    fit = {"tokens": tokens, "usable": None, "over": 0, "error": None}
     if not model:
         return fit
     try:
@@ -178,7 +192,8 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
                         "model": model, "effort": job.get("effort"), "kb": round(total / KB),
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
-                        "over": fit["over"], "fitError": fit["error"]})
+                        "over": fit["over"], "fitError": fit["error"],
+                        "readingTokens": math.ceil((total_characters + named_characters) / CHARS_PER_TOKEN)})
     duplicated = [{"path": names[key], "kb": round((sizes[key] or 0) / KB), "readBy": len(who)}
                   for key, who in readers.items() if len(who) > 1 and sizes[key]]
     named = [{"path": named_paths[key], "kb": round((sizes[key] or 0) / KB), "namedBy": len(who)}
@@ -229,6 +244,36 @@ def format_line(size: dict) -> str:
     return line
 
 
+def fact_lines(spec, root=None, data=None, ladder=None) -> list:
+    """One pre-launch line per job pinned above a cheaper claimant of its tier, else []: the job's pin and cost, then
+    each cheaper row on its transport with cost, prices, `±` cell, the job's measured reading (listed plus named files)
+    against that row's usable window and long-context point. Facts only: `_dispatch_checks.cheaper_claimants`
+    owns the filter, and no check denies on these lines. A job's tier is its shape
+    row's (`guards/tool_profiles.json`), else its own `tier`; a job with neither, or a pin the registry does not
+    resolve, gets no line."""
+    if _dispatch_checks is None or model_registry is None:
+        return []
+    try:
+        size = dispatch_size(spec, root, data)
+        data = data if data is not None else model_registry.load()
+        by_shape = _dispatch_checks.shape_tiers()
+        out = []
+        for job, sized in zip(_jobs_of(spec), size["perJob"]):
+            tier = by_shape.get(job.get("shape")) or job.get("tier")
+            model = sized["model"]
+            if not tier or not model:
+                continue
+            transport = job.get("transport") or model_registry.resolve(model, data)["transport"]
+            claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["readingTokens"], data, ladder)
+            if claimants:
+                out.append("cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
+                    sized["label"], model, claimants[0]["pinCost"], tier, transport,
+                    "; ".join(_dispatch_checks.claimant_text(c, sized["readingTokens"]) for c in claimants)))
+        return out
+    except Exception:
+        return []
+
+
 def line(spec, root=None):
     """The `format_line` of `spec`, or None when it holds no job or cannot be sized."""
     try:
@@ -246,6 +291,8 @@ def main(argv=None) -> int:
     try:
         spec = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
         print(format_line(dispatch_size(spec)))
+        for fact in fact_lines(spec):
+            print(fact)
     except (OSError, ValueError) as exc:
         print("dispatch_size: %s" % exc, file=sys.stderr)
         return 2

@@ -287,6 +287,53 @@ class WindowFitTests(Plant):
             [self.job("odd", "p.md", must=[small], model="no-such-row")]))
         self.assertNotIn("of its window", odd)
 
+    def claimant_job(self, label, model, shape, prompt="p.md", kb=20):
+        return {"label": label, "promptPath": self.file(prompt, kb), "model": model, "effort": "medium",
+                "shape": shape}
+
+    def test_a_pricier_pin_gets_a_pre_launch_line_naming_its_cheaper_claimants_with_the_job_reading(self):
+        spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md"),
+                         self.claimant_job("exec", "claude-sonnet-5-5", "author", "b.md"),
+                         self.claimant_job("cheap", "claude-haiku-5-5", "survey", "c.md")]}
+        lines = dispatch_size.fact_lines(spec, self.root)
+        self.assertEqual(len(lines), 2, lines)
+        survey, execute = lines
+        for text, tier in ((survey, "fanout"), (execute, "executor")):
+            self.assertIn("surv" if text is survey else "exec", text)
+            self.assertIn("`%s`" % tier, text)
+            self.assertIn("haiku (cost 10;", text)
+            self.assertIn("100,000-token long-context point", text)
+            self.assertIn("draw ≈0.05x the pin", text)
+            self.assertNotIn("$", text)
+        self.assertIn("reading 8,192 tokens fits", survey)
+        self.assertNotIn("cheap", "".join(lines).replace("cheaper", "").replace("cheapest", ""))
+        self.assertNotIn("pin haiku", survey.lower())
+
+    def test_a_reading_past_the_cheaper_rows_price_point_is_stated_past_it(self):
+        spec = {"jobs": [self.claimant_job("wide", "claude-sonnet-5-5", "survey", "w.md", kb=300)]}
+        line = dispatch_size.fact_lines(spec, self.root)[0]
+        self.assertIn("reading 122,880 tokens", line)
+        self.assertIn("past its 100,000-token long-context point", line)
+        self.assertIn("draw ≈0.05x the pin", line)
+        self.assertNotIn("$", line)
+
+    def test_a_pin_that_is_the_cheapest_claimant_or_unknown_gets_no_fact_line(self):
+        spec = {"jobs": [self.claimant_job("a", "claude-haiku-5-5", "survey", "a.md"),
+                         self.claimant_job("b", "no-such-row", "survey", "b.md")]}
+        self.assertEqual(dispatch_size.fact_lines(spec, self.root), [])
+        self.assertEqual(dispatch_size.fact_lines("not a spec", self.root), [])
+
+    def test_main_prints_the_size_line_then_the_fact_lines(self):
+        path = os.path.join(self.root, "jobs.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md")]}, fh)
+        done = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path], capture_output=True,
+                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root)
+        out = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(out[0].startswith("dispatch size:"), out)
+        self.assertTrue(any("cheaper claimants" in line and "haiku" in line for line in out[1:]), out)
+
     def test_the_line_helper_is_one_string_or_none(self):
         self.file("a.md", 1)
         spec = {"jobs": [self.job("j", "a.md")]}

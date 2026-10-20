@@ -6,7 +6,7 @@ description: Run integration tests for review/audit agents using synthetic fixtu
 
 # Agent Integration Test Runner
 
-Run synthetic integration tests that verify review and audit agents produce correct findings when given code with known violations. The deterministic orchestration (the fixture loop, CONTEXT+prompt assembly, the 5-clause assertion matcher, malformed-JSON-as-FAIL, and the PASS-only validator gate) lives in the workflow `.claude/workflows/test_agents_fixtures.js`. This command parses the fixtures, supplies the shared resources, and renders the result.
+Run synthetic integration tests that verify review and audit agents produce correct findings when given code with known violations. The workflow `.claude/workflows/test_agents_fixtures.js` owns deterministic orchestration. This command parses the fixtures, supplies the shared resources, and renders the result.
 
 **Arguments:** `$ARGUMENTS`
 - Empty or `all`: run all smoke fixtures
@@ -34,8 +34,9 @@ Workflow scripts cannot read files, so assemble everything here and pass it via 
    Build the `fixtures` array with `id` = fixture filename stem.
 
 3. **Read the shared resources** and extract only what the in-scope fixtures need:
-   - `.claude/commands/agents/review_agents.md` + `.claude/commands/agents/session_audit_agents.md` → for each distinct `agent`, extract its prompt-template code block (under its `### <agent-name>` header) into `agentTemplates[<agent>]`.
+   - `python3 .claude/tools/lens.py get <agent> [<agent> ...]` for the distinct `agent` keys the in-scope fixtures name → one template block each, into `agentTemplates[<agent>]`. Resolves across every registry, so review and session-audit keys go in one call. Never `Read` the registry files whole to extract a subset.
    - `.claude/commands/checklists/code_quality.md` + `test_quality.md` → extract the sections referenced by the fixtures' `checklistSection` values into `checklists` keyed by `C+D+S` / `R+P` / `I` / `full` / `test` (per the section map: `C+D+S`=Compliance→Semantics, `R+P`=Robustness→Performance, `I`=Intuitiveness→EOF, `full`=whole code_quality, `test`=whole test_quality). Only include keys actually used.
+     **Silent-fallback hazard:** the workflow substitutes `''` for any missing checklist key (`checklists[key] || ''` in `test_agents_fixtures.js`) — a wrong path or failed extraction does NOT error; the agent just runs with an empty rubric and its PASS is meaningless. Verify every key you pass is non-empty before Phase 2.
    - `.claude/commands/agents/orchestrator_action_protocol.md` → full content into `findingSchema`.
 
 ---
@@ -45,11 +46,15 @@ Workflow scripts cannot read files, so assemble everything here and pass it via 
 ```
 Workflow({
   scriptPath: ".claude/workflows/test_agents_fixtures.js",
-  args: { fixtures: [...], agentTemplates: {...}, checklists: {...}, findingSchema: "..." }
+  args: { fixtures: [...], agentTemplates: {...}, checklists: {...}, findingSchema: "...",
+          effort: "<rung for fixtures that declare none>", validator: { model: "<row>", effort: "<rung>" },
+          measurement: "agent fixture smoke: <agent keys> at each fixture's declared model" }
 })
 ```
 
-The workflow assembles each agent prompt (CONTEXT = DIFF + full file + abbreviated arch rules + finding schema [+ transcript corrections]; static test-mode preamble forbidding Read/Grep/Glob), dispatches each fixture's agent at its fixture `model` (fan-out is safe — agents analyze only injected context, no file/LSP access), extracts the JSON findings array (malformed → FAIL per the old Step 2f), runs the 5-clause matcher (count bounds, every Required matched, no Forbidden matched, every finding's `agent` field correct), and on PASS-only dispatches a Haiku validator that overrides to FAIL on REJECT.
+Each fixture pins its own `model` on purpose, so the call states `measurement` (>= 20 chars) instead of a tier; the provider guard reads every fixture's `model` as a pin.
+
+The workflow assembles each agent prompt (CONTEXT = DIFF + full file + abbreviated arch rules + finding schema [+ transcript corrections]; static test-mode preamble forbidding Read/Grep/Glob), dispatches each fixture's agent at its fixture `model` (fan-out is safe — agents analyze only injected context, no file/LSP access), extracts the JSON findings array (malformed → FAIL), runs the 5-clause matcher (count bounds, every Required matched, no Forbidden matched, every finding's `agent` field correct), and on PASS-only dispatches an independent validator that overrides to FAIL on REJECT.
 
 It returns: `{ total, passed, failed, results: [ { id, agent, pass, reason, findingCount, findings, validated, response } ] }`.
 
@@ -88,7 +93,7 @@ FAILURES:
 
 ## Notes
 
-- **Cost:** Smoke tier (~10 fixtures) ≈ $0.33–0.50 per run; validator adds ~$0.01/fixture (Haiku).
-- **Parallel execution:** fixtures fan out concurrently in the workflow (no shared writes, no single-flight resource — agents never run tests or touch the LSP). The legacy "sequential for debugging" note no longer applies.
+- **Cost:** Smoke tier (~10 fixtures) ≈ $0.33–0.50 per run; validator adds a small reduced-effort dispatch per fixture.
+- **Parallel execution:** fixtures fan out concurrently in the workflow (no shared writes, no single-flight resource — agents never run tests or touch the LSP).
 - **No file modifications:** read-only — never edits project files.
 - **Fixture exclusion:** the `pattern_enforcer` hook excludes `.claude/tests/agent_fixtures/` so fixtures can contain intentional violations.

@@ -14,15 +14,13 @@ public async Task Test_Input_Moves_Subject()
 
     // Simulate input
     runner.SimulateActionPressed("move_right");
-    await runner.AwaitInputProcessed();  // CRITICAL!
+    await runner.AwaitInputProcessed();
 
     // Assert result
     var pos = runner.GetProperty<Vector3>("Position");
     AssertThat(pos.X).IsGreater(0);
 }
 ```
-
-**Critical:** Always `await AwaitInputProcessed()` after ANY input simulation!
 
 ---
 
@@ -53,15 +51,17 @@ var result = runner.Invoke("TakeDamage", 25);
 | `SimulateFrames(count)` | Process N frames |
 | `SimulateFrames(count, delayMs)` | Process N frames with delay between each |
 | `SetTimeFactor(factor)` | Speed multiplier (2.0 = 2x speed) |
-| `AwaitMillis(ms)` | Wait for milliseconds of game time |
+| `AwaitMillis(ms)` | Wait for milliseconds of real wall-clock time (`Task.Delay`) |
 | `MoveWindowToForeground()` | Show scene window during test |
 
 ```csharp
 await runner.SimulateFrames(60);           // Process 60 frames
 await runner.SimulateFrames(10, 100);      // 10 frames, 100ms between each
 runner.SetTimeFactor(5.0);                 // 5x speed
-await runner.AwaitMillis(500);             // Wait 500ms game time
+await runner.AwaitMillis(500);             // Wait 500ms wall-clock
 ```
+
+Source: `Api/src/core/SceneRunner.cs` in the consumed fork. Choosing a wait: `rules/test_authoring.md` rule 9.
 
 ---
 
@@ -82,6 +82,8 @@ await runner.AwaitMethod<bool>("IsReady")
 ---
 
 ## Input Simulation
+
+**Await `AwaitInputProcessed()` after every input simulation** — an assertion that reads the result without it reads pre-input state.
 
 ### Keyboard
 

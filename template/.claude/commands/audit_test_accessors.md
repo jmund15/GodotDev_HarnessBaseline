@@ -101,13 +101,13 @@ For each unguarded file, wrap the test-only methods:
 
 After applying fixes:
 ```bash
-dotnet build "{{PROJECT_ROOT}}" -consoleLoggerParameters:ErrorsOnly
+dotnet build -consoleLoggerParameters:ErrorsOnly
 ```
 Build must succeed. `#if TOOLS` should be transparent since TOOLS is defined in editor/test builds.
 
 Then run a targeted test to confirm guarded methods are still callable:
 ```bash
-dotnet test "{{PROJECT_ROOT}}" --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Logic" 2>&1
+dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedName~Logic" 2>&1
 ```
 
 ## Future Prevention

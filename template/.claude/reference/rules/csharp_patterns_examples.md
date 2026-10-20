@@ -36,7 +36,7 @@ int result = rng.Next(min, max + 1);
 float mean = (float)values.Select(v => (double)v).Average();  // not values.Average()
 ```
 
-.NET 9 vectorizes `Average()`/`Sum()` over a `float` source and reduces in float lanes, so the result depends on lane count and diverges from a scalar sum. The symptom is a test failing on the ~7th decimal — it reads as a tolerance problem and is a summation-order problem. This applies to any statistic derived from authored `float` data: distribution means, stat aggregates, simulation reports.
+.NET 9 vectorizes `Average()`/`Sum()` over a `float` source and reduces in float lanes, so the result depends on lane count and diverges from a scalar sum. Treat lane-dependent differences as a summation-order issue, not a tolerance problem. This applies to any statistic derived from authored `float` data: distribution means, stat aggregates, simulation reports.
 
 ## Atomic initialization
 

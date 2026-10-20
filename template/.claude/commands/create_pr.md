@@ -8,10 +8,7 @@ Create a {{PROJECT_NAME}} PR (or update the branch's existing one) with enforced
 
 **Prerequisite:** Branch is pushed to origin (run `/commit_push` or `/clean_push` first).
 
-A project with a paired submodule/repo (its PR must merge first) inserts its pairing steps
-per its own layer's procedure — detect the pointer change after Step 1, create/update the
-paired PR, and cross-reference both bodies. Read the paired repos themselves from
-`adaptation.json` `paired_repos`.
+Read the paired repos from `adaptation.json` `paired_repos` and each one's rule file from `paired_repo_rules`. A paired repo's PR must merge first, and its rule file names the pairing procedure: detect the pointer change after Step 1, create or find the paired PR before Step 3-Create, update it after Step 3, and cross-reference both bodies.
 
 ## Arguments
 - `$ARGUMENTS` — Optional PR title override. If omitted, derives from commit history.
@@ -55,7 +52,7 @@ If the project ships a PR classification procedure (the coding layer supplies on
 Use `$ARGUMENTS` if provided. Otherwise, derive from commit history:
 - Single-concern branch → use the primary commit's message
 - Multi-concern branch → summarize with conventional commit format: `<type>(<scope>): <description>`
-- Title must be under 70 characters
+- The title is one conventional-commit line naming the change; detail goes in the body
 
 ### Body Template
 
@@ -95,15 +92,9 @@ Append a `## Review-pass updates` (or `## Follow-up commits`) section to the cac
 
 **Rule 1 — Preserve original body fidelity.** Summary + Key design decisions from the cached body stay verbatim, EXCEPT for surgical fixes to claims invalidated by new commits (e.g., a removed field that the original body described as load-bearing). Call out each surgical fix in the new section so the diff is visible. Never rewrite the original PR's prose — that's revisionism that obscures original intent and erases reviewer history.
 
-**Rule 2 — Update length must be proportional to commits added.** Update sections are NOT mini-PR-bodies. Detail belongs in commit messages; the PR body needs only the WHAT changed at a high level. Rough length budget:
+**Rule 2 — Update length must be proportional to commits added.** Update sections are NOT mini-PR-bodies. Detail belongs in commit messages; the PR body needs only the WHAT changed at a high level. An update section tells a reviewer what the new commits change, in proportion to them, and never outgrows the original summary. New commits that form a separate concern stay on this PR under their own update heading (`CLAUDE.core.md` §5–6).
 
-| Commits added | Review-pass section length target |
-|---|---|
-| 1–3 | 1 short paragraph + ≤5 bullets |
-| 4–8 | 1 paragraph + grouped bullets by theme (bugs/cleanup/tests/deferred); ≤30% of total body length |
-| 9+ | Consider splitting into a follow-up PR — at this point the update is its own PR |
-
-Cite commit hashes (e.g., `00675e2e → 4b5047ad`) once at the section top; let reviewers click through for per-commit detail rather than restating it in the body.
+Cite the commit range once at the section top; let reviewers click through for per-commit detail rather than restating it in the body.
 
 Title: leave unchanged unless the update fundamentally repositions the PR's intent.
 
@@ -150,5 +141,5 @@ Print a summary:
 - **Prerequisite: pushed** — do not commit or push; that's `/commit_push`'s job
 - **Ask before creating OR editing** — show the user the title and body before running `gh pr create` / `gh pr edit`
 - **UPDATE mode preserves original body** — never rewrite original Summary / Key design decisions; surgical fixes for stale-by-new-commits claims only, called out in the Review-pass section
-- **UPDATE section length is proportional to work added** — see Step 3-Update length budget. Detail belongs in commit messages, not duplicated into the PR body
+- **UPDATE section length is proportional to work added** — see Step 3-Update Rule 2. Detail belongs in commit messages, not duplicated into the PR body
 - **Labels at creation time** — don't defer them to merge time

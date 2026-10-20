@@ -1,6 +1,6 @@
 ---
 paths:
-  - "**/*Movement*.cs"
+  - "**/*MovementProcessor*.cs"
   - "**/*Strategy*.cs"
   - "**/*Body3D*.cs"
 ---

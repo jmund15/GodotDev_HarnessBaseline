@@ -14,7 +14,7 @@ upstream** that keeps that shared core in sync as it evolves across projects.
 |---|---|
 | `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), machine provisioning (`/workstation_setup` core), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `rules/model_delegation.md`, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
 | `coding` | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
-| `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and the `/workstation_setup` toolchain phases (`commands/reference/workstation_setup_toolchain.md`) |
+| `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-setup.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and the `/workstation_setup` toolchain phases (`commands/reference/workstation_setup_toolchain.md`) |
 
 A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
 
@@ -168,7 +168,7 @@ Typical lifecycles:
   command) covers what the script can't: game-domain-noun leaks and the
   adaptation-points list below. The standing layer-gate INFO rows (`/explore`,
   `/merge_pr`, `/plan_check`, `/test_compact`, review agents, code-quality checklist,
-  `debugging` and `parallel_agents` skills) are confirmed engine-agnostic tools whose
+  `debugging` skill) are confirmed engine-agnostic tools whose
   bodies use Godot examples — they stay in their layer.
 - Commit messages follow the same categorical convention as consumer projects
   (`feat`/`fix`/`refactor`/`chore`).
@@ -228,7 +228,7 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 - [pure] `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
   assumes the 4-doc Obsidian documentation system; adapt vocabulary if your doc
   tree differs.
-- [godot, pure] `cloud-install.sh` / `hooks/session_context_loader.py` / `commands/reference/workstation_setup_toolchain.md` —
+- [godot, pure] `cloud-setup.sh` / `hooks/session_context_loader.py` / `commands/reference/workstation_setup_toolchain.md` —
   pin your Godot/.NET/LSP versions (config constants at the top of each; the
   workstation toolchain reference carries them as defaults).
 - [godot] `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
@@ -254,7 +254,7 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 - [pure] pure files with example domain nouns as inline examples only (mechanism is
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,
-  `skills/instruction_quality/SKILL.md`, `skills/parallel_agents/SKILL.md`,
+  `skills/instruction_quality/SKILL.md`,
   `workflows/review_fanout.js`. Allowlisted in `tools/audit_baseline.py`'s
   core-domain-noun check — swap the examples for your domain's when you first touch each file.
 - [pure] `commands/clean_pull.md`, `clean_push.md`, `commit_push.md`, `create_pr.md` — the paired-repo

@@ -84,4 +84,4 @@ proceed* ([[feedback_invoke_named_skill_not_manual_equivalent]]), never stop.
 Caught 2026-08-17: skipped autolearn, self_evaluate and orchestration_metrics
 on a `/session_end` because the Skill tool refused all three.
 
-**Verified:** 2026-09-04 memory-claim audit — `disable-model-invocation: true` sits on `autolearn.md`, `self_evaluate.md`, `orchestration_metrics.md` line 3; the Skill-refusal mechanism is that documented frontmatter field.
+**Correction (2026-09-23):** the 2026-09-04 claim that `disable-model-invocation: true` sits on `autolearn.md`, `self_evaluate.md`, `orchestration_metrics.md` line 3 no longer holds — none of the three carry that field now (checked `head -5` on each). The 2026-08-17 Skill-refusal cause is unconfirmed; re-diagnose if it recurs.

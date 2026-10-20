@@ -1,7 +1,7 @@
 ---
 name: Orchestration
 description: >-
-  Use before delegating or coordinating multi-step work. SKIP small inline edits and known lookups where handoff costs more than the work.
+  Use before delegating or coordinating multi-step work, including 3+ unrelated test failures, multiple subsystems broken independently, batch PR reviews, cross-domain audits, or independent work units to parallelize. SKIP small inline edits and known lookups where handoff costs more than the work.
 ---
 
 # Orchestration
@@ -42,7 +42,7 @@ Workflow stays on the current endpoint with its actual model IDs; never accept a
 - The brief's premises and paths pass [`reference/brief_checks.md`](reference/brief_checks.md).
 - Read the preflight's fit line (`tools/dispatch_size.py`): required reading must fit the receiving model's usable window with room for work. Check required reading outside its scan, including standing doctrine (`-D`). Hand hunks, paths and search targets for on-demand reads when the set does not fit. Pin a larger window (`-M`) only when the work needs everything resident at once, and state its price: a larger window can bill at a long-context rate.
 - A multi-job run is marked concurrent, and `guards/single_flight.json` owns what its rail bars. A job needing a machine-wide single-flight tool gets its own dispatch; runtime-test jobs use a solo dispatch or a chain lane within the runtime-slot rule (§2).
-- Read the preflight facts (`reference/sidecar_dispatch.md` step 3 for sidecars), then tell the owner one line before dispatch. It names the work measure; the jobs with model, effort, paying plan and reading; the cheapest shape that would deliver the same accepted result (fewer or merged jobs, a lower pin, a search before reading, inline); and the fact that made this shape beat it. A pin above the cheapest row that clears the ladder's floor names why: quality, or its plan's quota against its window; under lean, the `±` clause that bars each cheaper claimant, never quality alone. A shape that cannot say why it beats the cheaper one takes the cheaper one. §8 compares the line with what ran.
+- Read the preflight facts (`reference/sidecar_dispatch.md` step 3 for sidecars), then tell the owner one line before dispatch. It names the work measure; the jobs with model, effort, paying plan and reading; the cheapest shape that would deliver the same accepted result (fewer or merged jobs, a lower pin, a search before reading, inline); and the fact that made this shape beat it. A pin above the cheapest row that clears the ladder's floor names why: quality, or its plan's quota against its window; under lean, the `±` clause that bars each cheaper claimant, never quality alone. A shape that cannot say why it beats the cheaper one takes the cheaper one. The brief-write facts table and the preflight price each claimant on the job's own reading; pick from them, never from the last jobs file. §8 compares the line with what ran.
 
 ## 2. Width
 

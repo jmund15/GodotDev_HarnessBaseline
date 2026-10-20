@@ -138,7 +138,6 @@ CORE_DOMAIN_ALLOWLIST = {
     # the archetype-home rule, but its plan-check targets are code/engine nouns.
     ".claude/commands/plan_check.md",
     ".claude/skills/instruction_quality/SKILL.md",
-    ".claude/skills/parallel_agents/SKILL.md",
     ".claude/workflows/review_fanout.js",
 }
 # Universal doctrine that legitimately discusses framework types as examples.

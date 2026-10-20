@@ -45,7 +45,7 @@ An observation enters the holding list on first sighting and earns a trait line 
 
 ## Step 6 — One gate
 
-A single `AskUserQuestion` batch over the whole proposal set — approve / reject / defer per proposal (chain batches if >4 proposals; still one gate). The step-5 profile diff rides in that batch as one item, quoting its promotions and demotions. **No secondary approvals downstream** (`feedback_single_gate_no_secondary_approval`).
+A single `AskUserQuestion` batch over the whole proposal set — approve / reject / defer per proposal (chain batches if >4 proposals; still one gate). The step-5 profile diff rides in that batch as one item, quoting its promotions and demotions. **No secondary approvals downstream**.
 
 ## Step 7 — Execute + record
 

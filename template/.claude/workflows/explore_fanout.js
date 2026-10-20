@@ -631,7 +631,7 @@ for (const c of stamped) {
 // Group on SUBJECT ONLY — never on `file`. review_fanout.js dedups review findings by `file:line`
 // because a finding IS a location; a claim is not. `file` is merely where the evidence lives, and
 // several unrelated claims legitimately share one file. Measured on the maiden run (2026-08-05):
-// keying on `file` produced TWO false contradictions — three unrelated claims about plan_drive.md, and
+// keying on `file` produced TWO false contradictions — three unrelated claims about one plan file, and
 // "the ExitPlanMode hook exists" versus "no write-lock exists" in settings.json — because a shared
 // location was read as a shared subject. The ACTION also differs from review_fanout: two lenses
 // reaching the same fact independently is corroboration worth keeping, not a duplicate to drop.

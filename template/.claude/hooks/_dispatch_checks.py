@@ -18,6 +18,14 @@ The retirement observation: a lone seat from the row matches a qualified seat's 
 plan-review pin A/B; its entry then moves to `roles`. A row holding the tier in both `roles` and `supplementary`
 is admitted alone here, because the ledger's clause 9 (`review_ledger.py`) floors its coverage.
 
+`cheaper_claimants(model, tier, transport, reading_tokens, data)` is the fact list behind the preflight's claimant line
+(`dispatch_size.fact_lines`) and the brief hook's table: each row on `transport` that claims `tier` in registry `roles`,
+neither unavailable nor on an owner probation mark, and is cheaper than `model` for this reading. Cheaper means a lower
+`price_reading` (`model_registry.list_price` for the reading, priced with the reading as the request's input so a row's
+long-context multiplier applies past its threshold); when the row or the pin cannot be priced, it means a higher ladder
+`cost`. Each claimant states its prices, its ladder `±` cell, whether the reading fits its `usable_window`, and whether
+the reading is past its long-context point. These are facts for the reader: no check in this module denies on them.
+
 `shape_tiers()` reads each shape row's tier from `guards/tool_profiles.json` for both routes.
 Capacity is read through `provider_bands.read_capacity`: the fresh cache, else one live read while
 the caller's deadline (`set_deadline`) leaves room for `provider_capacity.LIVE_BUDGET_SECONDS`.
@@ -150,3 +158,124 @@ def hop_line(row, data, label, launcher=None):
     if not line.startswith("bash "):
         return None
     return line.split("  (", 1)[0].replace("<label>", shlex.quote(str(label)))
+
+
+def _name(row):
+    return row.get("alias") or row["id"]
+
+
+ASSUMED_OUTPUT_TOKENS = 2000  # the output every row is priced at for a reading: one fixed assumption, so the comparison is about input
+
+
+def price_reading(row_id, reading_tokens, data):
+    """(usd, reason): the request priced at `reading_tokens` input (which applies a row's long-context multiplier past
+    its threshold) and ASSUMED_OUTPUT_TOKENS output; (None, why) when unmeasured or unpriceable."""
+    if not isinstance(reading_tokens, int):
+        return None, "reading not measured"
+    return model_registry.list_price(row_id, fresh=reading_tokens, request_input=reading_tokens,
+                                     output=ASSUMED_OUTPUT_TOKENS, data=data)
+
+
+def output_rate(row_id, data):
+    """The row's list output rate per 1M tokens, or None when unpriced. A plan's draw tracks this rate within one
+    plan (`orchestration_metrics.quota_weight`'s rule, read from the registry's price data), so a ratio of two rates
+    means nothing across plans."""
+    row = model_registry.row_for_model(row_id, data)
+    rate = ((row or {}).get("price") or {}).get("outputPer1M")
+    return float(rate) if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0 else None
+
+
+def draw_against(row_id, base_id, data):
+    """A row's output-rate ratio to a base row on the same plan, or None when either is unpriced."""
+    rate, base = output_rate(row_id, data), output_rate(base_id, data)
+    return None if rate is None or base is None else rate / base
+
+
+def draw_ratios(row_ids, data):
+    """{row id: output-rate ratio to the cheapest priced row among `row_ids`, or None}: one plan's draw column."""
+    rates = {rid: output_rate(rid, data) for rid in row_ids}
+    priced = [rate for rate in rates.values() if rate is not None]
+    base = min(priced) if priced else None
+    return {rid: (None if rate is None or not base else rate / base) for rid, rate in rates.items()}
+
+
+def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=None):
+    """[{alias, id, cost, pinCost, sign, usable, fits, thresholdAt, pastLongContext, tierMultiplier, price, pinPrice,
+    priced, plan, draw}] (`plan`: the transport spends a plan quota; `draw`: output-rate ratio to the pin, or None), ordered by ladder cost, cheapest first: each row on `transport` claiming `tier` in registry `roles`,
+    available, not on an owner probation mark for `tier`, and cheaper than `model` for `reading_tokens`. Cheaper is
+    `price < pinPrice` when both are priced (`priced` True); otherwise `priced` is False and cheaper is a higher ladder
+    `cost`. `fits` and `pastLongContext` are None for a reading not measured, and `fits` is None for a row stating no
+    window. Facts only. [] when nothing is cheaper or anything needed is unknown."""
+    if model_registry is None or not tier:
+        return []
+    try:
+        data = data if data is not None else model_registry.load()
+        pinned = model_registry.resolve(model, data)
+        costs = model_registry.ladder_costs(data, ladder)
+        mine = costs.get(pinned["id"])
+        if mine is None:
+            return []
+        with open(ladder or model_registry.ladder_path(), encoding="utf-8") as fh:
+            cells = model_registry.parse_ladder_rows(fh, ("model", "±"))
+        signs = {}
+        for cell in cells:
+            for m in model_registry.ladder_rows(cell["model"], data):
+                signs.setdefault(m["id"], cell["±"])
+        measured = isinstance(reading_tokens, int)
+        pin_price, _why = price_reading(pinned["id"], reading_tokens, data) if measured else (None, None)
+        plan = model_registry.cost_model_for(transport, data) == "plan-quota"
+        out = []
+        for row in tier_rows(tier, transport, data):
+            cost = costs.get(row["id"])
+            if row["id"] == pinned["id"] or not cost or model_registry.probation(row["id"], tier, data):
+                continue
+            price, _why = price_reading(row["id"], reading_tokens, data) if measured else (None, None)
+            priced = price is not None and pin_price is not None
+            if not (price < pin_price if priced else cost > mine):
+                continue
+            usable = model_registry.usable_window(row)
+            point = model_registry.long_context_tier(row, data)
+            at = point["thresholdInputTokens"] if point else None
+            out.append({"alias": _name(row), "id": row["id"], "cost": cost, "pinCost": mine,
+                        "sign": signs.get(row["id"], "no ± cell"), "usable": usable,
+                        "fits": (reading_tokens <= usable) if measured and usable is not None else None,
+                        "thresholdAt": at,
+                        "pastLongContext": (at is not None and reading_tokens > at) if measured else None,
+                        "tierMultiplier": point["multipliers"]["input"] if point else None,
+                        "price": price if priced else None, "pinPrice": pin_price if priced else None,
+                        "priced": priced, "plan": plan, "draw": draw_against(row["id"], pinned["id"], data)})
+        return sorted(out, key=lambda c: -c["cost"])
+    except Exception:
+        return []
+
+
+def claimant_text(c, reading_tokens):
+    """One claimant's facts, as the refusal and the preflight line state them."""
+    measured = isinstance(reading_tokens, int)
+    if c["plan"]:
+        money = f"draw ≈{c['draw']:.2f}x the pin" if c["draw"] is not None else "draw unpriced"
+    elif c["priced"]:
+        money = (f"≈${c['price']:.3f} vs the pin's ≈${c['pinPrice']:.3f} for this reading, "
+                 f"{c['price'] / c['pinPrice']:.2f}x")
+    else:
+        money = "not priced, cheaper by ladder cost"
+    parts = [f"cost {c['cost']}", money, f"± {c['sign']}"]
+    if c["usable"] is None:
+        parts.append("states no window")
+    elif measured:
+        parts.append(f"reading {reading_tokens:,} tokens {'fits' if c['fits'] else 'is over'} its "
+                     f"{c['usable']:,}-token usable window")
+    else:
+        parts.append(f"usable window {c['usable']:,} tokens")
+    if c["thresholdAt"] is None:
+        parts.append("no long-context point")
+    elif measured and c["pastLongContext"]:
+        parts.append(f"past its {c['thresholdAt']:,}-token long-context point, its x{c['tierMultiplier']:g} "
+                     f"tier price included")
+    elif measured:
+        parts.append(f"under its {c['thresholdAt']:,}-token long-context point")
+    else:
+        parts.append(f"long-context point {c['thresholdAt']:,} input tokens")
+    return f"{c['alias']} ({'; '.join(parts)})"
+
+

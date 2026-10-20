@@ -304,6 +304,11 @@ def with_companion(path: Path, render) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
+def checklist_for_tests(path: Path) -> str:
+    """The test-quality checklist below its frontmatter, plus its godot companion when the layer ships one."""
+    return with_companion(path, lambda f: below_frontmatter(f.read_text(encoding="utf-8")))
+
+
 def below_frontmatter(text: str) -> str:
     """The text after a leading `---` frontmatter block: its description addresses the skill loader, not a lens."""
     m = re.match(r"---\r?\n.*?\r?\n---\r?\n+", text, re.S)
@@ -618,7 +623,7 @@ def main() -> None:
         "CHECKLIST_RP": with_companion(cq, lambda f: sections(f, {"R", "P"})),
         "CHECKLIST_I": with_companion(cq, lambda f: sections(f, {"I"})),
         "CODE_QUALITY_CHECKLIST": with_companion(cq, lambda f: below_frontmatter(f.read_text(encoding="utf-8"))),
-        "TEST_QUALITY_CHECKLIST": below_frontmatter(tq.read_text(encoding="utf-8")),
+        "TEST_QUALITY_CHECKLIST": checklist_for_tests(tq),
     }
     if a.pr_num is not None:
         subs["PR_NUM"] = str(a.pr_num)

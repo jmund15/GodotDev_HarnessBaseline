@@ -1,12 +1,14 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(git ls-files:*), Bash(find:*), Bash(ls:*), Glob, Grep, Read, Workflow
+allowed-tools: Write, Bash(dotnet build:*), Bash(git ls-files:*), Bash(find:*), Bash(ls:*), Bash(python3 .claude/tools/post_check.py:*), Glob, Grep, Read, Workflow
 description: Audit project layout, ownership, framework boundaries, and resource references.
 ---
 
 Audit the full {{PROJECT_NAME}} tree against
 [`structure_rules.md`](../skills/architecture_philosophy/structure_rules.md). The audit is advisory and
-read-only until the user approves one action tier.
+read-only until the user approves one action tier. Its three lenses run in parallel, one seat per
+mandate, and never merge because the subject is always the whole project (`orchestration` §2 *Sizing
+the width*).
 
 ## Arguments
 
@@ -70,8 +72,12 @@ with one shared CONTEXT containing:
 - Class Symbol Manifest;
 - finding-schema path.
 
+Write the CONTEXT block to `.claude/scratch/structure_audit_<sid8>_context.md` and substitute
+`{{CONTEXT}}` with a line naming that file. It is each seat's must-read entry: pass it as the seat's
+`mustRead` (`agents/review_agents.md` *Seat coverage contract*).
+
 Resolve the `fanout` and `executor` roles through the current model registry. Pin model and effort on
-every job. Full mode uses:
+every job, with `mustRead: [<must-read entries>]`. Full mode uses:
 - `stra-layout-hygiene`: fanout role, low effort;
 - `stra-domain-coherence`: executor role, high effort;
 - `stra-reference-integrity`: executor role, high effort.
@@ -84,7 +90,8 @@ clean.
 ## 3. Report
 
 Apply [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md):
-1. dedupe by `file:line`; retain the more specific or critical finding;
+1. preserve and group findings across agents using source IDs. A shared location is not identity: retain
+   every original and contributor. Consume the result per protocol Step 1.5 before presenting;
 2. sort critical first, then FIX, ASK, PLAN, then category;
 3. show scanned counts and finding counts by action and category;
 4. rate the result:
@@ -102,10 +109,17 @@ Ask once before applying tiers. Then process FIX, ASK, and PLAN in order.
 - Before a move, rename, or delete, find inbound path, basename, UID, and source references.
 - Use `git mv` for moves. Update all references in the same change.
 - A delete with any inbound reference becomes ASK.
-- Build once after the approved FIX batch.
-- Walk ASK findings one at a time.
-- Route PLAN findings through the project's normal planning flow.
+- Apply the approved FIXes through the protocol's standalone fold: a blob subject whose `files` are each
+  FIX's `file`, with path FIXes per [`review_fold.md`](agents/review_fold.md) and each FIX's `new` path
+  declared in `--new-paths` at the snapshot. The reference search for a moved `.cs`/`.tscn`/`.tres` file
+  includes its UID (from the `.cs.uid` or the resource header) beside the old basename.
+- Build once after the approved FIX batch (`dotnet build`, not per fix).
+- Walk ASK findings one at a time. An answered folder-restructure ASK is applied by a refold over its id,
+  the same path-FIX rule.
+- Apply a resolved PLAN from `options[0]` on the tier approval, after the protocol's Step 4 ratification.
+  An open PLAN gets its decision from the user, then routes through the project's normal planning flow.
 
-Do not change behavior. Do not audit inside third-party or reusable-framework roots. Do enforce R11 at
-the framework boundary. Run the full audit after broad structural work; use quick mode after a rebase,
+Do not change behavior. **Substantive only:** apply `orchestration` §8's finding filter, and report what
+`structure_rules.md` codifies or what reduces measurable navigation friction. Do not audit inside
+third-party or reusable-framework roots. Do enforce R11 at the framework boundary. Run the full audit after broad structural work; use quick mode after a rebase,
 class rename, or file move.

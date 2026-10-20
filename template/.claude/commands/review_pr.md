@@ -1,7 +1,7 @@
 ---
 disable-model-invocation: true
 allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(git log:*), Bash(git diff:*), Glob, Grep, Read, Workflow
-description: "Thorough code review of a single PR or unstaged changes"
+description: Thorough code review of a single PR or unstaged changes
 ---
 
 Review a single PR (or unstaged changes) for missed errors, noncompliance, bad design, TDD compliance, and overall code quality.
@@ -11,10 +11,10 @@ Review a single PR (or unstaged changes) for missed errors, noncompliance, bad d
   - **PR number** (optional): Integer. If provided, review that PR's diff. If omitted, review unstaged changes on current branch.
   - **Aspect flags** (optional): One or more of `code`, `tests`, `errors`, `types`, `data`, `pool`, `transcript`, `full`. Default: `full`.
   - Examples:
-    - `/review-pr` — Review unstaged changes, all aspects
-    - `/review-pr 5` — Review PR #5, all aspects
-    - `/review-pr 5 tests errors` — Review PR #5, only test analyzer and error hunter
-    - `/review-pr code` — Review unstaged changes, only code reviewer
+    - `/review_pr` — Review unstaged changes, all aspects
+    - `/review_pr 5` — Review PR #5, all aspects
+    - `/review_pr 5 tests errors` — Review PR #5, only test analyzer and error hunter
+    - `/review_pr code` — Review unstaged changes, only code reviewer
   - **Parsing rule:** First argument is a PR number if it's a positive integer. All remaining arguments are aspect flags.
 
 ## Phase 1: Gather Context
@@ -39,13 +39,6 @@ Include this submodule diff in the CONTEXT block alongside the project diff. Wit
 ### 1c. Classify the PR
 
 Classify using the [PR Classification](agents/pr_classification.md) tables (Domain + Type).
-
-**Risk Level:**
-| Level | Criteria |
-|-------|----------|
-| LOW | Meta-only, or <50 lines changed |
-| MEDIUM | New code with tests, or Data-only changes |
-| HIGH | Refactors touching existing systems, >200 lines, no tests, or cross-domain changes |
 
 ### 1d. Load project context
 1. Read the [Architecture Philosophy Skill](/.claude/skills/architecture_philosophy/SKILL.md) — this is the primary compliance reference
@@ -116,14 +109,14 @@ Workflow({
 })
 ```
 
-It returns `{ findings: [...deduped, sorted...], counts, perAgent }`. The fan-out shape, single-message parallelism, and Step-1 merge/dedup/sort are now deterministic — do not re-spawn agents manually.
+It returns `{ findings: [...deduped, sorted...], counts, perAgent, verification }`. Do not re-spawn agents manually.
 
 ### Phase 2 Completion
 
-The workflow already performed **Step 1 (Merge & Deduplicate)** of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) — its `findings` are deduped by `file:line` and sorted critical→tier→category. Continue with the rest of the protocol yourself (these need the live-file/user access the workflow lacks):
+The workflow already performed **Step 1 (Merge & Deduplicate)** of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) — its original findings remain in `sources`, while `findings` is a sorted/grouped view; account for every source ID. Continue with the rest of the protocol yourself (these need the live-file/user access the workflow lacks):
 
-1. **Step 1.5 — Verify FIX findings against actual file content** — Read each FIX finding's `file:line`, whitespace-tolerant match of `old`; surface unverifiable ones in the ⚠️ UNVERIFIED section.
-2. **Steps 2–4** — present the unified report, add NOTE synthesis, then walk FIX/ASK/PLAN with the user.
+1. **Step 1.5** — consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md); the report's `held` ids and failed checks stay visible first.
+2. **Steps 2–4** — present the unified report, add NOTE synthesis, then rule the held ids with the user.
 
 ---
 
@@ -135,7 +128,7 @@ Follow the **Orchestrator Action Protocol** report format. Present all findings 
 ╔══════════════════════════════════════════════════════╗
 ║           PR REVIEW: #<N> — <title>                   ║
 ╠══════════════════════════════════════════════════════════╣
-║ Domain: <domains>  │  Risk: <level>  │  Verdict: <V>  ║
+║ Domain: <domains>  │  Verdict: <V>                    ║
 ║ Files: <count> (+<add> -<del>)  │  Tests: <new count> ║
 ║ Session: <compactions> compactions, <corrections> corrections ║
 ╚══════════════════════════════════════════════════════════╝
@@ -151,11 +144,13 @@ Follow the **Orchestrator Action Protocol** report format. Present all findings 
 <N>. [<agent>] <description>  [<category>] [CRITICAL]
    → <file>:<line>
    → Question: <specific question>
+   → Options: <each option with its wins-when condition>
    → <rationale>
 
-## PLAN — Deferred to follow-up (<count>)
+## PLAN — Larger changes (<count>)
 <N>. [<agent>] <description>  [<category>]
    → Scope: <affected files/areas>
+   → Approach: <options[0]> (open: <question>)
    → <rationale>
 
 ## Notes (orchestrator-synthesized, if applicable)
@@ -173,12 +168,12 @@ Follow the **Orchestrator Action Protocol** report format. Present all findings 
 
 ## Verdict
 <APPROVE | APPROVE WITH NOTES | REQUEST CHANGES>
-- APPROVE: 0 critical findings, ≤2 total findings
-- APPROVE WITH NOTES: 0 critical findings, 3+ findings (all addressable)
-- REQUEST CHANGES: 1+ critical findings, or unresolved ASK findings
+- APPROVE: nothing needs action before merge
+- APPROVE WITH NOTES: addressable non-critical findings remain, and none blocks merge
+- REQUEST CHANGES: a critical finding, an unresolved ASK, or an open PLAN in the PR's scope
 ```
 
-**Note:** `/review-pr` is read-only — it presents findings but does NOT apply fixes. The calling orchestrator (`/review-prs` Phase 2, or the user) handles fix application per the Orchestrator Action Protocol.
+**Note:** The calling orchestrator (`/review_prs` Phase 2, or the user) handles fix application per the Orchestrator Action Protocol.
 
 If reviewing unstaged changes (no PR number), omit PR-specific sections (PR Hygiene title/description, Verdict) and present as a pre-commit code quality report.
 
@@ -187,6 +182,8 @@ If reviewing unstaged changes (no PR number), omit PR-specific sections (PR Hygi
 ## Phase 5: Regression Gate (PR mode only)
 
 If the PR contains code changes, run the project's regression gate (`change_control` §Gate cadence names it) after the review but before issuing the final verdict. If the gate fails, the verdict MUST be `REQUEST CHANGES` regardless of code review findings.
+
+**Skip this phase when a batch orchestrator invoked you.** It runs the gate once itself; N concurrent PR agents each running it would collide on the single-flight machine slot. Issue the verdict from review findings and note the gate as orchestrator-deferred.
 
 Note: For unstaged changes (pre-commit review mode), the regression gate is the caller's responsibility (e.g., `/commit_push` runs it separately).
 
@@ -198,6 +195,6 @@ Note: For unstaged changes (pre-commit review mode), the regression gate is the 
 - **No GitHub posting** — output is local terminal only
 - **Load skills first** — Architecture Philosophy and Testing skills are the compliance reference
 - **Search Memory** — domain-specific gotchas inform what to look for
-- **Report honestly** — false positives waste the developer's time. When in doubt, don't report.
+- **Report honestly** — the reporting filter is [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) §Reporting Filter.
 - **Cite rules** — every finding must reference the specific CLAUDE.md rule, Architecture Philosophy pattern, or Testing convention it violates
 - **Full file context** — agents read complete files, not just diff hunks, to judge design quality in context

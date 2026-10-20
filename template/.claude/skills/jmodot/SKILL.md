@@ -1,12 +1,7 @@
 ---
 name: Jmodot Framework
 description: >-
-  Auto-load when proposing systems that touch Jmodot's Combat/AI/Movement/Stats surface —
-  Blackboard data, BBDataSig keys, IComponent, BehaviorTree, the Combat factory,
-  MovementProcessor, EntityStatSheet/Attribute, or squad formation — or diagnosing why an
-  IComponent silently no-ops. SKIP for project subsystem ownership (project_subsystems),
-  design-pattern decisions (architecture_philosophy), and submodule git mechanics
-  (rules/jmodot_submodule.md auto-loads).
+  Use for Jmodot Combat, AI, Movement or Stats integration, Blackboard keys, components, behavior trees, squad formation or silently inactive components. SKIP project subsystem ownership; use project_subsystems. SKIP pattern choices; use architecture_philosophy. SKIP submodule Git mechanics; use rules/jmodot_submodule.md.
 ---
 
 # Jmodot Framework
@@ -47,7 +42,7 @@ Subsystem deep-dives (read on demand when designing in a specific area):
 | **AI - BT** | Reactive task execution | `IBehaviorTask` | [ai.md](ai.md) |
 | **AI - Perception** | Sensor networks + memory | `IAISensor3D`, `Percept3D` | [ai.md](ai.md) |
 | **AI - Navigation** | Utility-based steering | `BaseAIConsideration3D` | [ai.md](ai.md) |
-| **AI - Agent** | Auto-wired AI setup | `IAIAgent`, `AIAgentComponent` | [ai.md](ai.md) |
+| **AI - Agent** | Blackboard provisioning | `IBlackboardProvider`, `EntityNodeComponentsInitializer` | [ai.md](ai.md) |
 | **Combat** | Data-driven effects | `ICombatEffect`, `ICombatant` | [combat.md](combat.md) |
 | **Status Effects** | Temporal buffs/debuffs | `StatusRunner` | [combat.md](combat.md) |
 | **Health** | Life/death state | `IHealth`, `IDamageable` | [combat.md](combat.md) |
@@ -61,10 +56,10 @@ Subsystem deep-dives (read on demand when designing in a specific area):
 
 | Partial | File | Holds |
 |---|---|---|
-| Framework | `Jmodot/Implementation/AI/BB/BBDataSig.cs` | Framework-owned keys such as agent, stats, movement, and formation data |
+| Framework | `Jmodot/Implementation/AI/BB/BBDataSig.cs` | `Agent`, `Stats`, `HealthComponent`, `CombatLog`, `CurrentTarget`, `Formation*`, `EntitySeed`, … |
 | Consuming project | Project-owned partial; path declared in `skills/project_subsystems/SKILL.md` | Keys owned by that project's subsystems |
 
-Grepping one partial for another partial's keys returns nothing — locate and search every `BBDataSig` partial before claiming a key is absent. Constant name may differ from its runtime string; match on the constant first.
+Grepping one partial for another partial's keys returns nothing — locate and search every `BBDataSig` partial before claiming a key is absent. Constant name ≠ runtime string in places: `BBDataSig.StatusEffects` → `"StatusEffectComponent"` — match on the constant, not the string.
 
 | Key | Type | Purpose |
 |-----|------|---------|
@@ -77,7 +72,6 @@ Grepping one partial for another partial's keys returns nothing — locate and s
 | `BBDataSig.StatusEffects` | `StatusEffectComponent` | Active buffs/debuffs |
 | `BBDataSig.IntentSource` | `IIntentSource` | Input provider |
 | `BBDataSig.AnimationComponent` | `IAnimComponent` | Animation control |
-| `BBDataSig.SelfInteruptible` | `bool` | Can self-interrupt current state |
 
 ## See Also
 

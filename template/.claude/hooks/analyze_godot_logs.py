@@ -40,9 +40,8 @@ from collections import Counter, defaultdict
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# Default log directory (platform-dependent) — LIVE-RUN-ONLY (editor / run_project). Since
-# the parallel-test-runner-unlock, test-spawned Godot writes to TestResults/godot_test.log
-# per worktree (`.runsettings` `--log-file`) instead of here — use spec "test" for that log.
+# Default log directory (platform-dependent) — LIVE-RUN-ONLY (editor / run_project). Test-spawned
+# Godot never writes here; spec "test" reads its logs.
 _system = platform.system()
 if _system == "Windows":
     DEFAULT_LOG_DIR = Path.home() / "AppData/Roaming/Godot/app_userdata/{{PROJECT_NAME}}/logs"
@@ -53,9 +52,20 @@ else:
 
 DEFAULT_LOG_PATH = DEFAULT_LOG_DIR / "godot.log"
 
-# Test-run log: fixed name, cwd-relative (project/worktree root), overwritten every run — no
-# rotation, unlike DEFAULT_LOG_PATH's timestamped siblings.
+# Test-run logs, cwd-relative (project/worktree root): the fixed path an unisolated run overwrites, and
+# the per-run dirs a `-ResultsRoot` run writes under TestResults/runs/<runId>/<safe>/.
 TEST_LOG_PATH = Path("TestResults/godot_test.log")
+TEST_RUNS_DIR = Path("TestResults/runs")
+
+
+def newest_test_log() -> Path:
+    """Newest godot_test.log among TEST_LOG_PATH and TEST_RUNS_DIR/**; TEST_LOG_PATH when none exists.
+
+    After a gate or batcher pool, newest means the unit that wrote last, not the failed unit: read a
+    named unit's log by its explicit path, TEST_RUNS_DIR/<runId>/<unit>/godot_test.log.
+    """
+    found = [p for p in [TEST_LOG_PATH, *TEST_RUNS_DIR.glob("**/godot_test.log")] if p.is_file()]
+    return max(found, key=os.path.getmtime) if found else TEST_LOG_PATH
 
 
 # --- Log file selection --------------------------------------------------
@@ -65,7 +75,7 @@ def resolve_log_path(spec: str | None) -> Path:
     Resolve a log spec to a concrete file path. Spec semantics:
       None        -> DEFAULT_LOG_PATH (the active LIVE-RUN godot.log)
       "latest"    -> DEFAULT_LOG_PATH (alias)
-      "test"      -> TEST_LOG_PATH (TestResults/godot_test.log — GdUnit4 test-run log)
+      "test"      -> newest_test_log() (newest godot_test.log under TestResults/ and TestResults/runs/**)
       "previous"  -> second-most-recent timestamped log file
       "<int>"     -> Nth-most-recent (0 = latest active, 1 = previous, ...)
       "<path>"    -> explicit path (absolute or relative)
@@ -78,7 +88,7 @@ def resolve_log_path(spec: str | None) -> Path:
         return DEFAULT_LOG_PATH
 
     if spec == "test":
-        return TEST_LOG_PATH
+        return newest_test_log()
 
     # Numeric index into the timestamped-files list
     try:
@@ -621,6 +631,7 @@ def format_summary(blocks: list[LogBlock], log_path: str, total_lines: int) -> d
     counts = {"errors": 0, "warnings": 0, "critical": 0, "info": 0, "debug": 0}
     grouped_warnings = Counter()
     grouped_errors = Counter()
+    chatty_sites = Counter()
 
     pool_pat = re.compile(r"(ReturnToPool|no pool exists|PooledArchetype)", re.IGNORECASE)
     tree_pat = re.compile(r"!is_inside_tree\(\)", re.IGNORECASE)
@@ -639,6 +650,8 @@ def format_summary(blocks: list[LogBlock], log_path: str, total_lines: int) -> d
             counts["info"] += 1
         elif level == "DEBUG":
             counts["debug"] += 1
+        if level in ("INFO", "DEBUG") and block.source_file:
+            chatty_sites[(block.source_file, block.method, tuple(block.tags[:1]))] += 1
 
         msg = block.message
         if pool_pat.search(msg):
@@ -660,9 +673,34 @@ def format_summary(blocks: list[LogBlock], log_path: str, total_lines: int) -> d
         "pattern_counts": pattern_counts,
         "grouped_warnings": grouped_warnings.most_common(10),
         "grouped_errors": grouped_errors.most_common(10),
-        "recommendations": generate_recommendations(counts, pattern_counts),
+        "recommendations": generate_recommendations(counts, pattern_counts)
+        + flood_recommendations(chatty_sites, len(blocks)),
     }
     return results
+
+
+# A flood is one call site owning a large share of a non-trivial log: the signature of a per-tick
+# caller driving an event-logging API (logging_methodology anti-pattern 1). Basis: flooded logs had
+# one site at 37-95% of blocks, healthy logs of 600+ blocks topped out at 4-7%. The block floor keeps
+# short boot logs, where any site is a large share, from reading as floods.
+FLOOD_MIN_BLOCKS = 200
+FLOOD_MIN_SHARE = 0.2
+
+
+def flood_recommendations(sites: Counter, total_blocks: int) -> list:
+    recs = []
+    for (source, method, tags), count in sites.most_common(3):
+        if count < FLOOD_MIN_BLOCKS or count < FLOOD_MIN_SHARE * total_blocks:
+            break
+        tag = f"[{tags[0]}] " if tags else ""
+        recs.append({
+            "issue": f"Log flood: {tag}{source} {method} emitted {count} of {total_blocks} blocks",
+            "count": count,
+            "likely_cause": "A per-tick caller drives a call that logs every invocation, often through another API (a continuous update calling a setter that logs)",
+            "fix": "Fix the producer per logging_methodology anti-pattern 1: log the edge or an aggregate, and keep the per-tick caller from reaching the logging call",
+            "severity": "HIGH",
+        })
+    return recs
 
 
 def normalize_message(msg: str) -> str:
@@ -792,8 +830,9 @@ def main():
                         help="Output mode preset (default: summary, or timeline if filters given)")
     parser.add_argument("--log", default=None,
                         help="Log file selector: 'latest' (default, live-run only), 'test' "
-                             "(TestResults/godot_test.log), 'previous', <int> (Nth most "
-                             "recent, 0=latest), or explicit path")
+                             "(newest godot_test.log under TestResults/ and TestResults/runs/**; "
+                             "after a pool, pass the unit's TestResults/runs/<runId>/<unit>/godot_test.log "
+                             "path instead), 'previous', <int> (Nth most recent, 0=latest), or explicit path")
 
     # Output format
     parser.add_argument("--json", action="store_true",

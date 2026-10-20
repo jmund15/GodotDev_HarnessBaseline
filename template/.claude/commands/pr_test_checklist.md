@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: false
-allowed-tools: Bash(git log:*), Bash(git diff:*), Bash(git diff-tree:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git -C Jmodot *), Bash(wc *), Glob, Grep, Read, mcp__obsidian__obsidian_list_notes, mcp__obsidian__obsidian_read_note, mcp__obsidian__obsidian_update_note, mcp__obsidian__obsidian_global_search
+allowed-tools: Bash(git log:*), Bash(git diff:*), Bash(git diff-tree:*), Bash(git branch:*), Bash(git rev-parse:*), Bash(git show:*), Bash(git -C Jmodot log:*), Bash(wc *), Glob, Grep, Read, Write, Edit
 description: "Generate or update a PR playtest checklist in Obsidian"
 ---
 
@@ -135,7 +135,7 @@ Build the full document using the template from [Conventions](agents/pr_test_che
 
 ### UPDATE Mode
 
-1. **Read existing document** via `obsidian_read_note`
+1. **Read existing document** with `Read` on its vault path, per `obsidian_conventions`
 2. **Parse structure:** Extract sections, subsections, and checkbox states (`- [x]` vs `- [ ]`)
 3. **Generate new sections** for commits not yet covered
 4. **Merge rules:**
@@ -152,16 +152,12 @@ Build the full document using the template from [Conventions](agents/pr_test_che
 
 ## Phase 4: Write and Report
 
-### Write to Obsidian
+### Write to the vault
+
+Write the file with native `Write` (new) or `Edit` (existing), per `obsidian_conventions`, at:
 
 ```
-obsidian_update_note:
-  targetType: "filePath"
-  targetIdentifier: "DevProjects/{{PROJECT_NAME}}/Claude/TODO/PRTesting/{filename}.md"
-  modificationType: "wholeFile"
-  wholeFileMode: "overwrite"
-  createIfNeeded: true
-  overwriteIfExists: true
+DevProjects/{{PROJECT_NAME}}/Claude/TODO/PRTesting/{filename}.md
 ```
 
 ### Report to Terminal

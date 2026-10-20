@@ -54,6 +54,14 @@ def companion_checks():
         whole = lens_briefs.with_companion(cq, lambda f: lens_briefs.below_frontmatter(f.read_text(encoding="utf-8")))
         check("the whole-file form joins both files below their frontmatter",
               "**a**" in whole and "**g**" in whole and "x: y" not in whole and "d: x" not in whole, whole)
+        tq = Path(tmp) / "test_quality.md"
+        tq.write_text("---\nd: x\n---\n# T\n\n## Quality\n\n- [ ] **t**\n", encoding="utf-8")
+        check("the test-quality brief is the base alone without a companion",
+              "**t**" in lens_briefs.checklist_for_tests(tq) and "**tg**" not in lens_briefs.checklist_for_tests(tq))
+        (Path(tmp) / "test_quality_godot.md").write_text("---\nx: y\n---\n# TG\n\n## Godot Quality\n\n- [ ] **tg**\n", encoding="utf-8")
+        merged_tq = lens_briefs.checklist_for_tests(tq)
+        check("the test-quality brief adds its godot companion after the base",
+              merged_tq.index("**t**") < merged_tq.index("**tg**") and "x: y" not in merged_tq, merged_tq)
 
 
 def main():

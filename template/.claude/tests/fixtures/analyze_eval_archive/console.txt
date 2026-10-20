@@ -36,12 +36,12 @@ Unknown:     1
 === DOMAIN PERFORMANCE (structured) ===
 Domain                Tot  Cln  Cor  Fal  Unk    Cln%
 meta                    8    5    1    2    0   62.5%
-godot                   5    3    2    0    0   60.0%
+gameplay                5    3    2    0    0   60.0%
 
 === SKILL PERFORMANCE (>=3 loads) ===
 Skill                         Tot  Cln  Cor  Fal  Unk    Cln%
 testing                         8    5    1    2    0   62.5%
-wizard                          3    2    1    0    0   66.7%
+writing                         3    2    1    0    0   66.7%
 
 === TREND (recent 10 vs prior 10, structured) ===
 Date range: 2026-07-03 - 2026-09-20
@@ -50,7 +50,7 @@ Prior window:  clean=0/0 known, population=0, unknown=0
 
 Per-skill trend:
   testing                      rec=5/8(62.5%) prior=0/0(unknown) UNKNOWN
-  wizard                       rec=2/3(66.7%) prior=0/0(unknown) UNKNOWN (low N)
+  writing                      rec=2/3(66.7%) prior=0/0(unknown) UNKNOWN (low N)
 
 === TOP MEMORY ENTITIES (>=3 hits, structured) ===
   gotcha_1: 3

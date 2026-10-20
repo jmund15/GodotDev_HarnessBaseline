@@ -15,6 +15,7 @@ cold through PROVIDER_CAPACITY_CACHE.
 import contextlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -149,6 +150,43 @@ def alias_lines(text, alias):
     return [line for line in text.splitlines() if re.match(r"^\s*%s\s" % re.escape(alias), line)]
 
 
+NOTE = "draw ratios compare models within one plan (list-price ratio, one measured point); across plans compare room"
+ROW_SHAPE = re.compile(r"\| draw \d+\.\d{2}x \| \S+ \| \S+ \| (fits|over by|window unjudged)")
+PLANT_LIMITS = {"contextTokens": 200000, "maxOutputTokens": 32000}
+
+
+def planted_facts(module, brief_path, routes, pay, seat="alpha"):
+    """The sub-hook's `_facts` over planted route rows: `lean_candidates` stubbed to `routes` and `pay`, the real
+    brief file as the reading, and the ladder stubbed out so only the table's own cells are under test."""
+    if TOOLS not in sys.path:
+        sys.path.insert(0, TOOLS)
+    import provider_bands
+    import model_registry
+    models, transports = [], {"alpha": {"costModel": "plan-quota"}, "beta": {"costModel": "plan-quota"},
+                              "ds": {"costModel": "marginal-usd"}}
+    for transport, alias, out in [("alpha", "a-top", 10), ("alpha", "a-half", 5), ("beta", "b-only", 2),
+                                  ("ds", "d-pay", 4)]:
+        models.append({"transport": transport, "id": alias, "alias": alias, "roles": ["executor"],
+                       "limits": PLANT_LIMITS, "price": {"cacheMissPer1M": out / 5, "outputPer1M": out,
+                                                         "cacheHitPer1M": out / 50}})
+    data = {"transports": transports, "models": models}
+    got = {"tier": "executor", "seat": seat, "refused": None, "supplementary": {}, "routes": routes,
+           "payOptions": pay}
+    saved_lean, saved_ladder = provider_bands.lean_candidates, module._ladder
+    provider_bands.lean_candidates = lambda tier, session, data=None, read=None, **kw: got
+    module._ladder = lambda _mr, _data: {}
+    try:
+        return module._facts({"tier": "executor"}, brief_path, data, seat)
+    finally:
+        provider_bands.lean_candidates = saved_lean
+        module._ladder = saved_ladder
+
+
+def planted_row(alias, plans=None):
+    return {"alias": alias, "id": alias, "cost": None, "plans": plans or [], "minus": None, "effort": None,
+            "probation": None, "supplementary": False}
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="task_brief_facts_")
     try:
@@ -186,10 +224,31 @@ def _main(tmp):
     case("a planted executor brief yields a context", text.startswith(TAG))
     case("the context names every alias for-role executor lists",
          expected and all(alias_lines(text, alias) for alias in expected))
-    case("each alias line carries its ladder cost and a plan room",
-         expected and all(any("cost " in line and "room " in line for line in alias_lines(text, alias))
+    if TOOLS not in sys.path:
+        sys.path.insert(0, TOOLS)
+    import model_registry as registry_oracle
+    registry_data = registry_oracle.load()
+
+    def plan_alias(alias):
+        return registry_oracle.cost_model_for(registry_oracle.row_for_model(alias, registry_data)["transport"],
+                                              registry_data) == "plan-quota"
+
+    plan_aliases = {a for a in expected if plan_alias(a)}
+    pay_aliases = expected - plan_aliases
+    case("each alias row carries a draw cell on a plan route, and a spend cell with USD on a pay-per-token route",
+         expected and all(any(ROW_SHAPE.search(line) for line in alias_lines(text, alias)) for alias in plan_aliases)
+         and all(any("| spend " in line and "$" in line for line in alias_lines(text, alias))
+                 for alias in pay_aliases))
+    case("each alias row quotes its ladder ± cell's first + and first − clause",
+         expected and all(any('+ "' in line and '− "' in line for line in alias_lines(text, alias))
                           for alias in expected))
-    case("a cold capacity cache prints room unknown", "room unknown" in text)
+    case("a plan row prints no USD figure, and every plan row's ratio is labelled draw",
+         plan_aliases and all(alias_lines(text, alias) and all("$" not in line and "draw " in line
+                                                               for line in alias_lines(text, alias))
+                              for alias in plan_aliases))
+    case("the draw note prints once per table", text.count(NOTE) == 1)
+    case("a cold capacity cache prints room unknown on a route header, and no row names a room",
+         "room unknown" in text and not any("room" in line for alias in expected for line in alias_lines(text, alias)))
     case("a cold capacity cache runs no subprocess and no network call", bool(text) and calls == [])
     big_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "big_brief.md"),
                      BRIEF + "filler " * 200_000)
@@ -198,6 +257,18 @@ def _main(tmp):
         with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
             big_text = (module.process(written(big_path, BRIEF + "filler " * 200_000)) or {}).get("context") or ""
     case("a brief over a row's window prints its excess tokens", "over by" in big_text)
+    named_text = "y" * 100_000
+    named_file = plant(os.path.join(tmp, "repo", "named_reference.md"), named_text)
+    named_brief_text = BRIEF + "Read `%s` before you start.\n" % named_file.replace("\\", "/")
+    named_brief = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "named_brief.md"), named_brief_text)
+    reading_named = math.ceil((len(named_brief_text) + len(named_text)) / 2.5)
+    named_out = ""
+    if module is not None and callable(getattr(module, "process", None)):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+            named_out = (module.process(written(named_brief, named_brief_text)) or {}).get("context") or ""
+    case("the window fit reads the brief plus the file it names, not the brief alone",
+         bool(named_out) and all(any("(%s of " % "{:,}".format(reading_named) in line
+                                     for line in alias_lines(named_out, alias)) for alias in expected))
     unquoted = re.sub(r'"[^"]*"', "", text).lower()
     case("the context holds no pick words (pick, recommend, use ) outside quoted row text",
          bool(text) and not any(word in unquoted for word in ("pick", "recommend", "use ")))
@@ -236,6 +307,37 @@ def _main(tmp):
     rc, out, err = run_dispatch(written(plain_path, "# no fence\n", session="taskfactsplain"), env)
     case("a write without a task block adds no task-brief-facts line through the dispatcher",
          rc == 0 and TAG not in context(out))
+
+    if module is not None and callable(getattr(module, "_facts", None)):
+        plant_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "plant_brief.md"), BRIEF)
+        routes = {"alpha": [planted_row("a-top", [{"plan": "alpha-plan", "room": 0.4}]),
+                            planted_row("a-half", [{"plan": "alpha-plan", "room": 0.4}])],
+                  "beta": [planted_row("b-only", [{"plan": "beta-plan", "room": None}])]}
+        pay = [{"alias": "d-pay", "id": "d-pay", "transport": "ds", "cost": None, "plans": None, "minus": None,
+                "effort": None, "probation": None, "supplementary": False}]
+        planted = planted_facts(module, plant_path, routes, pay)
+        rows = {alias: alias_lines(planted, alias) for alias in ("a-top", "a-half", "b-only", "d-pay")}
+        case("ratios restart per route: the cheapest plan row on each route reads draw 1.00x, others against it",
+             bool(rows["a-top"]) and "| draw 2.00x |" in rows["a-top"][0] and "| draw 1.00x |" in rows["a-half"][0]
+             and "| draw 1.00x |" in rows["b-only"][0])
+        case("a plan row prints no USD in the planted table", all(rows[a] and "$" not in rows[a][0]
+                                                                  for a in ("a-top", "a-half", "b-only")))
+        case("a pay-per-token row prints spend with its USD figure",
+             bool(rows["d-pay"]) and "| spend " in rows["d-pay"][0] and "$" in rows["d-pay"][0])
+        case("each route header names its plan room once, with its route",
+             "route alpha (plan, session route): alpha-plan room 0.40" in planted
+             and "route beta (plan): beta-plan room unknown" in planted and planted.count("alpha-plan room") == 1)
+        case("the planted table prints the draw note once and names no room on a row",
+             planted.count(NOTE) == 1 and not any("room" in line for a in rows for line in rows[a]))
+    else:
+        for label in ("ratios restart per route: the cheapest plan row on each route reads draw 1.00x",
+                      "a plan row prints no USD in the planted table",
+                      "a pay-per-token row prints spend with its USD figure",
+                      "each route header names its plan room once, with its route",
+                      "the planted table prints the draw note once and names no room on a row"):
+            case(label, False)
+    if text:
+        print("real executor brief table: %d bytes (target under 1536; measured, not gated)" % len(text.encode("utf-8")))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
