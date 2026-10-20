@@ -150,7 +150,6 @@ GODOT_PATTERNS = [
     ".claude/auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md",
     ".claude/auto-memory/gotcha_authoring_validator_needs_static_resolvable_reference.md",
     ".claude/commands/doc_workflow_battery.md",
-    ".claude/commands/workstation_setup.md",
     # Accepted cold-memory moves and new Godot harness proofs:
     ".claude/auto-memory/archive/arch_rule_*.md",
     ".claude/auto-memory/archive/feedback_dont_defer_existing_framework_abstractions.md",
@@ -359,6 +358,7 @@ PURE_PATTERNS = [
     ".claude/commands/sync_permissions.md",
     ".claude/commands/test_skill.md",
     ".claude/commands/worklog.md",
+    ".claude/commands/workstation_setup.md",
     ".claude/hooks/README.md",
     ".claude/hooks/_transcript_summary.py",
     ".claude/hooks/compound_cd_approver.py",

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""The cloud setup fingerprint: `cloud-setup.sh` carries a `SETUP_FINGERPRINT="<sha>"` line.
+"""The engine layer's workstation checks, beside `workstation_profile.py`.
+
+preflight   `workstation_profile.preflight` loads this module by path and returns these checks to
+            `stamp`: the .NET SDK and `GODOT_BIN` for a Godot project (`project.godot`), and every
+            `nuget.config` package source that names a local folder. A consumer without this file
+            runs none of them.
+fingerprint the cloud setup fingerprint: `cloud-setup.sh` carries a `SETUP_FINGERPRINT="<sha>"` line.
 
 The script writes that value to `<prefix>/.cloud-setup.fingerprint`, so a cloud snapshot built from an
 older pasted script can tell that its copy is not the repo's. `hooks/session_context_loader_godot.py`
@@ -13,18 +19,65 @@ import argparse
 import hashlib
 import os
 import re
+import shutil
 import sys
 import tempfile
+import xml.etree.ElementTree
 
 __all__ = [
     "MARKER_DIRS", "MARKER_NAME", "check_fingerprint", "cloud_setup_current", "declared_fingerprint",
-    "fingerprint", "write_fingerprint",
+    "fingerprint", "godot_project", "local_nuget_feeds", "preflight", "write_fingerprint",
 ]
 
 MARKER_NAME = ".cloud-setup.fingerprint"
 # The prefixes `cloud-setup.sh` installs into: /opt as root (or with passwordless sudo), else
 # $HOME/.local. A snapshot normally has one of the two.
 MARKER_DIRS = ("/opt", "~/.local")
+
+def _cmd_exists(name):
+    return shutil.which(name) is not None
+
+
+def local_nuget_feeds(root):
+    """The `nuget.config` package sources that name a local folder (not a URL)."""
+    path = os.path.join(str(root), "nuget.config")
+    try:
+        tree = xml.etree.ElementTree.parse(path)
+    except (OSError, xml.etree.ElementTree.ParseError):
+        return []
+    feeds = []
+    for node in tree.iter("add"):
+        value = (node.get("value") or "").strip()
+        if value and "://" not in value:
+            feeds.append(os.path.join(str(root), value))
+    return feeds
+
+
+def godot_project(root):
+    """True when `root` holds a Godot project (`project.godot`); the engine checks apply only then."""
+    return os.path.isfile(os.path.join(str(root), "project.godot"))
+
+
+def preflight(root):
+    """The toolchain failures `stamp` refuses on: a list of messages, empty when the machine passes.
+
+    The .NET SDK and `GODOT_BIN` checks apply to a Godot project only; the local-feed check applies
+    to any tree that carries a `nuget.config`.
+    """
+    failures = []
+    if godot_project(root):
+        if not _cmd_exists("dotnet"):
+            failures.append(".NET SDK not on PATH")
+        godot = os.environ.get("GODOT_BIN")
+        if not godot:
+            failures.append("GODOT_BIN is not set")
+        elif not os.path.isfile(godot):
+            failures.append("GODOT_BIN does not resolve to a file: %s" % godot)
+    for feed in local_nuget_feeds(root):
+        if not os.path.isdir(feed):
+            failures.append("nuget.config local feed folder is missing: %s" % feed)
+    return failures
+
 
 _FINGERPRINT_LINE = re.compile(rb'(?m)^SETUP_FINGERPRINT="[^"]*"')
 _FINGERPRINT_VALUE = re.compile(rb'(?m)^SETUP_FINGERPRINT="([^"]*)"')

@@ -12,15 +12,16 @@ upstream** that keeps that shared core in sync as it evolves across projects.
 
 | Layer | Contents |
 |---|---|
-| `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `rules/model_delegation.md`, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
+| `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), machine provisioning (`/workstation_setup` core), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `rules/model_delegation.md`, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
 | `coding` | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
-| `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and `/workstation_setup` |
+| `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-install.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and the `/workstation_setup` toolchain phases (`commands/reference/workstation_setup_toolchain.md`) |
 
 A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
 
 **Seed files** (the manifest's `sync: seed` rows) are copied once and then project-owned; `pull`
 writes one only when it is absent. Two shape the rest: `CLAUDE.md` imports `CLAUDE.core.md` and each
-adopted layer file, and `settings.project.json` composes with `settings.base.json` into `settings.json`.
+adopted layer file, and `settings.project.json` composes with `settings.base.json` and each adopted
+layer's `settings.<layer>.json` into `settings.json`.
 
 **Offer files** (`sync: offer`: every `.claude/auto-memory/` file except the `MEMORY.md` seed) are
 copied at bootstrap and tracked from then on. A memory added upstream later reports `offered`: a bare
@@ -210,9 +211,9 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
 - `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
   assumes the 4-doc Obsidian documentation system; adapt vocabulary if your doc
   tree differs.
-- `cloud-install.sh` / `hooks/session_context_loader.py` / `commands/workstation_setup.md` —
+- `cloud-install.sh` / `hooks/session_context_loader.py` / `commands/reference/workstation_setup_toolchain.md` —
   pin your Godot/.NET/LSP versions (config constants at the top of each; the
-  workstation command carries them as defaults).
+  workstation toolchain reference carries them as defaults).
 - `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
   artifact paths excluded from the tree digest; add your project's.
 - `scripts/run_integration_batched.ps1` — `$quarantine` reads `adaptation.json`

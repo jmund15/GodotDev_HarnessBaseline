@@ -57,6 +57,19 @@ WATCH_COMPOSED_INPUTS = {
         ".claude/skills/project_subsystems/adaptation.json",
     ],
 }
+SETTINGS_RELPATH = ".claude/settings.json"
+
+
+def settings_composed_inputs(root: Path, recorded: list[str], layers: list[str]) -> list[str]:
+    """The inputs of a `settings.json` row: its base first, its project file last, and between
+    them each adopted layer's `settings.<layer>.json` overlay present on disk, in profile order."""
+    if len(recorded) < 2:
+        return list(recorded)
+    overlays = [f".claude/{path.name}"
+                for path in baseline_compose.settings_overlay_files(root / ".claude", layers)]
+    return [recorded[0], *overlays, recorded[-1]]
+
+
 WATCH_OTHER_RELPATHS = {
     ".claude/skills/_brainstorm_shared/common.md",
     ".claude/skills/architecture_brainstorm/SKILL.md",
@@ -107,6 +120,22 @@ def replace_path(source: Path | str, target: Path | str, wait_s: float = 10.0) -
         try:
             os.replace(source, target)
             return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def read_path_bytes(path: Path | str, wait_s: float = 10.0) -> bytes:
+    """Path.read_bytes that waits out a writer's `replace_path` in flight.
+
+    Windows refuses an open of a path another process is replacing (Errno 13), so a reader racing
+    a lock save fails without this. Retry until `wait_s` passes, then raise.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            return Path(path).read_bytes()
         except PermissionError:
             if time.monotonic() >= deadline:
                 raise
@@ -411,7 +440,7 @@ def load_lock(root: Path) -> dict:
     if not lock_path.exists():
         sys.exit(f"error: {LOCK_RELPATH} not found — run 'init' first")
     try:
-        lock = json.loads(_lf(lock_path.read_bytes()).decode("utf-8"))
+        lock = json.loads(_lf(read_path_bytes(lock_path)).decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         sys.exit(f"error: could not read {LOCK_RELPATH}: {exc}")
     subs = lock.get("substitutions")
@@ -1134,14 +1163,16 @@ def _manifest_layers_v2(source: BaselineSource | Path, root: Path) -> dict[str, 
     return {relpath: item.get("layer") for relpath, item in _manifest_items_v2(source).items()}
 
 
-def _seed_rows(root: Path, relpath: str, layer: str | None, files: dict) -> dict[str, dict]:
+def _seed_rows(root: Path, relpath: str, layer: str | None, files: dict,
+               layers: list[str]) -> dict[str, dict]:
     """A manifest `sync: seed` path is project-owned once it exists locally: a `local` row. Its
     `settings.project.json` seed also makes `.claude/settings.json` a `composed` row when both
-    inputs are on disk and no row decides it yet (§9: settings.json is never a manifest entry)."""
+    inputs are on disk and no row decides it yet (§9: settings.json is never a manifest entry);
+    the row's inputs carry the adopted layers' settings overlays."""
     rows = {relpath: {"status": "local", "layer": layer, "judged": _decision(root, relpath, "keep-local")}}
     if relpath.endswith("settings.project.json"):
         composed_relpath = str(Path(relpath).parent / "settings.json").replace("\\", "/")
-        composed_inputs = WATCH_COMPOSED_INPUTS.get(composed_relpath, [])
+        composed_inputs = settings_composed_inputs(root, WATCH_COMPOSED_INPUTS.get(composed_relpath, []), layers)
         if (composed_relpath not in files and composed_inputs
                 and all((root / p).is_file() for p in composed_inputs)):
             rows[composed_relpath] = {
@@ -1859,7 +1890,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         # Seed rows are decided after every write, so a composed settings.json row sees the
         # settings.base.json this same pull delivered.
         for relpath in seeds:
-            files.update(_seed_rows(root, relpath, manifest_layers.get(relpath), files))
+            files.update(_seed_rows(root, relpath, manifest_layers.get(relpath), files, layers))
         if not changed:
             return NO_CHANGE
         lock["synced_commit"] = source.sha
@@ -2024,7 +2055,7 @@ def _migrate_core_region(root: Path, layers: list[str]) -> str | None:
 
 
 def _base_owned_hook_files(source: BaselineSource, base_text: str, subs: dict) -> set[str]:
-    """Hook files base runs: those settings.base.json registers, plus manifest hooks a registered
+    """Hook files base runs: those `base_text` (settings.base.json and the layer overlays) registers, plus manifest hooks a registered
     dispatcher names in its source. A shipped hook base neither registers nor runs is opt-in."""
     registered = set(baseline_compose._HOOK_COMMAND_PATH_PATTERN.findall(base_text))
     dispatcher_text = "\n".join(upstream_text(source, ".claude/hooks/" + name, subs) or "" for name in registered)
@@ -2034,26 +2065,33 @@ def _base_owned_hook_files(source: BaselineSource, base_text: str, subs: dict) -
     return registered | named
 
 
-def _migrate_monolithic_settings(root: Path, source: BaselineSource, lock: dict, files: dict) -> list[str]:
+def _migrate_monolithic_settings(root: Path, source: BaselineSource, lock: dict, files: dict,
+                                 layers: list[str]) -> list[str]:
     """A schema-1 `settings.json` is one hand-kept file. Write `settings.project.json` with only what
-    base does not already provide and drop the settings.json row: `pull` delivers settings.base.json
-    and records both rows through `_seed_rows`, and `compose` rebuilds settings.json."""
-    composed, base_input, project_input = ".claude/settings.json", *WATCH_COMPOSED_INPUTS[".claude/settings.json"]
+    the shared input (settings.base.json plus the adopted layers' overlays) does not already provide
+    and drop the settings.json row: `pull` delivers the shared input and records both rows through
+    `_seed_rows`, and `compose` rebuilds settings.json."""
+    composed, base_input, project_input = SETTINGS_RELPATH, *WATCH_COMPOSED_INPUTS[SETTINGS_RELPATH]
     subs = lock.get("substitutions", {})
     full_text = local_text(root, composed)
     base_text = upstream_text(source, base_input, subs)
     if full_text is None or base_text is None:
         return []
+    overlay_texts = [text for text in (upstream_text(source, f".claude/settings.{layer}.json", subs)
+                                       for layer in layers) if text is not None]
     if (root / project_input).exists():
         status = files.get(composed, {}).get("status")
         if status == "composed":
             return []
         return [f"settings.json: NOT split, {project_input} already exists; settings.json stays {status} for triage"]
     try:
-        base, full = json.loads(base_text), json.loads(full_text)
+        base = baseline_compose.merge_shared_settings(
+            json.loads(base_text), [json.loads(text) for text in overlay_texts])
+        full = json.loads(full_text)
     except json.JSONDecodeError as exc:
-        raise BaselineError(f"settings split: {composed} or upstream {base_input} is unparseable JSON ({exc})") from exc
-    project = baseline_compose.derive_project_settings(base, full, _base_owned_hook_files(source, base_text, subs))
+        raise BaselineError(f"settings split: {composed} or an upstream settings input is unparseable JSON ({exc})") from exc
+    project = baseline_compose.derive_project_settings(
+        base, full, _base_owned_hook_files(source, "\n".join([base_text, *overlay_texts]), subs))
     _write_lf(root / project_input, json.dumps(project, indent=2, ensure_ascii=False) + "\n")
     files.pop(composed, None)
     adopted = baseline_compose.base_only_entries(base, full)
@@ -2099,7 +2137,7 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
                 "judged": None,
             }
         if ".claude/settings.json" in files:
-            notes.extend(_migrate_monolithic_settings(root, source, lock, files))
+            notes.extend(_migrate_monolithic_settings(root, source, lock, files, layers))
         notes.append(_migrate_core_region(root, layers))
         lock["schema"] = 2
         lock["profile"] = ",".join(layers)
@@ -2164,26 +2202,26 @@ def _composed_rows(lock: dict) -> list[tuple[str, dict]]:
             if _entry_status(entry) == "composed"]
 
 
-def _compose_row_output(root: Path, relpath: str, inputs: list[str], layers: list[str]) -> bytes:
+def _compose_row_output(root: Path, relpath: str, inputs: list[str]) -> bytes:
     """Dispatch by relpath shape — the same two shapes `WATCH_COMPOSED_INPUTS` enumerates."""
     if relpath.endswith("settings.json"):
-        if len(inputs) != 2:
-            raise BaselineError(f"compose: {relpath} needs exactly 2 inputs, got {inputs}")
-        base_relpath, project_relpath = inputs
-        base_text = local_text(root, base_relpath)
-        project_text = local_text(root, project_relpath)
-        if base_text is None:
-            raise BaselineError(f"compose: missing input {base_relpath} for {relpath}")
-        if project_text is None:
-            raise BaselineError(f"compose: missing input {project_relpath} for {relpath}")
+        if len(inputs) < 2:
+            raise BaselineError(f"compose: {relpath} needs a base and a project input, got {inputs}")
+        base_relpath, *overlay_relpaths, project_relpath = inputs
+        texts = {}
+        for input_relpath in (base_relpath, *overlay_relpaths, project_relpath):
+            texts[input_relpath] = local_text(root, input_relpath)
+            if texts[input_relpath] is None:
+                raise BaselineError(f"compose: missing input {input_relpath} for {relpath}")
         try:
-            base = json.loads(base_text)
-            project = json.loads(project_text)
+            base = json.loads(texts[base_relpath])
+            overlays = [json.loads(texts[input_relpath]) for input_relpath in overlay_relpaths]
+            project = json.loads(texts[project_relpath])
         except json.JSONDecodeError as exc:
             raise BaselineError(f"compose: {relpath} input is not valid JSON: {exc}") from exc
         hooks_dir = root / ".claude" / "hooks"
         try:
-            merged = baseline_compose.compose_settings(base, project, hooks_dir, layers)
+            merged = baseline_compose.compose_settings(base, project, hooks_dir, overlays)
         except baseline_compose.ComposeError as exc:
             raise BaselineError(f"compose: {relpath}: {exc}") from exc
         return baseline_compose.canonical_json(merged)
@@ -2222,8 +2260,10 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
     inputs_by_relpath: dict[str, list[str]] = {}
     for relpath, entry in rows:
         inputs = list(entry.get("inputs") or [])
+        if relpath.endswith("settings.json"):
+            inputs = settings_composed_inputs(root, inputs, layers)
         inputs_by_relpath[relpath] = inputs
-        outputs[relpath] = _compose_row_output(root, relpath, inputs, layers)
+        outputs[relpath] = _compose_row_output(root, relpath, inputs)
 
     drift = []
     for relpath, output in outputs.items():
@@ -2348,7 +2388,7 @@ def v2_init(root: Path, baseline_dir: str, repo: str, ref: str,
             continue
         upstream = upstream_text(source, relpath, substitutions)
         if item.get("sync") == "seed":
-            files.update(_seed_rows(root, relpath, item.get("layer"), files))
+            files.update(_seed_rows(root, relpath, item.get("layer"), files, layers))
         elif upstream is not None:
             upstream_hash = sha(upstream.encode("utf-8"))
             files[relpath] = {

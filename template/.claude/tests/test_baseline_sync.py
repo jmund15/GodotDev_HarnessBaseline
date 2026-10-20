@@ -1614,7 +1614,8 @@ _REGION = (
 
 
 def _v1_consumer(path: Path, *, region: bool = True, extra_permissions: dict | None = None,
-                 skill: bytes | None = None, settings_text: bytes | None = None):
+                 skill: bytes | None = None, settings_text: bytes | None = None,
+                 overlay_permission: str | None = None):
     base_settings = {
         "env": {"PYTHONUTF8": "1"},
         "permissions": {"allow": ["Bash(git:*)"]},
@@ -1630,6 +1631,8 @@ def _v1_consumer(path: Path, *, region: bool = True, extra_permissions: dict | N
             {"type": "command", "command": "python .claude/hooks/mine.py"}]}]},
     }
     old_settings["permissions"].update(extra_permissions or {})
+    if overlay_permission is not None:
+        old_settings["permissions"]["allow"].append(overlay_permission)
     rows = {
         ".claude/CLAUDE.md": {"status": "watch", "sync": "seed",
                               "local": (_REGION if region else "# CLAUDE.md\nproject only\n").encode()},
@@ -1649,6 +1652,10 @@ def _v1_consumer(path: Path, *, region: bool = True, extra_permissions: dict | N
         ".claude/auto-memory/foreign_memory.md": {"row": False, "local": None, "sync": "offer"},
         ".claude/offered/elsewhere.md": {"row": False, "local": None, "sync": "offer"},
     }
+    if overlay_permission is not None:
+        rows[".claude/settings.godot.json"] = {
+            "row": False, "local": None, "layer": "godot",
+            "upstream": (json.dumps({"permissions": {"allow": [overlay_permission]}}, indent=2) + "\n").encode()}
     if settings_text is not None:
         rows[".claude/settings.json"]["local"] = settings_text
     root, baseline, _remote, _commit_sha = _v2_fixture(path, rows)
@@ -1798,6 +1805,41 @@ def test_pull_seed_project_settings_makes_composed_row() -> None:
         files = _load_lock(root)["files"]
         assert files[".claude/settings.json"]["status"] == "composed", files
         assert files[".claude/settings.project.json"]["status"] == "local", files
+
+
+def test_pull_seed_project_settings_records_layer_overlay_inputs() -> None:
+    base = (json.dumps({"permissions": {"allow": ["A"]}}, indent=2) + "\n").encode()
+    overlay = (json.dumps({"permissions": {"allow": ["G"]}}, indent=2) + "\n").encode()
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ".claude/tools/a.py": {},
+            ".claude/settings.base.json": {"row": False, "local": None, "upstream": base},
+            ".claude/settings.godot.json": {"row": False, "local": None, "upstream": overlay, "layer": "godot"},
+            ".claude/settings.project.json": {"row": False, "local": None, "sync": "seed",
+                                              "upstream": b"{}\n"},
+        })
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        row = _load_lock(root)["files"][".claude/settings.json"]
+        assert row["inputs"] == [".claude/settings.base.json", ".claude/settings.godot.json",
+                                 ".claude/settings.project.json"], row
+        compose = _run_baseline(root, baseline, "compose")
+        assert compose.returncode == 0, _out(compose)
+        settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        assert settings["permissions"]["allow"] == ["A", "G"], settings
+
+
+def test_migrate_derives_project_settings_over_layer_overlays() -> None:
+    with _fixture() as path:
+        root, baseline = _v1_consumer(path, overlay_permission="Bash(overlay_tool:*)")
+        result = _run(root.parent, "upgrade", "--project", str(root), "--baseline-dir", str(baseline))
+        output = _out(result)
+        assert _load_lock(root)["schema"] == 2, output
+        project = json.loads((root / ".claude" / "settings.project.json").read_text(encoding="utf-8"))
+        assert "Bash(overlay_tool:*)" not in project["permissions"]["allow"], project
+        settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        assert "Bash(overlay_tool:*)" in settings["permissions"]["allow"], settings
+        assert "Bash(mytool:*)" in settings["permissions"]["allow"], settings
 
 
 def test_pull_keeps_existing_seed_file_says_kept() -> None:
@@ -1961,6 +2003,8 @@ def main() -> int:
         test_upgrade_refuses_bad_subsystems_before_writing,
         test_upgrade_names_unparseable_settings,
         test_pull_seed_project_settings_makes_composed_row,
+        test_pull_seed_project_settings_records_layer_overlay_inputs,
+        test_migrate_derives_project_settings_over_layer_overlays,
         test_pull_keeps_existing_seed_file_says_kept,
     ]
     return run_cases(cases)

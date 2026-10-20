@@ -1019,6 +1019,19 @@ def is_instrument_run(run):
     return run.get('workflowName') in MEASUREMENT_WORKFLOWS or (isinstance(args, dict) and args.get('probe') is True)
 
 
+def progress_agents(run):
+    """The `workflow_agent` entries of one run's `workflowProgress`, one dispatch per label attempt.
+
+    A spawn the client refused before it started (an `error` entry with no `agentId`, e.g. an agent type the
+    session never loaded) that a later entry under the same label retried is not a dispatch: the retry is.
+    A label whose only entries failed keeps them, so a failed dispatch stays visible."""
+    entries = [e for e in run.get('workflowProgress') or []
+               if isinstance(e, dict) and e.get('type') == 'workflow_agent']
+    started = {e.get('label') for e in entries if e.get('agentId')}
+    return [e for e in entries
+            if e.get('agentId') or e.get('state') not in ('error', 'failed') or e.get('label') not in started]
+
+
 def _agent_base(rid, run, e, efforts, pins=None):
     """The identity fields every per-agent row shares: pending candidates and archived rows group on
     these, so both are built here. The launch's own facts ride on the row where the PINS line carried
@@ -1062,10 +1075,9 @@ def _session_candidate_rows(session_dir):
         rid = run.get('runId') or fn[:-5]
         run_ids.add(rid)
         efforts, pins = efforts_for(run), pin_tokens(run)
-        for e in run.get('workflowProgress') or []:
-            if isinstance(e, dict) and e.get('type') == 'workflow_agent':
-                candidates.append(dict(_agent_base(rid, run, e, efforts, pins),
-                                       phase=e.get('phaseTitle') or ''))
+        for e in progress_agents(run):
+            candidates.append(dict(_agent_base(rid, run, e, efforts, pins),
+                                   phase=e.get('phaseTitle') or ''))
     archived_pairs, ignored_runs = set(), set()
     if run_ids:
         for rec in _archive_records():
@@ -1923,9 +1935,7 @@ def run_rows(session, run_id, diagnostics=None, claims=None):
     eff, pins = efforts_for(run), pin_tokens(run)
     session_id = os.path.basename(os.path.abspath(session))
     usage = agent_usage(os.path.join(session, 'subagents', 'workflows', rid))
-    for e in run.get('workflowProgress') or []:
-        if not isinstance(e, dict) or e.get('type') != 'workflow_agent':
-            continue
+    for e in progress_agents(run):
         aid = e.get('agentId')
         u = usage.get(aid, dict(inp=None, out=None, cw=None, cr=None, turns=None,
                                 tools=None, recs=None, secs=None, first_ts=None,

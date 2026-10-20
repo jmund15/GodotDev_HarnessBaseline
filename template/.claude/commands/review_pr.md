@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(git log:*), Bash(git diff:*), Bash(git -C:*), Glob, Grep, Read, Workflow
+allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(git log:*), Bash(git diff:*), Glob, Grep, Read, Workflow
 description: "Thorough code review of a single PR or unstaged changes"
 ---
 

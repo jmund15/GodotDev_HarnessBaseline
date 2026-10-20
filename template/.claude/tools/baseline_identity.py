@@ -470,8 +470,8 @@ def _load_lock(repo_root: Path) -> dict:
     if not lock_path.is_file():
         return {}
     try:
-        return json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(_load_baseline_sync().read_path_bytes(lock_path).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 

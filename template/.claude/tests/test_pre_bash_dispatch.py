@@ -249,7 +249,12 @@ def test_pure_profile_allows_non_destructive_and_owned_cleanup(tmp_path):
 def test_actual_advisory_runtime_fault_preserves_git_floor(monkeypatch, tmp_path):
     def boom():
         raise RuntimeError('planted actual adviser fault')
-    monkeypatch.setattr(pre_bash_dispatch.cloud_test_enforcer, 'main', boom)
+    order = [module for module, _argv in pre_bash_dispatch.HOOKS]
+    floor = order.index(pre_bash_dispatch.git_guardrails)
+    # Any installed adviser ahead of the floor serves; godot-layer members are absent in a pure profile.
+    adviser = next(module for module in order[:floor]
+                   if os.path.basename(module.__file__)[:-3] not in pre_bash_dispatch._FLOOR_MEMBERS)
+    monkeypatch.setattr(adviser, 'main', boom)
     # Even a broken normalizer cannot skip the later floor member.
     monkeypatch.setattr(pre_bash_dispatch.git_guardrails, 'main', lambda: 2)
     code, out, err = pre_bash_dispatch.dispatch(payload('Bash', 'git checkout -- file'))
@@ -289,6 +294,7 @@ def test_launcher_commit_reaches_each_guard(monkeypatch, tmp_path):
     names = ('baseline_classification_guard', 'duplicate_commit_check', 'prototype_containment_guard',
              'provisional_totality_guard', 'rule_number_guard', 'tres_nullstrip_guard',
              'tres_script_strip_guard', 'triage_commit_check')
+    names = [name for name in names if name not in GODOT_MEMBERS or getattr(pre_bash_dispatch, name) is not None]
     monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
     original = pre_bash_dispatch._git_commit.commit_invocations
     for name in names:

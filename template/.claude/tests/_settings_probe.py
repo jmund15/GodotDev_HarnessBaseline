@@ -1,7 +1,7 @@
 """Resolve the settings a proof should assert against, in a consumer OR in the template.
 
 A consumer carries a composed `.claude/settings.json`. The baseline template carries only
-`settings.base.json` + `settings.project.json` and composes at install time (S8), so a proof that
+`settings.base.json`, the layers' `settings.<layer>.json` overlays and `settings.project.json`, and composes at install time (S8), so a proof that
 opens `settings.json` directly cannot run upstream -- it fails with FileNotFoundError inside the
 publication's battery, which is how eleven proofs went red the first time this project published
 them.
@@ -28,7 +28,9 @@ def _compose(claude_dir: Path) -> dict:
     base = json.loads((claude_dir / "settings.base.json").read_text(encoding="utf-8"))
     project_file = claude_dir / "settings.project.json"
     project = json.loads(project_file.read_text(encoding="utf-8")) if project_file.is_file() else {}
-    return baseline_compose.compose_settings(base, project, claude_dir / "hooks", ALL_LAYERS)
+    overlays = [json.loads(path.read_text(encoding="utf-8"))
+                for path in baseline_compose.settings_overlay_files(claude_dir, ALL_LAYERS)]
+    return baseline_compose.compose_settings(base, project, claude_dir / "hooks", overlays)
 
 
 def settings_path(claude_dir) -> str:

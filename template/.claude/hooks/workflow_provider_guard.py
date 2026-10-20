@@ -88,7 +88,10 @@ naming the override as the owner's to grant, never the agent's.
 
 INJECTION: every Workflow call on a known transport receives `args.__rails`, `args.__railsText`, `args.__driverNotes`
 (registry `driverNotes` per pinned model, when any), `args.__toolProfileDefaults` and `args.__transport` = {name, ids (the legal pins), efforts (only when
-the transport declares a vocabulary)}. It carries no default pin. A call naming no `args.checker` gets
+the transport declares a vocabulary)}. `args.__coverage` lists a covered shape only when the session
+can have loaded its generated agent type (`loadable_coverage`): the client reads `.claude/agents/` once,
+at session start, so a type whose file is missing or not older than the session's first transcript
+timestamp would fail as "agent type not found". An unknown start offers no shape. It carries no default pin. A call naming no `args.checker` gets
 `computed_checker`'s pin there. The
 engines hold no model vocabulary of their own.
 
@@ -130,7 +133,7 @@ import _dispatch_checks  # noqa: E402  tier fit and currency, shared with the si
 from _dispatch_checks import shape_tiers  # noqa: E402
 from _brief_coverage import coverage_fixes, coverage_map, coverage_refusal, skill_index  # noqa: E402
 from _dispatch_pins import (  # noqa: E402
-    _args, _is_review_fanout, agent_profile_request, dispatch_jobs, native_legal_pins,
+    _args, _is_review_fanout, _tp, agent_profile_request, dispatch_jobs, native_legal_pins,
     native_pin, profile_defaults, profile_request, resolve_request, script_blobs, tier_rows)
 try:
     import _session_transport
@@ -153,6 +156,8 @@ EFFORT_NOT_TIER = ("raise effort before tier (orchestration §5 Effort); if the 
 OWNER_CLASS = "owner"
 # The one class a statement may open with: a verified owner quote. Any other text is not a lift.
 _CLASS_RE = re.compile(r"^\s*(%s)\s*:\s*(.*)$" % OWNER_CLASS, re.S)
+AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents")
+TRANSCRIPT_HEAD_LINES = 200
 LOG_NAME = "workflow_provider_guard.jsonl"
 LOG_ENV = "HARNESS_PROVIDER_GUARD_LOG"
 # This invocation's diagnosis record: main() resets it, the phases fill it, main() appends it.
@@ -1180,6 +1185,56 @@ def _repo_root(payload):
     return _git_line(cwd, "rev-parse", "--show-superproject-working-tree") or _git_line(cwd, "rev-parse", "--show-toplevel")
 
 
+def session_started(payload):
+    """Epoch seconds of the first `timestamp` in the head of the session transcript, or None.
+
+    The payload carries `transcript_path` and `session_id`, not a start time; the transcript's first
+    record stamp is the session's own clock. A resumed session keeps its original stamp, which is
+    older than the reload, so a resume only withholds a swap it could have made. A transcript path
+    inside the session tree (a subagent's) is cut back to the session's own transcript.
+    """
+    transcript = str(payload.get("transcript_path") or "")
+    if not transcript:
+        return None
+    session_dir = _session_dir(payload)
+    main = session_dir + ".jsonl" if session_dir else ""
+    for path in (main, transcript):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for _ in range(TRANSCRIPT_HEAD_LINES):
+                    match = _STAMP.search(handle.readline())
+                    if match:
+                        stamp = match.group(1).replace("Z", "+00:00")
+                        return datetime.datetime.fromisoformat(stamp).timestamp()
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def loadable_coverage(payload, coverage, agents_dir=None):
+    """`coverage` with each entry's `covered` narrowed to shapes whose generated agent file is older than
+    the session start (`session_started`). A shape with no generated type, a missing file or an unknown
+    start is dropped. Never raises: any failure withholds every swap."""
+    try:
+        started = session_started(payload)
+        table = _tp().load_table()
+        agents_dir = agents_dir or AGENTS_DIR
+        loaded = set()
+        for shape, row in table["shapes"].items():
+            agent_type = row.get("agentType")
+            if not (started and agent_type):
+                continue
+            try:
+                if os.path.getmtime(os.path.join(agents_dir, agent_type + ".md")) < started:
+                    loaded.add(shape)
+            except OSError:
+                pass
+        return {label: dict(entry, covered=[s for s in entry.get("covered") or [] if s in loaded])
+                for label, entry in coverage.items()}
+    except Exception:
+        return {label: dict(entry, covered=[]) for label, entry in coverage.items()}
+
+
 def transport_injection(payload, transport, data=None):
     """`updatedInput` adding `args.__rails`, `args.__railsText`, `args.__driverNotes`, the tool profiles and
     `args.__transport`, or None when there is nothing to inject.
@@ -1244,7 +1299,7 @@ def transport_injection(payload, transport, data=None):
     # Which lean shapes cover each job's brief: an engine swaps a job to its shape's agent type only
     # when this says so (a script cannot read the brief itself). The names-only skill index rides
     # with it for the swapped child, which has no Skill tool.
-    parsed["__coverage"] = coverage_map(payload)
+    parsed["__coverage"] = loadable_coverage(payload, coverage_map(payload))
     try:
         parsed["__skillIndex"] = skill_index()
     except Exception:

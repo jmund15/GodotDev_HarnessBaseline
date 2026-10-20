@@ -23,8 +23,8 @@ RED-first proof against a planted violation, §16 fail posture and docstring par
 
 A shell a program spawns differs from an interactive one (WSL Bash versus Git Bash, no profile `PATH`): `environment_bootstrap` §This-machine ground truth owns the details.
 
-`settings.json` is composed: register a hook or change a setting in `settings.base.json` (shared) or
-`settings.project.json` (this project), then run `python3 .claude/tools/baseline_sync.py compose`.
+`settings.json` is composed: register a hook or change a setting in `settings.base.json` (shared),
+`settings.<layer>.json` (shared, one layer's stack) or `settings.project.json` (this project), then run `python3 .claude/tools/baseline_sync.py compose`.
 
 ## A guard matches the ACTION, never the noun
 

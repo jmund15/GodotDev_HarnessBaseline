@@ -1018,6 +1018,121 @@ def c_window_close_main_channel():
             and allow[0] == 0 and "deny" not in allow[1])
 
 
+NAMED_ROWS = (
+    (100, "claude.exe", "C:/Tools/claude.exe --resume"),
+    (101, "python.exe", "python3 .claude/tools/sidecar_fanout.py jobs.json --compare"),
+    (102, "pwsh.exe", "pwsh -File .claude/scripts/gate_chain.ps1"),
+    (103, "node.exe", "node C:/srv/app/server.js"),
+    (104, "python.exe", "python3 -m http.server 8000"),
+    (105, "grep.exe", "grep -rl foo ."),
+)
+
+
+def _named_table(rows=NAMED_ROWS):
+    fd, path = tempfile.mkstemp(prefix="kg_named_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({str(pid): {"pid": pid, "ppid": 1, "name": name, "cmd": cmd} for pid, name, cmd in rows}, fh)
+    return path
+
+
+def nv(cmd, table=None, env=None):
+    path = table or _named_table()
+    old = os.environ.get("KILL_GUARD_PROCESS_TABLE")
+    os.environ["KILL_GUARD_PROCESS_TABLE"] = path
+    try:
+        return kg.verdict(cmd, env or {})
+    finally:
+        if old is None:
+            os.environ.pop("KILL_GUARD_PROCESS_TABLE", None)
+        else:
+            os.environ["KILL_GUARD_PROCESS_TABLE"] = old
+
+
+NAME_KILLS_DENIED = {
+    "pkill -f <pattern>": "pkill -f sidecar_fanout",
+    "pkill <name>": "pkill claude",
+    "pkill python (one of two matches protected)": "pkill python",
+    "pkill with a combined flag cluster": "pkill -9 -fx 'python3 .claude/tools/sidecar_fanout.py jobs.json --compare'",
+    "killall <name>": "killall claude",
+    "taskkill /IM": "taskkill /IM claude.exe /F",
+    "taskkill //IM (MSYS escape)": "taskkill //IM claude.exe //F",
+    "taskkill /FI IMAGENAME": "taskkill /FI \"IMAGENAME eq claude.exe\" /F",
+    "taskkill /FI WINDOWTITLE (unresolvable)": "taskkill /FI \"WINDOWTITLE eq build*\" /F",
+    "Stop-Process -Name": "Stop-Process -Name claude -Force",
+    "Stop-Process -Name list with a wildcard": "Stop-Process -Name 'node','clau*' -Force",
+    "Stop-Process -Id": "Stop-Process -Id 100 -Force",
+    "Get-Process <n> | Stop-Process (top level)": "Get-Process claude | Stop-Process -Force",
+    "Get-Process <n> | Stop-Process (quoted payload)": "powershell -Command \"Get-Process claude | Stop-Process -Force\"",
+    "Get-Process | Where-Object | Stop-Process (unresolvable)":
+        "Get-Process | Where-Object { $_.CPU -gt 5 } | Stop-Process",
+    "wmic name delete": "wmic process where \"name='claude.exe'\" delete",
+    "wmic commandline like call terminate": "wmic process where \"commandline like '%sidecar_fanout%'\" call terminate",
+    "Win32_Process Terminate": "Get-CimInstance Win32_Process -Filter \"name='claude.exe'\" | Invoke-CimMethod -MethodName Terminate",
+    "kill $(pgrep -f <pattern>)": "kill $(pgrep -f sidecar_fanout)",
+    "pgrep | xargs kill": "pgrep -f sidecar_fanout | xargs kill -9",
+    "kill $(pidof <name>)": "kill -9 $(pidof claude)",
+    "a pkill inside bash -c, after other text": "bash -c \"echo go; pkill -f claude; true\"",
+    "a pkill after env assignments": "FOO=1 pkill claude",
+    "HARNESS_ALLOW_KILL does not cover a name kill": "HARNESS_ALLOW_KILL=100 pkill claude",
+    "pkill with an invalid regex fails closed": "pkill -f '('",
+    "pkill with no pattern fails closed": "pkill -9",
+}
+
+
+@case("every name- or pattern-addressed kill form that matches a protected process is denied")
+def c_name_kills_denied():
+    missed = [label for label, cmd in NAME_KILLS_DENIED.items()
+              if "BLOCKED kill" not in (nv(cmd, env={"HARNESS_ALLOW_KILL": "100"} if "ALLOW" in label else None) or "")]
+    assert not missed, "not denied: %s" % missed
+    return True
+
+
+NAME_KILLS_ALLOWED = {
+    "pkill -f of an unprotected pattern": "pkill -f http.server",
+    "pkill of an unprotected name": "pkill node",
+    "killall of an unprotected name": "killall node",
+    "taskkill /IM of an unprotected image": "taskkill /IM node.exe /F",
+    "Stop-Process -Name of an unprotected name": "Stop-Process -Name node -Force",
+    "Get-Process <n> | Stop-Process, unprotected": "Get-Process node | Stop-Process",
+    "wmic of an unprotected name": "wmic process where \"name='node.exe'\" delete",
+    "a name that matches nothing": "pkill -f nothing_runs_this",
+    "pgrep alone is a read": "pgrep -f sidecar_fanout",
+    "the reaper": "python3 .claude/tools/reap.py --help",
+    "grep for the word": "grep pkill notes.md",
+    "echo of a taskkill line": "echo taskkill /IM claude.exe",
+    "a commit message that mentions pkill": "git commit -m \"document pkill handling\"",
+    "kill of a shell job": "sleep 100 & kill $!",
+}
+
+
+@case("NEGATIVE: unprotected name kills, the reaper and read-only mentions are allowed")
+def c_name_kills_allowed():
+    blocked = [label for label, cmd in NAME_KILLS_ALLOWED.items() if nv(cmd)]
+    assert not blocked, "blocked: %s" % blocked
+    return True
+
+
+@case("a name kill whose table cannot be read fails CLOSED; a read-only pgrep does not need the table")
+def c_name_kill_table_unreadable():
+    missing = os.path.join(tempfile.gettempdir(), "kg_no_such_table.json")
+    denied = nv("pkill node", table=missing) or ""
+    return "cannot read" in denied and nv("pgrep node", table=missing) is None
+
+
+@case("the deny names the protected match and points to the reaper")
+def c_name_kill_message():
+    out = nv("pkill claude") or ""
+    return "PID 100" in out and "reap.py" in out and "PID 103" not in out
+
+
+@case("main() routes a name kill through the deny channel")
+def c_name_kill_main_channel():
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "pkill -f sidecar_fanout"}})
+    env = dict(os.environ, KILL_GUARD_PROCESS_TABLE=_named_table())
+    r = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True, timeout=30, env=env)
+    return r.returncode == 0 and '"permissionDecision": "deny"' in r.stdout
+
+
 def main():
     failed = 0
     for name, fn in CASES:

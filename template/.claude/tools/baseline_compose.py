@@ -11,8 +11,10 @@ hand it — every path argument is read by the caller, so a fixture never needs 
 tree on disk except through the `hooks_dir` prune paths documented below.
 
 Two composed shapes exist today (`WATCH_COMPOSED_INPUTS` in `baseline_sync.py`):
-  - `.claude/settings.json` from `settings.base.json` (tracked) + `settings.project.json`
-    (local) — `compose_settings`.
+  - `.claude/settings.json` from `settings.base.json` (tracked), each adopted layer's
+    `settings.<layer>.json` overlay in profile order (tracked) and `settings.project.json`
+    (local) — `compose_settings`. Base and overlays form the shared input; the project's
+    `$disable` validates against and removes from it.
   - `.claude/reference/memory_domains.md` from `memory_domains.base.md` (tracked) +
     `adaptation.json`'s `memory_domains` rows (local) — `render_memory_domains`.
 
@@ -30,9 +32,6 @@ from pathlib import Path
 
 MEMORY_DOMAINS_MARKER = "<!-- memory-domains-table -->"
 
-_GODOT_PERMISSION_PATTERN = re.compile(
-    r"dotnet|gdunit4|GODOT_BIN|mcp__godot__|godotengine|godot-gdunit", re.IGNORECASE
-)
 _HOOK_COMMAND_PATH_PATTERN = re.compile(r"\.claude/hooks/([\w.]+)")
 _SKILL_ALLOW_PATTERN = re.compile(r"Skill\(([\w-]+)\)")
 
@@ -182,61 +181,80 @@ def _prune_hooks(hooks: dict, hooks_dir: Path) -> None:
             del hooks[event]
 
 
-def _prune_allow(allow: list[str], claude_dir: Path, layers: list[str]) -> list[str]:
-    """R10: drop a `Skill(<name>)` entry whose command/skill file is absent, and drop a
-    godot-stack permission entry when the profile has not adopted the `godot` layer."""
+def _prune_allow(allow: list[str], claude_dir: Path) -> list[str]:
+    """R10: drop a `Skill(<name>)` entry whose command/skill file is absent."""
     def keep(entry: str) -> bool:
         skill_match = _SKILL_ALLOW_PATTERN.fullmatch(entry)
         if skill_match:
             name = skill_match.group(1)
-            if not ((claude_dir / "commands" / f"{name}.md").exists()
-                    or (claude_dir / "skills" / name).exists()):
-                return False
-        if "godot" not in layers and _GODOT_PERMISSION_PATTERN.search(entry):
-            return False
+            return ((claude_dir / "commands" / f"{name}.md").exists()
+                    or (claude_dir / "skills" / name).exists())
         return True
 
     return [entry for entry in allow if keep(entry)]
 
 
-def compose_settings(base: dict, project: dict, hooks_dir: Path, layers: list[str]) -> dict:
-    """§9 `settings.json`: deep-merge everything except `permissions` and `hooks`, ordered-union
-    the three permission lists, append-or-merge hook groups by matcher, apply the project's
-    `$disable`, then prune per R3/R10. `layers` is the consumer's adopted-layer list (the lock's
-    `profile`, or `bootstrap.sh`'s `--layers` before a lock exists) — not itself a Seams-listed
-    parameter, but the godot-permission prune filter has no other source for it (see the S8
-    report's deviations)."""
-    project = dict(project)
-    disable = project.pop("$disable", {})
+def settings_overlay_files(claude_dir: Path, layers: list[str]) -> list[Path]:
+    """The `settings.<layer>.json` overlays an adopted layer ships, in profile order. A layer
+    whose overlay is absent (stripped at bootstrap, or never shipped) contributes nothing."""
+    return [path for path in (Path(claude_dir) / f"settings.{layer}.json" for layer in layers)
+            if path.is_file()]
+
+
+def _merge_settings(base: dict, over: dict) -> dict:
+    """`over` merged onto `base`: deep-merge every key except `permissions` and `hooks`, ordered-union
+    the permission lists, append-or-merge hook groups by matcher. No `$disable`, no prune."""
     base_permissions = base.get("permissions", {})
-    project_permissions = project.pop("permissions", {})
-    base_hooks = base.get("hooks", {})
-    project_hooks = project.pop("hooks", {})
-
-    _validate_disable(disable, base_hooks, base_permissions)
-    base_permissions = _disable_base_permissions(base_permissions, disable)
-    base_hooks = _disable_base_hooks(base_hooks, list(disable.get("hooks", [])))
-
+    over_permissions = over.get("permissions", {})
     rest_base = {k: v for k, v in base.items() if k not in ("permissions", "hooks")}
-    merged = _deep_merge(rest_base, project)
-    # Only materialize a permission list key ("allow"/"deny"/"ask") that base or project actually
+    rest_over = {k: v for k, v in over.items() if k not in ("permissions", "hooks")}
+    merged = _deep_merge(rest_base, rest_over)
+    # Only materialize a permission list key ("allow"/"deny"/"ask") that either side actually
     # declares -- unconditionally synthesizing all three would add e.g. an empty "ask": [] that
     # neither side ever had, breaking canonical-JSON equality with a hand-authored settings.json
     # that omits an unused key entirely.
     permission_keys = [k for k in ("allow", "deny", "ask")
-                        if k in base_permissions or k in project_permissions]
+                       if k in base_permissions or k in over_permissions]
     merged["permissions"] = {
-        list_key: _ordered_union(base_permissions.get(list_key, []), project_permissions.get(list_key, []))
+        list_key: _ordered_union(base_permissions.get(list_key, []), over_permissions.get(list_key, []))
         for list_key in permission_keys
     }
-    for key in list(base_permissions) + list(project_permissions):
+    for key in list(base_permissions) + list(over_permissions):
         if key not in ("allow", "deny", "ask"):
-            merged["permissions"][key] = project_permissions.get(key, base_permissions.get(key))
-    merged["hooks"] = _merge_hooks(base_hooks, project_hooks)
+            merged["permissions"][key] = over_permissions.get(key, base_permissions.get(key))
+    merged["hooks"] = _merge_hooks(base.get("hooks", {}), over.get("hooks", {}))
+    return merged
+
+
+def merge_shared_settings(base: dict, overlays: list[dict]) -> dict:
+    """The shared input: `base` with each layer overlay merged over it in the order given."""
+    shared = base
+    for overlay in overlays:
+        shared = _merge_settings(shared, overlay)
+    return shared
+
+
+def compose_settings(base: dict, project: dict, hooks_dir: Path, overlays=()) -> dict:
+    """§9 `settings.json`: merge `base` and the layer `overlays` into the shared input, apply the
+    project's `$disable` to it, merge the project over what remains, then prune per R3/R10.
+    `overlays` are the parsed `settings.<layer>.json` documents of the consumer's adopted layers
+    (`settings_overlay_files`), so a layer's rows reach only a consumer that adopted the layer."""
+    project = dict(project)
+    disable = project.pop("$disable", {})
+    shared = merge_shared_settings(base, list(overlays))
+    shared_permissions = shared.get("permissions", {})
+    shared_hooks = shared.get("hooks", {})
+
+    _validate_disable(disable, shared_hooks, shared_permissions)
+    shared = dict(shared,
+                  permissions=_disable_base_permissions(shared_permissions, disable),
+                  hooks=_disable_base_hooks(shared_hooks, list(disable.get("hooks", []))))
+
+    merged = _merge_settings(shared, project)
 
     _prune_hooks(merged["hooks"], hooks_dir)
     if "allow" in merged["permissions"]:
-        merged["permissions"]["allow"] = _prune_allow(merged["permissions"]["allow"], hooks_dir.parent, layers)
+        merged["permissions"]["allow"] = _prune_allow(merged["permissions"]["allow"], hooks_dir.parent)
 
     return merged
 

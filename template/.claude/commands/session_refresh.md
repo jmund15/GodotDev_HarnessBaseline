@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(git:*), Read
+allowed-tools: Read
 description: Re-inject SessionStart-equivalent context (branch, working tree, recent commits, worklog, optional build) without /clear-and-resume.
 ---
 

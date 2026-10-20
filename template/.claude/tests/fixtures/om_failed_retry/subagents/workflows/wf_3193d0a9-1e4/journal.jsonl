@@ -1,0 +1,4 @@
+{"type":"launched"}
+{"type":"failed","key":"v2:7864c0c903fda986d315ac62642fa2b744295b2bcc4610d9cd207a976105803f","agentId":""}
+{"type":"started","key":"v2:470772686e762fd5f14d66815e16ee147222b25f7854ba2e62bf7d206ec10b47","agentId":"ac11a8499168f476d","label":"m3-S","phase":"Dispatch"}
+{"type":"result","key":"v2:470772686e762fd5f14d66815e16ee147222b25f7854ba2e62bf7d206ec10b47","agentId":"ac11a8499168f476d","result":""}

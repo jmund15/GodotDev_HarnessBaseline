@@ -71,7 +71,7 @@ A brief states its own task first, then context, purpose, the allowed write set,
 
 Debugging lanes gather discriminating evidence before fixes, especially after a failed fix. An executor's done-condition runs its dispatcher's checks of the returned work (its edited units' proof files, `dispatch_result.py check`, its live checks), so a defect is fixed inside the dispatch on the cheaper model. No brief hands it a wider run (bound proofs, `verify -Scope`, the gate): the dispatcher runs each once at close (`rules/harness_tooling.md`, `change_control` §Gate cadence). A findings or claims job's post-check follows §8.
 
-Message a dispatched agent only when it changes its next action, with the evidence path and the requested action; a running Workflow or sidecar author job has no inbox, so write `<its brief>.amend.md`, which its engine reads. A message may resume a finished agent; do not reopen a completed audit or review files still being edited. Preserve original findings and provenance on integration (`commands/agents/orchestrator_action_protocol.md` Step 1 owns location versus defect identity).
+Message a dispatched agent only when it changes its next action, with the evidence path and the requested action; a running Workflow or sidecar author job has no inbox, so write its brief's full file name plus `.amend.md` (`S.md.amend.md` for `S.md`), which its engine reads. A message may resume a finished agent; do not reopen a completed audit or review files still being edited. Preserve original findings and provenance on integration (`commands/agents/orchestrator_action_protocol.md` Step 1 owns location versus defect identity).
 
 ## 5. Model & Effort Selection
 
