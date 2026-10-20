@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for tools/workstation_profile_godot.py: the `SETUP_FINGERPRINT` line of
-`cloud-setup.sh` is a fixed point of its own digest, a stale or missing value is reported, and
-`cloud_setup_current` is true only when a marker records the repo script's fingerprint.
+"""Re-runnable proof for tools/workstation_profile_godot.py: the toolchain checks the core's `preflight`
+takes from it (the .NET SDK, `GODOT_BIN` and the local package feeds), and the `SETUP_FINGERPRINT` line of
+`cloud-setup.sh`, a fixed point of its own digest whose stale or missing value is reported, with
+`cloud_setup_current` true only when a marker records the repo script's fingerprint.
 
     python3 .claude/tests/test_workstation_profile_godot.py
 """
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "tools")))
+import workstation_profile as wp  # noqa: E402
 import workstation_profile_godot as wpg  # noqa: E402
 
 
@@ -21,6 +24,41 @@ def main():
         print("%-4s %s" % ("ok" if cond else "FAIL", label))
         if not cond:
             failures.append(label + (": " + str(detail)[:200] if detail else ""))
+
+    bare_env = {k: v for k, v in os.environ.items() if k != "GODOT_BIN"}
+    with tempfile.TemporaryDirectory(prefix="wpg_pre_") as tmp, patch.dict(os.environ, bare_env, clear=True), \
+            patch.object(wpg, "_cmd_exists", lambda _name: False):
+        check("godot_project is False without project.godot", wpg.godot_project(tmp) is False)
+        check("a tree with no engine project and no feed has no failure", wpg.preflight(tmp) == [], wpg.preflight(tmp))
+
+        with open(os.path.join(tmp, "project.godot"), "w", encoding="utf-8") as handle:
+            handle.write("; planted\n")
+        check("godot_project is True with project.godot", wpg.godot_project(tmp) is True)
+        failures_seen = wpg.preflight(tmp)
+        check("a Godot project without dotnet is refused", ".NET SDK not on PATH" in failures_seen, failures_seen)
+        check("a Godot project without GODOT_BIN is refused", "GODOT_BIN is not set" in failures_seen,
+              failures_seen)
+
+        with patch.dict(os.environ, {"GODOT_BIN": os.path.join(tmp, "missing")}):
+            check("a GODOT_BIN that is not a file is refused",
+                  any(f.startswith("GODOT_BIN does not resolve") for f in wpg.preflight(tmp)), wpg.preflight(tmp))
+
+        os.remove(os.path.join(tmp, "project.godot"))
+        with open(os.path.join(tmp, "nuget.config"), "w", encoding="utf-8") as handle:
+            handle.write('<configuration><packageSources><add key="l" value="feed_dir"/>'
+                         '<add key="remote" value="https://example.invalid/v3/index.json"/>'
+                         "</packageSources></configuration>")
+        check("only the folder-valued NuGet source is a local feed",
+              wpg.local_nuget_feeds(tmp) == [os.path.join(tmp, "feed_dir")], wpg.local_nuget_feeds(tmp))
+        check("a missing local NuGet feed is refused in any project",
+              any("local feed folder is missing" in f for f in wpg.preflight(tmp)), wpg.preflight(tmp))
+        os.makedirs(os.path.join(tmp, "feed_dir"))
+        check("a present local NuGet feed passes", wpg.preflight(tmp) == [], wpg.preflight(tmp))
+
+        with open(os.path.join(tmp, "project.godot"), "w", encoding="utf-8") as handle:
+            handle.write("; planted\n")
+        check("the core's preflight carries the engine failures this module supplies",
+              "GODOT_BIN is not set" in wp.preflight(tmp), wp.preflight(tmp))
 
     with tempfile.TemporaryDirectory(prefix="wpg_") as tmp:
         script_dir = os.path.join(tmp, ".claude")

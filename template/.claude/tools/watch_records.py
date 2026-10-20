@@ -103,7 +103,7 @@ PROJECT_ROOT = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.d
 CHECKIN_RULE = (
     "Judge each job now from its progress clause. Converging: new commits, new units reached, results improving. "
     "Not converging: the same unit reworked, results flat, a new cause each cycle. A job not converging gets, in order "
-    "of cost kept: an amend file for its brief (`<brief>.amend.md`), its finished items split off, or a stop through "
+    "of cost kept: an amend file for its brief (the brief's full file name plus `.amend.md`), its finished items split off, or a stop through "
     "tools/reap.py with these facts in hand. A job still progressing stops only on the owner's word. "
     "`watch_records.py --digest <record or transcript>` prints a job's whole course. Then re-arm.")
 

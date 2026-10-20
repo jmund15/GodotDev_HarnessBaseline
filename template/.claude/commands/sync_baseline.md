@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(python3:*), Bash(git:*), Bash(git -C:*), Bash(gh:*), Read, Edit, Write, Grep, Glob
+allowed-tools: Bash(python3:*), Bash(gh:*), Read, Edit, Write, Grep, Glob
 description: Check, pull, publish or fork shared harness configuration
 ---
 

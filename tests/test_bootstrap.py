@@ -102,7 +102,8 @@ def test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean() -> None:
         settings_row = lock["files"].get(".claude/settings.json")
         assert settings_row is not None, "no composed .claude/settings.json row"
         assert settings_row["status"] == "composed", settings_row
-        assert settings_row["inputs"] == [".claude/settings.base.json", ".claude/settings.project.json"]
+        assert settings_row["inputs"] == [".claude/settings.base.json", ".claude/settings.godot.json",
+                                          ".claude/settings.project.json"]
 
         assert (target / ".claude" / "settings.json").is_file(), "compose did not write settings.json"
 
@@ -188,6 +189,14 @@ def test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine()
             assert not foreign, f"{layers}: files of unadopted layers installed: {foreign[:5]}"
             missing = sorted(e["path"] for e in manifest if e["layer"] in adopted and e["path"] not in present)
             assert not missing, f"{layers}: adopted files missing: {missing[:5]}"
+            for pure_file in (".claude/commands/workstation_setup.md",
+                              ".claude/commands/reference/workstation_setup_land_runner.md",
+                              ".claude/tools/workstation_profile.py"):
+                assert (target / pure_file).is_file(), f"{layers}: {pure_file} not installed"
+            toolchain = target / ".claude" / "commands" / "reference" / "workstation_setup_toolchain.md"
+            assert toolchain.is_file() == ("godot" in adopted), f"{layers}: toolchain reference installed={toolchain.is_file()}"
+            godot_profile = target / ".claude" / "tools" / "workstation_profile_godot.py"
+            assert godot_profile.is_file() == ("godot" in adopted), f"{layers}: godot profile module installed={godot_profile.is_file()}"
             claude = (target / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
             imports = [line.strip() for line in claude.splitlines() if line.startswith("@")]
             expected = ["@CLAUDE.core.md"] + [f"@CLAUDE.{layer}.md" for layer in ("coding", "godot")
@@ -204,6 +213,13 @@ def test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine()
             assert [d["name"] for d in installed] == domains, f"{layers}: domains {[d['name'] for d in installed]}"
             crashes = _hook_crashes(target)
             assert not crashes, f"{layers}: hooks crash in a fresh project: " + "; ".join(crashes[:6])
+            composed = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            assert composed.get("outputStyle") == "terse", f"{layers}: outputStyle {composed.get('outputStyle')}"
+            assert (target / ".claude" / "output-styles" / "terse.md").is_file(), f"{layers}: terse.md not installed"
+            stack_rows = [row for row in json.dumps(composed).split('"') if "csharp" in row or "mcp__godot__" in row]
+            assert bool(stack_rows) == ("godot" in adopted), f"{layers}: stack rows {stack_rows[:3]}"
+            registered = {h["command"] for groups in composed["hooks"].values() for g in groups for h in g["hooks"]}
+            assert any("dispatch_table.py" in c for c in registered), f"{layers}: dispatch_table not registered"
     finally:
         removed = baseline is None or subprocess.run(
             ["git", "worktree", "remove", "--force", str(baseline)], cwd=ROOT, capture_output=True

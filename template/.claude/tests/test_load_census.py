@@ -573,6 +573,11 @@ class TwoPassPromptEmissionTests(unittest.TestCase):
         before_cache = snapshot(real_cache_file)
 
         settings = _settings_probe.settings(lc.DEFAULT_ROOT)
+        # The shared input registers no isolated shared-state hook; a consumer that opts into one
+        # registers it in its project file, which this plant stands in for.
+        settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
+            {"hooks": [{"type": "command", "timeout": 25,
+                        "command": 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/shell_census.py"'}]})
         rows = lc.profile_user_prompt_hooks_two_pass(lc.DEFAULT_ROOT, settings)
 
         after_state = snapshot(real_state_file)

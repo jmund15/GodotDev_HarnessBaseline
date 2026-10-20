@@ -115,10 +115,6 @@ CORE_DOMAIN_ALLOWLIST = {
     # Fixtures: scene/resource paths prove change classification, and dotnet rows prove runtime-test routing.
     ".claude/tests/test_close_predicates.py",
     ".claude/tests/test_run_call_router.py",
-    # The Godot toolchain preflight gates on project.godot; it moves to the godot layer with the
-    # /workstation_setup core/godot split (plan M3 item 6), which removes these two rows.
-    ".claude/tools/workstation_profile.py",
-    ".claude/tests/test_workstation_profile.py",
     # Two-shape lens set (harness/doctrine AND code plans): classified pure per
     # the archetype-home rule, but its plan-check targets are code/engine nouns.
     ".claude/commands/plan_check.md",

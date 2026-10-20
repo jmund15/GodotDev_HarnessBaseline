@@ -95,7 +95,7 @@ def main() -> int:
         "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
             {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/b.py\""}]}]},
     }
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure", "coding", "godot"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     expected = {
         "env": {"X": "1", "Y": "3", "Z": "4"},
         "permissions": {"allow": ["A", "B", "C"], "deny": ["D1"]},
@@ -117,7 +117,7 @@ def main() -> int:
     project = {"permissions": {}, "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
         {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/b.py\""}]}]},
         "$disable": {"hooks": ["python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/a.py\""]}}
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     only_b = merged["hooks"]["PreToolUse"] == [{"matcher": "Bash", "hooks": [
         {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/b.py\""}]}]
     failures.append(case("$disable.hooks removes the named base command only", only_b,
@@ -129,7 +129,7 @@ def main() -> int:
     base = {"permissions": {"allow": []}, "hooks": {}}
     project = {"permissions": {}, "hooks": {}, "$disable": {"hooks": ["nope"]}}
     try:
-        bc.compose_settings(base, project, hooks_dir, ["pure"])
+        bc.compose_settings(base, project, hooks_dir)
         failures.append(case("$disable.hooks unmatched entry -> ComposeError", False, "no raise"))
     except bc.ComposeError:
         failures.append(case("$disable.hooks unmatched entry -> ComposeError", True))
@@ -140,7 +140,7 @@ def main() -> int:
     base = {"permissions": {"allow": [], "deny": ["Glob(.claude/worktrees/**)", "Read(.claude/worktrees/**)"]}, "hooks": {}}
     project = {"permissions": {}, "hooks": {},
                "$disable": {"permissions.deny": ["Glob(.claude/worktrees/**)"]}}
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     failures.append(case("$disable.permissions.deny removes the named base entry",
                           merged["permissions"]["deny"] == ["Read(.claude/worktrees/**)"],
                           json.dumps(merged["permissions"])))
@@ -152,7 +152,7 @@ def main() -> int:
     base = {"permissions": {"allow": []}, "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
         {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/missing.py\""}]}]}}
     project = {"permissions": {}, "hooks": {}}
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     failures.append(case("prune: missing hook script drops the entry and the empty group",
                           merged["hooks"] == {}, json.dumps(merged["hooks"])))
     _rmtree_writable(root)
@@ -162,25 +162,21 @@ def main() -> int:
     root, hooks_dir = make_tree(skills=["present_skill"])
     base = {"permissions": {"allow": ["Skill(present_skill)", "Skill(absent_skill)"]}, "hooks": {}}
     project = {"permissions": {}, "hooks": {}}
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     failures.append(case("prune: Skill() absent command+skill dropped, present skill kept",
                           merged["permissions"]["allow"] == ["Skill(present_skill)"],
                           json.dumps(merged["permissions"])))
     _rmtree_writable(root)
 
-    # 6. Prune: a godot-stack permission entry is dropped when `godot` is not in the profile, and
-    #    kept when it is.
+    # 6. Compose names no engine: an allow row is kept whatever its noun, so a stack's rows reach a
+    #    consumer only through that layer's overlay (case 12).
     root, hooks_dir = make_tree()
-    base = {"permissions": {"allow": ["Bash(dotnet build:*)", "Bash(git status:*)"]}, "hooks": {}}
+    base = {"permissions": {"allow": ["Bash(toolchain build:*)", "Bash(git status:*)"]}, "hooks": {}}
     project = {"permissions": {}, "hooks": {}}
-    merged_no_godot = bc.compose_settings(base, project, hooks_dir, ["pure", "coding"])
-    merged_godot = bc.compose_settings(base, project, hooks_dir, ["pure", "coding", "godot"])
-    failures.append(case("prune: godot permission dropped without the godot layer",
-                          merged_no_godot["permissions"]["allow"] == ["Bash(git status:*)"],
-                          json.dumps(merged_no_godot["permissions"])))
-    failures.append(case("prune: godot permission kept with the godot layer",
-                          merged_godot["permissions"]["allow"] == ["Bash(dotnet build:*)", "Bash(git status:*)"],
-                          json.dumps(merged_godot["permissions"])))
+    merged = bc.compose_settings(base, project, hooks_dir)
+    failures.append(case("prune: no noun-based permission prune remains",
+                          merged["permissions"]["allow"] == ["Bash(toolchain build:*)", "Bash(git status:*)"],
+                          json.dumps(merged["permissions"])))
     _rmtree_writable(root)
 
     # 7. `canonical_json` is sorted-key, 2-space-indent, LF-terminated, and stable regardless of
@@ -300,7 +296,7 @@ def main() -> int:
     # The composed file is pre-written to already equal the composition (as if `compose` had run
     # before `migrate` reset `hash` to null) -- v2_compose must not treat "file already correct" as
     # a no-op with respect to the lock row.
-    already_composed = bc.canonical_json(bc.compose_settings(base_settings, project_settings, claude3 / "hooks", ["pure"]))
+    already_composed = bc.canonical_json(bc.compose_settings(base_settings, project_settings, claude3 / "hooks"))
     (claude3 / "settings.json").write_bytes(already_composed)
     (claude3 / "skills" / "project_subsystems").mkdir(parents=True)
     (claude3 / "skills" / "project_subsystems" / "adaptation.json").write_text("{}\n", encoding="utf-8")
@@ -411,7 +407,7 @@ def main() -> int:
     }
     owned = {"dispatch.py", "absorbed.py"}
     project = bc.derive_project_settings(base, full, owned)
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure", "coding", "godot"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     commands = [h["command"] for groups in merged["hooks"].values() for g in groups for h in g["hooks"]]
     failures.append(case("derive: project keeps only what base lacks",
                           project.get("env") == {"MINE": "x"}
@@ -436,7 +432,7 @@ def main() -> int:
     base = {"permissions": {"allow": ["A"]}}
     full = {"permissions": {"allow": ["A"], "defaultMode": "acceptEdits", "additionalDirectories": ["../x"]}}
     project = bc.derive_project_settings(base, full, set())
-    merged = bc.compose_settings(base, project, hooks_dir, ["pure"])
+    merged = bc.compose_settings(base, project, hooks_dir)
     failures.append(case("derive+compose: non-list permission keys survive",
                           merged["permissions"].get("defaultMode") == "acceptEdits"
                           and merged["permissions"].get("additionalDirectories") == ["../x"],
@@ -447,6 +443,166 @@ def main() -> int:
     failures.append(case("base_only_entries names what compose adds that full lacked",
                           adopted == ["permissions.allow B", "hook Stop: x", "env K"], repr(adopted)))
     _rmtree_writable(root)
+
+    # 12. Layer overlays: `settings.<layer>.json` documents merge into the shared input with the
+    #     same rules as the project file, BEFORE `$disable` validates and removes.
+    root, hooks_dir = make_tree(hooks=["a.py", "g.py", "h.py"])
+    hook = lambda name: {"type": "command", "command": f"python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/{name}.py\""}
+    base = {"permissions": {"allow": ["A"], "deny": ["D1"]},
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook("a")]}]}}
+    overlay = {"permissions": {"allow": ["Bash(toolchain:*)", "A"], "deny": ["mcp__godot__add_node"]},
+               "enabledPlugins": {"stack-lsp@x": True},
+               "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook("g")]},
+                                        {"matcher": "mcp__godot__run_project", "hooks": [hook("h")]}]}}
+    bare = bc.compose_settings(base, {}, hooks_dir, [])
+    layered = bc.compose_settings(base, {}, hooks_dir, [overlay])
+    failures.append(case("overlay: no overlay, no overlay rows",
+                         bare["permissions"] == {"allow": ["A"], "deny": ["D1"]}
+                         and "enabledPlugins" not in bare, json.dumps(bare["permissions"])))
+    failures.append(case("overlay: allow and deny rows reach the composition, ordered-union with base",
+                         layered["permissions"] == {"allow": ["A", "Bash(toolchain:*)"],
+                                                    "deny": ["D1", "mcp__godot__add_node"]},
+                         json.dumps(layered["permissions"])))
+    failures.append(case("overlay: a non-permission key deep-merges",
+                         layered.get("enabledPlugins") == {"stack-lsp@x": True}, json.dumps(layered)))
+    failures.append(case("overlay: hook groups append by matcher",
+                         layered["hooks"]["PreToolUse"] == [
+                             {"matcher": "Bash", "hooks": [hook("a"), hook("g")]},
+                             {"matcher": "mcp__godot__run_project", "hooks": [hook("h")]}],
+                         json.dumps(layered["hooks"])))
+    removed = bc.compose_settings(base, {"$disable": {"permissions.allow": ["Bash(toolchain:*)"],
+                                                      "permissions.deny": ["mcp__godot__add_node"],
+                                                      "hooks": [hook("g")["command"]]}},
+                                  hooks_dir, [overlay])
+    failures.append(case("overlay: $disable removes an overlay allow, deny and hook",
+                         removed["permissions"] == {"allow": ["A"], "deny": ["D1"]}
+                         and [h["command"] for g in removed["hooks"]["PreToolUse"] for h in g["hooks"]]
+                         == [hook("a")["command"], hook("h")["command"]],
+                         json.dumps(removed)))
+    try:
+        bc.compose_settings(base, {"$disable": {"permissions.allow": ["Bash(toolchain:*)"]}}, hooks_dir, [])
+        failures.append(case("overlay: $disable of an absent overlay row -> ComposeError", False, "no raise"))
+    except bc.ComposeError:
+        failures.append(case("overlay: $disable of an absent overlay row -> ComposeError", True))
+    projected = bc.compose_settings(base, {"permissions": {"allow": ["P"]}}, hooks_dir, [overlay])
+    failures.append(case("overlay: the project file merges after the overlay",
+                         projected["permissions"]["allow"] == ["A", "Bash(toolchain:*)", "P"],
+                         json.dumps(projected["permissions"])))
+    names = bc.settings_overlay_files(root / ".claude", ["pure", "coding", "godot"])
+    failures.append(case("overlay: no overlay file on disk, no overlay path", names == [], repr(names)))
+    (root / ".claude" / "settings.godot.json").write_text("{}\n", encoding="utf-8")
+    (root / ".claude" / "settings.coding.json").write_text("{}\n", encoding="utf-8")
+    names = bc.settings_overlay_files(root / ".claude", ["pure", "coding", "godot"])
+    failures.append(case("overlay: overlay paths follow profile order",
+                         [p.name for p in names] == ["settings.coding.json", "settings.godot.json"], repr(names)))
+    names = bc.settings_overlay_files(root / ".claude", ["pure", "coding"])
+    failures.append(case("overlay: a layer outside the profile contributes no path",
+                         [p.name for p in names] == ["settings.coding.json"], repr(names)))
+    _rmtree_writable(root)
+
+    # 13. Through `baseline_sync.py compose`: the lock row's inputs carry the overlay, a changed
+    #     overlay is drift, and a layer outside the profile is not merged even when its file is on disk.
+    def overlay_consumer(profile, recorded_inputs):
+        tmp = Path(tempfile.mkdtemp(prefix="bcompose_overlay_"))
+        claude = tmp / ".claude"
+        (claude / "hooks").mkdir(parents=True)
+        (claude / "tools").mkdir(parents=True)
+        for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
+            shutil.copy(_TOOLS_DIR / name, claude / "tools" / name)
+        (claude / "settings.base.json").write_text(json.dumps({"permissions": {"allow": ["A"]}}), encoding="utf-8")
+        (claude / "settings.godot.json").write_text(
+            json.dumps({"permissions": {"allow": ["G"], "deny": ["GD"]}}), encoding="utf-8")
+        (claude / "settings.project.json").write_text(json.dumps({"permissions": {"allow": ["B"]}}), encoding="utf-8")
+        (claude / "skills" / "project_subsystems").mkdir(parents=True)
+        (claude / "skills" / "project_subsystems" / "adaptation.json").write_text("{}\n", encoding="utf-8")
+        (claude / "skills" / "project_subsystems" / "SKILL.md").write_text(
+            "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: fixture-subsystem\n    paths: [fixture]\n```\n",
+            encoding="utf-8")
+        judged = {"sha": None, "verdict": "push", "at": "x", "borderline": False, "confirmed_at": None}
+        rows = {
+            ".claude/settings.base.json": {"status": "tracked", "layer": "pure", "hash": None, "judged": judged},
+            ".claude/settings.godot.json": {"status": "tracked", "layer": "godot", "hash": None, "judged": judged},
+            ".claude/settings.project.json": {"status": "local", "layer": "pure", "judged": None},
+            ".claude/settings.json": {"status": "composed", "layer": "pure", "hash": None,
+                                       "inputs": recorded_inputs, "judged": None},
+        }
+        lock_doc = {"schema": 2, "profile": profile, "substitutions": {},
+                    "baseline_repo": "https://example.invalid/x.git", "baseline_ref": "main",
+                    "synced_commit": "0" * 40, "identity": {"abbreviations": []}, "files": rows}
+        (claude / "baseline.lock.json").write_text(json.dumps(lock_doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+        def run(args):
+            return subprocess.run([sys.executable, str(claude / "tools" / "baseline_sync.py"), "compose"] + args,
+                                  cwd=str(tmp), capture_output=True, text=True, timeout=30)
+        return tmp, claude, run
+
+    plain_inputs = [".claude/settings.base.json", ".claude/settings.project.json"]
+    full_inputs = [".claude/settings.base.json", ".claude/settings.godot.json", ".claude/settings.project.json"]
+    tmp_g, claude_g, run_g = overlay_consumer("pure,coding,godot", plain_inputs)
+    r = run_g([])
+    composed = json.loads((claude_g / "settings.json").read_text(encoding="utf-8")) if (claude_g / "settings.json").is_file() else {}
+    failures.append(case("overlay compose: a godot consumer receives the overlay allow and deny",
+                         r.returncode == 0 and composed.get("permissions") == {"allow": ["A", "G", "B"], "deny": ["GD"]},
+                         r.stdout + r.stderr + json.dumps(composed)))
+    recorded = json.loads((claude_g / "baseline.lock.json").read_text(encoding="utf-8"))["files"][".claude/settings.json"]
+    failures.append(case("overlay compose: the lock row records the overlay between base and project",
+                         recorded.get("inputs") == full_inputs, json.dumps(recorded)))
+    r = run_g(["--check"])
+    failures.append(case("overlay compose: --check is clean after compose", r.returncode == 0, r.stdout + r.stderr))
+    (claude_g / "settings.godot.json").write_text(
+        json.dumps({"permissions": {"allow": ["G", "G2"], "deny": ["GD"]}}), encoding="utf-8")
+    r = run_g(["--check"])
+    failures.append(case("overlay compose: a changed overlay input is drift",
+                         r.returncode == 1 and "drift: .claude/settings.json" in r.stdout, r.stdout + r.stderr))
+    r = run_g([])
+    recomposed = json.loads((claude_g / "settings.json").read_text(encoding="utf-8"))
+    failures.append(case("overlay compose: a repeat compose picks up the changed overlay",
+                         r.returncode == 0 and "G2" in recomposed["permissions"]["allow"],
+                         r.stdout + r.stderr))
+    _rmtree_writable(tmp_g)
+
+    tmp_c, claude_c, run_c = overlay_consumer("pure,coding", plain_inputs)
+    r = run_c([])
+    composed = json.loads((claude_c / "settings.json").read_text(encoding="utf-8")) if (claude_c / "settings.json").is_file() else {}
+    failures.append(case("overlay compose: a pure,coding consumer gets no godot allow or deny",
+                         r.returncode == 0 and composed.get("permissions") == {"allow": ["A", "B"]},
+                         r.stdout + r.stderr + json.dumps(composed)))
+    recorded = json.loads((claude_c / "baseline.lock.json").read_text(encoding="utf-8"))["files"][".claude/settings.json"]
+    failures.append(case("overlay compose: a layer outside the profile stays out of the recorded inputs",
+                         recorded.get("inputs") == plain_inputs, json.dumps(recorded)))
+    _rmtree_writable(tmp_c)
+
+    # 14. The shipped base and every shipped overlay allow no form of `git push`, so a push reaches the
+    #     auto-mode classifier; the everyday git forms stay allowed. Matching follows the documented Bash
+    #     rule shape: `:*` equals a trailing ` *`, `*` matches any text, and a trailing ` *` also matches
+    #     the bare command.
+    import re as _re
+
+    def bash_rule_matches(rule, command):
+        m = _re.fullmatch(r"Bash\((.*)\)", rule)
+        if not m:
+            return False
+        pattern = m.group(1)
+        if pattern.endswith(":*"):
+            pattern = pattern[:-2] + " *"
+        rx = ".*".join(_re.escape(part) for part in pattern.split("*"))
+        if pattern.endswith(" *") and pattern.count("*") == 1:
+            rx = _re.escape(pattern[:-2]) + "(?: .*)?"
+        return _re.fullmatch(rx, command, _re.S) is not None
+
+    claude_dir = _TOOLS_DIR.parent
+    shipped_base = json.loads((claude_dir / "settings.base.json").read_text(encoding="utf-8"))
+    shipped_overlays = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(claude_dir.glob("settings.*.json"))
+                        if p.name not in ("settings.base.json", "settings.project.json", "settings.local.json")]
+    shared_allow = bc.merge_shared_settings(shipped_base, shipped_overlays).get("permissions", {}).get("allow", [])
+    push_forms = ["git push origin main", "git push", "git -C . push origin main",
+                  "git -c push.default=current push origin main", "git --no-pager push origin main"]
+    leaks = [(cmd, rule) for cmd in push_forms for rule in shared_allow if bash_rule_matches(rule, cmd)]
+    failures.append(case("shipped settings: no allow row matches a git push form", not leaks, repr(leaks)))
+    everyday = ["git status", "git diff --stat", "git log --oneline -5", "git commit -F msg.txt", "git add a.py",
+                "git worktree add ../wt -b x", "git fetch origin", "git rev-parse HEAD", "git show HEAD:a.py"]
+    missing = [cmd for cmd in everyday if not any(bash_rule_matches(rule, cmd) for rule in shared_allow)]
+    failures.append(case("shipped settings: everyday git forms stay allowed", not missing, repr(missing)))
 
     total = len(failures)
     failures = [f for f in failures if f]

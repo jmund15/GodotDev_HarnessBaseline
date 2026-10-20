@@ -1,0 +1,92 @@
+{
+  "enabledPlugins": {
+    "csharp-lsp@claude-plugins-official": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\" --worktree --editor-check --repair-inplace",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__godot__run_project"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/rail_probe_guard.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__godot__.*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\" --worktree --editor-check --repair-inplace",
+            "timeout": 30,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet clean:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet nuget:*)",
+      "Bash(dotnet tool list:*)",
+      "Bash(dotnet tool install:*)",
+      "Bash(dotnet tool run gdunit4:*)",
+      "Bash(dotnet gdunit4:*)",
+      "Bash(gdunit4:*)",
+      "Bash(dotnet:*)",
+      "Bash(xvfb-run --auto-servernum dotnet test *)",
+      "Bash(csharp-ls:*)",
+      "Bash(LSP_ADAPTER_DEBUG=1 csharp-ls:*)",
+      "Bash(LSP_ADAPTER_DEBUG=1 node:*)",
+      "Bash(ENABLE_LSP_TOOL=\"\" python3:*)",
+      "WebFetch(domain:godot-gdunit-labs.github.io)",
+      "WebFetch(domain:docs.godotengine.org)",
+      "WebFetch(domain:forum.godotengine.org)",
+      "WebFetch(domain:godotforums.org)",
+      "WebFetch(domain:godotshaders.com)",
+      "WebFetch(domain:haxegodot.github.io)",
+      "WebFetch(domain:kidscancode.org)",
+      "WebFetch(domain:www.nuget.org)",
+      "mcp__godot__*",
+      "Skill(jmodot)",
+      "Skill(testing)",
+      "Skill(regression_gate)",
+      "Skill(analyze_godot_logs)",
+      "Skill(pr_test_checklist)",
+      "Skill(game_vision)"
+    ],
+    "deny": [
+      "mcp__godot__create_scene",
+      "mcp__godot__add_node",
+      "mcp__godot__load_sprite",
+      "mcp__godot__save_scene",
+      "mcp__godot__export_mesh_library",
+      "mcp__godot__batch_scene_operations",
+      "mcp__godot__set_node_properties",
+      "mcp__godot__attach_script",
+      "mcp__godot__duplicate_node",
+      "mcp__godot__delete_nodes",
+      "mcp__godot__connect_signal",
+      "mcp__godot__disconnect_signal",
+      "mcp__godot__add_autoload",
+      "mcp__godot__remove_autoload",
+      "mcp__godot__update_autoload"
+    ]
+  }
+}

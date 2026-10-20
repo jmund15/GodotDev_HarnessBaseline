@@ -1452,6 +1452,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/reference/workstation_setup_land_runner.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/reference/workstation_setup_toolchain.md",
       "layer": "godot",
       "sync": "auto"
@@ -1583,7 +1588,7 @@
     },
     {
       "path": ".claude/commands/workstation_setup.md",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -2312,6 +2317,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/output-styles/terse.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/prototype_registry.md",
       "layer": "godot",
       "sync": "seed"
@@ -2779,6 +2789,11 @@
     {
       "path": ".claude/settings.base.json",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/settings.godot.json",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -3367,6 +3382,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/om_failed_retry/subagents/workflows/wf_3193d0a9-1e4/journal.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/om_failed_retry/workflows/wf_3193d0a9-1e4.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/om_session_pending/exec/codify-exec-floor.record.json",
       "layer": "pure",
       "sync": "auto"
@@ -3508,6 +3533,11 @@
     },
     {
       "path": ".claude/tests/fold_routing_vectors.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/lean_type_fallback_test.js",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4208,6 +4238,11 @@
     },
     {
       "path": ".claude/tests/test_orchestration_metrics_candidates.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_orchestration_metrics_failed_retry.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4953,6 +4988,11 @@
     },
     {
       "path": ".claude/tests/test_workflow_provider_guard_ladder.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_workflow_provider_guard_lean_loaded.py",
       "layer": "pure",
       "sync": "auto"
     },

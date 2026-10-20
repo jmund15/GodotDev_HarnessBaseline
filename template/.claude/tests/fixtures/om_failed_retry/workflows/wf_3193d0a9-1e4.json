@@ -1,0 +1,58 @@
+{
+ "runId": "wf_3193d0a9-1e4",
+ "timestamp": "2026-10-20T16:39:55.920Z",
+ "workflowName": "dispatch",
+ "status": "completed",
+ "startTime": 1792512983485,
+ "phases": [
+  {
+   "title": "Dispatch",
+   "detail": "all jobs concurrent (engine queues past the concurrency cap)"
+  }
+ ],
+ "defaultModel": "claude-opus-5-5",
+ "workflowProgress": [
+  {
+   "type": "workflow_phase",
+   "index": 1,
+   "title": "Dispatch"
+  },
+  {
+   "type": "workflow_agent",
+   "index": 1,
+   "label": "m3-S",
+   "phaseIndex": 1,
+   "phaseTitle": "Dispatch",
+   "model": "claude-sonnet-5-5[1m]",
+   "state": "error",
+   "error": "agent({agentType}): agent type 'lane-author' not found. ",
+   "queuedAt": 1792512983571,
+   "promptPreview": "",
+   "lastProgressAt": 1792512983571
+  },
+  {
+   "type": "workflow_agent",
+   "index": 2,
+   "label": "m3-S",
+   "phaseIndex": 1,
+   "phaseTitle": "Dispatch",
+   "agentId": "ac11a8499168f476d",
+   "agentType": "general-purpose",
+   "model": "claude-sonnet-5-5[1m]",
+   "state": "done",
+   "startedAt": 1792512983576,
+   "queuedAt": 1792512983572,
+   "attempt": 1,
+   "lastToolName": "Bash",
+   "lastToolSummary": "",
+   "promptPreview": "",
+   "promptFramed": true,
+   "lastProgressAt": 1792514393761,
+   "tokens": 289528,
+   "toolCalls": 131,
+   "durationMs": 1410184,
+   "resultPreview": ""
+  }
+ ],
+ "agentCount": 2
+}

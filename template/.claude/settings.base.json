@@ -1,10 +1,10 @@
 {
+  "disableClaudeAiConnectors": true,
   "enabledPlugins": {
-    "claude-code-setup@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false,
     "context7@claude-plugins-official": true,
-    "csharp-lsp@claude-plugins-official": true,
-    "explanatory-output-style@claude-plugins-official": true
+    "explanatory-output-style@claude-plugins-official": false
   },
   "env": {
     "CLAUDE_CODE_GLOB_NO_IGNORE": "false",
@@ -16,6 +16,17 @@
         "hooks": [
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/log_instruction_loads.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/denial_coach.py\" --record",
             "timeout": 10,
             "type": "command"
           }
@@ -61,6 +72,43 @@
           }
         ],
         "matcher": "Skill"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/memory_hits_logger.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__ai-worker__read_files"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_table.py\" --launch",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Workflow|Agent"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_table.py\" --launch",
+            "if": "Bash(*_sidecar.sh*)",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_table.py\" --launch",
+            "if": "Bash(*sidecar_fanout.py*)",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
       }
     ],
     "PreCompact": [
@@ -153,12 +201,21 @@
       {
         "hooks": [
           {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\" --worktree --editor-check --repair-inplace",
-            "timeout": 30,
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/overnight_ask_guard.py\"",
             "type": "command"
           }
         ],
-        "matcher": "mcp__godot__run_project"
+        "matcher": "AskUserQuestion"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/rail_probe_guard.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "LSP|NotebookEdit|EnterWorktree|CronCreate|RemoteTrigger|mcp__ai-worker__.*"
       }
     ],
     "SessionStart": [
@@ -171,11 +228,6 @@
           },
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_model_rails.py\"",
-            "timeout": 30,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tres_script_strip_guard.py\" --worktree --editor-check --repair-inplace",
             "timeout": 30,
             "type": "command"
           }
@@ -192,44 +244,39 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_compaction_rail.py\"",
             "timeout": 15,
             "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/sidecar_recompact_reprompt.py\"",
+            "timeout": 15,
+            "type": "command"
           }
         ],
         "matcher": "compact"
       }
     ],
-    "UserPromptSubmit": [
+    "Stop": [
       {
         "hooks": [
           {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_memory_loader.py\"",
-            "timeout": 30,
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_table.py\" --complete",
+            "timeout": 10,
             "type": "command"
-          },
+          }
+        ]
+      },
+      {
+        "hooks": [
           {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/critical_analysis_reminder.py\"",
-            "timeout": 30,
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/denial_coach.py\" --coach",
+            "timeout": 10,
             "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_git_state_delta.py\"",
-            "timeout": 15,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_cumulative_reset.py\"",
-            "timeout": 5,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tool_routing_prompt_synthesis.py\"",
-            "timeout": 5,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/shell_census.py\"",
-            "timeout": 25,
-            "type": "command"
-          },
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/runaway_scan_reaper.py\"",
             "timeout": 10,
@@ -239,26 +286,74 @@
       }
     ]
   },
+  "outputStyle": "terse",
   "permissions": {
     "ask": [
       "Bash(bash .claude/scripts/*_sidecar.sh * -t +Bash *)"
     ],
     "allow": [
-      "Bash(dotnet build:*)",
-      "Bash(dotnet test:*)",
-      "Bash(dotnet clean:*)",
-      "Bash(dotnet restore:*)",
-      "Bash(dotnet nuget:*)",
-      "Bash(dotnet tool list:*)",
-      "Bash(dotnet tool install:*)",
-      "Bash(dotnet tool run gdunit4:*)",
-      "Bash(dotnet gdunit4:*)",
-      "Bash(gdunit4:*)",
-      "Bash(git:*)",
-      "Bash(git -C:*)",
+      "Bash(git --version:*)",
+      "Bash(git add:*)",
+      "Bash(git apply:*)",
+      "Bash(git archive:*)",
+      "Bash(git bisect:*)",
+      "Bash(git blame:*)",
+      "Bash(git branch:*)",
+      "Bash(git cat-file:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git checkout:*)",
+      "Bash(git cherry:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git clean:*)",
+      "Bash(git clone:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(git describe:*)",
+      "Bash(git diff:*)",
+      "Bash(git diff-tree:*)",
+      "Bash(git fetch:*)",
+      "Bash(git for-each-ref:*)",
+      "Bash(git format-patch:*)",
+      "Bash(git grep:*)",
+      "Bash(git hash-object:*)",
+      "Bash(git init:*)",
+      "Bash(git log:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git merge:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git mv:*)",
+      "Bash(git notes:*)",
+      "Bash(git pull:*)",
+      "Bash(git range-diff:*)",
+      "Bash(git rebase:*)",
+      "Bash(git reflog:*)",
+      "Bash(git remote:*)",
+      "Bash(git reset:*)",
+      "Bash(git restore:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git revert:*)",
+      "Bash(git rm:*)",
+      "Bash(git shortlog:*)",
+      "Bash(git show:*)",
+      "Bash(git show-ref:*)",
+      "Bash(git stash:*)",
+      "Bash(git status:*)",
+      "Bash(git submodule:*)",
+      "Bash(git switch:*)",
+      "Bash(git symbolic-ref:*)",
+      "Bash(git tag:*)",
+      "Bash(git worktree:*)",
+      "Bash(wmic process get:*)",
       "Bash(GIT_EDITOR=true git rebase:*)",
-      "Bash(gh pr:*)",
-      "Bash(gh api:*)",
+      "Bash(gh pr close:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
       "Bash(gh auth status:*)",
       "Bash(gh label create:*)",
       "Bash(claude mcp:*)",
@@ -271,13 +366,16 @@
       "Bash(uv:*)",
       "Bash(uv run:*)",
       "Bash(bash:*)",
+      "Bash(/tmp/*)",
       "Bash(curl:*)",
       "Bash(wget:*)",
+      "Bash(ollama:*)",
       "Bash(unzip:*)",
       "Bash(chmod:*)",
       "Bash(ln:*)",
       "Bash(which:*)",
       "Bash(where:*)",
+      "Bash(where.exe:*)",
       "Bash(echo:*)",
       "Bash(printf:*)",
       "Bash(printenv:*)",
@@ -287,6 +385,7 @@
       "Bash(dir:*)",
       "Bash(tree:*)",
       "Bash(find:*)",
+      "Bash(findstr:*)",
       "Bash(grep:*)",
       "Bash(cat:*)",
       "Bash(head:*)",
@@ -303,6 +402,7 @@
       "Bash(test:*)",
       "Bash(mkdir:*)",
       "Bash(rm:*)",
+      "Bash(del:*)",
       "Bash(cp:*)",
       "Bash(tee:*)",
       "Bash(timeout:*)",
@@ -312,27 +412,57 @@
       "Bash(pkill:*)",
       "Bash(pgrep:*)",
       "Bash(for:*)",
+      "Bash(do echo:*)",
+      "Bash(do test:*)",
+      "Bash(done)",
+      "Bash(IFS=: read:*)",
+      "Bash(if not exist:*)",
       "Bash(powershell:*)",
       "Bash(powershell.exe:*)",
       "Bash(powershell -Command:*)",
+      "Bash(Format-List:*)",
+      "Bash(Get-ChildItem:*)",
+      "Bash(Get-Content:*)",
+      "Bash(Get-Process:*)",
+      "Bash(Measure-Object:*)",
+      "Bash(Remove-Item:*)",
+      "Bash(Select-Object:*)",
+      "Bash(Select-String:*)",
+      "Bash(select-string:*)",
+      "Bash(Start-Sleep:*)",
+      "Bash(Write-Host:*)",
       "Bash(tasklist:*)",
+      "Bash(tasklist.exe:*)",
       "Bash(taskkill:*)",
       "Bash(cygpath:*)",
       "Bash(cmd //c:*)",
+      "Edit(.claude/**)",
+      "Read(//tmp/**)",
       "WebSearch",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:gist.github.com)",
-      "WebFetch(domain:godot-gdunit-labs.github.io)",
-      "WebFetch(domain:docs.godotengine.org)",
-      "WebFetch(domain:forum.godotengine.org)",
+      "WebFetch(domain:gist.githubusercontent.com)",
+      "WebFetch(domain:githubnext.github.io)",
       "WebFetch(domain:learn.microsoft.com)",
-      "WebFetch(domain:www.nuget.org)",
       "WebFetch(domain:www.npmjs.com)",
       "WebFetch(domain:obsidian.md)",
       "WebFetch(domain:docs.anthropic.com)",
-      "mcp__godot__*",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:linux.die.net)",
+      "WebFetch(domain:src.fedoraproject.org)",
+      "WebFetch(domain:www.x.org)",
+      "WebFetch(domain:www.obsidianstats.com)",
+      "WebFetch(domain:taskgenius.md)",
+      "WebFetch(domain:bigdewlap.com)",
+      "WebFetch(domain:blog.febucci.com)",
+      "WebFetch(domain:softwarewitchcraft.com)",
+      "WebFetch(domain:straydragon.github.io)",
+      "Workflow",
+      "mcp__claude-in-chrome__tabs_context_mcp",
       "mcp__plugin_context7_context7__resolve-library-id",
       "mcp__plugin_context7_context7__query-docs",
       "mcp__plugin_semantic-search_semantic-search__search",
@@ -341,6 +471,9 @@
       "Skill(architecture_brainstorm)",
       "Skill(idea_brainstorm)",
       "Skill(autolearn)",
+      "Skill(codify)",
+      "Skill(plan_check)",
+      "Skill(plan_check:*)",
       "Skill(project_subsystems)",
       "Skill(sync_subsystems)",
       "Skill(sync_baseline)",
@@ -348,11 +481,7 @@
       "Skill(self_evaluate)",
       "Skill(session_audit)",
       "Skill(session_end)",
-      "Skill(jmodot)",
-      "Skill(testing)",
-      "Skill(regression_gate)",
       "Skill(memory_graph)",
-      "Skill(analyze_godot_logs)",
       "Skill(commit_push)",
       "Skill(clean_push)",
       "Skill(clean_pull)",
@@ -360,7 +489,7 @@
       "Skill(review_pr)",
       "Skill(review_prs)",
       "Skill(merge_pr)",
-      "Skill(pr_test_checklist)",
+      "Skill(test_compact)",
       "Skill(doc_full)",
       "Skill(doc_architecture)",
       "Skill(doc_retrospective)",
@@ -368,8 +497,7 @@
       "Skill(create_obsidian_design_doc)",
       "Skill(eval_dashboard)",
       "Skill(routing_audit)",
-      "Skill(worklog)",
-      "Skill(game_vision)"
+      "Skill(worklog)"
     ],
     "deny": [
       "Glob(.claude/worktrees/**)",
@@ -380,5 +508,17 @@
       "ReportFindings",
       "ScheduleWakeup"
     ]
+  },
+  "skillOverrides": {
+    "claude-api": "user-invocable-only",
+    "dataviz": "user-invocable-only",
+    "fewer-permission-prompts": "user-invocable-only",
+    "init": "user-invocable-only",
+    "keybindings-help": "user-invocable-only",
+    "plugin-authoring": "user-invocable-only",
+    "run": "user-invocable-only",
+    "security-review": "user-invocable-only",
+    "simplify": "user-invocable-only",
+    "update-config": "user-invocable-only"
   }
 }

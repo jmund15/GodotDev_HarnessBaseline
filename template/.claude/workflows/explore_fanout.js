@@ -139,6 +139,13 @@ const boundedVerification = verification => ({
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
+// A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
+const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
+  const msg = String((e && e.message) || e)
+  if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
+  log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
+  return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
+})
 const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
@@ -206,7 +213,7 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
     if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
     command = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + quoteArg(JSON.stringify(launched)) + ' && ' + command
     log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
-    verification = await agent('Run exactly this command with Bash: ' + command
+    verification = await verifierAgent('Run exactly this command with Bash: ' + command
       + '\nThen Read its --out file, even if the command exits 1. Return ONLY {status, counts, verdicts, report, note}.'
       + ' Copy status and counts. Map each verdict key to its verdict string, without changing values. Set report to the --out path and nothing else; put any observation in note (optional).'
       + ' Do not check evidence yourself, change permissions, or run another command.',

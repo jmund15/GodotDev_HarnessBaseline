@@ -47,17 +47,17 @@ Ask the user which new permissions to add to `settings.json`. Options:
 Before scanning transcripts, examine all hyper-specific entries in local and user-global that were NOT directly promotable. These are entries with hardcoded paths, specific arguments, or one-off patterns.
 
 **For each hyper-specific entry:**
-1. Extract the command prefix (e.g., `git -C` from `Bash(git -C "C:\\Users\\...specific path...")`)
-2. Check if a wildcard version already exists in tracked — check BOTH syntax forms: `Bash(cmd *)` AND `Bash(cmd:*)`
-3. If BOTH wildcard forms are tracked: skip
-4. If only one form is tracked: propose adding the missing form (Claude Code uses exact string matching)
-5. If neither wildcard form is tracked: flag it as a generalization candidate — propose BOTH forms
+1. Extract the command prefix through its subcommand (e.g., `Select-String` from `Bash(Select-String -Pattern "error")`, `git status` from `Bash(git status --short)`)
+2. If a tracked rule already matches the prefix, skip it. `Bash(cmd *)` and `Bash(cmd:*)` match the same commands, so either form counts.
+3. Never propose a rule that also matches a `git push`: `Bash(git:*)`, `Bash(git -C:*)`, or any rule with a `*` before the git subcommand. A push must reach the auto-mode classifier, and a `git -C <path> <subcommand>` entry has no rule that excludes push, so skip it.
+4. Otherwise flag it as a generalization candidate in the `:*` form
 
 **Present a generalization table:**
 
 | Specific Entry (Source) | Proposed Generalization | Already Covered? |
 |---|---|---|
-| `Bash(git -C "C:\\...\\{{PROJECT_NAME}}" status)` | `Bash(git -C:*)` | ✅ Yes — skip |
+| `Bash(git -C "C:\\...\\{{PROJECT_NAME}}" status)` | none: `Bash(git -C:*)` would also approve push | ⛔ Never — skip |
+| `Bash(git status --short)` | `Bash(git status:*)` | ✅ Yes — skip |
 | `Bash(Select-String -Pattern "error")` | `Bash(Select-String:*)` | ❌ No — NEW |
 | `Bash(timeout /t 4 /nobreak)` | `Bash(timeout:*)` | ❌ No — NEW |
 | `Bash(Get-Content "..." -Tail 200)` | `Bash(Get-Content:*)` | ❌ No — NEW |
@@ -82,7 +82,7 @@ Do NOT scan transcript files from other sessions — only this session's ID.
 2. Find this session's transcript backups by matching the session ID in filenames under `logs/transcript_backups/`
 3. Parse those `.jsonl` files for `"type":"tool_use"` entries to extract tool names and Bash command prefixes
 4. Combine results from both sources, deduplicate
-5. Subtract all permissions already in `settings.json` (including wildcard coverage — e.g., `Bash(git -C:*)` covers all `Bash(git -C ...)` variants)
+5. Subtract all permissions already in `settings.json` (including wildcard coverage — e.g., `Bash(git status:*)` covers all `Bash(git status ...)` variants), and drop any candidate that step 6 item 3 bars
 6. Present any NEW tool permissions as a separate table
 
 **Important filtering:**

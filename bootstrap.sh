@@ -21,7 +21,8 @@
 #   4. Writes .claude/baseline.lock.json via baseline_sync.py init (v2, with --layers
 #      recorded as the lock profile) so /sync_baseline works from day one.
 #   5. Runs baseline_sync.py compose, which writes .claude/settings.json from the copied
-#      settings.base.json + settings.project.json seed, pruning per the adopted layers.
+#      settings.base.json, the adopted layers' settings.<layer>.json overlays and the
+#      settings.project.json seed, pruning a missing hook script or Skill grant.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -132,10 +133,10 @@ for p in (target / ".claude").rglob("*"):
 print(f"substitutions applied in {changed} files")
 EOF
 
-# Layer-aware settings.json pruning (a missing hook script, an absent Skill(<name>)
-# command/skill, or a godot-stack permission when `godot` was not adopted) now lives in
+# Layer-aware settings.json composition (each adopted layer's settings.<layer>.json merged over
+# settings.base.json, then a missing hook script or an absent Skill(<name>) pruned) lives in
 # `baseline_compose.compose_settings` (R3/R10), run by `compose` below, after `init` has
-# written the lock `profile` those filters read.
+# written the lock `profile` that picks the overlays.
 ( cd "$TARGET" && python3 .claude/tools/baseline_sync.py init \
     --baseline-dir "$HERE" --repo "$REPO" --ref "$REF" --layers "$LAYERS" \
     --sub "{{PROJECT_NAME}}=$PROJECT_NAME" \
@@ -152,7 +153,7 @@ Bootstrapped. Next steps in $TARGET:
   3. Create the Obsidian dirs: <vault>/DevProjects/$PROJECT_NAME/Claude/TODO/.
   4. Review permissions in .claude/settings.project.json (project) or .claude/settings.local.json
      (this machine); run /sync_permissions later.
-  5. In the first Claude session: /system_check, then /reindex_search. On a new machine with
-     the godot layer, /workstation_setup provisions the toolchain and runs /reindex_search.
+  5. In the first Claude session: /system_check, then /reindex_search. On a new machine,
+     /workstation_setup provisions it (its toolchain phases when godot is adopted) and runs /reindex_search.
   6. Commit .claude/ including baseline.lock.json.
 NEXT

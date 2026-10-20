@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(dotnet:*), Bash(git:*), Bash(python3 .claude/tools/task_record.py:*), Glob, Grep, Read, Edit, Write, TaskCreate, TaskUpdate, SlashCommand
+allowed-tools: Bash(dotnet:*), Bash(python3 .claude/tools/task_record.py:*), Glob, Grep, Read, Edit, Write, TaskCreate, TaskUpdate, SlashCommand
 description: Autonomously execute an approved, converged plan as a TDD slice loop; halts on its stop valves
 ---
 

@@ -11,8 +11,12 @@ Three things live here and nothing else does:
               plugin scopes). An installed-or-not fact goes stale the moment `~/.claude.json`
               changes, and a stale "present" routes bulk I/O at a server that is not there.
   stamp       hashes the inputs `commands/workstation_setup.md` declares in its `stamp-inputs:`
-              frontmatter, so the list sits beside the procedure that consumes it and a change to
+              frontmatter, plus those each `commands/reference/workstation_setup_*.md` declares the
+              same way, so the list sits beside the procedure that consumes it and a change to
               either one shows up as drift at the next session start.
+
+The checks `stamp` re-runs first (`preflight`) come from the layer modules installed beside this
+file. The core has none of its own: a consumer without a layer module is refused for nothing.
 
 Profile: `~/.claude/workstation_profile.json` — never under a redirected Documents folder, and
 overridable with WORKSTATION_PROFILE_PATH so a proof can plant one. Writes are whole-file atomic.
@@ -32,18 +36,16 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree
 
 __all__ = [
     "AI_WORKER_VALUES", "DEFAULT_PROFILE", "FULL_MIN_MIB", "PROFILE_ENV", "SCHEMA", "SMALL_MIN_MIB",
-    "TIERS", "ai_worker", "godot_project", "gpu_tier", "input_hashes", "local_nuget_feeds",
-    "local_tier", "main_checkout_root", "preflight", "profile_key", "profile_path", "read_gpu",
-    "read_profile", "record", "setup_status", "stamp", "stamp_inputs", "update_profile", "write_profile",
+    "TIERS", "ai_worker", "gpu_tier", "input_hashes", "local_tier", "main_checkout_root", "preflight",
+    "profile_key", "profile_path", "read_gpu", "read_profile", "record", "setup_status", "stamp",
+    "stamp_inputs", "update_profile", "write_profile",
 ]
 
 SCHEMA = 1
@@ -63,6 +65,8 @@ PROFILE_ENV = "WORKSTATION_PROFILE_PATH"
 DEFAULT_PROFILE = "~/.claude/workstation_profile.json"
 STAMP_INPUTS_KEY = "stamp-inputs:"
 SETUP_DOC = os.path.join(".claude", "commands", "workstation_setup.md")
+REFERENCE_DIR = os.path.join(".claude", "commands", "reference")
+REFERENCE_PREFIX = "workstation_setup_"
 
 GPU_QUERY = ("nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader")
 
@@ -213,38 +217,78 @@ def _unquote(value):
     return value
 
 
-def stamp_inputs(root):
-    """The inputs declared by `commands/workstation_setup.md`'s `stamp-inputs:`, or None.
+def _declaration(text):
+    """(present, inputs) for one document's `stamp-inputs:` frontmatter key.
 
-    None covers absent, empty and unparsable alike, and a None reads as UNAUDITED at every caller:
-    a stamp with no input list would certify the machine forever.
+    `present` is whether the key is there at all; `inputs` is its list, or None when the key is
+    present but empty or malformed.
     """
-    path = os.path.join(str(root), SETUP_DOC)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-    except OSError:
-        return None
     block = _frontmatter(text)
     if block is None:
-        return None
+        return False, None
     declared, reading = [], False
     for line in block:
         stripped = line.strip()
         if not reading:
-            reading = stripped == STAMP_INPUTS_KEY
+            if stripped == STAMP_INPUTS_KEY:
+                reading = True
+            elif stripped.startswith(STAMP_INPUTS_KEY):
+                return True, None  # an inline scalar is not a list
             continue
         if not stripped or stripped.startswith("#"):
             continue  # a blank line or a comment inside the list does not end it
         if line[:1] not in (" ", "\t"):
             break  # a new top-level key ends the block
         if not stripped.startswith("- "):
-            return None
+            return True, None
         value = _unquote(stripped[2:].strip())
         if not value:
-            return None
+            return True, None
         declared.append(value)
-    return declared or None
+    return reading, declared or None
+
+
+def _read_text(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def stamp_inputs(root):
+    """The inputs declared by `commands/workstation_setup.md`'s `stamp-inputs:`, then by each
+    `commands/reference/workstation_setup_*.md` that declares any, or None.
+
+    None covers absent, empty and unparsable alike, in the command or in a reference that has the
+    key, and a None reads as UNAUDITED at every caller: a stamp with no input list would certify
+    the machine forever. A reference without the key adds nothing. A path declared twice is listed
+    once, at its first place.
+    """
+    text = _read_text(os.path.join(str(root), SETUP_DOC))
+    if text is None:
+        return None
+    present, declared = _declaration(text)
+    if not present or not declared:
+        return None
+    directory = os.path.join(str(root), REFERENCE_DIR)
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        names = []
+    for name in names:
+        if not (name.startswith(REFERENCE_PREFIX) and name.endswith(".md")):
+            continue
+        text = _read_text(os.path.join(directory, name))
+        if text is None:
+            continue
+        present, extra = _declaration(text)
+        if not present:
+            continue
+        if not extra:
+            return None
+        declared.extend(value for value in extra if value not in declared)
+    return declared
 
 
 def input_hashes(root, paths):
@@ -308,50 +352,35 @@ def setup_status(root):
     return "OK"
 
 
-def _cmd_exists(name):
-    return shutil.which(name) is not None
+def _sibling_path(name):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
 
 
-def local_nuget_feeds(root):
-    """The `nuget.config` package sources that name a local folder (not a URL)."""
-    path = os.path.join(str(root), "nuget.config")
-    try:
-        tree = xml.etree.ElementTree.parse(path)
-    except (OSError, xml.etree.ElementTree.ParseError):
-        return []
-    feeds = []
-    for node in tree.iter("add"):
-        value = (node.get("value") or "").strip()
-        if value and "://" not in value:
-            feeds.append(os.path.join(str(root), value))
-    return feeds
-
-
-def godot_project(root):
-    """True when `root` holds a Godot project (`project.godot`); the Godot toolchain checks apply only then."""
-    return os.path.isfile(os.path.join(str(root), "project.godot"))
+def _load_module(name, path):
+    """A module loaded from `path`, so any cwd and sys.path work."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def preflight(root):
     """The cheap checks `stamp` re-runs before it records anything. A non-empty list refuses.
 
     These are the stamp's own observations, never a count handed in by the caller: a stamp
-    certifying a machine whose toolchain is absent is worse than no stamp at all. The .NET SDK and
-    `GODOT_BIN` checks apply to a Godot project only; elsewhere they are not applicable and add nothing.
+    certifying a machine whose toolchain is absent is worse than no stamp at all. The checks belong
+    to the layer module installed beside this file; with none installed there are none to run. An
+    installed module that cannot load, or has no `preflight`, refuses the stamp: a broken check
+    must not read as a passed one.
     """
-    failures = []
-    if godot_project(root):
-        if not _cmd_exists("dotnet"):
-            failures.append(".NET SDK not on PATH")
-        godot = os.environ.get("GODOT_BIN")
-        if not godot:
-            failures.append("GODOT_BIN is not set")
-        elif not os.path.isfile(godot):
-            failures.append("GODOT_BIN does not resolve to a file: %s" % godot)
-    for feed in local_nuget_feeds(root):
-        if not os.path.isdir(feed):
-            failures.append("nuget.config local feed folder is missing: %s" % feed)
-    return failures
+    try:
+        name = "workstation_profile_godot"
+        if not os.path.isfile(_sibling_path(name)):
+            return []
+        return list(_load_module(name, _sibling_path(name)).preflight(root))
+    except Exception as exc:
+        return ["%s could not load or run: %s: %s" % (name, type(exc).__name__, exc)]
 
 
 def record(ai_worker_value=None):

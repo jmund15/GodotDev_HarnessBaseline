@@ -538,7 +538,9 @@ def load_settings(root: Path) -> dict:
     base = json.loads(base_file.read_text(encoding="utf-8"))
     project_file = root / "settings.project.json"
     project = json.loads(project_file.read_text(encoding="utf-8")) if project_file.is_file() else {}
-    return baseline_compose.compose_settings(base, project, root / "hooks", ["pure", "coding", "godot"])
+    overlays = [json.loads(path.read_text(encoding="utf-8"))
+                for path in baseline_compose.settings_overlay_files(root, ("pure", "coding", "godot"))]
+    return baseline_compose.compose_settings(base, project, root / "hooks", overlays)
 
 
 EXACT_MATCHER_RE = re.compile(r"[A-Za-z0-9_|, -]+")

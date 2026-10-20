@@ -6,22 +6,18 @@ import subprocess
 import sys
 import tempfile
 
-import _settings_probe
-
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SETTINGS = _settings_probe.settings_path(os.path.join(ROOT, ".claude"))
 BASENAME = "tool_routing_cumulative_reset.py"
 NUDGE = os.path.join(ROOT, ".claude", "hooks", "tool_routing_nudge.py")
 
 
 def registered_hook():
-    with open(SETTINGS, encoding="utf-8") as fh:
-        settings = json.load(fh)
-    for group in settings["hooks"]["UserPromptSubmit"]:
-        for hook in group.get("hooks", []):
-            if BASENAME in hook.get("command", ""):
-                return os.path.join(ROOT, ".claude", "hooks", BASENAME)
-    raise AssertionError(f"{BASENAME} is not registered for UserPromptSubmit")
+    """The shared input no longer registers this hook (a consumer opts in from its project file), so
+    the proof drives the shipped file with the payload a registration would feed it."""
+    hook = os.path.join(ROOT, ".claude", "hooks", BASENAME)
+    if not os.path.isfile(hook):
+        raise AssertionError(f"{BASENAME} is not shipped")
+    return hook
 
 
 def run(hook, prompt, sid, env):
