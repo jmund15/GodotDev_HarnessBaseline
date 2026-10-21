@@ -316,9 +316,10 @@ def _ladder_disagreement(tokens="`architect` `executor` `scout`"):
     import tempfile
     source = mr.ladder_path()
     text = source.read_text(encoding="utf-8")
-    before = "| opus | design & execution"
+    # Anchored on the row's start, not its strengths prose, which ladder edits reword.
+    before = "\n| opus | "
     assert text.count(before) == 1
-    text = text.replace(before, "| opus | " + tokens + " — design & execution", 1)
+    text = text.replace(before, before + tokens + " — ", 1)
     path = os.path.join(tempfile.mkdtemp(prefix="mladder_"), "ladder.md")
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)

@@ -510,6 +510,8 @@ def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True):
     remote = _remote(path)
     baseline = path / "baseline"
     _init_repo(baseline)
+    # identity's template-token read lists `template/`; a baseline without one has nothing to list.
+    _write(baseline / "template" / ".gitkeep", b"")
     manifest_rows = []
     for relpath, entry in rows.items():
         if not entry.get("manifest", True):
@@ -611,7 +613,7 @@ def test_v2_classify_layer_sets_overrides_from_and_refuses_unknown() -> None:
         root, _baseline, _remote_path, _commit_sha = _v2_fixture(
             path, {rel: {"upstream": b"value = 1\n"}, source: {"upstream": b"value = 2\n"}}
         )
-        first = _run(root, "classify", rel, "--status", "local", "--layer", "coding", "--force")
+        first = _run(root, "classify", rel, "--status", "local", "--layer", "coding", "--force", "--relayer")
         assert first.returncode == 0, first.stderr.decode(errors="replace")
         assert _load_lock(root)["files"][rel]["layer"] == "coding"
         _assert_no_change(_run(root, "classify", rel, "--status", "local", "--layer", "coding"))
@@ -620,12 +622,12 @@ def test_v2_classify_layer_sets_overrides_from_and_refuses_unknown() -> None:
         assert _load_lock(root)["files"][rel]["layer"] == "coding"
         wrong_op = _run(root, "judge", rel, "--verdict", "keep-local", "--layer", "pure")
         assert wrong_op.returncode == 2, wrong_op.stdout.decode(errors="replace")
-        seeded = _run(root, "classify", source, "--status", "local", "--layer", "godot", "--force")
+        seeded = _run(root, "classify", source, "--status", "local", "--layer", "godot", "--force", "--relayer")
         assert seeded.returncode == 0, seeded.stderr.decode(errors="replace")
         copied = _run(root, "classify", rel, "--status", "local", "--from", source)
         assert copied.returncode == 0, copied.stderr.decode(errors="replace")
         assert _load_lock(root)["files"][rel]["layer"] == "godot"
-        overridden = _run(root, "classify", rel, "--status", "local", "--from", source, "--layer", "pure")
+        overridden = _run(root, "classify", rel, "--status", "local", "--from", source, "--layer", "pure", "--relayer")
         assert overridden.returncode == 0, overridden.stderr.decode(errors="replace")
         assert _load_lock(root)["files"][rel]["layer"] == "pure"
 
@@ -1954,6 +1956,109 @@ def test_check_reports_layer_closure_and_strict_fails() -> None:
         assert strict.returncode == 0, _out(strict)
 
 
+def _drop_layer(root: Path, rel: str) -> None:
+    lock = _load_lock(root)
+    del lock["files"][rel]["layer"]
+    _write_json(root / ".claude" / "baseline.lock.json", lock)
+    _commit(root, "drop layer")
+
+
+def test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it() -> None:
+    rel = ".claude/commands/leaky_judged.md"
+    subsystem_id = "brew" + "Cauldron"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"clean\n"}})
+        skill_md = "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: " + subsystem_id + "\n    paths: []\n```\n"
+        _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", skill_md.encode())
+        _write(root / rel, ("The " + subsystem_id + " owns this file.\n").encode())
+        _git(root, "add", "-A")
+        refused = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        out = _out(refused)
+        assert refused.returncode == 1 and "identity scan hit" in out, out
+        assert "judged" not in _load_lock(root)["files"][rel], out
+        hit_id = out.split("--accept-hit ", 1)[1].split()[0]
+        accepted = _run_baseline(root, baseline, "judge", rel, "--verdict", "push", "--accept-hit", hit_id)
+        assert accepted.returncode == 0, _out(accepted)
+        assert _load_lock(root)["files"][rel]["judged"]["verdict"] == "push"
+        kept = _run_baseline(root, baseline, "judge", rel, "--verdict", "keep-local", "--force")
+        assert kept.returncode == 0, _out(kept)
+
+
+def test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks() -> None:
+    new_rel = ".claude/tools/brand_new.py"
+    shipped = ".claude/tools/shipped.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            new_rel: {"manifest": False, "local": b"v = 1\n", "hash": None},
+            shipped: {"upstream": b"v = 2\n", "local": b"v = 3\n"},
+        })
+        _drop_layer(root, new_rel)
+        _drop_layer(root, shipped)
+        refused = _run_baseline(root, baseline, "judge", new_rel, "--verdict", "push")
+        out = _out(refused)
+        assert refused.returncode == 1, out
+        assert "classify " + new_rel in out and "--layer pure|coding|godot" in out, out
+        assert "judged" not in _load_lock(root)["files"][new_rel]
+        ok = _run_baseline(root, baseline, "judge", shipped, "--verdict", "push")
+        assert ok.returncode == 0, _out(ok)
+
+
+def test_j3_write_prints_the_layer_closure_it_adds() -> None:
+    skill = ".claude/skills/demo/SKILL.md"
+    detail = ".claude/skills/demo/reference/detail.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            skill: {"upstream": b"Read [detail](reference/detail.md) first.\n"},
+            detail: {"manifest": False, "local": b"detail\n", "hash": None},
+        })
+        result = _run_baseline(root, baseline, "ignore", detail, "--force")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert "layer-closure" in out and skill + ": local-only" in out, out
+        again = _run_baseline(root, baseline, "ignore", skill, "--force")
+        assert skill + ": local-only" not in _out(again), _out(again)
+
+
+def test_j3_keep_local_on_an_unshipped_tracked_row_sets_local() -> None:
+    rel = ".claude/tools/never_shipped.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            rel: {"manifest": False, "local": b"v = 1\n", "hash": None},
+        })
+        before = _json_output(_run_baseline(root, baseline, "check", "--json"))
+        assert before["results"][rel] == "unpublished", before
+        judged = _run_baseline(root, baseline, "judge", rel, "--verdict", "keep-local")
+        assert judged.returncode == 0, _out(judged)
+        row = _load_lock(root)["files"][rel]
+        assert row["status"] == "local" and "hash" not in row, row
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert strict.returncode == 0 and "unpublished" not in _out(strict), _out(strict)
+
+
+def test_j3_relpath_with_control_or_edge_whitespace_refuses() -> None:
+    rel = ".claude/tools/crlf.py"
+    with _fixture() as path:
+        root, _baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"v = 1\n"}})
+        for bad in (rel + "\r", rel + " ", rel + "\t", "\n" + rel):
+            result = _run(root, "judge", bad, "--verdict", "keep-local")
+            assert result.returncode == 2, (repr(bad), _out(result))
+        assert "judged" not in _load_lock(root)["files"][rel]
+
+
+def test_j3_layer_on_an_existing_row_needs_relayer() -> None:
+    rel = ".claude/tools/relayer.py"
+    with _fixture() as path:
+        root, _baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"v = 1\n"}})
+        refused = _run(root, "classify", rel, "--status", "local", "--layer", "coding", "--force")
+        assert refused.returncode == 1 and "--relayer" in _out(refused), _out(refused)
+        assert _load_lock(root)["files"][rel]["layer"] == "pure"
+        allowed = _run(root, "classify", rel, "--status", "local", "--layer", "coding", "--force", "--relayer")
+        assert allowed.returncode == 0, _out(allowed)
+        assert _load_lock(root)["files"][rel]["layer"] == "coding"
+        no_layer = _run(root, "classify", rel, "--status", "local", "--relayer")
+        assert no_layer.returncode == 2, _out(no_layer)
+
+
 def _delete_upstream(baseline: Path, relpath: str) -> None:
     (baseline / "template" / relpath).unlink()
     _commit(baseline, "upstream deletes " + relpath)
@@ -1994,6 +2099,120 @@ def test_pull_drops_row_of_file_removed_upstream_and_missing_locally() -> None:
         assert pull.returncode == 0, _out(pull)
         assert gone not in _load_lock(root)["files"]
         assert f"retired: {gone}" in _out(pull), _out(pull)
+
+
+def test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it() -> None:
+    mine = ".claude/tools/mine_unpublished.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {mine: {"upstream": b"v1\n"}})
+        _delete_upstream(baseline, mine)
+        lock_path = root / ".claude" / "baseline.lock.json"
+        lock = _load_lock(root)
+        lock["files"][mine].pop("hash", None)
+        lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8", newline="\n")
+        _commit(root, "an unpublished tracked row")
+        check = _run_baseline(root, baseline, "check", "--json")
+        assert _json_output(check)["results"][mine] == "unpublished", _out(check)
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert (root / mine).is_file() and _load_lock(root)["files"][mine]["status"] == "tracked", _out(pull)
+        update = _run_baseline(root, baseline, "update-lock")
+        assert update.returncode == 0, _out(update)
+
+
+def _diverge(root: Path, baseline: Path, rel: str, local: bytes, upstream: bytes) -> None:
+    """Both sides edit a tracked row after its recorded base: a committed local edit, an upstream commit."""
+    _write(root / rel, local)
+    _commit(root, "local edit " + rel)
+    _write(baseline / "template" / rel, upstream)
+    _commit(baseline, "upstream edit " + rel)
+
+
+def test_pull_merge_combines_both_sides_of_a_diverged_row() -> None:
+    rel = ".claude/rules/merged.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+        _diverge(root, baseline, rel, b"ONE\ntwo\nthree\n", b"one\ntwo\nTHREE\n")
+        refused = _run_baseline(root, baseline, "pull", rel)
+        assert refused.returncode != 0 and "diverged" in _out(refused), _out(refused)
+        pull = _run_baseline(root, baseline, "pull", "--merge", rel)
+        assert pull.returncode == 0, _out(pull)
+        assert (root / rel).read_bytes() == b"ONE\ntwo\nTHREE\n", (root / rel).read_bytes()
+        assert _load_lock(root)["files"][rel]["hash"] == _sha(b"one\ntwo\nTHREE\n")
+        assert f"merged: {rel}" in _out(pull), _out(pull)
+
+
+def test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched() -> None:
+    rel = ".claude/rules/clash.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+        before = _load_lock(root)["files"][rel]["hash"]
+        pull = _run_baseline(root, baseline, "pull", "--merge")
+        out = _out(pull)
+        assert pull.returncode == 1, out
+        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n"
+        assert _load_lock(root)["files"][rel]["hash"] == before
+        line = next((l for l in out.splitlines() if l.startswith(f"conflict: {rel} ")), "")
+        assert line, out
+        copy = Path(line.rsplit(" -> ", 1)[-1].strip())
+        assert copy.is_file() and b"<<<<<<< local" in copy.read_bytes() and b"UPSTREAM" in copy.read_bytes(), line
+
+
+def test_resolve_installs_a_marker_free_copy_and_refuses_one_with_markers() -> None:
+    rel = ".claude/rules/clash.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+        pull = _run_baseline(root, baseline, "pull", "--merge")
+        copy = Path(next(l for l in _out(pull).splitlines() if l.startswith("conflict: ")).rsplit(" -> ", 1)[-1].strip())
+        refused = _run_baseline(root, baseline, "resolve", rel)
+        assert refused.returncode != 0 and "markers" in _out(refused), _out(refused)
+        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n"
+        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
+        done = _run_baseline(root, baseline, "resolve", rel)
+        assert done.returncode == 0, _out(done)
+        assert (root / rel).read_bytes() == b"one\nLOCAL UPSTREAM\nthree\n"
+        assert _load_lock(root)["files"][rel]["hash"] == _sha(b"one\nUPSTREAM\nthree\n")
+        assert not copy.exists() and f"resolved: {rel}" in _out(done), _out(done)
+
+
+def test_resolve_refuses_when_upstream_moved_or_the_file_changed_since_the_merge() -> None:
+    rel = ".claude/rules/clash.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+        _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
+        pull = _run_baseline(root, baseline, "pull", "--merge")
+        copy = Path(next(l for l in _out(pull).splitlines() if l.startswith("conflict: ")).rsplit(" -> ", 1)[-1].strip())
+        _write(copy, b"one\nLOCAL UPSTREAM\nthree\n")
+        _write(root / rel, b"one\nLOCAL EDITED\nthree\n")
+        dirty = _run_baseline(root, baseline, "resolve", rel)
+        assert dirty.returncode != 0 and "dirty" in _out(dirty), _out(dirty)
+        assert (root / rel).read_bytes() == b"one\nLOCAL EDITED\nthree\n"
+        _write(root / rel, b"one\nLOCAL\nthree\n")
+        _write(baseline / "template" / rel, b"one\nUPSTREAM\nthree\nfour\n")
+        _commit(baseline, "upstream moves again " + rel)
+        before = _load_lock(root)["files"][rel]["hash"]
+        moved = _run_baseline(root, baseline, "resolve", rel)
+        assert moved.returncode != 0 and f"pull --merge {rel}" in _out(moved), _out(moved)
+        assert _load_lock(root)["files"][rel]["hash"] == before
+        assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n" and copy.is_file()
+
+
+def test_pull_merge_reports_a_dirty_diverged_row_and_pulls_the_rest() -> None:
+    dirty, other = ".claude/rules/dirty.md", ".claude/rules/other.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {dirty: {"upstream": b"a\n"}, other: {"upstream": b"b\n"}})
+        _diverge(root, baseline, dirty, b"A\n", b"a2\n")
+        _write(root / dirty, b"uncommitted\n")
+        _write(baseline / "template" / other, b"b2\n")
+        _commit(baseline, "upstream edit " + other)
+        pull = _run_baseline(root, baseline, "pull", "--merge")
+        out = _out(pull)
+        assert pull.returncode == 1, out
+        assert (root / dirty).read_bytes() == b"uncommitted\n"
+        assert (root / other).read_bytes() == b"b2\n", out
+        assert f"conflict: {dirty} (uncommitted local edits" in out, out
 
 
 def _keep_local_judgment(content: bytes) -> dict:
@@ -2069,9 +2288,21 @@ def test_v2_provenance_strip_leaves_non_memory_files_alone() -> None:
 
 def main() -> int:
     cases = [
+        test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it,
+        test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks,
+        test_j3_write_prints_the_layer_closure_it_adds,
+        test_j3_keep_local_on_an_unshipped_tracked_row_sets_local,
+        test_j3_relpath_with_control_or_edge_whitespace_refuses,
+        test_j3_layer_on_an_existing_row_needs_relayer,
         test_pull_retires_unmodified_file_removed_upstream,
         test_explicit_pull_keeps_modified_file_removed_upstream_as_local,
         test_pull_drops_row_of_file_removed_upstream_and_missing_locally,
+        test_pull_merge_reports_a_dirty_diverged_row_and_pulls_the_rest,
+        test_resolve_installs_a_marker_free_copy_and_refuses_one_with_markers,
+        test_resolve_refuses_when_upstream_moved_or_the_file_changed_since_the_merge,
+        test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it,
+        test_pull_merge_combines_both_sides_of_a_diverged_row,
+        test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched,
         test_check_reports_layer_closure_and_strict_fails,
         test_bare_pull_skips_unrowed_offer_and_counts_it,
         test_named_pull_adopts_offer_as_tracked,

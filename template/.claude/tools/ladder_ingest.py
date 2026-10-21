@@ -83,7 +83,7 @@ JUDGE_SCHEMA = {
         "ladderClause": {
             "type": "string",
             "description": "one clause for a ± cell: what the model TENDS to do, never what this "
-                           "run did. No numbers, dates, arm counts, wall-clock or effort rungs. Empty is valid "
+                           "run did. No numbers, dates, arm counts, wall-clock or effort levels. Empty is valid "
                            "when nothing here would recur.",
         },
         "orchestrationNote": {
@@ -169,7 +169,7 @@ def _rails_info(path: Path, sidechain: bool = False) -> tuple[str, str]:
             elif "[anthropic session" in low:
                 transport = "anthropic"
         if effort == "unknown":
-            # `max` included: it is the top rung on every sidecar transport and what the
+            # `max` included: it is the top effort on every sidecar transport and what the
             # `claude-gpt-*` launcher accepts, so omitting it recorded a max-effort arm as
             # `unknown` — the one field a comparison of efforts cannot do without.
             m = re.search(
@@ -363,7 +363,7 @@ that n=1 per arm on one prompt supports a hypothesis, never a model ranking.
 `ladderClause` is one clause for a ± cell on the affected ladder row, stating what the
 model TENDS to do — never what it did in this run. "exhaustive over a diff, slow" is a
 tendency; "found 26 defects on the 5-lens audit" is a run description and is rejected.
-No numbers, no dates, no arm counts, no wall-clock, no reference to this comparison, no effort rung.
+No numbers, no dates, no arm counts, no wall-clock, no reference to this comparison, no effort level.
 If nothing here would recur, return an empty `ladderClause` and say why in `doesNotShow`
 — an ingest that adds no clause is a correct outcome, not a failed one.
 `orchestrationNote` is empty unless the finding is about delegation behaviour.

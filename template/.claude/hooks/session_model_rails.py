@@ -142,7 +142,7 @@ PROVIDER_RAILS_HEAD = """\
 - COVERAGE LIMIT of that deny: it reads statically visible pins in args, the Agent `model`, and quoted literals in the script. A pin COMPUTED at runtime can escape that guard; use native IDs in caller args and validate them before spawning, not literal pins in reusable scripts.
 - Reaching ANOTHER transport (including Anthropic itself) goes through its own sidecar launcher — `reference/sidecar_dispatch.md`, roster above. Workflow/Agent never cross transports.
 - You ARE the orchestrator this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
-- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints what serves a tier here, what serves it one hop away with the launcher line, and the nearest in-transport row when nothing here does. It picks no effort: take the rung from the ladder's effort cell for the work shape.{lacked_tiers}
+- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints what serves a tier here, what serves it one hop away with the launcher line, and the nearest in-transport row when nothing here does. It picks no effort: take the effort from the ladder's effort cell for the work shape.{lacked_tiers}
 - DISPATCH ROUTING is a judgment you own: a Workflow fan-out here is NOT band-gated, so state the intended model and cost before dispatching, then check the journal's model column against it.
 - COST SHAPE — bound prompts, use args.spillDir, and prefer FEW LONG agents to many short ones: each agent pays a large cold-start toll, so width multiplies it while depth amortizes it.
 """
@@ -310,7 +310,7 @@ def provider_rails(transport: str, source: str, payload: dict) -> str:
             "session is in."
             + (" This session was launched at effort `%s`." % os.environ["HARNESS_SESSION_EFFORT"]
                if os.environ.get("HARNESS_SESSION_EFFORT") else
-               " This session's launcher exported no HARNESS_SESSION_EFFORT, so the rung is unknown "
+               " This session's launcher exported no HARNESS_SESSION_EFFORT, so the effort is unknown "
                "here: `python3 .claude/scripts/codex_effort_probe.py` reads it from the wire.")
         )
 

@@ -38,7 +38,7 @@ If Step 0.5 adds `rt-systemic` or `rt-vision`, extend the push accordingly: the 
 
 The core lenses (Step 1) are the **floor**: guaranteed-minimum coverage, never dropped from a first round within their phase eligibility. They are deliberately generic; extending the panel to fit THIS design is the orchestrator's judgment (`feedback_prescribe_verification_not_cognition` — which lenses to run is cognition; that the floor runs at the seat width `orchestration` §2 sets, with liveness and taste-classification enforced, is verification).
 
-**Seat map** (`orchestration` §2 *Sizing the width*): one seat per admitted lens; when `orchestration` §2's size or room rule merges, merge in this order: first structure (`rt-boundary` + `rt-abstraction`); then scope (`rt-yagni-scope` + `rt-testability`); last those two seats with `rt-failuremode` as one seat for the core lenses. In round 1 the core five stay the floor within their phase eligibility. Conditional and bespoke lenses keep their own seats, and Mode B's phase subsets run one seat per lens. The review rung below sets a seat's effort.
+**Seat map** (`orchestration` §2 *Sizing the width*): one seat per admitted lens; when `orchestration` §2's size or room rule merges, merge in this order: first structure (`rt-boundary` + `rt-abstraction`); then scope (`rt-yagni-scope` + `rt-testability`); last those two seats with `rt-failuremode` as one seat for the core lenses. In round 1 the core five stay the floor within their phase eligibility. Conditional and bespoke lenses keep their own seats, and Mode B's phase subsets run one seat per lens. The Model paragraph below pins a seat's effort.
 
 **Conditional core lenses** — add each when `execution_depth.md` §Mandate admission admits it; `python3 .claude/tools/lens.py get --shared <keys>` returns its mandate (`rt-systemic`, `rt-vision`).
 
@@ -58,7 +58,7 @@ The core lenses (+ any Step 0.5 additions), each judging the pushed input. The m
 
 **Phase-scoped subsets for Mode B:** a step seats the core lenses whose `interleave:` line names it, plus Step 0.5 additions once approaches have shape; Step 5 / Mode A seats all core lenses plus Step 0.5 additions.
 
-**Model — pin every lens to the architect tier at its review rung, never the session model.** The ladder's selection line and *Review seats* bullet own the floor, and the fanout rows' `±` cells mark them down on architecture; a purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to that tier.
+**Model — pin every lens to the architect tier at its review effort, never the session model.** The ladder's selection line and *Review seats* bullet own the floor, and the fanout rows' `±` cells mark them down on architecture; a purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to that tier.
 
 **Ledger plan.** Before each pass, write the composed seats to a roster file (`{key, mandates, tier, effort}`, where `mandates` is each lens's `mandates:` header line in the registry, pins resolved per `orchestration` §5) and run `python3 .claude/tools/review_ledger.py plan --stage design --subject doc:<design path> --roster <roster.json> --files <design path>`; dispatch only the seats it returns.
 
@@ -73,8 +73,8 @@ Workflow({
       { key: "rt-boundary",    prompt: "<mandate only>", tier: "architect", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
       { key: "rt-failuremode", prompt: "<mandate only>", tier: "architect", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
       { key: "rt-yagni-scope", prompt: "<mandate only>", tier: "architect", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] }
-      // + rt-abstraction / rt-testability per the phase subset above (tier: "architect", model: "<architect>", effort: "<review rung>", mustRead)
-      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (tier: "architect", model: "<architect>", effort: "<review rung>", mustRead)
+      // + rt-abstraction / rt-testability per the phase subset above (tier: "architect", model: "<architect>", effort: "<review effort>", mustRead)
+      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (tier: "architect", model: "<architect>", effort: "<review effort>", mustRead)
       // a purely mechanical bespoke lens may drop to the fanout tier; the orchestrator tier only via an explicit per-lens pin
     ]
   }

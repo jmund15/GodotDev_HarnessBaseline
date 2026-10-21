@@ -48,14 +48,14 @@ Split plans get one seat map. Classify each plan's shape; use the Mixed row when
 
 Re-rank the order when the panel-yield lines of `/orchestration_metrics` flag a merged mandate or a solo seat with no unique finding.
 
-Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment needs a qualified review role. Pin each seat to its lenses' `seat_tier` (`lens.py`) at that tier's review rung's lowest value; `orchestration` §5 *Effort* owns a raise.
+Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment needs a qualified review role. Pin each seat to its lenses' `seat_tier` (`lens.py`) at the lowest value of that tier's review effort; `orchestration` §5 *Effort* owns a raise.
 
 Before the panel, write the seats to `.claude/scratch/plan_check_<sid8>_roster.json` (`{key, mandates, tier, effort}`, where `mandates` is each lens's `mandates:` line) and run `python3 .claude/tools/review_ledger.py plan --stage plan-check --subject plan:<path> --roster <roster.json> --files <reviewed-plan-paths> --design <design path>`; add `--no-new-decision` when the §1b facts show no new decision. Seat only the mandates it returns: a design mandate covered at the unchanged design hash is not re-judged, and that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness` and `plc-memory-alignment` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds* (owner-fork answers no reviewer has seen still get the full check). The flag is the caller's word, so the post-check's ledger step (`args.ledger.noNewDecision`, or `--no-new-decision` on the sidecar route) passes it too and each row it writes carries `noNewDecision: true`, which makes a wrong skip auditable.
 
 Materialize the selected ledger roster, never fetch raw mandates. Write shared context and one must-read list file per seat; each list names only the plans that seat reviews. Use `--must-read <list>` for a shared list or `--must-read-for <seat>=<list>` for split coverage. A merged seat key joins its lens keys with `+`; `lens_briefs.py` supplies every mandate and its coverage contract. Run:
 
 ```bash
-python3 .claude/tools/lens_briefs.py --plan <selected-panel.json> --out <out> --prefix <prefix> --context-path <absolute-context.md> --model <pin> --effort <rung> --must-read <list> --subject-plan meta:<meta-plan> --subject-plan code:<code-plan>
+python3 .claude/tools/lens_briefs.py --plan <selected-panel.json> --out <out> --prefix <prefix> --context-path <absolute-context.md> --model <pin> --effort <effort> --must-read <list> --subject-plan meta:<meta-plan> --subject-plan code:<code-plan>
 ```
 
 Repeat `--subject-plan` for every reviewed plan, with its own shape; omit the inapplicable shape's example flag. Pass seat overrides with `--model-for`, `--effort-for` and `--must-read-for`. The tool writes `jobs_<prefix>.json` under `--out` and the brief files it names. It sweeps meta subjects only and refuses a missing or invalid meta `surfaces` block before spend. `lens_briefs.py` is the sole `INBOUND_REFS` producer; retain its full sweep JSON beside the briefs.

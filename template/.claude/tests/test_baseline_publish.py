@@ -123,7 +123,7 @@ def _field(value, key):
     return value.get(key) if isinstance(value, dict) else getattr(value, key)
 
 
-def _load_publish():
+def _load_publish(real_preview: bool = False):
     assert PUBLISH.exists(), "publication target is missing"
     spec = importlib.util.spec_from_file_location("baseline_publish_under_test", PUBLISH)
     assert spec and spec.loader, "publication target could not be loaded"
@@ -132,6 +132,10 @@ def _load_publish():
         spec.loader.exec_module(module)
     except Exception as exc:
         raise AssertionError("publication target failed to load: %s" % exc) from exc
+    if not real_preview:
+        def _no_real_preview(_worktree):
+            raise AssertionError("this proof started a real Linux preview (WSL)")
+        module._start_preview = _no_real_preview
     return module
 
 
@@ -1835,10 +1839,201 @@ def test_battery_mode_triggers() -> None:
     assert publish._battery_mode([], True) == ("full", "flag")
 
 
+class _FakePreview:
+    """What `_start_preview` returns: `wait()` -> (rc, output), `kill()` for the unwind path."""
+
+    def __init__(self, rc: int, text: str, log: list[str] | None = None) -> None:
+        self.rc, self.text, self.log = rc, text, log if log is not None else []
+        self.waited = self.killed = False
+
+    def wait(self):
+        self.waited = True
+        self.log.append("preview-joined")
+        return self.rc, self.text
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def _validate_fixture(path: Path, with_tests: bool = False) -> Path:
+    worktree = path / "worktree"
+    _write(worktree / "template/.claude/scripts/harness_tests.py", b"# stand-in runner\n")
+    _write(worktree / ".github/workflows/baseline.yml", b"name: baseline\n")
+    if with_tests:
+        _write(worktree / "tests/test_a.py", b"raise SystemExit(0)\n")
+    return worktree
+
+
+def _stub_validate_seams(publish, red_labels, preview, log=None):
+    """Stub only the subprocess seams: each python child (by label), the count check and the preview."""
+    log = log if log is not None else []
+    started = []
+
+    def fake_run(worktree, args, label):
+        log.append(label)
+        if label in red_labels:
+            raise publish.PublishError(f"{label} failed: {red_labels[label]}")
+        return f"{label} ok"
+
+    def fake_start(worktree):
+        started.append(worktree)
+        log.append("preview-started")
+        return preview
+
+    publish._run_python_args = fake_run
+    publish._battery_counts_match = lambda worktree: None
+    publish._start_preview = fake_start
+    return started
+
+
+def _hook_record() -> dict:
+    return {"relpath": ".claude/hooks/x.py", "kind": "lock", "op": "M"}
+
+
+def _validate_error(publish, worktree, records) -> str:
+    try:
+        publish._validate(worktree, records, False)
+    except publish.PublishError as exc:
+        return str(exc)
+    raise AssertionError("validate passed; expected a red")
+
+
+def test_a_red_preview_makes_validate_red_with_preview_evidence() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        preview = _FakePreview(1, "::step ci proofs\n::fail ci proofs rc=1\nFAIL test_posix_path.py")
+        _stub_validate_seams(publish, {}, preview)
+        message = _validate_error(publish, worktree, [_hook_record()])
+        assert "preview=red" in message and "FAIL test_posix_path.py" in message, message
+        assert preview.waited, "validate returned before the preview finished"
+
+
+def test_a_green_preview_is_named_in_the_evidence() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        _stub_validate_seams(publish, {}, _FakePreview(0, "::pass ci proofs"))
+        evidence = publish._validate(worktree, [_hook_record()], False)
+        assert "preview=green" in evidence, evidence
+
+
+def test_no_wsl_records_preview_not_run_and_validate_is_not_green() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        _stub_validate_seams(publish, {}, _FakePreview(3, "error: wsl.exe not found; this preview needs WSL"))
+        message = _validate_error(publish, worktree, [_hook_record()])
+        assert "preview not run" in message and "wsl.exe not found" in message, message
+        assert "preview=green" not in message, message
+
+
+def test_a_scoped_docs_publication_owes_no_preview() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        started = _stub_validate_seams(publish, {}, _FakePreview(1, "must not run"))
+        evidence = publish._validate(worktree, [{"relpath": ".claude/commands/doc.md", "kind": "lock", "op": "M"}], False)
+        assert not started and "preview=not owed" in evidence, (started, evidence)
+
+
+def test_an_executable_row_or_a_workflow_row_owes_a_preview_in_scoped_mode() -> None:
+    publish = _load_publish()
+    for relpath, kind in ((".claude/tools/x.py", "lock"), (".claude/tools/x.sh", "lock"),
+                          (".claude/tools/x.mjs", "lock"), (".github/workflows/baseline.yml", "root")):
+        with _fixture() as path:
+            worktree = _validate_fixture(path)
+            started = _stub_validate_seams(publish, {}, _FakePreview(0, "::pass"))
+            evidence = publish._validate(worktree, [{"relpath": relpath, "kind": kind, "op": "M"}], False)
+            assert "mode=scoped" in evidence and started and "preview=green" in evidence, (relpath, evidence)
+
+
+def test_validate_reports_every_red_in_one_evidence_string() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path, with_tests=True)
+        log: list[str] = []
+        preview = _FakePreview(1, "FAIL linux_only_proof.py", log)
+        reds = {"gen_manifest.py --check": "manifest drift", "audit_baseline.py --strict": "audit hit AUDITHIT",
+                "tests/test_a.py": "bootstrap crash BOOTHIT", "harness_tests.py": "FAIL BATTERYHIT"}
+        _stub_validate_seams(publish, reds, preview, log)
+        message = _validate_error(publish, worktree, [_hook_record()])
+        for needle in ("manifest drift", "AUDITHIT", "BOOTHIT", "BATTERYHIT", "linux_only_proof.py"):
+            assert needle in message, (needle, message)
+        assert log.index("preview-started") < log.index("harness_tests.py") < log.index("preview-joined"), log
+
+
+def test_the_preview_is_joined_before_validate_returns_even_when_checks_raise() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        preview = _FakePreview(0, "::pass")
+        _stub_validate_seams(publish, {"audit_baseline.py --strict": "audit hit"}, preview)
+        _validate_error(publish, worktree, [_hook_record()])
+        assert preview.waited, "an early red left the preview running"
+
+
+def test_an_unexpected_error_kills_the_preview_instead_of_leaving_it_running() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        preview = _FakePreview(0, "::pass")
+        _stub_validate_seams(publish, {}, preview)
+
+        def explode(*_a, **_k):
+            raise KeyboardInterrupt()
+
+        publish._run_python_args = explode
+        try:
+            publish._validate(worktree, [_hook_record()], False)
+        except KeyboardInterrupt:
+            pass
+        assert preview.killed, "the preview outlived validate"
+
+
+def test_a_tree_without_a_baseline_workflow_owes_no_preview() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path)
+        (worktree / ".github/workflows/baseline.yml").unlink()
+        started = _stub_validate_seams(publish, {}, _FakePreview(1, "must not run"))
+        evidence = publish._validate(worktree, [_hook_record()], False)
+        assert not started and "preview=not owed" in evidence, (started, evidence)
+
+
+def test_the_real_preview_seam_reports_not_run_for_a_tree_without_a_workflow() -> None:
+    publish = _load_publish(real_preview=True)
+    with _fixture() as path:
+        worktree = path / "worktree"
+        worktree.mkdir()
+        rc, text = publish._start_preview(worktree).wait()
+        assert rc == 3 and "baseline.yml" in text, (rc, text)
+
+
+def test_battery_mode_a_workflow_row_alone_is_scoped_and_a_root_row_beside_it_is_full() -> None:
+    publish = _load_publish()
+    workflow = {"relpath": ".github/workflows/baseline.yml", "kind": "root", "op": "M"}
+    assert publish._battery_mode([workflow], False)[0] == "scoped"
+    assert publish._battery_mode([workflow, {"relpath": "tools/a.py", "kind": "root", "op": "M"}], False)[0] == "full"
+    assert publish._battery_mode([workflow, {"relpath": ".claude/hooks/h.py", "kind": "lock", "op": "M"}], False)[0] == "full"
+    assert publish._battery_mode([workflow], True) == ("full", "flag")
+
+
 def main() -> int:
     cases = [
         test_scoped_validate_runs_bound_proof_and_records_evidence,
         test_battery_mode_triggers,
+        test_a_red_preview_makes_validate_red_with_preview_evidence,
+        test_a_green_preview_is_named_in_the_evidence,
+        test_no_wsl_records_preview_not_run_and_validate_is_not_green,
+        test_a_scoped_docs_publication_owes_no_preview,
+        test_an_executable_row_or_a_workflow_row_owes_a_preview_in_scoped_mode,
+        test_validate_reports_every_red_in_one_evidence_string,
+        test_the_preview_is_joined_before_validate_returns_even_when_checks_raise,
+        test_an_unexpected_error_kills_the_preview_instead_of_leaving_it_running,
+        test_a_tree_without_a_baseline_workflow_owes_no_preview,
+        test_the_real_preview_seam_reports_not_run_for_a_tree_without_a_workflow,
+        test_battery_mode_a_workflow_row_alone_is_scoped_and_a_root_row_beside_it_is_full,
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,

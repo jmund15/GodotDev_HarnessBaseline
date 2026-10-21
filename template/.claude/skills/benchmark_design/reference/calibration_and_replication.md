@@ -59,9 +59,9 @@ invalidates everything above it** — every bound inherits that instability.
 ## Boundary reps and the effort bracket
 
 The boundary is where reps buy the most, and effort placement is a bracket, not a point.
-`bench.py next` prints, per task, the cheapest-competent pin and the pin one rung/tier below it
+`bench.py next` prints, per task, the cheapest-competent pin and the pin one effort level or tier below it
 (each with its n) — those cells go to n=3 on the unrestricted arms; and per (model, task) the next
-effort rung: at the maximum or tied with the cheapest-competent pin → one rung LOWER; below the
-maximum and not at the model's top rung → one rung HIGHER; closed when a pass sits beside a fail or
-two adjacent rungs fall within the cell's uncertainty band. A pin the ladder cites is a closed
-bracket, never a single rung.
+effort: at the maximum or tied with the cheapest-competent pin → one level LOWER; below the
+maximum and not at the model's top effort → one level HIGHER; closed when a pass sits beside a fail or
+two adjacent efforts fall within the cell's uncertainty band. A pin the ladder cites is a closed
+bracket, never a single effort.

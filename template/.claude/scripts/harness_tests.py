@@ -90,28 +90,32 @@ def _beside_stamp(override, name):
     return override or os.path.join(os.path.dirname(os.path.abspath(STAMP_PATH)), name)
 
 
-def _shared_passes_path(claude_dir):
-    """The pass cache every checkout of `claude_dir`'s repository shares, under its common git dir;
-    beside the stamp when git cannot name that dir. Rows key on input bytes, so a pass recorded in
-    one worktree holds in any other whose reached inputs match."""
+def _shared_path(claude_dir, name):
+    """`harness_<name>` as every checkout of `claude_dir`'s repository shares it, under its common git dir;
+    beside the stamp when git cannot name that dir. The pass cache lives here because its rows key on input
+    bytes, so a pass recorded in one worktree holds in any other whose reached inputs match."""
     try:
         result = subprocess.run(["git", "-C", claude_dir, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                 capture_output=True, text=True)
         common = result.stdout.strip() if result.returncode == 0 else ""
     except OSError:
         common = ""
-    return (os.path.join(common, "harness", "proof_passes.json") if common
-            else os.path.join(os.path.dirname(os.path.abspath(_DEFAULT_STAMP)), "harness_proof_passes.json"))
+    return (os.path.join(common, "harness", name) if common
+            else os.path.join(os.path.dirname(os.path.abspath(_DEFAULT_STAMP)), "harness_" + name))
+
+
+def _shared_or_beside(override, name):
+    """`override`, else the shared file while the stamp is at its default home, else beside an overridden
+    stamp (a proof's private run)."""
+    if override:
+        return override
+    if os.path.normcase(os.path.abspath(STAMP_PATH)) == os.path.normcase(os.path.abspath(_DEFAULT_STAMP)):
+        return _shared_path(_CLAUDE_DIR, name)
+    return _beside_stamp(None, "harness_" + name)
 
 
 def passes_path():
-    """`PASSES_PATH`, else the shared cache while the stamp is at its default home, else beside an
-    overridden stamp (a proof's private run)."""
-    if PASSES_PATH:
-        return PASSES_PATH
-    if os.path.normcase(os.path.abspath(STAMP_PATH)) == os.path.normcase(os.path.abspath(_DEFAULT_STAMP)):
-        return _shared_passes_path(_CLAUDE_DIR)
-    return _beside_stamp(None, "harness_proof_passes.json")
+    return _shared_or_beside(PASSES_PATH, "proof_passes.json")
 
 
 def runs_path():
@@ -119,7 +123,9 @@ def runs_path():
 
 
 def durations_path():
-    return _beside_stamp(DURATIONS_PATH, "harness_proof_durations.json")
+    """Shared like the pass cache: a recorded duration admits a failing proof to its alone retry, and a
+    checkout that only reused another checkout's pass records none."""
+    return _shared_or_beside(DURATIONS_PATH, "proof_durations.json")
 
 
 _PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "test_*.mjs", "test_*.sh", "*_test.sh", "test_*.ps1")
@@ -281,6 +287,13 @@ def _runner_cmd(path):
 
 
 _DETAIL_LINES = 20
+
+
+def _detail_excerpt(detail):
+    """A proof's output as printed: its failure-marked lines above the tail, then the last `_DETAIL_LINES`."""
+    lines = detail.strip().splitlines()
+    head, tail = lines[:-_DETAIL_LINES], lines[-_DETAIL_LINES:]
+    return [line for line in head if FAILURE_LINE.search(line)] + tail
 
 
 # What `git rev-parse --local-env-vars` printed on git 2.x; used only when git cannot answer.
@@ -492,8 +505,28 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
     return status, time.time() - start, detail
 
 
+# Windows caps a command line at 32,767 characters. `status` and `ls-files` print a per-path union, so a
+# longer pathspec list runs in chunks whose outputs concatenate to the single call's.
+_ARGV_BUDGET = 24000
+_PATH_UNION_COMMANDS = ("status", "ls-files")
+
+
 def _git(repo_root, args):
     """Raise on any git failure: a hash over a failed enumeration must never be stamped."""
+    if args and args[0] in _PATH_UNION_COMMANDS and "--" in args:
+        split = args.index("--") + 1
+        head, paths = args[:split], args[split:]
+        if sum(len(a) + 1 for a in args) > _ARGV_BUDGET:
+            chunks, chunk, size = [], [], sum(len(a) + 1 for a in head)
+            for path in paths:
+                if chunk and size + len(path) + 1 > _ARGV_BUDGET:
+                    chunks.append(chunk)
+                    chunk, size = [], sum(len(a) + 1 for a in head)
+                chunk.append(path)
+                size += len(path) + 1
+            chunks.append(chunk)
+            if len(chunks) > 1:
+                return "".join(_git(repo_root, head + c) for c in chunks)
     result = subprocess.run(["git"] + args, cwd=repo_root, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError("git %s failed in %s: %s" % (args[0], repo_root, result.stderr.strip()))
@@ -672,6 +705,12 @@ def _tracked_by_basename(repo_root):
     return census
 
 
+def _named_for(name, stem):
+    """A proof file name binds `stem` as `test_<stem>*`, `<stem>_test.*` or `<stem>_<suffix>_test.*`."""
+    return (name.startswith("test_" + stem) or name.startswith(stem + "_test")
+            or (name.startswith(stem + "_") and re.search(r"_test\.\w+$", name) is not None))
+
+
 def _mention_token(rel, census):
     """What a proof's source must contain to name `rel`: its basename, or `<parent>/<basename>` when
     another tracked `.claude/` file shares the basename (every skill's `SKILL.md`)."""
@@ -725,7 +764,7 @@ def bindings(repo_root, touched, include_excluded=False, proofs=None):
         rel = _norm(os.path.relpath(path, repo_root))
         for t, (stems, tokens, declared, settings) in rules.items():
             if (rel == t or name in _DIR_SCANNING or name in declared
-                    or any(name.startswith("test_" + s) or name.startswith(s + "_test") for s in stems)
+                    or any(_named_for(name, s) for s in stems)
                     or any(tok in text_of(path) for tok in tokens)
                     or (settings and any(os.path.basename(f) in text_of(path) for f in _SETTINGS_FILES))):
                 result[t].append(path)
@@ -1325,7 +1364,7 @@ class _PassCache:
         name = rel.rsplit("/", 1)[-1]
         seen = {rel} | self.declared.get(name, set()) | self._names(rel, raw=True)
         for stem, rels in self.by_stem.items():
-            if name.startswith("test_" + stem) or name.startswith(stem + "_test"):
+            if _named_for(name, stem):
                 seen |= rels
         for folder in (_CORPUS_SCANNING.get(name) or self.corpus.get(name, ())):
             seen |= {r for r in self.files if r.startswith(folder + "/")}
@@ -1846,7 +1885,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         if verbose or status != "pass":
             print("%s %.1fs %s" % (label[status], elapsed, path))
         if detail:
-            for line in detail.strip().splitlines()[-_DETAIL_LINES:]:
+            for line in _detail_excerpt(detail):
                 print("    | " + line)
         if status == "pass":
             passed += 1
@@ -2170,13 +2209,21 @@ def _outgoing(repo_root, base, head, remote="origin"):
 
 
 def _first_red(repo_root, base, head, proof, detail, reached, *, commits=None):
-    """Bisect this proof's first-parent input-changing commits, never the shared checkout."""
+    """Bisect this proof's first-parent input-changing commits, never the shared checkout. None once
+    `HARNESS_DEADLINE` passes: a run the deadline skipped is no pass, so no commit can be named."""
     if commits is None:
         commits = _input_commits(repo_root, base, head, reached)
     low, high = 0, len(commits) - 1
     while low < high:
         mid = (low + high) // 2
+        deadline = _deadline()
+        if deadline is not None and time.time() >= deadline:
+            _progress("bisect %s stopped: HARNESS_DEADLINE passed" % os.path.basename(proof))
+            return None
         red = _reds_at(repo_root, commits[mid], [proof]).get(proof)
+        if red is None and deadline is not None and time.time() >= deadline:
+            _progress("bisect %s stopped: HARNESS_DEADLINE passed" % os.path.basename(proof))
+            return None
         matches = red is not None and _is_pre_existing(detail, red, repo_root, repo_root)
         _progress("bisect %s at %s: %s" % (os.path.basename(proof), commits[mid],
                                          "red" if matches else "not this red"))
@@ -2204,7 +2251,7 @@ def _side_commit(repo_root, merge, proof, detail, reached):
         if not side:
             return merge
         found = _first_red(repo_root, None, None, proof, detail, reached, commits=side)
-        if found == merge:
+        if found is None or found == merge:
             return merge
         merge = found
 

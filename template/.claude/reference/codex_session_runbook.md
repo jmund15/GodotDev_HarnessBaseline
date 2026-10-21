@@ -9,9 +9,9 @@ and lives in [`sidecar_dispatch.md`](sidecar_dispatch.md). This file is about be
 ## Launch
 
 From a PowerShell profile shell (`claude_profile_functions.ps1`), use `claude-gpt` or
-`Invoke-ClaudeGpt -Model <registry alias> -Effort <legal rung> [-LongContext]`. Run
+`Invoke-ClaudeGpt -Model <registry alias> -Effort <legal effort> [-LongContext]`. Run
 `python3 .claude/tools/model_registry.py available` for the current Codex roster and
-`model_registry.py effort-values <alias>` for accepted rungs; profile function names and
+`model_registry.py effort-values <alias>` for accepted effort values; profile function names and
 its defaults are launch mechanics, not a second roster. A `-1m` suffix or `-LongContext`
 requests the registry's `maxContextTokens` window using `[1m]`, not another model row.
 

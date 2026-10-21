@@ -56,14 +56,14 @@ selects on proven brief coverage, so a profile A/B there measures nothing.
 ## Phase 0 — Is the pin question open?
 
 **Candidates.** `python3 .claude/tools/lens.py index` lists lens keys with their tier; the ladder's
-cell for that tier is the lens's current pin. `/orchestration_metrics` names the adjacent-rung
+cell for that tier is the lens's current pin. `/orchestration_metrics` names the adjacent-effort
 comparisons worth running.
 
 **No-op gate.** Stop and report if the lens's paired-run count n (Phase 4) already reaches the floor
 with a consistent verdict. A pin question that is already answered costs two dispatches to re-answer.
 
 State the lens's **mandate shape**, which predicts the result. Record it with the control pin, the
-challenger pin (the next cheaper rung the ladder rates for that tier) and the prediction as one
+challenger pin (the next cheaper effort level the ladder rates for that tier) and the prediction as one
 `planned` row in `.claude/scratch/pin_ab/<lens-key>.jsonl` before the run:
 
 - **Closed / enumerable** — the mandate names what to enumerate and what to check each item against

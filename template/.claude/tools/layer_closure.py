@@ -74,6 +74,11 @@ OPTIONAL_DATA = {
     ".claude/tools/workstation_profile.py": ("commands/workstation_setup.md",),
     ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md",),
     ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
+    ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
+    ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
+    ".claude/tools/sidecar_fanout.py": ("tests/fixtures/*",),
+    ".claude/tools/subsys.py": ("skills/project_subsystems/reference/subsystem_details.md",),
+    ".claude/tools/user_scope.py": ("user_scope/manifest.local.json",),
 }
 OPTIONAL_LOADER = "_optional_hooks"
 PLACEHOLDERS = {"foo", "bar", "baz", "example", "slug", "name", "x", "y"}
@@ -380,7 +385,8 @@ def _data_refs(tree: Tree, source: str, strings, seen: set[str]):
             cands, path_shaped = _doc_candidates(value, source_dir)
             cands = _expand(tree, cands) if cands else None
         else:
-            cands, path_shaped = tree.by_base.get(value) or tree.local_with_suffix("/" + value), False
+            cands = tree.by_base.get(value) or [c for c in tree.local_with_suffix("/" + value) if not _generated(c)]
+            path_shaped = False
         if cands and not any(fnmatch.fnmatch(c, ".claude/" + pat) for c in cands for pat in optional):
             found = _judge(tree, source, cands, value, path_shaped=path_shaped)
             if found:

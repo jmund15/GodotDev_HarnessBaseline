@@ -10,8 +10,6 @@ description: >-
 
 **Settle each question at the first stage whose inputs can.** A stage (brief, plan, check, fold, execution, review) hands forward only what needs a later stage's input: an execution result, an owner answer or an independent reading. What its own reads, searches or checks settle, it settles; a question passed on costs a later, wider stage the same read. Each handed-forward item names the input it waits on.
 
-Owners elsewhere: `/delegate` runs ordinary jobs, and fixed-panel commands own their coverage.
-
 ## 0. Dispatch Shape — decide this FIRST
 
 | Mechanism | Use |
@@ -29,7 +27,7 @@ Litmus, for work the Inline row does not keep: can you enumerate the jobs now? Y
 3. **Depth:** the lowest ladder cell that clears the job's residual ambiguity, at the effort its depth needs (§5).
 4. **Reading:** only what the work needs, as paths, hunks and excerpts, never a whole artifact for a few rows, within the window (Checklist).
 
-Keep required coverage and independent review. A command's mandates are a coverage floor, not a seat count: every admitted mandate runs (the drive's mandate-admission rule), on the seats §2 sets, and a bespoke lens may be added when it names the failure mode it hunts. Before a same-task comparison, read [`reference/model_evidence.md`](reference/model_evidence.md).
+Keep required coverage and independent review. A command's mandates are a coverage floor, not a seat count: every admitted mandate runs (the drive's mandate-admission rule), on the seats §2 sets, and a bespoke lens may be added when it names the failure mode it hunts.
 
 **Standing authorization** (`CLAUDE.core.md` §Model Delegation) holds within the session's live runtime and context capacity; only a larger fan-out asks first. A command that prescribes a fan-out authorizes it at the width §2 sets.
 
@@ -79,9 +77,9 @@ Before the first pinned dispatch after a session start or compaction, `Read` `re
 
 Pin the row and the effort per slice by whether its test intent scores what the executor must discover and then judge; never by size, file count or the cost of a mistake. A shape's tier admits both the ambiguous-execution and tight-spec rows; the test intent picks one. Read [`reference/slice_pins.md`](reference/slice_pins.md) for the clearly-defined and ambiguous tests and the `pick`/`spec` fields that record the reading. High stakes buy verification (a RED-first case, an independent review), not a stronger executor.
 
-Before pinning a model the owner marked for its tier, or one `for-role` does not list for it, read [`reference/model_evidence.md`](reference/model_evidence.md).
+Before a same-task comparison, or pinning a model the owner marked for its tier or one `for-role` does not list for it, read [`reference/model_evidence.md`](reference/model_evidence.md).
 
-A fixed panel lists eligible models with `for-role`; its rung follows the Effort rule below.
+A fixed panel lists eligible models with `for-role`; its effort follows the Effort rule below.
 
 ### Per-dispatch harness cost
 
@@ -89,7 +87,7 @@ Read-only built-ins omit project context and cannot write artifacts; supply the 
 
 ### Effort
 
-Every dispatched agent pins model and effort; engines fill no omitted pin, and only a measurement of the session model inherits. An engine's own checked verify and merge steps run on `args.checker`; when the call names none, the guard fills the cheapest verify-tier row by ladder `cost` on the session's transport, at its lowest rung. Pin `args.checker` yourself when the step needs more. Inspect a committed Workflow script's live pins before reuse: it is not automatically Anthropic-only. Before raising a lens's rung, name the defect class it would resolve (`args.justification` may record it); never bump a whole panel. When a lens under-resolves, find why first: a brief or evidence gap is fixed in the brief, effort starvation raises effort, and a capability limit changes the tier. A later round's seat sets effort from what its changed units can hide; a first round's raise never carries over. `.claude/orchestration_candidates.json` is advisory evidence, no automatic routing. When no measured default separates the legal rungs, choose the rung that meets the quality floor and rate effort fit after the result. §5b owns cost-driven descent.
+Every dispatched agent pins model and effort; engines fill no omitted pin, and only a measurement of the session model inherits. An engine's own checked verify and merge steps run on `args.checker`; when the call names none, the guard fills the cheapest verify-tier row by ladder `cost` on the session's transport, at its lowest effort level. Pin `args.checker` yourself when the step needs more. Inspect a committed Workflow script's live pins before reuse: it is not automatically Anthropic-only. Before raising a lens's effort, name the defect class it would resolve (`args.justification` may record it); never bump a whole panel. When a lens under-resolves, find why first: a brief or evidence gap is fixed in the brief, effort starvation raises effort, and a capability limit changes the tier. A later round's seat sets effort from what its changed units can hide; a first round's raise never carries over. `.claude/orchestration_candidates.json` is advisory evidence, no automatic routing. When no measured default separates the legal effort levels, choose the effort level that meets the quality floor and rate effort fit after the result. §5b owns cost-driven descent.
 
 ## 5b. Budget, Availability & Transport
 
@@ -126,7 +124,6 @@ Before a drive keeps task state across phases or compactions, read [`reference/c
 ## 11. Dispatch Doctrine (efficiency-to-quality)
 
 Dispatch a converged spec, work enumerated with a check (a plan slice, a close-out recipe, a known follow-on step), at the ladder's tight-spec cell; the parent keeps final judgment: a red's ruling, what lands, the commit. A delegatable unit is one coherent job whose file set you can enumerate now and which finishes in one session. A verified finding ledger with exact old/new text is a converged spec. Author the verification and first exemplar before batching clones. A delegate waits on its own runs by the until-loop rule in `guards/any.md`; only a lone wait past about 30 minutes costs less as the parent's one wake (the cache-lifetime memory note holds the replay).
-Usage condition: re-run that note's Reproduce recipe over the first delegates that wait on a run past the cache lifetime; a cold-turn share that puts the trickle-versus-parent split well below 30 minutes re-opens this sentence.
 
 Before a review-gated slice, a plan draft or a split over disjoint units, read [`reference/drive_dispatch.md`](reference/drive_dispatch.md): *Continue file*, *Plan drafts* and *Context bound*.
 
