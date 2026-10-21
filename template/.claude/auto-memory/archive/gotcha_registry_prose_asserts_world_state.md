@@ -4,8 +4,6 @@ description: "A registry comment asserting what has NOT happened goes stale sile
 metadata:
   node_type: memory
   type: reference
-  originSessionId: 692c41fb-b5c7-45db-a3bb-3220ff2ee4c2
-  modified: 2026-09-19T19:25:46.879Z
 ---
 
 # Registry prose asserting world state

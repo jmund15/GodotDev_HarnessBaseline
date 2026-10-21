@@ -20,8 +20,8 @@ GODOT_MCP_VERSION="3.8.0"
 # above or below: `python3 .claude/tools/workstation_profile_godot.py fingerprint --write .claude/cloud-setup.sh`.
 # The script writes the value to ${PREFIX}/.cloud-setup.fingerprint below, which is how
 # SessionStart tells a snapshot built from an older paste (paste this file again) from one built
-# from the repo's copy. `tests/test_setup_surface_parity.py` fails when the stored value is stale.
-SETUP_FINGERPRINT="21b0cc5636ce7d87dffe61af63861fb4d65e7e1a4021f37a22b7f7b81a7b9d80"
+# from the repo's copy. `.claude/tests/test_workstation_profile_godot.py` proves the check that reports a stale stored value.
+SETUP_FINGERPRINT="68986af1cc6218d9fccf1e97dbf6c2740648b30dd1943abb3d56504809607c93"
 
 if [ "$(id -u)" = "0" ]; then SUDO=""; PREFIX="/opt"
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo"; PREFIX="/opt"

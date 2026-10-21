@@ -147,6 +147,31 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(normalize(data)).hexdigest()
 
 
+# Auto-memory frontmatter keys that name the writing session and its write time. They are provenance,
+# never shared content: every sync reader, writer and hash, and the publish scrub, goes through this home.
+MEMORY_PREFIX = ".claude/auto-memory/"
+PROVENANCE_KEYS = (b"originSessionId:", b"modified:")
+
+
+def strip_provenance(relpath: str, data: bytes) -> bytes:
+    if not (relpath.startswith(MEMORY_PREFIX) and relpath.endswith(".md")):
+        return data
+    lines = data.splitlines(keepends=True)
+    if not lines or lines[0].rstrip(b"\r\n") != b"---":
+        return data
+    close = next((i for i in range(1, len(lines)) if lines[i].rstrip(b"\r\n") == b"---"), None)
+    if close is None:
+        return data
+    kept = [line for line in lines[1:close] if not line.lstrip(b" \t").startswith(PROVENANCE_KEYS)]
+    if len(kept) == close - 1:
+        return data
+    return b"".join([lines[0], *kept, *lines[close:]])
+
+
+def content_sha(relpath: str, data: bytes) -> str:
+    return sha(strip_provenance(relpath, data))
+
+
 def _write_lf(path: Path, data: bytes | str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
@@ -627,14 +652,14 @@ def upstream_text(baseline: BaselineSource | Path, relpath: str, subs: dict) -> 
     data = _read_upstream_bytes(baseline, relpath)
     if data is None:
         return None
-    text = _lf(data).decode("utf-8", errors="replace")
+    text = strip_provenance(relpath, _lf(data)).decode("utf-8", errors="replace")
     return forward_for(relpath, text, subs)
 
 
 def local_text(root: Path, relpath: str) -> str | None:
     path = root / relpath
     try:
-        return _lf(path.read_bytes()).decode("utf-8", errors="replace")
+        return strip_provenance(relpath, _lf(path.read_bytes())).decode("utf-8", errors="replace")
     except OSError:
         return None
 
@@ -1108,7 +1133,8 @@ def _content_bytes_many(root: Path, relpaths: list[str]) -> dict[str, bytes | No
                 contents[relpath] = _lf((root / relpath).read_bytes())
             except OSError:
                 contents[relpath] = None
-    return contents
+    return {relpath: (strip_provenance(relpath, data) if data is not None else None)
+            for relpath, data in contents.items()}
 
 
 def _content_bytes(root: Path, relpath: str) -> bytes | None:
@@ -1236,7 +1262,8 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
         reader = getattr(source, "read_at", None)
         at_base = reader(base, relpath) if reader else None
         at_pin = source.read(relpath) if reader else None
-        if at_base is not None and at_pin is not None and _lf(at_base) == _lf(at_pin):
+        if at_base is not None and at_pin is not None and (
+                strip_provenance(relpath, _lf(at_base)) == strip_provenance(relpath, _lf(at_pin))):
             return "forked"
         return "forked-upstream-moved"
     if status == "composed":
@@ -1307,6 +1334,13 @@ def _check_results(root: Path, lock: dict, source: BaselineSource,
     return results, outside
 
 
+def _keep_local_current(entry: dict | None, current_sha: str | None) -> bool:
+    """A keep-local verdict on the content the row holds now is a decision, so `check --strict` accepts it.
+    A verdict on older content (the sha moved since it was judged) stays a finding."""
+    judged = (entry or {}).get("judged") or {}
+    return judged.get("verdict") == "keep-local" and current_sha is not None and judged.get("sha") == current_sha
+
+
 def _strict_findings(root: Path, source: BaselineSource, lock: dict,
                      results: dict[str, str]) -> list[tuple[str, str]]:
     files = lock.get("files", {})
@@ -1315,6 +1349,8 @@ def _strict_findings(root: Path, source: BaselineSource, lock: dict,
     findings = []
     for relpath, state in sorted(results.items()):
         entry = files.get(relpath)
+        if state == "local-modified" and _keep_local_current(entry, current.get(relpath)):
+            continue
         if state in {
             "new-upstream", "forked-upstream-moved", "forked-base-unknown",
             "composed-drift", "watch", "removed-upstream", "missing-local",
@@ -1478,7 +1514,7 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
         for relpath in relpaths:
             existing = files.get(relpath)
             absent = relpath not in committed
-            current_sha = absent_upstream[relpath] if absent else sha(committed[relpath])
+            current_sha = absent_upstream[relpath] if absent else content_sha(relpath, committed[relpath])
             # --layer records a row the baseline manifest does not list yet; publish needs it.
             layer = layer_override or (
                 (source_entry or {}).get("layer") if source_entry else (existing or {}).get("layer"))
@@ -1536,7 +1572,8 @@ def _commit_shas(root: Path, commit: str, relpaths: list[str]) -> dict[str, str 
     blobs = _cat_file_many(root, [f"{commit}:{relpath}" for relpath in relpaths])
     if blobs is None:
         return {relpath: None for relpath in relpaths}
-    return {relpath: (sha(data) if data is not None else None) for relpath, data in zip(relpaths, blobs)}
+    return {relpath: (content_sha(relpath, data) if data is not None else None)
+            for relpath, data in zip(relpaths, blobs)}
 
 
 def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
@@ -2286,6 +2323,43 @@ def _compose_row_output(root: Path, relpath: str, inputs: list[str]) -> bytes:
     raise BaselineError(f"compose: no composition rule for {relpath}")
 
 
+def _drifted_outputs(root: Path, outputs: dict[str, bytes]) -> list[str]:
+    drift = []
+    for relpath, output in outputs.items():
+        local = local_text(root, relpath)
+        local_bytes = local.encode("utf-8") if local is not None else None
+        if local_bytes != _lf(output):
+            drift.append(relpath)
+    return sorted(drift)
+
+
+def v2_compose_template(root: Path, check: bool) -> int:
+    """`compose --template`: render every composed output the baseline template ships from its shipped
+    inputs, with every layer adopted. The template has no consumer lock, so the rows are
+    `WATCH_COMPOSED_INPUTS` itself; an output the template does not ship is skipped."""
+    outputs = {}
+    for relpath, inputs in WATCH_COMPOSED_INPUTS.items():
+        if not (root / relpath).is_file():
+            continue
+        if relpath.endswith("settings.json"):
+            inputs = settings_composed_inputs(root, inputs, list(FULL_LAYERS))
+        outputs[relpath] = _compose_row_output(root, relpath, inputs)
+    drift = _drifted_outputs(root, outputs)
+    if check:
+        for relpath in drift:
+            print(f"drift: {relpath}")
+        if drift:
+            return 1
+        print("no drift")
+        return 0
+    for relpath in drift:
+        _write_lf(root / relpath, outputs[relpath])
+        print(f"composed: {relpath}")
+    if not drift:
+        print("no change")
+    return 0
+
+
 def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
     if not check:
         require_v2_lock(lock)
@@ -2301,13 +2375,7 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
         inputs_by_relpath[relpath] = inputs
         outputs[relpath] = _compose_row_output(root, relpath, inputs)
 
-    drift = []
-    for relpath, output in outputs.items():
-        local = local_text(root, relpath)
-        local_bytes = local.encode("utf-8") if local is not None else None
-        if local_bytes != _lf(output):
-            drift.append(relpath)
-    drift.sort()
+    drift = _drifted_outputs(root, outputs)
 
     if check:
         for relpath in drift:
@@ -2824,6 +2892,8 @@ def _validate_cli_usage(args) -> list[str] | None:
         raise UsageError("--verdict is only valid with judge or paths")
     if args.check and args.op != "compose":
         raise UsageError("--check is only valid with compose")
+    if args.template and args.op != "compose":
+        raise UsageError("--template is only valid with compose")
     if args.layers is not None:
         resolve_layers_v2({}, args.layers)
     if args.op == "paths":
@@ -2914,6 +2984,7 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--template", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--status")
     ap.add_argument("--from", dest="from_relpath")
@@ -2940,6 +3011,8 @@ def main(argv=None) -> int:
                 raise UsageError("upgrade takes --project <path> and no relpaths")
             return v2_upgrade(args.project, args.baseline_dir, args.layers, args.abbrev)
         root = project_root()
+        if args.op == "compose" and args.template:
+            return v2_compose_template(root, args.check)
         if args.op == "doctor":
             return cmd_doctor(root, load_lock(root), args.json)
         if args.op == "init":

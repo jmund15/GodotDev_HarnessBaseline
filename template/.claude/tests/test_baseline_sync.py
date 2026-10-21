@@ -1982,6 +1982,77 @@ def test_pull_drops_row_of_file_removed_upstream_and_missing_locally() -> None:
         assert f"retired: {gone}" in _out(pull), _out(pull)
 
 
+def _keep_local_judgment(content: bytes) -> dict:
+    return {"sha": _sha(content), "verdict": "keep-local", "at": "2026-10-20T00:00:00Z",
+            "borderline": False, "confirmed_at": None}
+
+
+def test_v2_check_strict_clears_only_a_current_keep_local_verdict() -> None:
+    kept = ".claude/tools/kept_local.py"
+    stale = ".claude/tools/stale_local.py"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path,
+            {kept: {"upstream": b"value = 1\n", "local": b"value = 2\n",
+                    "judged": _keep_local_judgment(b"value = 2\n")}},
+        )
+        current = _run_baseline(root, baseline, "check", "--strict", "--json")
+        assert current.returncode == 0, _out(current)
+        assert _json_output(current)["results"][kept] == "local-modified"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path,
+            {stale: {"upstream": b"value = 1\n", "local": b"value = 3\n",
+                     "judged": _keep_local_judgment(b"value = 2\n")}},
+        )
+        moved = _run_baseline(root, baseline, "check", "--strict", "--json")
+        assert moved.returncode == 1, _out(moved)
+        assert _json_output(moved)["results"][stale] == "local-modified"
+
+
+MEMORY_UPSTREAM = b"---\nname: rule\ntype: feedback\nmetadata:\n  node_type: memory\n---\nBody line\n"
+MEMORY_WITH_PROVENANCE = (
+    b"---\nname: rule\ntype: feedback\nmetadata:\n  node_type: memory\n"
+    b"  originSessionId: session-one\n  modified: 2026-01-01T00:00:00Z\n---\nBody line\n"
+)
+
+
+def test_v2_memory_provenance_keys_never_make_a_row_differ() -> None:
+    memory = ".claude/auto-memory/feedback_rule.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {memory: {"upstream": MEMORY_UPSTREAM, "local": MEMORY_WITH_PROVENANCE}},
+        )
+        result = _run_baseline(root, baseline, "check", "--strict", "--json")
+        assert result.returncode == 0, _out(result)
+        assert _json_output(result)["results"][memory] == "in-sync"
+
+
+def test_v2_pull_writes_memory_without_provenance_keys() -> None:
+    memory = ".claude/auto-memory/feedback_pull.md"
+    old = b"---\nname: pull\n---\nOld body\n"
+    upstream = (b"---\nname: pull\nmetadata:\n  node_type: memory\n  originSessionId: session-two\n"
+                b"  modified: 2026-01-02T00:00:00Z\n---\nBody\n")
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {memory: {"upstream": upstream, "local": old, "hash": _sha(old)}},
+        )
+        pull = _run_baseline(root, baseline, "pull", memory)
+        assert pull.returncode == 0, _out(pull)
+        assert (root / memory).read_bytes() == b"---\nname: pull\nmetadata:\n  node_type: memory\n---\nBody\n"
+
+
+def test_v2_provenance_strip_leaves_non_memory_files_alone() -> None:
+    tool = ".claude/tools/front_matter.py"
+    upstream = b"---\nmodified: yes\n---\nvalue = 1\n"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {tool: {"upstream": upstream, "local": upstream.replace(b"yes", b"no")}},
+        )
+        result = _run_baseline(root, baseline, "check", "--strict", "--json")
+        assert _json_output(result)["results"][tool] == "local-modified"
+
+
 def main() -> int:
     cases = [
         test_pull_retires_unmodified_file_removed_upstream,
@@ -2055,6 +2126,10 @@ def main() -> int:
         test_pull_seed_project_settings_records_layer_overlay_inputs,
         test_migrate_derives_project_settings_over_layer_overlays,
         test_pull_keeps_existing_seed_file_says_kept,
+        test_v2_check_strict_clears_only_a_current_keep_local_verdict,
+        test_v2_memory_provenance_keys_never_make_a_row_differ,
+        test_v2_pull_writes_memory_without_provenance_keys,
+        test_v2_provenance_strip_leaves_non_memory_files_alone,
     ]
     return run_cases(cases)
 

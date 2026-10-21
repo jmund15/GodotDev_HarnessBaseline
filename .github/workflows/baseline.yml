@@ -47,3 +47,20 @@ jobs:
 
       - name: template harness battery
         run: python3 template/.claude/scripts/harness_tests.py
+
+      # The template battery above runs the full godot layer, so it cannot prove a non-godot consumer.
+      # Each step bootstraps a scratch project at one non-godot profile and runs that project's own
+      # battery. A proof that reaches a member the profile does not install fails the step.
+      - name: pure profile battery
+        run: |
+          set -euo pipefail
+          target="$(mktemp -d)/ProfileProbe-pure"
+          bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure
+          cd "$target" && python3 .claude/scripts/harness_tests.py
+
+      - name: pure,coding profile battery
+        run: |
+          set -euo pipefail
+          target="$(mktemp -d)/ProfileProbe-pure-coding"
+          bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure,coding
+          cd "$target" && python3 .claude/scripts/harness_tests.py

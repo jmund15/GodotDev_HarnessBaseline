@@ -4,7 +4,6 @@ description: "read_files/read_web spilling is governed by OUTPUT chars (~30-40K 
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-05T02:19:57.469Z
 ---
 
 `read_files` / `read_web` reliability is governed by **OUTPUT size, not input file count**. Claude Code stops inlining a tool result and spills it to a `tool-results/*.txt` file once the result grows past **~30–40K characters** — the "result saved to a file, now unwrap the `{result: "..."}` JSON" pain. Measured 2026-05-31 by bisection: a ~28.5K-char result arrived inline; a ~43K-char result (worker output complete, verified by an end-of-output sentinel — so NOT model-truncated) spilled to disk; historical spill files cluster 58K–126K bytes.

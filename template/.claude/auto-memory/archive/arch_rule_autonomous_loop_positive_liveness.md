@@ -4,7 +4,6 @@ description: "An autonomous convergence/gate loop must require a POSITIVE livene
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 328355ad-d25a-4be6-b511-a11b6412b744
 ---
 
 An autonomous loop that consumes fan-out results — a convergence loop, a gate, an adversarial panel — must NEVER read an empty/absent result as success. A fanned agent that errors, times out, or false-absences returns the SAME shape as a genuine clean: "0 findings" is indistinguishable from "never ran" ([[gotcha_workflow_fanout_search_false_absence]]).

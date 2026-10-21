@@ -4,7 +4,6 @@ description: "A forked baseline file stops receiving upstream fixes. baseline_sy
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 01c8633d-c4e3-4b41-88df-21aa59609efb
 ---
 
 A `forked` row keeps its local copy instead of the upstream `template/` file, so the copy can fall behind a real upstream fix. The risk is sharpest when the forked file is itself a tool, such as `baseline_sync.py`: the copy that runs the sync diverges from upstream.

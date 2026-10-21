@@ -29,6 +29,7 @@ import dangerous_shell_guard as dsg  # noqa: E402
 # An absolute path outside this repo on the running platform: `C:/...` is relative on POSIX,
 # where a cache segment under it would be an in-repo cache the rule rightly admits.
 OTHER_CHECKOUT = "C:/any/other/checkout" if os.name == "nt" else "/any/other/checkout"
+OTHER_HOME = "C:/Users/someone" if os.name == "nt" else "/home/someone"
 
 MUST_PASS = [
     "rm -rf .claude/.search-index",
@@ -75,7 +76,7 @@ MUST_BLOCK = [
     # absolute targets outside this repo, even with a cache segment (defect 2)
     "rm -rf " + OTHER_CHECKOUT + "/.search-index",
     "rm -rf /elsewhere/__pycache__",
-    "rm -rf C:/Users/someone/.claude/.cache",
+    "rm -rf " + OTHER_HOME + "/.claude/.cache",
     'rm -rf "' + OTHER_CHECKOUT + '/.search-index"',
     # quoting must not let a real target, variable or chained delete ride along
     'rm -rf ".search-index" Assets',

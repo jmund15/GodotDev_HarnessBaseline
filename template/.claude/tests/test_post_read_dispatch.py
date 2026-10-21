@@ -14,6 +14,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DISPATCH = os.path.join(HERE, "..", "hooks", "post_read_dispatch.py")
+sys.path.insert(0, os.path.dirname(DISPATCH))
+import routing_audit  # noqa: E402
 VAULT_DOC = (r"C:\Users\x\ObsidianVault\DevProjects\{{PROJECT_NAME}}\Claude\Design\Push System Design.md")
 
 
@@ -84,9 +86,14 @@ def main():
     r = run(json.dumps({"tool_name": "Read", "session_id": "prd00003", "agent_id": "agent001",
                         "tool_input": {"file_path": VAULT_DOC}, "tool_response": {"content": "x"}}), env)
     rows = [json.loads(ln) for ln in open(log_audit, encoding="utf-8")] if os.path.exists(log_audit) else []
-    check("routing-audit sub-hook logged the subagent's bulk-copyable vault read as cue-exempt",
-          any(row.get("session_id") == "prd00003" and row.get("classification") == "cue-exempt"
-              and row.get("rule") == "native-read-bulk-copyable" for row in rows), repr(rows)[:300])
+    logged = any(row.get("session_id") == "prd00003" and row.get("classification") == "cue-exempt"
+                 and row.get("rule") == "native-read-bulk-copyable" for row in rows)
+    if routing_audit.classify_call is not None:
+        check("routing-audit sub-hook logged the subagent's bulk-copyable vault read as cue-exempt",
+              logged, repr(rows)[:300])
+    else:
+        check("without the coding-layer classifier the routing-audit sub-hook logs nothing and the dispatcher survives",
+              not rows and r.returncode == 0, repr(rows)[:300] + r.stderr[:200])
 
     # 3. A successful full ladder Read arms exactly the model-selection marker.
     ladder = os.path.join(tmp, ".claude", "reference", "model_ladder_evidence.md")

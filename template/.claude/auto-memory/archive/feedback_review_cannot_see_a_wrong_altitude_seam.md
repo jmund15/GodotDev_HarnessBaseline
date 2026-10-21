@@ -4,7 +4,6 @@ description: "Every design lens asks whether a seam is correct; none asks whethe
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-19T06:12:12.910Z
 ---
 
 A destination-strategy seam went through a 29-finding `/plan_check`, two convergence rounds, and a

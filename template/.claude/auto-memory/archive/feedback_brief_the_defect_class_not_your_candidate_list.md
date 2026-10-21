@@ -6,7 +6,6 @@ metadata:
   type: feedback
   tier: cold
   source: owner correction 2026-09-17
-  originSessionId: c18ea0bc-a4aa-40f1-8cb1-9649d2345d34
 ---
 
 # Brief the defect class and the search obligation, not the candidates you happened to find

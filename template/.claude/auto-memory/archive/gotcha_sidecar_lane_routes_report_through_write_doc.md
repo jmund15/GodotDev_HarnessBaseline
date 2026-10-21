@@ -4,8 +4,6 @@ description: "A delegated author lane obeys the Documentation Delegation Rule on
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 415750d4-b7da-4582-b7ce-c3d371cded22
-  modified: 2026-09-09T14:34:19.285Z
 ---
 
 **Concrete:** five of five lanes died this way on 2026-09-09.

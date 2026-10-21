@@ -4,7 +4,6 @@ description: "When a test host, engine or tool fails, search the FAILING domain'
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-19T15:22:37.972Z
 ---
 
 Two rules, in this order, before any hypothesis about the code under test:

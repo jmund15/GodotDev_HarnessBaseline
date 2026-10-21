@@ -4,8 +4,6 @@ description: "Generic build-output gitignore globs ([Dd]ebug/, [Rr]elease/) matc
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 51c3a7b4-e34c-4bfd-bcdf-b1d8710a9fe5
-  modified: 2026-08-14T07:17:28.646Z
 retire_when:
   - review-by: 2027-02-16
 ---

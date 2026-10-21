@@ -45,6 +45,15 @@ Each lens carries the tier its seat reviews at: its registry's `REGISTRY_TIERS` 
 artifacts executor work, an anchored check fanout work. `seat_tier` is the one reader: the provider
 guard and review_fanout.js fill a seat that declares no tier from it.
 
+A project adds lenses without forking a registry: it writes `<registry file stem>.project.md` beside it
+(`commands/agents/review_agents.project.md`), holding only `### <key> <descriptor>` lens blocks in the registry's
+key prefix. The file is absent until the project creates it; the baseline never ships or tracks it, so a consumer
+locks it `local`. `parse` appends its lenses after the shipped ones, under the shipped preamble, so `get`,
+`index`, `seat_tier`, the review ledger and `doctor`'s `lens-registry` check see one merged registry. A key
+the shipped file or the companion already defines, a heading outside the key prefix, an unreadable file and a
+file with no lens each exit 2 naming the companion. A lens whose shipped text must change is a fork of the
+registry, never an override.
+
 Templates stay in their registry file — this reads, never rewrites. The index is generated at read
 time, so it cannot drift from the templates it lists.
 """
@@ -80,6 +89,7 @@ REGISTRIES = {
 }
 
 TEMPLATES_RE = re.compile(r"^## (Agent|Lens) Templates\b")
+STRAY_RE = re.compile(r"^### ([a-z0-9][a-z0-9-]*)(?:\s|$)")
 
 REGISTRY_TIERS = {
     "review": "executor",
@@ -207,18 +217,13 @@ def shipped() -> list[str]:
     return [reg for reg, (filename, _prefix) in REGISTRIES.items() if (AGENTS / filename).exists()]
 
 
-def parse(registry: str, agents: Path | None = None) -> tuple[str, list[Lens]]:
-    filename, prefix = REGISTRIES[registry]
-    path = (agents or AGENTS) / filename
-    if not path.exists():
-        sys.exit(f"registry file not found: {path}")
+def _scan(registry: str, lines: list[str], start: int) -> tuple[int, list[Lens]]:
+    """The lens blocks of one registry file, and the line index where the first begins."""
+    prefix = REGISTRIES[registry][1]
     head_re = re.compile(rf"^### ({re.escape(prefix)}[a-z0-9][a-z0-9-]*)\s*(.*)$")
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     lenses: list[Lens] = []
     current: Lens | None = None
     first = len(lines)
-    # Lenses start under the templates heading; `###` sections above it belong to the preamble.
-    start = next((n for n, line in enumerate(lines) if TEMPLATES_RE.match(line)), 0)
     for n, line in enumerate(lines):
         m = head_re.match(line) if n > start or not start else None
         if m:
@@ -229,6 +234,64 @@ def parse(registry: str, agents: Path | None = None) -> tuple[str, list[Lens]]:
             continue
         if current is not None:
             current.lines.append(line)
+    return first, lenses
+
+
+def companion_path(registry: str, agents: Path | None = None) -> Path:
+    """The project-owned file that adds lenses to a registry: `review_agents.md` -> `review_agents.project.md`."""
+    return (agents or AGENTS) / f"{Path(REGISTRIES[registry][0]).stem}.project.md"
+
+
+def _refuse(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def parse_companion(registry: str, agents: Path | None, shipped_path: Path, shipped_keys: set[str]) -> list[Lens]:
+    """A registry's project companion lenses; [] when the project keeps none.
+
+    Refuses, exit 2 naming the file: unreadable text, no lens, a lens heading outside the registry's key
+    prefix, and a key the shipped registry or the companion itself already defines.
+    """
+    path = companion_path(registry, agents)
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeError) as exc:
+        _refuse(f"project lens companion unreadable: {path} ({exc})")
+    prefix = REGISTRIES[registry][1]
+    in_fence = False
+    for n, line in enumerate(lines, 1):
+        if line.startswith("```"):
+            in_fence = not in_fence
+        stray = None if in_fence else STRAY_RE.match(line)
+        if stray and not stray.group(1).startswith(prefix):
+            _refuse(f"project lens companion {path}:{n}: heading `{stray.group(1)}` is outside the "
+                    f"{registry} registry's key prefix `{prefix}`")
+    _, lenses = _scan(registry, lines, 0)
+    if not lenses:
+        _refuse(f"project lens companion defines no lens: {path} (a lens is a `### {prefix}<key>` heading)")
+    seen = set(shipped_keys)
+    for item in lenses:
+        if item.key in seen:
+            _refuse(f"project lens companion {path} redefines `{item.key}`; a key is defined once, so the "
+                    f"project renames its lens or forks {shipped_path}")
+        seen.add(item.key)
+    return lenses
+
+
+def parse(registry: str, agents: Path | None = None) -> tuple[str, list[Lens]]:
+    """The registry's preamble and lenses: the shipped file's, then its project companion's."""
+    filename, _prefix = REGISTRIES[registry]
+    path = (agents or AGENTS) / filename
+    if not path.exists():
+        sys.exit(f"registry file not found: {path}")
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    # Lenses start under the templates heading; `###` sections above it belong to the preamble.
+    start = next((n for n, line in enumerate(lines) if TEMPLATES_RE.match(line)), 0)
+    first, lenses = _scan(registry, lines, start)
+    lenses += parse_companion(registry, agents, path, {item.key for item in lenses})
     return "".join(lines[:first]), lenses
 
 

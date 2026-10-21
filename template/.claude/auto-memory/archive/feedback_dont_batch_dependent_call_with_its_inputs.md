@@ -4,7 +4,6 @@ description: Never put a tool call in the same batch as the calls that produce i
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: dbb84ead-c527-47a7-97b3-4191277af230
 ---
 
 The harness encourages batching **independent** tool calls in one turn. A call whose ARGUMENTS are derived from a sibling call's OUTPUT is **not** independent — batching them forces you to pass guessed/fabricated arguments before the producing call's results have returned.

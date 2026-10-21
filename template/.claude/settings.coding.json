@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(architecture_philosophy)",
+      "Skill(architecture_brainstorm)",
+      "Skill(idea_brainstorm)",
+      "Skill(plan_check)",
+      "Skill(plan_check:*)",
+      "Skill(sync_subsystems)",
+      "Skill(session_audit)",
+      "Skill(review_pr)",
+      "Skill(review_prs)",
+      "Skill(merge_pr)",
+      "Skill(routing_audit)"
+    ]
+  }
+}

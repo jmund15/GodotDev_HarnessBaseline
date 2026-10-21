@@ -186,7 +186,7 @@ def _validate_rows(root: Path, source: dict, rows: list[str], lock: dict) -> lis
         judged = entry.get("judged") or {}
         if judged.get("verdict") != "push":
             raise PublishError(f"row is not judged push: {relpath}")
-        if judged.get("sha") != sync.sha(content):
+        if judged.get("sha") != sync.content_sha(relpath, content):
             raise PublishError(f"judged sha does not match source commit: {relpath}")
         collected.append(relpath)
     return collected
@@ -405,13 +405,18 @@ def _hit_id(hit) -> str:
 def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
            accept_hits: list[str], baseline_dir: Path) -> str:
     for record in records:
-        if record["kind"] != "lock" or record["op"] == "D":
-            continue  # root files skip reverse substitution (§5); deletions have no content
+        if record["op"] == "D":
+            continue  # deletions have no content
         destination = worktree / record["dest_path"]
         if not destination.exists():
             continue
-        rendered = destination.read_bytes().decode("utf-8", errors="replace")
-        _write_lf(destination, sync.reverse_for(record["relpath"], rendered, lock.get("substitutions", {})))
+        original = destination.read_bytes()
+        stripped = sync.strip_provenance(record["relpath"], original)
+        if record["kind"] == "lock":
+            rendered = stripped.decode("utf-8", errors="replace")
+            _write_lf(destination, sync.reverse_for(record["relpath"], rendered, lock.get("substitutions", {})))
+        elif stripped != original:  # root files skip reverse substitution (§5)
+            _write_lf(destination, stripped)
     _git(worktree, ["add", "-A"])
     diff_text = _lf(_git(worktree, ["diff", "--cached"]).stdout).decode("utf-8", errors="replace")
     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_dir))
@@ -828,10 +833,10 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
         if content is None:
             raise PublishError(f"merged baseline is missing: {relpath}")
         rendered = sync.forward_for(relpath, content.decode("utf-8", errors="replace"), substitutions)
-        merged_hash = sync.sha(rendered.encode("utf-8"))
+        merged_hash = sync.content_sha(relpath, rendered.encode("utf-8"))
         if from_worktree:
             local = sync.local_text(root, relpath)
-            local_hash = sync.sha(local.encode("utf-8")) if local is not None else None
+            local_hash = sync.content_sha(relpath, local.encode("utf-8")) if local is not None else None
             if local_hash != merged_hash:
                 continue  # leave `hash` untouched; the consumer's `pull` catches up (§5)
         entry["hash"] = merged_hash
@@ -876,7 +881,7 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
             expected_merged = sync.reverse_for(
                 record["relpath"], source_content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
             ).encode("utf-8")
-            if sync.sha(content) != sync.sha(expected_merged):
+            if sync.content_sha(record["relpath"], content) != sync.content_sha(record["relpath"], expected_merged):
                 raise PublishError(
                     f"check failed (merged tree does not hold source bytes): {record['relpath']}"
                 )
@@ -889,7 +894,9 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
         )
         published = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
         published_text = _lf(published).decode("utf-8", errors="replace") if published is not None else None
-        if published_text is None or sync.sha(published_text.encode("utf-8")) != sync.sha(expected.encode("utf-8")):
+        if published_text is None or (
+                sync.content_sha(record["relpath"], published_text.encode("utf-8"))
+                != sync.content_sha(record["relpath"], expected.encode("utf-8"))):
             raise PublishError(f"check failed: {record['relpath']}")
     if from_worktree and needs_pull:
         return "all published rows verified; pull needed: " + ", ".join(sorted(needs_pull))

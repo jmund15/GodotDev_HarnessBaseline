@@ -4,7 +4,6 @@ description: "When scoping/planning a worklog item, read its full Context block 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 90d4ba24-4f8f-4037-aa55-f7b6b19254bb
 retire_when:
   - review-by: 2026-12-07
 ---

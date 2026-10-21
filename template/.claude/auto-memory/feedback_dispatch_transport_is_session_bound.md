@@ -4,8 +4,6 @@ description: "Workflow/Agent subagents are transport-bound to the session endpoi
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: b729ef67-4b61-4c62-b99a-cdf587856c42
-  modified: 2026-10-13T15:01:39.434Z
 retire_when:
   - review-by: 2027-02-08
 ---

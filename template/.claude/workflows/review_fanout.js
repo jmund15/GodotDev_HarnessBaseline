@@ -239,7 +239,8 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
     verification.report = out  // the checker's text only proves it read this file; readers open the engine's own path
   } catch (e) {
     verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out }
+      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out,
+      note: String((e && e.message) || e) }
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }

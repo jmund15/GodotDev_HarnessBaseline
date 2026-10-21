@@ -34,10 +34,12 @@ Fail posture: every function is best-effort and total. A read never raises — i
 that cannot be written must degrade to a missing nudge, never to a crashed hook.
 """
 
+import fnmatch
 import importlib.util
 import io
 import json
 import os
+import re
 import tempfile
 import time
 
@@ -45,7 +47,9 @@ __all__ = [
     "HARNESS_DIRS",
     "CODE_EXT",
     "SETTINGS_FILES",
+    "is_settings_file",
     "is_harness_code",
+    "in_harness_dirs",
     "SETUP_SURFACE_FILES",
     "read_json_salvage",
     "write_json_atomic",
@@ -71,19 +75,41 @@ HARNESS_DIRS = (
     ".claude/workflows",
     ".claude/tests",
     ".claude/settings.json",
-    ".claude/settings.base.json",
-    ".claude/settings.project.json",
+    ".claude/settings.*.json",
 )
 
 # Which harness paths are code (a script or a settings file): the proof runner's binding and the fold
-# checker's untested-code rule read this one predicate.
+# checker's untested-code rule read this one predicate. A settings file is `settings.json` or any
+# `settings.<name>.json` (base, project, a layer overlay) except the user's gitignored `settings.local.json`.
 CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs")
-SETTINGS_FILES = (".claude/settings.json", ".claude/settings.base.json", ".claude/settings.project.json")
+_SETTINGS_RE = re.compile(r"\.claude/settings(?:\.(?!local\.json$)[\w-]+)?\.json")
+
+
+def is_settings_file(rel):
+    return _SETTINGS_RE.fullmatch(rel.replace(os.sep, "/")) is not None
+
+
+def _settings_files():
+    claude_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        names = sorted(os.listdir(claude_dir))
+    except OSError:
+        return ()
+    return tuple(".claude/" + n for n in names if is_settings_file(".claude/" + n))
+
+
+SETTINGS_FILES = _settings_files()
 
 
 def is_harness_code(rel):
     rel = rel.replace(os.sep, "/")
-    return rel in SETTINGS_FILES or rel.lower().endswith(CODE_EXT)
+    return is_settings_file(rel) or rel.lower().endswith(CODE_EXT)
+
+
+def in_harness_dirs(rel):
+    """True when `rel` is a `HARNESS_DIRS` entry or sits under one; an entry may be a glob, as git reads it."""
+    rel = rel.replace(os.sep, "/")
+    return any(fnmatch.fnmatchcase(rel, d) or rel.startswith(d + "/") for d in HARNESS_DIRS)
 
 
 # Files outside HARNESS_DIRS whose change must still run their bound proofs (pins, and a cloud script
@@ -112,7 +138,9 @@ _COMPACTION_KEY = "fired_since_compaction"
 SKILL_REATTACH_CHARS = 20_000
 _COMPACTED_AT_KEY = "compacted_at"
 LADDER_SLICE_KEY = "ladder_slice_tiers"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY)
+BRIEF_TABLE_KEY = "brief_table_fits"
+_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY,
+                          BRIEF_TABLE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
 
@@ -238,6 +266,25 @@ def ladder_slice_tiers(session_id):
     """The tiers whose ladder slice is in this context window, else []. Reads only."""
     have = read_json_salvage(state_path(session_id)).get(LADDER_SLICE_KEY)
     return sorted(t for t in have if isinstance(t, str)) if isinstance(have, list) else []
+
+
+def brief_table_seen(session_id, tier, fits):
+    """The fit snapshot `{row id: fit verdict}` stored for `tier` when its full table printed in this context
+    window, or None when none is stored: the caller then prints the full table, and `fits` is stored with it.
+    A compaction clears the record, so the table prints again. One locked read-and-set, fail-open to None."""
+    def update(state):
+        tables = state.get(BRIEF_TABLE_KEY)
+        if not isinstance(tables, dict):
+            tables = {}
+        earlier = tables.get(tier)
+        if not isinstance(earlier, dict):
+            tables[tier] = fits
+            state[BRIEF_TABLE_KEY] = tables
+            return None
+        return earlier
+
+    written, earlier = update_json_locked(state_path(session_id), update)
+    return earlier if written else None
 
 
 def fire_once_since_compaction(session_id, key):
