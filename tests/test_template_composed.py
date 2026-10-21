@@ -105,12 +105,21 @@ def test_layer_skill_grants_sit_in_their_layer_overlay_only() -> None:
         assert grants(overlay), "%s carries no Skill grants" % overlay
 
 
+def test_every_shipped_rule_is_path_scoped() -> None:
+    # A rules/ file without `paths:` loads in every consumer's session; the census counts it a source error.
+    sys.path.insert(0, str(TEMPLATE / ".claude" / "tools"))
+    import load_census
+    errors = load_census.rules_census(TEMPLATE / ".claude")["source_errors"]
+    assert not errors, "shipped rules the census cannot scope: %s" % errors
+
+
 def main() -> int:
     cases = [
         test_shipped_composed_outputs_equal_their_render,
         test_a_drifted_copy_fails_check_and_the_render_repairs_it,
         test_the_render_follows_the_adaptation_input,
         test_layer_skill_grants_sit_in_their_layer_overlay_only,
+        test_every_shipped_rule_is_path_scoped,
     ]
     failures = []
     for case in cases:

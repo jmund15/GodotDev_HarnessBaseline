@@ -2397,11 +2397,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/rules/model_delegation.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/rules/physics_patterns.md",
       "layer": "godot",
       "sync": "auto"
