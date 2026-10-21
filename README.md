@@ -249,8 +249,9 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   tag-constant class is named `InstrumentationTags`; rename in both if your project
   uses another holder.
 - [pure] `tools/lens.py` — `REGISTRIES` pairs each agent-registry file with the ID prefix
-  its lenses use. The shipped `review` entry assumes unprefixed IDs; set your own
-  prefix if your `review_agents.md` namespaces them.
+  its lenses use; `adaptation.json` `lens_prefixes` overrides a prefix. Add project
+  lenses in `commands/agents/<registry>.project.md` (the `tools/lens.py` docstring
+  owns the rules); never fork a registry to add one.
 - [pure] pure files with example domain nouns as inline examples only (mechanism is
   domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
   `commands/autolearn.md`, `commands/reindex_search.md`,

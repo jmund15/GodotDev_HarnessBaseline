@@ -8,8 +8,11 @@ the lock only when that proof holds:
 
   Windows — the delete succeeds. A file another process still has open refuses deletion
             (ERROR_SHARING_VIOLATION), so a successful unlink proves no holder remains.
-  POSIX   — a non-blocking flock on the named inode succeeds. The holder flocks its own
-            descriptor at creation, and unlink alone would succeed under a live holder.
+  POSIX   — a non-blocking flock on the named inode succeeds. The creator flocks a private
+            file and then hard-links it to the lock path, so the file is flocked before any
+            contender can open it; unlink alone would succeed under a live holder. A
+            filesystem without hard links creates the lock in place, where a contender that
+            opens it before the creator's flock can delete it, leaving neither one holding it.
 
 No process ID is probed, so PID reuse and signals cannot mislead it, and a live holder that
 stalls keeps its lock for as long as it lives. A directory at the lock path is a legacy
@@ -56,6 +59,12 @@ def _same_file(fd, path):
 
 def _create(path):
     """Return a descriptor that owns `path`, or None when another owner may hold it."""
+    if os.name != "nt":
+        return _create_flocked(path)
+    return _create_in_place(path)
+
+
+def _create_in_place(path):
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
     except FileExistsError:
@@ -73,6 +82,29 @@ def _create(path):
     except OSError:
         _release_fd(path, fd)
         raise
+    return fd
+
+
+def _create_flocked(path):
+    """Flock a private file, then link it to `path`, so no contender sees the lock unflocked."""
+    staged = "%s.%s.new" % (path, os.urandom(8).hex())
+    fd = os.open(staged, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, str(os.getpid()).encode("ascii"))
+        os.link(staged, path)
+    except FileExistsError:
+        os.close(fd)
+        return None
+    except OSError:
+        os.close(fd)
+        # A filesystem without hard links (FAT, exFAT) falls back to the in-place create.
+        return _create_in_place(path)
+    finally:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
     return fd
 
 

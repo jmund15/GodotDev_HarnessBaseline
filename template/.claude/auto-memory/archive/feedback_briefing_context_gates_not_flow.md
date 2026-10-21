@@ -4,8 +4,6 @@ description: "When a command/skill briefs a downstream context (a drafting step,
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: d72ceee1-1360-43a4-861a-e1c6aeae48c9
-  modified: 2026-08-05T17:41:39.257Z
 ---
 
 When designing a command or skill that hands off to a downstream context (a drafting step, a Task subagent, the next skill in a chain), the briefing surface should contain ONLY:

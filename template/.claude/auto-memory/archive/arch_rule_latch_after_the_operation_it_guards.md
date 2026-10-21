@@ -4,7 +4,6 @@ description: A do-once latch set before the operation it guards permanently admi
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-08-18T05:54:56.936Z
 ---
 
 A "run this once" memo — a `HashSet.Add`, a `_validated` bool, a dictionary insert — must be set

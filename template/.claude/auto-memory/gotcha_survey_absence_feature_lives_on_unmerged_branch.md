@@ -4,8 +4,6 @@ description: "A code survey can return a confident, well-evidenced NOT FOUND sim
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 11491863-83a1-49e2-9147-f13b079e8f51
-  modified: 2026-08-18T22:16:47.268Z
 retire_when:
   - review-by: 2027-01-05
 ---

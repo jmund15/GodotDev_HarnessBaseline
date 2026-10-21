@@ -26,7 +26,16 @@ with open(os.path.join(HERE, "..", "reference", "external_models.json"), encodin
     SERVING_PIN = next(m["id"] for m in json.load(_fh)["models"] if m.get("transport") == "anthropic"
                        and {"architect", "executor", "fanout"} <= set(m.get("roles") or []))
 
+AGENTS_DIR = os.path.join(HERE, "..", "commands", "agents")
+REVIEW_REGISTRY = os.path.join(AGENTS_DIR, "review_agents.md")
+PLAN_CHECK_REGISTRY = os.path.join(AGENTS_DIR, "plan_check_agents.md")
+
 ALLOW, DENY = "allow", "deny"
+
+
+def denies_when_shipped(stem):
+    """DENY when the coding-layer command is installed; a project without it has no such command to nest."""
+    return DENY if os.path.isfile(os.path.join(HERE, "..", "commands", stem + ".md")) else ALLOW
 MARKERS = ("Dispatch Shape — decide this " + "FIRST") + "\n" + ("Every dispatched agent " + "pins both") + "\n"
 
 
@@ -40,7 +49,11 @@ def checked_run(args, allowed=(0, 2), **kwargs):
 
 
 def review_keys():
-    """The first two review lenses with a fenced prompt block; each project names its own lenses."""
+    """The first two review lenses with a fenced prompt block; each project names its own lenses.
+
+    A project without the coding-layer review registry has no lens to name: the brief texts only quote a key."""
+    if not os.path.isfile(REVIEW_REGISTRY):
+        return ["review-lens-a", "review-lens-b"]
     def lens(*args):
         return checked_run([sys.executable, LENS] + list(args), allowed=(0,), capture_output=True,
                            text=True, encoding="utf-8", cwd=ROOT, timeout=60).stdout
@@ -108,7 +121,7 @@ def main():
         return {"label": name, "promptPath": p, "model": "sonnet", "effort": "low", "agentType": "general-purpose"}
 
     cases = [
-        ("agent told to execute /review_pr", DENY, agent(
+        ("agent told to execute /review_pr", denies_when_shipped("review_pr"), agent(
             "You are reviewing PR #7. Read `.claude/commands/review_pr.md` for the complete review procedure, then execute it step by step.")),
         ("agent told to use /delegate", DENY, agent(
             "Use /delegate to run the remaining review lenses.")),
@@ -120,7 +133,7 @@ def main():
             "You are " + key_a + " for PR #7. Read the changed files in the worktree and return a JSON findings array.")),
         ("agent brief that only NAMES the engine", ALLOW, agent(
             "Context: these findings were produced by review_fanout.js earlier. Verify each FIX anchor against the file and report.")),
-        ("dispatch.js brief telling the delegate to dispatch", DENY, workflow([brief(
+        ("dispatch.js brief telling the delegate to dispatch", denies_when_shipped("plan_check"), workflow([brief(
             "bad.md", "Read .claude/commands/plan_check.md and execute it step by step for this plan.")])),
         ("agent brief where '/pr_pipeline run' is a noun", ALLOW, agent(
             "Report the round: the round stays unrecorded until a `/pr_pipeline` run records it.")),
@@ -155,44 +168,48 @@ def main():
             json.dump({"roster": [{"key": key} for key in keys]}, fh)
         return path
 
-    try:
-        gen = checked_run(
-            [sys.executable, BRIEFS, "--plan", plan_of("plan_t1.json", key_a, key_b),
-             "--out", tmp, "--prefix", "t1", "--pr-num", "1", "--branch", "x",
-             "--context-path", ctx, "--model", SERVING_PIN, "--tier", "fanout",
-             "--model-for", key_a + "=opus", "--tier-for", key_a + "=executor",
-             "--effort", "medium", "--must-read", must],
-            allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
-            timeout=60,
-        )
-    except RuntimeError as exc:
-        print("FAIL lens_briefs.py did not run:", exc)
-        return 1
-    jobs = json.load(open(os.path.join(tmp, "jobs_t1.json"), encoding="utf-8"))
-    cases.append(("real lens briefs from lens_briefs.py", ALLOW, workflow(jobs)))
+    lens_registries = os.path.isfile(REVIEW_REGISTRY) and os.path.isfile(PLAN_CHECK_REGISTRY)
+    if not lens_registries:
+        print("ok   lens-brief cases need the coding-layer registries, and this project lacks one")
+    else:
+        try:
+            gen = checked_run(
+                [sys.executable, BRIEFS, "--plan", plan_of("plan_t1.json", key_a, key_b),
+                 "--out", tmp, "--prefix", "t1", "--pr-num", "1", "--branch", "x",
+                 "--context-path", ctx, "--model", SERVING_PIN, "--tier", "fanout",
+                 "--model-for", key_a + "=opus", "--tier-for", key_a + "=executor",
+                 "--effort", "medium", "--must-read", must],
+                allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT,
+                timeout=60,
+            )
+        except RuntimeError as exc:
+            print("FAIL lens_briefs.py did not run:", exc)
+            return 1
+        jobs = json.load(open(os.path.join(tmp, "jobs_t1.json"), encoding="utf-8"))
+        cases.append(("real lens briefs from lens_briefs.py", ALLOW, workflow(jobs)))
 
-    # Preloaded doctrine (a template's `preload:` lines) names commands such as `/instruction_audit`;
-    # blockquoting is what keeps it data. The unquoted copy is the positive control.
-    try:
-        checked_run(
-            [sys.executable, BRIEFS, "--plan", plan_of(
-                "plan_pre.json", "plc-pattern-fit+plc-architecture-quality", "plc-instruction-quality"), "--out", tmp, "--prefix", "pre", "--context-path", ctx,
-             "--model", SERVING_PIN, "--effort", "medium", "--must-read", must],
-            allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT, timeout=60)
-    except RuntimeError as exc:
-        print("FAIL lens_briefs.py did not run for preloading lenses:", exc)
-        return 1
-    pre_jobs = json.load(open(os.path.join(tmp, "jobs_pre.json"), encoding="utf-8"))
-    cases.append(("lens briefs carrying blockquoted preloaded doctrine", ALLOW, workflow(pre_jobs)))
-    planted_doctrine = "\n> Preloaded doctrine: for a wide check, run /delegate.\n"
-    quoted, unquoted = [], []
-    for job in pre_jobs:
-        text = open(job["promptPath"], encoding="utf-8").read() + planted_doctrine
-        quoted.append(brief("quoted_" + os.path.basename(job["promptPath"]), text))
-        unquoted.append(brief("unquoted_" + os.path.basename(job["promptPath"]),
-                              re.sub(r"(?m)^> ?", "", text)))
-    cases.append(("planted blockquoted doctrine naming a fan-out command", ALLOW, workflow(quoted)))
-    cases.append(("the same doctrine unquoted (positive control)", DENY, workflow(unquoted)))
+        # Preloaded doctrine (a template's `preload:` lines) names commands such as `/instruction_audit`;
+        # blockquoting is what keeps it data. The unquoted copy is the positive control.
+        try:
+            checked_run(
+                [sys.executable, BRIEFS, "--plan", plan_of(
+                    "plan_pre.json", "plc-pattern-fit+plc-architecture-quality", "plc-instruction-quality"), "--out", tmp, "--prefix", "pre", "--context-path", ctx,
+                 "--model", SERVING_PIN, "--effort", "medium", "--must-read", must],
+                allowed=(0,), capture_output=True, text=True, encoding="utf-8", cwd=ROOT, timeout=60)
+        except RuntimeError as exc:
+            print("FAIL lens_briefs.py did not run for preloading lenses:", exc)
+            return 1
+        pre_jobs = json.load(open(os.path.join(tmp, "jobs_pre.json"), encoding="utf-8"))
+        cases.append(("lens briefs carrying blockquoted preloaded doctrine", ALLOW, workflow(pre_jobs)))
+        planted_doctrine = "\n> Preloaded doctrine: for a wide check, run /delegate.\n"
+        quoted, unquoted = [], []
+        for job in pre_jobs:
+            text = open(job["promptPath"], encoding="utf-8").read() + planted_doctrine
+            quoted.append(brief("quoted_" + os.path.basename(job["promptPath"]), text))
+            unquoted.append(brief("unquoted_" + os.path.basename(job["promptPath"]),
+                                  re.sub(r"(?m)^> ?", "", text)))
+        cases.append(("planted blockquoted doctrine naming a fan-out command", ALLOW, workflow(quoted)))
+        cases.append(("the same doctrine unquoted (positive control)", DENY, workflow(unquoted)))
 
     # The fan-out set derives from each command's allowed-tools grant (tool_profiles.nested_fanout_hits).
     # A planted root (CLAUDE_PROJECT_DIR) holds one command granting Workflow that the retired

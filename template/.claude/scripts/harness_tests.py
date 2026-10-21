@@ -500,6 +500,15 @@ def _git(repo_root, args):
     return result.stdout
 
 
+def _head(repo_root):
+    """HEAD's sha, or None in a repository with no commit yet (a fresh bootstrap); other git failures raise."""
+    try:
+        return _git(repo_root, ["rev-parse", "--verify", "--quiet", "HEAD"]).strip() or None
+    except RuntimeError:
+        _git(repo_root, ["rev-parse", "--git-dir"])
+        return None
+
+
 def tree_entries(repo_root):
     """{posix-relpath: sha256(bytes)} for every tracked/untracked-unignored code file under
     `DIRS`, enumerated by `git ls-files`, run with cwd=repo_root — plus every proof
@@ -525,7 +534,7 @@ def tree_entries(repo_root):
             files.add(rel)
 
     # The stamp covers harness CODE, plus the setup surfaces (`SURFACES`): a `.json`, a `.sh` and a
-    # `.md` that carry pins, each proven by `test_setup_surface_parity.py`. `.claude/scripts/benchmark_campaign/`
+    # `.md` that carry pins. `.claude/scripts/benchmark_campaign/`
     # also holds campaign data a peer session writes mid-run (.env, score .json, .bak); hashing it
     # makes every peer write a stale stamp for a commit that changed no code.
     files = {f for f in files if _is_code(f) or _norm(f) in SURFACES}
@@ -553,7 +562,7 @@ def _write_stamp(repo_root, run, passed, excluded_list, indeterminate=(), entrie
     if entries is None:
         entries = tree_entries(repo_root)
     if head is None:
-        head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
+        head = _head(repo_root)
     current = tree_entries(repo_root)
 
     def publish(doc):
@@ -2534,7 +2543,7 @@ def run_scoped(repo_root, touched, verbose=False, mode="for", base=None, behavio
         print("harness_tests: " + roster_error)
         return 2
     tested_entries = tree_entries(repo_root)
-    tested_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
+    tested_head = _head(repo_root)
     touched = [_norm(t) for t in touched]
     _overlay_digests(tested_entries, repo_root, touched)
     in_scope = list(dict.fromkeys(touched))
@@ -2649,7 +2658,7 @@ def _heavy_bound(repo_root, entries, heavy_proofs):
 
 def run_all(repo_root, include_excluded=False, verbose=False, behavior_out=None):
     tested_entries = tree_entries(repo_root)
-    tested_head = _git(repo_root, ["rev-parse", "HEAD"]).strip() or None
+    tested_head = _head(repo_root)
     tests_dir = os.path.join(repo_root, ".claude", "tests")
     discovered = discover(tests_dir)
     present = {os.path.basename(p) for p in discovered}

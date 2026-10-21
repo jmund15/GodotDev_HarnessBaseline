@@ -29,7 +29,8 @@ stream shows, `progress unreadable` when the stream cannot be parsed) and `CHECK
 each clause. `--digest <record|stream|transcript>` prints the whole-run view the clause summarizes (`agent_progress.digest`).
 The live set also holds this session's running
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
-in `DONE_STATES`), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
+in `DONE_STATES`, or a run dir under `<session>/subagents/workflows/` with no entry, no host record and a write
+within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
 a run's end wakes nobody, and a watcher with nothing live exits `NONE`. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
@@ -94,6 +95,9 @@ UNRESOLVED_GRACE_SECONDS = 300
 # returned. Basis: a completed Haiku seat compaction, the longest observed gap between rows of a healthy seat,
 # took 3-6 min (A2b rail250 replay, 2026-10-14); the stalled seats of that run and of H3 sat 31+ min.
 WORKFLOW_STALL_SECONDS = float(os.environ.get("WATCH_RECORDS_STALL_SEC", "600"))
+# A run found on disk with no table entry counts as alive until nothing in it has been written for twice the stall
+# window: the first window wakes the session with STALLED, the second presumes a crash that left no end record.
+DISCOVERED_RUN_SECONDS = 2 * WORKFLOW_STALL_SECONDS
 ENDED = "ended-before-result"
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # the launch ids reap.py stopped for this session
 SHELL_OFFSET_KEY = "sidecar_wake_shell_offset"  # the transcript byte offset the last wake scanned to for ended shells
@@ -1570,13 +1574,60 @@ class ShellEnds:
             _hook_state.update_json_locked(self.state_path, lambda state: state.__setitem__(SHELL_OFFSET_KEY, offset))
 
 
+def _newest_write(run_dir):
+    """The latest mtime of a run dir's journal and agent transcripts, or None when it holds none."""
+    stamps = []
+    for path in [os.path.join(run_dir, "journal.jsonl")] + glob.glob(os.path.join(glob.escape(run_dir), "agent-*.jsonl")):
+        try:
+            stamps.append(os.path.getmtime(path))
+        except OSError:
+            continue
+    return max(stamps) if stamps else None
+
+
+def discovered_workflows(session_dir, known, now=None):
+    """This session's running Workflow runs that `known` (unit keys) does not list, found on disk.
+
+    A run's dir and `journal.jsonl` exist from its launch, and its host record only when it ends, so a run
+    with no record that was written within DISCOVERED_RUN_SECONDS is alive. The launch hook's table entry
+    lands up to `launch_grace()` after the call returns; a watcher armed before it, or before a denied call is
+    re-issued, finds nothing there, and a lost entry would leave the run unwatched for good."""
+    now = time.time() if now is None else now
+    root = os.path.join(session_dir, "subagents", "workflows")
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return {}
+    found = {}
+    for name in names:
+        run_dir = os.path.join(root, name)
+        key = "workflow:%s" % name
+        if key in known or not is_run_dir(run_dir):
+            continue
+        entry = foreign_workflow(run_dir)
+        newest = _newest_write(run_dir)
+        if workflow_running(entry) and newest is not None and now - newest <= DISCOVERED_RUN_SECONDS:
+            found[key] = {"workflow": entry, "records": [], "fanout_dir": None}
+    return found
+
+
 def _session_source(session_id, state_path=None):
     rosters = session_rosters(session_id)
     shells = ShellEnds(session_id, state_path)
+    session_dir = []
+
+    def discovered(known):
+        if not session_dir:
+            path = _digest().transcript_path(session_id)
+            if path is None:
+                return {}
+            session_dir.append(path[:-len(".jsonl")])
+        return discovered_workflows(session_dir[0], known)
 
     def source():
         grouped = units(pending_sidecars(session_id))
         grouped.update(pending_workflows(session_id))
+        grouped.update(discovered(grouped))
         grouped.update(rosters())
         grouped.update({"shell:%s" % task_id: {"shell": notice, "records": [], "fanout_dir": None}
                         for task_id, notice in shells.poll().items()})

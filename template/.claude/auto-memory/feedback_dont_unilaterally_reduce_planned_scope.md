@@ -4,7 +4,6 @@ description: "Never cut planned scope mid-execution without extremely good justi
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: be7b1f7e-2ff8-4ef7-8d20-c1c5fbe62ecd
 ---
 
 Never cut planned scope mid-execution without **extremely good justification** AND **explicit verification with the user that the cut is OK**. The plan was authored with the scope set that way for a reason. Framing a cut as a "scoping note" inside an execution turn does NOT count as authorization. Default is execute-as-planned; deferring anything the plan called out requires re-authorization.

@@ -108,9 +108,12 @@ class SizeTests(Plant):
         result = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), spec],
                                 capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(),
+        self.assertEqual(result.stdout.splitlines()[0],
                          "dispatch size: 2 jobs (opus·high ×2); reading 151/151 KB; 150 KB read by all 2 (300 KB total); "
                          "heaviest reading 7% of its window (j0)")
+        self.assertEqual(result.stdout.splitlines()[1:], [
+            "cheaper claimants: `j0` (opus) not compared: neither its shape row nor its own tier names one",
+            "cheaper claimants: `j1` (opus) not compared: neither its shape row nor its own tier names one"])
 
 
 class NamedFileTests(Plant):
@@ -296,8 +299,8 @@ class WindowFitTests(Plant):
                          self.claimant_job("exec", "claude-sonnet-5-5", "author", "b.md"),
                          self.claimant_job("cheap", "claude-haiku-5-5", "survey", "c.md")]}
         lines = dispatch_size.fact_lines(spec, self.root)
-        self.assertEqual(len(lines), 2, lines)
-        survey, execute = lines
+        self.assertEqual(len(lines), 3, lines)
+        survey, execute, closing = lines
         for text, tier in ((survey, "fanout"), (execute, "executor")):
             self.assertIn("surv" if text is survey else "exec", text)
             self.assertIn("`%s`" % tier, text)
@@ -306,7 +309,7 @@ class WindowFitTests(Plant):
             self.assertIn("draw ≈0.05x the pin", text)
             self.assertNotIn("$", text)
         self.assertIn("reading 8,192 tokens fits", survey)
-        self.assertNotIn("cheap", "".join(lines).replace("cheaper", "").replace("cheapest", ""))
+        self.assertEqual(closing, "pin is the cheapest claimant: cheap")
         self.assertNotIn("pin haiku", survey.lower())
 
     def test_a_reading_past_the_cheaper_rows_price_point_is_stated_past_it(self):
@@ -317,11 +320,44 @@ class WindowFitTests(Plant):
         self.assertIn("draw ≈0.05x the pin", line)
         self.assertNotIn("$", line)
 
-    def test_a_pin_that_is_the_cheapest_claimant_or_unknown_gets_no_fact_line(self):
-        spec = {"jobs": [self.claimant_job("a", "claude-haiku-5-5", "survey", "a.md"),
-                         self.claimant_job("b", "no-such-row", "survey", "b.md")]}
-        self.assertEqual(dispatch_size.fact_lines(spec, self.root), [])
+    def test_a_haiku_executor_pin_prints_pin_is_the_cheapest_claimant(self):
+        spec = {"jobs": [self.claimant_job("a", "claude-haiku-5-5", "author", "a.md")]}
+        self.assertEqual(dispatch_size.fact_lines(spec, self.root), ["pin is the cheapest claimant: a"])
         self.assertEqual(dispatch_size.fact_lines("not a spec", self.root), [])
+
+    def test_the_m6_capture_names_haiku_for_each_sonnet_executor_pin_and_sizes_every_job(self):
+        with open(os.path.join(HERE, "fixtures", "dispatch_m6_jobs.json"), encoding="utf-8") as fh:
+            spec = json.load(fh)
+        spec["contextPath"] = self.text("xcontext.md", "context\n")
+        for job in spec["jobs"]:
+            job["promptPath"] = self.text(job["promptPath"], "x" * 6 * KB)
+        size = dispatch_size.dispatch_size(spec, self.root)
+        lines = dispatch_size.fact_lines(spec, self.root)
+        sonnet = [job["label"] for job in spec["jobs"] if job["model"].startswith("claude-sonnet-5-5")]
+        for label in sonnet:
+            matching = [text for text in lines if "`%s`" % label in text]
+            self.assertEqual(len(matching), 1, lines)
+            self.assertIn("cheaper there: haiku", matching[0])
+        self.assertEqual(lines[-1], "pin is the cheapest claimant: m6-sync, m6-repo", lines)
+        self.assertEqual(len(lines), 4, lines)
+        self.assertTrue(all(job["usable"] for job in size["perJob"]), size["perJob"])
+        self.assertIn("heaviest reading", dispatch_size.format_line(size))
+
+    def test_an_unresolvable_pin_names_itself_in_one_line(self):
+        spec = {"jobs": [self.claimant_job("odd", "no-such-row", "author", "o.md")]}
+        lines = dispatch_size.fact_lines(spec, self.root)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("`odd` (no-such-row) not compared", lines[0])
+        self.assertIn("does not resolve", lines[0])
+
+    def test_a_pin_no_row_matches_prints_not_compared_and_not_sized_never_empty_output(self):
+        spec = {"jobs": [self.claimant_job("odd", "no-such-row", "author", "o.md"),
+                         self.claimant_job("fine", "claude-haiku-5-5", "author", "f.md")]}
+        lines = dispatch_size.fact_lines(spec, self.root)
+        self.assertIn("`odd` (no-such-row) not compared", lines[0])
+        self.assertEqual(lines[-1], "pin is the cheapest claimant: fine", lines)
+        summary = dispatch_size.format_line(dispatch_size.dispatch_size(spec, self.root))
+        self.assertIn("not sized: odd (does not resolve in the registry)", summary)
 
     def test_main_prints_the_size_line_then_the_fact_lines(self):
         path = os.path.join(self.root, "jobs.json")

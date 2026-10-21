@@ -18,6 +18,8 @@ HOOKS_DIR = os.path.join(ROOT, ".claude", "hooks")
 GUARD = os.path.join(HOOKS_DIR, "semantic_search_scope_guard.py")
 DISPATCH = os.path.join(HOOKS_DIR, "pre_read_dispatch.py")
 TOOL = "mcp__plugin_semantic-search_semantic-search__search"
+# An absolute path outside the project on the running platform: `C:/...` is relative on POSIX.
+OUTSIDE = "C:/Users/x/.claude" if os.name == "nt" else "/home/x/.claude"
 
 sys.path.insert(0, HOOKS_DIR)
 sys.path.insert(0, os.path.join(ROOT, '.claude', 'tools'))
@@ -70,7 +72,7 @@ def main():
 
     # Design-source roots are the project's `doc_roots`; parent/sibling roots remain external.
     roots = [r.replace('\\', '/') for r in adaptation.get(os.path.join(ROOT, '.claude'), 'doc_roots')]
-    vault = roots[0].rsplit('/', 1)[0] if roots else 'C:/Users/x/vault'
+    vault = roots[0].rsplit('/', 1)[0] if roots else OUTSIDE.rsplit('/', 1)[0] + '/vault'
     for path in roots:
         name = path.rsplit('/', 1)[1]
         for spelling in (path, path.replace('/', '\\'), path + '/../' + name):
@@ -85,7 +87,7 @@ def main():
         payload['tool_input']['restrictToDir'] = '../Other'
         rc, err = run_standalone(payload)
         cases.append(('vault restrict cannot escape: ' + name, rc == 2 and bool(err)))
-    for path in (vault, vault + '/Other', (roots[0] + '-copy') if roots else vault + '/Copy', 'C:/Users/x/.claude'):
+    for path in (vault, vault + '/Other', (roots[0] + '-copy') if roots else vault + '/Copy', OUTSIDE):
         rc, err = run_standalone({'tool_name': TOOL, 'tool_input': {'searchDir': path}, 'cwd': ROOT})
         cases.append(('external root remains denied: ' + path, rc == 2 and bool(err)))
 
@@ -158,9 +160,9 @@ def main():
                                   "tool_input": {"searchDir": ROOT,
                                                  "restrictToDir": ".claude/auto-memory"},
                                   "cwd": ROOT}) is None))
-    cases.append(("absolute C:/Users/x/.claude searchDir denied (process)",
+    cases.append(("absolute outside searchDir denied (process)",
                   guard.process({"tool_name": TOOL,
-                                  "tool_input": {"searchDir": "C:/Users/x/.claude"},
+                                  "tool_input": {"searchDir": OUTSIDE},
                                   "cwd": ROOT}) is not None))
     for raw, want in ((".claude\\hooks", ".claude/hooks"), (".claude/../Scripts", "Scripts"),
                       ("./.claude", ".claude"), (".claude/./hooks", ".claude/hooks"),
@@ -192,7 +194,7 @@ def main():
                   guard.process({"tool_name": TOOL, "tool_input": {}, "cwd": ROOT}) is None))
 
     # --- deny message names the correct call ---
-    result = guard.process({"tool_name": TOOL, "tool_input": {"searchDir": "C:/Users/x/.claude"}, "cwd": ROOT})
+    result = guard.process({"tool_name": TOOL, "tool_input": {"searchDir": OUTSIDE}, "cwd": ROOT})
     msg = (result or {}).get("deny") or ""
     cases.append(("deny message cites the searchDir rule's owner and names the canonical root + restrictToDir next step",
                   bool(msg) and "BLOCKED (reference/semantic_search.md)" in msg
@@ -200,7 +202,7 @@ def main():
                   and ".claude/auto-memory" in msg))
 
     # --- standalone --hook channel ---
-    rc, err = run_standalone({"tool_name": TOOL, "tool_input": {"searchDir": "C:/Users/x/.claude"},
+    rc, err = run_standalone({"tool_name": TOOL, "tool_input": {"searchDir": OUTSIDE},
                                "cwd": ROOT})
     cases.append(("standalone --hook channel: an outside searchDir -> exit 2 + stderr",
                   rc == 2 and bool(err)))
@@ -221,7 +223,7 @@ def main():
     cases.append(("real pre_read_dispatch.py channel: a .claude searchDir is rewritten and noted",
                   rc == 0 and hso.get("updatedInput", {}).get("restrictToDir") == ".claude"
                   and "reference/semantic_search.md" in hso.get("additionalContext", "")))
-    rc, err = run_dispatch({"tool_name": TOOL, "tool_input": {"searchDir": "C:/Users/x/.claude"},
+    rc, err = run_dispatch({"tool_name": TOOL, "tool_input": {"searchDir": OUTSIDE},
                              "cwd": ROOT})
     cases.append(("real pre_read_dispatch.py channel: an outside searchDir denied",
                   rc == 2 and "BLOCKED (reference/semantic_search.md)" in err

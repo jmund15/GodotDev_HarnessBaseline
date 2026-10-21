@@ -6,8 +6,6 @@ metadata:
   retire_when: 
     - review-by: 2027-03-18
   type: reference
-  originSessionId: dfe017b3-b84e-41bf-8517-359f6b15b971
-  modified: 2026-09-18T01:01:27.021Z
 ---
 
 `ScheduleWakeup` schedules the next `/loop` iteration; called outside an active `/loop` it just

@@ -205,48 +205,51 @@ def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=
     available, not on an owner probation mark for `tier`, and cheaper than `model` for `reading_tokens`. Cheaper is
     `price < pinPrice` when both are priced (`priced` True); otherwise `priced` is False and cheaper is a higher ladder
     `cost`. `fits` and `pastLongContext` are None for a reading not measured, and `fits` is None for a row stating no
-    window. Facts only. [] when nothing is cheaper or anything needed is unknown."""
-    if model_registry is None or not tier:
-        return []
-    try:
-        data = data if data is not None else model_registry.load()
-        pinned = model_registry.resolve(model, data)
-        costs = model_registry.ladder_costs(data, ladder)
-        mine = costs.get(pinned["id"])
-        if mine is None:
-            return []
-        with open(ladder or model_registry.ladder_path(), encoding="utf-8") as fh:
-            cells = model_registry.parse_ladder_rows(fh, ("model", "±"))
-        signs = {}
-        for cell in cells:
-            for m in model_registry.ladder_rows(cell["model"], data):
-                signs.setdefault(m["id"], cell["±"])
-        measured = isinstance(reading_tokens, int)
-        pin_price, _why = price_reading(pinned["id"], reading_tokens, data) if measured else (None, None)
-        plan = model_registry.cost_model_for(transport, data) == "plan-quota"
-        out = []
-        for row in tier_rows(tier, transport, data):
-            cost = costs.get(row["id"])
-            if row["id"] == pinned["id"] or not cost or model_registry.probation(row["id"], tier, data):
-                continue
-            price, _why = price_reading(row["id"], reading_tokens, data) if measured else (None, None)
-            priced = price is not None and pin_price is not None
-            if not (price < pin_price if priced else cost > mine):
-                continue
-            usable = model_registry.usable_window(row)
-            point = model_registry.long_context_tier(row, data)
-            at = point["thresholdInputTokens"] if point else None
-            out.append({"alias": _name(row), "id": row["id"], "cost": cost, "pinCost": mine,
-                        "sign": signs.get(row["id"], "no ± cell"), "usable": usable,
-                        "fits": (reading_tokens <= usable) if measured and usable is not None else None,
-                        "thresholdAt": at,
-                        "pastLongContext": (at is not None and reading_tokens > at) if measured else None,
-                        "tierMultiplier": point["multipliers"]["input"] if point else None,
-                        "price": price if priced else None, "pinPrice": pin_price if priced else None,
-                        "priced": priced, "plan": plan, "draw": draw_against(row["id"], pinned["id"], data)})
-        return sorted(out, key=lambda c: -c["cost"])
-    except Exception:
-        return []
+    window. Facts only.
+
+    Contract: `[]` means only that nothing is cheaper. What cannot be compared raises, so a caller prints the reason
+    instead of an absence: `model_registry.UnknownModel` (the pin resolves to no row, its context suffix included),
+    `model_registry.RegistryError` (the pin has no ladder cost), `OSError` (the ladder cannot be read) and `ValueError`
+    (no `tier`)."""
+    if not tier:
+        raise ValueError("no tier to compare the pin against")
+    data = data if data is not None else model_registry.load()
+    pinned = model_registry.resolve(model, data)
+    costs = model_registry.ladder_costs(data, ladder)
+    mine = costs.get(pinned["id"])
+    if mine is None:
+        raise model_registry.RegistryError(
+            f"`{pinned['id']}` has no cost on the ladder (or the ladder cannot be read), so it cannot be compared")
+    with open(ladder or model_registry.ladder_path(), encoding="utf-8") as fh:
+        cells = model_registry.parse_ladder_rows(fh, ("model", "±"))
+    signs = {}
+    for cell in cells:
+        for m in model_registry.ladder_rows(cell["model"], data):
+            signs.setdefault(m["id"], cell["±"])
+    measured = isinstance(reading_tokens, int)
+    pin_price, _why = price_reading(pinned["id"], reading_tokens, data) if measured else (None, None)
+    plan = model_registry.cost_model_for(transport, data) == "plan-quota"
+    out = []
+    for row in tier_rows(tier, transport, data):
+        cost = costs.get(row["id"])
+        if row["id"] == pinned["id"] or not cost or model_registry.probation(row["id"], tier, data):
+            continue
+        price, _why = price_reading(row["id"], reading_tokens, data) if measured else (None, None)
+        priced = price is not None and pin_price is not None
+        if not (price < pin_price if priced else cost > mine):
+            continue
+        usable = model_registry.usable_window(row)
+        point = model_registry.long_context_tier(row, data)
+        at = point["thresholdInputTokens"] if point else None
+        out.append({"alias": _name(row), "id": row["id"], "cost": cost, "pinCost": mine,
+                    "sign": signs.get(row["id"], "no ± cell"), "usable": usable,
+                    "fits": (reading_tokens <= usable) if measured and usable is not None else None,
+                    "thresholdAt": at,
+                    "pastLongContext": (at is not None and reading_tokens > at) if measured else None,
+                    "tierMultiplier": point["multipliers"]["input"] if point else None,
+                    "price": price if priced else None, "pinPrice": pin_price if priced else None,
+                    "priced": priced, "plan": plan, "draw": draw_against(row["id"], pinned["id"], data)})
+    return sorted(out, key=lambda c: -c["cost"])
 
 
 def claimant_text(c, reading_tokens):

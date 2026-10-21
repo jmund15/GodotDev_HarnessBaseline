@@ -103,8 +103,8 @@ def test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean() -> None:
         settings_row = lock["files"].get(".claude/settings.json")
         assert settings_row is not None, "no composed .claude/settings.json row"
         assert settings_row["status"] == "composed", settings_row
-        assert settings_row["inputs"] == [".claude/settings.base.json", ".claude/settings.godot.json",
-                                          ".claude/settings.project.json"]
+        assert settings_row["inputs"] == [".claude/settings.base.json", ".claude/settings.coding.json",
+                                          ".claude/settings.godot.json", ".claude/settings.project.json"]
 
         assert (target / ".claude" / "settings.json").is_file(), "compose did not write settings.json"
 
@@ -380,13 +380,63 @@ def test_bootstrap_sets_up_git_ignore_worklog_and_memory_directory() -> None:
         assert subs["{{PROJECT_NAME}}"] == "OnboardGame", subs
 
 
+# Template files deleted in commit range 9483449..bdb68ae (`git diff --name-only --diff-filter=D
+# 9483449 bdb68ae -- template/`), relative to the target. Embedded as data because CI checkouts are
+# shallow and cannot read that range.
+RETIRED_IN_RANGE = (
+    ".claude/auto-memory/arch_rule_absent_input_needs_its_own_outcome_value.md",
+    ".claude/auto-memory/arch_rule_autonomous_loop_positive_liveness.md",
+    ".claude/auto-memory/feedback_dont_defer_immediately_addressable.md",
+    ".claude/auto-memory/feedback_found_defect_is_fixed_now_peer_owned_is_a_git_fact.md",
+    ".claude/auto-memory/feedback_invoke_named_skill_not_manual_equivalent.md",
+    ".claude/auto-memory/feedback_plan_mode_is_claude_code_built_in.md",
+    ".claude/auto-memory/feedback_single_gate_no_secondary_approval.md",
+    ".claude/auto-memory/gotcha_guard_can_be_an_algebraic_identity.md",
+    ".claude/auto-memory/gotcha_workflow_args_permission_control_chars.md",
+    ".claude/cloud-install.sh",
+    ".claude/commands/agents/jmodot_submodule_procedure.md",
+    ".claude/commands/agents/worklog_drive_triage.md",
+    ".claude/commands/agents/worklog_plan_triage.md",
+    ".claude/commands/create_obsidian_design_doc.md",
+    ".claude/commands/plan_drive.md",
+    ".claude/commands/system_check.md",
+    ".claude/hooks/bash_shape_guard.py",
+    ".claude/hooks/heredoc_escape_guard.py",
+    ".claude/hooks/json_merge.py",
+    ".claude/hooks/load_steps_validator.py",
+    ".claude/hooks/tool_routing_cumulative.py",
+    ".claude/hooks/tool_routing_cumulative_block.py",
+    ".claude/hooks/tool_routing_post_grep.py",
+    ".claude/reference/model_ladder_candidates.md",
+    ".claude/scripts/anthropic_quota_probe.py",
+    ".claude/scripts/codex_sidecar.sh",
+    ".claude/skills/parallel_agents/SKILL.md",
+    ".claude/tests/test_anthropic_quota_probe.py",
+    ".claude/tests/test_duplicate_test_double_guard_commit_detection.py",
+    ".claude/tests/test_heredoc_escape_guard.py",
+    ".claude/tests/test_load_steps_validator.py",
+    ".claude/tests/test_test_suite_gate_coverage_guard_commit_detection.py",
+    ".claude/tools/sidecar_compact_end.py",
+)
+
+
+def test_fresh_bootstrap_contains_none_of_the_range_deleted_files() -> None:
+    with _Baseline() as b:
+        target = b.temp_root / "FreshGame"
+        result = b.run("--target", _to_posix(target), "--project-name", "FreshGame")
+        assert result.returncode == 0, result.stdout + result.stderr
+        present = [rel for rel in RETIRED_IN_RANGE if (target / rel).exists()]
+        assert not present, present
+
+
 def main() -> int:
     cases = [test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean,
              test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine,
              test_backslash_paths_normalize_and_a_bad_vault_root_fails_before_any_write,
              test_every_written_file_is_lf,
              test_forced_rerun_is_idempotent_and_keeps_seeds,
-             test_bootstrap_sets_up_git_ignore_worklog_and_memory_directory]
+             test_bootstrap_sets_up_git_ignore_worklog_and_memory_directory,
+             test_fresh_bootstrap_contains_none_of_the_range_deleted_files]
     failures = []
     for case in cases:
         try:

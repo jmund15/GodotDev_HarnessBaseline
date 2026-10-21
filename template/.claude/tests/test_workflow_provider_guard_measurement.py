@@ -6,6 +6,9 @@ import os
 import sys
 
 CLAUDE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# plc-memory-alignment implies architect only where the coding-layer plan-check registry is installed;
+# a project without it has no lens to name, so no fit rule to skip and nothing to deny.
+PLAN_CHECK_SHIPPED = os.path.isfile(os.path.join(CLAUDE, "commands", "agents", "plan_check_agents.md"))
 sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 import workflow_provider_guard as g  # noqa: E402
 
@@ -23,7 +26,10 @@ def call(measurement=None):
 
 def test_implied_tier_fit_denies_without_a_declaration():
     verdict, body, _ = g.decide_tiers(call(), HOST, DATA)
-    assert verdict == "deny" and "architect" in body, (verdict, body)
+    if PLAN_CHECK_SHIPPED:
+        assert verdict == "deny" and "architect" in body, (verdict, body)
+    else:
+        assert verdict is None, (verdict, body)
 
 
 def test_a_measurement_skips_implied_tier_fit():
@@ -33,7 +39,7 @@ def test_a_measurement_skips_implied_tier_fit():
 
 def test_a_short_declaration_is_no_declaration():
     verdict, _body, _ = g.decide_tiers(call("bench"), HOST, DATA)
-    assert verdict == "deny", verdict
+    assert verdict == ("deny" if PLAN_CHECK_SHIPPED else None), verdict
 
 
 def test_a_measurement_call_seating_a_lone_supplementary_seat_returns_no_deny():
@@ -43,7 +49,7 @@ def test_a_measurement_call_seating_a_lone_supplementary_seat_returns_no_deny():
         if row["alias"] == "haiku":
             row["supplementary"] = ["architect"]
     plain, _body, _ = g.decide_tiers(call(), HOST, data)
-    assert plain == "deny", plain
+    assert plain == ("deny" if PLAN_CHECK_SHIPPED else None), plain
     verdict, body, _ = g.decide_tiers(call("rail battery arm: haiku on a plan-review probe"), HOST, data)
     assert verdict is None and any("measurement" in n for n in body), (verdict, body)
 

@@ -4,8 +4,6 @@ description: "Part briefs must grep the WHOLE design doc for the Part's name/str
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 5ab89c41-ab74-4ddc-bb14-6bbc29dfed42
-  modified: 2026-08-04T05:38:36.207Z
 ---
 
 A design doc's prescriptions for a Part are NOT confined to the Part's home section. Sibling sections routinely carry corrections that name the Part directly (e.g. a determinism section prescribing "the same correction applies to Part X's pins" while X's own section says nothing).

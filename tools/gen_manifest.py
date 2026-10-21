@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -256,6 +257,7 @@ CODING_PATTERNS = [
     ".claude/tests/test_build_plan_auto_variant.py",
     ".claude/tests/test_git_guardrails_harness_commit.py",
     ".claude/tests/test_routing_classifier.py",
+    ".claude/tests/test_routing_audit_subagent_exempt.py",
     # Accepted candidates requiring an exact layer entry:
     ".claude/auto-memory/archive/feedback_session_end_full_scope.md",
     ".claude/reference/semantic_search.md",
@@ -532,7 +534,6 @@ PURE_PATTERNS = [
     ".claude/tests/test_prompt_memory_loader.py",
     ".claude/tests/test_provider_bands_cache.py",
     ".claude/tests/test_quota_bands.py",
-    ".claude/tests/test_routing_audit_subagent_exempt.py",
     ".claude/tests/test_running_script_edit_guard.py",
     ".claude/tests/test_self_eval_archive_guard.py",
     ".claude/tests/test_session_end_check.py",
@@ -586,23 +587,19 @@ LAYER_ORDER = [
     ("pure", PURE_PATTERNS),
 ]
 
-# Runtime/session-state directories and build artifacts that exist on disk but are
-# never part of the shipped template (the filesystem walk doesn't respect gitignore).
-# Mirrors baseline_sync.py's consumer-side exclude set.
-EXCLUDE_DIR_PARTS = {"__pycache__", "logs", ".cache", "sessions",
-                     "worktrees", "plans", "scratch"}
 
-
-def is_artifact(p: Path) -> bool:
-    # Match exclude-parts against the path RELATIVE to TEMPLATE, not the absolute
-    # path: a consumer clones this repo to `.../.claude/.cache/baseline-repo`, so the
-    # absolute parts always contain `.cache` and would exclude EVERY template file
-    # (silently emptying the manifest). Only segments *inside* template/ should count.
-    try:
-        parts = p.relative_to(TEMPLATE).parts
-    except ValueError:
-        parts = p.parts
-    return p.suffix == ".pyc" or bool(EXCLUDE_DIR_PARTS.intersection(parts))
+def template_files(template: Path = TEMPLATE) -> list[Path]:
+    """Template files as git sees them: tracked, plus untracked files git does not ignore. A gitignored
+    file (a proof run's cache, a session log) is never a template file, so no gate sees it.
+    Sorted by the posix relpath STRING, not the Path object: Path comparison uses os.path.normcase,
+    so it is case-insensitive on Windows and case-sensitive on Linux."""
+    listed = subprocess.run(
+        ["git", "-C", str(template), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    ).stdout.decode("utf-8")
+    files = [template / rel for rel in listed.split("\0") if rel]
+    return sorted((p for p in files if p.is_file() and p.name != ".gitkeep"),
+                  key=lambda p: p.relative_to(template).as_posix())
 
 
 LAYER_ENTRIES_PATH = ROOT / "tools" / "layer_entries.json"
@@ -675,15 +672,7 @@ def main() -> int:
 
     files = []
     unclassified = []
-    # Sort by the posix relpath STRING, not the Path object: Path comparison uses
-    # os.path.normcase, so it's case-insensitive on Windows and case-sensitive on
-    # Linux — same inputs, different manifest order per OS. A string key is stable
-    # cross-platform.
-    for p in sorted(TEMPLATE.rglob("*"), key=lambda x: x.relative_to(TEMPLATE).as_posix()):
-        if not p.is_file() or p.name == ".gitkeep":
-            continue
-        if is_artifact(p):
-            continue  # runtime/session-state artifacts — not part of the template
+    for p in template_files():
         rel = p.relative_to(TEMPLATE).as_posix()
         layer = classify(rel)
         if layer is None:

@@ -50,11 +50,14 @@ function measurementWorkflows() {
 }
 
 // Every tracked engines/*.js present in the working tree — a tracked file deleted from the tree has no
-// prompts to check, and an untracked one is not yet part of the battery.
+// prompts to check, and an untracked one is not yet part of the battery. A project whose index holds no
+// file at all (before its first `git add`) has nothing tracked, so every untracked file counts there.
 function engines() {
   const skip = measurementWorkflows()
   const root = path.join(__dirname, '..', '..')
-  const listed = execFileSync('git', ['ls-files', '--', '.claude/workflows'], { cwd: root, encoding: 'utf8' })
+  const git = args => execFileSync('git', [...args, '--', '.claude/workflows'], { cwd: root, encoding: 'utf8' })
+  const indexed = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 26 }).trim() !== ''
+  const listed = git(indexed ? ['ls-files'] : ['ls-files', '--others', '--exclude-standard'])
     .split('\n').filter(f => f.endsWith('.js'))
   if (listed.length === 0) throw new Error('git ls-files returned no .claude/workflows/*.js')
   const out = []

@@ -4,8 +4,6 @@ description: "Diagnose an auto-mode denial from the actual result and its layer;
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 1575807a-659b-4f41-9af8-9997b17e978c
-  modified: 2026-10-15T10:10:20.643Z
 retire_when:
   - review-by: 2027-02-14
 ---

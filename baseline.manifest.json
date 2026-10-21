@@ -2687,6 +2687,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/settings.coding.json",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/settings.godot.json",
       "layer": "godot",
       "sync": "auto"
@@ -3302,8 +3307,18 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/dispatch_readonly_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/dispatch_transport_effort_test.js",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/dispatch_verifier_note_test.js",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -3328,6 +3343,16 @@
     },
     {
       "path": ".claude/tests/fixtures/analyze_eval_archive/stats.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/dispatch_m6_jobs.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/dispatch_readonly/m4_survey_args.json",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3503,6 +3528,11 @@
     },
     {
       "path": ".claude/tests/review_fanout_spill_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/schema_parity_test.js",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4448,7 +4478,7 @@
     },
     {
       "path": ".claude/tests/test_routing_audit_subagent_exempt.py",
-      "layer": "pure",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -4898,6 +4928,11 @@
     },
     {
       "path": ".claude/tests/test_void_check_engagement.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_watch_records_workflow.py",
       "layer": "pure",
       "sync": "auto"
     },

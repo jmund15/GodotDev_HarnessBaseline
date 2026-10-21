@@ -4,8 +4,6 @@ description: "Harness procedures should prescribe verification/artifacts (gates,
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 5b51989a-86af-4d24-986d-83eb441291eb
-  modified: 2026-09-23T17:23:07.241Z
 ---
 
 User directive (2026-07-16, designing an autonomous design-drive command): the detailed brainstorm/drive pipelines were authored when agent judgment wasn't trusted; they bundle two content kinds that age differently. When authoring or refining autonomy surfaces, split them:

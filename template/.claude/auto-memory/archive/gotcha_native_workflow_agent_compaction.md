@@ -4,8 +4,6 @@ description: "A native Anthropic-model Workflow agent auto-compacts and finishes
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 3259384b-d4a7-47b7-8d52-9cded4b98af2
-  modified: 2026-10-15T00:05:53.488Z
 retire_when:
   - review-by: 2027-03-14
 ---

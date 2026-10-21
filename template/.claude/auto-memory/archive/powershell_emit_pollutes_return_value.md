@@ -4,8 +4,6 @@ description: "A PowerShell function that both logs via Write-Output and returns 
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 9549ad2e-b562-41d6-9cdd-31c53f695de0
-  modified: 2026-08-19T16:30:29.734Z
 ---
 
 # Logging inside a value-returning PowerShell function corrupts its return value

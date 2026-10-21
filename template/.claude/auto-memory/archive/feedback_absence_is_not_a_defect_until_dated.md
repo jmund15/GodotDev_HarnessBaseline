@@ -4,7 +4,6 @@ description: "A 'X lacks Y, and doctrine mandates Y' finding is a gap report, no
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-20T05:46:18.319Z
 ---
 
 A delegate reports that a surface lacks something doctrine requires. The finding reads as a defect

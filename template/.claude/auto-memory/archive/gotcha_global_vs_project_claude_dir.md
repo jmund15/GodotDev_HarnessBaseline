@@ -4,8 +4,6 @@ description: "This project's tooling (.claude/scripts, .claude/tools, .claude/co
 metadata: 
   node_type: memory
   type: project
-  originSessionId: dfe017b3-b84e-41bf-8517-359f6b15b971
-  modified: 2026-09-18T01:01:12.319Z
 ---
 
 Two directories share the name `.claude` and hold different things. `<repo>/.claude/` holds this

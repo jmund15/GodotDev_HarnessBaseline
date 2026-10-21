@@ -299,12 +299,16 @@ const leanTypeOf = (keys, asked, tp) => {
 const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
   ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
   : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
+const leanAgent = (prompt, opts, swapped, rec, strict) => {
   if (!swapped) return agent(prompt, opts)
   const asked = opts.agentType || 'general-purpose'
   return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
     const msg = String((e && e.message) || e)
     if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
+    if (strict) {
+      log('FALLBACK-REFUSED ' + opts.label + ' ' + swapped + ': a read-only job never retries as ' + asked + ', which holds write tools')
+      return null
+    }
     log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
     rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
     log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
@@ -346,11 +350,39 @@ const NO_SHELL_AGENT_TYPES = ['lane-review', 'lane-survey']
 const spills = (j) => !!SPILL_DIR && !NO_WRITE_AGENT_TYPES.includes(effectiveType(j))
 
 // The read-only guard must except the spill file, or a readOnly job is told to write and not-write.
-// It is prompt-level only, and deliberately has NO marker backstop: a dispatch.js run mixes
-// readOnly and author jobs, so arming it would warn on every legitimate authored write.
+// The line is prompt text. Only a lane type's tool list removes the write tools, so the engine keeps
+// the promise by tool set (readOnlyKept) and carries no marker backstop: a dispatch.js run mixes
+// readOnly and author jobs, so arming one would warn on every legitimate authored write.
 const readOnlyGuard = (j) => spills(j)
   ? '\n=== READ-ONLY: do NOT modify, create, or delete any file EXCEPT your own spill file ' + spillPath(j.label) + '. ==='
   : '\n=== READ-ONLY: do NOT modify, create, or delete any file. ==='
+
+// Bash writes as freely as Write does, so it counts as a write tool.
+const WRITE_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'Bash']
+const writeToolsOf = (j) => ((profileOf(j) || {}).builtins || []).filter(t => WRITE_TOOLS.includes(t))
+// A shape whose default profile names a lane type and holds no write tool is read-only by its shape
+// (survey, review). A brief that runs a shell widens the job's profile with Bash, which ends the claim.
+const shapeReadOnly = (j) => { const d = TOOLP.f[shapeOf(j)]; return !!(d && d.agentType && !(d.builtins || []).some(t => WRITE_TOOLS.includes(t))) }
+const readOnlyOf = (j) => j.readOnly === true || (j.readOnly !== false && shapeReadOnly(j) && writeToolsOf(j).length === 0)
+// `readOnly: true` is a promise the engine keeps by tool set or refuses: the job must run as a shell-less lane type.
+const readOnlyKept = (j) => NO_SHELL_AGENT_TYPES.includes(effectiveType(j))
+const brokenPromise = jobs.filter(j => j.readOnly === true && !readOnlyKept(j))
+if (brokenPromise.length > 0) {
+  return {
+    error: 'dispatch: readOnly:true is kept by tool set, and these jobs would run with write tools: '
+      + brokenPromise.map(j => j.label + ' (' + (writeToolsOf(j).length > 0
+        ? 'its tool profile holds ' + writeToolsOf(j).join(', ') + ', which a brief that runs a shell widens it with'
+        : 'it would not run as a lane type: the session has not loaded the generated agent type, or hooks/workflow_provider_guard.py did not prove its brief covered') + ')').join('; ')
+      + '. Dispatch them as shape author or any without readOnly:true, or drop the tool the brief needs.',
+  }
+}
+for (const j of jobs.filter(j => j.readOnly === undefined && shapeReadOnly(j) && writeToolsOf(j).length > 0)) {
+  log('NOT-READ-ONLY ' + j.label + ': its ' + shapeOf(j) + ' profile holds ' + writeToolsOf(j).join(', ') + ', so the job can write')
+}
+const unenforced = jobs.filter(j => j.readOnly !== true && readOnlyOf(j) && !readOnlyKept(j))
+if (unenforced.length > 0) {
+  log('READ-ONLY-UNENFORCED ' + unenforced.map(j => j.label).join(', ') + ': read-only by shape, but not running as a lane type, so only the prompt line holds them')
+}
 
 const spillContract = (j) => spills(j) ? [
   '',
@@ -362,7 +394,7 @@ const spillContract = (j) => spills(j) ? [
 
 // A writing job names what it wrote beyond its spec, so review routes those units as design no
 // reviewer saw (orchestration §2 *Later rounds*); `dispatch_result.py check --block choices=unit,why` validates it.
-const choicesContract = (j) => (j.readOnly || NO_WRITE_AGENT_TYPES.includes(effectiveType(j))) ? '' : [
+const choicesContract = (j) => (readOnlyOf(j) || NO_WRITE_AGENT_TYPES.includes(effectiveType(j))) ? '' : [
   '',
   '=== CHOICES (orchestration/reference/writer_returns.md) ===',
   'End your deliverable with a fenced block opened by ```choices holding one JSON object per line, {"unit": "<what you wrote>", "why": "<its reason>"}, for each unit whose content your brief or plan does not state. Leave the block empty when there is none. With Bash, run `python3 .claude/tools/dispatch_result.py check <your deliverable file> --block choices=unit,why` before returning; the parent runs it otherwise, and a missing block fails it.',
@@ -403,14 +435,14 @@ const results = await parallel(jobs.map(j => () => {
     + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
     + '\n' + RELAY_LINE
     + (shapeOf(j) === 'author' ? '\n' + AMEND_LINE(j.promptPath) : '')
-    + (j.readOnly ? readOnlyGuard(j) : '')
+    + (readOnlyOf(j) ? readOnlyGuard(j) : '')
     + concurrencyGuard(j)
     + guardRef(j)
     + spillContract(j)
     + choicesContract(j)
   const opts = { label: j.label, phase: 'Dispatch', model: PIN(j.model), effort: EFF(j.effort) }
   if (j.agentType) opts.agentType = j.agentType
-  return leanAgent(prompt, opts, swapOf(j), RECORDED).then(r => [j.label, r])
+  return leanAgent(prompt, opts, swapOf(j), RECORDED, j.readOnly === true).then(r => [j.label, r])
 }))
 
 // `inlineLabels` rides the RETURN value, not just log(): the caller reads this object, and an
@@ -551,7 +583,8 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
     verification.report = out  // the checker's text only proves it read this file; readers open the engine's own path
   } catch (e) {
     verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out }
+      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out,
+      note: String((e && e.message) || e) }
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }

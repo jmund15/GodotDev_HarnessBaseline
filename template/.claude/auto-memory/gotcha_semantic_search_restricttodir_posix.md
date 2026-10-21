@@ -4,8 +4,6 @@ description: "semantic-search restrictToDir matches the index's stored REPO-RELA
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 0154c3a7-691a-4c1b-acb2-f593c6f511b1
-  modified: 2026-09-14T18:34:36.284Z
 retire_when:
   - review-by: 2027-03-03
 ---

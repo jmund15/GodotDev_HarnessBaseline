@@ -4,8 +4,6 @@ description: "A recommendation that trades A for B must measure B's cost BEFORE 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 40a30e2c-3efb-4fd4-ad4d-3a6ee32ba28f
-  modified: 2026-09-24T21:59:32.541Z
 ---
 
 # Measure the cost side before you recommend the trade, not after approval

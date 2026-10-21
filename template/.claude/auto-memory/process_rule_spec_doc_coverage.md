@@ -2,8 +2,6 @@
 name: Spec-Doc Coverage subsection before plan approval
 description: Plans downstream of a brainstorm/design doc need an explicit Spec-Doc Coverage mapping (design mechanic → plan section) before the plan is presented for approval.
 type: feedback
-originSessionId: 15bc6648-e4d1-4a64-b970-d32e8c122873
-modified: 2026-08-05T17:40:22.425Z
 ---
 Before presenting for approval any plan downstream of a brainstorming/design doc: **explicitly verify each mechanic from the design doc is addressed in the plan, OR explicitly out-of-scoped with rationale.** Missing-spec slips that get caught at approval review cost a re-plan cycle; ones that don't get caught ship without the user noticing the gap until playtest.
 

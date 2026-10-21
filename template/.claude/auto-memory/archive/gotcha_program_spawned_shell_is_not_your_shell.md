@@ -4,7 +4,6 @@ description: "A shell spawned by a program does not reproduce your interactive s
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-08-20T05:45:00.436Z
 ---
 
 A script that works when you run it and fails when a program runs it has usually not changed

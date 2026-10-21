@@ -6,8 +6,6 @@ metadata:
   retire_when: 
     - review-by: 2027-03-18
   type: project
-  originSessionId: dfe017b3-b84e-41bf-8517-359f6b15b971
-  modified: 2026-09-22T00:31:39.615Z
 ---
 
 `$USERPROFILE` on Windows expands to a backslash path (`C:\Users\<name>`). Writing

@@ -57,13 +57,13 @@ from datetime import datetime, timezone
 
 # Shared classifier (extracted 2026-05-04).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import read_json_salvage
 try:
-    from _hook_state import read_json_salvage
     from routing_classifier import classify_call, Classification
 except ImportError:
-    # Defensive: if import fails, this hook becomes a no-op rather than break
-    # the tool call. Tool routing nudges still work via the other hooks.
-    sys.exit(0)
+    # A project without the coding-layer classifier logs nothing: process() returns at once.
+    # post_read_dispatch imports this module for its other sub-hooks, so importing must not exit.
+    classify_call = None
 
 
 # === State + log paths =======================================================
@@ -191,6 +191,8 @@ def _append_audit_entry(entry: dict) -> None:
 def process(input_data: dict) -> None:
     """In-process entry — classifies + logs; emits nothing. Called by
     post_read_dispatch.py; main() wraps it for standalone wiring."""
+    if classify_call is None:
+        return
     tool_name = input_data.get("tool_name") or ""
     tool_input = input_data.get("tool_input") or {}
     session_id = input_data.get("session_id") or ""

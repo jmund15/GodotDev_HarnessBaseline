@@ -4,7 +4,6 @@ description: "A merge can drop a one-sided addition from the incoming side with 
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-08-16T23:08:59.394Z
 ---
 
 A merge that reports success can still lose content the incoming side added. There is no conflict

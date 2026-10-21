@@ -4,8 +4,6 @@ description: "Workflow tool calls carrying large multi-line agent prompts can be
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 0b5c3657-803b-4235-bb42-c157ccfcf355
-  modified: 2026-07-27T22:36:30.590Z
 retire_when:
   - review-by: 2026-11-23
 ---

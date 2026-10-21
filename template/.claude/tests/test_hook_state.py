@@ -15,7 +15,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
-from _hook_state import read_json_salvage, write_json_atomic  # noqa: E402
+import fnmatch  # noqa: E402
+from _hook_state import HARNESS_DIRS, SETTINGS_FILES, in_harness_dirs, is_harness_code, is_settings_file, read_json_salvage, write_json_atomic  # noqa: E402
 
 failures = []
 ran = 0
