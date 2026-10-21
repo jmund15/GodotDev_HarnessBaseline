@@ -1,6 +1,6 @@
 # Model evidence: probation and comparisons
 
-Read before pinning a model the owner marked for its tier or one `for-role` does not list for it, and before running a same-task comparison (`orchestration` §0 and §5 point here).
+Read before pinning a model the owner marked for its tier or one `for-role` does not list for it, and before running a same-task comparison (`orchestration` §5 points here).
 
 A model is on probation for a tier when the owner marks it for that tier, or when it has neither a tier claim (its registry `roles`) nor a clean-rated dispatch at that tier in this project's metrics archive. Native dispatches infer the tier from the call or shape before using a written tier. Sidecar preflight derives it from `-G` through the profile row. Probation is computed, never a rating. `model_registry.py review-state <alias> <tier>` reads that tier's probation state.
 

@@ -11,8 +11,8 @@ description: >-
 **For the model-effort battery, run the battery's `bench.py doctor` before
 designing or citing anything** — it reports which published scores are safe, which need only
 arithmetic, and which need a paid re-judge, plus the G4 integrity sweep. Never hand-assemble an
-answer from the data roots; `bench.py where` lists all six. Plan runs that add evidence for a ladder family, rung or task from `bench.py coverage`
-(every ladder family × rung × live task); `bench.py next` plans repeats of cells the board already holds.
+answer from the data roots; `bench.py where` lists all six. Plan runs that add evidence for a ladder family, effort or task from `bench.py coverage`
+(every ladder family × effort × live task); `bench.py next` plans repeats of cells the board already holds.
 
 Section numbers are cited across the harness and from `scripts/benchmark_campaign/` — never renumber.
 Each section states its verdict and names the file to read at that step; read only the sections your
@@ -138,7 +138,7 @@ A pin is measured, VOIDED, or unmeasured by design — three states, never two. 
 `reference/board_publication.md` §Three states, never two at every roster end, and §Writing the board
 while writing it.
 
-A tied total across effort rungs can hide opposite failure classes: report which axis moved, not only the
+A tied total across efforts can hide opposite failure classes: report which axis moved, not only the
 sum. More effort can buy completeness at the cost of integrity, such as forcing an out-of-scope fix through by
 editing a pre-existing test.
 

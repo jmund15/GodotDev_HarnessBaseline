@@ -113,6 +113,36 @@ def main():
         blp.CACHE = real_cache
     cases.append(("a workflow with no run: step exits 3, never a green preview of nothing", rc == 3))
 
+    import contextlib
+    import io
+    direct = Path(tempfile.mkdtemp(prefix="blp_direct_")) / "anywhere"
+    (direct / ".github" / "workflows").mkdir(parents=True)
+    (direct / ".github" / "workflows" / "baseline.yml").write_text("jobs: {}\n", encoding="utf-8")
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = blp.main(["--worktree", str(direct)])
+    cases.append(("--worktree PATH previews a tree outside the cache (it reached the workflow parse)",
+                  rc == 3 and "no run: step parsed" in err.getvalue()))
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = blp.main(["--worktree", str(direct.parent / "missing")])
+    cases.append(("--worktree to a missing path exits 3", rc == 3 and "no publish worktree" in err.getvalue()))
+
+    (direct / ".github" / "workflows" / "baseline.yml").write_text(
+        "jobs:\n  t:\n    steps:\n      - run: echo hi\n", encoding="utf-8")
+    seen = []
+    real_run, real_no_wsl, real_cwd = blp._run_wsl, blp._no_wsl, os.getcwd()
+    blp._run_wsl, blp._no_wsl = (lambda script, log: seen.append(script) or 0), (lambda: False)
+    try:
+        os.chdir(direct.parent)
+        with contextlib.redirect_stdout(io.StringIO()):
+            blp.main(["--worktree", direct.name])
+    finally:
+        os.chdir(real_cwd)
+        blp._run_wsl, blp._no_wsl = real_run, real_no_wsl
+    cases.append(("a relative --worktree reaches WSL as the absolute path of that tree",
+                  len(seen) == 1 and blp._quote(blp.wsl_path(str(direct.resolve()))) in seen[0]))
+
     cases.append(("a pwsh hash missing from hashes.sha256 stops setup instead of skipping the check",
                   '[ -n "$want" ] &&' not in blp.SETUP_SCRIPT
                   and '[ -n "$want" ] || { echo "no sha256 for $p" >&2; exit 1; }' in blp.SETUP_SCRIPT))

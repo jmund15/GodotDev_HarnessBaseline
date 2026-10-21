@@ -106,7 +106,7 @@ Without `--archive` (or `--verdicts`) the tool only reports and leaves the archi
 log('PINS ' + JSON.stringify(Object.fromEntries(JOBS.map(j => [j.label, j.effort]))))
 ```
 
-**3. Record each agent's falsification outcome.** Sidecar rows are recorded identically, keyed by their `-l` label; their `effort` is archived as the requested vendor string, which is correct — never translate it to an Anthropic rung. This is what makes the archive worth keeping — cost without an outcome has no denominator and rewards under-pinning. Record **what happened**, never an effort verdict:
+**3. Record each agent's falsification outcome.** Sidecar rows are recorded identically, keyed by their `-l` label; their `effort` is archived as the requested vendor string, which is correct — never translate it to an Anthropic effort level. This is what makes the archive worth keeping — cost without an outcome has no denominator and rewards under-pinning. Record **what happened**, never an effort verdict:
 
 | Outcome | Means (what happened — objective) |
 |---------|-----------------------------------|

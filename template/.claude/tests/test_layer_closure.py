@@ -158,6 +158,12 @@ def main():
 
     got = planted({doc: "Writes `logs/pre_compact.json` and `baseline.lock.json`.\n"}, {doc: "pure"})
     check("generated runtime state is exempt", got == [], kinds(got))
+    writer = ".claude/tools/writer.py"
+    got = planted({writer: 'OUT = "families.md"\n'}, {writer: "pure"}, extra=(".claude/generated/families.md",))
+    check("a bare data literal whose only local match is generated output is exempt", got == [], kinds(got))
+    got = planted({writer: 'OUT = "families.md"\n'}, {writer: "pure"}, extra=(".claude/reference/families.md",))
+    check("...while a non-generated local match still fails as local-only",
+          kinds(got) == [(writer, "local-only", "families.md")], kinds(got))
 
     got = planted({doc: "Shape: `[text](../rules/nowhere.md)` is a link.\n"}, {doc: "pure"})
     check("link syntax inside inline code is not a link", got == [], kinds(got))

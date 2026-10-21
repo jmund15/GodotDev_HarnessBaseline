@@ -2,6 +2,7 @@
 """Run the baseline CI's Ubuntu lane against a publish worktree inside WSL, before the PR exists.
 
     python3 .claude/tools/baseline_linux_preview.py [<journal-id>]   # default: newest worktree
+    python3 .claude/tools/baseline_linux_preview.py --worktree PATH  # a tree anywhere (publish validate runs this)
     python3 .claude/tools/baseline_linux_preview.py --setup          # once: python 3.x + node 20 + pwsh, no sudo
 
 Windows validation cannot see Linux-only failures: a `C:/` path is relative on POSIX, and real
@@ -18,7 +19,8 @@ and the latest PowerShell there and checks their SHA-256.
 
 Full output: `.claude/scratch/linux_preview/<worktree>.log`. Stdout carries each step's verdict,
 FAIL lines and the battery summary.
-Exit: 0 every step passed; 1 a step failed; 3 no worktree, no workflow, no parsed step or no WSL.
+Exit: 0 every step passed; 1 a step failed; 3 the preview could not run (no worktree, no workflow,
+no parsed step or no WSL).
 """
 from __future__ import annotations
 
@@ -183,11 +185,18 @@ def _no_wsl() -> bool:
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--setup"]:
         return 3 if _no_wsl() else _run_wsl(SETUP_SCRIPT, None)
-    worktree = resolve_worktree(CACHE, argv[0] if argv else None)
-    if worktree is None:
-        print("error: no publish worktree%s under %s"
-              % (" for " + argv[0] if argv else "", CACHE), file=sys.stderr)
-        return 3
+    if argv[:1] == ["--worktree"]:
+        given = argv[1] if len(argv) > 1 else ""
+        worktree = Path(given).resolve() if given and Path(given).is_dir() else None
+        if worktree is None:
+            print("error: no publish worktree at %s" % (given or "(no path given)"), file=sys.stderr)
+            return 3
+    else:
+        worktree = resolve_worktree(CACHE, argv[0] if argv else None)
+        if worktree is None:
+            print("error: no publish worktree%s under %s"
+                  % (" for " + argv[0] if argv else "", CACHE), file=sys.stderr)
+            return 3
     workflow = worktree / WORKFLOW
     if not workflow.is_file():
         print("error: %s has no %s" % (worktree, WORKFLOW.as_posix()), file=sys.stderr)

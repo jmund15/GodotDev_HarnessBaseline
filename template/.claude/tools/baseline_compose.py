@@ -143,14 +143,16 @@ def _disable_base_permissions(base_permissions: dict, disable: dict) -> dict:
 def _validate_disable(disable: dict, base_hooks: dict, base_permissions: dict) -> None:
     """Every `$disable` target is counted against the BASE entries only (`removes those base
     entries`) — a target the project itself also introduced does not satisfy the count. A count
-    other than 1 is a hard error naming the exact key and entry, never a silent skip."""
+    other than 1 is a hard error naming the exact key and entry, never a silent skip; one error names
+    every such entry."""
+    errors = []
     hook_targets = list(disable.get("hooks", []))
     if hook_targets:
         base_commands = _flatten_hook_commands(base_hooks)
         for target in hook_targets:
             count = base_commands.count(target)
             if count != 1:
-                raise ComposeError(f"$disable.hooks entry matches {count} base entries: {target!r}")
+                errors.append(f"$disable.hooks entry matches {count} base entries: {target!r}")
     for disable_key, list_key in _DISABLE_PERMISSION_KEYS.items():
         targets = disable.get(disable_key)
         if not targets:
@@ -159,7 +161,9 @@ def _validate_disable(disable: dict, base_hooks: dict, base_permissions: dict) -
         for target in targets:
             count = base_list.count(target)
             if count != 1:
-                raise ComposeError(f"$disable.{disable_key} entry matches {count} base entries: {target!r}")
+                errors.append(f"$disable.{disable_key} entry matches {count} base entries: {target!r}")
+    if errors:
+        raise ComposeError("\n".join(errors))
 
 
 def _prune_hooks(hooks: dict, hooks_dir: Path) -> None:

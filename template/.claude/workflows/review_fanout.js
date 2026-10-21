@@ -220,11 +220,13 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
     if (new Set(seats.map(seat => seat.label)).size !== seats.length) throw new Error('duplicate launched seat label')
     const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(sys.argv[2] + "\\n", encoding="utf-8", newline="\\n")'
     if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
+    const printer = 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"status": r["status"], "counts": r["counts"], "verdicts": {k: v["verdict"] for k, v in r["verdicts"].items()}}))'
     command = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + quoteArg(JSON.stringify(launched)) + ' && ' + command
+      + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
     log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
     verification = await verifierAgent('Run exactly this command with Bash: ' + command
-      + '\nThen Read its --out file, even if the command exits 1. Return ONLY {status, counts, verdicts, report, note}.'
-      + ' Copy status and counts. Map each verdict key to its verdict string, without changing values. Set report to the --out path and nothing else; put any observation in note (optional).'
+      + '\nIts last output line is one JSON object holding status, counts and verdicts, read from the --out file; it prints even when the check exits 1.'
+      + ' Return ONLY {status, counts, verdicts, report, note}: copy status, counts and verdicts from that line unchanged. Set report to the --out path and nothing else; put any observation in note (optional).'
       + ' Do not check evidence yourself, change permissions, or run another command.',
     { label, phase: 'Verify', agentType: profile.agentType, model, effort, schema })
     if (!verification || !['pass', 'fail'].includes(verification.status) || !reportsOut(verification.report)

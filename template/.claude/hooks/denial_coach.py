@@ -27,17 +27,20 @@ except Exception:
 
 KEY = "classifier_denials"
 _TAG = re.compile(r"\[([^\]]+)\]")
+PARK = ("If a question above is off the critical path, park it: keep working, and put it in the "
+        "AskUserQuestion packet you send at the end. Ask now only when nothing else can advance without it.")
 MOVES = {
     "Self-Modification": "the classifier reads the user's messages and CLAUDE.md, not your findings. If this "
-                         "edit does what the user asked, ask one AskUserQuestion naming the exact change; "
-                         "the answer clears it. Otherwise drop consent or provenance text and keep ask-the-user steps.",
-    "Security Test Removal": "running or editing a proof is ordinary test work. Ask one AskUserQuestion naming the "
-                             "command; say it is a proof run.",
+                         "edit does what the user asked, the user's answer to a question naming the exact change "
+                         "clears it. Otherwise drop consent or provenance text and keep ask-the-user steps.",
+    "Security Test Removal": "running or editing a proof is ordinary test work; ask the user one question that "
+                             "names the command and says it is a proof run.",
     "Irreversible Local Destruction": "name the exact path, or copy it aside first; never a glob or variable.",
-    "Auto-Mode Bypass": "do not retry it another way. Ask one AskUserQuestion naming the action, or drop it.",
+    "Auto-Mode Bypass": "do not retry it another way: drop it, or ask the user one question naming the action.",
 }
+ASKS = frozenset(("Self-Modification", "Security Test Removal", "Auto-Mode Bypass"))
 GENERIC = ("If the user asked for this action, it is still needed: never replace it with other work. "
-           "Ask one AskUserQuestion naming it exactly.")
+           "Ask the user one question naming it exactly.")
 CLOSE = "Finish the rest of the task first; do not end the turn idle."
 OVERNIGHT = ("/overnight is armed, so no one can answer: follow commands/overnight.md §Step 2 "
              "to decide or park with the actual blocker and default; the classifier denial still "
@@ -79,7 +82,7 @@ def _coach(payload):
     if not pending or payload.get("stop_hook_active"):
         return None
     unattended = _overnight_armed(payload)
-    seen, lines = set(), []
+    seen, lines, asks = set(), [], False
     for entry in pending:
         tag = entry.get("tag") or "?"
         gate = entry.get("gate")
@@ -88,9 +91,11 @@ def _coach(payload):
         if key not in seen:
             seen.add(key)
             move = OVERNIGHT if unattended else gate or MOVES.get(tag, GENERIC)
+            asks = asks or move is GENERIC or (tag in ASKS and move is MOVES[tag])
             denied = " Denied command: %s." % json.dumps(command, ensure_ascii=False) if command is not None else ""
             lines.append("[%s] on %s: %s%s" % (tag, entry.get("tool"), move, denied))
-    return {"decision": "block", "reason": "Auto mode denied: " + " ".join(lines) + " " + CLOSE}
+    tail = PARK + " " + CLOSE if asks else CLOSE
+    return {"decision": "block", "reason": "Auto mode denied: " + " ".join(lines) + " " + tail}
 
 
 def main():

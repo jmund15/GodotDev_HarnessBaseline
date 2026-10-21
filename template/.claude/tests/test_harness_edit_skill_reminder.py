@@ -164,14 +164,15 @@ def main():
     cases.append(("the ladder note carries the cell rule, word for word as /ladder_ingest states it",
                   bool(note) and flat(note) in flat(owner)))
     # The cell-scope bullets live in the owner's list, so each is held to the note on its own.
-    scope_keys = ("`effort` owns every rung", "An `effort` cell gives a start rung", "A clause is as wide as the evidence", "A rung earns a place",
+    scope_keys = ("`effort` owns every effort level", "An `effort` cell gives the starting effort", "A clause is as wide as the evidence",
+                  "An effort level earns a place", "A cell is read mid-dispatch",
                   "Every shape term", "Version takeover audits")
     bullets = [line[2:].replace("**", "") for line in owner.splitlines()
                if line.startswith("- **") and any(key in line for key in scope_keys)]
     cases.append(("the ladder note carries each cell-scope bullet, word for word as /ladder_ingest states it",
                   len(bullets) == len(scope_keys) and all(flat(b) in flat(reason) for b in bullets)))
     cases.append(("the ladder note carries the routing-verdict rule too, through its last sentence",
-                  "Every work shape a source measured gets a routing verdict" in note
+                  "cells cover every work shape of every tier its registry rows claim" in note
                   and "fails a name no ladder row covers." in note))
     got, reason = edit(LADDER, env)
     cases.append(("and on every later ladder edit", got == NUDGE and "/ladder_ingest" in reason))

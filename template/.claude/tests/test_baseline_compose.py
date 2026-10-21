@@ -135,6 +135,21 @@ def main() -> int:
         failures.append(case("$disable.hooks unmatched entry -> ComposeError", True))
     _rmtree_writable(root)
 
+    # 2c. Every stale $disable entry is named in one error, so one compose run lists them all.
+    root, hooks_dir = make_tree()
+    base = {"permissions": {"allow": [], "deny": []}, "hooks": {}}
+    project = {"permissions": {}, "hooks": {}, "$disable": {"hooks": ["gone-hook"],
+                                                             "permissions.allow": ["gone-allow"],
+                                                             "permissions.deny": ["gone-deny"]}}
+    try:
+        bc.compose_settings(base, project, hooks_dir)
+        failures.append(case("$disable: one error names every stale entry", False, "no raise"))
+    except bc.ComposeError as exc:
+        text = str(exc)
+        failures.append(case("$disable: one error names every stale entry",
+                             all(t in text for t in ("gone-hook", "gone-allow", "gone-deny")), text))
+    _rmtree_writable(root)
+
     # 3. $disable.permissions.deny removes exactly the named base entry.
     root, hooks_dir = make_tree()
     base = {"permissions": {"allow": [], "deny": ["Glob(.claude/worktrees/**)", "Read(.claude/worktrees/**)"]}, "hooks": {}}

@@ -125,7 +125,7 @@ Workflow({
     // + each conditional seat (`sa-architecture-sweep`, `sa-harness-quality`, `sa-holistic`) when `execution_depth.md` §Mandate admission admits it:
     { key: "sa-architecture-sweep", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] } ],
     spillDir: ".claude/scratch/session_audit_<sid8>_spill",
-    fold: { tier: "<fold tier>", model: "<row>", effort: "<rung>", subjects: [{ root: ".", snapshot: ".claude/scratch/session_audit_<sid8>_snapshot.json", files: [<native-legal harness subject files>] }] },
+    fold: { tier: "<fold tier>", model: "<row>", effort: "<effort>", subjects: [{ root: ".", snapshot: ".claude/scratch/session_audit_<sid8>_snapshot.json", files: [<native-legal harness subject files>] }] },
     ledger: { stage: "candidate", subject: "session:<sid>", roster: ".claude/scratch/session_audit_<sid8>_roster.json", task: "<id>", premiseCommits: "<inputs.premiseCommits>", head: "<inputs.head>", blobs: "<inputs.blobs>" } }
 })
 ```

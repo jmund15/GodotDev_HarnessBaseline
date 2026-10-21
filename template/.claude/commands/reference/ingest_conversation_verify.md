@@ -75,8 +75,8 @@ adjectival: something reasons about each problem before seeing the chosen answer
    verbatim constraints both parties stated, premise-check repo facts. The participants' chosen
    answers are REMOVED — the blind brief is the de-biasing mechanism (the `--design_panel`
    blind-attempt structure).
-3. **Dispatch ONE blind job** through `/delegate` at the architect tier: its lowest ladder rung for interpersonal or process contention,
-   a higher rung when a brief turns on repo facts the arm must discover. **Never use a fanout-tier row**: those fabricate
+3. **Dispatch ONE blind job** through `/delegate` at the architect tier: its lowest ladder effort level for interpersonal or process contention,
+   a higher effort level when a brief turns on repo facts the arm must discover. **Never use a fanout-tier row**: those fabricate
    on open judgment (their `±` cells in `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
    per brief with tradeoffs. Record the pin in the run report.
 4. **Compare and write `## Outside read`** (session): delegate directions vs what was concluded vs

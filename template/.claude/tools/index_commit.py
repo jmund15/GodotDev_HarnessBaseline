@@ -5,8 +5,8 @@ peer's staged files, and a peer's next plain `git commit` publishes whatever thi
 This tool performs the safe cycle instead:
 
   stage   build `.git/index-<name>` from HEAD (read once, recorded as the base), force-add the named paths into it, stage the lock
-          blob (HEAD's `baseline.lock.json` plus the rows for this commit's new `.claude/` paths,
-          minus the rows of its deleted ones), and print the `git commit` line to run next. A path an
+          blob (HEAD's `baseline.lock.json` plus the rows for this commit's new `.claude/` paths and
+          the working rows of its changed ones, minus the rows of its deleted ones), and print the `git commit` line to run next. A path an
           earlier commit deleted, named alone, stages only the removal of its leftover row.
   resync  after that commit lands, reset the committed paths in the shared index and update the
           working `baseline.lock.json` so the committed rows equal HEAD's while every other row
@@ -307,7 +307,7 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
     blob = json.loads(json.dumps(head_lock))
     files = blob.setdefault("files", {})
     head_rows = set(head_lock.get("files") or {})
-    added, removed = [], []
+    added, removed, changed_rows = [], [], []
     for rel in paths:
         if rel not in after:
             if files.pop(rel, None) is not None or rel in head_rows:
@@ -318,6 +318,10 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
                 raise IndexCommitError("classify wrote no lock row for %s" % rel)
             files[rel] = row
             added.append(rel)
+        elif rel in head_rows and _lock_row(work_lock, rel) not in (None, files.get(rel)):
+            # A row belongs to its path: a pull's new hash or a judge's verdict ships with the path's commit.
+            files[rel] = _lock_row(work_lock, rel)
+            changed_rows.append(rel)
 
     payload = (json.dumps(blob, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     lock_sha = _git(root, ["hash-object", "-w", "--stdin"], input_bytes=payload)[1].strip()
@@ -337,6 +341,8 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
         print("  + lock row %s" % rel)
     for rel in removed:
         print("  - lock row %s" % rel)
+    for rel in changed_rows:
+        print("  ~ lock row %s" % rel)
     stat = _git(root, ["diff", "--cached", "--stat"], index=index)[1]
     if stat.strip():
         print(stat.rstrip())

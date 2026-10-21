@@ -70,12 +70,12 @@ Workflow({
   args: {
     contextPrefix: "<the Step-0 CONTEXT as ONE flat string>",
     generators: [
-      { key: "canon-import",        instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" },
-      { key: "objective-inversion", instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" },
-      { key: "theme-exploit",       instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" },
-      { key: "systems-exploit",     instr: "<mandate only>", model: "<row>", effort: "<rung>", tier: "architect" }
+      { key: "canon-import",        instr: "<mandate only>", model: "<row>", effort: "<effort>", tier: "architect" },
+      { key: "objective-inversion", instr: "<mandate only>", model: "<row>", effort: "<effort>", tier: "architect" },
+      { key: "theme-exploit",       instr: "<mandate only>", model: "<row>", effort: "<effort>", tier: "architect" },
+      { key: "systems-exploit",     instr: "<mandate only>", model: "<row>", effort: "<effort>", tier: "architect" }
     ],
-    critic: { model: "<row>", effort: "<rung>", tier: "fanout" },
+    critic: { model: "<row>", effort: "<effort>", tier: "fanout" },
     genFields: [
       { name: "winAxis",   desc: "win-condition axis the candidate maps to", required: true },
       { name: "dependsOn", desc: "which referenced system it leans on" }

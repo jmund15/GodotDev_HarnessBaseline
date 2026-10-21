@@ -19,9 +19,10 @@ For each task, and each ladder family with current-instrument cells on it, compa
 2. **Strongest pick missing:** the row leads outside the band, and its cell does not say so.
 3. **Failure missing:** the row falls well below the field, or fails a FLOOR item, where a pin could land, and its cell does not warn.
 4. **Contradiction:** a cell claims something the board refutes outside the band.
-5. **Effort mismatch:** another rung gives better quality per token on the shape than the `effort` cell names. A rung the board never ran is unmeasured, not a mismatch.
-6. **Rung without merit:** a rung or shape the dominance rule in §What lands would propose removing: same-plan pins dominate it on every shape its cell claims for it. Run `bench.py ladder-dominance` on it and report the listing as a proposal, never an edit.
-7. **Cell breaks a cell rule:** a rung in a `±` cell, an absolute in an `effort` cell, a shape term the ladder does not define, or a claim about the model or rung in general that rests on one task, one rung or runs whose spreads overlap.
+5. **Effort mismatch:** another effort gives better quality per token on the shape than the `effort` cell names. An effort the board never ran is unmeasured, not a mismatch.
+6. **Effort without merit:** an effort level or shape the dominance rule in §What lands would propose removing. Run `bench.py ladder-dominance` on it and report the listing as a proposal, never an edit.
+7. **Claimed shape uncovered:** a tier the row's registry rows claim has a shape the row's cells give no routing verdict (`ladder_ingest.md` §What lands), or a seat clause states no case where an orchestrator adds the row.
+8. **Cell breaks a cell rule:** an effort level in a `±` cell, an absolute in an `effort` cell, a shape term the ladder does not define, or a claim about the model or effort in general that rests on one task, one effort or runs whose spreads overlap.
 
 Mark a result resting on one run, or on a gap narrower than the spread, as thin. A row is evidence only when the ladder-lag ledger counts it: ranked, current, and not stale, VOID, unverified, sealed, archived or a `control:` row. A board model name maps to the ladder row of its family (`model_registry.py` `family`); context or compaction variants are configurations of a row, not new rows.
 
