@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check a review fold against disk and an independent quote run; never against its own report.
 
-A fold author reports its applied/deferred ids, decisions, quote verdicts, mechanical old/new
-checks and the paths it changed. Every one of those is a claim. This checker re-derives each
-from inputs the author did not write:
+A fold author reports its judgment: the ids it applied (each with its `source`, an optional `file` and `noTest`),
+the ids it deferred with a class and reason, `designDelta`, and the paths it changed. This checker computes every
+fact from inputs the author did not write:
 
   * the ORIGINAL findings (the native journal's source findings, sidecar `review.json` sources,
     or an ungrouped findings list/object), independently of the routing view;
@@ -22,33 +22,31 @@ Checks, each a failure kind in the report:
                           subjects; a file outside every subject is disposition `out-of-subject`, held for
                           the session, never a failure
                           has no single subject to take it
-  fold-invalid-shape      the digest lacks its applied/deferred/decisions/verdicts lists
-  fold-id-coverage        a routed id is absent, repeated or unknown across applied + deferred
-  fold-decision-coverage  a routed id has no decision, `taken` disagrees with applied, or a taken
-                          decision's `source` is not `finding`, `adapted`, `fold` or `ruling`
-  fold-verdict-mismatch   a digest verdict differs from the independent one, or is missing
-  fold-checker-artifact   the digest's verdictPath is missing, malformed or disagrees
+  fold-invalid-shape      the digest lacks its applied/deferred lists of {id} rows
+  fold-id-coverage        a routed id is absent from applied + deferred (held `unreported`); an unknown id is
+                          reported and ignored; a repeated id counts once (an id in both lists counts deferred)
   fold-applied-unverified an applied id with evidence is not independently VERIFIED, or an
-                          applied refutation has no verified evidence
-  fold-mechanical-check   an applied old/new pair: old occurs as often as in the snapshot bytes of its
-                          file, or new is absent when the decision's `source` is `finding`. `adapted` and
-                          `fold` and `ruling` rewrote the text: new may be absent, and old may stay if a snapshot line
-                          holding it changed
+                          applied refutation has no verified evidence, unless `--ruled` names it
+  fold-not-applied        an applied old/new pair whose `old` is still present: it occurs as often as in the
+                          snapshot bytes of its file (an `adapted`, `fold` or `ruling` source may keep it on a
+                          line that changed). A pair whose `old`
+                          is gone but whose `new` is not verbatim is recorded `adapted` for the next round's
+                          re-review, never a failure
   fold-old-missing        an applied FIX whose `old` occurs zero times in its file's snapshot bytes,
                           unless another applied id in the same file changed that region
   fold-applied-held       ASK or open PLAN (a PLAN with no options) applied without a caller-authorized ruling
   fold-application-unattributed an applied id resolves to no subject file
   fold-unchanged-file     an applied id over file bytes identical to the snapshot, unless `--ruled` names it
-  fold-untested-code      an applied decision on a code path without `noTest`, and the change set
+  fold-untested-code      an applied id on a code path without `noTest`, and the change set
                           holds no test path
   fold-test-order         a rev subject's fix commit precedes the test commit of the same id, or a
                           commit's kind disagrees with the paths it touches
   fold-out-of-subject     a changed or claimed path outside `files` and `newPaths` (a claimed path naming the fold's own findings,
-                          verdicts, digest or prompt file is excepted)
+                          verdicts, digest or prompt file, or any path under `.claude/scratch/`, is excepted)
   fold-snapshot-missing   the snapshot or a subject file is unreadable
 
 `FAILURE_SCOPE` defines each failure's `ids` and voided `files`; an unknown kind voids the whole
-subject. A path-prefixed `designDelta` marks only its named changed file; an unnamed element marks
+subject. An `id` or `file` scoped failure, or a `finding` scoped one that names its ids, holds those ids alone; any other scope fails a post-check's outcome. A path-prefixed `designDelta` marks only its named changed file; an unnamed element marks
 all changed files. Post-fold bytes are captured once, so recording never credits a later disk edit.
 
 A successful child exit, a present digest or a self-reported pass never overrides a failure here.
@@ -58,7 +56,7 @@ A successful child exit, a present digest or a self-reported pass never override
   fold_check.py --workflow-dir <review_fanout transcriptDir> --out <report.json>
 
 `--ruled ID[,ID...]` supplies caller-authorized rulings; a digest's `source: ruling`
-alone grants no authority. A fileless applied decision over several files names its
+alone grants no authority. A fileless applied entry over several files names its
 subject-relative `file`; changedPaths alone cannot attribute it.
 
 `--workflow-dir` is the native route: each fold agent's first prompt (engine-authored) supplies
@@ -71,7 +69,7 @@ one subject whose `files` holds its `file`.
 The report holds one disposition per source finding (a merged view id expands to its
 `merged_from` sources), and one `nextRound` block per subject: the next review round's seats read
 from the fold (`orchestration` §2 *Later rounds*). A `re-review` seat carries the units the fold
-wrote itself, the `noTest` code decisions and the units whose check failed, with the mandates whose
+wrote itself, the `noTest` code entries, the reworded edits and the units whose check failed, with the mandates whose
 findings cite them; a `grounding` seat carries each added line that states a number, path or line
 cite; a `coherence` seat carries the digest's `designDelta`. `fileUnits` maps each changed file to
 the reasons it holds a unit. `change` measures how much of the reviewed subject changed and how far
@@ -107,13 +105,12 @@ import verify_claims  # noqa: E402
 _LINE = re.compile(r":[1-9]\d*(?:-[1-9]\d*)?$")
 from typing import Literal
 
-Scope = Literal["id", "file", "path", "report", "finding", "subject", "none", "run"]
+Scope = Literal["id", "file", "path", "finding", "subject", "none", "run"]
 FAILURE_SCOPE: dict[str, Scope] = {
-    "fold-mechanical-check": "id", "fold-applied-unverified": "id", "fold-old-missing": "id",
-    "fold-applied-held": "id", "fold-application-unattributed": "id",
+    "fold-not-applied": "id", "fold-applied-unverified": "id", "fold-old-missing": "id",
+    "fold-applied-held": "id", "fold-application-unattributed": "subject",
     "fold-test-order": "id", "fold-untested-code": "id", "fold-unchanged-file": "file",
-    "fold-out-of-subject": "path", "fold-verdict-mismatch": "report", "fold-checker-artifact": "report",
-    "fold-decision-coverage": "report", "fold-id-coverage": "report", "fold-routing": "finding",
+    "fold-out-of-subject": "path", "fold-id-coverage": "id", "fold-routing": "finding",
     "fold-invalid-shape": "subject", "fold-snapshot-missing": "subject",
     "source-incomplete": "none", "ledger-record-failed": "run",
 }
@@ -122,9 +119,12 @@ _CONTENT_FAILURES = tuple(kind for kind, scope in FAILURE_SCOPE.items() if scope
 
 def scoped_failure(kind, detail, subject=None, rows=(), **extra):
     ids = extra.pop("ids", [extra["id"]] if extra.get("id") else [row["id"] for row in rows])
+    given = extra.pop("files", None)
     scope = FAILURE_SCOPE.get(kind, "subject")
     files = []
-    if subject is not None:
+    if given is not None:
+        files = list(given)
+    elif subject is not None:
         if scope in ("subject", "run"):
             files = sorted(subject.allowed)
         elif scope == "id":
@@ -181,6 +181,12 @@ def fold_prompt_path(digest):
     `fold<N>_digest.json`), else None. The engine writes one prompt per fold next to its digest."""
     match = _FOLD_DIGEST_NAME.fullmatch(os.path.basename(str(digest)))
     return os.path.join(os.path.dirname(str(digest)), match[1] + "prompt.md") if match else None
+
+
+def fold_verdicts_path(digest):
+    """The checker-verdicts file the review engine names beside a fold digest, else None."""
+    match = _FOLD_DIGEST_NAME.fullmatch(os.path.basename(str(digest)))
+    return os.path.join(os.path.dirname(str(digest)), match[1] + "verdicts.json") if match else None
 
 
 def rel_path(value, root=None):
@@ -726,83 +732,44 @@ def hold_class(row):
 
 
 def check_job(job, rows, independent, failures):
-    """Validate one subject's digest over the ids routed to it; -> {id: (disposition, decision)}."""
+    """Validate one subject's digest over the ids routed to it; -> {id: (disposition, taken)}.
+
+    The digest is judgment only: `taken` is True for an applied id, False for a deferred one, None for an absent one."""
     subject = job["subject"]
     fail = lambda kind, detail, **extra: failures.append(scoped_failure(kind, detail, subject, rows, **extra))  # noqa: E731
     ids = [row["id"] for row in rows]
     by_id = {row["id"]: row for row in rows}
     digest = job["digestValue"]
-    lists = ("applied", "deferred", "decisions", "verdicts")
+    job["reworded"] = set()
+    lists = ("applied", "deferred")
     if not isinstance(digest, dict) or any(not isinstance(digest.get(k), list) for k in lists) or any(
             not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
             for k in lists for entry in digest[k]):
-        fail("fold-invalid-shape", "digest lacks applied/deferred/decisions/verdicts lists of {id} rows")
+        fail("fold-invalid-shape", "digest lacks applied/deferred lists of {id} rows")
         return {i: ("missing", None) for i in ids}
-    applied = [entry["id"] for entry in digest["applied"]]
-    deferred = [entry["id"] for entry in digest["deferred"]]
-    listed = applied + deferred
+    listed = [entry["id"] for k in lists for entry in digest[k]]
+    deferred = [i for i in dict.fromkeys(entry["id"] for entry in digest["deferred"]) if i in by_id]
+    applied = [i for i in dict.fromkeys(entry["id"] for entry in digest["applied"]) if i in by_id and i not in deferred]
     unknown = sorted({i for i in listed if i not in by_id})
     repeated = sorted({i for i in listed if listed.count(i) > 1})
     absent = [i for i in ids if i not in listed]
-    if unknown or repeated or absent:
-        fail("fold-id-coverage", f"unknown {unknown or '-'}; repeated {repeated or '-'}; "
-                                 f"absent {absent or '-'}")
-    decisions, sources, entries = {}, {}, {}
-    for entry in digest["decisions"]:
-        if entry["id"] in decisions or not isinstance(entry.get("taken"), bool):
-            fail("fold-decision-coverage", f"decision {entry['id']} repeated or malformed", id=entry["id"])
-        elif entry["taken"] and entry.get("source") not in ("finding", "adapted", "fold", "ruling"):
-            fail("fold-decision-coverage", f"decision {entry['id']} is taken without source finding|adapted|fold|ruling",
-                 id=entry["id"])
-        decisions[entry["id"]] = entry.get("taken")
-        sources[entry["id"]] = entry.get("source")
-        entries[entry["id"]] = entry
-    for i in ids:
-        if i not in decisions:
-            fail("fold-decision-coverage", f"{i} has no decision", id=i)
-        elif decisions[i] is not (i in applied):
-            fail("fold-decision-coverage", f"{i} decision taken={decisions[i]} but "
-                                           f"{'applied' if i in applied else 'not applied'}", id=i)
-    reported = {entry["id"]: entry for entry in digest["verdicts"]}
-    for i in ids:
-        truth = independent.get(i)
-        claim = (reported.get(i) or {}).get("verdict")
-        if truth is None:
-            if claim == "VERIFIED":
-                fail("fold-verdict-mismatch", f"{i} has no evidence yet reports VERIFIED", id=i)
-        elif claim != truth:
-            fail("fold-verdict-mismatch", f"{i} reports {claim or 'no verdict'}; independent "
-                                          f"checker says {truth}", id=i)
-    artifact_path = digest.get("verdictPath")
-    evidenced = [i for i in ids if i in independent]
-    if evidenced:
-        artifact = None
-        if isinstance(artifact_path, str) and artifact_path.strip():
-            path = Path(artifact_path)
-            try:
-                artifact = json.loads((path if path.is_absolute() else REPO / path).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                artifact = None
-        rows_of = artifact.get("verdicts") if isinstance(artifact, dict) else None
-        if not isinstance(rows_of, list):
-            fail("fold-checker-artifact", f"verdictPath {artifact_path!r} is missing or not a checker "
-                                          f"output; the fold's verdicts are unproven")
-        else:
-            written = {r.get("id"): r.get("verdict") for r in rows_of if isinstance(r, dict)}
-            wrong = [i for i in evidenced if written.get(i, written.get((job.get('viewIds') or {}).get(i))) != independent[i]]
-            if wrong:
-                fail("fold-checker-artifact", f"checker artifact disagrees with the independent run "
-                                              f"for {', '.join(wrong)}")
+    if unknown or repeated:
+        fail("fold-id-coverage", f"unknown {unknown or '-'}; repeated {repeated or '-'}; counted once", ids=[])
+    if absent:
+        fail("fold-id-coverage", f"absent from applied and deferred: {', '.join(absent)}", ids=absent, files=[])
+    entries = {}
+    for entry in digest["applied"]:
+        entries.setdefault(entry["id"], entry)
+    sources = {i: entries[i].get("source") or "finding" for i in applied}
     for i in applied:
-        row = by_id.get(i)
-        if row is None:
-            continue
+        row = by_id[i]
         held = hold_class(row)
         if held and i not in (job.get('ruled') or ()):
             fail('fold-applied-held', f'{i}: {held} applied without a caller-authorized ruling', id=i)
         has_evidence = bool(row.get("evidence"))
-        refuting = row.get("refuting") is True or (reported.get(i) or {}).get("refuting") is True
-        if (has_evidence and independent.get(i) != "VERIFIED") or (refuting and not has_evidence):
+        if i in (job.get('ruled') or ()):
+            continue
+        if (has_evidence and independent.get(i) != "VERIFIED") or (row.get("refuting") is True and not has_evidence):
             fail("fold-applied-unverified", f"{i} is applied without independently VERIFIED "
                                             f"evidence", id=i)
     try:
@@ -814,17 +781,17 @@ def check_job(job, rows, independent, failures):
     if tables is not None:
         file_of = {i: subject.application_file(by_id[i], entries.get(i, {})) for i in ids}
         for i in applied:
-            if i in by_id and file_of.get(i) is None:
+            if file_of.get(i) is None:
                 fail('fold-application-unattributed', f'{i}: applied id resolves to no subject file', id=i)
         state = _FoldState(by_id, applied, file_of, tables, sources, entries, digest)
-        _check_old_new(state, fail)
+        job["reworded"] = _check_old_new(state, fail)
         _check_unchanged_files(state, fail, set(job.get('ruled') or ()))
         _check_untested_code(state, change, fail)
         _check_out_of_subject(subject, job, digest, change, fail)
         if subject.snapshot["kind"] == "rev":
             _check_commit_order(subject, digest, fail)
     return {i: ("applied" if i in applied else "deferred" if i in deferred else "missing",
-                decisions.get(i)) for i in ids}
+                True if i in applied else False if i in deferred else None) for i in ids}
 
 
 def _old_touched_by_other(i, old, rel, applied, file_of, by_id):
@@ -839,8 +806,8 @@ def _old_touched_by_other(i, old, rel, applied, file_of, by_id):
 
 @dataclass
 class _FoldState:
-    """One fold job's findings by id, applied ids, file of each id, (pre, post) bytes per file, decision sources
-    and entries by id, and the digest, as the per-job checks read them."""
+    """One fold job's findings by id, applied ids, file of each id, (pre, post) bytes per file, each applied id's
+    source and entry, and the digest, as the per-job checks read them."""
     by_id: dict
     applied: list
     file_of: dict
@@ -851,8 +818,10 @@ class _FoldState:
 
 
 def _check_old_new(state, fail):
+    """Fail an applied id whose `old` is still present; -> the ids whose `old` is gone but whose `new` is not verbatim
+    though the fold named `finding` as the source: those are reworded edits for the next round's re-review."""
     by_id, applied, file_of, tables = state.by_id, state.applied, state.file_of, state.tables
-    checks = {c.get("id"): c for c in state.digest.get("mechanicalChecks") or [] if isinstance(c, dict)}
+    reworded = set()
     for i in applied:
         row = by_id.get(i) or {}
         old, new = row.get("old"), row.get("new")
@@ -865,16 +834,13 @@ def _check_old_new(state, fail):
         if had == 0 and not _old_touched_by_other(i, old, rel, applied, file_of, by_id):
             fail("fold-old-missing", f"{i}: old occurs zero times in the snapshot bytes of {rel}", id=i)
         old_absent = _flat(old) in _flat(new) or had == 0 or flat.count(_flat(old)) < had
-        new_present = _flat(new) in flat
-        rewritten = state.sources.get(i) in ("adapted", "fold", "ruling")
-        if rewritten and not old_absent:
+        if not old_absent and state.sources.get(i) in ("adapted", "fold", "ruling"):
             old_absent = _unit_changed(before, text, _flat(old))
-        if not (old_absent and (new_present or rewritten)):
-            claim = checks.get(i) or {}
-            fail("fold-mechanical-check", f"{i}: old {'absent' if old_absent else 'still present'}, "
-                                          f"new {'present' if new_present else 'absent'} in {rel}; "
-                                          f"digest reported oldAbsent={claim.get('oldAbsent')} "
-                                          f"newPresent={claim.get('newPresent')}", id=i)
+        if not old_absent:
+            fail("fold-not-applied", f"{i}: old is still present in {rel}", id=i)
+        elif _flat(new) not in flat and state.sources.get(i) == "finding":
+            reworded.add(i)
+    return reworded
 
 
 def _check_unchanged_files(state, fail, ruled=()):
@@ -903,9 +869,10 @@ def _check_out_of_subject(subject, job, digest, change, fail):
     allowed = subject.allowed
     outside = sorted(p for p in change if p not in allowed)
     own = {rel_path(p, subject.root) for p in [*(job.get("artifacts") or ()), job.get("digest"),
-                                               digest.get("verdictPath")] if isinstance(p, str) and p}
+                                               fold_verdicts_path(job.get("digest") or "")] if isinstance(p, str) and p}
     claimed = [rel_path(p, subject.root) for p in digest.get("changedPaths") or []
-               if isinstance(p, str) and rel_path(p, subject.root) not in own]
+               if isinstance(p, str) and rel_path(p, subject.root) not in own
+               and not rel_path(p, subject.root).startswith(".claude/scratch/")]
     outside += sorted(p for p in claimed if p not in allowed and p not in outside)
     held = subject.snapshot.get("files") if subject.snapshot["kind"] == "blobs" else None
     for p in claimed:
@@ -1062,27 +1029,29 @@ def next_round(job, mine, failures):
     """The next review round's seats for one subject, read from its fold (`orchestration` §2 *Later rounds*)."""
     subject = job["subject"]
     digest = job.get("digestValue") if isinstance(job.get("digestValue"), dict) else {}
-    decisions = [d for d in digest.get("decisions") or [] if isinstance(d, dict)]
+    applied = [d for d in digest.get("applied") or [] if isinstance(d, dict)]
     by_id = {row["id"]: row for row in mine}
     ids = set(by_id)
-    taken = {d.get("id") for d in decisions if d.get("taken") is True}
+    taken = {d.get("id") for d in applied}
     failed = {f["id"] for f in failures if f.get("id") in ids and f["kind"] in _CONTENT_FAILURES}
+    reworded = set(job.get("reworded") or ())
     try:
         change = subject.change_set()
         before = {rel: subject.pre_bytes(rel) for rel in subject.allowed}
         after = {rel: subject.post_bytes(rel) for rel in subject.allowed}
     except Unusable:
         change = before = after = None
-    entries = {d.get('id'): d for d in decisions}
+    entries = {d.get("id"): d for d in applied}
     file_of = {i: subject.application_file(row, entries.get(i, {})) for i, row in by_id.items()}
-    notest_code = {d.get("id") for d in decisions if d.get("taken") is True and d.get("noTest")
+    notest_code = {d.get("id") for d in applied if d.get("noTest")
                    and file_of.get(d.get("id")) and is_code_path(file_of[d["id"]])}
-    fold_units = {d.get("id") for d in decisions if d.get("taken") is True and d.get("source") in ("fold", "ruling")}
+    sources = {d.get("id"): d.get("source") or "finding" for d in applied}
+    sources.update({i: "adapted" for i in reworded})
+    fold_units = {i for i, source in sources.items() if source in ("fold", "ruling")} | reworded
     units = sorted((fold_units | notest_code | failed) & ids)
     anchors = {row.get("file") for row in mine if row["id"] in units and row.get("file")}
     mandates = sorted({key for row in mine if row["id"] in units or row.get("file") in anchors
                        for key in _mandates_of(row.get("agent"))})
-    sources = {d.get("id"): d.get("source") for d in decisions}
     facts, unaccounted, per_file, measures, per_mandate = [], [], {}, {}, {}
     if change is not None:
         for rel in [p for p in change if p in subject.allowed and not is_test_path(p)]:
@@ -1123,9 +1092,8 @@ def next_round(job, mine, failures):
                 reasons.append("unaccounted")
             for i, rel_of in file_of.items():
                 if rel_of == rel:
-                    d = next((x for x in decisions if x.get("id") == i), {})
-                    if d.get("taken") is True and d.get("source") in ("fold", "adapted", "ruling"):
-                        reasons.append(f"{d['source']}:{i}")
+                    if i in taken and sources.get(i) in ("fold", "adapted", "ruling"):
+                        reasons.append(f"{sources[i]}:{i}")
                     if i in failed:
                         reasons.append(f"check:{i}")
                     if i in notest_code:
@@ -1166,7 +1134,7 @@ def _expanded_job(job, views):
     if not isinstance(digest, dict):
         return copy
     expanded = dict(digest)
-    for key in ('applied', 'deferred', 'decisions', 'verdicts', 'mechanicalChecks'):
+    for key in ('applied', 'deferred'):
         entries = digest.get(key)
         if isinstance(entries, list):
             expanded[key] = []
@@ -1235,15 +1203,15 @@ def run(findings, jobs, out, *, independent=None, original=None):
         state.update(check_job(job, mine, independent, failures))
         rounds.append(next_round(job, mine, failures))
     dispositions = []
-    decisions = {entry['id']: entry for job in jobs if isinstance(job.get('digestValue'), dict)
-                 for entry in job['digestValue'].get('decisions') or []
-                 if isinstance(entry, dict) and isinstance(entry.get('id'), str)}
+    entries = {entry['id']: entry for job in jobs if isinstance(job.get('digestValue'), dict)
+               for entry in job['digestValue'].get('applied') or []
+               if isinstance(entry, dict) and isinstance(entry.get('id'), str)}
     for row in rows:
         disposition, taken = state[row["id"]]
         subject = subjects[routed[row["id"]]] if row["id"] in routed else None
         dispositions.append({"id": row['id'], "viewId": by_source.get(row['id']),
                              "subject": subject.root_text if subject else None,
-                             "file": subject.application_file(row, decisions.get(row['id'], {})) if subject else None,
+                             "file": subject.application_file(row, entries.get(row['id'], {})) if subject else None,
                              "disposition": disposition, "taken": taken,
                              "verdict": independent.get(row['id'])})
     return {"status": "fail" if failures else "pass", "failures": failures,

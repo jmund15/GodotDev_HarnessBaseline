@@ -1125,17 +1125,13 @@ log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' received
 const DIGEST_SCHEMA = {
   type: 'object', additionalProperties: true,
   properties: {
-    applied: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, change: { type: 'string', description: 'what changed and where, one line' } }, required: ['id', 'change'] } },
-    deferred: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, class: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'reason'] } },
-    decisions: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { id: { type: 'string' }, taken: { type: 'boolean' }, source: { type: 'string', enum: ['finding', 'adapted', 'fold', 'ruling'], description: 'taken decisions: finding when the subject carries the fix or option the finding proposed verbatim, adapted when it carries reviewers fixes merged or reworded with no design of the fold, fold when the fold wrote its own design' }, why: { type: 'string' }, noTest: { type: 'string', description: 'the reason a change to a code path needs no test' } }, required: ['id', 'taken', 'why'] } },
-    verdicts: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { id: { type: 'string' }, refuting: { type: 'boolean' }, verdict: { type: 'string', enum: VERDICTS } }, required: ['id', 'refuting', 'verdict'] } },
-    verdictPath: { type: 'string' },
+    applied: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, change: { type: 'string', description: 'what changed and where, one line' }, source: { type: 'string', enum: ['finding', 'adapted', 'fold', 'ruling'], description: 'finding when the subject carries the fix or option the finding proposed verbatim, adapted when it carries reviewers fixes merged or reworded with no design of the fold, fold when the fold wrote its own design, ruling for a ruled id whose prompt-given ruling is not one of the finding options' }, file: { type: 'string', description: 'the subject-relative file of a fileless application over several subject files' }, noTest: { type: 'string', description: 'the reason a change to a code path needs no test' } }, required: ['id', 'change'] } },
+    deferred: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, class: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'class', 'reason'] } },
     designDelta: { type: 'array', items: { type: 'string' }, description: 'each changed element, read from the diff against the snapshot' },
     changedPaths: { type: 'array', items: { type: 'string' }, description: 'every path created, edited, moved or deleted, relative to the subject root' },
     commits: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { sha: { type: 'string' }, ids: { type: 'array', items: { type: 'string' } }, kind: { type: 'string', enum: ['test', 'fix'] } }, required: ['sha', 'ids', 'kind'] }, description: 'rev subjects only, in commit order' },
-    mechanicalChecks: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, oldAbsent: { type: 'boolean' }, newPresent: { type: 'boolean' } }, required: ['id', 'oldAbsent', 'newPresent'] } },
   },
-  required: ['applied', 'deferred', 'decisions', 'verdicts', 'verdictPath', 'designDelta', 'changedPaths', 'mechanicalChecks'],
+  required: ['applied', 'deferred', 'designDelta', 'changedPaths'],
 }
 const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, if ' + promptPath + '.amend.md exists, read it; it overrides the brief. Name what you applied.'
 const authorRef = (label, model, writes, promptPath) => {
@@ -1190,10 +1186,9 @@ const foldSubject = async (job, jobFinal) => {
     'Verdicts file: ' + FOLD_FILES.verdicts,
     'Digest file: ' + FOLD_FILES.digest,
     'Prompt file: ' + FOLD_FILES.promptPath,
-    'Write the CONSOLIDATED FINDINGS JSON array exactly to the Findings file before checking quotes. Run `' + cdRootPrefix(A) + 'python3 .claude/tools/verify_claims.py --findings ' + FOLD_FILES.findings + ' --out ' + FOLD_FILES.verdicts + '`. Read the verdicts file and derive each digest verdict from its complete claims; never self-report VERIFIED when the checker did not run or an evidence item failed. Return verdictPath: ' + FOLD_FILES.verdicts + '.',
+    'Write the CONSOLIDATED FINDINGS JSON array exactly to the Findings file. Run `' + cdRootPrefix(A) + 'python3 .claude/tools/verify_claims.py --findings ' + FOLD_FILES.findings + ' --out ' + FOLD_FILES.verdicts + '` and read the verdicts file (template steps 1 and 5).',
     'Read each cited source and decide whether it supports the finding (template step 3). A refuting finding with no evidence is deferred, never applied.',
-    'Apply each supported FIX edit and each supported resolved PLAN (question null) from its options[0]. Hold exactly the cases step 4 of the template lists, and name the hold class in deferred.',
-    'Return a verdicts row {id, refuting, verdict} for each required finding. Return every input id exactly once across applied and deferred — the coverage check reconciles on that accounting.',
+    'Apply each supported FIX edit and each PLAN\'s options[0]. Hold exactly the cases step 4 of the template lists and a finding whose evidence is not VERIFIED (`unverified`), and name the hold class in deferred.',
     '',
     findingsBlock,
   ].filter(l => l !== null).join('\n') + authorRef(job.label, FOLD_PIN.model, [
@@ -1204,74 +1199,8 @@ const foldSubject = async (job, jobFinal) => {
   const listOk = (list, field) => Array.isArray(list) && list.every(e => isRecord(e) && typeof e.id === 'string' && typeof e[field] === 'string')
   if (!isRecord(digest)) {
     problems.push({ kind: 'fold-no-return', detail: 'the fold stage returned no schema object; read ' + job.subject.files.join(', ') + ' against the snapshot ' + job.subject.snapshot + ' before trusting either.' })
-  } else if (!listOk(digest.applied, 'change') || !listOk(digest.deferred, 'reason') || !Array.isArray(digest.decisions) || !Array.isArray(digest.verdicts) || typeof digest.verdictPath !== 'string' || !Array.isArray(digest.mechanicalChecks) || !Array.isArray(digest.changedPaths)) {
-    problems.push({ kind: 'fold-invalid-shape', detail: 'the digest lacks applied/deferred/decisions/verdicts/verdictPath/mechanicalChecks/changedPaths in schema shape.' })
-  } else {
-    if (digest.verdictPath !== FOLD_FILES.verdicts) {
-      problems.push({ kind: 'fold-verdict-path', detail: 'digest verdictPath does not name the checker output: ' + FOLD_FILES.verdicts })
-    }
-    const listed = [...digest.applied, ...digest.deferred].map(e => e.id)
-    const unknown = listed.filter(id => !byId.has(id))
-    const repeated = listed.filter((id, i) => listed.indexOf(id) !== i)
-    const absent = ids.filter(id => !listed.includes(id))
-    if (unknown.length || repeated.length || absent.length) {
-      problems.push({ kind: 'fold-id-coverage', detail: 'every input id must appear once across applied and deferred (the coverage check reconciles on that accounting); unknown: ' + (unknown.join(', ') || '-') + '; repeated: ' + ([...new Set(repeated)].join(', ') || '-') + '; absent: ' + (absent.join(', ') || '-') + '.' })
-    }
-    const decisionById = new Map()
-    let invalidDecision = null
-    for (const decision of digest.decisions) {
-      if (!isRecord(decision) || !byId.has(decision.id) || decisionById.has(decision.id)
-        || typeof decision.taken !== 'boolean' || typeof decision.why !== 'string' || !decision.why.trim()
-        || (decision.taken && !['finding', 'adapted', 'fold', 'ruling'].includes(decision.source))) {
-        invalidDecision = 'decision ' + JSON.stringify(decision) + ' is malformed, unknown or repeated'
-        break
-      }
-      decisionById.set(decision.id, decision)
-    }
-    const missingDecisions = ids.filter(id => !decisionById.has(id))
-    const mismatchedDecisions = ids.filter(id => decisionById.has(id)
-      && decisionById.get(id).taken !== digest.applied.some(row => row.id === id))
-    if (invalidDecision || missingDecisions.length || mismatchedDecisions.length) {
-      problems.push({ kind: 'fold-decision-coverage', detail: invalidDecision
-        || 'every input id needs one decision whose taken value matches applied/deferred; missing: '
-        + (missingDecisions.join(', ') || '-') + '; mismatched: ' + (mismatchedDecisions.join(', ') || '-') + '.' })
-    }
-    const requiredVerdicts = jobFinal.filter(f => f.refuting === true || (Array.isArray(f.evidence) && f.evidence.length)).map(f => f.id)
-    const verdictOf = new Map()
-    let invalidVerdict = null
-    for (const v of digest.verdicts) {
-      if (!isRecord(v) || !byId.has(v.id) || verdictOf.has(v.id) || typeof v.refuting !== 'boolean' || !VERDICTS.includes(v.verdict)) {
-        invalidVerdict = 'verdict entry ' + JSON.stringify(v) + ' is malformed, unknown or repeated'
-        break
-      }
-      verdictOf.set(v.id, v)
-    }
-    const missingVerdicts = requiredVerdicts.filter(id => !verdictOf.has(id))
-    if (invalidVerdict || missingVerdicts.length) {
-      problems.push({ kind: 'fold-verdict-coverage', detail: invalidVerdict || 'missing verdicts for ' + missingVerdicts.join(', ') + '.' })
-    }
-    const appliedInvalid = digest.applied.map(e => e.id).filter(id => {
-      const f = byId.get(id)
-      const v = verdictOf.get(id)
-      const hasEvidence = Array.isArray(f && f.evidence) && f.evidence.length > 0
-      return (hasEvidence && (!v || v.verdict !== 'VERIFIED'))
-        || (f && f.refuting === true && (!v || v.verdict !== 'VERIFIED'))
-        || (v && v.refuting && !hasEvidence)
-    })
-    if (appliedInvalid.length) {
-      problems.push({ kind: 'fold-applied-unverified', detail: 'applied id(s) carry evidence without a VERIFIED verdict, are seat-marked refuting without VERIFIED, or are judged refuting with no evidence: ' + appliedInvalid.join(', ') + '.' })
-    }
-    const checkOf = new Map(digest.mechanicalChecks.filter(isRecord).map(c => [c.id, c]))
-    const failedChecks = digest.applied.map(e => e.id).filter(id => {
-      const f = byId.get(id)
-      if (!f || typeof f.old !== 'string' || !f.old || typeof f.new !== 'string' || !f.new) return false
-      const c = checkOf.get(id)
-      const own = decisionById.has(id) && ['adapted', 'fold', 'ruling'].includes(decisionById.get(id).source)
-      return !c || c.oldAbsent !== true || (c.newPresent !== true && !own)
-    })
-    if (failedChecks.length) {
-      problems.push({ kind: 'fold-mechanical-check', detail: 'applied id(s) whose old text is still present, whose finding-sourced new text is absent, or with no check reported: ' + failedChecks.join(', ') + '.' })
-    }
+  } else if (!listOk(digest.applied, 'change') || !listOk(digest.deferred, 'reason') || !Array.isArray(digest.changedPaths)) {
+    problems.push({ kind: 'fold-invalid-shape', detail: 'the digest lacks applied/deferred/changedPaths in schema shape.' })
   }
   problems.forEach(p => flags.push(FOLD_PIN.joint ? Object.assign(p, { subject: job.subject.files.join(', ') }) : p))
   const appliedIds = isRecord(digest) && Array.isArray(digest.applied) ? digest.applied.filter(isRecord).map(e => e.id) : []
@@ -1282,12 +1211,11 @@ const foldSubject = async (job, jobFinal) => {
     status: problems.length ? 'invalid' : 'provisional',
     subject: job.subject,
     files: FOLD_FILES,
-    verdicts: isRecord(digest) && Array.isArray(digest.verdicts) ? digest.verdicts : [],
     digest: isRecord(digest) ? Object.assign({}, digest, { appliedWithAlternative }) : null,
   }
 }
-// The engine cannot read disk, so a digest that passes the checks above is provisional: only
-// tools/post_check.py re-derives verdicts, old/new checks and the file diffs from the snapshot and the transcript.
+// The engine cannot read disk and checks only the digest's shape, so a digest is provisional: only
+// tools/post_check.py computes verdicts, id coverage, old/new checks and the file diffs from the snapshot and the transcript.
 let FOLD_RESULT = null
 if (FOLD_PIN) {
   const routeKey = (p) => {
@@ -1508,7 +1436,7 @@ if (RESULT_MODE === 'bounded') {
       designDelta: (foldDigest.designDelta || []).map(d => clipText(d, 'fold', 160)),
       appliedWithAlternative: (foldDigest.appliedWithAlternative || []).map(e => ({ id: e.id, applied: clipText(e.applied, 'fold', 160), alternative: clipText(e.alternative, 'fold', 160) })),
       changedPaths: foldDigest.changedPaths || [],
-      refutingIds: (r.verdicts || []).filter(v => v.refuting).map(v => v.id + ':' + v.verdict),
+      refutingIds: (foldDigest.deferred || []).filter(e => e.class === 'refutation').map(e => e.id),
     } : {})
   }
   const boundedFold = !FOLD_RESULT ? null
