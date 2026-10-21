@@ -106,6 +106,20 @@ def test_strict_exits_0_from_another_cwd() -> None:
         _remove(tmp)
 
 
+def test_planted_ignored_file_under_template_changes_no_strict_result() -> None:
+    # `.search-index/` is gitignored at the repo root, so the walk must never see a file in it.
+    ignored_dir = ROOT / "template" / ".claude" / ".search-index"
+    assert not ignored_dir.exists(), "planted-file fixture directory already exists"
+    try:
+        ignored_dir.mkdir()
+        (ignored_dir / ("s10_proof_" + "ignored_marker.txt")).write_text(
+            "ignored fixture content\n", encoding="utf-8", newline="\n")
+        result = _run(ROOT)
+        assert result.returncode == 0, result.stdout + result.stderr
+    finally:
+        _remove(ignored_dir)
+
+
 def test_identity_scan_flags_a_planted_leak() -> None:
     """Wires an isolated fixture git repo through the real check_identity() —
     the real worktree's git index and template/ tree are never touched."""
@@ -250,6 +264,7 @@ def test_secret_scan_flags_a_planted_secret_shape() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="audit_baseline_secret_"))
     original_template = audit.TEMPLATE
     try:
+        _git(tmp, "init", "-q")
         (tmp / ".claude").mkdir(parents=True)
         (tmp / ".claude" / "notes.md").write_text(f"key = {fake_key}\n",
                                                     encoding="utf-8", newline="\n")
@@ -295,6 +310,7 @@ def _surface_findings(files: dict[str, tuple[str, str]], check: str) -> list[tup
     tmp = Path(tempfile.mkdtemp(prefix="audit_baseline_surface_"))
     original_template = audit.TEMPLATE
     try:
+        _git(tmp, "init", "-q")
         for rel, (_layer, text) in files.items():
             target = tmp / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -374,6 +390,7 @@ def main() -> int:
         test_layer_closure_flags_a_pure_file_citing_a_godot_file,
         test_strict_exits_0_from_repo_root,
         test_strict_exits_0_from_another_cwd,
+        test_planted_ignored_file_under_template_changes_no_strict_result,
         test_identity_scan_flags_a_planted_leak,
         test_scanner_flags_every_identity_form_in_the_corpus,
         test_secret_scan_flags_a_planted_secret_shape,

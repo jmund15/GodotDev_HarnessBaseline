@@ -13,13 +13,18 @@ sys.path[:0] = [str(HERE), str(HERE.parent / "tools"), str(HERE.parent / "hooks"
 import workflow_provider_guard as guard
 from _citer_boundary_cases import cases, stage_cases
 
+# A job keyed to a lens that declares `citers: plan` is a citer only where the coding-layer plan-check registry is installed.
+CITER_REGISTRY_SHIPPED = (HERE.parent / "commands" / "agents" / "plan_check_agents.md").is_file()
+CITER_LABEL = "declared citer non-review"
+
 
 def run():
     failures = 0
     with tempfile.TemporaryDirectory(prefix="native_citers_") as root:
         for engine in ("dispatch", "review_fanout"):
             for blocking in (False, True):
-                rows = [(label, job, None, bad) for label, job, bad in cases(root)] + stage_cases(root)
+                rows = [(label, job, None, bad and (CITER_REGISTRY_SHIPPED or label != CITER_LABEL))
+                        for label, job, bad in cases(root)] + stage_cases(root)
                 for label, job, stage, bad in rows:
                     if engine == "review_fanout" and job.get("shape") != "review":
                         continue

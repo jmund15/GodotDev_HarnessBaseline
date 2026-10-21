@@ -4,7 +4,6 @@ description: "An opt-out annotation makes a broken check indistinguishable from 
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-18T05:55:09.771Z
 ---
 
 Marking a check "deliberately excluded" fully explains its silence. From then on a check that

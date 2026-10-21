@@ -4,7 +4,6 @@ description: "A large, deeply-nested, escape-dense Workflow `args` payload makes
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: c85a2c2a-bc96-40bf-b8ea-6d889e7de3a0
 ---
 
 # Workflow `args` generation-fidelity failure

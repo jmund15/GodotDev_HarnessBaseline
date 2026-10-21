@@ -967,6 +967,30 @@ def _schedule_cases(live):
     return failed, len(cases)
 
 
+def _suffixed_vocabulary_resolves(live):
+    """Every id `workflow_provider_guard.transport_injection` injects as `args.__transport.ids` (the one builder of
+    that vocabulary, never a copied list) resolves to a registry row, and so does every row's suffixed id and alias."""
+    import json
+    hooks = os.path.join(HERE, "..", "hooks")
+    sys.path.insert(0, hooks)
+    wpg_spec = importlib.util.spec_from_file_location("wpg", os.path.join(hooks, "workflow_provider_guard.py"))
+    wpg = importlib.util.module_from_spec(wpg_spec)
+    wpg_spec.loader.exec_module(wpg)
+    payload = {"tool_name": "Workflow", "tool_input": {"scriptPath": ".claude/workflows/x.js", "args": {"jobs": []}}}
+    names = []
+    for transport in sorted({m["transport"] for m in live["models"]}):
+        injected = wpg.transport_injection(payload, transport, live)
+        args = injected["args"]
+        args = json.loads(args) if isinstance(args, str) else args
+        names += args["__transport"]["ids"]
+    for m in live["models"]:
+        if m.get("contextSuffix"):
+            names += [m["id"] + m["contextSuffix"], m["alias"] + m["contextSuffix"]]
+    if not any(n.endswith("[1m]") for n in names):
+        return False  # the vocabulary must actually carry a suffixed pin, or the case proves nothing
+    return all(mr.resolve(n, live) is not None for n in names)
+
+
 def _identity_cases(live):
     """Model identity (S1): versioned aliases, dated alias history, record resolution, lifecycle.
 
@@ -1135,6 +1159,10 @@ def _identity_cases(live):
         # for the family, and `measuredVersion` still names that predecessor. What moved is the
         # rung's home -- `see-ladder`, because the ladder's sol/luna cell owns it -- so the case
         # asserts the transferred claim, not the retired `evidence: measured` spelling of it.
+        ("every id the guard's suffixed vocabulary injects, and every suffixed row, resolves to its row",
+         lambda: _suffixed_vocabulary_resolves(live)),
+        ("an unknown name with a context suffix still raises",
+         lambda: raises(lambda: mr.resolve("no-such-model-5-5[1m]", live))),
         ("the current luna/sol rows take their family's roles and its measured predecessor's cells",
          lambda: mr.resolve("luna", live)["roles"] == ["fanout", "scout", "executor"]
                  and mr.resolve("sol", live)["roles"] == ["architect", "executor", "fanout"]

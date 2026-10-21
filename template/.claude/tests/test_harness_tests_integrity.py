@@ -328,6 +328,23 @@ class HarnessIntegrityTests(unittest.TestCase):
                 self.assertEqual(exited.exception.code, 2)
                 run.assert_not_called()
 
+    def test_head_is_none_before_the_first_commit_and_raises_outside_a_repo(self):
+        import subprocess
+        with tempfile.TemporaryDirectory(prefix='harness-head-') as tmp:
+            repo, outside = Path(tmp) / 'repo', Path(tmp) / 'outside'
+            repo.mkdir()
+            outside.mkdir()
+            git = lambda *a: subprocess.run(['git', '-C', str(repo), *a], check=True, capture_output=True)
+            git('init', '-q')
+            self.assertIsNone(runner._head(str(repo)))
+            (repo / 'f.txt').write_text('x\n', encoding='utf-8')
+            git('add', 'f.txt')
+            git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'first')
+            self.assertRegex(runner._head(str(repo)), r'^[0-9a-f]{40}$')
+            with patch.dict(runner.os.environ, {'GIT_CEILING_DIRECTORIES': str(Path(tmp))}):
+                with self.assertRaises(RuntimeError):
+                    runner._head(str(outside))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

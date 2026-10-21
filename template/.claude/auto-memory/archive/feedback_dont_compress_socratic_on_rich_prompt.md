@@ -2,7 +2,6 @@
 name: Don't compress Socratic when prompt is rich
 description: Rich front-loaded context (brainstorm prompt, /plan_part briefing, design doc) is starter material — NOT a license to skip a workflow's validation steps (Socratic phase, /explore, the plan-validation pass). Run them in full with personal verification.
 type: feedback
-modified: 2026-08-06T22:23:17.016Z
 ---
 When a brainstorm prompt (e.g. `/architecture_brainstorm`) front-loads candidate patterns, class kinds, wiring questions, or named options, do NOT collapse the Socratic phase into a "user already pre-loaded most of this" shortcut. Run the full Socratic — every fork asked — even if questions feel partially answered by the prompt.
 

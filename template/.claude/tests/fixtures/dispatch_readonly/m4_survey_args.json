@@ -1,0 +1,227 @@
+{
+ "source": "workflows/wf_7cba1aca-c5d.json args of the m4 survey dispatch, trimmed to job m4-FA",
+ "args": {
+  "route": "parallel",
+  "jobs": [
+   {
+    "label": "m4-FA",
+    "promptPath": "p.md",
+    "role": "fanout",
+    "tier": "fanout",
+    "model": "claude-sonnet-5-5[1m]",
+    "effort": "high",
+    "transport": "anthropic",
+    "currency": "plan-quota",
+    "agentType": "general-purpose",
+    "shape": "survey",
+    "tools": {
+     "add": [
+      "Bash"
+     ]
+    }
+   }
+  ],
+  "checker": {
+   "model": "claude-haiku-5-5",
+   "effort": "medium"
+  },
+  "__rails": {
+   "claude-opus-5-5": "condensed",
+   "opus": "condensed",
+   "claude-opus-5": "condensed",
+   "opus5": "condensed",
+   "claude-sonnet-5-5[1m]": "detailed",
+   "sonnet[1m]": "detailed",
+   "claude-sonnet-5": "detailed",
+   "sonnet5": "detailed",
+   "claude-haiku-5-5": "detailed",
+   "haiku": "detailed",
+   "claude-haiku-4-5-20251001": "detailed",
+   "haiku45": "detailed",
+   "claude-fable-5-1": "minimal",
+   "fable": "minimal",
+   "claude-opus-4-8": "detailed",
+   "opus48": "detailed",
+   "claude-fable-5": "detailed",
+   "fable5": "detailed"
+  },
+  "__returns": {},
+  "__toolProfiles": {
+   "m4-FA": {
+    "shape": "survey",
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep",
+     "Bash"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [
+     "Bash"
+    ],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "agentType": "lane-survey",
+    "tier": "fanout",
+    "effectiveMcp": "unknown/inherited"
+   }
+  },
+  "__coverage": {
+   "m4-FA": {
+    "covered": [],
+    "needs": [
+     "Bash"
+    ],
+    "unread": []
+   }
+  },
+  "__toolProfileDefaults": {
+   "any": {
+    "shape": "any",
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "effectiveMcp": "unknown/inherited"
+   },
+   "author": {
+    "shape": "author",
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep",
+     "Edit",
+     "Write",
+     "Bash"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "agentType": "lane-author",
+    "tier": "executor",
+    "effectiveMcp": "unknown/inherited"
+   },
+   "review": {
+    "shape": "review",
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "agentType": "lane-review",
+    "tier": "executor",
+    "effectiveMcp": "unknown/inherited"
+   },
+   "survey": {
+    "shape": "survey",
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "agentType": "lane-survey",
+    "tier": "fanout",
+    "effectiveMcp": "unknown/inherited"
+   },
+   "verify": {
+    "shape": "verify",
+    "builtins": [
+     "Read",
+     "Bash"
+    ],
+    "mcpServers": [],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "mcpRegistrations": {},
+    "agentType": "lane-verify",
+    "tier": "fanout",
+    "effectiveMcp": "unknown/inherited"
+   }
+  },
+  "__transport": {
+   "name": "anthropic",
+   "ids": [
+    "claude-fable-5-1",
+    "claude-haiku-4-5-20251001",
+    "claude-haiku-5-5",
+    "claude-opus-5",
+    "claude-opus-5-5",
+    "claude-sonnet-5",
+    "claude-sonnet-5-5[1m]",
+    "fable",
+    "haiku",
+    "opus",
+    "sonnet[1m]"
+   ],
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ]
+  },
+  "__shapeTiers": {
+   "survey": "fanout",
+   "review": "executor",
+   "author": "executor",
+   "verify": "fanout"
+  }
+ }
+}

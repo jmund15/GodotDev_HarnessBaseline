@@ -4,7 +4,6 @@ description: A Part is plan-pending only when the architecture behind its interf
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-05T17:41:05.452Z
 ---
 
 # Plan-pending requires impl-architecture, not just a seam

@@ -4,8 +4,6 @@ description: "orchestration skill (and other role-based mechanism docs) must spe
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: c2a2d3b7-b66e-4590-9e56-41338781f9d4
-  modified: 2026-08-20T05:44:04.329Z
 ---
 
 Never name a specific model (Sonnet, Opus, etc.) or cite model-specific benchmark evidence inside `skills/orchestration/SKILL.md` (or any other mechanism-layer doc). That skill is the *dispatch mechanism* layer and must speak only in `role` names (default fan-out, validation, executor, orchestrator) — model *attributes*, including any stage-shape effort split and the evidence behind it, live in exactly one place: the ladder in `.claude/reference/model_ladder_evidence.md` §Role guidance.

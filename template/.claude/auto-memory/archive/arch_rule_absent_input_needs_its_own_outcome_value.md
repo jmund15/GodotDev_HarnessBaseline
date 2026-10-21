@@ -4,8 +4,6 @@ description: A reducer over rows destroys the never-measured/failed distinction 
 metadata: 
   node_type: memory
   type: project
-  originSessionId: ebff4f3f-f4b7-4e00-aef7-77c616d4e878
-  modified: 2026-08-19T04:49:15.556Z
 ---
 
 Any code that collapses a set of rows to a scalar — a pass/fail walker, a percentage, a re-derive

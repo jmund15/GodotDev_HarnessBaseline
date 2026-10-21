@@ -2,8 +2,6 @@
 name: Doc revision discipline — rewrite in place, don't append revision footers
 description: When correcting a saved doc, rewrite the body so it reads as one continuous current account — no revision callouts, banners, superseded markers or addenda. Change notes go in the commit or session, or in the doc only when its type keeps a log (roadmap revision log, plan decision record).
 type: feedback
-originSessionId: 2026-04-30
-modified: 2026-09-15T20:25:18.331Z
 ---
 When correcting a saved doc (design doc, plan, retrospective, README, etc.), rewrite the affected sections in the main body. Do NOT use append-mode to add a "v1.1 revision" footer that leaves the wrong recommendation at the top of the doc.
 

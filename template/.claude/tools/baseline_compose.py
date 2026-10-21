@@ -2,7 +2,8 @@
 """
 baseline_compose.py — the merge rules for every `composed` lock row (§9).
 
-`baseline_sync.py`'s `compose` operation is the only caller of the merge functions; `migrate` calls
+`baseline_sync.py`'s `compose` operation is the only caller of the merge functions (`compose --template`
+renders the baseline template's own shipped copies, with no lock and every layer adopted); `migrate` calls
 `derive_project_settings`, their inverse, once per schema-1 upgrade. `compose` holds the lock mutex, reads
 each `composed` row's `inputs`, dispatches to one function here per row shape, writes the
 result with LF bytes, and records `hash`/`inputs` in one mutex-held lock write. This module

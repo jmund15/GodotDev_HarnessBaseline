@@ -108,13 +108,16 @@ def mandate_checks():
     text = (
         "# Review agents\n\nShared.\n\n## Agent Templates\n\n"
         "### xx-alpha (alpha)\n\nmandates: cq.C, cq.D , parity\nadmission: triggered, conditional\n"
-        "preload: rules/design_litmus.md\nkfm: index\nciters: plan\n\n```\nalpha prompt\n```\n\n"
+        "preload: rules/fixture_doctrine.md\nkfm: index\nciters: plan\n\n```\nalpha prompt\n```\n\n"
         "### xx-plain (plain)\n\n```\nplain prompt\nmandates: not.a.declaration\nkfm: index\nciters: plan\n```\n"
     )
-    saved = (lens.AGENTS, lens.REGISTRIES)
+    saved = (lens.AGENTS, lens.REGISTRIES, lens.DOCTRINE_ROOT)
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "review_agents.md").write_text(text, encoding="utf-8")
+        (Path(tmp) / "rules").mkdir()
+        (Path(tmp) / "rules" / "fixture_doctrine.md").write_text("# Fixture doctrine\n", encoding="utf-8")
         lens.AGENTS = Path(tmp)
+        lens.DOCTRINE_ROOT = Path(tmp)
         lens.REGISTRIES = {"review": ("review_agents.md", "xx-")}
         try:
             alpha, plain = lens.parse("review")[1]
@@ -140,7 +143,7 @@ def mandate_checks():
             code, out, _ = run_cli(lens.cmd_index, ["review"])
             check("index lists each lens's keys", code == 0 and "cq.C,cq.D,parity" in out, out)
         finally:
-            lens.AGENTS, lens.REGISTRIES = saved
+            lens.AGENTS, lens.REGISTRIES, lens.DOCTRINE_ROOT = saved
 
 def registry_checks():
     """A key resolves to the registry with the longest matching prefix; an empty prefix takes only the rest."""
@@ -210,6 +213,88 @@ def rule_hash_checks():
         check("a key outside the catalog has no hash", review_ledger.rule_hash("nope", root, catalog) is None)
 
 
+def companion_checks():
+    """A project-owned `<registry>.project.md` adds lenses to a shipped registry at read time."""
+    shipped_text = (
+        "# Review agents\n\nShared preamble line.\n\n## Agent Templates\n\n"
+        "### code-reviewer (code)\n\n```\nshipped prompt\n```\n"
+    )
+    companion_text = (
+        "---\ndisable-model-invocation: true\n---\n\n# Project lenses\n\nNot a preamble.\n\n"
+        "### proj-extra (extra) -- project lens\n\nmandates: cq.C\n\n```\nproject prompt\n```\n"
+    )
+    saved = (lens.AGENTS, lens.REGISTRIES)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        shipped, comp = root / "review_agents.md", root / "review_agents.project.md"
+        shipped.write_text(shipped_text, encoding="utf-8")
+        lens.AGENTS, lens.REGISTRIES = root, {"review": ("review_agents.md", "")}
+        try:
+            code, out, err = run_cli(lens.cmd_get, ["code-reviewer"], True)
+            check("companion: a shipped lens resolves with no companion present",
+                  code == 0 and "shipped prompt" in out, (code, err))
+            code, out, _ = run_cli(lens.cmd_index, ["review"])
+            check("companion: the index with no companion lists only shipped lenses",
+                  "code-reviewer" in out and "proj-extra" not in out and "1 lenses" in out, out)
+
+            comp.write_text(companion_text, encoding="utf-8")
+            code, out, err = run_cli(lens.cmd_get, ["proj-extra"], True)
+            check("companion: get resolves a lens only the companion defines", code == 0 and "project prompt" in out,
+                  (code, err))
+            check("companion: --shared prepends the shipped registry preamble, not companion prose",
+                  "Shared preamble line." in out and "Not a preamble." not in out, out[:300])
+            code, out, _ = run_cli(lens.cmd_get, ["code-reviewer"], False)
+            check("companion: the shipped lens still resolves beside a companion",
+                  code == 0 and "shipped prompt" in out and "project prompt" not in out, out)
+            code, out, _ = run_cli(lens.cmd_index, ["review"])
+            check("companion: the index lists shipped and companion lenses with the merged count",
+                  "code-reviewer" in out and "proj-extra" in out and "2 lenses" in out and "[cq.C]" in out, out)
+            parsed = {l.key: l for l in lens.parse("review")[1]}
+            check("companion: a companion lens takes its registry's tier and mandates",
+                  parsed["proj-extra"].tier == "executor" and parsed["proj-extra"].mandates == ["cq.C"],
+                  (parsed["proj-extra"].tier, parsed["proj-extra"].mandates))
+            check("companion: seat_tier resolves a companion key", lens.seat_tier("proj-extra") == "executor",
+                  lens.seat_tier("proj-extra"))
+
+            comp.write_text(companion_text + "\n### code-reviewer (dup)\n\n```\nfork\n```\n", encoding="utf-8")
+            code, out, err = run_cli(lens.cmd_get, ["proj-extra"], False)
+            check("companion: a key the shipped registry already defines is refused, naming both files",
+                  code == 2 and "code-reviewer" in err and str(comp) in err and str(shipped) in err, (code, err))
+            code, _, err = run_cli(lens.cmd_index, ["review"])
+            check("companion: the duplicate also fails index, which doctor runs", code == 2, (code, err))
+
+            comp.write_text(companion_text + "\n### proj-extra (again)\n\n```\nagain\n```\n", encoding="utf-8")
+            code, _, err = run_cli(lens.cmd_get, ["proj-extra"], False)
+            check("companion: a key defined twice inside the companion is refused",
+                  code == 2 and "proj-extra" in err and str(comp) in err, (code, err))
+
+            comp.write_text("# Project lenses\n\nNo lens headings here.\n", encoding="utf-8")
+            code, _, err = run_cli(lens.cmd_get, ["code-reviewer"], False)
+            check("companion: a companion defining no lens fails loudly with its path",
+                  code == 2 and str(comp) in err, (code, err))
+
+            comp.write_bytes(b"### proj-bad (x)\n\n\xff\xfe not utf-8\n")
+            code, _, err = run_cli(lens.cmd_get, ["code-reviewer"], False)
+            check("companion: an undecodable companion fails loudly with its path",
+                  code == 2 and str(comp) in err, (code, err))
+
+            lens.REGISTRIES = {"review": ("review_agents.md", "xx-")}
+            shipped.write_text(shipped_text.replace("### code-reviewer", "### xx-code-reviewer"), encoding="utf-8")
+            comp.write_text("### yy-stray (wrong prefix)\n\n```\nstray\n```\n\n### xx-ok (fine)\n\n```\nok\n```\n",
+                            encoding="utf-8")
+            code, _, err = run_cli(lens.cmd_get, ["xx-ok"], False)
+            check("companion: a lens heading outside the registry's key prefix fails loudly with path and line",
+                  code == 2 and str(comp) in err and "yy-stray" in err and ":1" in err, (code, err))
+
+            lens.REGISTRIES = {"review": ("review_agents.md", "")}
+            shipped.unlink()
+            comp.write_text(companion_text, encoding="utf-8")
+            check("companion: a companion without its shipped registry file is not read",
+                  "review" not in lens.shipped(), lens.shipped())
+        finally:
+            lens.AGENTS, lens.REGISTRIES = saved
+
+
 def main():
     registry = "review"
     filename, prefix = "review_agents.md", ""
@@ -237,6 +322,7 @@ def main():
     registry_checks()
     unshipped_registry_checks()
     rule_hash_checks()
+    companion_checks()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         return 1

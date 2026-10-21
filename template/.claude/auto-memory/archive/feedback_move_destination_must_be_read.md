@@ -4,7 +4,6 @@ description: "A content move has two ends — the source gets read, the destinat
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-20T05:59:18.210Z
 ---
 
 A move has two ends. The source gets read line by line; the destination gets described from memory — which is how a move recreates *inside* the destination the duplication it was removing from the source.

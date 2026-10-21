@@ -4,7 +4,6 @@ description: "A world-space constant that encodes an assumption about scene geom
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-08-18T01:22:17.857Z
 ---
 
 A constant that encodes an assumption about scene geometry — the walkable surface sits at y≈0, the origin plane is the floor, the arena fits in these bounds — is a coupling with no declared endpoint. Unit tests pass because they supply the same assumption; review passes because the constant reads as a tuning number. It breaks the moment a second variant of that geometry exists with a different value, and the break is a quiet mis-placement rather than an error.

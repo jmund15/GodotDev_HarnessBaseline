@@ -69,7 +69,8 @@
       "Skill(regression_gate)",
       "Skill(analyze_godot_logs)",
       "Skill(pr_test_checklist)",
-      "Skill(game_vision)"
+      "Skill(game_vision)",
+      "Skill(test_compact)"
     ],
     "deny": [
       "mcp__godot__create_scene",

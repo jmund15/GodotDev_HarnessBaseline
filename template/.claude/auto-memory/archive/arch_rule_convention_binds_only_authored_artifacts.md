@@ -4,7 +4,6 @@ description: "A convention enforced at the authoring surface (.tscn/.tres/attrib
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-08-18T01:22:10.944Z
 ---
 
 A project convention enforced at the authoring surface — a scene-file field, a resource field, an attribute on a declared type — binds only artifacts the project itself authors. Anything produced by a generator, a vendored addon, or a direct server/RID call has no authoring surface to carry the opt-in, so it is outside the convention **by construction**. No sweep of the authored files can reach it, and its failure mode is the inverse of the convention's designed one: nothing is missing from any file a reviewer reads, so the defect is silent and can survive the whole life of the feature.

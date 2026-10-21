@@ -383,6 +383,7 @@ with tempfile.TemporaryDirectory() as pd_home, tempfile.TemporaryDirectory() as 
 # delegate profile carries (orchestration §0). `nested_fanout_hits` derives the fan-out set from those
 # grants; `Task` reads as Agent. Planted commands keep the grammar cases hermetic; the
 # /pr_ready and /clean_pull cases read the live commands, whose grants are the contract under test.
+PR_READY_SHIPPED = os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "commands", "pr_ready.md"))
 CMD_ROOT = tempfile.mkdtemp(prefix="tp_cmds_")
 os.makedirs(os.path.join(CMD_ROOT, ".claude", "commands"))
 
@@ -448,7 +449,8 @@ check("a `run:<id>` key heading a ledger unit row is data, not a dispatch verb",
 check("...while the verb before a command path still dispatches", True,
       attempt(lambda: tp.nested_fanout_hit("Next, run .claude/commands/planted_wf.md.", CMD_ROOT)) is not None)
 _pr = str(attempt(lambda: refusal_for("Run /pr_ready over the branch.", "author")))
-check("Run /pr_ready under author is refused with the orchestration §0 text", True,
+check("Run /pr_ready under author is refused with the orchestration §0 text (only where the command is shipped)",
+      PR_READY_SHIPPED,
       "orchestration §0" in _pr and "every lens of a nested fan-out itself" in _pr)
 check("...and offers no delta or wider shape for Workflow/Agent", False, "Fix:" in _pr)
 _pull = str(attempt(lambda: refusal_for("Then run /clean_pull.", "review")))
@@ -461,7 +463,8 @@ check("a negated run after a /pr_ready mention passes", None,
 check("a negated run of /pr_ready passes", None,
       attempt(lambda: refusal_for("Never run /pr_ready yourself.", "author")))
 _neg_then_run = str(attempt(lambda: refusal_for("Run /pr_ready; do not skip it.", "author")))
-check("a run whose later clause is negated is still refused", True, "orchestration §0" in _neg_then_run)
+check("a run whose later clause is negated is still refused (only where /pr_ready is shipped)",
+      PR_READY_SHIPPED, "orchestration §0" in _neg_then_run)
 check("a blockquoted /pr_ready passes", None,
       attempt(lambda: refusal_for("> Run /pr_ready over the branch.", "author")))
 check("a fenced /pr_ready passes", None,
@@ -481,7 +484,7 @@ check("a noun 'a /pr_pipeline run records it' is no instruction to run it", [],
 check("a verb and a /explore mention in different sentences are no instruction", [],
       fanout_tools("use the smallest method that verifies the claims and retains their quotes. `/explore` "
                    "and the caller's validation pass downstream of the briefing remain required"))
-check("'Otherwise run /pr_ready now' is still refused", True,
+check("'Otherwise run /pr_ready now' is still refused (only where /pr_ready is shipped)", PR_READY_SHIPPED,
       "orchestration §0" in str(attempt(lambda: refusal_for(
           "Admit no mandate for the PR. Otherwise run `/pr_ready` now if it hasn't run.", "author"))))
 

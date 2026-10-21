@@ -7,7 +7,6 @@ metadata:
   tier: cold
   source: archive
   entity_type: TechnicalKnowledge
-  originSessionId: 34f04e8e-de64-46f0-bcc5-2758e6139a6f
 ---
 
 # Hook_Gotchas

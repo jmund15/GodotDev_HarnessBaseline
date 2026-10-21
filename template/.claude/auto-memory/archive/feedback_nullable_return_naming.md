@@ -4,7 +4,6 @@ description: "Method names communicate the contract — `Find*` / `TryGet*` for 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 3458cc73-6e07-455f-8d44-8d1251b9edee
 ---
 
 When authoring extension methods or helpers whose return type is nullable, prefer `Find*` prefix (or the `Try*` + out-param convention) over `Get*`. `Get*` reads as "guaranteed resolution"; a caller sees `bb.GetGraph()` and is statistically more likely to skip the null check than one seeing `bb.FindGraph()` / `bb.FindParentGraph()`.

@@ -1,0 +1,56 @@
+{
+  "route": "parallel",
+  "contextPath": "xcontext.md",
+  "jobs": [
+    {
+      "label": "m6-sync",
+      "role": "executor",
+      "tier": "executor",
+      "model": "claude-haiku-5-5",
+      "effort": "medium",
+      "transport": "anthropic",
+      "shape": "author",
+      "promptPath": "X_sync.md"
+    },
+    {
+      "label": "m6-lens",
+      "role": "executor",
+      "tier": "executor",
+      "model": "claude-sonnet-5-5[1m]",
+      "effort": "medium",
+      "transport": "anthropic",
+      "shape": "author",
+      "promptPath": "X_lens.md"
+    },
+    {
+      "label": "m6-dispatch",
+      "role": "executor",
+      "tier": "executor",
+      "model": "claude-sonnet-5-5[1m]",
+      "effort": "medium",
+      "transport": "anthropic",
+      "shape": "author",
+      "promptPath": "X_dispatch.md"
+    },
+    {
+      "label": "m6-compose",
+      "role": "executor",
+      "tier": "executor",
+      "model": "claude-sonnet-5-5[1m]",
+      "effort": "medium",
+      "transport": "anthropic",
+      "shape": "author",
+      "promptPath": "X_compose.md"
+    },
+    {
+      "label": "m6-repo",
+      "role": "executor",
+      "tier": "executor",
+      "model": "claude-haiku-5-5",
+      "effort": "medium",
+      "transport": "anthropic",
+      "shape": "author",
+      "promptPath": "X_repo.md"
+    }
+  ]
+}

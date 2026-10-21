@@ -4,8 +4,6 @@ description: "Probing whether a newly-announced model is on your plan: the backe
 metadata:
   node_type: memory
   type: project
-  originSessionId: bee93ab6-839d-4f44-a335-11cfccc01bcf
-  modified: 2026-09-05T00:11:37.593Z
 ---
 
 > Cold-tier archive. Search-only — surfaced when checking whether a newly-released model is

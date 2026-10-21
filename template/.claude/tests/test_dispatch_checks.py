@@ -185,10 +185,18 @@ def main():
              dc.cheaper_claimants("dear-1", "fanout", "anthropic", None, data, ladder)[0]["fits"] is None)
         case("the cheapest claimant has no cheaper claimant",
              dc.cheaper_claimants("cheap-1", "fanout", "anthropic", 20000, data, ladder) == [])
-        case("an unknown model, an unreadable ladder and no tier never raise",
-             dc.cheaper_claimants("nope", "fanout", "anthropic", 1, data, ladder) == []
-             and dc.cheaper_claimants("dear-1", "fanout", "anthropic", 1, data, os.path.join(td, "gone.md")) == []
-             and dc.cheaper_claimants("dear-1", None, "anthropic", 1, data, ladder) == [])
+        def raised(exc_type, fn):
+            try:
+                fn()
+            except exc_type:
+                return True
+            return False
+        case("an unknown model, an unreadable ladder and no tier raise, so [] always means nothing is cheaper",
+             raised(dc.model_registry.UnknownModel,
+                    lambda: dc.cheaper_claimants("nope", "fanout", "anthropic", 1, data, ladder))
+             and raised((OSError, dc.model_registry.RegistryError),
+                        lambda: dc.cheaper_claimants("dear-1", "fanout", "anthropic", 1, data, os.path.join(td, "gone.md")))
+             and raised(ValueError, lambda: dc.cheaper_claimants("dear-1", None, "anthropic", 1, data, ladder)))
         claimant = dc.claimant_text(facts[0], 20000)
         case("the claimant line names haiku, its cost, its ± cell and its window fit",
              "haiku (cost 10" in claimant and "uneven at review" in claimant and "fits" in claimant, repr(claimant))

@@ -199,6 +199,7 @@ def _main(tmp):
     home = os.path.join(tmp, "home")
     state_dir = os.path.join(home, ".claude", ".routing_state")
     os.makedirs(state_dir, exist_ok=True)
+    os.environ.update(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir)
     cold_cache = os.path.join(tmp, "no-such-capacity-cache.json")
     env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
                CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8",
@@ -255,7 +256,8 @@ def _main(tmp):
     big_text = ""
     if module is not None and callable(getattr(module, "process", None)):
         with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
-            big_text = (module.process(written(big_path, BRIEF + "filler " * 200_000)) or {}).get("context") or ""
+            big_text = (module.process(written(big_path, BRIEF + "filler " * 200_000, session="big-sess"))
+                        or {}).get("context") or ""
     case("a brief over a row's window prints its excess tokens", "over by" in big_text)
     named_text = "y" * 100_000
     named_file = plant(os.path.join(tmp, "repo", "named_reference.md"), named_text)
@@ -265,7 +267,8 @@ def _main(tmp):
     named_out = ""
     if module is not None and callable(getattr(module, "process", None)):
         with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
-            named_out = (module.process(written(named_brief, named_brief_text)) or {}).get("context") or ""
+            named_out = (module.process(written(named_brief, named_brief_text, session="named-sess"))
+                         or {}).get("context") or ""
     case("the window fit reads the brief plus the file it names, not the brief alone",
          bool(named_out) and all(any("(%s of " % "{:,}".format(reading_named) in line
                                      for line in alias_lines(named_out, alias)) for alias in expected))
@@ -336,6 +339,37 @@ def _main(tmp):
                       "each route header names its plan room once, with its route",
                       "the planted table prints the draw note once and names no room on a row"):
             case(label, False)
+    if module is not None and callable(getattr(module, "process", None)):
+        sys.path.insert(0, HOOKS)
+        import _hook_state
+        sess = "brief-table-sess"
+        arch_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "arch_brief.md"),
+                          BRIEF.replace('"tier": "executor"', '"tier": "architect"'))
+        wide_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "wide_brief.md"),
+                          BRIEF + "filler " * 200_000)
+        with planted_env(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir, CLAUDE_CODE_TRANSPORT=SEAT,
+                         PROVIDER_CAPACITY_CACHE=cold_cache), no_probe_spy([]):
+            first = (module.process(written(brief_path, BRIEF, session=sess)) or {}).get("context") or ""
+            second = (module.process(written(brief_path, BRIEF, session=sess)) or {}).get("context") or ""
+            bigger_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "bigger_brief.md"),
+                                BRIEF + "filler " * 500)
+            bigger = (module.process(written(bigger_path, "", session=sess)) or {}).get("context") or ""
+            wide =(module.process(written(wide_path, "", session=sess)) or {}).get("context") or ""
+            arch = (module.process(written(arch_path, "", session=sess)) or {}).get("context") or ""
+            _hook_state.clear_compaction_keys(sess)
+            after = (module.process(written(brief_path, BRIEF, session=sess)) or {}).get("context") or ""
+        case("the first brief of a tier in a session prints the full table", "model | draw or spend" in first)
+        case("a second brief of that tier in the session prints one short line, not the table",
+             "table as earlier this session" in second and "model | draw or spend" not in second
+             and "reading" in second and len(second) < len(first) / 2)
+        case("a bigger reading whose rows all still fit prints no fit row: only a verdict change is news",
+             "fits as earlier" in bigger and "fit changed" not in bigger and "table as earlier this session" in bigger)
+        case("a short line names the fit of a row whose fit changed: a wider reading reports the excess",
+             "over by" in wide and "table as earlier this session" in wide and "model | draw or spend" not in wide)
+        case("a brief of a new tier in the session prints its full table",
+             "model | draw or spend" in arch and "table as earlier" not in arch)
+        case("after a compaction the executor brief prints its full table again",
+             "model | draw or spend" in after and "table as earlier" not in after)
     if text:
         print("real executor brief table: %d bytes (target under 1536; measured, not gated)" % len(text.encode("utf-8")))
 
