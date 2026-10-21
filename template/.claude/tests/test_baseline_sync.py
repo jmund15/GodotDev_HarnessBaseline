@@ -1576,6 +1576,20 @@ def test_bare_pull_skips_unrowed_differing_local() -> None:
         assert (root / fresh).read_bytes() == b"fresh\n"
 
 
+def test_bare_pull_names_a_diverged_row_it_holds() -> None:
+    mine = ".claude/tools/mine.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {mine: {"upstream": b"v1\n"}})
+        _write(root / mine, b"local edit\n")
+        _commit(root, "local edit")
+        _write(baseline / "template" / mine, b"v2\n")
+        _commit(baseline, "upstream edit")
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert (root / mine).read_bytes() == b"local edit\n"
+        assert "held (diverged): " + mine in _out(pull) and "pull --force " + mine in _out(pull), _out(pull)
+
+
 def test_explicit_pull_refuses_unrowed_differing_local() -> None:
     clash = ".claude/tools/clash.py"
     with _fixture() as path:
@@ -2110,6 +2124,7 @@ def main() -> int:
         test_pull_new_seed_row_is_local,
         test_pull_keeps_existing_seed_file,
         test_bare_pull_skips_unrowed_differing_local,
+        test_bare_pull_names_a_diverged_row_it_holds,
         test_explicit_pull_refuses_unrowed_differing_local,
         test_migrate_core_row_absent_until_pulled,
         test_migrate_replaces_core_region_with_imports,

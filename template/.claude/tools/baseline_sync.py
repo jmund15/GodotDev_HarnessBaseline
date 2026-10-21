@@ -1825,6 +1825,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     manifest_layers = {relpath: item.get("layer") for relpath, item in manifest_items.items()}
     skipped = 0
     unrowed_differs: list[str] = []
+    held: list[tuple[str, str]] = []
     kept_seeds: list[str] = []
     retired: list[str] = []
     kept_local: list[str] = []
@@ -1848,6 +1849,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 if not in_profile(entry, layers):
                     continue
                 state = _v2_state(root, source, lock, path, entry)
+                if state in ("diverged", "forked-upstream-moved"):
+                    held.append((path, state))
                 if state in ("upstream-updated", "new-upstream") or (
                     state == "removed-upstream" and _entry_status(entry) == "tracked"
                 ):
@@ -1976,6 +1979,9 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 print(f"pulled: {relpath}")
     for relpath in dict.fromkeys(unrowed_differs):
         print(f"skipped (local file differs, no lock row): {relpath}")
+    for relpath, state in dict.fromkeys(held):
+        print(f"held ({state}): {relpath} — upstream changed it too; `pull --force {relpath}` takes "
+              f"upstream, `fork {relpath}` keeps yours")
     if offered:
         print(f"offered: {len(offered)} file(s) — not pulled; `check --json` lists them, `pull <relpath>` adopts one")
     if skipped:
