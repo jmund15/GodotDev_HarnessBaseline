@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 
 ALLOW, DENY = "allow", "deny"
+PR_READY_PRESENT = os.path.isfile(os.path.join(HERE, "..", "commands", "pr_ready.md"))
 STATE = tempfile.mkdtemp(prefix="dispatchguard_state_")
 
 # Former skill-load markers stay as transcript fixtures; neither authorizes a dispatch.
@@ -354,9 +355,10 @@ def main():
          delegated_brief(loaded_1, "Do not push. The orchestrator runs the full gate afterwards; you run scoped "
                                    "verification. Same rules as the first pass (`.claude/scratch/pr_ready/fix_brief.md`)."),
          ALLOW, ""),
-        ("a slash command after a path-like word is still a command",
+        ("a slash command after a path-like word is still a command"
+         + ("" if PR_READY_PRESENT else " (coding member absent: its name is no command)"),
          delegated_brief(loaded_1, "Then run /pr_ready over the frozen diff."),
-         DENY, "dispatch a fan-out"),
+         DENY if PR_READY_PRESENT else ALLOW, "dispatch a fan-out" if PR_READY_PRESENT else ""),
 
     ]
 

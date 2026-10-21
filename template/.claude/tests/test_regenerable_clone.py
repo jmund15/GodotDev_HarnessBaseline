@@ -7,7 +7,7 @@ Owner direction 2026-09-14: a stray probe clone left in scratch is bloat and mus
 recursive-delete guard keeps scratch blocked because it holds evidence, so the discriminator is
 regenerability proven from the clone itself.
 
-Fixture: a bare remote plus clones under `.claude/scratch/_regenerable_clone_fixture_<pid>/`, since
+Fixture: a bare remote plus clones under `.claude/scratch/_rc_fix_<pid>/`, since
 the rule only admits scratch paths. Several sessions run this battery concurrently:
 - Startup removes a same-prefix directory only when it is older than STALE_AFTER_S, so another run's
   live fixture is never touched.
@@ -34,12 +34,14 @@ sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 os.environ["REGENERABLE_CLONE_GIT_TIMEOUT_S"] = "120"
 import _regenerable_clone as rc  # noqa: E402
 
-PREFIX = os.path.join(CLAUDE, "scratch", "_regenerable_clone_fixture_")
+PREFIX = os.path.join(CLAUDE, "scratch", "_rc_fix_")
 FIX = PREFIX + str(os.getpid())
 STALE_AFTER_S = 1800  # a live run takes well under a minute
 # The fixture sits under this checkout's scratch, so a deeply nested checkout (a publish worktree)
 # pushes its submodule objects past Windows MAX_PATH. Every git this proof starts, the hook's
 # included, runs with long paths on.
+# `git worktree add` also refuses a git dir longer than PATH_MAX - 40 ("'$GIT_DIR' too big"), which long paths
+# do not lift, so the prefix and the multi-worktree fixture names stay short.
 os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.longpaths", GIT_CONFIG_VALUE_0="true")
 ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
        "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_NOSYSTEM": "1"}
@@ -494,8 +496,8 @@ try:
     git("remote", "remove", "origin", cwd=no_remote)
     expect("clone without a remote", no_remote, False)
 
-    multi = fresh_clone("multi", remote)
-    worktree = os.path.join(FIX, "multi_wt")
+    multi = fresh_clone("m", remote)
+    worktree = os.path.join(FIX, "w")
     git("worktree", "add", "-q", worktree, cwd=multi)
     expect("clone with a second worktree", multi, False)
     expect("worktree checkout (.git file)", worktree, False)
@@ -510,7 +512,7 @@ try:
     git("clone", "-q", remote, outside_clone)
     expect("clean clone outside scratch", outside_clone, False)
     expect("traversal token", rel(clean) + "/../clean", False)
-    expect("glob token", ".claude/scratch/_regenerable_clone_fixture_*/clean", False)
+    expect("glob token", ".claude/scratch/_rc_fix_*/clean", False)
     expect("variable token", "$HOME/clean", False)
     expect("home token", "~/clean", False)
     expect("nonexistent path", os.path.join(FIX, "missing"), False)

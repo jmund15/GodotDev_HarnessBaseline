@@ -1390,6 +1390,29 @@ def test_from_worktree_publishes_root_files_and_lock_rows() -> None:
         assert "tools/newtool.py" not in lock["files"]
 
 
+def test_publish_strips_memory_provenance_keys_from_the_published_file() -> None:
+    memory = ".claude/auto-memory/feedback_publish.md"
+    with _fixture() as path:
+        remote, baseline_commit = _seed_bare_baseline(path)
+        root = _seed_worktree_root(path, remote, baseline_commit)
+        cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-memory")
+        _write(worktree / "template" / memory,
+               b"---\nname: rule\ntype: feedback\nmetadata:\n  node_type: memory\n"
+               b"  originSessionId: session-one\n  modified: 2026-01-01T00:00:00Z\n---\nBody line\n")
+        _commit(worktree, "author memory")
+        commit = _git(worktree, "rev-parse", "HEAD").decode().strip()
+
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "worktree", "repo": str(worktree), "commit": commit},
+                                   None, [], False, True, None)
+        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+        published = _git(remote, "show", "main:template/" + memory).decode()
+        assert "originSessionId" not in published and "modified:" not in published, published
+        assert "name: rule" in published and "type: feedback" in published, published
+
+
 def test_battery_count_mismatch_is_detected() -> None:
     with _fixture() as path:
         remote, baseline_commit = _seed_bare_baseline(path, voided_discovery=True)
@@ -1849,6 +1872,7 @@ def main() -> int:
         test_from_worktree_refuses_dirty_foreign_nondescendant_sibling_and_nested,
         test_author_history_never_publishes_ancestor_token,
         test_from_worktree_publishes_root_files_and_lock_rows,
+        test_publish_strips_memory_provenance_keys_from_the_published_file,
         test_battery_count_mismatch_is_detected,
         test_diff_records_parses_copy_as_addition_only,
         test_from_worktree_publishes_every_diff_record_including_root_config_files,

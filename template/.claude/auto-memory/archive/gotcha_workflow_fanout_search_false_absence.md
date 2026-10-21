@@ -4,7 +4,6 @@ description: "In workflow fan-out, agents' Grep/Glob/semantic-search return empt
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: c85a2c2a-bc96-40bf-b8ea-6d889e7de3a0
 ---
 
 Observed 2026-05-31 running a 21-agent discovery workflow on a 24-core Windows box (workflow concurrency cap = min(16, cores-2) = 16 agents each spawning ripgrep/glob at once).

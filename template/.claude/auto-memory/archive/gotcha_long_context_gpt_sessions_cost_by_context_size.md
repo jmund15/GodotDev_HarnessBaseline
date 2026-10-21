@@ -4,8 +4,6 @@ description: "GPT -1m sessions cost ~2.9x the standard launcher for the same wor
 metadata:
   node_type: memory
   type: project
-  originSessionId: fda900c8-fd6a-47da-a5ad-4d19c68e3402
-  modified: 2026-09-23T00:37:34.349Z
   retire_when: "review-by: 2027-03-22"
 ---
 

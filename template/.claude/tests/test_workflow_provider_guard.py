@@ -665,6 +665,13 @@ def planted_agents_dir():
             LENS.AGENTS = saved
 
 
+def registry_shipped(key):
+    """True when the registry file holding lens `key` is installed: plan-check, session-audit and review lenses ship in the
+    coding layer, so a pure project has no lens to imply a tier."""
+    reg = LENS.registry_of(key.split("+")[0])
+    return reg is not None and (LENS.AGENTS / LENS.REGISTRIES[reg][0]).is_file()
+
+
 def implied_tier_cases():
     out = []
 
@@ -685,6 +692,10 @@ def implied_tier_cases():
                     seat_tier("stra-layout-hygiene") == "fanout", repr(seat_tier("stra-layout-hygiene"))))
         for key in ("plc-memory-alignment", "sa-design-semantics", "stra-layout-hygiene",
                     "stra-layout-hygiene+stra-domain-coherence"):
+            if not registry_shipped(key):
+                case("review seat %s: its registry is not installed, so no tier is implied -> allow" % key,
+                     run_channel(seats([(key, "h-fan")])), "allow", absent=("No tier declared",))
+                continue
             tier = seat_tier(key) or "executor"
             case("review seat %s with no tier takes its lens's tier (%s) -> fitting pin allowed" % (key, tier),
                  run_channel(seats([(key, TIERS[tier][0])])), "allow")
@@ -693,12 +704,13 @@ def implied_tier_cases():
     case("review seat keyed by no registry lens and no tier -> allow: a missing tier never denies",
          run_channel(seats([("zz-boundary", "h-arch")])), "allow", absent=("No tier declared",))
     lens_tier = seat_tier("plc-memory-alignment") or "executor"
+    plan_check_shipped = registry_shipped("plc-memory-alignment")
     case("a seat tier written on the seat cannot replace its lens's tier",
-         run_channel(seats([("plc-memory-alignment", "h-fan", "fanout")])), "deny",
-         (lens_tier, EFFORT_LINE))
+         run_channel(seats([("plc-memory-alignment", "h-fan", "fanout")])),
+         "deny" if plan_check_shipped else "allow", (lens_tier, EFFORT_LINE) if plan_check_shipped else ())
     case("a call-wide args.tier cannot replace a seat's lens tier either",
-         run_channel(seats([("plc-memory-alignment", "h-fan")], {"tier": "fanout"})), "deny",
-         (lens_tier, EFFORT_LINE))
+         run_channel(seats([("plc-memory-alignment", "h-fan")], {"tier": "fanout"})),
+         "deny" if plan_check_shipped else "allow", (lens_tier, EFFORT_LINE) if plan_check_shipped else ())
     other_engine = seats([("exp-memory", "h-fan")])
     # A synthetic engine name: the guard resolves the engine from the basename alone, so this case
     # needs no shipped workflow.
@@ -739,8 +751,11 @@ def implied_tier_cases():
         wpg.model_registry.role_tiers = lambda *_a, **_k: TIERS
         upd = wpg.transport_injection(seats([("sa-design-semantics", "h-exec")]), "host", SYN) or {}
         injected = upd.get("args", {}).get("__lensTiers")
-        out.append(("review_fanout call gets __lensTiers for its registry seats",
-                    injected == {"sa-design-semantics": seat_tier("sa-design-semantics")}, repr(injected)))
+        sa_shipped = registry_shipped("sa-design-semantics")
+        out.append(("review_fanout call gets __lensTiers for its registry seats"
+                    + ("" if sa_shipped else " (none where the session-audit registry is not installed)"),
+                    (injected == {"sa-design-semantics": seat_tier("sa-design-semantics")}) if sa_shipped
+                    else not injected, repr(injected)))
         import lens as _lens
         # The two catalog cases run when the project's registries declare `mandates:` keys; a project with
         # no review catalog has nothing for the injection to carry.
@@ -761,8 +776,9 @@ def implied_tier_cases():
         run = run_engine("review_fanout", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"]), checker={"model": "h-fan", "effort": "low"}))
         pins = [l for l in run.get("logs") or [] if l.startswith("PINS ")]
-        out.append(("review_fanout logs the lens tier for a seat that declared none",
-                    any("tier:%s" % seat_tier("sa-design-semantics") in l for l in pins), repr(pins or run)[:300]))
+        if sa_shipped:
+            out.append(("review_fanout logs the lens tier for a seat that declared none",
+                        any("tier:%s" % seat_tier("sa-design-semantics") in l for l in pins), repr(pins or run)[:300]))
         upd = wpg.transport_injection(shaped("review", "h-exec"), "host", SYN) or {}
         injected = upd.get("args", {}).get("__shapeTiers")
         out.append(("dispatch.js call gets __shapeTiers from the shape table",
@@ -779,9 +795,10 @@ def implied_tier_cases():
         run = run_engine("review_fanout", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"]), checker={"model": "h-fan", "effort": "low"}))
         pins = [l for l in run.get("logs") or [] if l.startswith("PINS ")]
-        out.append(("review_fanout logs the lens tier for a seat that writes another tier",
-                    any("tier:%s" % seat_tier("sa-design-semantics") in l for l in pins),
-                    repr(pins or run)[:300]))
+        if sa_shipped:
+            out.append(("review_fanout logs the lens tier for a seat that writes another tier",
+                        any("tier:%s" % seat_tier("sa-design-semantics") in l for l in pins),
+                        repr(pins or run)[:300]))
         upd = wpg.transport_injection(shaped("review", "h-exec", tier="fanout"), "host", SYN) or {}
         run = run_engine("dispatch", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"])))
@@ -816,15 +833,21 @@ def supplementary_seat_cases():
         out.append((name, got == want and not missing and not present,
                     "got %s, missing %s, unwanted %s: %s" % (got, missing, present, text[:400])))
 
+    plc = registry_shipped("plc-pattern-fit")
+
+    def denied_where_shipped(musts, absent=()):
+        """The deny the plan-check registry's lens earns, else the allow of a key no installed registry names."""
+        return ("deny", musts, absent) if plc else (None, (), ())
+
     case("supplementary: a haiku-like seat beside a qualified merged seat carrying its mandate is allowed",
          seats([("plc-pattern-fit", "h-supp"), (merged, "h-arch")]), None)
     case("supplementary: the lone supplementary seat is denied, naming the rule and the next step",
-         seats([("plc-pattern-fit", "h-supp")]), "deny",
-         ("supplementary review seat", "plc-pattern-fit", "for-role architect", "host-arch-1"),
-         ("Pin one of the implied tier's rows", "raise effort before tier"))
+         seats([("plc-pattern-fit", "h-supp")]),
+         *denied_where_shipped(("supplementary review seat", "plc-pattern-fit", "for-role architect", "host-arch-1"),
+                               ("Pin one of the implied tier's rows", "raise effort before tier")))
     case("supplementary: a qualified seat on other mandates does not back it",
-         seats([("plc-pattern-fit", "h-supp"), ("plc-architecture-quality", "h-arch")]), "deny",
-         ("carries plc-pattern-fit.",))
+         seats([("plc-pattern-fit", "h-supp"), ("plc-architecture-quality", "h-arch")]),
+         *denied_where_shipped(("carries plc-pattern-fit.",)))
     case("supplementary: a lone supplementary seat on an executor lens is a plain claim, allowed",
          seats([("lane-code-reviewer", "h-supp")]), None)
     case("supplementary: a lone qualified architect seat is allowed",
@@ -832,13 +855,13 @@ def supplementary_seat_cases():
     case("supplementary: a call with no lens key is untouched",
          seats([("zz-boundary", "h-supp")]), None)
     case("supplementary: a pin outside the tier still gets the tier_fit line and its tail",
-         seats([("plc-pattern-fit", "h-fan")]), "deny",
-         ("Pin outside the tier this call implies", "Pin one of"), ("supplementary review seat",))
+         seats([("plc-pattern-fit", "h-fan")]),
+         *denied_where_shipped(("Pin outside the tier this call implies", "Pin one of"), ("supplementary review seat",)))
     real = wpg._dispatch_checks.seat_verdicts
     wpg._dispatch_checks.seat_verdicts = _raiser("planted seat_verdicts failure")
     try:
         case("supplementary: a seat_verdicts failure keeps the per-seat fallback and carries the exception text",
-             seats([("plc-pattern-fit", "h-supp")]), "deny", ("planted seat_verdicts failure",))
+             seats([("plc-pattern-fit", "h-supp")]), *denied_where_shipped(("planted seat_verdicts failure",)))
     finally:
         wpg._dispatch_checks.seat_verdicts = real
     return out

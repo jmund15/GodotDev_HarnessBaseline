@@ -1098,10 +1098,14 @@ def driver_notes(model, data=None):
 
 
 def resolve(name, data=None):
-    """Accept an alias or a full id; return the model entry."""
+    """Accept an alias or a full id, with or without a legal context suffix; return the model entry."""
     data = data or load()
+    bare = name
+    for suffix in _LEGAL_CONTEXT_SUFFIXES:
+        if isinstance(name, str) and name.endswith(suffix):
+            bare = name[:-len(suffix)]
     for entry in data["models"]:
-        if name in (entry["id"], entry["alias"]):
+        if bare in (entry["id"], entry["alias"]):
             return entry
     legal = sorted({v for e in data["models"] for v in (e["id"], e["alias"])})
     raise UnknownModel(f"unknown model {name!r}; legal values: {', '.join(legal)}")

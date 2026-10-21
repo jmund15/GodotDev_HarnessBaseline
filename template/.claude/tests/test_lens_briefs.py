@@ -82,6 +82,20 @@ def main():
     check("an unknown key is refused by name while another registry's file is absent",
           "no such lens: no-such-key" in outcome, outcome)
     companion_checks()
+    import contextlib
+    import io
+    saved_tier = lens.seat_tier
+    lens.seat_tier = lambda key: "executor" if key == "seat-a" else None
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            refusal = lens_briefs.lens_tier_refusal(panel={"seat-a": "no-such-row"}, native=False,
+                                                    data=lens_briefs.model_registry.load())
+    finally:
+        lens.seat_tier = saved_tier
+    check("a seat whose pin does not resolve is named on stderr with its reason, not dropped silently",
+          "seat-a" in stderr.getvalue() and "no-such-row" in stderr.getvalue() and refusal == [],
+          stderr.getvalue() + repr(refusal))
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         return 1

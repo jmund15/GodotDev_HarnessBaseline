@@ -100,12 +100,20 @@ for (const [js, json] of pairs) {
     failed = failed || 1
   }
 }
-const checkedEngines = ['dispatch', 'dispatch_chains', 'explore_fanout', 'review_fanout', 'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
+// An engine is any other workflow that calls closeCheck( or carries a verifier block; each must carry both
+// blocks byte-equal to dispatch.js's. A workflow that calls closeCheck( without the blocks is DIVERGED.
 const canonical = fs.readFileSync(path.join(ROOT, '.claude/workflows/dispatch.js'), 'utf8')
+const engines = fs.readdirSync(path.join(ROOT, '.claude/workflows')).sort()
+  .filter(f => f.endsWith('.js') && f !== 'dispatch.js')
+  .filter(f => {
+    const src = fs.readFileSync(path.join(ROOT, '.claude/workflows', f), 'utf8')
+    return src.includes('closeCheck(') || src.includes('// CLOSE-CHECK-BEGIN') || src.includes('// EVIDENCE-SSOT-BEGIN')
+  })
+  .map(f => f.replace(/\.js$/, ''))
 for (const marker of ['CLOSE-CHECK', 'EVIDENCE-SSOT']) {
   const pattern = new RegExp('// ' + marker + '-BEGIN[\\s\\S]*?// ' + marker + '-END')
   const expected = canonical.match(pattern)
-  for (const name of checkedEngines) {
+  for (const name of engines) {
     const source = fs.readFileSync(path.join(ROOT, '.claude/workflows', name + '.js'), 'utf8')
     const actual = source.match(pattern)
     if (!expected || !actual || actual[0] !== expected[0]) {
@@ -122,5 +130,5 @@ for (const marker of ['CLOSE-CHECK', 'EVIDENCE-SSOT']) {
     }
   }
 }
-if (!failed) console.log('OK   CLOSE-CHECK and EVIDENCE-SSOT parity (7 engines)')
+if (!failed) console.log('OK   CLOSE-CHECK and EVIDENCE-SSOT parity (' + engines.length + ' engines)')
 process.exit(failed)

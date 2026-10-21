@@ -4,8 +4,6 @@ description: "Owner's harness mindset: the core stays model-agnostic and optimal
 metadata:
   node_type: memory
   type: feedback
-  originSessionId: fda900c8-fd6a-47da-a5ad-4d19c68e3402
-  modified: 2026-09-27T00:34:09.312Z
 ---
 
 **Rule home:** `instruction_quality` §3 *A correction takes the scope of its evidence*; `/codify` Step 2 gates on it.

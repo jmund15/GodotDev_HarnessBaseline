@@ -27,9 +27,11 @@ bytes) at CHARS_PER_TOKEN (the rate the orchestration Pre-Dispatch
 Checklist counts required reading at) against `model_registry.usable_window` of its `model` or `alias`
 (`window_fit`). A job over its window is named in the line. A pin the registry does not resolve is not marked.
 
-`fact_lines(spec)` adds, after that line, one line per job pinned above a cheaper claimant of its tier (executor
-included): the claimants with cost, `±` cell and the job's reading against each one's window and long-context price
-point. These are facts read before a pin is chosen; no check denies on them.
+`fact_lines(spec)` adds, after that line, a verdict per job: one line for a job pinned above a cheaper claimant of its
+tier (executor included), with the claimants' cost, `±` cell and the job's reading against each one's window and
+long-context price point; a `not compared` line for a job it cannot compare, with the reason; and one closing
+`pin is the cheapest claimant` line for the compared jobs with nothing cheaper. `format_line` names each job whose window
+fit cannot be judged under `not sized`. These are facts read before a pin is chosen; no check denies on them.
 
 `dispatch_size(jobs)` takes the jobs list or the whole jobs file / Workflow args object, is pure, and raises
 only on a spec that holds no job list. `line(spec, root)` is its one-line form, None when the spec holds no
@@ -140,8 +142,8 @@ def fit_tokens(model, tokens: int, data=None) -> dict:
         return fit
     try:
         entry = model_registry.resolve(model, data)
-    except Exception as err:
-        fit["error"] = f"does not resolve in the registry ({err})"
+    except Exception:
+        fit["error"] = "does not resolve in the registry"
         return fit
     fit["usable"] = model_registry.usable_window(entry)
     if fit["usable"] is None:
@@ -232,6 +234,12 @@ def format_line(size: dict) -> str:
         percent = round(100 * heaviest["tokens"] / heaviest["usable"])
         if percent:
             line += "; heaviest reading %d%% of its window%s" % (percent, " (%s)" % heaviest["label"] if jobs > 1 else "")
+    unsized = {}
+    for job in size["perJob"]:
+        if job.get("fitError"):
+            unsized.setdefault(job["fitError"], []).append(job["label"])
+    for reason, labels in unsized.items():
+        line += "; not sized: %s (%s)" % (", ".join(labels), reason)
     over = [job for job in size["perJob"] if job["over"]]
     if over:
         line += "; over its usable window: " + ", ".join(
@@ -245,33 +253,53 @@ def format_line(size: dict) -> str:
 
 
 def fact_lines(spec, root=None, data=None, ladder=None) -> list:
-    """One pre-launch line per job pinned above a cheaper claimant of its tier, else []: the job's pin and cost, then
-    each cheaper row on its transport with cost, prices, `±` cell, the job's measured reading (listed plus named files)
-    against that row's usable window and long-context point. Facts only: `_dispatch_checks.cheaper_claimants`
-    owns the filter, and no check denies on these lines. A job's tier is its shape
-    row's (`guards/tool_profiles.json`), else its own `tier`; a job with neither, or a pin the registry does not
-    resolve, gets no line."""
+    """The claimant verdict of each job of a dispatch, in job order; [] for a spec holding no job. Per job, one of:
+    a `cheaper claimants:` line for a job pinned above a cheaper claimant of its tier (the job's pin and cost, then each
+    cheaper row on its transport with cost, prices, `±` cell, the job's measured reading against that row's usable
+    window and long-context point); a `cheaper claimants: `label` (model) not compared: reason` line for a job it
+    could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
+    A job's tier is its shape row's (`guards/tool_profiles.json`), else its own `tier`. Facts only: no check denies on
+    these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare."""
+    try:
+        jobs = _jobs_of(spec)
+    except ValueError:
+        return []  # not a dispatch spec: it holds no job to state a verdict for
     if _dispatch_checks is None or model_registry is None:
-        return []
+        return ["cheaper claimants: `%s` (%s) not compared: the registry reader or the claimant facts did not import"
+                % (job.get("label") or "job %d" % index, job.get("model")) for index, job in enumerate(jobs)]
     try:
         size = dispatch_size(spec, root, data)
         data = data if data is not None else model_registry.load()
         by_shape = _dispatch_checks.shape_tiers()
-        out = []
-        for job, sized in zip(_jobs_of(spec), size["perJob"]):
-            tier = by_shape.get(job.get("shape")) or job.get("tier")
-            model = sized["model"]
-            if not tier or not model:
-                continue
+    except Exception as err:
+        return ["cheaper claimants: not compared for this dispatch: %s" % err]
+    out, compared = [], []
+    for job, sized in zip(jobs, size["perJob"]):
+        label, model = sized["label"], sized["model"]
+        tier = by_shape.get(job.get("shape")) or job.get("tier")
+        if not model:
+            out.append("cheaper claimants: `%s` not compared: no model pin" % label)
+            continue
+        if not tier:
+            out.append("cheaper claimants: `%s` (%s) not compared: neither its shape row nor its own tier names one"
+                       % (label, model))
+            continue
+        try:
             transport = job.get("transport") or model_registry.resolve(model, data)["transport"]
             claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["readingTokens"], data, ladder)
-            if claimants:
-                out.append("cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
-                    sized["label"], model, claimants[0]["pinCost"], tier, transport,
-                    "; ".join(_dispatch_checks.claimant_text(c, sized["readingTokens"]) for c in claimants)))
-        return out
-    except Exception:
-        return []
+        except Exception as err:
+            reason = ("does not resolve in the registry" if isinstance(err, model_registry.UnknownModel) else str(err))
+            out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, reason))
+            continue
+        if claimants:
+            out.append("cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
+                label, model, claimants[0]["pinCost"], tier, transport,
+                "; ".join(_dispatch_checks.claimant_text(c, sized["readingTokens"]) for c in claimants)))
+        else:
+            compared.append(label)
+    if compared:
+        out.append("pin is the cheapest claimant: " + ", ".join(compared))
+    return out
 
 
 def line(spec, root=None):

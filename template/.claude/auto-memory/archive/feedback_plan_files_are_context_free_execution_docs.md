@@ -4,7 +4,6 @@ description: "Plan files must read as clean end-to-end execution docs for a cont
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-05T18:14:03.022Z
 ---
 
 A plan file is a context-free execution document — for the executor AND the user reviewing it for approval, not for the audit. Write it for someone with zero discovery/planning context who just wants the instructions: a comprehensive, sequential, methodical procedure. State the **resolved** design as fact — never "the design said X, we changed to Y"; write Y. The reader doesn't care what the original said or what changed.

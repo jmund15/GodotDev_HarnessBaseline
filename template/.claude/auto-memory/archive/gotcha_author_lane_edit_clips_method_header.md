@@ -4,7 +4,6 @@ description: "Authoring-only delegate lanes (luna at low) repeatedly replace a m
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-22T06:43:12.417Z
 ---
 
 Measured 2026-08-22, three instances in one drive (two in L1's test edits, one `using` drop): an

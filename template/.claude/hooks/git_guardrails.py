@@ -50,10 +50,10 @@ sys.path.insert(0, _HOOKS_DIR)
 # commits; runner failure denies pushes and only advises local commits.
 try:
     from _hook_state import read_json_salvage, state_path, SETUP_SURFACE_FILES as SURFACES, \
-        HARNESS_DIRS  # noqa: E402
+        in_harness_dirs  # noqa: E402
     _STATE_IMPORT_ERROR = None
 except Exception as _exc:
-    read_json_salvage, state_path, SURFACES, HARNESS_DIRS = None, None, None, ()
+    read_json_salvage, state_path, SURFACES, in_harness_dirs = None, None, None, (lambda _rel: False)
     _STATE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 try:
     from harness_edit_skill_reminder import is_harness_file  # noqa: E402
@@ -576,7 +576,7 @@ def _skill_verdict(session_id, touched):
     # The skill governs what the Write|Edit reminder classifies plus the harness code set; a plan,
     # a memory or the worklog mirror has its own owner.
     surfaces = [p for p in touched if is_harness_file is None or is_harness_file(p)
-                or any(p == d or p.startswith(d + "/") for d in HARNESS_DIRS)]
+                or in_harness_dirs(p)]
     if not surfaces:
         return None
     home = ("skills/instruction_quality/SKILL.md" if any(p.endswith(".md") for p in surfaces)

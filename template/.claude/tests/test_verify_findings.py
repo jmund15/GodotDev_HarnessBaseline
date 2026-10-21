@@ -35,9 +35,11 @@ class FindingsTests(unittest.TestCase):
         path.write_text(json.dumps(content) + "\n", encoding="utf-8")
         return path
 
-    def verify(self, source, *, cwd=ROOT):
+    def verify(self, source, *, cwd=ROOT, root=None):
         out = self.root / "verdicts.json"
         args = [sys.executable, str(TOOL), "--findings", str(source), "--out", str(out)]
+        if root is not None:
+            args += ["--root", str(root)]
         proc = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=30)
         self.assertNotIn("Traceback", proc.stderr)
         return proc, json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
@@ -190,7 +192,12 @@ class FindingsTests(unittest.TestCase):
             dict(self.findings[0], id="K5", evidence=[
                 {"command": "git ls-files -- .claude/tools/verify_claims.py", "output": "wrong"}]),
         ]
-        proc, payload = self.verify(self.put("kinds.json", findings))
+        repo = self.root / "repo"
+        (repo / ".claude/tools").mkdir(parents=True)
+        (repo / ".claude/tools/verify_claims.py").write_text("# fixture\n", encoding="utf-8")
+        for args in (["init", "-q"], ["add", "."]):
+            subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        proc, payload = self.verify(self.put("kinds.json", findings), root=repo)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual({row["id"]: row["verdict"] for row in payload["verdicts"]},
                          {"K1": "VERIFIED", "K2": "VERIFIED", "K3": "UNCHECKED", "K4": "VERIFIED",

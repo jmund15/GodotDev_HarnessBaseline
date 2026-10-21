@@ -4,8 +4,6 @@ description: "Load Skill(orchestration) before the first dispatch; a denial does
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: f387bceb-e25c-4a11-a4a7-24e93bc04e45
-  modified: 2026-10-12T15:26:47.509Z
 retire_when:
   - review-by: 2027-02-27
 ---

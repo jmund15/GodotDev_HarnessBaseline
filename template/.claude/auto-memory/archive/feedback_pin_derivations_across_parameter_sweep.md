@@ -4,7 +4,6 @@ description: "Pin a derived quantity across a SWEEP of its parameter, never at t
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: dea0e670-a3ba-4764-a603-db211c552f1c
 ---
 
 # Pin derivations across a sweep, not at the production value

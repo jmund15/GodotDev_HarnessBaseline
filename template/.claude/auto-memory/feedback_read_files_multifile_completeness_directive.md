@@ -4,8 +4,6 @@ description: "ai-worker read_files multi-file extraction silently omits files (r
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: df2b3626-2692-4176-8ae7-e5953e99385a
-  modified: 2026-07-27T22:36:20.828Z
 retire_when:
   - review-by: 2026-11-22
 ---

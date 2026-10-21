@@ -434,7 +434,9 @@ def lens_tier_refusal(*, panel: dict, native: bool, data: dict) -> list[str]:
             continue
         try:
             transport = model_registry.resolve(token, data)["transport"]
-        except Exception:
+        except Exception as err:
+            print(f"lens_briefs: seat `{key}` not checked against its lens tier `{tier}`: pin {token!r} does not "
+                  f"resolve ({err})", file=sys.stderr)
             continue
         seats.append({"label": key, "model": token, "tier": tier, "mandates": lens.seat_mandates(key) or [],
                       "transport": transport})

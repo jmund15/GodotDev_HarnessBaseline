@@ -9,7 +9,9 @@ plan's room (`room unknown` on a cold capacity cache, read cache-only with no pr
 output-rate ratio to the cheapest row on its own route, one measured point, never compared across plans. A
 pay-per-token row states its spend: its priced reading ratio to the cheapest row on its route, with the USD figure.
 Every row also states the ladder's intel and speed, whether the reading fits its usable window, and the first `+` and
-first `−` clause of its `±` cell, quoted verbatim. The reading is the brief plus the files it names, as
+first `−` clause of its `±` cell, quoted verbatim. A later brief of the same tier in the same session, with no
+compaction between, gets one short line instead: its reading, the fit of each row whose fit changed, and `table as
+earlier this session`. The record is `_hook_state.brief_table_seen`, cleared by a compaction. The reading is the brief plus the files it names, as
 `dispatch_size` measures a job and `_dispatch_checks.price_reading` prices a claimant.
 
 Owners: `dispatch_result.task_block` (the block), `provider_bands.lean_candidates` (rows, routes, rooms, probation),
@@ -99,10 +101,10 @@ def _money(price):
     return "unpriced" if price is None else "$%.4f" % price
 
 
-def _route_lines(route, entries, seat, data, tokens, owners, ladder):
+def _route_lines(route, entries, seat, data, tokens, owners, ladder, fits):
     """One route's header line, then one row per entry. Ratios restart on each route: a plan's draw is taken
     against the cheapest priced row of that plan's route, and a pay-per-token row's spend against its own route."""
-    dispatch_size, model_registry, dispatch_checks = owners
+    model_registry, dispatch_checks = owners
     suffix = ", session route" if route == seat else ""
     plan = model_registry.cost_model_for(route, data) == "plan-quota"
     if plan:
@@ -126,14 +128,31 @@ def _route_lines(route, entries, seat, data, tokens, owners, ladder):
             ratio = None if price is None or not base else price / base
             label = "spend %s %s" % ("n/a" if ratio is None else "%.2fx" % ratio, _money(price))
         cells = [entry.get("alias") or entry["id"], label, cell.get("intel", "?"), cell.get("speed", "?"),
-                 _fit(dispatch_size, entry["id"], tokens, data), _quoted("+", plus), _quoted("−", minus)]
+                 fits[entry["id"]], _quoted("+", plus), _quoted("−", minus)]
         if entry.get("probation"):
             cells.append('probation "%s"' % entry["probation"])
         lines.append(" | ".join(cells))
     return lines
 
 
-def _facts(block, path, data, session):
+def _verdict(fit):
+    """A fit cell's verdict without its token counts: `fits`, `over` or `window` (unjudged)."""
+    return fit.split(" ", 1)[0]
+
+
+def _short(tier, tokens, unreadable, fits, names, earlier):
+    """One line for a repeat brief of `tier`: its reading, each row whose fit verdict moved since the stored table,
+    and that the table stands as earlier. A new reading size alone is not news: the line already states it."""
+    changed = ["%s %s" % (names[row], fit) for row, fit in fits.items() if earlier.get(row) != _verdict(fit)]
+    parts = ["%s tier %s; reading %s tokens" % (TAG, tier, _n(tokens))]
+    if unreadable:
+        parts.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
+    parts.append("fit changed: " + "; ".join(changed) if changed else "fits as earlier")
+    parts.append("table as earlier this session")
+    return "; ".join(parts)
+
+
+def _facts(block, path, data, session, session_id=None):
     dispatch_result, dispatch_size, model_registry, provider_bands, dispatch_checks = _owners()
     tier = block.get("tier")
     if not isinstance(tier, str) or not tier:
@@ -147,17 +166,29 @@ def _facts(block, path, data, session):
         return "%s tier %s: %s" % (TAG, tier, got["refused"])
     tokens, unreadable = _reading(dispatch_size, path)
     ladder = _ladder(model_registry, data)
+    pay = {}
+    for option in got["payOptions"]:
+        pay.setdefault(option["transport"], []).append(option)
+    groups = list(got["routes"].items()) + list(pay.items())
+    fits = {}
+    names = {}
+    for _route, entries in groups:
+        for entry in entries:
+            fits[entry["id"]] = _fit(dispatch_size, entry["id"], tokens, data)
+            names[entry["id"]] = entry.get("alias") or entry["id"]
+    if session_id is not None:
+        import _hook_state
+        earlier = _hook_state.brief_table_seen(session_id, tier, {row: _verdict(fit) for row, fit in fits.items()})
+        if earlier is not None:
+            return _short(tier, tokens, unreadable, fits, names, earlier)
     lines = ["%s tier %s, session plan %s; reading %s tokens (the brief plus the files it names); "
              "USD only on pay-per-token rows; facts only, registry order" % (TAG, tier, session, _n(tokens))]
     if unreadable:
         lines.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
     lines += [NOTE, HEADER]
-    pay = {}
-    for option in got["payOptions"]:
-        pay.setdefault(option["transport"], []).append(option)
-    owners = (dispatch_size, model_registry, dispatch_checks)
-    for route, entries in list(got["routes"].items()) + list(pay.items()):
-        lines += _route_lines(route, entries, got["seat"], data, tokens, owners, ladder)
+    owners = (model_registry, dispatch_checks)
+    for route, entries in groups:
+        lines += _route_lines(route, entries, got["seat"], data, tokens, owners, ladder, fits)
     return "\n".join(lines)
 
 
@@ -186,4 +217,4 @@ def process(payload):
         return None
     session = provider_bands.session_plan()
     data = model_registry.load()
-    return {"context": _facts(block, path, data, session)}
+    return {"context": _facts(block, path, data, session, session_id=data_in.get("session_id") or "default")}

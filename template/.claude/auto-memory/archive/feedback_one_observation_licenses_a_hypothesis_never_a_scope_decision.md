@@ -4,7 +4,6 @@ description: "A single run justifies a hypothesis, never a decision about what a
 metadata:
   node_type: memory
   type: feedback
-  modified: 2026-09-04T04:05:48.237Z
 ---
 
 Jacob caught this twice on 2026-09-03, hours apart:

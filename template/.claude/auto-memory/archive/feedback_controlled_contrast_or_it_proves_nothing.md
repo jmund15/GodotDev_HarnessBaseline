@@ -4,7 +4,6 @@ description: Two runs that differ in more than the named factor cannot attribute
 metadata: 
   node_type: memory
   type: feedback
-  modified: 2026-08-21T04:28:23.823Z
 ---
 
 # A comparison across separate runs attributes to the wrong cause

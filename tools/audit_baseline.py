@@ -162,10 +162,7 @@ class Findings:
 
 
 def iter_template_files():
-    # Stable cross-platform order (see gen_manifest: Path sort is OS-case-dependent).
-    for p in sorted(TEMPLATE.rglob("*"), key=lambda x: x.relative_to(TEMPLATE).as_posix()):
-        if not p.is_file() or p.name == ".gitkeep" or gm.is_artifact(p):
-            continue  # gm.is_artifact: __pycache__/.pyc/logs/.cache/session-state
+    for p in gm.template_files(TEMPLATE):
         yield p, p.relative_to(TEMPLATE).as_posix()
 
 

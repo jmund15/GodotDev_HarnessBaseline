@@ -4,7 +4,6 @@ description: "{{PROJECT_NAME}} convention: reference memory files as bare code-s
 metadata:
   node_type: memory
   type: feedback
-  modified: 2026-08-16T18:11:54.130Z
 ---
 
 Reference memory files (`.claude/auto-memory/*.md`) using **bare code-styled text**, not markdown links:

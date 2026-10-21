@@ -4,8 +4,6 @@ description: "A filter/denial/exclusion that is working and one that was never i
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 57e6ed14-e265-4415-94ec-b1cdebc1bfe4
-  modified: 2026-08-21T16:27:09.349Z
 ---
 
 # Prove a guard by making it FIRE, never by observing nothing

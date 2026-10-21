@@ -4,7 +4,6 @@ description: "A post-resume compile error in untouched consumer code can come fr
 metadata: 
   node_type: memory
   type: project
-  modified: 2026-09-11T06:29:35.575Z
 ---
 
 A restored checkout can compile against a different framework revision than the work expects. The error names the consumer of the missing API, not the operation that changed the dependency revision. Check the intended branch and gitlink before editing that consumer.

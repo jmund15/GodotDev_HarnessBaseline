@@ -43,7 +43,19 @@ for rel, tool, home in (
     check("%s %s block cites its home and names the next step" % (tool, rel),
           home in block and "then run `python3 .claude/tools/baseline_sync.py compose`" in block, got)
 
+settings_block = (guard.process(edit(".claude/settings.json")) or {}).get("block", "")
+installed_settings = sorted(n for n in os.listdir(os.path.join(ROOT, ".claude"))
+                            if n.startswith("settings.") and n.endswith(".json")
+                            and n not in ("settings.json", "settings.local.json"))
+check("the settings.json block names every installed settings input, layer overlays included",
+      "settings.base.json" in installed_settings and "settings.project.json" in installed_settings
+      and all(name in settings_block for name in installed_settings),
+      (installed_settings, settings_block))
+check("the memory_domains.md block does not name settings files",
+      "settings." not in (guard.process(edit(".claude/reference/memory_domains.md")) or {}).get("block", ""))
+
 for rel in (".claude/settings.project.json", ".claude/settings.base.json", ".claude/settings.local.json",
+            *(".claude/" + n for n in installed_settings),
             ".claude/reference/memory_domains.base.md", ".claude/hooks/x.py"):
     check("Edit %s passes" % rel, not guard.process(edit(rel)), rel)
 check("a worktree's composed settings.json is blocked too",

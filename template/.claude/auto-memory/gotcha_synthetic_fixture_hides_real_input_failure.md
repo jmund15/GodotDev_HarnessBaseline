@@ -4,8 +4,6 @@ description: A test fixture engineered to satisfy the checks can pass every stag
 metadata:
   node_type: memory
   type: feedback
-  originSessionId: e33ca9f0-be37-4de3-a1d8-1deb2c741274
-  modified: 2026-10-07T13:44:38.889Z
 ---
 
 A synthetic fixture built to *pass* the assertions exercises the happy path of every pipeline stage but can structurally exclude the failure mode that real input guarantees — so "proven end-to-end on synthetic" overstates coverage.

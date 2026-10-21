@@ -2,7 +2,6 @@
 name: No performative agreement
 description: Don't open OR close responses with performative filler — "you're absolutely right!", "great point!", "let me implement that now", "I hope this helps!", "Let me know if...", "Certainly!", "Found the smoking gun!". Restate, verify, or just fix it. Actions speak.
 type: feedback
-modified: 2026-08-20T06:56:17.714Z
 ---
 Four phrase classes are banned when receiving feedback (from the user OR from a code-review / audit agent), and the closer classes are the same defect at the other end — a response that has delivered its answer is finished:
 

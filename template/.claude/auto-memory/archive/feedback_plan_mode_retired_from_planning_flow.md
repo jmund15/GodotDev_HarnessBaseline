@@ -4,8 +4,6 @@ description: "Plan Mode is retired from this harness — every planning path run
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 80422bbb-fc4d-4b9f-a63e-ad998868bd38
-  modified: 2026-09-12T21:28:16.584Z
 ---
 
 **Plan Mode is retired from every planning path in this harness** (owner directive 2026-08-05: *"plans should exist but plan mode itself is not necessary and we've basically outgrown it"*). No command enters it, no gate depends on it, and `EnterPlanMode`/`ExitPlanMode` appear in no `allowed-tools` list.

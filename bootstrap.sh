@@ -26,6 +26,8 @@
 #   4. Writes .claude/baseline.lock.json via baseline_sync.py init (v2, with --layers
 #      recorded as the lock profile) so /sync_baseline works from day one; init also renders the
 #      lane agents and writes .claude/gitignore.harness into the root .gitignore between its markers.
+#   4b. Seeds the gitignored sync cache clone (.claude/.cache/baseline-repo) from this baseline, so the
+#      pinned manifest is readable before the first sync.
 #   5. Runs baseline_sync.py compose, which writes .claude/settings.json from the copied
 #      settings.base.json, the adopted layers' settings.<layer>.json overlays and the
 #      settings.project.json seed, pruning a missing hook script or Skill grant.
@@ -215,6 +217,19 @@ if [[ $FORCE -eq 1 ]]; then FORCE_ARG=(--force); fi
     ${VAULT_NATIVE:+--sub "{{VAULT_ROOT}}=$VAULT_NATIVE"} \
     --sub "{{PROJECT_ROOT}}=$TARGET_NATIVE" \
   && python3 .claude/tools/baseline_sync.py compose )
+
+# The lock pins this baseline's commit; the proofs and `layer_closure.py` read that commit's manifest from the
+# sync engine's cache clone, which the first sync would otherwise be the first to create.
+CACHE_CLONE="$TARGET/.claude/.cache/baseline-repo"
+if [[ ! -e "$CACHE_CLONE" ]]; then
+  if git -c core.longpaths=true clone -q --no-checkout "$HERE" "$CACHE_CLONE" 2>/dev/null \
+     && git -C "$CACHE_CLONE" remote set-url origin "$REPO"; then
+    echo "baseline cache clone seeded in $TARGET_NATIVE/.claude/.cache/baseline-repo"
+  else
+    rm -rf "$CACHE_CLONE"
+    echo "warning: baseline cache clone not seeded; the first sync creates it" >&2
+  fi
+fi
 
 if [[ ! -e "$TARGET/.git" ]]; then
   git -C "$TARGET" init -q

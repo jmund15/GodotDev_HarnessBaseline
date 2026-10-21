@@ -436,13 +436,19 @@ def main():
 
     planted_deny = SimpleNamespace(__name__="planted_deny", __file__="planted_deny.py",
                                    main=planted_deny_main)
+    digest_repo = os.path.join(tmp, "digest_repo")
+    os.makedirs(os.path.join(digest_repo, ".claude", "tools"))
+    with open(os.path.join(digest_repo, ".claude", "tools", "session_digest.py"), "w", newline="\n") as fh:
+        fh.write("# fixture\n")
+    for git_args in (["init", "-q"], ["add", "."]):
+        subprocess.run(["git", *git_args], cwd=digest_repo, check=True, capture_output=True)
     digest_payload = payload(
-        "Bash", "python3 .claude/tools/session_digest.py --session abc123 --brief")
+        "Bash", "python3 .claude/tools/session_digest.py --session abc123 --brief", digest_repo)
     approver_at = [m for m, _ in pre_bash_dispatch.HOOKS].index(pre_bash_dispatch.approving_gates)
     planted_chain = (*pre_bash_dispatch.HOOKS[:approver_at], (planted_deny, ()),
                      *pre_bash_dispatch.HOOKS[approver_at:])
     project_before = os.environ.get("CLAUDE_PROJECT_DIR")
-    os.environ["CLAUDE_PROJECT_DIR"] = REPO
+    os.environ["CLAUDE_PROJECT_DIR"] = digest_repo
     try:
         control = pre_bash_dispatch.dispatch(digest_payload)
         planted = pre_bash_dispatch.dispatch(digest_payload, hooks=planted_chain)

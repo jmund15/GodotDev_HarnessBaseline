@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,22 @@ def test_check_exits_1_on_unclassified_file_and_writes_nothing() -> None:
     finally:
         if planted.exists():
             planted.unlink()
+
+
+def test_planted_ignored_file_under_template_changes_no_check_result() -> None:
+    # `.search-index/` is gitignored at the repo root, so git never lists a file in it.
+    ignored_dir = ROOT / "template" / ".claude" / ".search-index"
+    assert not ignored_dir.exists(), "planted-file fixture directory already exists"
+    before = MANIFEST.read_bytes()
+    try:
+        ignored_dir.mkdir()
+        (ignored_dir / ("s10_proof_" + "ignored_marker.unclassified")).write_text(
+            "ignored fixture content\n", encoding="utf-8", newline="\n")
+        result = _run_check()
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert MANIFEST.read_bytes() == before, "gen_manifest.py --check must write nothing"
+    finally:
+        shutil.rmtree(ignored_dir, ignore_errors=True)
 
 
 def test_classify_returns_none_for_an_unknown_path() -> None:
@@ -149,6 +166,7 @@ def main() -> int:
     cases = [
         test_check_passes_on_the_committed_tree,
         test_check_exits_1_on_unclassified_file_and_writes_nothing,
+        test_planted_ignored_file_under_template_changes_no_check_result,
         test_classify_returns_none_for_an_unknown_path,
         test_exact_layer_entry_classifies_a_path_no_pattern_matches,
         test_invalid_layer_entry_exits_1_naming_the_path,
