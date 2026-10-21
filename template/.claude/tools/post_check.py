@@ -36,9 +36,11 @@ relative evidence through verify_claims.resolve_path; folded reviews retain each
 Caller artifact flags become absolute at intake against the invoking cwd; subject-relative `--files` and
 `--new-paths`, git revisions and identifiers stay unchanged. Ledger subprocesses keep the subject cwd.
 `--spill-dir` supplies `<label>.md` when a job's inline result has no block. `--expect-total` supplies
-the consolidated review count before the host record exists; `--expect-sources` is the raw source count. A branch
-that reads consolidated findings checks `--expect-total`, one that reads raw seat rows checks `--expect-sources`, and
-each ignores the flag for a count it does not read; and `--seats-file` supplies the review sources'
+the consolidated review count before the host record exists; `--expect-sources` is the raw source count. An unfolded
+branch that reads consolidated findings checks `--expect-total`, one that reads raw seat rows checks `--expect-sources`,
+and each ignores the flag for a count it does not read. A folded run fails routing only when the engine's consolidated
+count exceeds the archive's originals, since consolidation only merges; fold_check holds by id each original finding
+no fold job read. And `--seats-file` supplies the review sources'
 numbering (launch order); a multi-source fold with neither the record nor the seats fails `fold-id-order-unknown`. Missing or unreadable sources write unavailable.
 
 `claims --run-label` finds the live journal by the independent verifier's started, unreturned label.
@@ -63,7 +65,8 @@ import fold_check  # noqa: E402
 
 Unusable = fold_check.Unusable
 HOLD_CLASSES = ("owner-input", "own-design", "unbased-number", "new-mechanism", "path-scope",
-                "read-first", "conflict", "destructive", "taste-fork", "plan-alternative", "spike", "refutation")
+                "read-first", "conflict", "destructive", "taste-fork", "plan-alternative", "spike", "refutation",
+                "unverified")
 COVERING = ("findings", "clean")
 
 
@@ -115,21 +118,6 @@ class Source:
     def __init__(self):
         self.rows, self.jobs, self.record, self.errors, self.findings_path = [], [], None, [], None
         self.selection = None
-        self.routing_gap = None
-
-
-def routing_failure(gap, fold_report):
-    """The fold-routing error when the fold jobs plus the findings held out-of-subject fall short of the engine's
-    consolidated count, else None. `gap` is (engine total, findings in fold jobs, consolidated rows). A group is
-    held only when every member is: fold_check disposes a finding citing no subject file `out-of-subject`."""
-    total, seen, consolidated = gap
-    outside = {entry["id"] for entry in fold_report["dispositions"] if entry.get("disposition") == "out-of-subject"}
-    held = sum(1 for row in consolidated if all(member in outside for member in row.get("merged_from") or [row["id"]]))
-    if total == seen + held:
-        return None
-    return {"kind": "fold-routing", "detail": (
-        f"expected {total} consolidated findings, read {seen} in fold jobs and {held} held out-of-subject "
-        f"(unrouted or ambiguous); retrieve them with session_digest --workflow-kind review and fold them standalone")}
 
 
 def _seat_order(seats_file):
@@ -203,7 +191,6 @@ def read_source(args):
         directory = Path(args.workflow_dir)
         src.jobs = fold_check.workflow_jobs(directory, required=False)
         if src.jobs:
-            views = fold_check._validated([row for job in src.jobs for row in job["rows"]], "fold prompts")
             src.rows, archive = _archive_rows(directory, merge=False, seat_order=_seat_order(args.seats_file))
             if archive['status'] != 'completed':
                 src.errors.append({'kind': 'source-incomplete', 'detail': f"workflow coverage is {archive['status']}"})
@@ -212,14 +199,10 @@ def read_source(args):
                     "pass --seats-file with the launched-seats file. Without it the review sources are numbered "
                     "in journal start order, so fold ids may name other findings")})
             total = args.expect_total if args.expect_total is not None else _consolidated_total(directory)
-            if total is None:
+            if total is not None and total > len(src.rows):
                 src.errors.append({"kind": "fold-routing", "detail": (
-                    "unverified: the run's host record holds no consolidated count, so no check shows every "
-                    "consolidated finding reached a fold job; retrieve them with session_digest --workflow-kind "
-                    "review")})
-            elif total != len(views):
-                consolidated, _ = _archive_rows(directory, merge=True, seat_order=_seat_order(args.seats_file))
-                src.routing_gap = (total, len(views), consolidated)
+                    f"the engine consolidated {total} findings but the run archive holds {len(src.rows)} originals, and "
+                    "consolidation only merges; retrieve the missing ones with session_digest --workflow-kind review")})
         else:
             view_total = None
             raw_total = None
@@ -283,9 +266,9 @@ def read_source(args):
             raise Unusable("each --digest needs one --snapshot, in order")
         for digest, manifest in zip(args.digest, args.snapshot):
             subject = fold_check.subject_from_manifest(manifest)
-            prompt = fold_check.fold_prompt_path(digest)
+            engine_files = [path for path in (fold_check.fold_prompt_path(digest), fold_check.fold_verdicts_path(digest)) if path]
             src.jobs.append({"subject": subject, "digest": digest, "digestValue": _digest_value(digest),
-                             "artifacts": [args.findings, *([prompt] if prompt else [])]})
+                             "artifacts": [args.findings, *engine_files]})
     return src
 
 
@@ -345,13 +328,9 @@ def applied_job(args, src):
     _write(manifest_path, manifest)
     subject = fold_check.Subject(root, files, manifest, manifest_path=manifest_path)
     src.rows = [row for row in src.rows if row['id'] in applied]
-    independent, verdict_path = fold_check.independent_verdicts(src.rows, [subject], str(args.out) + ".applied")
-    digest = {"applied": [{"id": i} for i in sorted(applied)],
-              "deferred": [{"id": row["id"], "reason": "not applied"} for row in src.rows if row["id"] not in applied],
-              "decisions": [{"id": row["id"], "taken": row["id"] in applied,
-                             "source": "ruling" if row["id"] in ruled else "finding"} for row in src.rows],
-              "verdicts": [{"id": i, "verdict": v, "refuting": False} for i, v in independent.items()],
-              "verdictPath": verdict_path, "designDelta": [], "changedPaths": subject.change_set()}
+    digest = {"applied": [{"id": i, "change": "applied by the caller", "source": "ruling" if i in ruled else "finding"}
+                          for i in sorted(applied)],
+              "deferred": [], "designDelta": [], "changedPaths": subject.change_set()}
     return {"subject": subject, "digestValue": digest, "artifacts": [args.findings], "rows": src.rows,
             "ruled": sorted(authorized)}
 
@@ -381,9 +360,7 @@ def held_rows(rows, jobs, *, views=None):
                              "reason": str(entry.get("reason") or "")})
     applied = {entry.get("id") for job in jobs if isinstance(job.get("digestValue"), dict)
                for entry in job["digestValue"].get("applied") or [] if isinstance(entry, dict)}
-    authorized = {entry.get('id') for job in jobs if isinstance(job.get('digestValue'), dict)
-                  for entry in job['digestValue'].get('decisions') or [] if isinstance(entry, dict)
-                  and entry.get('id') in (job.get('ruled') or [])}
+    authorized = {i for job in jobs for i in job.get('ruled') or []}
     for row in rows:
         if row['id'] in seen or (row['id'] in applied and
                                 (not fold_check.hold_class(row) or row['id'] in authorized)):
@@ -534,11 +511,18 @@ def candidate_mandates(blocks, roles):
     return candidates
 
 
+def roster_mandates(candidates, roster):
+    """`candidates` with each seat key the roster names replaced by that seat's mandates: a finding's `agent` is its
+    seat key, and a lens split over several seats has keys no registry lens carries."""
+    by_key = {seat["key"]: seat.get("mandates") or [] for seat in roster if isinstance(seat.get("key"), str)}
+    return {rel: {m for key in mandates for m in by_key.get(key) or [key]} for rel, mandates in candidates.items()}
+
+
 def next_round_uncovered(cwd, args, blocks, roster, rows, roles, candidates=None):
     """Per lens, the mandates and files unseen units leave uncovered; a mandate no roster lens carries
     names the lens that declares it."""
     import review_ledger
-    candidates = candidates if candidates is not None else candidate_mandates(blocks, roles)
+    candidates = candidates if candidates is not None else roster_mandates(candidate_mandates(blocks, roles), roster)
     wanted = set().union(*candidates.values()) if candidates else set()
     unit_files = sorted(rel for rel, mandates in candidates.items() if mandates)
     if not wanted or not unit_files:
@@ -602,8 +586,6 @@ def review(args, *, independent=None):
                                      src.jobs, fold_out, independent=independent, original=src.rows)
         _write(fold_out + ".json", fold_report)
         failures += fold_report["failures"]
-        if src.routing_gap and (gap := routing_failure(src.routing_gap, fold_report)):
-            failures.append(gap)
         independent = {item["id"]: item["verdict"] for item in fold_report["independentVerdicts"]}
         blocks = fold_report["nextRound"]
     import verify_claims
@@ -648,7 +630,7 @@ def review(args, *, independent=None):
             failures.append({"kind": "ledger-record-failed", "detail": done[2].strip()})
         rows_now = ledger_rows(cwd, args.subject)
         ledger_report["panelRows"] = len(rows_now) - before
-        candidates = candidate_mandates(blocks, roles)
+        candidates = roster_mandates(candidate_mandates(blocks, roles), roster)
         written, _ = record_inline(cwd, args, wanted, blocks, rows_now, candidates,
                                           failures, subjects, roster)
         ledger_report["inlineRows"] = written
@@ -671,7 +653,8 @@ def review(args, *, independent=None):
             held.append({"id": entry["id"], "class": "path-scope",
                          "reason": "its file is outside every fold subject, so no fold may edit it"})
             held_ids.add(entry["id"])
-    classes = {"file": "unapplied", "report": "report-mismatch", "finding": "unrouted"}
+    classes = {"file": "unapplied", "finding": "unrouted"}
+    id_classes = {"fold-id-coverage": "unreported"}
     failed_checks = set()
     for failure in failures:
         failure.setdefault("ids", [failure["id"]] if failure.get("id") else [])
@@ -681,10 +664,11 @@ def review(args, *, independent=None):
                                                 failure.get("subject") in (None, subject.root_text))}))
         if scope == "id":
             failed_checks.update(failure["ids"])
-        if scope in classes:
+        held_class = id_classes.get(failure["kind"], failure["kind"]) if scope == "id" else classes.get(scope)
+        if held_class:
             for finding_id in failure["ids"]:
                 if finding_id not in held_ids:
-                    held.append({"id": finding_id, "class": classes[scope], "reason": failure["detail"]})
+                    held.append({"id": finding_id, "class": held_class, "reason": failure["detail"]})
                     held_ids.add(finding_id)
     import shlex
     root = subjects[0].root if subjects else Path(args.root or REPO)
@@ -710,7 +694,10 @@ def review(args, *, independent=None):
                             "failedCheck": sorted(failed_checks), "files": refold_files,
                             "snapshot": shlex.join(snapshot_cmd), "check": shlex.join(check_cmd)}
     report = {**checked, "status": "fail" if failures or checked["status"] != "pass" else "pass",
-              "outcome": "fail" if failures or checked["errors"] else "pass",
+              "outcome": "fail" if checked["errors"] or any(
+                  fold_check.FAILURE_SCOPE.get(f["kind"], "subject") not in ("id", "file", "finding")
+                  or (fold_check.FAILURE_SCOPE.get(f["kind"]) == "finding" and not f.get("ids")) for f in failures)
+              else "pass",
               "unverified": sorted(i for i, v in independent.items() if v == "UNVERIFIED"),
               "held": held, "failures": failures, "ledger": ledger_report,
               "nextRound": next_round, "changedPaths": changed_paths,

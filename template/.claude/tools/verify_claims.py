@@ -378,7 +378,7 @@ GIT_SPECS = {
                     long_value=("--contains", "--merged", "--no-merged", "--points-at"),
                     require=lambda seen, positional: not positional or "--list" in seen,
                     pathspecs=lambda seen, positional: []),
-    "check-ignore": _Spec(short="vnq", long=("--verbose", "--non-matching", "--quiet"),
+    "check-ignore": _Spec(short="vnq", long=("--verbose", "--non-matching", "--quiet", "--no-index"),
                           require=lambda seen, positional: bool(positional)),
     "cat-file": _Spec(short="ptse",
                       require=lambda seen, positional: len(positional) == 1 and len(seen & {"-p", "-t", "-s", "-e"}) == 1,
@@ -396,14 +396,31 @@ _SHELL_CHARS = re.compile(r"[|;&<>$`]")
 _FIXED_REV = re.compile(r"[0-9a-f]{7,40}(?:~\d*|\^\d*)*")
 
 
-def parse_git(command):
-    """(subcommand, argv-after-git, pathspecs) for an allow-listed read-only git command, else None."""
+def _workdir(value, root):
+    """`value` when it names an existing directory under `root` by a relative path with no `..`, else None."""
+    if root is None or not value or Path(value).anchor or ".." in re.split(r"[\\/]", value):
+        return None
+    base = Path(root).resolve()
+    target = (base / value).resolve()
+    return value if target.is_dir() and (target == base or base in target.parents) else None
+
+
+def parse_git(command, root=None):
+    """(subcommand, argv-after-git, pathspecs, workdir) for an allow-listed read-only git command, else None.
+
+    One leading `-C <dir>` is the only git-level option, and only for a `<dir>` `_workdir` accepts under `root`."""
     if not isinstance(command, str) or _SHELL_CHARS.search(command):
         return None
     try:
         argv = shlex.split(command)
     except ValueError:
         return None
+    workdir = None
+    if len(argv) > 3 and argv[:2] == ["git", "-C"]:
+        workdir = _workdir(argv[2], root)
+        if workdir is None:
+            return None
+        argv = ["git", *argv[3:]]
     if len(argv) < 2 or argv[0] != "git" or argv[1].startswith("-") or argv[1] not in GIT_SPECS:
         return None
     sub, spec, rest = argv[1], GIT_SPECS[argv[1]], argv[2:]
@@ -451,7 +468,7 @@ def parse_git(command):
     if not spec.require(seen, positional):
         return None
     pathspecs = after if dashdash else spec.pathspecs(seen, positional)
-    return sub, [sub, *rest], [p for p in pathspecs if p]
+    return sub, [sub, *rest], [p for p in pathspecs if p], workdir
 
 
 def _run_git(rest, root, timeout):
@@ -463,16 +480,17 @@ def _run_git(rest, root, timeout):
 
 
 def _check_command(item, ctx):
-    parsed = parse_git(item.get("command"))
+    parsed = parse_git(item.get("command"), ctx.root)
     if parsed is None:
         return _result("command", UNCHECKED, "not-runnable")
-    sub, rest, pathspecs = parsed
+    sub, rest, pathspecs, workdir = parsed
+    cwd = Path(ctx.root) / workdir if workdir else ctx.root
     if sub == "show" and any(":" in token and not _FIXED_REV.fullmatch(token.split(":", 1)[0])
                              for token in rest[1:] if not token.startswith("-")):
         return _result("command", UNCHECKED, "moving-ref")
     output = item.get("output")
     try:
-        code, stdout, stderr = _run_git(rest, ctx.root, ctx.timeout)
+        code, stdout, stderr = _run_git(rest, cwd, ctx.timeout)
     except subprocess.TimeoutExpired:
         return _result("command", UNCHECKED, "timeout")
     except OSError:
@@ -486,7 +504,7 @@ def _check_command(item, ctx):
         return _result("command", UNVERIFIED, "output-differs")
     for spec in pathspecs:
         try:
-            code, listed, stderr = _run_git(["ls-files", "--", spec], ctx.root, ctx.timeout)
+            code, listed, stderr = _run_git(["ls-files", "--", spec], cwd, ctx.timeout)
         except subprocess.TimeoutExpired:
             return _result("command", UNCHECKED, "timeout")
         except OSError:

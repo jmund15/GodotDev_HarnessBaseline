@@ -1208,7 +1208,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
         # each other's duplicate launch (sidecar_common.sh sc_check_duplicate_launch).
         child_env = dict(os.environ, SIDECAR_LAUNCH_ID=launch_id, SIDECAR_FANOUT_ID=fanout_id,
                          SIDECAR_CHECK_OWNER=launch_id)
-        # A job whose work keeps one subject resident compacts only at the model's full window (model_registry.anthropic_window).
+        # A job whose work keeps one subject resident compacts at the resident window (model_registry.anthropic_window).
         if label in resident:
             child_env["SIDECAR_RESIDENT_SUBJECT"] = "1"
         identity = {"launchId": launch_id, "parentSessionId": parent_session,
@@ -1699,8 +1699,7 @@ def run_review_fold(review, args, data, out_dir, seats=()):
     for job in jobs:
         if not job["rows"]:
             with open(job["digest"], "w", encoding="utf-8", newline="\n") as stream:
-                json.dump({"applied": [], "deferred": [], "decisions": [], "verdicts": [],
-                           "mechanicalChecks": []}, stream)
+                json.dump({"applied": [], "deferred": [], "designDelta": [], "changedPaths": []}, stream)
             continue
         subject = job["subject"]
         findings = out_dir / f"{job['label']}_findings.json"
@@ -1719,7 +1718,7 @@ def run_review_fold(review, args, data, out_dir, seats=()):
             f"Digest file: {_posix(job['digest'])}",
             "The findings and verdicts files already exist: read them and never rewrite them. The snapshot is the "
             "caller's: never write it.",
-            f"Write only: {', '.join(writes + [_posix(job['digest'])])}. Return verdictPath: {_posix(verdicts)}.",
+            f"Write only: {', '.join(writes + [_posix(job['digest'])])}.",
             "",
             f"CONSOLIDATED FINDINGS ({len(job['rows'])} ids: "
             + ", ".join(row["id"] for row in job["rows"]) + "):",

@@ -145,20 +145,11 @@ const PLAN_P = '.claude/plans/p.md'
 const subjectOf = (files, over = {}) => ({ root: '.', snapshot: SNAPSHOT, files, ...over })
 const FOLD = { subjects: [subjectOf([PLAN_P])], templatePath: TEMPLATE, tier: 'fanout', model: 'sonnet', effort: 'medium' }
 const POST_CHECK_LINE = 'python3 .claude/tools/post_check.py review --workflow-dir "<transcriptDir-from-Workflow-result>" --out .claude/scratch/fold_fixture/post_check.json'
-const verdictsFor = (ids, over = {}) => ids.map(id => Object.assign({ id, refuting: false, verdict: 'UNCHECKED' }, over[id] || {}))
 const goodDigest = (over = {}) => Object.assign({
-  applied: [{ id: 'F1', change: 'fixed typo in step 3' }],
-  deferred: [{ id: 'F2', reason: 'taste fork' }, { id: 'F3', reason: 'measurement needed' }],
-  verdicts: [],
-  verdictPath: '.claude/scratch/fold_fixture/fold_verdicts.json',
+  applied: [{ id: 'F1', change: 'fixed typo in step 3', source: 'finding' }],
+  deferred: [{ id: 'F2', class: 'taste-fork', reason: 'taste fork' }, { id: 'F3', class: 'spike', reason: 'measurement needed' }],
   designDelta: [],
   changedPaths: [PLAN_P],
-  mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: true }],
-  decisions: [
-    { id: 'F1', taken: true, source: 'finding', why: 'intent-preserving typo correction' },
-    { id: 'F2', taken: false, why: 'held for owner choice' },
-    { id: 'F3', taken: false, why: 'premise needs a spike' },
-  ],
 }, over)
 const foldReply = ({ digest } = {}) => (prompt, opts) => {
   if (opts.phase === 'Fold') return digest === undefined ? goodDigest() : digest
@@ -194,13 +185,11 @@ async function foldCases() {
       && grouped.result.findings[0].verdict === 'UNVERIFIED', JSON.stringify(grouped.result))
   } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
   const ruling = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    decisions: [{ id: 'F1', taken: true, source: 'ruling', why: 'owner chose different wording' },
-      { id: 'F2', taken: false, why: 'held' }, { id: 'F3', taken: false, why: 'held' }],
-    mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: false }],
+    applied: [{ id: 'F1', change: 'owner wording', source: 'ruling' }],
     designDelta: [PLAN_P + ': owner wording'],
   }) }))
-  check('a ruling with different applied wording passes native decision and mechanical validation',
-    !flagKinds(ruling).some(k => ['fold-decision-coverage', 'fold-mechanical-check'].includes(k)),
+  check('a ruling with different applied wording is provisional: the post-check owns the old/new facts',
+    ruling.result.fold.status === 'provisional' && !flagKinds(ruling).some(k => k.startsWith('fold-')),
     JSON.stringify(ruling.result.flags))
   const foldCall = ruling.calls.find(call => call.opts.phase === 'Fold')
   const pinsFor = (r, label) => r.logs.filter(l => l.startsWith('PINS ')).map(l => {
@@ -216,7 +205,7 @@ async function foldCases() {
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Persist this full engine brief with Write to the Prompt file before any subject action.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Prompt file: .claude/scratch/fold_fixture/fold_prompt.md'))
   check('native digest schema admits ruling without changing designDelta strings',
-    ruling.calls.find(c => c.opts.phase === 'Fold').opts.schema.properties.decisions.items.properties.source.enum.includes('ruling'))
+    ruling.calls.find(c => c.opts.phase === 'Fold').opts.schema.properties.applied.items.properties.source.enum.includes('ruling'))
   for (const mode of ['full', 'bounded']) {
     const r = await run(noFoldArgs(mode), foldFixtureReply)
     const got = fingerprint(r)
@@ -323,11 +312,16 @@ async function foldCases() {
   check('Fold has only its own write scope and receives both checker paths',
     fold && !fold.prompt.includes('Read-only: do NOT modify') && fold.prompt.includes('Write only')
       && fold.prompt.includes('fold_findings.json') && fold.prompt.includes('fold_verdicts.json'))
-  check('fold schema requires applied, held, claim-verdict, decision and changed-path records',
-    fold && ['applied', 'deferred', 'verdicts', 'verdictPath', 'decisions', 'designDelta', 'changedPaths', 'mechanicalChecks']
-      .every(k => (fold.opts.schema.required || []).includes(k))
-      && !['planBytes', 'planChanged', 'prefoldPath'].some(k => (fold.opts.schema.required || []).includes(k)),
-    fold && JSON.stringify(fold.opts.schema.required))
+  check('fold schema requires judgment and changed paths only, never a fact the checker computes',
+    fold && ['applied', 'deferred', 'designDelta', 'changedPaths'].every(k => (fold.opts.schema.required || []).includes(k))
+      && ['decisions', 'verdicts', 'verdictPath', 'mechanicalChecks'].every(k => !(k in fold.opts.schema.properties))
+      && ['source', 'noTest'].every(k => k in fold.opts.schema.properties.applied.items.properties)
+      && fold.opts.schema.properties.deferred.items.required.includes('class'),
+    fold && JSON.stringify(fold.opts.schema))
+  check('the fold prompt asks for no verdict, verdictPath or question-null filter and applies each resolved PLAN option',
+    fold && !fold.prompt.includes('verdictPath') && !fold.prompt.includes('Return a verdicts row') && !fold.prompt.includes('question null')
+      && fold.prompt.includes('each PLAN') && fold.prompt.includes('options[0]'),
+    fold && fold.prompt.slice(0, 1800))
   check('a well-formed digest validates and is returned',
     ok.result.fold && ok.result.fold.status === 'provisional' && ok.result.fold.digest.applied[0].id === 'F1', JSON.stringify(ok.result.fold))
   check('a digest that passes the engine checks stays provisional and the result names the post-check',
@@ -349,20 +343,23 @@ async function foldCases() {
       && /Write only: [^\n]*Tests\/Logic\/NewTest\.cs/.test(newPathFold.prompt), newPathFold && newPathFold.prompt.slice(0, 700))
 
   for (const [label, digest, kind] of [
-    ['an id missing from applied and deferred', goodDigest({ deferred: [{ id: 'F2', reason: 'taste fork' }] }), 'fold-id-coverage'],
-    ['an id listed twice', goodDigest({ deferred: [{ id: 'F1', reason: 'conflict' }, { id: 'F2', reason: 'taste fork' }, { id: 'F3', reason: 'spike' }] }), 'fold-id-coverage'],
-    ['a ruled id missing from decisions', goodDigest({ decisions: [] }), 'fold-decision-coverage'],
-    ['a failed old/new check', goodDigest({ mechanicalChecks: [{ id: 'F1', oldAbsent: false, newPresent: true }] }), 'fold-mechanical-check'],
-    ['an applied old/new id with no check row', goodDigest({ mechanicalChecks: [] }), 'fold-mechanical-check'],
     ['no changedPaths list', goodDigest({ changedPaths: undefined }), 'fold-invalid-shape'],
-    ['a taken decision with no source', goodDigest({ decisions: [{ id: 'F1', taken: true, why: 'x' }, { id: 'F2', taken: false, why: 'y' }, { id: 'F3', taken: false, why: 'z' }] }), 'fold-decision-coverage'],
-    ['a finding-sourced change without its new text', goodDigest({ mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: false }] }), 'fold-mechanical-check'],
-    ['a fold-written change that left the old text', goodDigest({ decisions: [{ id: 'F1', taken: true, source: 'fold', why: 'x' }, { id: 'F2', taken: false, why: 'y' }, { id: 'F3', taken: false, why: 'z' }], mechanicalChecks: [{ id: 'F1', oldAbsent: false, newPresent: false }] }), 'fold-mechanical-check'],
+    ['no deferred list', goodDigest({ deferred: undefined }), 'fold-invalid-shape'],
+    ['an applied row with no change text', goodDigest({ applied: [{ id: 'F1' }] }), 'fold-invalid-shape'],
     ['no schema object', null, 'fold-no-return'],
   ]) {
     const r = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest }))
     check('fold digest with ' + label + ' is flagged ' + kind,
       flagKinds(r).includes(kind) && r.result.fold.status === 'invalid', JSON.stringify(r.result.flags))
+  }
+  for (const [label, digest] of [
+    ['an id absent from applied and deferred', goodDigest({ deferred: [{ id: 'F2', class: 'taste-fork', reason: 'taste fork' }] })],
+    ['an id listed twice', goodDigest({ deferred: [{ id: 'F1', class: 'conflict', reason: 'conflict' }, { id: 'F2', class: 'taste-fork', reason: 'x' }, { id: 'F3', class: 'spike', reason: 'y' }] })],
+    ['stale decisions, verdicts and mechanicalChecks fields', goodDigest({ decisions: [], verdicts: [], verdictPath: 'x', mechanicalChecks: [] })],
+  ]) {
+    const r = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest }))
+    check('fold digest with ' + label + ' stays provisional: post_check holds the id, the engine checks no fact',
+      r.result.fold.status === 'provisional' && !flagKinds(r).some(k => k.startsWith('fold-')), JSON.stringify(r.result.flags))
   }
   const unchangedClaim = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({ changedPaths: [] }) }))
   check('the engine reads no disk, so an empty changedPaths stays provisional and the post-check decides',
@@ -370,27 +367,22 @@ async function foldCases() {
     JSON.stringify(unchangedClaim.result.flags))
 
   const own = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    decisions: [{ id: 'F1', taken: true, source: 'fold', why: 'wrote a better change' }, { id: 'F2', taken: false, why: 'y' }, { id: 'F3', taken: false, why: 'z' }],
-    mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: false }] }) }))
-  check('a fold-written change without the finding new text is valid', own.result.fold.status !== 'invalid', JSON.stringify(own.result.flags))
+    applied: [{ id: 'F1', change: 'wrote a better change', source: 'fold' }] }) }))
+  check('a fold-written change is valid', own.result.fold.status !== 'invalid', JSON.stringify(own.result.flags))
 
   const adapted = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    decisions: [{ id: 'F1', taken: true, source: 'adapted', why: 'merged with another finding fix' }, { id: 'F2', taken: false, why: 'y' }, { id: 'F3', taken: false, why: 'z' }],
-    mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: false }] }) }))
-  check('an adapted change without the finding new text is valid', adapted.result.fold.status !== 'invalid', JSON.stringify(adapted.result.flags))
+    applied: [{ id: 'F1', change: 'merged with another finding fix', source: 'adapted' }] }) }))
+  check('an adapted change is valid', adapted.result.fold.status !== 'invalid', JSON.stringify(adapted.result.flags))
 
   const noTest = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    decisions: [{ id: 'F1', taken: true, source: 'finding', why: 'typo', noTest: 'docs only' }, { id: 'F2', taken: false, why: 'y' }, { id: 'F3', taken: false, why: 'z' }] }) }))
-  check('a decision may carry a noTest reason', noTest.result.fold.status === 'provisional', JSON.stringify(noTest.result.flags))
+    applied: [{ id: 'F1', change: 'typo', source: 'finding', noTest: 'docs only' }] }) }))
+  check('an applied entry may carry a noTest reason', noTest.result.fold.status === 'provisional', JSON.stringify(noTest.result.flags))
 
   const broad = await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD },
     (_prompt, opts) => opts.phase === 'Fold'
       ? goodDigest({
-        applied: ['F1', 'F3', 'F4'].map(id => ({ id, change: 'applied ' + id })), deferred: [{ id: 'F2', reason: 'owner-input' }],
-        decisions: [
-          ...['F1', 'F3', 'F4'].map(id => ({ id, taken: true, source: 'finding', why: 'source supports this action' })),
-          { id: 'F2', taken: false, why: 'the question names an owner-held input' },
-        ],
+        applied: ['F1', 'F3', 'F4'].map(id => ({ id, change: 'applied ' + id, source: 'finding' })),
+        deferred: [{ id: 'F2', class: 'owner-input', reason: 'owner-input' }],
       })
       : { findings: [
         finding({ agent: 'one', file: PLAN_P + ':1', description: 'ordinary fix' }),
@@ -401,43 +393,20 @@ async function foldCases() {
   check('fold applies critical, PLAN and test-readiness findings; holds ASK',
     broad.result.fold && broad.result.fold.status === 'provisional' && !flagKinds(broad).some(k => k === 'fold-applied-held'), JSON.stringify(broad.result))
 
-  const markedMissing = await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD },
+  const evidenceApplied = await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD },
     (_prompt, opts) => opts.phase === 'Fold' ? goodDigest({
-      applied: [], deferred: [{ id: 'F1', reason: 'missing quote' }],
-      decisions: [{ id: 'F1', taken: false, why: 'missing quote prevents verification' }], verdicts: [],
-    }) : { findings: [finding({ agent: 'one', file: PLAN_P + ':1', refuting: true })] })
-  check('a seat-marked refutation without a verdict is flagged',
-    flagKinds(markedMissing).includes('fold-verdict-coverage'), JSON.stringify(markedMissing.result.flags))
-
-  const evidenceUnverified = await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD },
-    (_prompt, opts) => opts.phase === 'Fold' ? goodDigest({
-      applied: [{ id: 'F1', change: 'applied unsupported claim' }], deferred: [],
-      decisions: [{ id: 'F1', taken: true, source: 'finding', why: 'unsupported claim' }],
-      verdicts: [{ id: 'F1', refuting: false, verdict: 'UNVERIFIED' }],
-    }) : { findings: [finding({ agent: 'one', file: PLAN_P + ':1', evidence: [{ file: 'source.js:4', quote: 'not present' }] })] })
-  check('applied evidence without VERIFIED is flagged even when not refuting',
-    flagKinds(evidenceUnverified).includes('fold-applied-unverified'), JSON.stringify(evidenceUnverified.result.flags))
-
-  const verdictVocabulary = verdict => run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD },
-    (_prompt, opts) => opts.phase === 'Fold' ? goodDigest({
-      applied: [], deferred: [{ id: 'F1', reason: 'external evidence' }],
-      decisions: [{ id: 'F1', taken: false, why: 'external evidence' }],
-      verdicts: [{ id: 'F1', refuting: false, verdict }],
-    }) : { findings: [finding({ agent: 'one', file: PLAN_P + ':1', evidence: [{ file: 'context7:/x', quote: 'q' }] })] })
-  const unchecked = await verdictVocabulary('UNCHECKED')
-  check('a fold verdict of UNCHECKED is a known verdict',
-    !flagKinds(unchecked).includes('fold-verdict-coverage'), JSON.stringify(unchecked.result.flags))
-  check('the retired NOT-APPLICABLE is an unknown verdict',
-    flagKinds(await verdictVocabulary('NOT-APPLICABLE')).includes('fold-verdict-coverage'))
+      applied: [{ id: 'F1', change: 'applied claim', source: 'finding' }], deferred: [],
+    }) : { findings: [finding({ agent: 'one', file: PLAN_P + ':1', refuting: true, evidence: [{ file: 'source.js:4', quote: 'not present' }] })] })
+  check('an applied evidence-bearing or refuting id is provisional: verdicts are the checker\'s, never the digest\'s',
+    evidenceApplied.result.fold.status === 'provisional' && !flagKinds(evidenceApplied).some(k => k.startsWith('fold-')),
+    JSON.stringify(evidenceApplied.result.flags))
 
   const refutingMerged = await run({
     agents: [reviewAgent('one'), reviewAgent('two')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD,
   }, (_prompt, opts) => {
     if (opts.phase === 'Merge') return { findings: [{ merged_from: ['F1', 'F2'] }] }
     if (opts.phase === 'Fold') return goodDigest({
-      applied: [{ id: 'M1', change: 'corrected source premise' }], deferred: [],
-      decisions: [{ id: 'M1', taken: true, source: 'finding', why: 'source proves correction' }],
-      verdicts: [{ id: 'M1', refuting: true, verdict: 'VERIFIED' }],
+      applied: [{ id: 'M1', change: 'corrected source premise', source: 'finding' }], deferred: [],
     })
     const one = opts.label === 'review:one'
     return { findings: [finding({ agent: opts.label, file: PLAN_P + ':' + (one ? '1' : '2'), refuting: one,
@@ -450,7 +419,7 @@ async function foldCases() {
       && refutingMerged.result.fold.status === 'provisional', JSON.stringify(refutingMerged.result))
 
   const bounded = await run({ ...noFoldArgs('bounded'), fold: FOLD }, foldReply())
-  check('bounded delivery carries fold decisions, verdicts, status and the post-check inline',
+  check('bounded delivery carries the fold digest, status and the post-check inline',
     bounded.result.fold && bounded.result.fold.status === 'provisional' && JSON.stringify(bounded.result.fold).includes('F2')
       && bounded.result.verification.status === 'unavailable', JSON.stringify(bounded.result.fold))
   const empty = await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD }, () => ({ findings: [] }))
@@ -472,9 +441,7 @@ const PLAN_B = '.claude/plans/b.md'
 const JOINT = { subjects: [subjectOf([PLAN_A]), subjectOf([PLAN_B])], templatePath: TEMPLATE, tier: 'fanout' }
 const jointSeat = (files) => () => ({ findings: files.map((file, i) => finding({ agent: 'one', file, description: 'finding ' + i })) })
 const digestFor = (ids, prompt = '') => goodDigest({
-  verdictPath: (prompt.match(/Verdicts file: ([^\n]+)/) || [null, '.claude/scratch/fold_fixture/fold_verdicts.json'])[1],
-  applied: ids.map(id => ({ id, change: 'applied ' + id })), deferred: [],
-  decisions: ids.map(id => ({ id, taken: true, source: 'finding', why: 'source supports it' })), mechanicalChecks: [],
+  applied: ids.map(id => ({ id, change: 'applied ' + id, source: 'finding' })), deferred: [],
 })
 const idsIn = (prompt) => ['F1', 'F2', 'F3', 'F4'].filter(id => prompt.includes('"id":"' + id + '"'))
 const jointReply = (files, digestOf = (ids, prompt) => digestFor(ids, prompt)) => (prompt, opts) =>
@@ -563,10 +530,9 @@ async function jointFoldCases() {
   const halfBad = await run(jointArgs(JOINT), jointReply(files, (ids, prompt) =>
     prompt.includes('\nFiles: ' + PLAN_B + '\n') ? digestFor(ids.slice(1), prompt) : digestFor(ids, prompt)))
   const planB = halfBad.result.fold && (halfBad.result.fold.subjects || []).find(p => p.subject.files[0] === PLAN_B)
-  check('each subject digest passes the digest checks on its own ids',
-    flagKinds(halfBad).includes('fold-id-coverage') && halfBad.result.fold.status === 'invalid'
-      && planB && planB.status === 'invalid'
-      && halfBad.result.fold.subjects.find(p => p.subject.files[0] === PLAN_A).status === 'provisional',
+  check('a subject digest that omits an id is still provisional: post_check holds that id alone',
+    !flagKinds(halfBad).includes('fold-id-coverage') && halfBad.result.fold.status === 'provisional'
+      && planB && planB.status === 'provisional',
     JSON.stringify(halfBad.result.fold))
 
   const bounded = await run(jointArgs(JOINT, 'bounded'), jointReply(files))
@@ -595,16 +561,12 @@ async function verificationCases() {
   const seat = { findings: [finding({ agent: 'one', file: CHECK_PLAN + ':1', description: 'typo', old: 'teh default', new: 'the default',
     evidence: [{ file: CHECK_DIR + '/src.txt:2', quote: 'return None' }] })] }
   const digestOf = (prompt, over = {}) => goodDigest(Object.assign({
-    applied: [{ id: 'F1', change: 'typo' }], deferred: [],
-    decisions: [{ id: 'F1', taken: true, source: 'finding', why: 'typo' }],
-    verdicts: [{ id: 'F1', refuting: false, verdict: 'VERIFIED' }],
-    verdictPath: (prompt.match(/Verdicts file: ([^\n]+)/) || [])[1],
+    applied: [{ id: 'F1', change: 'typo', source: 'finding' }], deferred: [],
     changedPaths: [CHECK_PLAN],
-    mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: true }],
   }, over))
   const foldArgs = { agents: [reviewAgent('one')], spillDir: CHECK_DIR,
     fold: { subjects: [subjectOf([CHECK_PLAN], { snapshot: CHECK_DIR + '/snapshot.json' })], templatePath: TEMPLATE, tier: 'fanout' } }
-  const checkRun = async (label, over, writeArtifact) => {
+  const checkRun = async (label, over) => {
     const r = await run(foldArgs, (prompt, opts) => opts.phase === 'Fold' ? digestOf(prompt, over) : seat)
     const call = r.calls.find(c => c.opts.phase === 'Fold')
     const digest = r.result.fold && r.result.fold.digest
@@ -616,9 +578,6 @@ async function verificationCases() {
       { type: 'started', key: 'k', agentId: 'fold1', label: call.opts.label, phase: 'Fold' },
       { type: 'result', key: 'k', agentId: 'fold1', result: digest },
     ].map(row => JSON.stringify(row)).join('\n') + '\n')
-    const artifact = path.join(REPO, digest.verdictPath)
-    fs.rmSync(artifact, { force: true })
-    if (writeArtifact) fs.writeFileSync(artifact, JSON.stringify({ status: 'complete', verdicts: [{ id: 'F1', verdict: 'VERIFIED' }] }))
     const out = path.join(wf, 'fold_check.json')
     const proc = childProcess.spawnSync('python3', [path.join(REPO, '.claude/tools/fold_check.py'), '--workflow-dir', wf, '--out', out], { cwd: REPO, encoding: 'utf8' })
     const report = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : null
@@ -626,27 +585,21 @@ async function verificationCases() {
   }
   try {
     check('the snapshot command writes the manifest the fold prompt names', snap.status === 0 && fs.existsSync(path.join(dir, 'snapshot.json')), snap.stderr)
-    const normal = await checkRun('normal', {}, true)
+    const normal = await checkRun('normal', {})
     check('a normal fold passes the shared post-fold checker with equal independent verdicts',
       normal.r.result.fold.status === 'provisional' && normal.proc.status === 0 && normal.report
         && JSON.stringify(normal.report.independentVerdicts) === JSON.stringify([{ id: 'F1', verdict: 'VERIFIED' }]),
       normal.proc.stderr + ' ' + JSON.stringify(normal.report))
     fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: owner-selected wording.\n')
     const ruling = await checkRun('ruling', {
-      decisions: [{ id: 'F1', taken: true, source: 'ruling', why: 'owner selected a different fix' }],
-      mechanicalChecks: [{ id: 'F1', oldAbsent: true, newPresent: false }],
-    }, true)
+      applied: [{ id: 'F1', change: 'owner selected a different fix', source: 'ruling' }],
+    })
     check('a native ruling with different wording produces the required re-review unit',
       ruling.r.result.fold.status === 'provisional' && ruling.proc.status === 0 && ruling.report
         && ruling.report.nextRound.some(block => block.seats.some(seat => seat.role === 're-review'
           && seat.units.includes('F1') && seat.mandates.includes('one'))),
       ruling.proc.stderr + ' ' + JSON.stringify(ruling.report))
     fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: the default.\n')
-    const planted = await checkRun('planted', {}, false)
-    check('a fold reporting VERIFIED without its checker artifact passes the engine as provisional only and fails the shared checker',
-      planted.r.result.fold.status === 'provisional' && planted.proc.status === 1 && planted.report
-        && planted.report.failures.some(f => f.kind === 'fold-checker-artifact'),
-      planted.proc.stderr + ' ' + JSON.stringify(planted.report))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -907,9 +860,7 @@ async function verificationCases() {
     fold: FOLD,
   }, (_prompt, opts) => opts.phase === 'Fold'
     ? goodDigest({
-      applied: [{ id: 'F1', change: 'applied verified evidence' }], deferred: [],
-      verdicts: [{ id: 'F1', refuting: true, verdict: 'VERIFIED' }],
-      decisions: [{ id: 'F1', taken: true, source: 'finding', why: 'verified source supports the change' }],
+      applied: [{ id: 'F1', change: 'applied verified evidence', source: 'finding' }], deferred: [],
     })
     : { findings: [finding({ agent: 'one', file: PLAN_P + ':1', evidence: [{ file: 'source.js:4', quote: 'source claim' }], refuting: true })] })
   const evidenceFoldCall = evidenceFold.calls.find(c => c.opts.phase === 'Fold')
@@ -918,7 +869,7 @@ async function verificationCases() {
       && evidenceFoldCall.prompt.includes('verify_claims.py --findings')
       && evidenceFoldCall.prompt.includes('fold_findings.json')
       && evidenceFoldCall.prompt.includes('fold_verdicts.json')
-      && evidenceFoldCall.opts.schema.required.includes('verdicts'),
+      && !('verdicts' in evidenceFoldCall.opts.schema.properties),
     JSON.stringify({ phases: evidenceFold.calls.map(c => c.opts.phase), fold: evidenceFoldCall }))
   check('fold digest VERIFIED evidence permits its applied finding',
     evidenceFold.result.fold && evidenceFold.result.fold.status === 'provisional',
@@ -930,17 +881,11 @@ async function verificationCases() {
   }, (_prompt, opts) => opts.phase === 'Fold'
     ? goodDigest({
       applied: [
-        { id: 'F1', change: 'fixed typo' },
-        { id: 'F3', change: 'resolved critical correction' },
-        { id: 'F4', change: 'resolved design finding' },
-        { id: 'F5', change: 'completed test-readiness item' },
-      ], deferred: [{ id: 'F2', reason: 'owner-input' }], decisions: [
-        { id: 'F1', taken: true, source: 'finding', why: 'supported correction' },
-        { id: 'F2', taken: false, why: 'the question names an owner-held input' },
-        { id: 'F3', taken: true, source: 'finding', why: 'critical fix is supported' },
-        { id: 'F4', taken: true, source: 'finding', why: 'design work is supported' },
-        { id: 'F5', taken: true, source: 'finding', why: 'readiness work is feasible' },
-      ],
+        { id: 'F1', change: 'fixed typo', source: 'finding' },
+        { id: 'F3', change: 'resolved critical correction', source: 'finding' },
+        { id: 'F4', change: 'resolved design finding', source: 'finding' },
+        { id: 'F5', change: 'completed test-readiness item', source: 'finding' },
+      ], deferred: [{ id: 'F2', class: 'owner-input', reason: 'owner-input' }],
     })
     : { findings: [
       finding({ agent: 'one', file: PLAN_P + ':1', description: 'ordinary fix' }),
@@ -961,16 +906,14 @@ async function verificationCases() {
       && !holdPrompt.prompt.includes('Apply every supported finding')
       && ['owner-input', 'own-design', 'unbased-number', 'new-mechanism'].every(k => foldTemplate.includes('`' + k + '`')),
     holdPrompt && holdPrompt.prompt.slice(0, 1600))
+  check('the fold prompt also holds a finding whose evidence is not VERIFIED, as the template does',
+    holdPrompt && holdPrompt.prompt.includes('not VERIFIED (`unverified`)') && foldTemplate.includes('`unverified`'),
+    holdPrompt && holdPrompt.prompt.slice(0, 400))
 
   const altReply = (_prompt, opts) => opts.phase === 'Fold'
     ? goodDigest({
-      applied: [{ id: 'F1', change: 'took A' }, { id: 'F2', change: 'took C' }], deferred: [{ id: 'F3', reason: 'own-design' }],
-      decisions: [
-        { id: 'F1', taken: true, source: 'finding', why: 'resolved' },
-        { id: 'F2', taken: true, source: 'finding', why: 'resolved' },
-        { id: 'F3', taken: false, why: 'open decision' },
-      ],
-      mechanicalChecks: [],
+      applied: [{ id: 'F1', change: 'took A', source: 'finding' }, { id: 'F2', change: 'took C', source: 'finding' }],
+      deferred: [{ id: 'F3', class: 'own-design', reason: 'own-design' }],
     })
     : { findings: [
       finding({ agent: 'one', file: PLAN_P + ':1', action: 'PLAN', scope: ['plan section'], description: 'with alternative', options: ['Do A', 'Alternative: B; wins when C'] }),
@@ -987,12 +930,6 @@ async function verificationCases() {
   check('the bounded fold block carries appliedWithAlternative whole',
     altBounded.result.fold && JSON.stringify(altBounded.result.fold.appliedWithAlternative) === JSON.stringify(expectedAlt),
     JSON.stringify(altBounded.result.fold))
-
-  const noDecisions = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({
-    digest: goodDigest({ decisions: [] }),
-  }))
-  check('a digest missing a ruled decision is flagged',
-    flagKinds(noDecisions).includes('fold-decision-coverage'), JSON.stringify(noDecisions.result.flags))
 
   const validMerge = await runMerge([mergedFinding()])
   check('valid semantic merge is accepted',

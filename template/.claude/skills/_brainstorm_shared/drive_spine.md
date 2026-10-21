@@ -153,7 +153,7 @@ that patch as its resume point. A red test left in the tree fails every other se
    (its Step 4) that lie in the plan's write set, or in the short plan's file list when no plan file exists. The
    report holds an `sa-architecture-sweep` verdict or the ledger row that covers it. It reads the review ledger
    (`tools/review_ledger.py`, `orchestration` §2).
-   Every finding is dispositioned (applied by the fold, with its `decisions` row; fix now by a refold; worklog under a `worklog_reference` §Do-now gate reason, or refuse with
+   Every finding is dispositioned (applied by the fold, with its `applied` entry; fix now by a refold; worklog under a `worklog_reference` §Do-now gate reason, or refuse with
    evidence); an ASK goes to the adapter's owner stop, or halts the drive under H3 when there is none. A fix-now disposition routes per `orchestration` §2 *Later rounds*. Close is done when every finding has a disposition; an undispositioned finding stops the commit sequence.
    The close report lists each seam review the drive's boundaries admitted: the runs from
    `review_ledger.py rows --task <task id>`, the skips from the task record's decisions.
