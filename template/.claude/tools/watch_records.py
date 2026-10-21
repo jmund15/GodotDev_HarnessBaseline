@@ -33,7 +33,7 @@ in `DONE_STATES`, or a run dir under `<session>/subagents/workflows/` with no en
 within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
 a run's end wakes nobody, and a watcher with nothing live exits `NONE`. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
-`<record>.stream`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
+`<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
 re-reading a file it had read before the previous compaction (the cycle: a seat that loses its subject, refills its window and
 compacts again) wakes the session with `COMPACTING [workflow <runId>] <label> compacted <n>, re-read <file>`, once per
 new compaction count. A running Workflow seat whose `agent-<id>.jsonl` has not grown for `WORKFLOW_STALL_SECONDS`
@@ -757,8 +757,9 @@ _GRID_SEEN = {}  # grid.log path -> (log stat, cells pending, pid, pid alive, mo
 
 def bench_grid_running(campaign):
     """True while the campaign's grid has cells to run: grid.log has a CELL line after its last terminal
-    `GRID` line and the grid.pid process is alive. A missing log, a dead or unprobeable pid, or any
-    error reads False, so the unit ends and wakes. The watcher polls this at POLL_SECONDS, so the log is
+    `GRID` line and the grid.pid process is alive. A missing log, a dead pid, a pid no probe has seen
+    alive, or any error reads False, so the unit ends and wakes. A probe that cannot answer (`ps` timing
+    out on a loaded machine) keeps the pid's last answer and retries next window. The watcher polls this at POLL_SECONDS, so the log is
     parsed only when its size or mtime changes and the pid is probed at most once per GRID_RECHECK_S."""
     try:
         scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
@@ -788,7 +789,11 @@ def bench_grid_running(campaign):
             if seen and seen[2] == pid and time.monotonic() - seen[4] < GRID_RECHECK_S:
                 alive, probed = seen[3], seen[4]
             else:
-                alive, probed = bench_lib._pid_alive(pid) is True, time.monotonic()
+                answer, last = bench_lib._pid_alive(pid), _GRID_SEEN.get(log)
+                if answer is None and last and last[2] == pid:
+                    alive, probed = last[3], last[4]
+                else:
+                    alive, probed = answer is True, time.monotonic()
             _GRID_SEEN[log] = (stamp, pending, pid, alive, probed)
             return alive
     except Exception:
@@ -855,7 +860,9 @@ def session_rosters(session_id):
                     if pid is not None and checked[(name, pid)]:
                         owned[name] = pid
                 if name in owned:
-                    units["roster:" + name] = {"roster": row, "records": []}
+                    live = row["state"] in ROSTER_LIVE_STATES
+                    units["roster:" + name] = {"roster": row, "records": [],
+                                               "cells": bench_lib.roster_running_cells(logs, name) if live else []}
             last[:] = [now, units]
         except Exception:
             last[0] = now
@@ -1231,6 +1238,12 @@ def _wake(grouped, now=None):
             row = unit["roster"]
             if row["state"] in ROSTER_LIVE_STATES:
                 live += 1
+                for cell, stream in unit.get("cells") or []:
+                    compaction = agent_compaction(stream)
+                    if compaction["reread"]:
+                        lines.append(("compacting", ("compacting", stream, compaction["count"]),
+                                      "COMPACTING roster %s %s compacted %d, re-read %s"
+                                      % (row["name"], cell, compaction["count"], compaction["reread"]), True))
             else:
                 # DONE is the roster's `END <name> ok`; a clean end waits while another roster of this session runs.
                 others_live = any(other.get("roster") and other["roster"]["state"] in ROSTER_LIVE_STATES
@@ -1349,6 +1362,10 @@ def checkin_lines(grouped, now=None):
             row = unit["roster"]
             if row["state"] in ROSTER_LIVE_STATES:
                 out.append("RUNNING roster %s: %s" % (row["name"], row["last"]))
+                for cell, stream in unit.get("cells") or []:
+                    compaction = agent_compaction(stream)
+                    if compaction["count"]:
+                        out.append("  %s %s" % (cell, compaction_clause(compaction)))
             continue
         for label, record in unit["records"]:
             state, _, found_by = record_state(record)

@@ -7,7 +7,7 @@ additionalContext carries every exceptional record, a `running or queued (no liv
 group, and the session-wake command that covers them. Non-notices and fully covered runs are
 silent. Advisory errors log to stderr and do not block the prompt. Measured through
 prompt_dispatch's 5 s member budget, median of 7 reps: killed 18 ms, stopped 18 ms,
-ordinary 10 ms; the emitted line is 299 bytes when it fires, 0 when it does not.
+ordinary 10 ms; the emitted text is empty when no notice fires.
 """
 import glob
 import json
@@ -88,7 +88,9 @@ def advice(payload):
             lines.append("%s%s: %s" % (group, action, ", ".join(paths)))
     if uncovered:
         lines.append("running or queued (no live watcher): " + ", ".join(dict.fromkeys(uncovered)))
-        lines.append("Arm the session watcher: %s (Bash run_in_background, timeout 7200000)" % WAKE_COMMAND)
+        lines.append("Arm the session watcher as its own Bash call with run_in_background: true and timeout 7200000: %s. "
+                     "Started any other way (foreground, &, nohup, disown) it never wakes you and blocks a correct arm."
+                     % WAKE_COMMAND)
     return "\n".join(lines) if len(lines) > 1 else None
 
 

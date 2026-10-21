@@ -50,18 +50,18 @@ BANNED = [
      "the `evidence` column tags the source; the cell states the tendency"),
 ]
 
-# Rungs belong to the `effort` column alone; a `±` cell that names one is a second home that drifts from
-# it, and pins a rung the reader should weigh case by case.
+# Effort levels belong to the `effort` column alone; a `±` cell that names one is a second home that drifts
+# from it, and pins an effort the reader should weigh case by case.
 RUNG = r"(?:low|medium|high|xhigh|max)"
 PM_BANNED = [
-    ("effort rung", r"`" + RUNG + r"`|·" + RUNG + r"\b|\bxhigh\b|\b" + RUNG + r"\s+effort\b",
-     "the `effort` column owns every rung; compare with another row by family and scope, not by its rung"),
+    ("effort level", r"`" + RUNG + r"`|·" + RUNG + r"\b|\bxhigh\b|\b" + RUNG + r"\s+effort\b",
+     "the `effort` column owns every effort level; compare with another row by family and scope, not by its effort"),
 ]
 
-# A result at one rung shows that rung is enough, not that the others fail.
+# A result at one effort shows that effort is enough, not that the others fail.
 EFFORT_BANNED = [
     ("absolute", r"\b(?:only|always|never)\b",
-     "a start rung and the signal that moves it; a result at one rung is not a law about the others"),
+     "a starting effort and the signal that moves it; a result at one effort is not a law about the others"),
 ]
 
 COLUMN_RULES = {"±": PM_BANNED, "effort": EFFORT_BANNED}
@@ -74,7 +74,7 @@ TOP_LEVEL_BANNED = [
     ("candidate promotion rule", r"A claim reaches this file only"),
     ("version takeover rule", r"takes over its family's row"),
     ("owner-claim rule", r"owner's statement that a row"),
-    ("contradicting-cell rule", r"contradicts a rung"),
+    ("contradicting-cell rule", r"contradicts an? (?:effort level|rung)"),
     ("authority rule", r"may edit any cell"),
     ("ingest proposal rule", r"proposes a change with its evidence"),
     ("cost-axis scoring rule", r"counted apart"),
@@ -148,6 +148,42 @@ def dangling_names(path, data=None):
     return out
 
 
+# The everyday shapes of each tier (the Role definitions table), each as the words an effort cell uses for it. A
+# row's effort cell names a start rung for every shape of every tier its registry rows claim, measured or not, so
+# no reader guesses a rung at dispatch. A `supplementary` tier is a review seat: its shape is that seat.
+TIER_SHAPES = {
+    "orchestrator": (("session", r"session|long-horizon|orchestrat"),),
+    "architect": (("architecting or design", r"architect|design"), ("planning", r"plann")),
+    "executor": (("execution", r"execut|coding|refactor|converged"), ("debugging", r"debug")),
+    "fanout": (("surveys and explore lenses", r"survey|explor"),
+               ("mechanical fan-out (extraction, enumeration, comparison, rubric checks)",
+                r"extract|enumerat|comparison|rubric|mechanical|copyable")),
+    "scout": (("locate, enumerate, extract", r"locat|enumerat|extract|copyable"),),
+}
+SUPPLEMENTARY_SHAPE = ("an added review seat", r"review|plan-check|audit seat|added .*seat")
+
+
+def coverage_gaps(path, data=None):
+    """(line, model, tier, shape) per claimed tier shape the row's effort cell names no rung for."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import model_registry           # noqa: E402
+
+    data = data if data is not None else model_registry.load()
+    out = []
+    for line_no, model, col, text in cells(path) or []:
+        if col != "effort":
+            continue
+        members = model_registry.ladder_rows(model, data)
+        roles = {r for m in members for r in (m.get("roles") or [])}
+        supplementary = {r for m in members for r in (m.get("supplementary") or [])} - roles
+        wanted = [(tier, shape, pat) for tier in sorted(roles) for shape, pat in TIER_SHAPES.get(tier, ())]
+        wanted += [(tier,) + SUPPLEMENTARY_SHAPE for tier in sorted(supplementary)]
+        for tier, shape, pat in wanted:
+            if not re.search(pat, text, re.I):
+                out.append((line_no, model, tier, shape))
+    return out
+
+
 def _has_table(lines):
     """Is there a Role guidance table at all? Distinguishes 'no rows' from 'no table'."""
     return any(raw.strip() == HEADING for raw in lines)
@@ -194,10 +230,14 @@ def main(argv, data=None):
         bad += 1
         print("%s:%d  %s  [%s]  names %r, which no ladder row covers -- compare with a row the reader can find"
               % (path, line, model.split("(")[0].strip(), col, name))
+    for line, model, tier, shape in coverage_gaps(path, data):
+        bad += 1
+        print("%s:%d  %s  [effort]  claims %s but names no starting effort for %s -- give one, marked (unmeasured) "
+              "when no source measured it" % (path, line, model.split("(")[0].strip(), tier, shape))
     print("\n%d cell(s) checked across %s, %d prose-contract hit(s)"
           % (len(rows), " + ".join(CHECKED_COLUMNS), bad))
     if bad:
-        print("These cells state what the model TENDS to do and which rung to pin. Rewrite the "
+        print("These cells state what the model TENDS to do and which effort to pin. Rewrite the "
               "clause as a tendency, or drop it -- see `.claude/commands/ladder_ingest.md`.")
     return 1 if bad else 0
 

@@ -130,7 +130,7 @@ def expect_wt(label, token, want, project, cwd=None, **kwargs):
         got = rc.is_retired_worktree(token, cwd or project, project, reasons=reasons, **kwargs)
     except TypeError as exc:
         got = "TypeError: %s" % exc
-    if got != want or (not want and len(reasons) != 1) or (want and reasons):
+    if got != want or (not want and not reasons) or (want and reasons):
         fails += 1
         print(f"  FAIL worktree {label}: expected {want}, got {got} ({token}) {reasons}")
     else:
@@ -147,6 +147,28 @@ def expect_wt_channel(label, cmd, want, project, transcript=None):
               f"{(proc.stdout + proc.stderr)[:240]!r}")
     else:
         print(f"  ok   worktree channel {label}: {want}")
+
+
+def expect_retire_check(label, argv, want_code, want_lines, project):
+    """`--retire-check` prints `<token>: retired` or `<token>: blocked: <reasons>` per worktree; a `want_lines`
+    entry ending in `: retired` must match exactly, any other is a prefix of its blocked line."""
+    global fails, total
+    import io
+    from contextlib import redirect_stdout
+    from unittest.mock import patch
+    total += 1
+    buf = io.StringIO()
+    with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": project}), redirect_stdout(buf):
+        code = rc.main(["--retire-check"] + argv)
+    lines = buf.getvalue().splitlines()
+    ok = code == want_code and len(lines) == len(want_lines) and all(
+        got == want if want.endswith(": retired") else got.startswith(want)
+        for got, want in zip(lines, want_lines))
+    if not ok:
+        fails += 1
+        print(f"  FAIL retire-check {label}: expected exit {want_code} {want_lines}, got exit {code} {lines}")
+    else:
+        print(f"  ok   retire-check {label}: exit {code}")
 
 
 def answer_transcript(path, *answers):
@@ -258,6 +280,9 @@ def retired_worktree_cases():
     expect_wt("traversal token", ".claude/worktrees/clean/../clean", False, proj)
     expect_wt("glob token", ".claude/worktrees/cl*", False, proj)
     expect_wt("a clean worktree of another project", clean, False, os.path.join(FIX, "proj_seed"))
+    expect_retire_check("retired worktree prints retired, exit 0", [clean], 0, [clean + ": retired"], proj)
+    expect_retire_check("blocked worktrees print their reasons, exit 1", [clean, dirty, stray], 1,
+                        [clean + ": retired", dirty + ": blocked: ", stray + ": blocked: "], proj)
 
     from unittest.mock import patch
     from pathlib import Path
@@ -283,7 +308,8 @@ def retired_worktree_cases():
                 key = {'status': 'sub_status', 'rev-list': 'sub_pushed'}.get(key, key)
             defaults = {'worktree': listing, 'status': '', 'rev-list': '',
                         'submodule': ' abc Sub (heads/main)\n', 'sub_status': '',
-                        'sub_pushed': '', 'rev-parse': 'abc\n'}
+                        'sub_pushed': '', 'rev-parse': 'abc\n', 'branch': '',
+                        'config': 'submodule.Sub.path Sub\n'}
             return overrides.get(key, defaults[key])
         global total, fails
         total += 1
@@ -366,6 +392,64 @@ def retired_worktree_cases():
     o_sub_dirty = orphan("o_sub_dirty", submodule=True,
                          edit=lambda p: write(os.path.join(p, "Sub", "s.txt"), "edited in the submodule\n"))
     expect_wt("orphan, submodule file edited", o_sub_dirty, False, proj, allow_ignored=True)
+
+    # A worktree's submodule clone keeps its own remote refs, which go stale: its HEAD is pushed when
+    # the main checkout's same submodule sees it on a remote.
+    sub_main = os.path.join(proj, "Sub")
+    before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=sub_main, env=ENV, capture_output=True,
+                            text=True, check=True).stdout.strip()
+    write(os.path.join(sub_main, "s2.txt"), "pushed from the main checkout\n")
+    git("add", "s2.txt", cwd=sub_main)
+    git("commit", "-q", "-m", "pushed later", cwd=sub_main)
+    git("push", "-q", "origin", "HEAD:main", cwd=sub_main)
+    git("fetch", "-q", "origin", cwd=sub_main)
+    git("add", "Sub", cwd=proj)
+    git("commit", "-q", "-m", "bump Sub", cwd=proj)
+    git("push", "-q", "origin", "HEAD:main", cwd=proj)
+    git("fetch", "-q", "origin", cwd=proj)
+    stale = add_wt("stale_sub_refs", submodule=True)
+    git("update-ref", "refs/remotes/origin/main", before, cwd=os.path.join(stale, "Sub"))
+    expect_wt("submodule HEAD pushed, seen only by the main checkout's refs", stale, True, proj)
+
+    # A submodule whose `.git` names a pruned admin directory: git cannot read it, so its files are judged
+    # like an orphan's, against the main checkout's submodule store, and only on the owner's pick.
+    def broken_sub(name, edit=None):
+        path = add_wt(name, submodule=True)
+        if edit:
+            edit(path)
+        with open(os.path.join(path, "Sub", ".git"), encoding="utf-8") as fh:
+            admin = fh.read().split("gitdir:", 1)[1].strip()
+        force_rmtree(admin if os.path.isabs(admin) else os.path.join(path, "Sub", admin))
+        return path
+
+    b_held = broken_sub("b_held")
+    expect_wt("broken submodule link, content held by git, owner approved", b_held, True, proj, allow_ignored=True)
+    expect_wt("broken submodule link, no approval", b_held, False, proj)
+    b_reasons = []
+    rc.is_retired_worktree(b_held, proj, proj, reasons=b_reasons)
+    total += 1
+    if not any("Sub" in r and "missing admin directory" in r for r in b_reasons):
+        fails += 1
+        print(f"  FAIL broken submodule link names the broken link: {b_reasons}")
+    else:
+        print("  ok   broken submodule link names the broken link")
+    b_edit = broken_sub("b_edit", edit=lambda p: write(os.path.join(p, "Sub", "s.txt"), "edited\n"))
+    expect_wt("broken submodule link, submodule file edited", b_edit, False, proj, allow_ignored=True)
+
+    # Every unmet condition reaches one deny, so a retry never meets a second, unseen block.
+    both = add_wt("two_blocks")
+    write(os.path.join(both, "notes.md"), "n\n")
+    write(os.path.join(both, "b2.txt"), "b\n")
+    git("add", "b2.txt", cwd=both)
+    git("commit", "-q", "-m", "local only", cwd=both)
+    two = []
+    rc.is_retired_worktree(both, proj, proj, reasons=two)
+    total += 1
+    if not (len(two) == 2 and "notes.md" in two[0] and "no remote branch" in two[1]):
+        fails += 1
+        print(f"  FAIL every unmet condition is named in one verdict: {two}")
+    else:
+        print("  ok   every unmet condition is named in one verdict")
     # A leftover whose `.git` file is gone too (an interrupted removal): the same held-content test decides it.
     def gitless(name, edit=None):
         path = orphan(name, edit=edit)

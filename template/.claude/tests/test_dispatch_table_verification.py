@@ -313,6 +313,36 @@ def test_generic_dispatch_without_claims_is_allowed():
     assert not e.body and not reports(e)
 
 
+def plant_text_list(texts):
+    """A run whose agents return plain text, as the host records it: the result is the list of their strings."""
+    e = Env()
+    e.plant_run('texts', 'completed', [])
+    host = Path(e.session) / 'workflows/texts.json'
+    record = json.loads(host.read_text())
+    record.update(workflowName='codify-ladder-probe-arms', result=list(texts))
+    host.write_text(json.dumps(record), encoding='utf-8')
+    journal = Path(e.session) / 'subagents/workflows/texts/journal.jsonl'
+    journal.write_text(''.join(
+        json.dumps(dict(type='started', key='k%d' % i, agentId='a%d' % i, label='arm-%d' % i, phase='Arms')) + '\n'
+        + json.dumps(dict(type='result', key='k%d' % i, agentId='a%d' % i, result=text)) + '\n'
+        for i, text in enumerate(texts)))
+    e.run(workflow_payload(dict(scriptPath='.claude/workflows/probe.js', args={}), 'texts'), '--launch')
+    return e
+
+
+def test_text_list_result_without_a_claims_block_is_allowed():
+    e = plant_text_list(['+ a rewritten cell; - its weakness', '+ another arm; - slow'])
+    e.run(stop_payload(), '--complete')
+    assert not e.body and not reports(e), e.body
+
+
+def test_text_list_result_with_a_claims_block_is_audited():
+    claim = json.dumps(dict(claim='x', evidence=[dict(file='nowhere.txt', quote='q')]))
+    e = plant_text_list(['prose only', 'prose\n```claims\n' + claim + '\n```\n'])
+    e.run(stop_payload(), '--complete')
+    assert e.body.get('decision') == 'block', e.body
+
+
 def test_exempt_engine_with_claims_is_not_exempt_from_audit():
     e, _, _ = plant(name='idea_fanout')
     e.run(stop_payload(), '--complete')

@@ -192,6 +192,10 @@ entry. A contract approves one command in canonical shape (a tracked project too
 with allowlisted flags and in-project paths; anything else falls through to the classifier. Hooks and narrow `permissions.allow` rules decide before the classifier; a `.claude/` write reaches it, and only a user-settings `autoMode.allow` entry changes its verdict. An action that grants
 persistence, spend, detachment or writes becomes a contract only after the owner names that class.
 
+## Paid work stops on an observed fact of waste, never on a cost estimate
+
+Facts such as a finished result about to be re-paid, an orphaned, stalled or duplicate job, a balance below its floor, a spent allowance or a provider's usage-limit rejection stop a run. A cap derived from a spend estimate never does: it measures a run's size, not waste, so it stops the largest legitimate run first. Whatever stops a run leaves it resumable: its record keeps the session id.
+
 ## A launcher script is not edited in place while detached runs execute it
 
 Bash reads a running script by byte offset, so a size-changing edit makes every in-flight run resume mid-token and die, losing the output its shell held. Before editing a `.sh` launcher with live detached instances, edit a copy and point new dispatches at it, or stop the instances this session owns through `python3 .claude/tools/reap.py` and edit once they are gone. Evidence: `gotcha_editing_shell_script_corrupts_running_instances`.

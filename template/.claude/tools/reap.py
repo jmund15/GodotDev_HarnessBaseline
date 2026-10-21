@@ -38,11 +38,21 @@ it cannot (incident: auto-memory/archive/feedback_guard_denial_of_justified_work
                             written by another job. An artifact whose label stem (the name before
                             its first dot, any case) is in the target tree's command lines is the
                             job's own in-progress output and refuses.
-                owner       --why quotes the owner's stop instruction VERBATIM (12+ characters; case and
-                            whitespace ignored), and the quote must appear in an owner-typed message of
-                            this session's transcript, or in the question of an AskUserQuestion the owner
-                            answered with a stop option -- never assistant text, a subagent prompt or tool
-                            output. A missing or unreadable transcript refuses. The only prose-backed class,
+                queued      nothing the job runs is in flight: no model client (claude, codex, opencode,
+                            ollama), `*_sidecar.sh` launcher or dispatch shim in its tree, and no live process
+                            outside it carrying its job id (REAP_JOB_ID, or a sidecar's SIDECAR_LAUNCH_ID, set
+                            by its launcher at spawn, so detached members count). A target with no job id
+                            refuses. Stopping it loses no work, so an owned job waiting its turn stops on this.
+                owner       --why is the owner's stop order, verbatim from this session's transcript (case and
+                            whitespace ignored): an owner-typed message that passes kill_guard's stop-order
+                            test (a stop verb, no keep word), or the question of an AskUserQuestion the owner
+                            answered with a stop option. It names the target: its pid, its launch label, or the
+                            script or campaign its command line or a launching ancestor's runs. Any other owner
+                            sentence is one the agent chose. The owner's latest reply also passes with no quote
+                            when it approves the stop (_owner_text.owner_consent): a typed "yes" to the agent's
+                            message that asked to stop the target by one of those names, or a typed or answered
+                            order naming it. A missing or unreadable transcript refuses. The
+                            only prose-backed class,
                             and the only one that SUBSTITUTES for the ownership proof above: the
                             proof stands in for a human's authorisation, so a human naming the
                             target outranks it. It does not reach a never-kill target or one whose
@@ -116,6 +126,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
 from kill_guard import KEEP_LABEL_RE, STOP_LABEL_RE, _owner_inputs  # noqa: E402  (the owner-message projection a stop request reads)
+from _owner_text import owner_consent  # noqa: E402
 import _hook_state  # noqa: E402
 from _win_path import drive_path, native_path  # noqa: E402
 
@@ -126,8 +137,12 @@ from model_registry import login_dirs, session_projects_dir  # noqa: E402
 import sidecar_argv  # noqa: E402
 
 PROJECTS_ROOT = Path(session_projects_dir())
-OWNER_QUOTE_MIN = 12
-REASONS = ("duplicate", "orphan", "stalled", "superseded", "owner")
+REASONS = ("duplicate", "orphan", "stalled", "superseded", "queued", "owner")
+# A tree member doing paid or result-bearing work: a model client, a sidecar launcher, or a dispatch shim.
+IN_FLIGHT_RE = re.compile(r"(?:^|[\\/\s\"'])(?:claude|codex|opencode|ollama)(?:\.exe)?(?=[\s\"']|$)|_sidecar\.sh\b|text_only_shim",
+                          re.I)
+# The id a job's launcher sets in its environment at spawn; every process carrying it is one of the job's.
+JOB_ID_KEYS = (b"REAP_JOB_ID=", b"SIDECAR_LAUNCH_ID=")
 
 # Never a target, whoever owns it: a session host, a background pty host, an MCP server. A shared transport
 # proxy is judged by image name and environment in never_reason, not by command-line text.
@@ -711,14 +726,13 @@ def session_transcript(sid):
 
 
 def owner_quote(why, sid):
-    """(ok, evidence): --why must appear verbatim (case/whitespace-folded) in an owner-typed message
-    of THIS session's transcript, or in the question of an AskUserQuestion the owner answered with a
-    stop option (kill_guard's stop and keep label tests). Assistant text, subagent prompts and tool
-    output never count."""
+    """(ok, evidence): --why is the owner's stop order, verbatim (case/whitespace-folded) from THIS session's
+    transcript: an owner-typed message, or the question of an AskUserQuestion the owner answered with a stop
+    option. A typed quote passes kill_guard's stop-order test itself: a stop verb, no keep word. Assistant text,
+    subagent prompts and tool output never count. `owner_names_target` then requires it to name the target."""
     quote = _norm(why).strip("\"'`“”‘’ ")
-    if len(quote) < OWNER_QUOTE_MIN:
-        return False, ("--why must quote at least %d characters of the owner's stop instruction, "
-                       "verbatim from their message" % OWNER_QUOTE_MIN)
+    if not quote:
+        return False, "--why must quote the owner's stop order, verbatim from their message"
     path = session_transcript(sid)
     inputs = _owner_inputs(str(path)) if path else None
     if inputs is None:
@@ -728,10 +742,11 @@ def owner_quote(why, sid):
     def stopped(pairs):
         return any(quote in _norm(question) and STOP_LABEL_RE.search(label) and not KEEP_LABEL_RE.search(label)
                    for question, label in pairs)
-    if not any(quote in _norm(text) if kind == "text" else stopped(text) for kind, text in inputs):
-        return False, ("--why is not a verbatim quote from any owner message in this session's "
-                       "transcript; copy the owner's own words, or the question they answered with a stop "
-                       "option (case and whitespace are ignored)")
+    typed_order = bool(STOP_LABEL_RE.search(quote)) and not KEEP_LABEL_RE.search(quote)
+    if not any((typed_order and quote in _norm(text)) if kind == "text" else stopped(text) for kind, text in inputs):
+        return False, ("--why is neither an owner-typed stop order (a stop verb, no keep word) nor the question of "
+                       "an AskUserQuestion the owner answered with a stop option, verbatim from this session's "
+                       "transcript (case and whitespace are ignored)")
     return True, "owner: %s" % why.strip()[:160]
 
 
@@ -758,7 +773,7 @@ def orphan_evidence(table, pid):
     return True, "parent %s is gone" % ppid
 
 
-def justification(args, table, pid, targets, owner=None):
+def justification(args, table, pid, targets, owner=None, sid=None):
     """(ok, evidence) for the claimed reason, verified mechanically. `owner` is the precomputed
     `owner_quote` verdict, read once per invocation rather than once per target."""
     reason = args.reason
@@ -799,12 +814,84 @@ def justification(args, table, pid, targets, owner=None):
         stem = name.lower().split(".")[0]
         if stem and any(stem in (table[member].get("cmd") or "").replace("\\", "/").lower()
                         for member in [pid] + descendants(table, pid)):
-            return False, ("artifact %s is the target's own output, still being written; a running job "
-                           "is stopped only on the owner's word (--reason owner)" % name)
+            return False, ("artifact %s is the target's own output, still being written; stop it under "
+                           "--reason queued once nothing in its tree is in flight" % name)
         return True, "artifact %s exists" % name
+    if reason == "queued":
+        return queued_evidence(table, pid)
     if reason == "owner":
-        return owner or (False, "owner quote was not verified")
+        if owner and owner[0]:
+            refusal = owner_names_target(args.why, table, pid)
+            if refusal is None:
+                return owner
+        else:
+            refusal = owner or (False, "owner quote was not verified")
+        if owner_consents(sid, table, pid):
+            return True, "owner: their latest reply approved stopping %d" % pid
+        return refusal
     return False, "unknown reason"
+
+
+def queued_evidence(table, pid):
+    """(ok, evidence) for `--reason queued`: nothing the job runs is in flight, its detached members included.
+    Those are found by the job id its launcher set at spawn, so a target carrying none refuses: its detached
+    work cannot be seen."""
+    tree = [pid] + descendants(table, pid)
+    busy = [k for k in tree if IN_FLIGHT_RE.search("%s %s" % (table[k].get("name") or "", table[k].get("cmd") or ""))]
+    if busy:
+        return False, ("%s in flight in its tree (%s); wait for that work to end"
+                       % (", ".join(map(str, busy)), (table[busy[0]].get("cmd") or "")[:60]))
+    block = _environ(pid)
+    ids = [(key, _env_value(block, key)) for key in JOB_ID_KEYS if _env_value(block, key)]
+    if not ids:
+        return False, ("it carries no job id (%s), so work it detached cannot be seen"
+                       % ", ".join(k.decode().rstrip("=") for k in JOB_ID_KEYS))
+    since = table[pid].get("start") or ""
+    members = [k for k, row in table.items() if k not in tree and (row.get("start") or "") >= since
+               and any(_env_value(_environ(k), key) == value for key, value in ids)]
+    if members:
+        return False, ("its detached work is live (%s: %s); wait for it to end"
+                       % (", ".join(map(str, members)), (table[members[0]].get("cmd") or "")[:60]))
+    return True, "nothing in flight: no model client or launcher in its tree, and no live process carries its job id"
+
+
+def target_names(table, pid):
+    """The names a stop order may call `pid` by: its launch label, and the name of a script or campaign its
+    command line or a launching ancestor's runs (a path's file name without extension or a trailing _YYYYMMDD)."""
+    label = _launch_label(table, pid)
+    members = [pid] + [a for a in ancestors(table, pid) if not never_reason(table[a], table)]
+    names = {label} if label != "unknown" else set()
+    for k in members:
+        for path in re.findall(r"[\w.:~-]*[\\/][^\s\"']+", table[k].get("cmd") or ""):
+            stem = os.path.splitext(re.split(r"[\\/]", path)[-1])[0]
+            names.update(n for n in (stem, re.sub(r"_\d{8}$", "", stem)) if len(n) >= 6)
+    return names
+
+
+def owner_names_target(why, table, pid):
+    """None when the owner's stop order names `pid` or one of its `target_names`; else the refusal. An order
+    that names none of them stops some other process."""
+    said = why.lower()
+    msys = msys_pid_for_winpid(pid)
+    if any(re.search(r"(?<!\d)%d(?!\d)" % p, why) for p in [pid] + ([msys] if msys else [])) or any(
+            re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(n.lower()), said) for n in target_names(table, pid)):
+        return None
+    return False, ("the owner's stop order names neither pid %d, its launch label, nor its script or campaign; "
+                   "quote the order that names this process" % pid)
+
+
+def owner_consents(sid, table, pid):
+    """True when the owner's latest input approves stopping `pid` (`_owner_text.owner_consent`): a typed "yes"
+    to the agent's stop question that named the pid or one of its `target_names` counts, as in the git guards."""
+    path = session_transcript(sid)
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path else []
+    except OSError:
+        return False
+    msys = msys_pid_for_winpid(pid)
+    pids = [str(pid)] + ([str(msys)] if msys else [])
+    return bool(lines) and any(owner_consent(lines, [name], STOP_LABEL_RE, KEEP_LABEL_RE)
+                               for name in pids + sorted(target_names(table, pid)))
 
 
 # ----------------------------------------------------------------- act + record
@@ -1080,7 +1167,7 @@ def describe_launches(table, hits):
         ok, _evidence = orphan_evidence(table, pid)
         lines.append("  stop: python3 .claude/tools/reap.py %d %s" % (
             pid, '--reason orphan --why "a relaunch replaces this run"' if ok
-            else "--reason owner --why \"<the owner's stop instruction, verbatim>\""))
+            else "--reason queued once nothing it runs is in flight, else ask the owner a question naming it"))
     return "\n".join(lines)
 
 
@@ -1121,7 +1208,7 @@ def _main(argv=None, env=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
     ap.add_argument("--reason", required=True, choices=REASONS)
-    ap.add_argument("--why", default="", help="one line for the ledger; for --reason owner, the owner's words copied verbatim from their message")
+    ap.add_argument("--why", default="", help="one line for the ledger; for --reason owner, the owner's stop order or the question they answered with a stop option, verbatim (their latest reply approving the stop needs no quote)")
     ap.add_argument("--twin", type=int, help="duplicate: the surviving copy")
     ap.add_argument("--key", help="duplicate: text both command lines carry (script + campaign, or the cell)")
     ap.add_argument("--log", help="stalled: the log the target should be writing")
@@ -1160,7 +1247,7 @@ def _main(argv=None, env=None):
         row = table[pid]
         head = "%d %s :: %s" % (pid, row.get("name"), (row.get("cmd") or "")[:110])
         proof, foreign = ownership(table, pid, session_pid, sid)
-        ok, evidence = justification(args, table, pid, set(targets), owner=owner)
+        ok, evidence = justification(args, table, pid, set(targets), owner=owner, sid=sid)
         tree = [pid] + descendants(table, pid)
         # The NEVER gate is judged on every member, but a member that may never die is SPARED rather
         # than the whole kill being refused: refusing made any sidecar whose tree merely contains an

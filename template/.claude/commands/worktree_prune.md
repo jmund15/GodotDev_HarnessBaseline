@@ -30,10 +30,11 @@ Per worktree, gather:
 | Merge state | `git branch --merged main` membership, or `git -C <path> log --oneline main..HEAD \| wc -l` for the unmerged-commit count |
 | Uncommitted | `git -C <path> status --porcelain` — count **tracked** modifications separately from untracked files |
 | Locked | `locked` in the porcelain output — a locked worktree is deliberately pinned; never recommend it |
+| Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check --owner-approved <path>...`: the delete guard's own verdict after an owner pick, with every reason it would deny |
 
 Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan`.
 
-A `*--twin` worktree is an agent twin, which a test runner builds in while an editor holds its source: harness-generated and regenerable, its uncommitted state a copy of its source's, so its `wip:N` is never unique work. Recommend it removable once no run holds it (the twin's checkout lock, which this command does not read), and remove its Jmodot worktree first.
+A `*--twin` worktree is an agent twin, which a test runner builds in while an editor holds its source: harness-generated and regenerable. While its source worktree exists, its uncommitted state is a copy of the source's, so its `wip:N` is not unique work. With the source gone, judge it like any worktree. Recommend it removable once no run holds it (the twin's checkout lock, which this command does not read), and remove any submodule worktrees inside it first.
 
 ### 3. Report
 
@@ -48,6 +49,8 @@ A `*--twin` worktree is an agent twin, which a test runner builds in while an ed
 ### Recommended for removal (confirm each)
 1. audio_system — merged into main, 3 weeks idle, 1.2G. `git worktree remove .claude/worktrees/audio_system`
 ```
+
+The Note column carries each Guard reason. Recommend only a worktree whose Guard verdict is `retired`, so the owner's pick never meets a deny. When the only reason is untracked files, move them under `.claude/scratch/` and re-run the check before asking. A tracked diff stays a block: save it there as a patch and name the patch in the Note, and every other reason goes in the Note for the owner to decide.
 
 The report is done when the table prints. With no worktree under `.claude/worktrees/`, print `No worktrees under .claude/worktrees/.` and stop; when every worktree is `locked` or `wip`, print the table and state that nothing is recommendable.
 

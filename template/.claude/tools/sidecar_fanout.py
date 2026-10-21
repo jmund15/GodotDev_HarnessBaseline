@@ -200,6 +200,8 @@ LAUNCHER_EXITS = {
     12: "launch refused for Windows memory headroom; nothing started (NOT overridable)",
     13: "duplicate launch: a live launcher or seat child already runs this job (this prompt under the "
         "same label or record) or resumes this session; stop it first (NOT overridable)",
+    15: "re-pay refused: the spend ledger holds a finished row for this work, or cannot be read; nothing started "
+        "(finished work repeats under its own label, an unreadable ledger is repaired first; NOT overridable)",
 }
 DUPLICATE_LAUNCH_EXIT = 13
 USAGE_LIMIT_EXIT = 10
@@ -1151,7 +1153,7 @@ def duplicate_launches(planned):
 REVIEW_CLAIM = "review.claim"
 
 
-def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_seats=False):
+def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_seats=False, resident=frozenset()):
     # A bounded pool: `max_parallel` workers draining a queue. The previous shape started one OS
     # thread per job and used the semaphore only to cap concurrent SUBPROCESSES, so a 200-job file
     # spawned 200 threads to run 4 at a time -- and N is caller-controlled from the jobs JSON.
@@ -1206,6 +1208,9 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
         # each other's duplicate launch (sidecar_common.sh sc_check_duplicate_launch).
         child_env = dict(os.environ, SIDECAR_LAUNCH_ID=launch_id, SIDECAR_FANOUT_ID=fanout_id,
                          SIDECAR_CHECK_OWNER=launch_id)
+        # A job whose work keeps one subject resident compacts only at the model's full window (model_registry.anthropic_window).
+        if label in resident:
+            child_env["SIDECAR_RESIDENT_SUBJECT"] = "1"
         identity = {"launchId": launch_id, "parentSessionId": parent_session,
                     "inventoryPath": str(inventory_path)}
         since = time.time()
@@ -1540,7 +1545,8 @@ def resume_plan(jobs, results, out_dir, lanes):
     for label in stopped:
         r = results[label] or {}
         if r.get("plan"):
-            resets[r["plan"]] = max(resets.get(r["plan"]) or 0, r.get("limitResetsAt") or 0)
+            known = [t for t in (resets.get(r["plan"]), r.get("limitResetsAt")) if _utc(t)]
+            resets[r["plan"]] = max(known) if known else None
     when = ", ".join(f"{plan} resets {_utc(t) or 'at an unrecorded time'}" for plan, t in sorted(resets.items()))
     text = (f"\nusage-limit stop: {len(stopped)} job(s) stopped mid-run; {count} job(s) in {_posix(path)}"
             + (f" ({when})" if when else "")
@@ -1935,7 +1941,7 @@ def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
     driver keeps the caller's cwd, so every relative path resolves as it did here; its stdout, the
     summary, goes to `<out-dir>/fanout-driver.log`. The session watcher wakes the caller."""
     sys.path.insert(0, str(ROOT / "hooks"))
-    from _bounded_run import detach_options
+    from _bounded_run import detach_options, job_env
     child, swapped = [sys.executable, str(Path(__file__).resolve())], False
     for token in argv:
         if token == "--detach":
@@ -1947,10 +1953,11 @@ def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
     with open(log, "ab") as fh:
         env = dict(os.environ, SIDECAR_REVIEW_CLAIM=claim) if claim else None
         proc = subprocess.Popen(child, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                                cwd=os.getcwd(), close_fds=True, env=env, **detach_options())
+                                cwd=os.getcwd(), close_fds=True, env=job_env(env), **detach_options())
     print(f"fan-out detached: driver pid {proc.pid}; its summary goes to {_posix(log)}, and each job still "
-          f"writes {_posix(out_dir)}/<label>.md. Arm the session watcher: python3 .claude/tools/watch_records.py "
-          f"--session --wake (Bash run_in_background).")
+          f"writes {_posix(out_dir)}/<label>.md. Arm the session watcher as its own Bash call with run_in_background: "
+          f"true and timeout 7200000: python3 .claude/tools/watch_records.py --session --wake. Started any other way "
+          f"(foreground, &, nohup, disown) it never wakes you and blocks a correct arm.")
     return 0
 
 
@@ -2217,7 +2224,9 @@ def main(argv=None):
         out_dir.mkdir(parents=True, exist_ok=False)
     # Keep the three-argument call for a run with no extra stages or scheduling.
     extras = {k: v for k, v in (('fallbacks', dict(FALLBACKS)), ('lanes', lanes),
-                                ('after_seats', bool(args.review))) if v}
+                                ('after_seats', bool(args.review)),
+                                ('resident', frozenset(j.get("label") for j in jobs if j.get("resident") is True)))
+              if v}
     results = {} if args.refold else run_jobs(planned, args.max_parallel, out_dir, **extras)
     text, code = summarize(planned, results, args.compare)
     if not args.review:

@@ -253,6 +253,56 @@ def main():
                   not any("Yes, stop it" in text for text in quotes or [])))
     cases.append(("an unreadable transcript is not an empty one for owner_turns", missing_turns is None))
 
+    import re
+    act, decl = re.compile(r"\b(delete|remove)\b", re.I), re.compile(r"\b(no|not|don't|stop|keep)\b", re.I)
+
+    def asst(text):
+        return {"type": "assistant", "uuid": "a", "message": {"role": "assistant",
+                                                              "content": [{"type": "text", "text": text}]}}
+
+    def consent(*rows):
+        return ot.owner_consent([json.dumps(row) for row in rows], ["feature/x"], act, decl)
+
+    Q = "Delete branch feature/x?"
+    for asked, said, want in [
+        (Q, "ok, what would that delete?", False),
+        (Q, "sure, but explain first", False),
+        ("I will not delete feature/x until you say so. Continue with the other task?", "ok", False),
+        (None, "why did you delete feature/x?", False),
+        (None, "did you remove feature/x yet?", False),
+        ("Delete branch feature/x? It has 3 unmerged commits.", "yes", True),
+        (Q, "go ahead.", True),
+        (Q, "yes please", True),
+        (Q, "sure, do it", True),
+        (Q, "yes after you fix X", False),
+        (None, "delete feature/x", True),
+    ]:
+        rows = ([asst(asked)] if asked else []) + [user(said, "c1")]
+        cases.append(("consent %s: %r after %r" % ("allows" if want else "denies", said, asked),
+                      consent(*rows) == want))
+    pick = user([{"type": "tool_result", "tool_use_id": "toolu_c", "content": "x"}], "c2",
+                toolUseResult={"questions": [{"question": "Which for feature/x?"}],
+                               "answers": {"Which for feature/x?": "Delete it"}})
+    cases.append(("consent allows an answer row naming the target with a matching label", consent(pick)))
+
+    packet = ("feature/x is merged.\n\n**Q1: what to do with it?**\n"
+              "- **O1 (my pick): delete it now.** Nothing else uses it.\n"
+              "- **O2: keep it for later.**")
+    cases.append(("consent allows an option code picking an action option of a packet naming the target",
+                  consent(asst(packet), user("O1", "c3"))))
+    cases.append(("consent denies an option code picking the keep option",
+                  not consent(asst(packet), user("O2", "c4"))))
+    cases.append(("consent denies an option code to a packet naming no target",
+                  not consent(asst(packet.replace("feature/x", "the branch")), user("O1", "c5"))))
+    cases.append(("consent resolves an option code from the packet before a codeless restatement",
+                  consent(asst(packet), asst("Still open; Q1 is pending."), user("O1", "c6"))))
+    two = ("feature/x and feature/y are merged.\n\n**Q1: which to delete?**\n"
+           "- **O1: delete feature/x.**\n- **O2: delete feature/y.**")
+    cases.append(("consent denies an option code picking the option of another target the packet names",
+                  not consent(asst(two), user("O2", "c7"))))
+    cases.append(("consent allows an option code picking the option that names the target",
+                  consent(asst(two), user("O1", "c8"))))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

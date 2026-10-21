@@ -35,6 +35,15 @@ CONSOLE_SECOND_LAUNCHER = ".claude/scripts/anthropic_console_secondary_sidecar.s
 PROBE = ".claude/scripts/console_credit_probe.py"
 
 
+# Each grant cycle rewrites the credit values, so the proof asserts the block's shape, never its amounts or dates.
+def credit_shape(credit):
+    if not isinstance(credit, dict) or set(credit) != {"grantUSD", "cycleStart", "cycleEnd"}:
+        return repr(credit)
+    grant, start, end = credit["grantUSD"], str(credit["cycleStart"]), str(credit["cycleEnd"])
+    iso = all(len(d) == 10 and d[4] == d[7] == "-" and d.replace("-", "").isdigit() for d in (start, end))
+    return True if isinstance(grant, (int, float)) and grant > 0 and iso and start < end else repr(credit)
+
+
 def live():
     return copy.deepcopy(mr.load())
 
@@ -141,7 +150,7 @@ def main():
             "credentialFile": (p.get("credentialFile"), s.get("credentialFile")),
             "credentialVar": (p.get("credentialVar"), s.get("credentialVar")),
             "workspaceIdVar": (p.get("workspaceIdVar"), s.get("workspaceIdVar")),
-            "credit": (p.get("credit"), s.get("credit")),
+            "credit": (credit_shape(p.get("credit")), credit_shape(s.get("credit"))),
             "probe": ((p.get("capacityProbe") or {}).get("kind"), (p.get("capacityProbe") or {}).get("args"),
                       (s.get("capacityProbe") or {}).get("args")),
             "state": ((p.get("status") or {}).get("state"), (s.get("status") or {}).get("state")),
@@ -155,8 +164,7 @@ def main():
             "credentialFile": ("~/.env.ai-worker.cmd", "~/.env.ai-worker.cmd"),
             "credentialVar": ("ANTHROPIC_CONSOLE_KEY_PRIMARY", "ANTHROPIC_CONSOLE_KEY_SECONDARY"),
             "workspaceIdVar": (None, None),
-            "credit": ({"grantUSD": 200, "cycleStart": "2026-10-10", "cycleEnd": "2026-10-20"},
-                       {"grantUSD": 100, "cycleStart": "2026-10-10", "cycleEnd": "2026-10-31"}),
+            "credit": (True, True),
             "probe": ("quota", [PROBE], [PROBE]),
             "state": ("available", "available"),
             "reason": (True, True),

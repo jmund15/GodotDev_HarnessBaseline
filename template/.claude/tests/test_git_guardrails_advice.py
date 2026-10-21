@@ -191,7 +191,7 @@ def main():
         ("git checkout -- f.txt", "Copy the file aside"),
         ("git restore f.txt", "Copy the file aside"),
         ("git push --force", "Rebase onto the remote and push normally"),
-        ("git branch -D obsolete", "Use `git branch -d`"),
+        ("git branch -D obsolete", "Ask the owner in one message naming each branch exactly"),
         ("git clean -f", "Run the same command with `-n` first"),
         ("git stash drop", "then the same drop passes"),
         ("git stash clear", "ask the user before discarding"),

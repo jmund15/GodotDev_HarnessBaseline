@@ -839,6 +839,12 @@ class SpendSession:
     def clear(self):
         return self._in_state(lambda: self.sm.clear_spend(session_id=SPEND_SID))
 
+    def compact(self):
+        """What PreCompact does to this session's once-per-compaction keys."""
+        sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
+        import _hook_state
+        return self._in_state(lambda: _hook_state.clear_compaction_keys(SPEND_SID))
+
     def prompt(self, used_pct=45, capture=True):
         """One prompt through the real hook: (exit code, stdout). A dispatched session, so the posture line's first turn fires."""
         tmp = self.tmp
@@ -915,6 +921,16 @@ def spend_cases():
     s.set("lean", SPEND_FUTURE)
     rc, out = s.prompt(capture=False)
     case("no rate-limit telemetry: the spend line still emits",
+         rc == 0 and SPEND_LINE % SPEND_FUTURE in out, out)
+
+    s = SpendSession(sm)
+    s.set("lean", SPEND_FUTURE)
+    s.prompt()
+    s.prompt()
+    s.compact()
+    rc, out = s.prompt()
+    # A compaction drops the lean line from context; unchanged text must not keep it out.
+    case("lean set, then a compaction: the next prompt re-emits the lean line",
          rc == 0 and SPEND_LINE % SPEND_FUTURE in out, out)
 
     s = SpendSession(sm)

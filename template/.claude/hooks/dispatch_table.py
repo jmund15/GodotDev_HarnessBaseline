@@ -53,7 +53,10 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            A running sidecar that no live watcher covers ALSO blocks the Stop: nothing would wake
            this session when that sidecar needs a decision, so the reason names
            `python3 .claude/tools/watch_records.py --session --wake` to arm. Coverage is
-           `watch_records._covered`; a payload with `stop_hook_active` true never blocks.
+           `watch_records._covered`; a payload with `stop_hook_active` true never blocks. A live bench
+           roster this session started blocks the same way unless a session-wide watcher runs: it
+           registers no sidecar entry, so `watch_records.session_rosters` finds it. Gated on one `ps -e`
+           over the roster pid files.
 
 CHANNEL: `systemMessage` — "Warning message shown to the user" (hooks.md, JSON output) — and for
 `--complete` only, `decision: block` with `reason`, which reaches the model. No additionalContext.
@@ -90,6 +93,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -102,6 +106,7 @@ from _win_path import native_path  # noqa: E402
 sys.path.insert(0, TOOLS)
 import sidecar_argv  # noqa: E402
 from sidecar_argv import _SHELL_VAR  # noqa: E402
+import watch_records  # noqa: E402
 from watch_records import (ENDED, _covered, _launcher_gone, _process_line_gone, epoch as _epoch,  # noqa: E402
                            inventory_written, ledger_path, read_journal, writer_launcher_running)
 from _dispatch_pins import (  # noqa: E402
@@ -115,6 +120,10 @@ NO_WATCHER_REASON = (
     "%d sidecar(s) running with no live watcher, so nothing wakes you when one needs you. "
     "Run `python3 .claude/tools/watch_records.py --session --wake` with run_in_background and timeout 7200000, "
     "then end the turn (reference/sidecar_dispatch.md §Procedure).")
+NO_WATCHER_ROSTER_REASON = (
+    "Bench roster(s) this session started are running with no live watcher (%s), so nothing wakes you when "
+    "one ends or fails. Run `python3 .claude/tools/watch_records.py --session --wake` with run_in_background "
+    "and timeout 7200000, then end the turn (reference/sidecar_dispatch.md §Procedure).")
 STALE_SECONDS = 24 * 3600
 MAX_PENDING = 50
 DONE_STATES = ("completed", "failed", "killed", "cancelled", "error", "stopped")
@@ -198,6 +207,14 @@ def _audit_rows(value, label="", *, mode="claims"):
         # Like the in-run reader, a text result holds claims only in fenced blocks; JSON text such as a
         # fold digest's `applied` and `decisions` rows is never a claim.
         return post_check.result_claims(label, value, preserve=True)
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        # The host's list of agents' text returns: each holds claims only in fenced blocks, like one text result.
+        rows, errors = [], []
+        for index, item in enumerate(value, 1):
+            found, bad = _audit_rows(item, "%s#%d" % (label, index), mode=mode)
+            rows.extend(found)
+            errors.extend(bad)
+        return rows, errors
     if isinstance(value, list):
         values = value
     elif isinstance(value, dict):
@@ -1693,6 +1710,51 @@ def _uncovered_sidecars(running, session_id):
     return uncovered
 
 
+def _any_roster_pid_alive():
+    """True when some `<logs>/<name>.pid` names a live process: the cheap gate before reading every roster log.
+    False where the benchmark suite is not installed, since only that suite starts rosters."""
+    scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        import bench_lib
+    except ModuleNotFoundError as exc:
+        if exc.name != "bench_lib":
+            raise
+        return False
+    pids = {bench_lib._roster_pid(p) for p in glob.glob(os.path.join(bench_lib.roots.logs_dir(), "*.pid"))} - {None}
+    if not pids:
+        return False
+    try:
+        # One `ps -e` for every pid file: a roster writes its Git Bash (MSYS) pid, which `ps` lists.
+        out = subprocess.run(["ps", "-e"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return any(line.split() and line.split()[0].isdigit() and int(line.split()[0]) in pids
+               for line in out.splitlines()[1:])
+
+
+def _unwatched_rosters_reason(payload):
+    """(block reason, note). The reason is set when a bench roster this session started is live and no
+    session-wide watcher runs. A roster registers no sidecar entry (its seats run as
+    SIDECAR_DISPATCH_OWNER=bench), so only the session watcher's own roster poll
+    (`watch_records.session_rosters`) sees it. A failed roster read never blocks the stop: it returns no
+    reason and a note naming the lost check, which `complete` shows the owner."""
+    session_id = payload.get("session_id")
+    if payload.get("stop_hook_active") or not session_id:
+        return None, None
+    try:
+        state = _hook_state.read_json_salvage(_hook_state.state_path(session_id)) or {}
+        if watch_records.session_watcher_live(state) or not _any_roster_pid_alive():
+            return None, None
+        live = sorted(name[len("roster:"):] for name, unit in watch_records.session_rosters(session_id)().items()
+                      if (unit.get("roster") or {}).get("state") == "LIVE")
+    except Exception as exc:
+        return None, ("⚠ the bench roster check did not run (%s: %s); a live roster this session started "
+                      "would go unwatched. Arm the session watcher if one runs." % (type(exc).__name__, exc))
+    return (NO_WATCHER_ROSTER_REASON % ", ".join(live) if live else None), None
+
+
 def complete(payload):
     path = _hook_state.state_path(payload.get("session_id"))
     live = _background_ids(payload, None) if "background_tasks" in payload else None
@@ -1700,7 +1762,8 @@ def complete(payload):
     lines = list(_take_gone(path)) if state.get(GONE_KEY) else []
     pending = state.get(STATE_KEY) or []
     if not pending:
-        return "\n\n".join(lines) or None, None
+        roster_reason, roster_note = _unwatched_rosters_reason(payload)
+        return "\n\n".join(lines + [roster_note] if roster_note else lines) or None, roster_reason
     payload = dict(payload, _pending_sidecars=pending, _audit_deadline=_stop_deadline())
     session = _session_dir(payload)
     now = time.time()
@@ -1771,6 +1834,10 @@ def complete(payload):
             uncovered = _uncovered_sidecars(running, payload.get("session_id"))
             if uncovered:
                 reason = "\n\n".join(filter(None, (reason, NO_WATCHER_REASON % len(uncovered))))
+    roster_reason, roster_note = _unwatched_rosters_reason(payload)
+    if roster_note:
+        lines.append(roster_note)
+    reason = "\n\n".join(filter(None, (reason, roster_reason))) or None
     return "\n\n".join(lines) or None, reason  # each entry is a table or a ⚠ line; blank line between
 
 

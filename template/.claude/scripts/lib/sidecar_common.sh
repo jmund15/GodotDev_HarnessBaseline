@@ -37,6 +37,11 @@
 #   13 launch refused: a live launcher or seat child already runs this job (this -f prompt file under the
 #   same -l label or -R record) or resumes this -r session (sc_check_duplicate_launch); nothing started.
 #   Stop the old run first with the printed tools/reap.py command; no flag overrides it
+#   14 RETIRED (never reuse the code).
+#   15 re-pay refused: the spend ledger already holds a FINISHED row for this work key (tools/work_key.py:
+#   the brief's bytes, the harness revision, the pin and the label, or the key the starting tool declared in
+#   SIDECAR_WORK_KEY); nothing started. A deliberate repeat is different work: give it its own label. A
+#   resume (-r) and a --check are never refused. No flag overrides it
 #
 # 8 is NOT 7. "This provider's capacity cannot be read" and "this transport is not in the
 # roster" have different fixes and different overrides; one code for both would send a
@@ -848,9 +853,53 @@ PY
 # -A does NOT override it. -A authorizes spending past a BAND floor, which is a judgement
 # about relative currency cost that an agent may legitimately make. A suspension is a standing
 # decision by the user about a provider, so overriding it takes its own flag (-U).
+# Work already finished and paid for is not paid for again: the spend ledger is asked for a finished row under
+# this launch's work key (tools/work_key.py owns the key and the message). A --check starts nothing, so it is
+# not asked (it never parses launch flags, which is what sets SC_DISPATCH_PENDING). A resume continues an
+# unfinished call, so it is not refused either, but it still carries the key, so the row it finishes under is
+# found by a later launch of the same work. The key is exported once for sc_write_record. Class: floor (it
+# protects the owner's paid quota; rules/harness_tooling.md §Paid work stops on an observed fact of waste).
+sc_gate_repay() {
+  [ "${SC_DISPATCH_PENDING:-0}" = 1 ] || return 0
+  local ledger="$SC_LEDGER" harness rc=0 prompt_arg=() text_file=""
+  { [ -n "$ledger" ] && [ "$ledger" != "__default__" ]; } || ledger="$SC_LEDGER_DEFAULT"
+  harness="$(sc_harness_revision)"
+  if [ -n "${SC_PROMPT_FILE:-}" ]; then
+    prompt_arg=(--prompt-file "$(sc_to_native "$SC_PROMPT_FILE")")
+  else
+    text_file="$(mktemp)"
+    printf '%s' "${SC_PROMPT:-}" > "$text_file"
+    prompt_arg=(--prompt-text-file "$(sc_to_native "$text_file")")
+  fi
+  SC_WORK_KEY="$(python3 "$SC_ROOT/tools/work_key.py" key --model "$SC_MODEL" --effort "${SC_EFFORT:-}" \
+    --label "${SC_LABEL:-}" --harness "$harness" "${prompt_arg[@]}")" || rc=$?
+  [ -z "$text_file" ] || rm -f "$text_file"
+  { [ "$rc" -eq 0 ] && [ -n "$SC_WORK_KEY" ]; } || sc_die 2 "[sidecar] the work key could not be computed (exit $rc); nothing started"
+  export SC_WORK_KEY
+  [ -z "${SC_RESUME:-}${SC_RESUMED_FROM:-}${SC_RESUME_SID:-}" ] || return 0
+  rc=0
+  python3 "$SC_ROOT/tools/work_key.py" check --key "$SC_WORK_KEY" --ledger "$(sc_to_native "$ledger")" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 15 ] && sc_die 15 "[sidecar] REFUSED: the re-pay check found this work finished and paid, or could not read the spend ledger (line above); nothing started. Finished work repeats under its own label; an unreadable ledger is repaired first."
+  sc_die 2 "[sidecar] the re-pay check failed (exit $rc); nothing started"
+}
+
+# The harness revision a launch runs under: the code HEAD sc_write_record records as harnessSession, plus the
+# doctrineSha a benchmark overlay stamped when one is present.
+# bench_overlay_doctrine (benchmark_campaign/lib.sh) drops the .bench-doctrine-sha marker when it refreshes
+# $SC_WORKDIR/.claude from BENCH_DOCTRINE_REF; absent on a root whose .claude/ is still the task tag's own
+# frozen copy (BENCH_DOCTRINE_REF=none, or a non-benchmark dispatch entirely).
+sc_harness_head() { git -C "$SC_WORKDIR" rev-parse HEAD 2>/dev/null || echo unknown; }
+sc_doctrine_sha() { cat "$SC_WORKDIR/.claude/.bench-doctrine-sha" 2>/dev/null || echo ""; }
+sc_harness_revision() {
+  local dsha; dsha="$(sc_doctrine_sha)"
+  printf '%s%s' "$(sc_harness_head)" "${dsha:+/$dsha}"
+}
+
 sc_gate_availability() {
   # --check never parses launch flags, so its gate call cannot re-enter the dispatch preflight.
   [ "${SC_DISPATCH_PENDING:-0}" != 1 ] || sc_dispatch_launch "${SC_DISPATCH_ARGS[@]}"
+  sc_gate_repay
   sc_gate_exhausted
   [ "$SC_TRANSPORT_STATE" = "unavailable" ] || return 0
   if [ "$SC_UNSUSPEND" -eq 1 ]; then
@@ -1627,9 +1676,9 @@ PY
 # and every model: the autonomy rail below. It is transport, not disclosure — a sidecar child
 # has no human on the other end, and a `-D full` child in a sealed arm root reads that root's
 # frozen hooks, so no guard file in this repo can reach it.
-# Appended paths must be ABSOLUTE: the child resolves them against its own cwd, not this
-# script's — a relative path breaks in the isolated tiers exactly where these appends are
-# the only context.
+# Every part is appended into ONE temp file passed once (the CLI keeps only the last
+# --append-system-prompt-file); its path is absolute because the child resolves it against its
+# own cwd, not this script's.
 sc_build_disclosure() {
   SC_RUN_CWD="$SC_WORKDIR"
   SC_APPEND_ARGS=()
@@ -1643,9 +1692,8 @@ sc_build_disclosure() {
 [sidecar] You run UNATTENDED. No human reads anything you write until you exit, so a question in your final message is answered by nobody and the run is recorded as having delivered nothing. Never end on a question or a request for direction. When a choice is yours to make, make it, state it in the deliverable as an assumption, and finish. When a gate, a failing suite or a missing input blocks a step, record the blocker in the deliverable and still return everything the brief asked for. Run every command whose result you need in the foreground and wait for it. This overrides any run_in_background default your instructions carry: nothing wakes you after your turn ends, so a background job you start dies with your turn. A run that outlasts the foreground Bash cap starts detached and is waited on in foreground until-loop calls (guards/any.md).
 SC_AUTONOMY
   sc_on_exit "rm -f \"$auto_tmp\" 2>/dev/null || :"
-  auto_arg="$auto_tmp"
-  command -v cygpath >/dev/null 2>&1 && auto_arg="$(cygpath -m "$auto_tmp")"
-  SC_APPEND_ARGS+=(--append-system-prompt-file "$auto_arg")
+  # The CLI keeps only the last --append-system-prompt-file, so every part below goes into this one file, passed once.
+  _sc_append_part() { printf '\n' >> "$auto_tmp"; cat "$1" >> "$auto_tmp"; }
   case "$SC_DISCLOSURE" in
     bare|pointer)
       SC_RUN_CWD="$(mktemp -d)"
@@ -1659,30 +1707,31 @@ SC_AUTONOMY
       # shape file ships BOTH tiers and omits any.md, and no hook fires in the isolated
       # tiers to correct it. SC_MODEL is already resolved by sc_resolve_model to the id
       # the launcher sends to the CLI/proxy; `detailed` matches the hook's default.
-      local guard_tmp guard_arg
+      local guard_tmp
       guard_tmp="$(mktemp)"
       python3 "$SC_ROOT/tools/guard_text.py" "$shape" detailed "$SC_MODEL" > "$guard_tmp" || {
         rm -f "$guard_tmp" 2>/dev/null || :
         sc_die 2 "could not assemble guards for shape '$shape' — refusing to dispatch unguarded"
       }
-      sc_on_exit "rm -f \"$guard_tmp\" 2>/dev/null || :"
-      # mktemp hands back an MSYS path (/tmp/...). /tmp is Git Bash's own mount and does not
-      # exist for the native child, which would read the flag as a missing file. The -C branch
-      # below never hit this because cd/pwd yields /c/Users/..., which maps trivially.
-      guard_arg="$guard_tmp"
-      command -v cygpath >/dev/null 2>&1 && guard_arg="$(cygpath -m "$guard_tmp")"
-      SC_APPEND_ARGS+=(--append-system-prompt-file "$guard_arg")
+      _sc_append_part "$guard_tmp"
+      rm -f "$guard_tmp" 2>/dev/null || :
       ;;
   esac
   if [ "$SC_DISCLOSURE" = "pointer" ]; then
     local mem="$SC_ROOT/auto-memory/MEMORY.md"
     [ -f "$mem" ] || sc_die 2 "pointer disclosure requires $mem"
-    SC_APPEND_ARGS+=(--append-system-prompt-file "$mem")
+    _sc_append_part "$mem"
   fi
   local cf
   for cf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
-    SC_APPEND_ARGS+=(--append-system-prompt-file "$(cd "$(dirname "$cf")" && pwd)/$(basename "$cf")")
+    [ -f "$cf" ] || sc_die 2 "context file not found: $cf"
+    _sc_append_part "$cf"
   done
+  # mktemp hands back an MSYS path (/tmp/...). /tmp is Git Bash's own mount and does not exist for the
+  # native child, which would read the flag as a missing file.
+  auto_arg="$auto_tmp"
+  command -v cygpath >/dev/null 2>&1 && auto_arg="$(cygpath -m "$auto_tmp")"
+  SC_APPEND_ARGS=(--append-system-prompt-file "$auto_arg")
 }
 
 # ------------------------------------------------------------------ claude binary
@@ -1859,11 +1908,8 @@ sc_write_record() {
   sc_ensure_launch_id || return 1
   local hb hs dsha raw_tmp ledger_default publish_rc=0
   hb="$(git -C "$SC_WORKDIR" describe --tags --exact-match HEAD 2>/dev/null || echo unknown)"
-  hs="$(git -C "$SC_WORKDIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-  # bench_overlay_doctrine (benchmark_campaign/lib.sh) drops this marker when it refreshes
-  # $SC_WORKDIR/.claude from BENCH_DOCTRINE_REF; absent on a root whose .claude/ is still the
-  # task tag's own frozen copy (BENCH_DOCTRINE_REF=none, or a non-benchmark dispatch entirely).
-  dsha="$(cat "$SC_WORKDIR/.claude/.bench-doctrine-sha" 2>/dev/null || echo "")"
+  hs="$(sc_harness_head)"
+  dsha="$(sc_doctrine_sha)"
   # Payload goes via temp file: `python3 -` reads its PROGRAM from stdin, so a heredoc and a
   # data pipe cannot share the channel.
   raw_tmp="$(mktemp)"
@@ -1969,6 +2015,13 @@ else:
         # `-o json` under the user setting `"verbose": true` is an ARRAY of every event, not the
         # single result object (live 2026-09-22: every launch died on data.get).
         data = _result_event(data)
+    if not data.get("session_id"):
+        # A run that ended before its result event (killed, stalled, crashed) still names its session in every
+        # other event; the record keeps it so the run can be resumed.
+        _sid = next((o.get("session_id") for o in reversed(list(_events(raw.splitlines())))
+                     if isinstance(o, dict) and o.get("session_id")), None)
+        if _sid:
+            data = dict(data, session_id=_sid)
     usage = data.get("usage") or {}
     mu = {k: v for k, v in (data.get("modelUsage") or {}).items() if isinstance(v, dict)}
     served = sorted({v.get("canonicalModel") for v in mu.values() if v.get("canonicalModel")})
@@ -2099,6 +2152,7 @@ if turn1:
 record = {
     "launchId": os.environ.get("LAUNCH_ID_V") or None,
     "parentSessionId": os.environ.get("PARENT_SESSION_V") or None,
+    "workKey": os.environ.get("SC_WORK_KEY") or None,
     "sessionId": data.get("session_id"),
     "label": os.environ.get("LABEL_V") or None,
     "transport": os.environ.get("TRANSPORT_V") or None,

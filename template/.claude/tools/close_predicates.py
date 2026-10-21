@@ -554,6 +554,8 @@ def predicate_worklog_sweep(ctx):
 _PLAN_REF = re.compile(r"\.claude[\\/]plans[\\/]([A-Za-z0-9_.-]+\.md)")
 _ROADMAP_FILE = re.compile(r"[\\/]roadmap\.md(?![A-Za-z0-9_])", re.I)
 _UPDATE_ROADMAP = re.compile(r"/update_roadmap(?!\.md)")
+# A skip receipt quotes the predicate's own text, so closeout bookkeeping would re-trip the phase it skipped.
+_CLOSEOUT_BOOKKEEPING = re.compile(r"\b(session_end_check|close_predicates)\.py\b")
 
 
 def _tool_inputs(transcript):
@@ -610,7 +612,9 @@ def _roadmap_signal(ctx):
     for block in _tool_inputs(transcript):
         if block.get("name", "").split(".")[-1] == "Skill" and block["input"].get("skill") == "update_roadmap":
             update = True
-        for value in _input_strings(block["input"]):
+        if _CLOSEOUT_BOOKKEEPING.search(str(block["input"].get("command") or "")):
+            continue
+        for value in _input_strings({k: v for k, v in block["input"].items() if k != "description"}):
             plans.update(_PLAN_REF.findall(value))
             vault = vault or bool(_ROADMAP_FILE.search(value))
             update = update or bool(_UPDATE_ROADMAP.search(value))

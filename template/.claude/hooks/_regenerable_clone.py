@@ -463,9 +463,11 @@ def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | N
     return None
 
 
-def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '') -> bool:
+def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '', also: Path | None = None) -> bool:
     """Every HEAD commit is on a remote, by hash or, for a lane landed by rebase, by patch: each
-    local-only non-merge commit's patch is on the remote's default branch."""
+    local-only non-merge commit's patch is on the remote's default branch. `also` is the main
+    checkout's copy of the same submodule: a worktree's submodule clone keeps its own remote refs,
+    which go stale, so a HEAD that copy sees on a remote branch is pushed."""
     def reject(reason):
         if reasons is not None:
             reasons.append(prefix + reason)
@@ -475,6 +477,9 @@ def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '') -> b
     if out is None:
         return reject('cannot verify HEAD reachability')
     if not out.strip():
+        return True
+    head = (_git(['rev-parse', 'HEAD'], repo) or '').strip()
+    if also is not None and head and (_git(["branch", "-r", "--contains", head], also) or '').strip():
         return True
     unpushed = 'HEAD ' + (_git(['rev-parse', '--short', 'HEAD'], repo) or '(unreadable)').strip() \
         + ' is on no remote branch'
@@ -592,8 +597,11 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     passes only under `allow_ignored`, and only when every non-ignored file's content, submodules
     included, is already a blob in the repository's object store: commits and branches live in the
     shared store, so unsaved file content is the only loss. A leftover directory with no `.git` file
-    (an interrupted removal) is judged the same way. If supplied, `reasons` receives the first
-    failed condition; the bool contract is unchanged.
+    (an interrupted removal) is judged the same way, and so is a submodule whose `.git` names a pruned
+    admin directory, against the main checkout's `.git/modules/<path>` store. A submodule HEAD counts
+    as pushed when the main checkout's copy of that submodule sees it on a remote branch. If supplied,
+    `reasons` receives every failed condition, so one deny names them all; a target or registration
+    that cannot be judged stops at that reason. The bool contract is unchanged.
     """
     def reject(reason):
         if reasons is not None:
@@ -635,33 +643,83 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
         return reject('cannot read worktree registration')
     if not _registered_unlocked(listing, target, reasons):
         return False
+    listed = _git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], target) \
+        if (target / ".gitmodules").is_file() else ""
+    declared = [line.split(" ", 1)[1].strip().strip("/") for line in (listed or "").splitlines() if " " in line]
+    broken = [name for name in declared if (target / name / ".git").is_file() and _orphan_admin(target / name)]
     status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching",
-                   "--ignore-submodules=none"], target)
+                   "--ignore-submodules=" + ("all" if broken else "none")], target)
     if status is None:
         return reject('cannot read worktree status')
+    failed: list[str] = []
     loss = _first_loss(status, target, allow_ignored)
     if loss:
-        return reject('worktree has local files or changes: ' + loss)
-    if not _pushed(target, reasons):
-        return False
+        failed.append('worktree has local files or changes: ' + loss)
+    _pushed(target, failed)
 
-    submodules = _git(["submodule", "status", "--recursive"], target)
-    if submodules is None:
-        return reject('cannot read submodule status')
-    for line in submodules.splitlines():
-        fields = line[1:].split()
-        if len(fields) < 2:
-            return reject('cannot parse submodule status')
-        sub = target / fields[1]
+    for name in broken:
+        if not allow_ignored:
+            failed.append('submodule ' + name + ': its .git names a missing admin directory, so its state is '
+                          'unreadable, and its removal is not owner-approved')
+            continue
+        store = root / ".git" / "modules" / name
+        lost = _unheld_file(store, target / name, root, target / name / ".git-absent" / "index") \
+            if store.is_dir() else '(no store at .git/modules/' + name + ')'
+        if lost:
+            failed.append('submodule ' + name + ': its .git names a missing admin directory, and it holds '
+                          'content git does not have: ' + lost + ' (save it elsewhere, then retry)')
+
+    if broken:
+        rows = [name for name in declared if name not in broken]
+    else:
+        submodules = _git(["submodule", "status", "--recursive"], target)
+        if submodules is None:
+            return reject('cannot read submodule status')
+        rows = []
+        for line in submodules.splitlines():
+            fields = line[1:].split()
+            if len(fields) < 2:
+                return reject('cannot parse submodule status')
+            rows.append(fields[1])
+    for name in rows:
+        sub = target / name
         if not (sub / ".git").exists():
             continue
         sub_status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching",
                            "--ignore-submodules=none"], sub)
         if sub_status is None:
-            return reject('submodule ' + fields[1] + ': cannot read status')
-        if not _pushed(sub, reasons, 'submodule ' + fields[1] + ': '):
-            return False
+            failed.append('submodule ' + name + ': cannot read status')
+            continue
+        _pushed(sub, failed, 'submodule ' + name + ': ', also=root / name)
         loss = _first_loss(sub_status, sub, allow_ignored)
         if loss:
-            return reject('submodule ' + fields[1] + ' has local files or changes: ' + loss)
-    return True
+            failed.append('submodule ' + name + ' has local files or changes: ' + loss)
+    if reasons is not None:
+        reasons.extend(failed)
+    return not failed
+
+
+def main(argv: list[str]) -> int:
+    """`--retire-check [--owner-approved] <worktree>...`: the delete guard's verdict per worktree, with
+    every reason it would deny; `--owner-approved` judges as after an owner's removal pick. Exit 1 when any
+    worktree is not retired."""
+    if not argv or argv[0] != "--retire-check":
+        print(main.__doc__)
+        return 2
+    approved = "--owner-approved" in argv
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or _git(["rev-parse", "--show-toplevel"], Path.cwd()) or "."
+    root = root.strip()
+    blocked = 0
+    for token in (a for a in argv[1:] if not a.startswith("--")):
+        reasons: list[str] = []
+        if is_retired_worktree(token, os.getcwd(), root, allow_ignored=approved, reasons=reasons):
+            print(f"{token}: retired")
+        else:
+            blocked += 1
+            print(f"{token}: blocked: " + "; ".join(reasons))
+    return 1 if blocked else 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv[1:]))

@@ -64,7 +64,7 @@ _TAGS = re.compile(r"</?[A-Za-z][A-Za-z0-9:_-]*(?:\s+[^<>]*?)?\s*/?>")
 _SCRIPT = re.compile(r"<(script|style).*?</\1>", re.S | re.I)
 # Class-reference BBCode + markdown emphasis: present in the source, absent from a sensibly-quoted line.
 _BB = re.compile(r"\[/?(?:b|i|u|s|code|codeblock|codeblocks|gdscript|csharp|url|param|member|"
-                 r"method|constant|enum|signal|theme_item|annotation|class)[^\]]*\]", re.I)
+                 r"method|constant|enum|signal|theme_item|annotation|class)(?=[\s=\]])[^\]]*\]", re.I)
 _EMPH = re.compile(r"[*_`]+")
 
 
@@ -133,6 +133,13 @@ def _bounded(body, part, at=0):
         if not (before or after):
             return found
         at = found + 1
+
+
+def _raw_hit(text, quote):
+    """The quote as a literal substring, whitespace collapsed and case-folded: normalize() strips BBCode and
+    emphasis, so a quote that is itself such a token (a C# `[Signal]` line) normalizes to nothing."""
+    raw = re.sub(r"\s+", " ", quoted_text(str(quote or ""))).strip().casefold()
+    return bool(raw) and raw in re.sub(r"\s+", " ", text).casefold()
 
 
 def _match(body, quote, whole_words=False):
@@ -291,11 +298,14 @@ def _check_quote(kind, cited, quote, artifact, ctx, legacy):
     if span:
         lines = text.splitlines()[span[0] - 1:span[1]]
         extra["rangeHit"] = _match(prepare("\n".join(lines)), quote)
-    if not _match(prepared, quote):
+    if not _match(prepared, quote) and not _raw_hit(text, quote):
         return _result(kind, UNVERIFIED, "quote-absent", **extra)
     if legacy:
-        needle = normalize(quoted_text(quote)).casefold()
-        if len(needle) < SHORT_FRAGMENT and prepared.count(needle) > 1:
+        needle, body = normalize(quoted_text(quote)).casefold(), prepared
+        if not needle:
+            needle = re.sub(r"\s+", " ", quoted_text(quote)).strip().casefold()
+            body = re.sub(r"\s+", " ", text).casefold()
+        if len(needle) < SHORT_FRAGMENT and body.count(needle) > 1:
             return _result(kind, UNCHECKED, "short-fragment", **extra)
     return _result(kind, VERIFIED, "quote-found", **extra)
 
