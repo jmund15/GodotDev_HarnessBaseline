@@ -60,9 +60,9 @@ try:
 except Exception:
     is_harness_file = None
 try:
-    from _owner_text import classify as owner_row, owner_quote_text  # noqa: E402
+    from _owner_text import classify as owner_row, owner_consent, owner_quote_text  # noqa: E402
 except Exception:
-    owner_row = owner_quote_text = None
+    owner_row = owner_consent = owner_quote_text = None
 try:
     from harness_tests import close_base, close_paths, commit_advisories, push_destination, unproven_note  # noqa: E402
     _HARNESS_IMPORT_ERROR = None
@@ -226,13 +226,39 @@ _DECLINE_LABEL = re.compile(r"\b(?:no|not|don't|dont|stop|keep|leave|abort|cance
 _OWNER_TAIL_BYTES = 4_000_000
 
 
+_DELETE_LABEL = re.compile(r"\b(?:delete|remove)\b", re.I)
+
+
+def _owner_tail(transcript_path):
+    """The transcript's last _OWNER_TAIL_BYTES as lines, or None when it cannot be read."""
+    try:
+        with open(transcript_path, 'rb') as fh:
+            size = os.fstat(fh.fileno()).st_size
+            fh.seek(max(0, size - _OWNER_TAIL_BYTES))
+            return fh.read().decode('utf-8', errors='replace').splitlines()
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _owner_approved_branch_delete(rest, transcript_path, cwd=None, git_env=None):
+    """True when the owner's latest input approves deleting every branch this `branch -D` names
+    (`_owner_text.owner_consent`, with a delete or remove verb), and each is a local branch of this repo."""
+    names = [a for a in rest if not a.startswith('-')]
+    if (not owner_consent or not transcript_path or not cwd or not names
+            or any(a not in ('-D', '--delete', '--force', '-f') for a in rest if a.startswith('-'))
+            or any(run_git(['rev-parse', '--verify', '-q', 'refs/heads/' + n], cwd, git_env) is None for n in names)):
+        return False
+    lines = _owner_tail(transcript_path)
+    return bool(lines) and owner_consent(lines, names, _DELETE_LABEL, _DECLINE_LABEL)
+
+
 def _owner_approved_discard(sub, rest, transcript_path, cwd=None, git_env=None):
-    """True when the owner's latest input is an AskUserQuestion answer whose question names every
-    file this checkout/restore discards by its absolute path in this checkout, and whose picked label
-    approves. Literal tracked-file paths only: a pathspec of `.`, a directory or a glob is never named
+    """True when the owner's latest input approves discarding every file this checkout/restore names, each
+    by its absolute path in this checkout (`_owner_text.owner_consent`, with a reset, discard, restore or
+    revert verb). Literal tracked-file paths only: a pathspec of `.`, a directory or a glob is never named
     exactly enough to consent to, and a relative name would also match the same file in every other
     checkout."""
-    if not owner_row or not transcript_path or sub not in ('checkout', 'restore'):
+    if not owner_consent or not transcript_path or sub not in ('checkout', 'restore'):
         return False
     if sub == 'checkout':
         if '--' not in rest:
@@ -245,31 +271,9 @@ def _owner_approved_discard(sub, rest, transcript_path, cwd=None, git_env=None):
             or os.path.isdir(os.path.join(cwd, p))
             or run_git(['ls-files', '--error-unmatch', '--', p], cwd, git_env) is None for p in paths):
         return False
-    try:
-        with open(transcript_path, 'rb') as fh:
-            size = os.fstat(fh.fileno()).st_size
-            fh.seek(max(0, size - _OWNER_TAIL_BYTES))
-            lines = fh.read().decode('utf-8', errors='replace').splitlines()
-    except (OSError, TypeError, ValueError):
-        return False
-    latest = None
-    for index, line in enumerate(lines):
-        try:
-            row = owner_row(json.loads(line), index, raw=line)
-        except Exception:
-            continue
-        if row is None or row.meta or row.sidechain:
-            continue
-        if row.pairs:
-            latest = row.pairs
-        elif owner_quote_text(row):
-            latest = None
-    flags = re.I if os.name == 'nt' else 0
+    lines = _owner_tail(transcript_path)
     norm = [os.path.abspath(os.path.join(cwd, p)).replace('\\', '/') for p in paths]
-    return any(all(re.search(r'(?<![\w./-])' + re.escape(p) + r'(?![\w/-]|\.\w)', question.replace('\\', '/'), flags)
-                   for p in norm)
-               and _APPROVE_LABEL.search(label) and not _DECLINE_LABEL.search(label)
-               for question, label in (latest or ()))
+    return bool(lines) and owner_consent(lines, norm, _APPROVE_LABEL, _DECLINE_LABEL)
 
 
 def verdict(args, cwd=None, git_env=None, transcript_path=None):
@@ -302,9 +306,8 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
         return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
                 "overwrites uncommitted edits to those paths, which may be another session's. Copy the file "
                 "aside (`cp <path> .claude/scratch/`), then edit your own change back out in place. For an edit "
-                "that is not yours, ask one AskUserQuestion naming each file by its absolute path, with an option labeled "
-                "Discard, Reset, Restore or Revert and no decline word; that option picked as the owner's latest "
-                "input lets this exact-path discard through. Never `git stash`: every session "
+                "that is not yours, ask the owner in one message naming each file by its absolute path and the word "
+                "discard, reset, restore or revert; their next reply approving it lets this exact-path discard through. Never `git stash`: every session "
                 "in this checkout shares its list.")
 
     staged_only = ({"--staged", "-S"} & set(rest)) and not ("--worktree" in rest or "W" in short_flag_chars(rest))
@@ -312,9 +315,9 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
         return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
                 "discards uncommitted worktree edits, which may be another session's. Copy the file aside "
                 "(`cp <path> .claude/scratch/`), then edit your own change back out in place; for an edit "
-                "that is not yours, ask one AskUserQuestion naming each file by its absolute path, with an option labeled "
-                "Discard, Reset, Restore or Revert and no decline word (that option picked as the owner's latest "
-                "input lets this exact-path discard through). `git restore --staged` alone is "
+                "that is not yours, ask the owner in one message naming each file by its absolute path and the word "
+                "discard, reset, restore or revert (their next reply approving it lets this exact-path discard through). "
+                "`git restore --staged` alone is "
                 "allowed.")
 
     if sub == "push":
@@ -329,10 +332,11 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
                     "push normally.")
 
     if (sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest))
-            and not _branches_fully_applied(rest, cwd, git_env)):
+            and not _branches_fully_applied(rest, cwd, git_env)
+            and not _owner_approved_branch_delete(rest, transcript_path, cwd, git_env)):
         return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — force-deletes a "
-                "branch whose commits may be unmerged and unpushed. Use `git branch -d`; if it refuses, the "
-                "work is not merged.")
+                "branch whose commits are not applied to HEAD. Ask the owner in one message naming each branch exactly and "
+                "the word delete; their next reply approving it lets this exact delete through.")
 
     if sub == "stash" and rest and rest[0] in ("drop", "clear"):
         if rest[0] == "drop" and _stash_preserved(rest[1:], cwd, git_env):

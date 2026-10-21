@@ -57,7 +57,7 @@ The sampler runs in its own try/except and prints nothing: a failure costs only 
 Spend line. The owner's lean condition (tools/spend_mode.py) prints on its own path, ahead of the rate_limits
 early return: `spend: lean (owner, <scope>, until <time>)` while lean is set, `spend: lean expired <time>` once
 after its expiry, and `spend: lean available — owner only` while the session's own plan is Hot or worse and spend
-is normal. Its last value is the dedupe key `spend`; normal with a plan that is not Hot says nothing.
+is normal. Its last value is the dedupe key `spend`, and the first prompt after a compaction re-injects an unchanged line once. Normal with a plan that is not Hot says nothing.
 """
 
 import glob
@@ -123,10 +123,10 @@ def start_warm(transports):
     if os.environ.get("HARNESS_CAPACITY_WARM") == "0" or not transports:
         return False
     try:
-        from _bounded_run import detach_options
+        from _bounded_run import detach_options, job_env
         subprocess.Popen([sys.executable, os.path.join(TOOLS, "provider_bands.py"), "warm", *transports],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         close_fds=True, **detach_options())
+                         close_fds=True, env=job_env(), **detach_options())
     except Exception:
         return False
     return True
@@ -703,11 +703,13 @@ def spend_line(posture, own_band):
 
 
 def emit_spend(session_id, dstate, dpath, own_band):
-    """Print the spend line when it changed since the last prompt. Its last value is `dstate["spend"]`, so a set,
-    an expiry or a band change re-injects once, with or without rate_limits telemetry."""
+    """Print the spend line when it changed since the last prompt or the session compacted. Its last value is
+    `dstate["spend"]`, so a set, an expiry or a band change re-injects once, with or without rate_limits telemetry;
+    a compaction dropped the line from context, so the first prompt after one re-injects it unchanged."""
     line = spend_line(spend_posture(session_id), own_band)
     previous = dstate.get("spend")
-    if previous == line:
+    compacted = fire_once_since_compaction(session_id, "budget_posture_spend")
+    if previous == line and not (line and compacted):
         return
     dstate["spend"] = line
     if str(previous or "").startswith("spend: lean (") and not str(line or "").startswith("spend: lean"):

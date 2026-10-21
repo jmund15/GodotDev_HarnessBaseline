@@ -11,6 +11,7 @@ the command started ends with it (a Windows Job Object with kill-on-close; a POS
       -> SimpleNamespace(returncode, stdout, stderr); returncode None when the deadline passed.
   ProcessTree(proc).end()   ends a Popen and every process it started.
   detach_options()          Popen keywords for a worker that outlives the hook that starts it.
+  job_env(env=None)         that worker's environment, carrying the REAP_JOB_ID reap.py's `queued` reads.
 """
 
 import os
@@ -29,6 +30,16 @@ def detach_options():
     if os.name == "nt":
         return {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
+
+
+def job_env(env=None):
+    """A detached worker's environment carrying REAP_JOB_ID: every process it starts, detached ones included,
+    inherits it, so reap.py's `queued` sees the job's work outside its process tree. A worker started inside a job
+    keeps that job's id, so nested detached work counts toward its root."""
+    import uuid
+    env = dict(os.environ if env is None else env)
+    env.setdefault("REAP_JOB_ID", "job-" + uuid.uuid4().hex[:12])
+    return env
 
 
 class ProcessTree:

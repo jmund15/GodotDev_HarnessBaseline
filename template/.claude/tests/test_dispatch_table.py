@@ -51,6 +51,7 @@ class Env:
         self.transcript = self.session + ".jsonl"
         open(self.transcript, "w").close()
         self.body = {}
+        self.extra = {"BENCH_ROOTS": json.dumps({"BenchmarkArms": os.path.join(self.root, "arms")})}
 
     def state_path(self):
         return os.path.join(self.state, SID[:8] + ".json")
@@ -77,7 +78,7 @@ class Env:
                              env=hook_env(HARNESS_HOOK_STATE_DIR=self.state, SIDECAR_LEDGER_PATH=self.ledger,
                                           CLAUDE_PROJECTS_ROOT=projects_root or os.path.join(self.root, "none"),
                                           DISPATCH_TABLE_LAUNCH_WAIT="0", DISPATCH_TABLE_UNRESOLVED_WAIT="0",
-                                          CC_CACHESTAT_DIR=self.root))
+                                          CC_CACHESTAT_DIR=self.root, **self.extra))
         assert out.returncode == 0 and "Traceback" not in out.stderr, "CRASH rc=%s %s" % (out.returncode, out.stderr)
         body = json.loads(out.stdout) if out.stdout.strip() else {}
         allowed = {"systemMessage"} if mode == "--launch" else {"systemMessage", "decision", "reason"}
@@ -1738,6 +1739,96 @@ def test_a_launch_inside_a_bench_owned_tree_is_not_the_sessions_dispatch():
             % os.path.join(CLAUDE_DIR, "hooks"))
     assert _probe_env(code, CLAUDE_CODE_SESSION_ID=SID) == [SID]
     assert _probe_env(code, CLAUDE_CODE_SESSION_ID=SID, SIDECAR_DISPATCH_OWNER="bench") == ["None"]
+
+
+# A bench roster this session started registers no sidecar entry (SIDECAR_DISPATCH_OWNER=bench), so the
+# no-watcher block must find it the way the session watcher does: a live `<logs>/<name>.pid` whose process
+# carries this session id. A live process stands in for the worker: its environment cannot be planted.
+def _live_roster(e, owner, name="cov-proof-t7"):
+    logs = os.path.join(e.root, "arms", "logs")
+    os.makedirs(logs, exist_ok=True)
+    with open(os.path.join(logs, name + ".log"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("START %s\n[2026-10-20T19:00:00Z] WAITING for prior grid\n" % name)
+    pid_file = os.path.join(logs, name + ".pid")
+    shell = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else "bash"
+    worker = subprocess.Popen([shell, "-c", 'echo $$ > "$1"; exec sleep 60', "x", pid_file.replace("\\", "/")],
+                              env=dict(os.environ, CLAUDE_CODE_SESSION_ID=owner))
+    deadline = time.time() + 20
+    while time.time() < deadline and not (os.path.exists(pid_file) and open(pid_file).read().strip()):
+        time.sleep(0.1)
+    return worker
+
+
+def test_stop_blocks_a_live_roster_of_this_session_with_no_watcher():
+    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
+        return  # the roster poll lives in the benchmark suite, a project-layer tree a consumer lacks
+    e = Env()
+    worker = _live_roster(e, SID)
+    try:
+        e.run(stop_payload(), "--complete")
+        assert e.body.get("decision") == "block", e.body
+        assert WATCH_COMMAND in e.body["reason"] and "cov-proof-t7" in e.body["reason"], e.body
+    finally:
+        worker.kill()
+
+
+def test_stop_does_not_block_a_roster_a_session_watcher_covers():
+    e = Env()
+    worker = _live_roster(e, SID)
+    try:
+        e.watch()
+        e.run(stop_payload(), "--complete")
+        assert "decision" not in e.body, e.body
+    finally:
+        worker.kill()
+
+
+def test_stop_does_not_block_a_peer_sessions_roster():
+    e = Env()
+    worker = _live_roster(e, "peer-session-0000-0000-0000-000000000000")
+    try:
+        e.run(stop_payload(), "--complete")
+        assert "decision" not in e.body, e.body
+    finally:
+        worker.kill()
+
+
+def _dispatch_table_module():
+    hooks = os.path.join(CLAUDE_DIR, "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import dispatch_table
+    return dispatch_table
+
+
+def test_roster_gate_is_false_where_the_benchmark_suite_is_not_installed():
+    dt = _dispatch_table_module()
+    real_scoring = os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")
+    saved_here, saved_path, saved_mod = dt.HERE, list(sys.path), sys.modules.pop("bench_lib", None)
+    sys.path[:] = [p for p in sys.path if os.path.normcase(os.path.abspath(p)) != os.path.normcase(real_scoring)]
+    with tempfile.TemporaryDirectory() as tmp:
+        dt.HERE = os.path.join(tmp, "hooks")
+        try:
+            assert dt._any_roster_pid_alive() is False
+        finally:
+            dt.HERE, sys.path[:] = saved_here, saved_path
+            if saved_mod is not None:
+                sys.modules["bench_lib"] = saved_mod
+
+
+def test_a_failed_roster_read_is_reported_to_the_owner_not_only_stderr():
+    dt = _dispatch_table_module()
+    saved = dt._any_roster_pid_alive
+
+    def broken():
+        raise OSError("roster logs unreadable")
+    dt._any_roster_pid_alive = broken
+    try:
+        reason, note = dt._unwatched_rosters_reason({"session_id": SID})
+    finally:
+        dt._any_roster_pid_alive = saved
+    assert reason is None, reason
+    assert note and "OSError" in note, note
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ a caller should use depends on whether a backgrounded job wakes it:
 - woken: the interactive session (CLAUDE_CODE_ENTRYPOINT=cli) and an Agent-tool subagent, known by its
   `.meta.json` under the session's `subagents/` dir (`_agent_tool_subagent`);
 - never woken: a Workflow subagent (agent_type "workflow-subagent", or a job's own agentType such as
-  "lane-author", whose `.meta.json` sits under `subagents/workflows/<run>/`) and a print-mode `claude -p`
+  "<job>-author", whose `.meta.json` sits under `subagents/workflows/<run>/`) and a print-mode `claude -p`
   child (CLAUDE_CODE_ENTRYPOINT=sdk-cli: the session ends at its turn's end). A subagent whose kind is
   unknown counts as never woken, the safe side: one bounded foreground call, never a trap.
 
@@ -53,6 +53,10 @@ a caller should use depends on whether a backgrounded job wakes it:
    at that ceiling with no wake, so the request cannot do what it says. The deny names the waiter for a detached
    job's end (the launch's printed WAIT-CMD, or the session watcher) and the Monitor's own bound. It reads the
    requested number only, never the command: a Monitor at or under the cap, or naming none, passes.
+8. Session-watcher arm outside run_in_background (denies, interactive orchestrator only). A Bash call without
+   `run_in_background` whose segment runs `watch_records.py` with `--session` is denied (`foreground_watch_arm`):
+   in the foreground, or detached with `&`/`nohup`/`disown`, its wake reaches no task notification, and while it lives
+   every correct arm exits COVERED. Rule home: reference/sidecar_dispatch.md step 6.
 
 Matches the ACTION, never the noun: a command that only names `sleep` passes, and a Monitor (except item 7) or a
 backgrounded call is never counted. Class: process guard. State: the shared per-session file
@@ -89,7 +93,7 @@ _HEREDOC = re.compile(r"(?P<head>[^\n]*?)<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[
 _SHELL_WORDS = frozenset(("bash", "sh", "zsh", "dash", "pwsh", "powershell"))
 
 POLL_LIMIT = 4
-SUBAGENT_WAIT_MS = 270000  # under the 5-minute subagent cache with margin for the turn itself
+SUBAGENT_WAIT_MS = _hook_state.SUBAGENT_CACHE_WARM_SECONDS * 1000
 BASH_DEFAULT_MS = 120000
 TIMEOUT_BIN = "/usr/bin/timeout"  # Git Bash's coreutils; a bare `timeout` can resolve to Windows' timeout.exe (a pause)
 _DEADLINE = re.compile(r"^\s*(?:/usr/bin/)?timeout\s+\d")
@@ -136,6 +140,12 @@ NO_WAKE_ADVICE = (
 )
 
 
+WATCH_REASON = (
+    "BLOCKED session-watcher arm outside run_in_background: a watcher started in a foreground call, or detached with "
+    "&, nohup or disown, delivers its wake to no task notification, and while it lives every correct arm exits COVERED. "
+    "Run `python3 .claude/tools/watch_records.py --session --wake` alone with Bash run_in_background: true and "
+    "timeout 7200000 (reference/sidecar_dispatch.md step 6)."
+)
 BATCH_ADVICE = (
     "[wait] This foreground proof batch is expected to take %s, past this call's %d s timeout. Run it with "
     "run_in_background: true and act on its one wake; a batch that ends inside its call stays in the foreground, "
@@ -216,7 +226,7 @@ def _caller(payload):
 def _agent_tool_subagent(payload):
     """True when the caller's .meta.json sits where the runtime keeps an Agent-tool subagent's:
     <session>/subagents/agent-<id>.meta.json beside the orchestrator's <session>.jsonl. A Workflow job's sits under
-    <session>/subagents/workflows/<run>/, and its agent_type is the job's agentType (e.g. lane-author), so the type
+    <session>/subagents/workflows/<run>/, and its agent_type is the job's agentType (e.g. <job>-author), so the type
     alone cannot tell the two apart."""
     transcript = str(payload.get("transcript_path") or "")
     if not transcript.endswith(".jsonl"):
@@ -272,6 +282,23 @@ def _words(segment):
     if words:
         words[0] = words[0].strip("'\"").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
     return words
+
+
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def foreground_watch_arm(command):
+    """True when a segment of `command` runs `watch_records.py --session` (a python or direct run, not a mention).
+    A quoted span that holds a command separator is data (a payload, an echoed command), so it is blanked first."""
+    code = _QUOTED_SPAN.sub(lambda m: "''" if re.search(r"[;&|\n]", m.group(0)) else m.group(0), shell_code(command))
+    for segment in _segments(code):
+        words = [w for w in _words(segment) if w not in ("nohup", "setsid", "exec")]
+        if not words or "--session" not in words:
+            continue
+        script = words[1] if _PYTHON.match(words[0]) and len(words) > 1 else words[0]
+        if script.strip("'\"").replace("\\", "/").endswith("watch_records.py"):
+            return True
+    return False
 
 
 def _recorded(runner):
@@ -669,6 +696,8 @@ def main():
             else:
                 _check_in(payload, command, tool_input, None)
         return 0
+    if not (unwoken or _caller(payload)) and foreground_watch_arm(command):
+        return _deny(WATCH_REASON)
     advice = None if unwoken else _batch_advice(command, tool_input.get("timeout"))
     if _LOOP_SLEEP.search(shell_code(command)):
         try:

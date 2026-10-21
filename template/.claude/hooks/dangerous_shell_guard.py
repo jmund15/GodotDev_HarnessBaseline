@@ -33,7 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import executable_text, _REDIRECTION  # noqa: E402
 from _regenerable_clone import is_regenerable_clone, is_retired_worktree, session_created_worktree  # noqa: E402
-from _owner_text import classify  # noqa: E402
+from _owner_text import classify, owner_consent  # noqa: E402
 from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
 
 
@@ -59,7 +59,7 @@ DANGEROUS_BASH_PATTERNS = [
     # The token scan stops at a command separator. Without that bound it runs to end-of-line and
     # reads a LATER command's flag as this delete's own -- `rm -f a.txt; tool -R out.json` denied
     # five times in one session, every one a safe delete followed by an unrelated -R.
-    # Regression: .claude/tests/test_pattern_enforcer_rm_scope.py
+    # Regression: .claude/tests/test_dangerous_shell_guard_rm_scope.py
     (r'(?<!git\s)\brm\s+(?:[^\s;|&\n]+\s+)*-[a-zA-Z]*[rR]', 'BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)'),
     (r'(?<!git\s)\brm\s+--recursive\b', 'BLOCKED: Dangerous recursive delete (rm --recursive)'),
 ]
@@ -254,7 +254,8 @@ def _owner_approved_removal(token: str, transcript_path: str | None) -> bool:
         for question, label in row.pairs:
             if named.search(question):
                 verdict = bool(_REMOVE_LABEL_RE.search(label)) and not _KEEP_LABEL_RE.search(label)
-    return verdict
+    return verdict or owner_consent(content.splitlines(), [token.replace("\\", "/").rstrip("/")],
+                                    _REMOVE_LABEL_RE, _KEEP_LABEL_RE)
 
 
 def _registered_worktrees() -> list[str]:
@@ -279,9 +280,9 @@ def _owner_approved_scratch(token: str, target: str, transcript_path: str | None
     held = [wt for wt in _registered_worktrees() if wt == _norm(target) or _strictly_under(wt, _norm(target))]
     if not _owner_approved_removal(token, transcript_path):
         if reasons is not None:
-            reasons.append('it is no pushed clone and no owner answer approved its removal. Ask one AskUserQuestion '
-                           'naming the folder, with a delete option, then re-issue the delete; a typed reply is not '
-                           'read as approval')
+            reasons.append('it is no pushed clone and the owner has not approved its removal. Ask the owner in one '
+                           'message naming the folder and the word delete; their next reply approving it lets this '
+                           'delete through')
         return False
     if held:
         if reasons is not None:
@@ -301,9 +302,9 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
         return _owner_approved_scratch(token, target, transcript_path, reasons)
     if not (_owner_approved_removal(token, transcript_path) or session_created_worktree(target, transcript_path)):
         if reasons is not None:
-            reasons.append('ownership not proven: this session did not create it, and no owner answer approved its '
-                           'removal. Ask one AskUserQuestion naming each worktree, with a remove option, then '
-                           're-issue the delete; a typed reply is not read as approval')
+            reasons.append('ownership not proven: this session did not create it, and the owner has not approved its '
+                           'removal. Ask the owner in one message naming each worktree and the word remove; their '
+                           'next reply approving it lets this delete through')
         return False
     return is_retired_worktree(token, cwd or root, root, allow_ignored=True, reasons=reasons)
 
@@ -586,7 +587,7 @@ def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> st
             reasons = []
             if target == home or _strictly_under(target, home):
                 if not _is_regenerable_target(value, here, transcript_path, reasons):
-                    return ' %s is not retired: %s.' % (value, reasons[0])
+                    return ' %s is not retired: %s.' % (value, '; '.join(reasons))
             elif _strictly_under(target, scratch):
                 clone_reasons = []
                 if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)

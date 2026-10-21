@@ -2361,6 +2361,23 @@ def _subagent_requests(transcript):
     return out
 
 
+def _missed_final_requests(driver_requests, remainder):
+    """How many trailing driver requests the record's totals omit, when the negative remainder is exactly
+    their sum (a stopped run's result can drop its last served request); 0 for any other gap."""
+    gap = {kind: -count for kind, count in remainder.items()}
+    if any(count < 0 for count in gap.values()):
+        return 0
+    tail = dict.fromkeys(gap, 0)
+    for n, req in enumerate(reversed(driver_requests), 1):
+        for kind in tail:
+            tail[kind] += req[kind] + (req['cache_write_1h'] if kind == 'cache_write' else 0)
+        if tail == gap:
+            return n
+        if any(tail[kind] > gap[kind] for kind in tail):
+            return 0
+    return 0
+
+
 def record_requests(record, path, data=None, events=None):
     """Final client requests plus the aggregate remainder, with explicit estimate labels.
 
@@ -2400,9 +2417,14 @@ def record_requests(record, path, data=None, events=None):
             raise RegistryError(f'invalid aggregate {field}: {count!r}')
         remainder[kind] = count - sums[kind]
     negative = {k: v for k, v in remainder.items() if v < 0}
-    if negative:
+    missed = _missed_final_requests(requests[:driver_count], remainder) if negative else 0
+    if negative and not missed:
         raise RegistryError(f'negative remainder (aggregate minus final requests): {negative}')
+    if missed:
+        remainder = dict.fromkeys(remainder, 0)
     basis = 'per-request' + (' (stream-partial-output)' if usage_basis != 'transcript-final' else '')
+    if missed:
+        basis += f' (aggregate missed the final {missed} request(s))'
     if any(remainder.values()):
         models = {req['model'] for req in requests[:driver_count]} or {req['model'] for req in requests}
         if len(models) != 1:
@@ -2946,7 +2968,7 @@ def _tier_of(entry):
     return long_context_tier(entry) if "longContextTier" in entry or entry.get("transport") else None
 
 
-def anthropic_window(entry, use_max=False, max_output=None, compact_override=None, shape=None):
+def anthropic_window(entry, use_max=False, max_output=None, compact_override=None, shape=None, resident=False):
     r"""Claude Code 2.1.291 window contract, extracted from claude.exe on 2026-10-08.
 
     Binary: `var OEt=20000`; `z4`: `Math.min(e.maxOutputTokens,OEt)` then `return g-r`;
@@ -2962,8 +2984,12 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     A Claude row between 200K and 1M cannot prove the client's belief: report unknown rather
     than its catalog window. Non-Claude names retain the existing MAX_CONTEXT_TOKENS contract.
 
-    A `review` shape (a job that keeps one subject resident) gets no autoCompactWindow: the model's full
-    contextTokens, source `review-shape`. An explicit compact_override (-K) still applies.
+    A job that keeps one subject resident compacts only at the model's full contextTokens, passed as an explicit
+    autoCompactWindow: left unset, the client falls back to the login's `autoCompactWindow` setting (global or
+    per-model `modelSettings`), which the env value overrides. A
+    `review` shape is one (source `review-shape`); `resident` marks any other (source `resident-subject`):
+    the launcher's SIDECAR_RESIDENT_SUBJECT=1, set from the job's data (a benchmark task's archetype, a
+    fan-out job's `resident`). An explicit compact_override (-K) still applies.
     """
     limits = entry.get("limits") or {}
     model = entry["id"]
@@ -2971,15 +2997,16 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     if not model.lower().startswith("claude-"):
         return {"model": model, "autoCompactWindow": None, "maxContextTokens": window,
                 "contextWindow": window, "contextWindowSource": "launcher-declared" if window else "unknown"}
-    if shape == "review" and compact_override is None:
+    if (shape == "review" or resident) and compact_override is None:
         full = int(limits.get("contextTokens") or 0)
         native_1m = full >= 1000000
         known = full > 0 and (full <= 200000 or native_1m)
         if native_1m and not model.lower().endswith("[1m]"):
             model += "[1m]"
-        return {"model": model, "autoCompactWindow": None, "maxContextTokens": None,
+        return {"model": model, "autoCompactWindow": min(full, 1000000) if known else None, "maxContextTokens": None,
                 "contextWindow": full if known else None,
-                "contextWindowSource": "review-shape" if known else "unknown"}
+                "contextWindowSource": ("review-shape" if shape == "review" else "resident-subject")
+                if known else "unknown"}
     operating_point = compact_override if compact_override is not None else limits.get("compactAtTokens")
     if operating_point:
         cap = max_output if max_output is not None else output_cap(limits, use_max, _tier_of(entry))
@@ -3013,7 +3040,8 @@ def _cmd_anthropic_window(argv):
         raise RegistryError("SIDECAR_COMPACT_AT_TOKENS must be a positive integer")
     print(json.dumps(anthropic_window(resolve(argv[0]), flags == ["--max"],
                                       int(cap) if cap.isdigit() else None,
-                                      int(override) if override else None, shape)))
+                                      int(override) if override else None, shape,
+                                      os.environ.get("SIDECAR_RESIDENT_SUBJECT") == "1")))
     return 0
 
 

@@ -191,6 +191,25 @@ def _capture_context(argv, limits):
     return code, output.getvalue().strip()
 
 
+def _with_env(values, fn):
+    """Run `fn` with `values` set in os.environ (an empty value unsets), restoring the old values after."""
+    import os
+    saved = {k: os.environ.get(k) for k in values}
+    try:
+        for k, v in values.items():
+            if v:
+                os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
+        return fn()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def _anthropic_window_cli(argv):
     """Run the anthropic-window CLI branch against a synthetic Claude row and return its JSON."""
     original = mr.resolve
@@ -204,6 +223,12 @@ def _anthropic_window_cli(argv):
     finally:
         mr.resolve = original
     return __import__("json").loads(output.getvalue()) if code == 0 else {"exit": code}
+
+
+def _full_window_cli(argv):
+    """True when the CLI sets the compaction window to the model's full window, never leaving it unset."""
+    out = _anthropic_window_cli(argv)
+    return out.get("autoCompactWindow") == out.get("contextWindow") == 1000000
 
 
 _TIERED = {"limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
@@ -637,11 +662,11 @@ CASES = [
                                  "limits": {"contextTokens": 1000000, "compactAtTokens": 200000}},
                                 compact_override=117000)["autoCompactWindow"] == 150000),
 
-    ("a review-shaped job gets no compaction window: the model's full window, named review-shape",
+    ("a review-shaped job compacts only at the model's full window, set explicitly so a login's autoCompactWindow setting cannot apply, named review-shape",
      lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
                                             "compactAtTokens": 200000}}, shape="review") == {
-         "model": "claude-haiku-test[1m]", "autoCompactWindow": None, "maxContextTokens": None,
+         "model": "claude-haiku-test[1m]", "autoCompactWindow": 1000000, "maxContextTokens": None,
          "contextWindow": 1000000, "contextWindowSource": "review-shape"}),
     ("an author-shaped job keeps the compaction window",
      lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
@@ -652,9 +677,23 @@ CASES = [
                                  "limits": {"contextTokens": 1000000, "compactAtTokens": 200000}},
                                 compact_override=117000, shape="review")["autoCompactWindow"] == 150000),
     ("anthropic-window --shape review reaches the resolver through argv",
-     lambda: _anthropic_window_cli(["synthetic", "--shape", "review"])["autoCompactWindow"] is None
+     lambda: _full_window_cli(["synthetic", "--shape", "review"])
      and _anthropic_window_cli(["synthetic"])["autoCompactWindow"] == 233000
      and _anthropic_window_cli(["synthetic", "--max", "--shape", "author"])["autoCompactWindow"] == 233000),
+    ("a job marked resident-subject compacts only at the model's full window whatever its tool-profile shape",
+     lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
+                                 "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
+                                            "compactAtTokens": 200000}}, shape="arm", resident=True) == {
+         "model": "claude-haiku-test[1m]", "autoCompactWindow": 1000000, "maxContextTokens": None,
+         "contextWindow": 1000000, "contextWindowSource": "resident-subject"}),
+    ("SIDECAR_RESIDENT_SUBJECT=1 reaches the resolver through the launcher's environment; unset keeps the point",
+     lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1"},
+                       lambda: _full_window_cli(["synthetic", "--shape", "arm"]))
+     and _with_env({"SIDECAR_RESIDENT_SUBJECT": ""},
+                   lambda: _anthropic_window_cli(["synthetic", "--shape", "arm"]))["autoCompactWindow"] == 233000),
+    ("an explicit compact point still overrides the resident-subject mark",
+     lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1", "SIDECAR_COMPACT_AT_TOKENS": "117000"},
+                       lambda: _anthropic_window_cli(["synthetic", "--shape", "arm"]))["autoCompactWindow"] == 150000),
 
     # ---- context-window modes ----------------------------------------------
     ("the default context query uses contextTokens and the provider percentage",

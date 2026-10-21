@@ -4448,7 +4448,7 @@
     },
     {
       "path": ".claude/tests/test_regenerable_clone.py",
-      "layer": "pure",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -4722,6 +4722,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_repay.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_resume_check.py",
       "layer": "pure",
       "sync": "auto"
@@ -4739,6 +4744,11 @@
     {
       "path": ".claude/tests/test_sidecar_stall_watchdog.sh",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_stopped_run.sh",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -4928,6 +4938,11 @@
     },
     {
       "path": ".claude/tests/test_watch_records_workflow.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_work_key.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5533,6 +5548,11 @@
     },
     {
       "path": ".claude/tools/watch_records.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/work_key.py",
       "layer": "pure",
       "sync": "auto"
     },

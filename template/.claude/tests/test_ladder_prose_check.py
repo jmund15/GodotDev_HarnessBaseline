@@ -80,6 +80,20 @@ def named_code(pm_cell, rows=("opus", "somemodel")):
     return lpc.main([path], data=REGISTRY)
 
 
+# A planted claim: one family claiming two tiers, plus an added review seat (supplementary).
+COVER_REG = {"models": [{"id": "x-cmodel", "family": "cmodel", "alias": "cmodel", "roles": ["fanout", "executor"],
+                         "supplementary": ["architect"]}]}
+
+
+def coverage_code(effort_cell):
+    """Exit code for a one-row table whose row claims fanout and executor, plus a review seat."""
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(HEAD + "| cmodel | a role | %s | + fine |\n\n## Next section\n" % effort_cell)
+    return lpc.main([path], data=COVER_REG)
+
+
 def top_level_code(text):
     path = table("+ ordinary tendency")
     with open(path, "r+", encoding="utf-8", newline="\n") as fh:
@@ -101,7 +115,8 @@ CASES = [
     ("the owner-claim rule fails",
      lambda: top_level_code("The owner's statement that a row does a shape sets it.") == 1),
     ("the contradicting-cell rule fails",
-     lambda: top_level_code("A cell that contradicts a rung goes to the owner.") == 1),
+     lambda: top_level_code("A cell that contradicts a rung goes to the owner.") == 1
+     and top_level_code("A cell that contradicts an effort level goes to the owner.") == 1),
     ("the authority rule fails",
      lambda: top_level_code("- **Authority:** the owner may edit any cell at any time.") == 1),
     ("the ingest proposal rule fails",
@@ -236,6 +251,16 @@ CASES = [
     # "violations found" rather than "could not check". Indeterminate has its own code.
     ("an absent file exits 2, not 1 and not a traceback",
      lambda: lpc.main(["/no/such/ladder.md"]) == 2),
+
+    # ---- every claimed tier's everyday shapes have a start rung ------------
+    ("a claimed fanout tier with no survey or mechanical rung fails",
+     lambda: coverage_code("`low` converged execution and debugging; an added review seat") == 1),
+    ("a claimed executor tier with no debugging rung fails",
+     lambda: coverage_code("`max` surveys and an added review seat / `low` converged execution and extraction") == 1),
+    ("a supplementary tier with no review-seat rung fails",
+     lambda: coverage_code("`max` surveys and debugging / `low` converged execution and extraction") == 1),
+    ("every claimed shape named passes",
+     lambda: coverage_code("`max` surveys, debugging and an added review seat / `low` converged execution and extraction") == 0),
 
     # ---- the live file ----------------------------------------------------
     ("the shipped ladder is clean", lambda: lpc.main([LIVE]) == 0),

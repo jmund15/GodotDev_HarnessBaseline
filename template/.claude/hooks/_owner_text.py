@@ -243,6 +243,124 @@ def owner_answer_pairs(path):
     return [(row.uuid, tuple(row.pairs)) for row in rows if owner_answer_text(row)]
 
 
+AFFIRM_RE = re.compile(r"^\W*(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|approved?|confirm(?:ed)?)"
+                       r"(?:\W+(?:please|pls|thanks|thank you|do it|go ahead|now))*\W*$", re.I)
+
+
+OPTION_CODE_RE = re.compile(r"^\W*(O\d+)\W*$", re.I)
+
+
+def _option_lines(asked, code=r"O\d+"):
+    opens = re.compile(r"^[\s>*_#-]*%s\b" % code, re.I)
+    return [line for line in (asked or "").splitlines() if opens.match(line)]
+
+
+def _picked_line(reply, asked):
+    """The line of the agent's packet `asked` that a code-only `reply` ("O1") opens, or None."""
+    code = OPTION_CODE_RE.match(reply or "")
+    return next(iter(_option_lines(asked, re.escape(code.group(1)))), None) if code else None
+
+
+def _picked_option(reply, asked):
+    """The label of the option a code-only `reply` ("O1") picks in the agent's packet `asked`, or None: the bold span
+    of the line the code opens, else that line's first sentence. Its explanation is not the option, and a "no" in it
+    would read as a keep word."""
+    line = _picked_line(reply, asked)
+    if line is None:
+        return None
+    bold = re.search(r"\*\*(.+?)\*\*", line)
+    return bold.group(1) if bold else re.split(r"(?<=[.?!])\s", line, maxsplit=1)[0]
+
+
+def _option_concerns(reply, packet, targets):
+    """True when the option `reply` picks concerns every target: its line names them all, or the packet names them
+    and no option line names any one (a target named only in the header). An option line naming a target makes the
+    options target-specific, so a pick of another target's option never approves this one."""
+    if names_all(_picked_line(reply, packet), targets):
+        return True
+    return names_all(packet, targets) and not any(
+        names_all(line, [t]) for line in _option_lines(packet) for t in targets)
+
+
+def _last_naming(text, targets):
+    """The last sentence of `text` that names every target, or None."""
+    named = [s for s in re.split(r"(?<=[.?!])\s+|\n+", text or "") if names_all(s, targets)]
+    return named[-1] if named else None
+
+
+def _asks(sentence):
+    return (sentence or "").rstrip().rstrip("`*_\"')]").endswith("?")
+
+
+def _assistant_text(entry):
+    if not isinstance(entry, dict) or entry.get("type") != "assistant" or entry.get("isSidechain"):
+        return ""
+    content = (entry.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(str(b.get("text") or "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+
+
+def names_all(text, targets):
+    """True when `text` names every target as a whole token (a longer name or a path continuing it does not
+    count); backslashes read as forward slashes, case folded on Windows-style paths."""
+    text = (text or "").replace("\\", "/")
+    return bool(targets) and all(
+        re.search(r"(?<![\w./-])" + re.escape(t.replace("\\", "/")) + r"(?![\w/-]|\.\w)", text, re.I)
+        for t in targets)
+
+
+def owner_consent(lines, targets, action_re, decline_re):
+    """True when the owner's LATEST input approves `action_re` on every one of `targets`:
+    - an AskUserQuestion answer whose question names every target and whose picked label matches `action_re`;
+    - a typed statement (not a question) naming every target with an action verb; or
+    - a typed reply that is only an affirmative ("yes", "go ahead", "yes please"; a condition, question or
+      further instruction voids it) to a preceding assistant message (the last one before the reply) whose last
+      sentence naming every target is a question carrying an action verb; or
+    - a typed reply that is only an option code ("O1") picking, from the latest assistant message since the owner's
+      previous input that labels that code, an option whose label line carries an action verb, where that line names
+      every target, or the message does and no option line names one.
+    `decline_re` anywhere in the owner's words refuses. Any later owner input replaces the earlier one, so a
+    later "wait" revokes. Sidechain, meta, envelope and tool rows are never the owner. `lines` is the
+    transcript's raw JSON lines in order."""
+    latest, asked, since, said = None, "", [], []
+    for index, line in enumerate(lines):
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        spoken = _assistant_text(entry)
+        if spoken:
+            said.append(spoken)
+            continue
+        try:
+            row = classify(entry, index, raw=line)
+        except Exception:
+            continue
+        if row is None or row.meta or row.sidechain:
+            continue
+        if row.pairs:
+            latest, asked, since, said = ("answer", row.pairs), (said[-1] if said else ""), said, []
+        elif owner_quote_text(row):
+            latest, asked, since, said = ("text", row.text), (said[-1] if said else ""), said, []
+    if latest is None:
+        return False
+    kind, value = latest
+    if kind == "answer":
+        return any(names_all(q, targets) and action_re.search(label) and not decline_re.search(label)
+                   for q, label in value)
+    if decline_re.search(value):
+        return False
+    if names_all(value, targets) and action_re.search(value) and not _asks(value) and not _asks(_last_naming(value, targets)):
+        return True
+    for packet in reversed(since):
+        option = _picked_option(value, packet)
+        if option is not None:
+            return _option_concerns(value, packet, targets) and bool(action_re.search(option)) and not decline_re.search(option)
+    question = _last_naming(asked, targets)
+    return bool(AFFIRM_RE.search(value)) and _asks(question) and bool(action_re.search(question))
+
+
 def owner_quote_rows(path):
     """`owner_quote_text` for every owner row of a transcript file, in order; None when it cannot be read."""
     turns = _turns(path, False)
@@ -257,10 +375,17 @@ def classify(entry, index, raw=None):
     if queued is not None:
         # Its own kind, so each consumer declares a cell rather than inheriting the `prompt` one:
         # a mid-turn message carries owner text (kill_guard, digest) but does NOT start a turn.
+        # The runtime queues its own events the same way (a background task's notification carries
+        # `commandMode: task-notification`); those are envelopes, never the owner speaking.
+        attachment = entry.get("attachment") or {}
+        mode = attachment.get("commandMode") or (attachment.get("origin") or {}).get("kind")
+        opens = ENVELOPE_RE.match(queued.strip())
+        envelope = (opens.group(1).lower() if opens
+                    else (str(mode).lower() if mode and str(mode).lower() != "prompt" else None))
         return OwnerRow(
             kind="queued_prompt", uuid=_identity(entry, raw), index=index, text=queued.strip(),
             blocks=(queued,), command_name=None, command_args=None, pairs=None, tool_results=(),
-            injection_prefixed=False, envelope=None,
+            injection_prefixed=False, envelope=envelope,
             sidechain=bool(entry.get("isSidechain")), meta=False,
         )
     message = entry.get("message")

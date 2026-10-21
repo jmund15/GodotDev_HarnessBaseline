@@ -307,6 +307,9 @@ _TRANSCRIPT_BYTES_PER_TOKEN = 3
 # the TTL (about 54 min, a server flag), so the session watcher's check-in and the longest background
 # wait both end at 50 min, before that compaction and well inside the cache.
 ORCHESTRATOR_CHECKIN_SECONDS = 3000
+# A subagent's prompt cache lives 5 minutes (auto-memory archive_subagent_cache_ttl_measurement.md); 30 s of
+# margin for the turn itself. A delegate's foreground wait and a message to a subagent both end inside it.
+SUBAGENT_CACHE_WARM_SECONDS = 270
 _TRANSCRIPT_TAIL_BYTES = 8_000_000
 
 

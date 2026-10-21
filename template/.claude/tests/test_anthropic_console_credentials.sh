@@ -262,7 +262,7 @@ PY
 }
 cycle_end_of() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])' "$NATIVE/cycles.json" "$1"; }
 
-rm -f "$MARKER" "$RECORD"
+rm -f "$MARKER" "$RECORD" "$LEDGER"
 ( export CLAUDE_BIN="$STUB_EXHAUSTED"
   launch "$CONSOLE" "$RECORD" ) >/dev/null 2>"$NATIVE/exhausted.err"
 rc=$?
@@ -274,7 +274,7 @@ check "a Console child result carrying the credit error marks that plan for the 
 
 # The SECOND plan's own launch, so a launcher that marked a hardcoded default plan instead of the
 # plan it is running fails here. The marker is removed first, so its single entry is the proof.
-rm -f "$MARKER" "$RECORD"
+rm -f "$MARKER" "$RECORD" "$LEDGER"
 ( export CLAUDE_BIN="$STUB_EXHAUSTED"
   launch "$CONSOLE_SECOND" "$RECORD" ) >/dev/null 2>"$NATIVE/exhausted2.err"
 entries="$(marker_entries)"

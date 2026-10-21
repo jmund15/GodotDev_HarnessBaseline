@@ -17,6 +17,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
 import _background_tasks  # noqa: E402
+sys.path.insert(0, HERE)
+import dispatch_result  # noqa: E402
 
 # A head is what the orchestrator reads to decide whether to open the report: one screen line per field. The
 # report path carries the rest.
@@ -64,16 +66,27 @@ def sidecar_lines(label, record, fanout_dir=None):
     """The indented digest lines of one ended sidecar job.
 
     The result is the record's `.claims.json` `result`, else the head of the fan-out deliverable
-    `<label>.md`. Verification is the claims file's `verification.status` with its counts, `UNCHECKED`
+    `<label>.md` written since this attempt launched (its `<record>.pid`). Verification is the claims file's `verification.status` with its counts, `UNCHECKED`
     when the file or its verdict is absent. The report is the deliverable when one exists, else the claims file."""
     claims_path = str(record) + ".claims.json"
     claims = _json(claims_path)
-    deliverable = os.path.join(str(fanout_dir), "%s.md" % label) if fanout_dir else None
+    deliverable = str(dispatch_result.deliverable_path(fanout_dir, label)) if fanout_dir else None
+    try:
+        launched = os.path.getmtime(str(record) + ".pid")
+    except OSError:
+        launched = None
+
+    def current(path):
+        try:
+            return os.path.getmtime(path) >= (launched or 0)
+        except OSError:
+            return False
+
     if deliverable and claims is None:
         deadline = time.monotonic() + DELIVERABLE_GRACE_SEC
-        while not os.path.isfile(deliverable) and time.monotonic() < deadline:
+        while not current(deliverable) and time.monotonic() < deadline:
             time.sleep(0.1)
-    deliverable = deliverable if deliverable and os.path.isfile(deliverable) else None
+    deliverable = deliverable if deliverable and current(deliverable) else None
     result = (claims or {}).get("result")
     if result is None and deliverable:
         try:
