@@ -680,9 +680,10 @@ def _importers(touched, sources):
         return set()
     pending, seen, importers = [name[:-3]], {name[:-3]}, set()
     while pending:
-        pattern = _import_re(pending.pop())
+        module = pending.pop()
+        pattern = _import_re(module)
         for rel, text in sources.items():
-            if rel == touched or rel in importers or not pattern.search(text):
+            if rel == touched or rel in importers or module not in text or not pattern.search(text):
                 continue
             importers.add(rel)
             stem = rel.rsplit("/", 1)[-1][:-3]
@@ -771,15 +772,26 @@ def bindings(repo_root, touched, include_excluded=False, proofs=None):
     return result
 
 
+def shipped_proofs_by_tool(repo_root, tools):
+    """{tool: repo-relative paths of the non-fixture proofs bound to it by name or by an importer's name,
+    never by a mention: a proof that only names the tool in its source does not prove it}. One module
+    scan and one discovery serve every tool."""
+    tools = list(dict.fromkeys(tools))
+    sources = _module_sources(repo_root) if any(t.endswith(".py") for t in tools) else {}
+    stems = {}
+    for tool in tools:
+        found = {os.path.splitext(tool.rsplit("/", 1)[-1])[0]}
+        if tool.endswith(".py"):
+            found |= {os.path.splitext(n.rsplit("/", 1)[-1])[0] for n in _importers(tool, sources)}
+        stems[tool] = found
+    proofs = [(os.path.basename(p), _norm(os.path.relpath(p, repo_root)))
+              for p in discover(os.path.join(repo_root, ".claude", "tests"))]
+    return {tool: [rel for name, rel in proofs if any(_named_for(name, stem) for stem in found)]
+            for tool, found in stems.items()}
+
+
 def shipped_proofs(repo_root, tool):
-    """Repo-relative paths of the non-fixture proofs bound to `tool` by name or by an importer's name,
-    never by a mention: a proof that only names the tool in its source does not prove it."""
-    stems = {os.path.splitext(tool.rsplit("/", 1)[-1])[0]}
-    if tool.endswith(".py"):
-        stems |= {os.path.splitext(n.rsplit("/", 1)[-1])[0]
-                  for n in _importers(tool, _module_sources(repo_root))}
-    return [_norm(os.path.relpath(p, repo_root)) for p in discover(os.path.join(repo_root, ".claude", "tests"))
-            if any(_named_for(os.path.basename(p), stem) for stem in stems)]
+    return shipped_proofs_by_tool(repo_root, [tool])[tool]
 
 
 def _behavior_plan(repo_root, paths=None):

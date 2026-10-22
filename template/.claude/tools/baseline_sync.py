@@ -185,13 +185,64 @@ def _repo_arg(path: Path) -> str:
     return str(path)
 
 
+NETWORK_RETRY_DELAYS = (2, 5)
+_TRANSIENT_NETWORK = re.compile(
+    r"connection (?:was )?reset|could not resolve host|timed out|timeout|early eof|"
+    r"unexpected disconnect|remote end hung up|rpc failed|failed to connect|"
+    r"\bssl\b|\btls\b|returned error: 5\d\d|http 50\d|i/o timeout",
+    re.IGNORECASE,
+)
+_REMOTE_GIT = ("fetch", "push", "clone", "ls-remote", "pull")
+
+
+def git_subcommand(args: list[str]) -> str:
+    """The subcommand of a git argument list, past leading `-c k=v` / `-C path` options."""
+    items = iter(args)
+    for item in items:
+        if item in ("-c", "-C"):
+            next(items, None)
+        elif not item.startswith("-"):
+            return item
+    return ""
+
+
+def is_remote_git(args: list[str]) -> bool:
+    return git_subcommand(args) in _REMOTE_GIT
+
+
+def run_with_network_retry(label: str, run, retryable: bool = True):
+    """Call `run()` (returns a CompletedProcess); rerun it after a transient network failure.
+
+    Only stderr is matched. Anything else, and the last attempt of a transient run, returns as is."""
+    result = run()
+    if not retryable:
+        return result
+    for attempt, delay in enumerate(NETWORK_RETRY_DELAYS, start=1):
+        if result.returncode == 0:
+            break
+        stderr = result.stderr or b""
+        text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else str(stderr)
+        found = _TRANSIENT_NETWORK.search(text)
+        if not found:
+            break
+        print(f"{label}: transient network error ({found.group(0)!r}); retry {attempt}/"
+              f"{len(NETWORK_RETRY_DELAYS)} in {delay}s", file=sys.stderr)
+        time.sleep(delay)
+        result = run()
+    return result
+
+
 def _git(repo: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = subprocess.run(
-            ["git", "-C", _repo_arg(repo), *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        result = run_with_network_retry(
+            f"git {' '.join(args)}",
+            lambda: subprocess.run(
+                ["git", "-C", _repo_arg(repo), *args],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            ),
+            retryable=is_remote_git(args),
         )
     except OSError as exc:
         raise BaselineError(f"git {' '.join(args)} failed: {exc}") from exc
@@ -262,11 +313,14 @@ def _has_linked_worktree(path: Path) -> bool:
 def _clone_no_checkout(repo: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        result = subprocess.run(
-            ["git", "clone", "--no-checkout", repo, str(destination)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        result = run_with_network_retry(
+            "git clone",
+            lambda: subprocess.run(
+                ["git", "clone", "--no-checkout", repo, str(destination)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            ),
         )
     except OSError as exc:
         raise BaselineError(f"could not clone baseline: {exc}") from exc
@@ -1409,8 +1463,8 @@ def _harness_tests():
 def _bound_proofs(root: Path, files: dict, tools: list[str]) -> dict[str, list[str]]:
     """Each tool's proof rows bound by name or importer, never by a mention, whatever their status."""
     ht = _harness_tests()
-    return {tool: [rel for rel in ht.shipped_proofs(str(root), tool) if rel in files and rel.count("/") == 2]
-            for tool in tools}
+    bound = ht.shipped_proofs_by_tool(str(root), tools)
+    return {tool: [rel for rel in bound[tool] if rel in files and rel.count("/") == 2] for tool in tools}
 
 
 def _proves_at_layer(files: dict, tool: str, proof: str) -> bool:
@@ -1747,13 +1801,20 @@ _DEPENDENCY_MEANING = {
 }
 
 
+_ADDED_CITATION_MEANING = "this change adds the citation and consumers have older bytes"
+
+
 def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None, lock: dict,
                                    source: BaselineSource | None, pushing: set[str],
                                    commit: str | None) -> None:
     """A row publishes with what it imports and cites: each dependency that is a lock row is in sync
     with the baseline, judged push at its current sha (here or in this call), forked, or a `local` row
     the baseline ships (a seed): a forked or shipped-local dependency reaches every consumer as the
-    baseline's copy."""
+    baseline's copy. A `local-modified` dependency (the baseline ships it, consumers hold older bytes)
+    refuses only when the baseline copy of `relpath` does not already cite it: consumers already run
+    that pairing, so only a citation this change adds is new. `local`, `watch` and `unpublished`
+    dependencies (consumers lack the file) refuse whatever the baseline copy cites, and a row new to
+    the baseline has no old citations."""
     files = lock.get("files", {})
     text = data.decode("utf-8", errors="replace") if data is not None else None
     layers = None
@@ -1766,6 +1827,15 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
         deps = [dep for dep in layer_closure.row_dependencies(root, relpath, layers, text) if dep in files]
     except (OSError, ValueError) as exc:
         raise BaselineError(f"dependency check failed for {relpath}: {exc}")
+    old_deps: set[str] | None = None
+    if source is not None:
+        old_bytes = _read_upstream_bytes(source, relpath)
+        if old_bytes is not None:
+            try:
+                old_deps = set(layer_closure.row_dependencies(
+                    root, relpath, layers, old_bytes.decode("utf-8", errors="replace")))
+            except (OSError, ValueError) as exc:
+                raise BaselineError(f"dependency check failed for {relpath}: {exc}")
     states = {}
     for dep in deps:
         if dep in pushing:
@@ -1778,10 +1848,14 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
         current = (_commit_shas(root, commit, [dep]) if commit else _content_shas(root, [dep])).get(dep)
         if judged.get("verdict") == "push" and judged.get("sha") == current:
             continue
+        if state == "local-modified" and old_deps is not None and dep in old_deps:
+            continue
         states[dep] = state
     if states:
-        lines = [f"  {dep}: {state}; {_DEPENDENCY_MEANING.get(state, 'it is not in sync with the baseline')}; "
-                 f"run `judge {dep} --verdict push`" for dep, state in states.items()]
+        lines = [f"  {dep}: {state}; "
+                 + (_ADDED_CITATION_MEANING if state == "local-modified" and old_deps is not None
+                    else _DEPENDENCY_MEANING.get(state, 'it is not in sync with the baseline'))
+                 + f"; run `judge {dep} --verdict push`" for dep, state in states.items()]
         raise BaselineError(f"{relpath} depends on rows consumers would not receive:\n" + "\n".join(lines))
 
 

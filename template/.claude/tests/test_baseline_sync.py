@@ -2685,6 +2685,55 @@ def test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push() ->
             assert _load_lock(root)["files"][_DEP_CITER]["judged"]["verdict"] == "push", state
 
 
+def _shipped_citer_rows(helper: dict, *, baseline_cites: bool) -> dict[str, dict]:
+    # The citer ships (a baseline copy exists); its local copy always differs by one line.
+    old = _DEP_CITES if baseline_cites else b"Run nothing.\n"
+    return {
+        _DEP_CITER: {"upstream": old, "local": _DEP_CITES + b"More.\n"},
+        _DEP_HELPER: helper,
+    }
+
+
+def test_judge_push_passes_when_the_baseline_copy_already_cites_the_modified_dependency() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, _shipped_citer_rows(_dep_helpers()["local-modified"],
+                                                                      baseline_cites=True))
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+        assert result.returncode == 0, _out(result)
+        assert _load_lock(root)["files"][_DEP_CITER]["judged"]["verdict"] == "push"
+
+
+def test_judge_push_refuses_a_citation_the_change_adds_to_a_modified_dependency() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, _shipped_citer_rows(_dep_helpers()["local-modified"],
+                                                                      baseline_cites=False))
+        # the local copy must cite the helper: replace the one-line addition with the citation
+        _write(root / _DEP_CITER, _DEP_CITES)
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+        out = _out(result)
+        assert result.returncode == 1, out
+        assert _DEP_HELPER in out and "adds the citation" in out, out
+
+
+def test_judge_push_refuses_a_local_dependency_even_when_the_baseline_copy_cites_it() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, _shipped_citer_rows(_dep_helpers()["local"],
+                                                                      baseline_cites=True))
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+        out = _out(result)
+        assert result.returncode == 1, out
+        assert _DEP_HELPER in out and "never ships" in out, out
+
+
+def test_judge_push_keeps_the_rule_for_a_citer_new_to_the_baseline() -> None:
+    with _fixture() as path:
+        root, baseline = _dep_fixture(path, _dep_helpers()["local-modified"])
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+        out = _out(result)
+        assert result.returncode == 1, out
+        assert _DEP_HELPER in out and "differs from the baseline copy" in out, out
+
+
 def test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call() -> None:
     with _fixture() as path:
         proof = ".claude/tests/test_dep_helper.py"
@@ -2762,8 +2811,105 @@ def test_dependency_check_failure_refuses_the_push() -> None:
         bs.layer_closure.row_dependencies = real
 
 
+def test_unproven_tools_binds_every_tool_in_one_scan() -> None:
+    engine = _load_engine()
+    ht = engine._harness_tests()
+    names = ("alpha", "beta", "gamma")
+    with _fixture() as path:
+        for name in names:
+            _write(path / ".claude" / "tools" / (name + ".py"), b"x = 1\n")
+        _write(path / ".claude" / "tests" / "test_alpha.py", b"pass\n")
+        files = {".claude/tools/%s.py" % n: {"status": "tracked"} for n in names}
+        files[".claude/tests/test_alpha.py"] = {"status": "tracked"}
+        calls = {"discover": 0}
+        real = ht.discover
+
+        def counted(*a, **k):
+            calls["discover"] += 1
+            return real(*a, **k)
+
+        ht.discover = counted
+        try:
+            got = engine.unproven_tools(path, files, list(files))
+        finally:
+            ht.discover = real
+        assert calls["discover"] == 1, calls
+        assert got == [".claude/tools/beta.py", ".claude/tools/gamma.py"], got
+
+_RESET_STDERR = b"fatal: unable to access 'https://example.invalid/x.git/': Recv failure: Connection was reset\n"
+
+
+def _stub_runs(outcomes):
+    """A subprocess.run stub replaying (returncode, stderr) outcomes; records each argv."""
+    calls = []
+
+    def _run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        code, err = outcomes[min(len(calls), len(outcomes)) - 1]
+        return subprocess.CompletedProcess(cmd, code, stdout=b"deadbeef\n", stderr=err)
+
+    return _run, calls
+
+
+def _resolve_with(outcomes):
+    from unittest import mock
+    engine = _load_engine()
+    run, calls = _stub_runs(outcomes)
+    err = io.StringIO()
+    with mock.patch.object(engine, "NETWORK_RETRY_DELAYS", (0, 0), create=True), \
+            mock.patch.object(subprocess, "run", run), contextlib.redirect_stderr(err):
+        try:
+            pinned, failure = engine._resolve_default(Path("cache"), "repo", "main"), None
+        except engine.BaselineError as exc:
+            pinned, failure = None, exc
+    return engine, calls, err.getvalue(), pinned, failure
+
+
+def test_fetch_retries_a_connection_reset_then_succeeds() -> None:
+    _engine, calls, err, pinned, exc = _resolve_with([(128, _RESET_STDERR), (0, b""), (0, b"")])
+    assert exc is None, "a single reset must not fail the fetch: %s" % exc
+    fetches = [c for c in calls if "fetch" in c]
+    assert len(fetches) == 2, calls
+    assert "retry" in err and "Connection was reset" in err, err
+
+
+def test_fetch_does_not_retry_repository_not_found() -> None:
+    _engine, calls, _err, _pinned, exc = _resolve_with(
+        [(128, b"remote: Repository not found.\nfatal: repository 'x' not found\n")])
+    assert exc is not None and "could not fetch baseline ref main" in str(exc), exc
+    assert len([c for c in calls if "fetch" in c]) == 1, calls
+
+
+def test_a_non_network_subcommand_is_not_retried_on_reset_looking_stderr() -> None:
+    from unittest import mock
+    engine = _load_engine()
+    run, calls = _stub_runs([(128, _RESET_STDERR)])
+    with mock.patch.object(engine, "NETWORK_RETRY_DELAYS", (0, 0), create=True), \
+            mock.patch.object(subprocess, "run", run):
+        result = engine._git(Path("cache"), ["cat-file", "-e", "abc"], check=False)
+    assert result.returncode == 128 and len(calls) == 1, calls
+
+
+def test_three_transient_fetch_failures_raise_the_existing_error() -> None:
+    _engine, calls, _err, _pinned, exc = _resolve_with([(128, _RESET_STDERR)])
+    assert exc is not None and str(exc).startswith("could not fetch baseline ref main: "), exc
+    assert "Connection was reset" in str(exc), exc
+    assert len(calls) == 3, calls
+
+
+def test_clone_retries_a_reset_then_succeeds() -> None:
+    from unittest import mock
+    engine = _load_engine()
+    run, calls = _stub_runs([(128, _RESET_STDERR), (0, b"")])
+    with mock.patch.object(engine, "NETWORK_RETRY_DELAYS", (0, 0), create=True), \
+            mock.patch.object(subprocess, "run", run), contextlib.redirect_stderr(io.StringIO()):
+        engine._clone_no_checkout("https://example.invalid/x.git", Path(tempfile.gettempdir()) / "nr-clone-x")
+    assert len(calls) == 2, calls
+
+
 def main() -> int:
     cases = [
+        test_unproven_tools_binds_every_tool_in_one_scan,
         test_carry_refuses_a_new_tool_whose_proof_is_local,
         test_carry_refuses_a_citer_whose_named_dependency_is_not_carried,
         test_dependency_check_failure_refuses_the_push,
@@ -2872,7 +3018,16 @@ def main() -> int:
         test_judge_push_refuses_a_citer_whose_dependency_does_not_ship,
         test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push,
         test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call,
+        test_judge_push_passes_when_the_baseline_copy_already_cites_the_modified_dependency,
+        test_judge_push_refuses_a_citation_the_change_adds_to_a_modified_dependency,
+        test_judge_push_refuses_a_local_dependency_even_when_the_baseline_copy_cites_it,
+        test_judge_push_keeps_the_rule_for_a_citer_new_to_the_baseline,
         test_carry_refuses_a_row_whose_dependency_is_local,
+        test_fetch_retries_a_connection_reset_then_succeeds,
+        test_fetch_does_not_retry_repository_not_found,
+        test_a_non_network_subcommand_is_not_retried_on_reset_looking_stderr,
+        test_three_transient_fetch_failures_raise_the_existing_error,
+        test_clone_retries_a_reset_then_succeeds,
     ]
     return run_cases(cases)
 

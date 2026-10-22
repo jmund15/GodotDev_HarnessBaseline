@@ -2,12 +2,12 @@
 """Run the baseline CI's Ubuntu lane against a publish worktree inside WSL, before the PR exists.
 
     python3 .claude/tools/baseline_linux_preview.py [<journal-id>]   # default: newest worktree
-    python3 .claude/tools/baseline_linux_preview.py --worktree PATH  # a tree anywhere (publish validate runs this)
+    python3 .claude/tools/baseline_linux_preview.py --worktree PATH  # a tree anywhere
     python3 .claude/tools/baseline_linux_preview.py --setup          # once: python 3.x + node 20 + pwsh, no sudo
 
 Windows validation cannot see Linux-only failures: a `C:/` path is relative on POSIX, and real
 symlinks exist. Each one otherwise surfaces only as a red PR check, costing a closed PR and a
-fresh dry run. This tool runs every `run:` step of every job in the worktree's own
+fresh dry run. This tool runs every `run:` step of every job, one lane per job, in the worktree's own
 `.github/workflows/baseline.yml` in order, so it tracks CI without a copied step list. Unlike
 CI, it runs every step after a failure.
 
@@ -39,11 +39,14 @@ CACHE = REPO / ".claude" / ".cache" / "baseline-publish"
 LOG_DIR = REPO / ".claude" / "scratch" / "linux_preview"
 WORKFLOW = Path(".github") / "workflows" / "baseline.yml"
 STEP_EOF = "PREVIEW_STEP_EOF"
+# Width of the one slot pool all preview lanes share (HARNESS_MACHINE_SLOTS). Measured on a 24-CPU,
+# 30 GB WSL machine; re-measure when the machine changes.
+PREVIEW_SLOTS = 4
 # WSL appends the Windows PATH under /mnt; a CI runner has none of it, so a proof that finds a Windows
 # binary there (claude.cmd) passes here and fails in CI.
 STRIP_HOST_PATH = ('_kept=; IFS=: read -ra _dirs <<< "$PATH"; for _d in "${_dirs[@]}"; do'
                    ' case "$_d" in /mnt/*) ;; *) _kept="${_kept:+$_kept:}$_d" ;; esac; done; PATH="$_kept"')
-SHOWN = re.compile(r"^(::(step|pass|fail) |FAIL|harness_tests:|\s+\| FAIL)")
+SHOWN = re.compile(r"^(::(step|pass|fail|lane) |FAIL|harness_tests:|\s+\| FAIL)")
 
 SETUP_SCRIPT = r"""set -euo pipefail
 T="$HOME/.local/ci-tools"; mkdir -p "$T"; cd "$T"
@@ -145,17 +148,20 @@ def exec_paths_of(worktree: Path) -> list[str]:
     return [path for path, mode in baseline_identity.file_modes(out).items() if mode == "100755"]
 
 
-def preview_script(src: str, steps: list[tuple[str, str]], origin: str | None = None,
+def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], origin: str | None = None,
                    exec_paths: list[str] | None = None) -> str:
-    """The bash script WSL runs: snapshot `src` under $HOME, then every step in its own shell.
-    `origin` becomes the snapshot's origin remote, as checkout sets it; proofs read it.
-    `exec_paths` are the 100755 entries, which get their executable bit back after the 644 reset."""
+    """The bash script WSL runs: snapshot `src` once under $HOME, copy it per job, then run every job
+    as its own lane at once, each step in its own shell. `origin` becomes the snapshot's origin remote,
+    as checkout sets it; proofs read it. `exec_paths` are the 100755 entries, which get their
+    executable bit back after the 644 reset. Each lane has its own copy and HOME, as a CI job has its
+    own checkout and runner; all lanes share one slot pool of PREVIEW_SLOTS (an already-set
+    HARNESS_MACHINE_SLOTS wins). Lane logs print in job order; the exit is 1 when any lane failed."""
     parts = [
         "set -u",
         STRIP_HOST_PATH,
         'export PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"',
         'D="$HOME/baseline-linux-preview"',
-        'rm -rf "$D" && mkdir -p "$D" && cd "$D" || exit 3',
+        'rm -rf "$D" && mkdir -p "$D/src" && cd "$D/src" || exit 3',
         "tar -C %s --exclude=.git -cf - . | tar -xf - || exit 3" % _quote(src),
         # drvfs reports every file executable; checkout gives 100644 except the 100755 entries, restored below
         "find . -type f -exec chmod 644 {} +",
@@ -168,16 +174,31 @@ def preview_script(src: str, steps: list[tuple[str, str]], origin: str | None = 
     ]
     if origin:
         parts.append("git remote add origin %s || exit 3" % _quote(origin))
-    parts.append("fail=0")
-    for name, body in steps:
-        label = name.replace("'", "").replace('"', "").replace("$", "").replace("`", "")
+    parts += [
+        'cd "$D"',
+        'export HARNESS_SLOT_DIR="$D/.slots"',
+        'export HARNESS_MACHINE_SLOTS="${HARNESS_MACHINE_SLOTS:-%d}"' % PREVIEW_SLOTS,
+        "pids=()",
+    ]
+    for job, steps in jobs:
         parts += [
-            "echo '::step %s'" % label,
-            "if bash --noprofile --norc -eo pipefail <<'%s'" % STEP_EOF,
-            body,
-            STEP_EOF,
-            "then echo '::pass %s'; else echo \"::fail %s rc=$?\"; fail=1; fi" % (label, label),
+            'cp -a "$D/src" "$D/%s" && mkdir -p "$D/%s.home" || exit 3' % (job, job),
+            '( HOME="$D/%s.home"; export HOME; cd "$D/%s" || exit 3; fail=0; lane0=$SECONDS' % (job, job),
         ]
+        for name, body in steps:
+            label = name.replace("'", "").replace('"', "").replace("$", "").replace("`", "")
+            parts += [
+                "echo '::step %s'; s0=$SECONDS" % label,
+                "if bash --noprofile --norc -eo pipefail <<'%s'" % STEP_EOF,
+                body,
+                STEP_EOF,
+                "then echo \"::pass %s $((SECONDS-s0))s\"; else rc=$?; echo \"::fail %s rc=$rc $((SECONDS-s0))s\"; fail=1; fi"
+                % (label, label),
+            ]
+        parts += ['echo "::lane %s $((SECONDS-lane0))s"; exit $fail ) > "$D/%s.log" 2>&1 &' % (job, job),
+                  "pids+=($!)"]
+    parts += ["fail=0", 'for p in "${pids[@]}"; do wait "$p" || fail=1; done']
+    parts += ['cat "$D/%s.log"' % job for job, _ in jobs]
     parts.append("exit $fail")
     return "\n".join(parts) + "\n"
 
@@ -240,18 +261,18 @@ def main(argv: list[str]) -> int:
         print("error: %s has no %s" % (worktree, WORKFLOW.as_posix()), file=sys.stderr)
         return 3
     jobs = ci_jobs(workflow.read_text(encoding="utf-8"))
-    steps = [step for _, job_steps in jobs for step in job_steps]
-    if not steps:
+    step_count = sum(len(job_steps) for _, job_steps in jobs)
+    if not step_count:
         print("error: no run: step parsed from %s; a preview of nothing is not green"
               % (worktree / WORKFLOW).as_posix(), file=sys.stderr)
         return 3
     if _no_wsl():
         return 3
     log_path = LOG_DIR / (worktree.name + ".log")
-    print("preview %s: %d step(s); log %s" % (worktree.name, len(steps), log_path), flush=True)
+    print("preview %s: %d step(s); log %s" % (worktree.name, step_count, log_path), flush=True)
     origin = subprocess.run(["git", "-C", str(worktree), "remote", "get-url", "origin"],
                             capture_output=True, text=True).stdout.strip() or None
-    rc = _run_wsl(preview_script(wsl_path(str(worktree)), steps, origin, exec_paths_of(worktree)), log_path)
+    rc = _run_wsl(preview_script(wsl_path(str(worktree)), jobs, origin, exec_paths_of(worktree)), log_path)
     return 3 if rc == 3 else (1 if rc else 0)
 
 
