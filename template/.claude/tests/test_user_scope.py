@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import _scan_fixtures as fx
+
 REPO = Path(__file__).resolve().parents[2]
 TOOL = REPO / ".claude" / "tools" / "user_scope.py"
 REAL_SCOPE = REPO / ".claude" / "user_scope"
@@ -37,7 +39,7 @@ def tool():
 class Sandbox:
     def __init__(self):
         self.root = Path(tempfile.mkdtemp(prefix="usp-test-"))
-        self.home = self.root / "zq-user"
+        self.home = self.root / fx.HOME_USER
         self.scope = self.root / "scope"
         self.repo = self.root / "repo"
         self.home.mkdir()
@@ -698,7 +700,7 @@ def s3_lint_red_on_a_manifest_value():
     sb = Sandbox()
     try:
         sb.manifest([{"id": "bg", "kind": "env", "platform": "win32", "name": "TOOL_NAME",
-                      "value": "sk-a1B2c3D4e5F6g7H8"}])
+                      "value": fx.SK_KEY}])
         done = sb.run("lint")
         expect(done.code == 1, f"exit {done.code}: {done.out!r}")
         expect("manifest.json" in done.out, f"lint output does not name the manifest: {done.out!r}")
@@ -778,12 +780,12 @@ def s3_lint_green_on_placeholder_assignment():
 def s3_lint_red_for_each_pattern_family():
     families = [
         ("home path", lambda sb: f"path {sb.home.as_posix()}\n"),
-        ("user name", lambda sb: "owner zq-user here\n"),
-        ("sk-", lambda sb: "key sk-a1B2c3D4e5F6g7H8\n"),
-        ("AKIA", lambda sb: "id AKI" + "AABCDEFGHIJKLMNOP\n"),
-        ("ghp_", lambda sb: "tok ghp_" + "a" * 36 + "\n"),
-        ("xox", lambda sb: "slack xoxb-1234567890-abcdef\n"),
-        ("-----BEGIN", lambda sb: "-----BEGIN PRIVATE" + " KEY-----\n"),
+        ("user name", lambda sb: f"owner {fx.HOME_USER} here\n"),
+        ("sk-", lambda sb: f"key {fx.SK_KEY}\n"),
+        ("AKIA", lambda sb: f"id {fx.AWS_KEY}\n"),
+        ("ghp_", lambda sb: f"tok {fx.GITHUB_TOKEN}\n"),
+        ("xox", lambda sb: f"slack {fx.SLACK_TOKEN}\n"),
+        ("-----BEGIN", lambda sb: f"{fx.PEM_HEADER}\n"),
         ("assignment", lambda sb: "NAME_KEY_PRIMARY=<value>\n"),
     ]
     missed = []
@@ -841,7 +843,7 @@ def s3_adopt_lint_hit_refuses_and_leaves_template():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
-        (sb.home / ".claude" / "a.txt").write_bytes(b"owner zq-user\n")
+        (sb.home / ".claude" / "a.txt").write_bytes(f"owner {fx.HOME_USER}\n".encode("utf-8"))
         done = sb.run("adopt", "tool-a")
         expect(done.code == 1, f"exit {done.code}, want 1 for a lint hit")
         expect((sb.scope / "a.txt").read_bytes() == b"alpha\n", "template changed after a lint hit")
@@ -994,7 +996,7 @@ def s5_claude_json_key_absent_is_a_manual_step_and_never_written():
         expect(done.code == 0, "a manual step is informational and must exit 0")
         expect("never writes" in done.out, f"no manual step printed: {done.out!r}")
         expect(sb.run("install").code == 0 and not claude_json(sb).exists(), "install created ~/.claude.json")
-        planted = b'{"oauthAccount": {"token": "sk-ant-planted"}, "numStartups": 3}'
+        planted = json.dumps({"oauthAccount": {"token": fx.CLAUDE_OAUTH_TOKEN}, "numStartups": 3}).encode("utf-8")
         claude_json(sb).write_bytes(planted)
         expect(sb.statuses() == {"no-chrome": "manual"}, "the key is still absent")
         expect(sb.run("install").code == 0 and claude_json(sb).read_bytes() == planted, "install changed ~/.claude.json")
@@ -1007,11 +1009,12 @@ def s5_claude_json_reports_the_key_without_printing_anything_else():
     sb = Sandbox()
     try:
         sb.manifest([chrome_item()])
-        claude_json(sb).write_bytes(b'{"oauthAccount": {"token": "sk-ant-planted"}, "claudeInChromeDefaultEnabled": false}')
+        claude_json(sb).write_bytes(json.dumps({"oauthAccount": {"token": fx.CLAUDE_OAUTH_TOKEN},
+                                                "claudeInChromeDefaultEnabled": False}).encode("utf-8"))
         expect(sb.statuses() == {"no-chrome": "set"}, f"statuses {sb.statuses()}")
         for args in ((), ("--json",)):
             out = sb.run("check", *args).out
-            expect("sk-ant-planted" not in out and "oauthAccount" not in out, "check printed ~/.claude.json content")
+            expect(fx.CLAUDE_OAUTH_TOKEN not in out and "oauthAccount" not in out, "check printed ~/.claude.json content")
         claude_json(sb).write_bytes(b'{"claudeInChromeDefaultEnabled": true}')
         expect(sb.statuses() == {"no-chrome": "differs"} and sb.run("check").code == 0, "differs must exit 0")
     finally:

@@ -8,7 +8,9 @@ below it. So a file closes when every file it cites, imports or executes is ship
 Dependencies read per file type:
 - markdown: backticked `/command`, `skill`, `path/file.md` and `file.py` tokens, and relative
   `[text](path)` links resolved against the file's own directory, and memory slugs, bare or
-  backticked, that name a file in the memory store or its archive; and `preload: <path>` header lines
+  backticked, that name a file in the memory store or its archive; script paths in fenced blocks and in
+  inline spans holding `$`, when the path starts `.claude/` after an optional `$CLAUDE_PROJECT_DIR/` or
+  `$ROOT/` (a `$HOME/` or other-root path is not a project reference); and `preload: <path>` header lines
   (a lens template's doctrine file, relative to `.claude/`);
 - python: imports outside a `try` that catches ImportError, string literals naming a `.py`/`.sh`/
   `.js`/`.ps1` file (in a test, only whitespace-free ones: a test's command line is fixture input), string
@@ -61,6 +63,7 @@ GENERATED = (
     "pending_harness_edits.md", "orchestration_verdicts.json", "orchestration_candidates.json", "eval_history.json",
     "self_evaluate_archive.json", "logs/*", "scratch/*", ".cache/*", "cache/*", "worktrees/*",
     "sessions/*", "state/*", "generated/*", "reference/godot_class_index.md", "plugins/*", "__*__/*",
+    "tools/load_census.project.json", "index_composition_baseline.json",
 )
 # Python sources whose string literals name a .md/.json file the source tolerates absent (a path it
 # matches, a name in a message, a read behind an existence check, or a list it classifies):
@@ -158,12 +161,16 @@ class Tree:
         self.root = root
         self.layers = layers
         self._local: list[str] | None = None
+        self.deps: set[str] = set()
         self.by_base: dict[str, list[str]] = {}
         for rel in layers:
             self.by_base.setdefault(posixpath.basename(rel), []).append(rel)
 
     def on_disk(self, rel: str) -> bool:
         return (self.root / rel).exists()
+
+    def is_file(self, rel: str) -> bool:
+        return (self.root / rel).is_file()
 
     def local_with_suffix(self, suffix: str) -> list[str]:
         """Unshipped files under .claude/ ending in `suffix`; walked once, lazily."""
@@ -199,6 +206,8 @@ class Tree:
 
 def _judge(tree: Tree, source: str, candidates, display: str, *, path_shaped: bool) -> Finding | None:
     shipped, exists = tree.resolve(candidates)
+    tree.deps.update(shipped)
+    tree.deps.update(c for c in candidates if c not in shipped and not c.startswith(MEMORY_DIR) and tree.is_file(c))
     rank = ORDER[tree.layers[source]]
     if shipped:
         best = min(ORDER[tree.layers[c]] for c in shipped)
@@ -254,6 +263,20 @@ def _expand(tree: Tree, cands):
     return out
 
 
+def _doc_commands(text: str) -> str:
+    """A document's fenced lines and its inline code spans holding `$`: the commands it tells a reader to run."""
+    fenced, prose, inside = [], [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            inside = not inside
+        elif inside:
+            fenced.append(line)
+        else:
+            prose.append(line)
+    spans = [span for span in re.findall(r"`([^`\n]+)`", "\n".join(prose)) if "$" in span]
+    return "\n".join(fenced + spans)
+
+
 def _scan_doc(tree: Tree, source: str, text: str):
     source_dir = posixpath.dirname(source)
     seen = set()
@@ -290,6 +313,12 @@ def _scan_doc(tree: Tree, source: str, text: str):
         found = _judge(tree, source, (joined,), joined, path_shaped=True)
         if found:
             yield found
+    for base, cands in _script_refs(tree, source, _doc_commands(text), set(), keep=_claude_prefixed):
+        if base not in seen:
+            seen.add(base)
+            found = _judge(tree, source, cands, base, path_shaped=False)
+            if found:
+                yield found
     for token in PRELOAD_LINE.findall(text):
         joined = ".claude/" + token
         if token in seen or _generated(joined):
@@ -356,10 +385,18 @@ SCRIPT_REF = re.compile(r"([\w./${}-]*?)([A-Za-z_][\w-]*(?:\.py|\.sh|\.js|\.ps1)
 DUNDER = re.compile(r"__\w+__\.py")
 
 
-def _script_refs(tree: Tree, source: str, text: str, skip: set[str]):
+def _claude_prefixed(prefix: str) -> bool:
+    prefix = prefix.lstrip("\"'")
+    for root in ("$CLAUDE_PROJECT_DIR/", "$ROOT/"):
+        prefix = prefix.removeprefix(root)
+    return prefix.startswith(".claude/")
+
+
+def _script_refs(tree: Tree, source: str, text: str, skip: set[str], keep=None):
     for match in SCRIPT_REF.finditer(text):
         base = match.group(2)
-        if base in skip or base == posixpath.basename(source) or DUNDER.fullmatch(base):
+        if base in skip or base == posixpath.basename(source) or DUNDER.fullmatch(base) \
+                or (keep and not keep(match.group(1))):
             continue
         cands = tree.by_base.get(base) or tree.local_with_suffix("/" + base)
         if cands:
@@ -400,7 +437,7 @@ def _scan_python(tree: Tree, source: str, text: str):
         return
     seen = set()
     for name in sorted(imports - optional):
-        cands = tree.by_base.get(name + ".py")
+        cands = tree.by_base.get(name + ".py") or tree.local_with_suffix("/" + name + ".py")
         if cands and name not in seen:
             seen.add(name)
             found = _judge(tree, source, cands, name + ".py", path_shaped=False)
@@ -447,6 +484,16 @@ def _scan_script(tree: Tree, source: str, text: str):
                 yield found
 
 
+def _scan_text(tree: Tree, source: str, text: str):
+    if source.endswith(".md"):
+        return _scan_doc(tree, source, text)
+    if source.endswith(".py"):
+        return _scan_python(tree, source, text)
+    if source.endswith((".sh", ".js", ".ps1")):
+        return _scan_script(tree, source, text)
+    return iter(())
+
+
 def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> list[Finding]:
     """Findings for every file in `check` (default: every shipped file) that exists under `root`."""
     tree = Tree(Path(root), layers)
@@ -459,13 +506,29 @@ def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> l
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        if source.endswith(".md"):
-            findings.extend(_scan_doc(tree, source, text))
-        elif source.endswith(".py"):
-            findings.extend(_scan_python(tree, source, text))
-        elif source.endswith((".sh", ".js", ".ps1")):
-            findings.extend(_scan_script(tree, source, text))
+        findings.extend(_scan_text(tree, source, text))
     return findings
+
+
+def row_dependencies(root: Path, relpath: str, layers: dict[str, str] | None = None,
+                     text: str | None = None) -> list[str]:
+    """Every file `relpath` imports, runs or cites, shipped or local: what `scan` resolves for it, whatever its
+    layer. `layers` defaults to the consumer view of the root's lock; `text` to the file on disk."""
+    root = Path(root)
+    if layers is None:
+        lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        layers = consumer_layers(lock, pinned_manifest(root, lock))
+        layers.setdefault(relpath, (lock.get("files", {}).get(relpath) or {}).get("layer") or LAYERS[0])
+    layers = {**layers, relpath: layers.get(relpath) or LAYERS[0]}
+    if text is None:
+        try:
+            text = (root / relpath).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return []
+    tree = Tree(root, layers)
+    for _ in _scan_text(tree, relpath, text):
+        pass
+    return sorted(tree.deps - {relpath})
 
 
 def lock_findings(root: Path, lock: dict, manifest: dict | None) -> list[Finding]:

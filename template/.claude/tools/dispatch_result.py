@@ -391,13 +391,12 @@ def task_block(text):
     found = _fenced_bodies(text, "task")
     if not found:
         return None
-    rows = [line for line in "\n".join(found).splitlines() if line.strip()]
-    if len(rows) != 1:
-        raise ValueError(f"the brief must hold one task block of one JSON object; found {len(rows)} rows")
+    if len(found) != 1:
+        raise ValueError(f"the brief must hold one task block of one JSON object; found {len(found)} blocks")
     try:
-        obj = json.loads(rows[0])
+        obj = json.loads(found[0])
     except ValueError as exc:
-        raise ValueError(f"the task block is not JSON ({exc})")
+        raise ValueError(f"the task block is not one JSON object ({exc})")
     if not isinstance(obj, dict):
         raise ValueError("the task block is not a JSON object")
     checks = obj.get("check")
@@ -492,10 +491,11 @@ def _git(root, *args):
                           encoding="utf-8", errors="replace").stdout
 
 
-def _changed_rows(root, write_set, returned, since):
+def _changed_rows(root, write_set, returned, since, base="HEAD"):
     """One row per path in writeSet or the deliverable's changedPaths: its git status (`unchanged` when
     git lists none), and whether it lies outside writeSet. A gitignored file counts (`!!`) when its
-    mtime is after `since` (epoch seconds): a new proof or fixture under a gitignored writeSet entry is a change."""
+    mtime is after `since` (epoch seconds): a new proof or fixture under a gitignored writeSet entry is a change.
+    A path committed between `base` and HEAD reads `committed`."""
     scope = list(write_set) + [p for p in returned if p not in write_set]
     rows, seen = [], set()
     if scope:
@@ -507,6 +507,11 @@ def _changed_rows(root, write_set, returned, since):
                 continue
             seen.add(path)
             rows.append({"status": line[:2], "path": path, "outside": not _inside(path, write_set)})
+        if base != "HEAD":
+            for path in _git(root, "diff", "--name-only", base, "HEAD", "--", *scope).splitlines():
+                if path and path not in seen:
+                    seen.add(path)
+                    rows.append({"status": "committed", "path": path, "outside": not _inside(path, write_set)})
     for path in scope:
         if path not in seen:
             rows.append({"status": "unchanged", "path": path, "outside": not _inside(path, write_set)})
@@ -571,11 +576,27 @@ def _workflow_origin(root, run, label, brief):
             "session": run.parent.parent.parent, "record_dir": None, "run": run}
 
 
+def _inventory_job(out_dir, label):
+    """`label`'s fields merged over every fan-out inventory in `out_dir`, oldest first: the fan-out's own
+    inventory names the job's `workdir`, and each launcher's per-job inventory omits it."""
+    merged = {}
+    for inv in sorted(Path(out_dir).glob("fanout-*.inventory.json"), key=lambda p: p.stat().st_mtime):
+        try:
+            jobs = json.loads(inv.read_text(encoding="utf-8")).get("jobs") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        for job in jobs:
+            if isinstance(job, dict) and job.get("label") == label:
+                merged.update(job)
+    return merged
+
+
 def _sidecar_origin(root, source, label, brief):
     paths = _sidecar_source(source, label)
     if paths is None:
         raise Refused("consume reads a Workflow run dir, a sidecar fan-out out dir or a -R record")
     record_path, stdout_path, out_dir = paths
+    workdir = _inventory_job(out_dir, label).get("workdir") if Path(source).is_dir() else None
     if not brief:
         raise Refused("a sidecar source needs --brief: its record and inventory hold no brief path")
     try:
@@ -594,7 +615,8 @@ def _sidecar_origin(root, source, label, brief):
             "brief": _resolve(root, brief),
             "seed_jobs": [{"label": label, "model": record.get("requestedModel"), "effort": record.get("effort")}],
             "session": None, "record_dir": record_path.parent, "run": None,
-            "claims_path": Path(str(record_path) + ".claims.json")}
+            "claims_path": Path(str(record_path) + ".claims.json"),
+            "workdir": Path(workdir) if workdir else None}
 
 
 def _read_task(brief_file):
@@ -690,18 +712,22 @@ def _judge(root, label, origin, check_timeout, result):
             trailing = False
         if trailing:
             result["delivery_flag"] = "the final message answered a later turn after an earlier reply and no report file was kept"
+    work = origin.get("workdir") or root
+    base = "HEAD"
+    if origin.get("workdir"):
+        base = _git(work, "rev-list", "-1", f"--before={int(origin['start_s'])}", "HEAD").strip() or "HEAD"
     result.update(deliverable=deliverable.as_posix(),
                   digest="\n".join(text.splitlines()[:DIGEST_LINES])[:DIGEST_CHARS],
-                  changed=_changed_rows(root, task.get("writeSet", []), returned, origin["start_s"]))
+                  changed=_changed_rows(work, task.get("writeSet", []), returned, origin["start_s"], base))
     new = [row["path"] for row in result["changed"] if row["status"] in ("??", "!!")]
     tracked = [row["path"] for row in result["changed"] if row["status"] not in ("??", "!!", "unchanged")]
     diff = ""
     if tracked:
-        diff = _git(root, "diff", "--stat", "HEAD", "--", *tracked) + _git(root, "diff", "HEAD", "--", *tracked)
+        diff = _git(work, "diff", "--stat", base, "--", *tracked) + _git(work, "diff", base, "--", *tracked)
     for path in new:
         if len(diff) >= DIFF_CHARS:
             break
-        diff += _git(root, "diff", "--no-index", "--", "/dev/null", path)
+        diff += _git(work, "diff", "--no-index", "--", "/dev/null", path)
     if diff:
         result["diff"] = diff[:DIFF_CHARS]
     manifest, refused = _write_manifest(root, label, origin)
@@ -727,7 +753,7 @@ def _judge(root, label, origin, check_timeout, result):
             continue
         shell = _shell_command(command, origin["run"], out_dir, label)
         try:
-            proc = run_bounded([bash, "-c", shell], check_timeout, cwd=str(root))
+            proc = run_bounded([bash, "-c", shell], check_timeout, cwd=str(work))
         except OSError as exc:
             verdict, tail = "FAIL", str(exc)
         else:

@@ -114,17 +114,30 @@ def _quote(value: str) -> str:
     return "'%s'" % value.replace("'", "'\\''")
 
 
-def preview_script(src: str, steps: list[tuple[str, str]], origin: str | None = None) -> str:
+def exec_paths_of(worktree: Path) -> list[str]:
+    """The worktree's 100755 index entries: the files checkout gives the executable bit."""
+    out = subprocess.run(["git", "-C", str(worktree), "ls-files", "-s", "-z"], capture_output=True).stdout
+    entries = (e.decode("utf-8", "replace").split("\t", 1) for e in out.split(b"\0") if e)
+    return [path for meta, path in entries if meta.startswith("100755")]
+
+
+def preview_script(src: str, steps: list[tuple[str, str]], origin: str | None = None,
+                   exec_paths: list[str] | None = None) -> str:
     """The bash script WSL runs: snapshot `src` under $HOME, then every step in its own shell.
-    `origin` becomes the snapshot's origin remote, as checkout sets it; proofs read it."""
+    `origin` becomes the snapshot's origin remote, as checkout sets it; proofs read it.
+    `exec_paths` are the 100755 entries, which get their executable bit back after the 644 reset."""
     parts = [
         "set -u",
         'export PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"',
         'D="$HOME/baseline-linux-preview"',
         'rm -rf "$D" && mkdir -p "$D" && cd "$D" || exit 3',
         "tar -C %s --exclude=.git -cf - . | tar -xf - || exit 3" % _quote(src),
-        # drvfs reports every file executable; the Windows-authored baseline tree commits none (mode 100644), as CI checks it out
+        # drvfs reports every file executable; checkout gives 100644 except the 100755 entries, restored below
         "find . -type f -exec chmod 644 {} +",
+    ]
+    if exec_paths:
+        parts.append("chmod +x " + " ".join(_quote(p) for p in exec_paths))
+    parts += [
         "git init -q -b main && git -c user.email=preview@local -c user.name=preview add -A"
         " && git -c user.email=preview@local -c user.name=preview commit -qm snapshot || exit 3",
     ]
@@ -212,7 +225,7 @@ def main(argv: list[str]) -> int:
     print("preview %s: %d step(s); log %s" % (worktree.name, len(steps), log_path), flush=True)
     origin = subprocess.run(["git", "-C", str(worktree), "remote", "get-url", "origin"],
                             capture_output=True, text=True).stdout.strip() or None
-    rc = _run_wsl(preview_script(wsl_path(str(worktree)), steps, origin), log_path)
+    rc = _run_wsl(preview_script(wsl_path(str(worktree)), steps, origin, exec_paths_of(worktree)), log_path)
     return 3 if rc == 3 else (1 if rc else 0)
 
 

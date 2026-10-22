@@ -5,6 +5,7 @@ the worktree resolver. WSL itself is not started; the script text is asserted in
     python3 .claude/tests/test_baseline_linux_preview.py
 """
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -77,6 +78,19 @@ def main():
                   all("::step %s" % n in script for n, _ in steps)))
     cases.append(("a step body with quotes survives as a heredoc, not an argument",
                   "<<'PREVIEW_STEP_EOF'" in script and "pwsh -NoProfile -Command 'exit 0'" in script))
+    with_exec = blp.preview_script("/mnt/c/w/tree", steps, None, ["a/run.sh", "it's.sh"])
+    cases.append(("a 100755 entry gets chmod +x after the 644 reset and before the commit",
+                  "chmod +x 'a/run.sh' 'it'\\''s.sh'" in with_exec
+                  and with_exec.index("chmod 644") < with_exec.index("chmod +x") < with_exec.index("git init")))
+    cases.append(("no 100755 entry means no chmod +x", "chmod +x" not in script))
+    index_repo = Path(tempfile.mkdtemp(prefix="blp_index_"))
+    subprocess.run(["git", "-C", str(index_repo), "init", "-q"], check=True)
+    (index_repo / "run.sh").write_text("true\n", encoding="utf-8", newline="\n")
+    (index_repo / "plain.txt").write_text("x\n", encoding="utf-8", newline="\n")
+    subprocess.run(["git", "-C", str(index_repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(index_repo), "update-index", "--chmod=+x", "run.sh"], check=True)
+    cases.append(("exec_paths_of lists the 100755 index entries and not the 100644 ones",
+                  blp.exec_paths_of(index_repo) == ["run.sh"]))
     with_origin = blp.preview_script("/mnt/c/w/tree", steps, "https://example.invalid/b.git")
     cases.append(("the snapshot carries the worktree's origin, as checkout does (test_bootstrap reads it)",
                   "git remote add origin 'https://example.invalid/b.git'" in with_origin

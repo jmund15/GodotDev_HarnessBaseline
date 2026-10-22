@@ -14,7 +14,7 @@ Use this for ordinary ad hoc jobs. Commands with their own coverage contract, su
 - `--jobs <path>` reads `{route, jobs|chains, contextPath?, spillDir?}`. Routes: `single|parallel|chain|review`.
 - For missing/ambiguous arguments, unreadable files or malformed input, the parent returns `HOLD` with the exact problem before dispatch.
 
-A job requires `label`, `promptPath`, `role`, `model`, `effort`, `transport`, `currency`, `agentType`; a `review` route job also requires `mustRead` for its subject files, the `{"path", "lines"}` entries that `python3 .claude/tools/lens_briefs.py must-read <list file>` prints. Optional: `shape`, `disclosure`, `contextFiles`, `schemaFile`. `shape` is `any|survey|review|author`; it selects delegate rails, never an executor. `route` selects the engine.
+A job requires `label`, `promptPath`, `role`, `model`, `effort`, `transport`, `currency`, `agentType`; a `review` route job also requires `mustRead` for its subject files, the `{"path", "lines"}` entries that `python3 .claude/tools/lens_briefs.py must-read <list file>` prints. Optional: `shape`, `disclosure`, `contextFiles`, `schemaFile`, `resident` (`true` for a job that keeps one subject resident, such as a design, a plan or chained research). The sidecar route compacts a resident job at the resident window, and a `review` shape already does. `shape` is `any|survey|review|author`; it selects delegate rails, never an executor. `route` selects the engine.
 
 ## Converged single job
 

@@ -535,22 +535,24 @@ def entry_spans(entry, reads) -> list:
 
 
 def gap_verdict(gaps, must_read, reads):
-    """(legal gaps, bad gaps, unread must-read paths) for one seat's return.
+    """(legal gaps, bad gaps, unread must-read paths, gap notes) for one seat's return.
 
     A legal gap is exactly `{"item", "reason"}` with a reason in GAP_REASONS and, when the seat has a
-    must-read list, an item that list holds. Every other entry is bad, and a `gaps` value that is not a
-    list is one bad entry. An entry `{"path", "lines"}` is read when the `reads` pairs `(target_path,
-    spans)` naming its file together cover all its lines (`covers`); it is unread when it is not read and
-    no legal gap names it. Any bad gap or unread entry fails the seat (commands/agents/review_agents.md
-    *Seat coverage contract*); `review_fanout.js` `gapVerdict` applies the same rule."""
+    must-read list, an item that list holds. With a must-read list, every other entry excuses nothing and is a
+    note; with none, it is bad. A `gaps` value that is not a list is one such entry. An entry `{"path", "lines"}`
+    is read when the `reads` pairs `(target_path, spans)` naming its file together cover all its lines
+    (`covers`); it is unread when it is not read and no legal gap names it. Any bad gap or unread entry fails the
+    seat (commands/agents/review_agents.md *Seat coverage contract*); `review_fanout.js` `gapVerdict` applies
+    the same rule."""
     legal, bad = [], []
     for gap in gaps if isinstance(gaps, list) else [gaps]:
         (legal if _legal_gap(gap, must_read) else bad).append(gap)
+    notes, bad = (bad, []) if must_read is not None else ([], bad)
     named = [target_path(f"Read:{gap['item']}") for gap in legal]
     unread = [entry["path"] for entry in must_read or []
               if not covers(entry_spans(entry, reads), entry["lines"])
               and not any(same_path(target_path(f"Read:{entry['path']}"), path) for path in named)]
-    return legal, bad, unread
+    return legal, bad, unread, notes
 
 
 def unread_text(must_read, reads, unread) -> str:
@@ -924,7 +926,7 @@ def ingest(seats):
         observed = reads is not None
         if not observed:
             reads = claimed_reads(checked.get("toolsUsed") if checked else None)
-        legal, bad, unread = gap_verdict(gaps, must_read, reads) if body else ([], [], [])
+        legal, bad, unread, notes = gap_verdict(gaps, must_read, reads) if body else ([], [], [], [])
         if bad:
             errors.append(f"{len(bad)} gap entr{'y names' if len(bad) == 1 else 'ies name'} no "
                           f"{'listed ' if must_read is not None else ''}item with a legal reason "
@@ -962,7 +964,7 @@ def ingest(seats):
                          "status": status, "received": received, "valid": valid,
                          "rejected": rejected, "checked": checked, "issues": errors + unattributed,
                          "capabilityPartial": capability_partial,
-                         "gaps": legal if isinstance(gaps, list) else None, "unread": unread,
+                         "gaps": legal if isinstance(gaps, list) else None, "gapNotes": notes, "unread": unread,
                          "mustReadEvidence": None if must_read is None
                          else "observed" if observed else "self-reported",
                          "mustReadSpans": must_read_spans(must_read, reads) if body else None})

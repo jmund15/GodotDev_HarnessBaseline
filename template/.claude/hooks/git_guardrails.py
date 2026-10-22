@@ -630,9 +630,7 @@ REVERT_SCAN_CAP = 500  # staged paths checked; one stale file is enough to deny
 def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     """Deny an index commit that reverts a peer's commit because its index was read from an older HEAD.
 
-    Three signatures, each a path the commit changes: its working tree still matches HEAD (2026-09-23,
-    69 files); its staged blob is the version one of HEAD's last REVERT_HISTORY commits replaced, which
-    holds even when a peer kept editing the file (d31b4eeb4 reverted 7 metrics rows); or it is a staged
+    Three signatures, each a path whose content the commit changes, so a mode-only change is no revert: its working tree still matches HEAD; its staged blob is the version one of HEAD's last REVERT_HISTORY commits replaced, which holds even when a peer kept editing the file; or it is a staged
     addition the working tree lacks and HEAD's history deleted. Only index-publishing commits are
     judged; a pathspec or `-a` commit takes the working tree. Staged deletions are skipped, because
     `git rm --cached` has the same shape on purpose. A git failure skips that signature. A blob only
@@ -649,7 +647,10 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     readded = [p for p in (added or "").split("\0") if p and not os.path.lexists(os.path.join(root, p))
                and run_git(["log", "-1", "--format=%h", "--diff-filter=D", "HEAD", "--", p], root)]
     out = run_git(["diff", "--cached", "--name-only", "--diff-filter=M", "-z"], root, git_env)
-    paths = [p for p in (out or "").split("\0") if p][:REVERT_SCAN_CAP]
+    staged = _raw_blobs(run_git(["diff", "--cached", "--raw", "-z", "--no-abbrev", "--diff-filter=M"],
+                                root, git_env))
+    paths = [p for p in (out or "").split("\0") if p and staged.get(p, (0, 1))[0] != staged.get(p, (0, 1))[1]]
+    paths = paths[:REVERT_SCAN_CAP]
     if not paths:
         return _revert_message(readded)
     head = run_git(["ls-tree", "-z", "HEAD", "--"] + paths, root)
@@ -663,8 +664,6 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
             head_blob[path] = meta.split()[-1]
     stale = [p for p, blob in zip(paths, work.split()) if head_blob.get(p) == blob]
     replaced = _replaced_blobs(root, own_trailer or _own_trailer(session_id))
-    staged = _raw_blobs(run_git(["diff", "--cached", "--raw", "-z", "--no-abbrev", "--diff-filter=M"],
-                                root, git_env))
     merging = run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], root, git_env)
     theirs = {}
     if merging:

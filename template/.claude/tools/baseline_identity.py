@@ -227,6 +227,9 @@ def digest_kinds(profile: dict) -> dict[str, list]:
 # ---------------------------------------------------------------------------
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+# A bare user name may join words with `-`, `_` or `.`; `_WORD_RE` splits it, so the home kind also tries
+# each joined run whole.
+_JOINED_RUN_RE = re.compile(r"[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)+")
 _PATH_RE = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+")
 _HOME_RE = re.compile(
     r"(?:[A-Za-z]:[\\/]Users[\\/]|/(?:[A-Za-z]/)?Users/|/home/)[^\\/\s\"']+"
@@ -327,6 +330,9 @@ def _scan_line(path: str, line_no: int, content: str, digest_sets: dict) -> list
         for kind in _EXACT_WORD_KINDS:
             if digest in digest_sets.get(kind, ()):
                 hits.append(_make_hit(path, line_no, kind, token, content))
+    for tok in _JOINED_RUN_RE.findall(content):
+        if _digest_full(tok) in digest_sets.get("home", ()):
+            hits.append(_make_hit(path, line_no, "home", tok, content))
     for tok in _PATH_RE.findall(content):
         if _digest_full(tok) in digest_sets.get("topology", ()):
             hits.append(_make_hit(path, line_no, "topology", tok, content))

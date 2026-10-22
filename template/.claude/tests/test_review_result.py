@@ -541,18 +541,26 @@ class ReviewIngestionTests(unittest.TestCase):
         self.assertEqual(by["outside-lens"]["unread"], [])
         self.assertEqual(by["outside-lens"]["gaps"], [{"item": "src/Core/ImpactPhysics.cs", "reason": "outside-lens"}])
 
-    def test_a_free_text_unlisted_or_unknown_reason_gap_fails_the_seat(self):
+    def test_a_gap_that_excuses_no_listed_entry_is_a_note_on_a_seat_that_read_its_list(self):
         read_both = ("Read:src/a.cs", "Read:src/Core/ImpactPhysics.cs")
         rows = [self._listed("text", gaps=["could not trace callers"], tools=read_both),
-                self._listed("unlisted", gaps=[{"item": "src/other.cs", "reason": "outside-lens"}], tools=read_both),
+                self._listed("unlisted", gaps=[{"item": "src/other.cs", "reason": "capability"}], tools=read_both),
                 self._listed("reason", gaps=[{"item": "src/a.cs", "reason": "ran out of time"}], tools=read_both),
                 self._listed("extra", gaps=[{"item": "src/a.cs", "reason": "capability", "note": "x"}], tools=read_both),
                 self._listed("malformed", gaps="not a list", tools=read_both)]
+        by = {row["label"]: row for row in review_result.ingest(rows)["coverage"]}
+        self.assertEqual({label: row["status"] for label, row in by.items()}, {label: "completed" for label in by})
+        self.assertEqual(by["unlisted"]["gapNotes"], [{"item": "src/other.cs", "reason": "capability"}])
+        self.assertEqual(by["unlisted"]["gaps"], [])
+
+    def test_a_gap_that_excuses_nothing_still_fails_an_unread_entry_or_a_seat_with_no_list(self):
+        rows = [self._listed("unread", gaps=[{"item": "src/other.cs", "reason": "outside-lens"}],
+                             tools=("Read:src/a.cs",))]
         bare = reply(finding())
         bare["structured_output"]["gaps"] = ["skimmed the rest"]
         rows.append(seat("bare", bare))
         by = {row["label"]: row["status"] for row in review_result.ingest(rows)["coverage"]}
-        self.assertEqual(by, {label: "failed" for label in by})
+        self.assertEqual(by, {"unread": "failed", "bare": "failed"})
 
     def _stream_review(self, root, reads):
         """`prepare_review` over one job whose stream shows `reads`: (file_path, offset, limit) Read calls, None

@@ -12,6 +12,20 @@ vocabulary words (`source_extensions`, `symbol_stopwords`, read by `tools/verify
 ledger path scope (`review_mandates`, `review_scope`, read by `tools/review_ledger.py` and `tools/escape_log.py`), the proof runner's excluded/timeout tables and the directories a project proof scans whole (`proof_corpus`, {proof: [dir, ...]}), the absolute document roots the project reads outside the repo (`doc_roots`, re-injected after compaction by `hooks/compact_directive_anchor.py`), and the mandates a later review round seats for added facts and changed seams (`later_round_roles`, {stage: {grounding, coherence: {meta, code}}}, read by `tools/post_check.py`, which reports `roles: omitted` for a stage with no row), the key prefix a registry's lens headings share (`lens_prefixes`, {registry: prefix}, read by `tools/lens.py`; a registry with no row takes every heading), the doctrine files a project attaches to a lens beyond its header `preload:` lines (`lens_preloads`, {lens key: [path relative to `.claude/`]}, read by `tools/lens.py`). The baseline tracks only this file's default seed (manifest `sync: seed`);
 each consumer's copy is `local` and never published.
 
+Framework data the shipped tools need lives beside it in `adaptation.<layer>.defaults.json`
+(`pure`, `coding`, `godot`; manifest `sync: auto`, so a pull delivers it to every consumer that adopted
+the layer). `load()` reads `DEFAULTS`, then each defaults file present on disk in that layer order, then
+`adaptation.json`: a list is the earlier files' items followed by the later file's with exact
+duplicates dropped, a dict merges key by key by these same rules (so a list nested in a dict key, such
+as a `lens_preloads` entry, also unions, and a project cannot drop a defaults item), and a scalar takes
+the last file that sets it. The godot defaults file holds `index_prebuild` (`list[str]`, default `[]`), the
+commands `/reindex_search` Step 3 runs. Command line:
+  - `python3 .claude/tools/adaptation.py get <key>` prints a list one item per line, a dict as one JSON
+    line and a scalar as is; an unknown key exits 2.
+  - `python3 .claude/tools/adaptation.py run <key>` runs each entry of a list key once from the repo
+    root as an argv list (`shlex.split`, no shell), prints each command's output, reports a failing
+    entry and continues, and exits 0; a non-list key exits 2.
+
 Two contracts share this loader:
   - advisory hook/script consumers (every row below except `classify`/`compose`/`publish`)
     want the lenient behavior `load()` gives: an absent file or key silently returns the
@@ -36,6 +50,8 @@ Unknown keys are ignored everywhere.
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,6 +87,7 @@ DEFAULTS: dict = {
     "later_round_roles": {},
     "lens_prefixes": {},
     "lens_preloads": {},
+    "index_prebuild": [],
     "usage_reset": {"weekday": "sunday", "hour": 13},
     "land_prefix": "",
     "rigor_defaults": {
@@ -114,6 +131,7 @@ _TYPES: dict = {
     "later_round_roles": dict,
     "lens_prefixes": dict,
     "lens_preloads": dict,
+    "index_prebuild": list,
     "usage_reset": dict,
     "land_prefix": str,
     "rigor_defaults": dict,
@@ -127,45 +145,74 @@ def adaptation_path(claude_dir) -> Path:
 
 _CACHE: dict = {}
 
+LAYER_ORDER = ("pure", "coding", "godot")
 
-def load(claude_dir) -> dict:
-    """Every known key at its default, overridden by `adaptation.json` when present, parseable
-    and the right type. Absent file: defaults, no message. Unparseable file, non-object root,
-    or a known key of the wrong type: defaults for the affected key(s) plus one stderr line
-    each, naming the file. Unknown keys are ignored.
 
-    Cached per (path, mtime, size) so a process that reads several keys via `get()` re-parses
-    the file and re-prints a malformed-value warning once, not once per key requested; a
-    rewritten file (different mtime or size) invalidates the cache and reloads."""
-    path = adaptation_path(claude_dir)
+def _adaptation_files(claude_dir) -> list:
+    """Candidate files in read order: each layer's defaults file, then `adaptation.json`."""
+    skill_dir = Path(claude_dir) / "skills" / "project_subsystems"
+    return [skill_dir / f"adaptation.{layer}.defaults.json" for layer in LAYER_ORDER] + [adaptation_path(claude_dir)]
+
+
+def _stat_key(path: Path):
     try:
         st = path.stat()
-        cache_key = (str(path), st.st_mtime_ns, st.st_size)
+        return (str(path), st.st_mtime_ns, st.st_size)
     except OSError:
-        cache_key = (str(path), None, None)
+        return (str(path), None, None)
+
+
+def load(claude_dir) -> dict:
+    """Every known key at its default, overridden by the layer defaults files and `adaptation.json`
+    that are present and parseable, merged in read order (module docstring). An absent file
+    contributes nothing, silently. An unparseable file, non-object root, or a known key of the wrong
+    type contributes nothing for the affected key(s) plus one stderr line each, naming the file.
+    Unknown keys are ignored.
+
+    Cached per (path, mtime, size) of every candidate file so a process that reads several keys via
+    `get()` re-parses the files and re-prints a malformed-value warning once, not once per key
+    requested; a rewritten, added or removed file invalidates the cache and reloads."""
+    files = _adaptation_files(claude_dir)
+    cache_key = tuple(_stat_key(path) for path in files)
     if cache_key in _CACHE:
         return dict(_CACHE[cache_key])
 
-    result = _load_uncached(path)
+    result = dict(DEFAULTS)
+    seen: dict = {}
+    for path in files:
+        for key, value in _read_file(path).items():
+            seen[key] = _merge_value(seen[key], value) if key in seen else value
+    result.update(seen)
     _CACHE[cache_key] = dict(result)
     return result
 
 
-def _load_uncached(path: Path) -> dict:
-    result = dict(DEFAULTS)
+def _merge_value(earlier, later):
+    if isinstance(later, list) and isinstance(earlier, list):
+        return earlier + [item for item in later if item not in earlier]
+    if isinstance(later, dict) and isinstance(earlier, dict):
+        merged = dict(earlier)
+        for key, value in later.items():
+            merged[key] = _merge_value(merged[key], value) if key in merged else value
+        return merged
+    return later
+
+
+def _read_file(path: Path) -> dict:
     if not path.is_file():
-        return result
+        return {}
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         print(f"adaptation: {path} is unparseable -- using defaults", file=sys.stderr)
-        return result
+        return {}
 
     if not isinstance(raw, dict):
         print(f"adaptation: {path} is not a JSON object -- using defaults", file=sys.stderr)
-        return result
+        return {}
 
+    values: dict = {}
     for key, expected in _TYPES.items():
         if key not in raw:
             continue
@@ -177,10 +224,54 @@ def _load_uncached(path: Path) -> dict:
                 file=sys.stderr,
             )
             continue
-        result[key] = value
-    return result
+        values[key] = value
+    return values
 
 
 def get(claude_dir, key):
     """One key, defaulted the same way `load()` defaults it."""
     return load(claude_dir).get(key, DEFAULTS.get(key))
+
+
+def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 2 or args[0] not in ("get", "run"):
+        print("usage: adaptation.py get|run <key>", file=sys.stderr)
+        return 2
+    verb, key = args
+    claude_dir = Path(__file__).resolve().parent.parent
+    if key not in DEFAULTS:
+        print(f"adaptation: unknown key '{key}'", file=sys.stderr)
+        return 2
+    value = get(claude_dir, key)
+    if verb == "get":
+        if isinstance(value, list):
+            for item in value:
+                print(item)
+        elif isinstance(value, dict):
+            print(json.dumps(value))
+        else:
+            print(value)
+        return 0
+    if not isinstance(value, list):
+        print(f"adaptation: key '{key}' is not a list", file=sys.stderr)
+        return 2
+    for entry in value:
+        try:
+            done = subprocess.run(shlex.split(entry), cwd=str(claude_dir.parent), capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            print(f"adaptation: {entry} failed to start: {exc}", file=sys.stderr)
+            continue
+        sys.stdout.write(done.stdout)
+        sys.stderr.write(done.stderr)
+        if done.returncode != 0:
+            print(f"adaptation: {entry} failed (exit {done.returncode})", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

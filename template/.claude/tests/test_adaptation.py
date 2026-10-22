@@ -57,7 +57,7 @@ def main():
 
         # --- present: valid project values are used ---------------------------
         seed = {
-            "read_only_commands": ["dotnet"],
+            "read_only_commands": ["make"],
             "tests_root": "MyTests",
             "memory_domains": [{"name": "X", "triggers": ["x"], "memory_keywords": [],
                                  "skills": [], "rules": []}],
@@ -65,7 +65,7 @@ def main():
         claude_dir = _claude_dir_with(tmp, json.dumps(seed))
         result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
         cases.append(("present file: known key overrides default",
-                      result["read_only_commands"] == ["dotnet"] and result["tests_root"] == "MyTests"))
+                      result["read_only_commands"] == ["make"] and result["tests_root"] == "MyTests"))
         cases.append(("present file: key absent from seed keeps its default",
                       result["git_submodules"] == []))
         cases.append(("present file prints nothing to stderr", err == ""))
@@ -228,6 +228,92 @@ def main():
                       and len(err.strip().splitlines()) == 1))
         cases.append(("the module docstring lists lens_preloads with its reader",
                       "lens_preloads" in doc and "lens.py" in doc))
+        # --- layered defaults: DEFAULTS, then pure/coding/godot defaults files, then adaptation.json ----
+        def put(claude_dir, name, doc):
+            with open(os.path.join(claude_dir, "skills", "project_subsystems", name), "w",
+                      encoding="utf-8", newline="\n") as fh:
+                fh.write(json.dumps(doc))
+
+        claude_dir = _claude_dir_with(tmp, json.dumps({
+            "tests_root": "Project", "paired_repo_rules": {"a": "project", "p": "p"},
+            "memory_domains": [{"name": "x"}, {"name": "proj"}],
+            "index_prebuild": ["cmd-proj", "cmd-pure"],
+            "lens_preloads": {"sa-x": ["b.md", "a.md"], "sa-z": ["z.md"]}}))
+        put(claude_dir, "adaptation.godot.defaults.json", {"tests_root": "Third", "index_prebuild": ["cmd-godot"],
+                                                           "paired_repo_rules": {"a": "godot", "g": "g"}})
+        put(claude_dir, "adaptation.pure.defaults.json", {"tests_root": "Pure", "index_prebuild": ["cmd-pure"],
+                                                          "memory_domains": [{"name": "x"}],
+                                                          "lens_preloads": {"sa-x": ["a.md"], "sa-y": ["y.md"]},
+                                                          "paired_repo_rules": {"a": "pure", "u": "u"}})
+        put(claude_dir, "adaptation.coding.defaults.json", {"land_prefix": "coding/", "tests_root": "Coding"})
+        adaptation._CACHE.clear()
+        result = adaptation.load(claude_dir)
+        cases.append(("a scalar takes the last file that sets it: adaptation.json beats the defaults files",
+                      result["tests_root"] == "Project"))
+        cases.append(("a scalar set only in a layer defaults file loads", result["land_prefix"] == "coding/"))
+        cases.append(("a dict key merges key by key, later file winning",
+                      result["paired_repo_rules"] == {"a": "project", "u": "u", "g": "g", "p": "p"}))
+        cases.append(("a list key is the defaults items then the project's, exact duplicates dropped",
+                      result["index_prebuild"] == ["cmd-pure", "cmd-godot", "cmd-proj"]
+                      and result["memory_domains"] == [{"name": "x"}, {"name": "proj"}]))
+        cases.append(("a list inside a dict key is the earlier files' items then the later's, duplicates dropped",
+                      result["lens_preloads"] == {"sa-x": ["a.md", "b.md"], "sa-y": ["y.md"], "sa-z": ["z.md"]}))
+        os.remove(os.path.join(claude_dir, "skills", "project_subsystems", "adaptation.json"))
+        adaptation._CACHE.clear()
+        result = adaptation.load(claude_dir)
+        cases.append(("layer order is pure, coding, godot: godot wins a scalar", result["tests_root"] == "Third"))
+        cases.append(("an absent adaptation.json leaves the defaults files in force",
+                      result["index_prebuild"] == ["cmd-pure", "cmd-godot"]))
+        before = adaptation.get(claude_dir, "land_prefix")
+        put(claude_dir, "adaptation.coding.defaults.json", {"land_prefix": "coding2/"})
+        cases.append(("rewriting a defaults file invalidates the cache (same-size edit)",
+                      before == "coding/" and adaptation.get(claude_dir, "land_prefix") == "coding2/"))
+        put(claude_dir, "adaptation.coding.defaults.json", {"land_prefix": ["bad"]})
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        cases.append(("a wrong-typed key in a defaults file keeps the default and names that file",
+                      result["land_prefix"] == "" and "adaptation.coding.defaults.json" in err))
+        cases.append(("index_prebuild defaults to []", adaptation.DEFAULTS.get("index_prebuild") == []
+                      and adaptation.get(_claude_dir_with(os.path.join(tmp, "bare"), None), "index_prebuild") == []))
+
+        # --- CLI verbs -----------------------------------------------------------
+        import subprocess
+        script = os.path.join(TOOLS, "adaptation.py")
+        root = os.path.join(tmp, "cli")
+        cdir = os.path.join(root, ".claude")
+        sdir = os.path.join(cdir, "skills", "project_subsystems")
+        os.makedirs(sdir)
+        marker = os.path.join(root, "ran.txt")
+        ok_cmd = "%s -c \"open(r'%s','a').write('x')\"" % (sys.executable.replace("\\", "/"), marker.replace("\\", "/"))
+        bad_cmd = "%s -c \"import sys; sys.exit(3)\"" % sys.executable.replace("\\", "/")
+        with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"index_prebuild": [bad_cmd, ok_cmd], "tests_root": "T", "usage_reset": {"weekday": "monday", "hour": 2}}, fh)
+        tools_copy = os.path.join(cdir, "tools")
+        os.makedirs(tools_copy)
+        shutil.copy(script, tools_copy)
+
+        def cli(*args):
+            done = subprocess.run([sys.executable, os.path.join(tools_copy, "adaptation.py"), *args],
+                                  capture_output=True, text=True, encoding="utf-8", cwd=tmp)
+            return done.returncode, done.stdout, done.stderr
+
+        code, out, _ = cli("get", "index_prebuild")
+        cases.append(("get prints a list one item per line", code == 0 and out.splitlines() == [bad_cmd, ok_cmd]))
+        code, out, _ = cli("get", "usage_reset")
+        cases.append(("get prints a dict as one JSON line",
+                      code == 0 and len(out.splitlines()) == 1 and json.loads(out) == {"weekday": "monday", "hour": 2}))
+        code, out, _ = cli("get", "tests_root")
+        cases.append(("get prints a scalar as is", code == 0 and out.strip() == "T"))
+        code, _, _ = cli("get", "no_such_key")
+        cases.append(("get of an unknown key exits 2", code == 2))
+        code, out, _ = cli("run", "tests_root")
+        cases.append(("run of a non-list key exits 2", code == 2))
+        code, out, err = cli("run", "index_prebuild")
+        with open(marker, encoding="utf-8") as fh:
+            ran = fh.read()
+        cases.append(("run executes every entry once, reports the failing one and exits 0",
+                      code == 0 and ran == "x" and "3" in (out + err)))
+        cases.append(("the module docstring names the defaults files, their auto sync and index_prebuild",
+                      "adaptation.<layer>.defaults.json" in doc and "auto" in doc and "index_prebuild" in doc))
     finally:
         _rm(tmp)
 

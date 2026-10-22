@@ -79,6 +79,12 @@ def _git_show(repo: Path, commit: str, relpath: str) -> bytes | None:
     return _lf(result.stdout)
 
 
+def _git_mode(repo: Path, commit: str, relpath: str) -> str | None:
+    result = _git(repo, ["ls-tree", commit, "--", relpath], check=False)
+    fields = result.stdout.decode("utf-8", errors="replace").split(None, 1)
+    return fields[0] if result.returncode == 0 and fields else None
+
+
 def _write_lf(path: Path, data: bytes | str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
@@ -362,8 +368,7 @@ def _record_layers_and_regenerate_manifest(worktree: Path, layers: dict[str, str
 
 def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
                   cache: Path, baseline_sha: str, worktree: Path, branch: str) -> str:
-    # A worktree source is an author checkout: its author owns the pattern lists and the manifest.
-    layers = _new_row_layers(records, lock, cache, baseline_sha) if source["kind"] == "commit" else None
+    layers = _new_row_layers(records, lock, cache, baseline_sha)
     if worktree.exists():
         raise PublishError(f"publication worktree already exists: {worktree}")
     # A `--resume` that redoes this step (worktree lost between runs) reuses the same
@@ -389,8 +394,14 @@ def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
                 _git(worktree, ["rm", "-q", "--", record["dest_path"]])
             continue
         _write_lf(destination, content)
-    if layers is not None:
-        _record_layers_and_regenerate_manifest(worktree, layers)
+        mode = _git_mode(Path(source["repo"]), source["commit"], record["source_path"])
+        if mode in ("100755", "100644"):
+            executable = mode == "100755"
+            if os.name == "posix":
+                os.chmod(destination, 0o755 if executable else 0o644)
+            _git(worktree, ["add", "--", record["dest_path"]])
+            _git(worktree, ["update-index", "--chmod=+x" if executable else "--chmod=-x", "--", record["dest_path"]])
+    _record_layers_and_regenerate_manifest(worktree, layers)
     return _git_text(worktree, ["rev-parse", "HEAD"])
 
 
@@ -714,8 +725,17 @@ def _gh_text(cwd: Path, args: list[str]) -> str:
     return _lf(result.stdout).decode("utf-8", errors="replace").strip()
 
 
+def _carried_rows(lock: dict, rows: list[str]) -> list[str]:
+    carried = []
+    for relpath in rows:
+        judged = (lock.get("files", {}).get(relpath) or {}).get("judged") or {}
+        if judged.get("carried_from"):
+            carried.append(f"- {relpath}: judged {judged['carried_from'][:8]}, carried to {judged['sha'][:8]}")
+    return carried
+
+
 def _write_pr_body(path: Path, journal_id: str, source: dict, rows: list[str],
-                    step_evidence: list[dict]) -> None:
+                    step_evidence: list[dict], carried: list[str] | None = None) -> None:
     lines = [
         f"# baseline publish {journal_id}",
         "",
@@ -724,6 +744,7 @@ def _write_pr_body(path: Path, journal_id: str, source: dict, rows: list[str],
         "## Rows",
         *(f"- {row}" for row in rows),
         "",
+        *(["## Carried rows", *carried, ""] if carried else []),
         "## Steps 1-5",
         *(f"- {step['name']}: {step['evidence']}" for step in step_evidence),
     ]
@@ -818,7 +839,8 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
         _git(worktree, ["push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}"])
         body_path = _journal_dir(root) / f"{journal_id}.pr.md"
         _write_pr_body(body_path, journal_id, journal["source"], journal["rows_published"],
-                       journal["steps"][:5])
+                       journal["steps"][:5],
+                       _carried_rows(sync.load_lock(root), journal["rows_published"]))
         listed = _gh_text(worktree, ["pr", "list", "--head", branch, "--state", "all",
                                       "--json", "url,state"])
         matches = []

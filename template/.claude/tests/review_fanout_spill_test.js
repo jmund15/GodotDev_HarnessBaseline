@@ -119,8 +119,8 @@ function checkFallback(label, runResult, expected = ['strong source', 'weak sour
 // result carries: the fingerprint covers the result, every agent() option and every log line in full and bounded modes.
 const crypto = require('crypto')
 const NO_FOLD_FINGERPRINTS = {
-  full: 'f8a2b0618424d074376c02d444302f303408263b66db5c197eee71e6bd4cf242',
-  bounded: 'ec556c8eb120c44c1391546733f8aff9acb82cb651616aee377d8e7589716a75',
+  full: 'bf698e204a078ceea87dfd17c3fbfa596a954f26bda0d68bcf562d0df46982a2',
+  bounded: '06aa73c8cac6f885e0d444f284d0a0bdcefe55bb4fd63d0e186c8032266db524',
 }
 const fingerprint = (r) => crypto.createHash('sha256').update(JSON.stringify({
   result: r.result, opts: r.calls.map(c => c.opts), logs: r.logs,
@@ -901,13 +901,14 @@ async function verificationCases() {
   const holdPrompt = broadFold.calls.find(c => c.opts.phase === 'Fold')
   const foldTemplate = fs.readFileSync(path.join(__dirname, '..', 'commands', 'agents', 'review_fold.md'), 'utf8')
   check('the fold prompt defers its hold list to the template, which names every hold class',
-    holdPrompt && holdPrompt.prompt.includes('Read ' + TEMPLATE) && holdPrompt.prompt.includes('Hold exactly the cases step 4 of the template lists')
+    holdPrompt && holdPrompt.prompt.includes('Read ' + TEMPLATE) && holdPrompt.prompt.includes('Hold exactly the cases steps 4 and 5 of the template list')
       && !['owner-input', 'own-design'].some(k => holdPrompt.prompt.includes('(' + k + ')'))
       && !holdPrompt.prompt.includes('Apply every supported finding')
       && ['owner-input', 'own-design', 'unbased-number', 'new-mechanism'].every(k => foldTemplate.includes('`' + k + '`')),
     holdPrompt && holdPrompt.prompt.slice(0, 1600))
-  check('the fold prompt also holds a finding whose evidence is not VERIFIED, as the template does',
-    holdPrompt && holdPrompt.prompt.includes('not VERIFIED (`unverified`)') && foldTemplate.includes('`unverified`'),
+  check('the fold prompt defers the not-VERIFIED hold and its --ruled exception to template step 5',
+    holdPrompt && holdPrompt.prompt.includes('steps 4 and 5') && !holdPrompt.prompt.includes('not VERIFIED (`unverified`)')
+      && foldTemplate.includes('apply it only with a VERIFIED verdict') && foldTemplate.includes('--ruled'),
     holdPrompt && holdPrompt.prompt.slice(0, 400))
 
   const altReply = (_prompt, opts) => opts.phase === 'Fold'

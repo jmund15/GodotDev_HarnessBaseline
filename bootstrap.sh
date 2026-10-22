@@ -18,7 +18,7 @@
 #
 # What it does (every file it writes uses LF):
 #   1. Copies template/.claude into the target project (refusing to clobber an
-#      existing .claude unless --force).
+#      existing .claude unless --force): `git ls-files` of a git checkout, every file otherwise.
 #   2. Substitutes {{PROJECT_NAME}} / {{PROJECT_NAMESPACE}} / {{VAULT_ROOT}} /
 #      {{PROJECT_ROOT}} (the target folder) everywhere except baseline.lock.json
 #      ({{PROJECT_NAMESPACE}} defaults to the project name).
@@ -31,7 +31,8 @@
 #   5. Runs baseline_sync.py compose, which writes .claude/settings.json from the copied
 #      settings.base.json, the adopted layers' settings.<layer>.json overlays and the
 #      settings.project.json seed, pruning a missing hook script or Skill grant.
-#   6. Runs `git init` when the target has no repo and points core.hooksPath at .claude/githooks;
+#   6. Runs `git init` when the target has no repo (staging 100755 template entries executable, and with
+#      `git add -f` each delivered file a .gitignore rule matches) and points core.hooksPath at .claude/githooks;
 #      creates the vault worklog skeleton
 #      <vault>/DevProjects/<project>/Claude/TODO/Worklog.md when absent; merges autoMemoryDirectory
 #      into the gitignored .claude/settings.local.json.
@@ -102,10 +103,14 @@ else
 fi
 
 mkdir -p "$TARGET"
+# The copy step lists the 100755 template entries here; the git-init step stages them executable.
+EXEC_LIST="$(mktemp)"
+trap 'rm -f "$EXEC_LIST"' EXIT
+EXEC_LIST_NATIVE="$(native_abs "$EXEC_LIST")"
 
-TARGET="$TARGET_NATIVE" PROJECT_NAME="$PROJECT_NAME" PROJECT_NAMESPACE="$PROJECT_NAMESPACE" \
+TARGET="$TARGET_NATIVE" PROJECT_NAME="$PROJECT_NAME" PROJECT_NAMESPACE="$PROJECT_NAMESPACE" EXEC_LIST="$EXEC_LIST_NATIVE" \
 VAULT_ROOT="$VAULT_NATIVE" PROJECT_ROOT="$TARGET_NATIVE" LAYERS="$LAYERS" HERE="$HERE" FORCE="$FORCE" python3 - <<'EOF'
-import json, os, shutil
+import json, os, shutil, subprocess
 from pathlib import Path
 
 target = Path(os.environ["TARGET"])
@@ -125,7 +130,18 @@ seeds = {e["path"] for e in manifest["files"] if e.get("sync") == "seed"}
 # Copy with LF line endings; a seed file the project already owns is left as it is.
 kept = set()
 template = here / "template"
-for src in sorted((template / ".claude").rglob("*")):
+listed = subprocess.run(["git", "-C", str(here), "ls-files", "-s", "-z", "--", "template/.claude"],
+                        capture_output=True) if (here / ".git").exists() else None
+executable = set()
+if listed is not None and listed.returncode == 0 and listed.stdout:
+    entries = [e.split("\t", 1) for e in listed.stdout.decode("utf-8").split("\0") if e]
+    executable = {name for meta, name in entries if meta.startswith("100755")}
+    sources = sorted(here / name for _meta, name in entries)
+else:
+    sources = sorted((template / ".claude").rglob("*"))
+for src in sources:
+    if not src.exists():
+        continue
     rel = src.relative_to(template).as_posix()
     dest = target / rel
     if src.is_dir():
@@ -144,6 +160,9 @@ for src in sorted((template / ".claude").rglob("*")):
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
     shutil.copymode(src, dest)
+    if src.relative_to(here).as_posix() in executable:
+        dest.chmod(dest.stat().st_mode | 0o111)
+Path(os.environ["EXEC_LIST"]).write_text("".join(name[len("template/"):] + "\n" for name in sorted(executable)), encoding="utf-8")
 if kept:
     print(f"seed files kept ({len(kept)}): " + ", ".join(sorted(kept)))
 
@@ -234,6 +253,27 @@ fi
 if [[ ! -e "$TARGET/.git" ]]; then
   git -C "$TARGET" init -q
   echo "git repository initialized in $TARGET_NATIVE"
+  # A delivered file a .gitignore rule matches (the shipped .claude/tests/ ignore) is staged here, so
+  # the first commit carries it; it is the install-time twin of /sync_baseline Pull step 4.
+  python3 - "$TARGET_NATIVE" "$HERE/baseline.manifest.json" "$EXEC_LIST_NATIVE" <<'EOF'
+import json, subprocess, sys
+from pathlib import Path
+
+target, manifest, exec_list = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+paths = [e["path"] for e in json.loads(manifest.read_text(encoding="utf-8"))["files"] if (target / e["path"]).is_file()]
+checked = subprocess.run(["git", "-C", str(target), "check-ignore", "-z", "--stdin"],
+                         input="\0".join(paths).encode("utf-8"), capture_output=True)
+ignored = [name for name in checked.stdout.decode("utf-8").split("\0") if name]
+for start in range(0, len(ignored), 200):
+    subprocess.run(["git", "-C", str(target), "add", "-f", "--", *ignored[start:start + 200]], check=True)
+if ignored:
+    print(f"staged {len(ignored)} ignored delivered files (git add -f)")
+executable = [name for name in exec_list.read_text(encoding="utf-8").splitlines() if (target / name).is_file()]
+for start in range(0, len(executable), 200):
+    subprocess.run(["git", "-C", str(target), "update-index", "--add", "--chmod=+x", "--", *executable[start:start + 200]], check=True)
+if executable:
+    print(f"staged {len(executable)} executable delivered files (100755)")
+EOF
 fi
 if [[ -d "$TARGET/.claude/githooks" ]]; then
   git -C "$TARGET" config core.hooksPath .claude/githooks

@@ -362,6 +362,15 @@ class WorkflowResultTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate workflow selector"):
             digest.workflow_result_select(archive, ["F1", "F1"])
 
+    def test_select_returns_every_row_of_an_id_the_digest_holds_twice(self):
+        temp, run_dir = self.make_review(3)
+        self.addCleanup(temp.cleanup)
+        archive = digest.build_workflow_result_archive(run_dir, "review")
+        archive["items"].append(dict(archive["items"][1]))
+        selected = digest.workflow_result_select(archive, ["F2", "F1"])
+        self.assertEqual([row["id"] for row in selected["rows"]], ["F2", "F2", "F1"])
+        self.assertEqual(selected["rows"][0], selected["rows"][1])
+
     def test_hash_mismatch_and_missing_or_malformed_journal_fail_loudly(self):
         temp, run_dir = self.make_review(2)
         self.addCleanup(temp.cleanup)

@@ -6,21 +6,21 @@ Usage:
     review_ledger.py project <N> --scope-json <file> --out <body.md>
                                  [--date YYYY-MM-DD] [--waive] [--repo <path>] [--base-ref <ref>]
     review_ledger.py plan --stage <stage> --subject <subject> --roster <roster.json>
-                          [--files <path>...] [--scope-json <file>] [--ignore-ledger]
+                          [--files <path>... | --files-from <file>] [--scope-json <file>] [--ignore-ledger]
                           [--design <path> [--no-new-decision]] [--base-ref <ref>]
     review_ledger.py record --stage <stage> --subject <subject>
                             (--run <run id> | --seats-file <seats.json> --workflow-dir <live dir>
                              | --sidecar-result <prepared.json> | --result <saved return>
                              | --script <name> --outcome <o> [--mandate <key>]
                              | --inline <command> --outcome <o> --mandate <key>)
-                            [--files <path>...] [--scope-json <file>] [--head <commit>] [--blobs <map.json>] [--from <map.json>]
+                            [--files <path>... | --files-from <file>] [--scope-json <file>] [--head <commit>] [--blobs <map.json>] [--from <map.json>]
                             [--roster <roster.json>] [--premise-commits <commits.json>]
                             [--author-model <id>] [--task <id>] [--degraded] [--no-new-decision]
                             [--escaped <finding id>=<sha>[:<mandate key>]...] [--base-ref <ref>]
-    review_ledger.py uncovered --files <path>... --mandates <keys | candidate> [--roster <roster.json>]
+    review_ledger.py uncovered (--files <path>... | --files-from <file>) --mandates <keys | candidate> [--roster <roster.json>]
                                [--base-ref <ref>]
     review_ledger.py owed [--roster <roster.json>] [--base-ref <ref>] [--mandates <keys | candidate>] [--doctrine]
-    review_ledger.py whole-scope --subject <s> (--files <path>... | --scope-json <file>)
+    review_ledger.py whole-scope --subject <s> (--files <path>... | --files-from <file> | --scope-json <file>)
                                 [--mandates <keys | candidate>] [--roster <roster.json>] [--base-ref <ref>]
     review_ledger.py rows (--subject <s> | --task <id> | --model <id>)... [--json | --units]
     review_ledger.py keys [--check] [--stage candidate]
@@ -652,6 +652,14 @@ def _load_json(path: str, label: str) -> dict:
     if not isinstance(data, dict):
         raise ToolError(f"{label} {path} is not a JSON object")
     return data
+
+
+def _load_files_from(path: str) -> list[str]:
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ToolError(f"cannot read --files-from {path}: {exc}") from exc
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def _load_scope(path: str, pr: int | None = None) -> dict:
@@ -2352,11 +2360,11 @@ def _engine_seats(result: dict, where: str, pins=None, tiers=None, served=None, 
         if evidence == "observed":
             agent = (results or {}).get(label)
             gaps = agent.get("gaps", []) if isinstance(agent, dict) else []
-            _legal, bad, unread = review_result.gap_verdict(gaps, seat_row["mustRead"], reads)
-            if (bad or unread) and status != "failed":
+            _legal, _bad, unread, _notes = review_result.gap_verdict(gaps, seat_row["mustRead"], reads)
+            if unread and status != "failed":
                 print(f"seat {key}: its transcript does not cover must-read "
                       f"{review_result.unread_text(seat_row['mustRead'], seat_row['reads'], unread) or 'entries'}"
-                      f"{' and it names an illegal gap' if bad else ''}; recorded failed", file=sys.stderr)
+                      f"; recorded failed", file=sys.stderr)
                 status, mandates = "failed", {mandate: "failed" for mandate in mandates}
         seats.append({"seat": key, "status": status, "stopped": row.get("stoppedAt"),
                       "mustReadEvidence": evidence,
@@ -2368,6 +2376,19 @@ def _engine_seats(result: dict, where: str, pins=None, tiers=None, served=None, 
                       "effort": (pins or {}).get(label) or row.get("effort"), "model": model,
                       "observed": bool(seat_row.get("served_model"))})
     return seats
+
+
+def _roster_mandates(seat: dict, roster: dict, catalog: dict) -> None:
+    """A split seat (one lens across several seat keys) names its mandates only in the roster, so the outcomes it
+    reports under keys the catalog lacks stand for its roster mandates. The least covering outcome wins."""
+    pinned = [m for m in (roster.get(seat["seat"]) or {}).get("mandates") or [] if m in catalog]
+    stray = {key: value for key, value in seat["mandates"].items() if key not in catalog}
+    if not pinned or not stray:
+        return
+    outcome = max(stray.values(), key=OUTCOMES.index)
+    seat["mandates"] = {key: value for key, value in seat["mandates"].items() if key in catalog}
+    for mandate in pinned:
+        seat["mandates"].setdefault(mandate, outcome)
 
 
 def _catalog_keys(key: str, catalog: dict) -> list[str]:
@@ -2741,6 +2762,8 @@ def cmd_record(args, repo: Path) -> int:
             result = _load_json(args.sidecar_result, "--sidecar-result")
             seats = _sidecar_seats(result, catalog)
             rid = Path(args.sidecar_result).stem
+        for seat in seats:
+            _roster_mandates(seat, roster, catalog)
         empty = sorted(seat["seat"] for seat in seats if not seat["mandates"])
         mute = [key for key in empty if (roster.get(key) or {}).get("mandates")]
         unrostered = [key for key in empty if key not in mute]
@@ -3103,6 +3126,7 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--roster", required=True)
     plan.add_argument("--task", help="task holding accepted subject jobs; absent lineage remains unknown")
     plan.add_argument("--files", nargs="+")
+    plan.add_argument("--files-from", help="a file of paths, one per line; the same list as --files")
     plan.add_argument("--scope-json")
     plan.add_argument("--ignore-ledger", action="store_true")
     plan.add_argument("--design")
@@ -3122,6 +3146,7 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--outcome")
     record.add_argument("--mandate")
     record.add_argument("--files", nargs="+")
+    record.add_argument("--files-from", help="a file of paths, one per line; the same list as --files")
     record.add_argument("--scope-json")
     record.add_argument("--head", help="the commit the review read: rows hash its blobs and carry it as their head")
     record.add_argument("--blobs", help="a JSON map of path to the blob sha the review read (a fold's pre-fold "
@@ -3138,7 +3163,8 @@ def _build_parser() -> argparse.ArgumentParser:
     common(record)
 
     uncovered = subs.add_parser("uncovered")
-    uncovered.add_argument("--files", nargs="+", required=True)
+    uncovered.add_argument("--files", nargs="+")
+    uncovered.add_argument("--files-from", help="a file of paths, one per line; the same list as --files")
     uncovered.add_argument("--mandates", required=True)
     uncovered.add_argument("--roster")
     common(uncovered)
@@ -3152,6 +3178,7 @@ def _build_parser() -> argparse.ArgumentParser:
     whole = subs.add_parser("whole-scope")
     whole.add_argument("--subject", required=True)
     whole.add_argument("--files", nargs="+")
+    whole.add_argument("--files-from", help="a file of paths, one per line; the same list as --files")
     whole.add_argument("--scope-json")
     whole.add_argument("--mandates", default="candidate")
     whole.add_argument("--roster")
@@ -3173,6 +3200,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     try:
         args = _build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+        if getattr(args, "files_from", None) is not None:
+            args.files = (args.files or []) + _load_files_from(args.files_from)
+        if args.command == "uncovered" and args.files is None:
+            raise ToolError("uncovered needs --files or --files-from")
         repo = Path(getattr(args, "repo", None) or Path.cwd())
         if args.command == "scope":
             sys.stdout.write(json.dumps(build_scope(repo, args.base_ref, args.pr)) + "\n")

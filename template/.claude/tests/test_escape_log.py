@@ -121,6 +121,18 @@ def build(tmp):
     def check(name, ok, detail=""):
         cases.append((name, ok, detail))
 
+    import escape_log
+    layer_dir = os.path.join(tmp, "layer_only", ".claude")
+    _write(os.path.join(layer_dir, "skills", "project_subsystems", "adaptation.json"), "{}")
+    _write(os.path.join(layer_dir, "skills", "project_subsystems", "adaptation.coding.defaults.json"),
+           json.dumps({"review_mandates": {
+               "cq.C": {"home": "commands/checklists/code_quality.md#Compliance (C)", "interaction": False},
+               "architecture-sweep": {"home": "commands/agents/session_audit_agents.md#sa-architecture-sweep",
+                                      "interaction": False}}}))
+    layer_keys = escape_log.mandate_keys(layer_dir)
+    check("`mandate_keys` over an empty project file lists the coding layer keys",
+          {"cq.C", "architecture-sweep"} <= layer_keys, str(sorted(layer_keys)))
+
     ok = run(["add", "--sha", sha, "--writer", "self_evaluate", "--should-have-caught", "none"], root)
     check("an escape row is written for a landed sha", ok.returncode == 0, ok.stderr.strip())
     written = rows_of(root)

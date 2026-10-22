@@ -605,6 +605,19 @@ def test_v2_classify_success_refusal_and_repeat() -> None:
         assert bad.returncode == 2
 
 
+def test_relpaths_after_an_option_parse_on_every_python() -> None:
+    # Python before 3.12.7 lets the empty `relpaths` match at `op` when an option follows it, so a
+    # trailing relpath is `unrecognized arguments`; Ubuntu 24.04 ships 3.12.3.
+    rel = ".claude/tools/classify.py"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {rel: {"upstream": b"value = 1\n"}}
+        )
+        result = _run(root, "classify", "--status", "local", "--force", rel)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["status"] == "local"
+
+
 def test_v2_classify_layer_sets_overrides_from_and_refuses_unknown() -> None:
     # A row new to the baseline has no manifest layer; publish needs one, and --layer records it.
     rel = ".claude/tools/layered.py"
@@ -741,6 +754,85 @@ def test_v2_judge_commit_reads_that_commit_not_the_shared_index() -> None:
         assert _load_lock(root)["files"][rel]["judged"]["sha"] == _sha(b"value = 2\n")
         missing = _run(root, "judge", ".claude/tools/absent.py", "--verdict", "push", "--commit", pinned)
         assert missing.returncode == 1
+
+
+def _proof_rows(*specs: tuple[str, str, bytes]) -> dict[str, dict]:
+    return {rel: {"status": status, "upstream": body, "manifest": status != "local"} for rel, status, body in specs}
+
+
+def test_check_strict_lists_each_tool_without_a_shipped_proof() -> None:
+    bare, mention, named = ".claude/tools/bare.py", ".claude/tools/mention.py", ".claude/tools/named.py"
+    rows = _proof_rows(
+        (bare, "tracked", b"x = 1\n"),
+        (mention, "tracked", b"x = 2\n"),
+        (named, "tracked", b"x = 3\n"),
+        (".claude/tests/test_unrelated.py", "tracked", b"# exercises mention.py\n"),
+        (".claude/tests/test_named.py", "tracked", b"pass\n"),
+    )
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        result = _run_baseline(root, baseline, "check", "--strict")
+        text = _out(result)
+        assert result.returncode == 1, text
+        assert "unproven: " + bare in text, text
+        assert "unproven: " + mention in text, text
+        assert "unproven: " + named not in text, text
+        assert "unproven: .claude/tests/" not in text, text
+
+
+def test_check_strict_counts_a_local_proof_as_no_proof() -> None:
+    tool = ".claude/tools/lonely.py"
+    rows = _proof_rows((tool, "tracked", b"x = 1\n"), (".claude/tests/test_lonely.py", "local", b"pass\n"))
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        assert "unproven: " + tool in _out(_run_baseline(root, baseline, "check", "--strict"))
+
+
+def _new_tool_fixture(path: Path, proof_status: str):
+    tool, proof = ".claude/tools/fresh.py", ".claude/tests/test_fresh.py"
+    rows = _proof_rows((tool, "local", b"x = 1\n"), (proof, proof_status, b"pass\n"))
+    root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+    return root, tool, proof
+
+
+def test_judge_push_refuses_a_new_tool_whose_proof_is_local() -> None:
+    with _fixture() as path:
+        root, tool, _proof = _new_tool_fixture(path, "local")
+        result = _run(root, "judge", tool, "--verdict", "push")
+        assert result.returncode == 1, _out(result)
+        assert "shipped proof" in _out(result), _out(result)
+        assert "judged" not in _load_lock(root)["files"][tool]
+        none = _run(root, "judge", tool, "--verdict", "keep-local")
+        assert none.returncode == 0, _out(none)
+
+
+def test_judge_push_allows_a_new_tool_with_a_shipped_proof() -> None:
+    with _fixture() as path:
+        root, tool, _proof = _new_tool_fixture(path, "tracked")
+        result = _run(root, "judge", tool, "--verdict", "push")
+        assert result.returncode == 0, _out(result)
+        assert _load_lock(root)["files"][tool]["judged"]["verdict"] == "push"
+
+
+def test_judge_push_allows_a_new_tool_and_its_new_proof_in_one_range() -> None:
+    with _fixture() as path:
+        root, tool, proof = _new_tool_fixture(path, "local")
+        together = _run(root, "judge", tool, proof, "--verdict", "push")
+        assert together.returncode == 0, _out(together)
+        files = _load_lock(root)["files"]
+        assert files[tool]["judged"]["verdict"] == files[proof]["judged"]["verdict"] == "push"
+
+
+def test_judge_push_counts_a_proof_judged_push_at_its_current_sha() -> None:
+    with _fixture() as path:
+        root, tool, proof = _new_tool_fixture(path, "local")
+        assert _run(root, "judge", proof, "--verdict", "push").returncode == 0
+        assert _run(root, "judge", tool, "--verdict", "push").returncode == 0
+        _write(root / proof, b"pass  # edited\n")
+        _write(root / tool, b"x = 2\n")
+        _commit(root, "edit")
+        stale = _run(root, "judge", tool, "--verdict", "push")
+        assert stale.returncode == 1 and "shipped proof" in _out(stale), _out(stale)
 
 
 def test_v2_triage_json_fields_and_truncation() -> None:
@@ -1321,6 +1413,7 @@ def test_v2_check_strict_git_spawns_do_not_grow_with_rows() -> None:
     for n in (3, 12):
         with _fixture() as path:
             rows = {".claude/tools/spawn_%d.py" % i: {"upstream": b"value = %d\n" % i} for i in range(n)}
+            rows.update({".claude/tests/test_spawn_%d.py" % i: {} for i in range(n)})
             root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
             spawned = []
             real_popen = engine.subprocess.Popen
@@ -1661,6 +1754,9 @@ def _v1_consumer(path: Path, *, region: bool = True, extra_permissions: dict | N
         ".claude/hooks/dispatch.py": {"row": False, "local": None, "upstream": b"import absorbed\n"},
         ".claude/hooks/absorbed.py": {"status": "tracked"},
         ".claude/hooks/optin.py": {"status": "tracked"},
+        ".claude/tests/test_dispatch.py": {"row": False, "local": None},
+        ".claude/tests/test_absorbed.py": {"status": "tracked"},
+        ".claude/tests/test_optin.py": {"status": "tracked"},
         ".claude/hooks/mine.py": {"status": "local", "manifest": False, "local": b"# mine\n"},
         ".claude/CLAUDE.core.md": {"row": False, "local": None},
         ".claude/CLAUDE.coding.md": {"row": False, "local": None, "layer": "coding"},
@@ -1919,6 +2015,7 @@ def test_check_reports_offered_and_strict_passes() -> None:
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {
             ".claude/tools/a.py": {},
+            ".claude/tests/test_a.py": {},
             OFFER: {"sync": "offer", "row": False, "local": None},
         })
         check = _run_baseline(root, baseline, "check")
@@ -2227,7 +2324,8 @@ def test_v2_check_strict_clears_only_a_current_keep_local_verdict() -> None:
         root, baseline, _remote_path, _commit_sha = _v2_fixture(
             path,
             {kept: {"upstream": b"value = 1\n", "local": b"value = 2\n",
-                    "judged": _keep_local_judgment(b"value = 2\n")}},
+                    "judged": _keep_local_judgment(b"value = 2\n")},
+             ".claude/tests/test_kept_local.py": {}},
         )
         current = _run_baseline(root, baseline, "check", "--strict", "--json")
         assert current.returncode == 0, _out(current)
@@ -2286,8 +2384,291 @@ def test_v2_provenance_strip_leaves_non_memory_files_alone() -> None:
         assert _json_output(result)["results"][tool] == "local-modified"
 
 
+def test_pull_prints_each_written_row_the_gitignore_matches() -> None:
+    ignored = ".claude/tests/test_planted.py"
+    open_row = ".claude/tools/open.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            ignored: {"local": None, "row": False},
+            open_row: {"local": None, "row": False},
+        })
+        _write(root / ".gitignore", b".claude/tests/" + bytes([10]))
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert f"ignored: {ignored} (add with git add -f)" in _out(pull), _out(pull)
+        assert f"ignored: {open_row}" not in _out(pull), _out(pull)
+
+
+def test_pull_chmods_a_100755_entry_and_leaves_a_100644_entry() -> None:
+    exec_row = ".claude/scripts/planted_run.sh"
+    plain_row = ".claude/tools/planted_plain.py"
+    engine = _load_engine()
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            exec_row: {"local": None, "row": False},
+            plain_row: {"local": None, "row": False},
+        })
+        _git(baseline, "update-index", "--chmod=+x", "template/" + exec_row)
+        _git(baseline, "commit", "-q", "-m", "exec bit")
+        chmods = []
+        real_chmod = engine.os.chmod
+
+        def recording_chmod(target, mode, *a, **k):
+            chmods.append((Path(target).name, mode))
+            return real_chmod(target, mode, *a, **k)
+
+        engine.os.chmod = recording_chmod
+        try:
+            with contextlib.chdir(root), contextlib.redirect_stdout(io.StringIO()):
+                code = engine.main(["pull", "--baseline-dir", str(baseline)])
+        finally:
+            engine.os.chmod = real_chmod
+        assert code == 0, "pull exited %s" % code
+        assert ("planted_run.sh", 0o755) in chmods, chmods
+        assert not [c for c in chmods if c[0] == "planted_plain.py"], chmods
+
+
+def test_pull_keeps_the_posix_exec_bit_of_a_100755_entry() -> None:
+    if os.name != "posix":
+        return
+    exec_row = ".claude/scripts/planted_run.sh"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {exec_row: {"local": None, "row": False}})
+        _git(baseline, "update-index", "--chmod=+x", "template/" + exec_row)
+        _git(baseline, "commit", "-q", "-m", "exec bit")
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert os.stat(root / exec_row).st_mode & 0o111, "pulled 100755 file is not executable"
+
+
+def _judged_push(data: bytes) -> dict:
+    return {"sha": _sha(data), "verdict": "push", "at": "2026-09-14T00:00:00Z",
+            "borderline": False, "confirmed_at": None}
+
+
+def _head(root: Path) -> str:
+    return _git(root, "rev-parse", "HEAD").decode().strip()
+
+
+def test_carry_walks_the_range_and_leaves_a_peer_row_alone() -> None:
+    a, b = ".claude/tools/carry_a.py", ".claude/tools/carry_b.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            a: {"local": b"a = 0\n", "judged": _judged_push(b"a = 0\n")},
+            b: {"local": b"b = 0\n", "judged": _judged_push(b"b = 0\n")},
+        })
+        base = _head(root)
+        _write(root / a, b"a = 1\n")
+        _write(root / b, b"b = 1\n")
+        _commit(root, "one")
+        _write(root / a, b"a = 2\nmore = 1\n")
+        _commit(root, "two")
+        result = _run_baseline(root, baseline, "judge", a, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert "carried: " + a in out and "+2" in out and "-1" in out, out
+        files = _load_lock(root)["files"]
+        assert files[a]["judged"]["sha"] == _sha(b"a = 2\nmore = 1\n"), files[a]
+        assert files[a]["judged"]["verdict"] == "push"
+        assert files[a]["judged"]["carried_from"] == _sha(b"a = 0\n")
+        assert files[b]["judged"]["sha"] == _sha(b"b = 0\n"), files[b]
+        assert "carried_from" not in files[b]["judged"]
+
+
+def test_carry_lists_a_row_the_range_adds_deletes_or_leaves_alone() -> None:
+    added, gone, still = ".claude/tools/c_added.py", ".claude/tools/c_gone.py", ".claude/tools/c_still.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            added: {"local": None, "judged": _judged_push(b"x = 0\n")},
+            gone: {"local": b"g = 0\n", "judged": _judged_push(b"g = 0\n")},
+            still: {"local": b"s = 0\n", "judged": _judged_push(b"s = 0\n")},
+        })
+        base = _head(root)
+        _write(root / added, b"x = 0\n")
+        (root / gone).unlink()
+        _commit(root, "add and delete")
+        result = _run_baseline(root, baseline, "judge", added, gone, still, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        for rel in (added, gone, still):
+            assert f"not carried: {rel} (" in out, out
+        assert "carried: " not in out.replace("not carried: ", ""), out
+        files = _load_lock(root)["files"]
+        assert files[gone]["judged"]["sha"] == _sha(b"g = 0\n")
+        assert files[added]["judged"]["sha"] == _sha(b"x = 0\n")
+
+
+def test_carry_leaves_a_row_judged_keep_local_alone() -> None:
+    rel = ".claude/tools/carry_kept.py"
+    with _fixture() as path:
+        kept = {**_judged_push(b"k = 0\n"), "verdict": "keep-local"}
+        root, baseline, _r, _c = _v2_fixture(path, {
+            rel: {"local": b"k = 0\n", "judged": kept},
+        })
+        base = _head(root)
+        _write(root / rel, b"k = 1\n")
+        _commit(root, "edit")
+        result = _run_baseline(root, baseline, "judge", rel, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert f"not carried: {rel} (judged keep-local, not push)" in out, out
+        judged = _load_lock(root)["files"][rel]["judged"]
+        assert judged["verdict"] == "keep-local" and judged["sha"] == _sha(b"k = 0\n"), judged
+
+
+def test_carry_names_a_broken_chain() -> None:
+    rel = ".claude/tools/chain.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            rel: {"local": b"v = 0\n", "judged": _judged_push(b"v = 0\n")},
+        })
+        _write(root / rel, b"v = 9\n")
+        _commit(root, "unjudged edit")
+        base = _head(root)
+        _write(root / rel, b"v = 10\n")
+        _commit(root, "in range")
+        result = _run_baseline(root, baseline, "judge", rel, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert f"not carried: {rel} (chain broken)" in out, out
+        assert _load_lock(root)["files"][rel]["judged"]["sha"] == _sha(b"v = 0\n")
+
+
+def test_carry_refuses_an_identity_hit_and_a_layerless_new_row() -> None:
+    leaky, fresh = ".claude/commands/carry_leaky.md", ".claude/tools/carry_fresh.py"
+    subsystem_id = "brew" + "Cauldron"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            leaky: {"upstream": b"clean\n", "judged": _judged_push(b"clean\n")},
+            fresh: {"manifest": False, "local": b"f = 0\n", "hash": None, "judged": _judged_push(b"f = 0\n")},
+        })
+        _drop_layer(root, fresh)
+        skill_md = "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: " + subsystem_id + "\n    paths: []\n```\n"
+        _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", skill_md.encode())
+        _commit(root, "subsystem")
+        base = _head(root)
+        _write(root / leaky, ("The " + subsystem_id + " owns this file.\n").encode())
+        _write(root / fresh, b"f = 1\n")
+        _commit(root, "edits")
+        rng = f"{base}..{_head(root)}"
+        hit = _run_baseline(root, baseline, "judge", leaky, "--carry", rng)
+        assert hit.returncode == 1 and "identity scan hit" in _out(hit), _out(hit)
+        layer = _run_baseline(root, baseline, "judge", fresh, "--carry", rng)
+        assert layer.returncode == 1 and "--layer pure|coding|godot" in _out(layer), _out(layer)
+        files = _load_lock(root)["files"]
+        assert files[leaky]["judged"]["sha"] == _sha(b"clean\n")
+        assert files[fresh]["judged"]["sha"] == _sha(b"f = 0\n")
+
+
+def test_carry_usage_errors_exit_two_naming_the_flag() -> None:
+    rel = ".claude/tools/usage.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {}})
+        for extra, flag in (
+            (["--verdict", "push"], "--verdict"),
+            (["--commit", "HEAD"], "--commit"),
+            (["--borderline"], "--borderline"),
+            (["--confirm"], "--confirm"),
+        ):
+            result = _run_baseline(root, baseline, "judge", rel, "--carry", "HEAD~1..HEAD", *extra)
+            assert result.returncode == 2 and flag in _out(result), (flag, _out(result))
+        other = _run_baseline(root, baseline, "check", "--carry", "HEAD~1..HEAD")
+        assert other.returncode == 2 and "--carry" in _out(other), _out(other)
+        for bad in ("HEAD", "a..", "..b", "a...b"):
+            result = _run_baseline(root, baseline, "judge", rel, "--carry", bad)
+            assert result.returncode == 2 and "--carry" in _out(result), (bad, _out(result))
+
+
+_DEP_CITER = ".claude/commands/dep_citer.md"
+_DEP_HELPER = ".claude/tools/dep_helper.py"
+_DEP_OLD, _DEP_NEW = b"h = 0\n", b"h = 1\n"
+_DEP_CITES = b"Run:\n```\npython3 \"$CLAUDE_PROJECT_DIR/.claude/tools/dep_helper.py\"\n```\n"
+
+
+def _dep_rows(helper: dict) -> dict[str, dict]:
+    return {
+        _DEP_CITER: {"status": "local", "manifest": False, "local": _DEP_CITES},
+        _DEP_HELPER: helper,
+    }
+
+
+def _dep_helpers() -> dict[str, dict]:
+    return {
+        "local": {"status": "local", "manifest": False, "local": _DEP_NEW},
+        "local-modified": {"upstream": _DEP_OLD, "local": _DEP_NEW},
+        "forked": {"status": "forked", "upstream": _DEP_OLD, "local": _DEP_NEW},
+        "local-shipped": {"status": "local", "upstream": _DEP_OLD, "local": _DEP_NEW},
+        "in-sync": {"upstream": _DEP_OLD, "local": _DEP_OLD},
+        "judged-local-modified": {"upstream": _DEP_OLD, "local": _DEP_NEW, "judged": _judged_push(_DEP_NEW)},
+        "judged-unpublished": {"manifest": False, "hash": None, "local": _DEP_NEW,
+                               "judged": _judged_push(_DEP_NEW)},
+    }
+
+
+def _dep_fixture(path: Path, helper: dict):
+    root, baseline, remote, commit = _v2_fixture(path, _dep_rows(helper))
+    lock = _load_lock(root)
+    if lock["files"][_DEP_HELPER]["status"] == "forked":
+        lock["files"][_DEP_HELPER]["base"] = commit
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "fork base")
+    return root, baseline
+
+
+def test_judge_push_refuses_a_citer_whose_dependency_does_not_ship() -> None:
+    meaning = {"local": "never ships", "local-modified": "differs from the baseline copy"}
+    for state, words in meaning.items():
+        with _fixture() as path:
+            root, baseline = _dep_fixture(path, _dep_helpers()[state])
+            result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+            out = _out(result)
+            assert result.returncode == 1, (state, out)
+            assert _DEP_HELPER in out and state in out and words in out, (state, out)
+            assert f"judge {_DEP_HELPER} --verdict push" in out, (state, out)
+            assert "judged" not in _load_lock(root)["files"][_DEP_CITER], state
+
+
+def test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push() -> None:
+    # A forked row, or a local row the baseline ships (a seed), reaches every consumer as the baseline's
+    # copy; refusing it would block the citer for as long as the fork or seed stands.
+    for state in ("in-sync", "judged-local-modified", "judged-unpublished", "forked", "local-shipped"):
+        with _fixture() as path:
+            root, baseline = _dep_fixture(path, _dep_helpers()[state])
+            result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+            assert result.returncode == 0, (state, _out(result))
+            assert _load_lock(root)["files"][_DEP_CITER]["judged"]["verdict"] == "push", state
+
+
+def test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call() -> None:
+    with _fixture() as path:
+        proof = ".claude/tests/test_dep_helper.py"
+        rows = _dep_rows(_dep_helpers()["local"])
+        rows[proof] = {"status": "local", "manifest": False, "local": b"pass\n"}
+        root, baseline, _r, _c = _v2_fixture(path, rows)
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, _DEP_HELPER, proof, "--verdict", "push")
+        assert result.returncode == 0, _out(result)
+
+
+def test_carry_refuses_a_row_whose_dependency_is_local() -> None:
+    with _fixture() as path:
+        rows = _dep_rows(_dep_helpers()["local"])
+        rows[_DEP_CITER]["judged"] = _judged_push(_DEP_CITES)
+        root, baseline, _r, _c = _v2_fixture(path, rows)
+        base = _head(root)
+        _write(root / _DEP_CITER, _DEP_CITES + b"More.\n")
+        _commit(root, "edit citer")
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 1, out
+        assert _DEP_HELPER in out and "local" in out and f"judge {_DEP_HELPER} --verdict push" in out, out
+        assert _load_lock(root)["files"][_DEP_CITER]["judged"]["sha"] == _sha(_DEP_CITES)
+
+
 def main() -> int:
     cases = [
+        test_pull_chmods_a_100755_entry_and_leaves_a_100644_entry,
+        test_pull_keeps_the_posix_exec_bit_of_a_100755_entry,
+        test_pull_prints_each_written_row_the_gitignore_matches,
         test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it,
         test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks,
         test_j3_write_prints_the_layer_closure_it_adds,
@@ -2376,6 +2757,21 @@ def main() -> int:
         test_v2_memory_provenance_keys_never_make_a_row_differ,
         test_v2_pull_writes_memory_without_provenance_keys,
         test_v2_provenance_strip_leaves_non_memory_files_alone,
+        test_carry_walks_the_range_and_leaves_a_peer_row_alone,
+        test_carry_lists_a_row_the_range_adds_deletes_or_leaves_alone,
+        test_carry_names_a_broken_chain,
+        test_carry_refuses_an_identity_hit_and_a_layerless_new_row,
+        test_carry_usage_errors_exit_two_naming_the_flag,
+        test_check_strict_lists_each_tool_without_a_shipped_proof,
+        test_check_strict_counts_a_local_proof_as_no_proof,
+        test_judge_push_refuses_a_new_tool_whose_proof_is_local,
+        test_judge_push_allows_a_new_tool_with_a_shipped_proof,
+        test_judge_push_allows_a_new_tool_and_its_new_proof_in_one_range,
+        test_judge_push_counts_a_proof_judged_push_at_its_current_sha,
+        test_judge_push_refuses_a_citer_whose_dependency_does_not_ship,
+        test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push,
+        test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call,
+        test_carry_refuses_a_row_whose_dependency_is_local,
     ]
     return run_cases(cases)
 

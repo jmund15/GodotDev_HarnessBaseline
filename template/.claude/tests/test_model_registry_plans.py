@@ -11,6 +11,7 @@ import contextlib
 import copy
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sys
@@ -147,10 +148,8 @@ def main():
             "costModel": (p.get("costModel"), s.get("costModel")),
             "configDir": (p.get("configDir"), s.get("configDir")),
             "launcher": (p.get("launcher"), s.get("launcher")),
-            "credentialFile": (p.get("credentialFile"), s.get("credentialFile")),
             "credentialVar": (p.get("credentialVar"), s.get("credentialVar")),
             "workspaceIdVar": (p.get("workspaceIdVar"), s.get("workspaceIdVar")),
-            "credit": (credit_shape(p.get("credit")), credit_shape(s.get("credit"))),
             "probe": ((p.get("capacityProbe") or {}).get("kind"), (p.get("capacityProbe") or {}).get("args"),
                       (s.get("capacityProbe") or {}).get("args")),
             "state": ((p.get("status") or {}).get("state"), (s.get("status") or {}).get("state")),
@@ -161,10 +160,8 @@ def main():
             "costModel": ("plan-quota", "plan-quota"),
             "configDir": ("~/.claude-console-primary", "~/.claude-console-secondary"),
             "launcher": (CONSOLE_LAUNCHER, CONSOLE_SECOND_LAUNCHER),
-            "credentialFile": ("~/.env.ai-worker.cmd", "~/.env.ai-worker.cmd"),
             "credentialVar": ("ANTHROPIC_CONSOLE_KEY_PRIMARY", "ANTHROPIC_CONSOLE_KEY_SECONDARY"),
             "workspaceIdVar": (None, None),
-            "credit": (True, True),
             "probe": ("quota", [PROBE], [PROBE]),
             "state": ("available", "available"),
             "reason": (True, True),
@@ -173,6 +170,28 @@ def main():
         return ok, repr({k: v for k, v in got.items() if v != want.get(k)}) if not ok else repr(got)
     case("the shipped registry carries both Console plans: key credential, credit block, quota probe "
          "and the available status S3's probe unlocks", shipped_console)
+
+    def planted_account_overlay():
+        root = tempfile.mkdtemp(prefix="mr_plans_overlay_")
+        path = os.path.join(root, "external_models.json")
+        raw = mr.find_registry().read_text(encoding="utf-8")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(raw)
+        bare = mr.load(path=path)["transports"]
+        bare_ok = all("credentialFile" not in bare[n] and "credit" not in bare[n] for n in (CONSOLE, CONSOLE_SECOND))
+        grants = {CONSOLE: 200, CONSOLE_SECOND: 100}
+        overlay = {"transports": {n: {"credentialFile": "~/.planted.cmd",
+                                      "credit": {"grantUSD": g, "cycleStart": "2026-10-10", "cycleEnd": "2026-10-31"}}
+                                  for n, g in grants.items()}}
+        with open(os.path.join(root, "external_models.local.json"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(overlay))
+        mr._cache.pop(path, None)
+        t = mr.load(path=path)["transports"]
+        ok = bare_ok and all(t[n].get("credentialFile") == "~/.planted.cmd" and credit_shape(t[n].get("credit")) is True
+                             and t[n].get("credit", {}).get("grantUSD") == g for n, g in grants.items())
+        return ok, repr((bare_ok, {n: (t[n].get("credentialFile"), t[n].get("credit")) for n in grants}))
+    case("the shipped file carries no credentialFile or credit; a planted external_models.local.json "
+         "supplies both Console plans' merged credentialFile and credit shape", planted_account_overlay)
 
     def console_routable_since_the_probe():
         d = live()

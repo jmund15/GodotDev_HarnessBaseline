@@ -20,3 +20,12 @@ def project_owned(relpath):
         return False
     entry = (lock.get("files") or {}).get(relpath) or {}
     return entry.get("status") in ("forked", "local")
+
+
+def rows():
+    """The lock's rows as `{relpath: row}`; None when there is no readable lock."""
+    try:
+        lock = json.loads((ROOT / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return dict(lock.get("files") or {})

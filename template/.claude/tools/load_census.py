@@ -84,7 +84,9 @@ or `{"rule": "<file>.md"}`; reported as `<name>_bundle_files/_bytes`),
 `shared_state_hook_skip`, `isolated_shared_state_hooks`, and
 `code_edit_probe` (`{"path": <project-relative file>}`, profiled as the
 `edit-code` case). Lists union, mappings update, and an unreadable profile is
-a source error.
+a source error. `tools/load_census.project.json` is the project's own profile:
+its `budgets` are the tripwires `over_baseline` judges against each
+`[cap, baseline]` baseline. Shipped budgets are caps only.
 
 CLI: `python3 .claude/tools/load_census.py [--json <path>] [--profile-hooks] [--budgets]`
 `--budgets` fails closed when a standing file, entrypoint, or rule `paths:` frontmatter is missing or malformed.
@@ -194,6 +196,7 @@ NON_ISOLATABLE_SHARED_STATE_HOOKS: dict[str, str] = {}
 PROFILE_GLOB = "tools/load_census.*.json"
 PROFILE_LISTS = ("entrypoints", "shared_state_hook_skip", "isolated_shared_state_hooks")
 PROFILE_MAPS = ("rule_bundles", "budgets", "known_oversized_no_selector", "code_edit_probe")
+PROJECT_PROFILE = "load_census.project.json"
 
 
 def load_profile(root: Path) -> dict:
@@ -202,6 +205,7 @@ def load_profile(root: Path) -> dict:
     merged: dict = {key: [] for key in PROFILE_LISTS}
     merged.update({key: {} for key in PROFILE_MAPS})
     merged["source_errors"] = []
+    merged["tripwires"] = {}
     for path in sorted(root.glob(PROFILE_GLOB)):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -210,6 +214,8 @@ def load_profile(root: Path) -> dict:
         except (OSError, ValueError) as exc:
             merged["source_errors"].append(f"unreadable census profile: {path}: {exc}")
             continue
+        if path.name == PROJECT_PROFILE:
+            merged["tripwires"] = {k: tuple(v) for k, v in data.get("budgets", {}).items()}
         for key in PROFILE_LISTS:
             merged[key].extend(x for x in data.get(key, []) if x not in merged[key])
         for key in PROFILE_MAPS:
@@ -852,6 +858,7 @@ def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks
         "transitive_load": transitive,
         "hook_chain": edit_hook_chain(settings),
         "budgets": {**BUDGETS, **{k: tuple(v) for k, v in profile["budgets"].items()}},
+        "tripwires": profile["tripwires"],
         "source_errors": source_errors,
     }
     if profile_hooks_flag:
@@ -869,6 +876,51 @@ def build_report(root: Path, profile_hooks_flag: bool = False, need_budget_hooks
             for r in excluded
         ]
     return report
+
+
+class NotConfigured(Exception):
+    """The report holds no tripwire baseline and no selectorless oversized body, so the hot-set review has nothing to judge."""
+
+
+def measured_budgets(report: dict) -> dict:
+    """The live value of each budget key the report measures; a tripwire names one of these keys."""
+    values = {
+        "listing_bytes": report["listing"]["total_bytes"],
+        "standing_bytes": report["standing"]["total_bytes"],
+        "edit_hook_chain_subprocesses": report["hook_chain"]["edit_subprocesses"],
+        "prompt_emission_bytes": report.get("prompt_emission_steady_bytes"),
+    }
+    for name, bundle in report["rules"].get("bundles", {}).items():
+        values[f"{name}_rule_bundle_bytes"] = bundle["bytes"]
+    return values
+
+
+def over_baseline(report: dict) -> list[dict]:
+    """One row per tripwire whose measured value exceeds its project baseline (a tripwire the report does not
+    measure gives an `error: unmeasured` row, never a silent skip), then one `oversized_body`
+    row per selectorless body past its bytes (OVERSIZED_THRESHOLD, or its KNOWN_OVERSIZED_NO_SELECTOR
+    bytes). Raises NotConfigured when the report holds no tripwire and no selectorless oversized body."""
+    tripwires = report.get("tripwires") or {}
+    measured = measured_budgets(report)
+    rows = []
+    for budget, (_cap, baseline) in tripwires.items():
+        value = measured.get(budget)
+        if value is None:
+            rows.append({"budget": budget, "measured": None, "baseline": baseline, "delta": None,
+                         "error": "unmeasured"})
+            continue
+        if value <= baseline:
+            continue
+        rows.append({"budget": budget, "measured": value, "baseline": baseline, "delta": value - baseline})
+    for b in report["oversized_bodies"]:
+        if b["has_selector"] or b["known"]:
+            continue
+        baseline = b["known_bytes"] if b["known_bytes"] is not None else OVERSIZED_THRESHOLD
+        rows.append({"budget": "oversized_body", "measured": b["bytes"], "baseline": baseline,
+                     "delta": b["bytes"] - baseline, "files": [b["path"]]})
+    if not tripwires and not any(not b["has_selector"] for b in report["oversized_bodies"]):
+        raise NotConfigured("no tripwire baseline in tools/load_census.project.json and no selectorless oversized body")
+    return rows
 
 
 def check_budgets(report: dict) -> list[str]:

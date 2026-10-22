@@ -472,12 +472,16 @@ def main():
         failures.append("compute(month=): %r %r" % (month_probe.stdout[-200:], month_probe.stderr[-200:]))
 
     # Case 28: a bad archive raises through compute() and the CLI still prints UNKNOWN and exits 2.
+    bad_root = tempfile.mkdtemp(prefix="eval_archive_bad_")
+    os.makedirs(os.path.join(bad_root, ".claude"))
+    with open(os.path.join(bad_root, ".claude", "self_evaluate_archive.json"), "w", encoding="utf-8") as fh:
+        fh.write("{not json")
     bad_code = "\n".join([
         "import sys",
         "sys.path.insert(0, %r)" % os.path.join(ROOT, "tools"),
         "import analyze_eval_archive as a",
         "try:",
-        "    a.compute(%r)" % os.path.join(tempfile.gettempdir(), "no-such-root-xyz"),
+        "    a.compute(%r)" % bad_root,
         "except a.AnalysisError as e:",
         "    print('raised', e)"])
     bad_probe = subprocess.run([sys.executable, "-c", bad_code], cwd=tempfile.gettempdir(),

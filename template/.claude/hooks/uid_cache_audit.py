@@ -116,10 +116,10 @@ def tracked_files():
     for line in dirty:
         p = line[3:].strip()
         if p:
-            dirty_paths.add(p.replace("/", "\\"))
-    skipped = [p for p in out if p.replace("/", "\\") in dirty_paths]
+            dirty_paths.add(p)
+    skipped = [p for p in out if p in dirty_paths]
     SKIPPED_DIRTY.update(skipped)
-    return [p for p in out if p.replace("/", "\\") not in dirty_paths]
+    return [p for p in out if p not in dirty_paths]
 
 
 def staged_new_files():
@@ -137,17 +137,17 @@ def resolve_target_uid(tgt: str) -> str | None:
     """
     if tgt.endswith((".png", ".jpg", ".svg", ".wav", ".ogg", ".ttf", ".glb", ".fbx",
                      ".dae", ".obj", ".hdr", ".exr", ".webp", ".mp3", ".ogv")):
-        imp = REPO / (tgt.replace("/", "\\") + ".import")
+        imp = REPO / (tgt + ".import")
         if imp.exists():
             t = imp.read_text(encoding="utf-8", errors="replace")
             m = re.search(r'uid="(uid://[^"]+)"', t)
             return m.group(1) if m else None
     if tgt.endswith(".cs"):
-        comp = REPO / (tgt.replace("/", "\\").removesuffix(".cs") + ".cs.uid")
+        comp = REPO / (tgt.removesuffix(".cs") + ".cs.uid")
         if comp.exists():
             return comp.read_text(encoding="utf-8", errors="replace").strip()
     if tgt.endswith((".tres", ".tscn")):
-        tp = REPO / tgt.replace("/", "\\")
+        tp = REPO / tgt
         if tp.exists():
             head = tp.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
             m = re.search(r'uid="(uid://[^"]+)"', head)
@@ -164,7 +164,7 @@ def audit(path_to_uid):
     for rel in tracked_files():
         if rel.startswith(EXCLUDE_PREFIX):
             continue
-        p = REPO / rel.replace("/", "\\")
+        p = REPO / rel
         text = p.read_text(encoding="utf-8", errors="replace")
         for m in REF_RE.finditer(text):
             ref_uid, tgt = m.group(2), m.group(3)
@@ -205,7 +205,7 @@ def backfill_headers(path_to_uid, uid_to_path, apply: bool):
     """Add a header uid to every staged new .tres/.tscn (outside Jmodot/ and addons/) that lacks one."""
     used = {id_to_text(u) for u in uid_to_path}
     for rel in tracked_files():
-        p = REPO / rel.replace("/", "\\")
+        p = REPO / rel
         if p.exists():
             m = re.search(r'uid="(uid://[^"]+)"', p.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0])
             if m:
@@ -214,7 +214,7 @@ def backfill_headers(path_to_uid, uid_to_path, apply: bool):
     for rel in staged_new_files():
         if rel.startswith(BACKFILL_EXCLUDE_PREFIXES):
             continue
-        p = REPO / rel.replace("/", "\\")
+        p = REPO / rel
         text = p.read_text(encoding="utf-8", errors="replace")
         head, sep, rest = text.partition("\n")
         if not HDR_LINE.match(head) or ' uid="' in head:
@@ -234,7 +234,7 @@ def backfill_headers(path_to_uid, uid_to_path, apply: bool):
     print(f"{len(todo)} header(s) missing a uid ({from_cache} from cache, {minted} freshly minted)")
     if apply:
         for rel, new_text in todo:
-            (REPO / rel.replace("/", "\\")).write_text(new_text, encoding="utf-8", newline="\n")
+            (REPO / rel).write_text(new_text, encoding="utf-8", newline="\n")
         print(f"APPLIED: wrote {len(todo)} header uid(s) under {REPO}")
     else:
         for rel, _ in todo[:20]:
@@ -272,7 +272,7 @@ def main():
     if "--apply" in sys.argv:
         fixed = 0
         for rel, tgt, disk, want in mismatches:
-            p = REPO / rel.replace("/", "\\")
+            p = REPO / rel
             text = p.read_text(encoding="utf-8")
             n = text.count(disk)
             text = text.replace(disk, want)
@@ -285,7 +285,7 @@ def main():
         for rel, tgt, disk, _ in unregistered:
             by_file.setdefault(rel, set()).add(disk)
         for rel, bad_uids in by_file.items():
-            p = REPO / rel.replace("/", "\\")
+            p = REPO / rel
             text = p.read_text(encoding="utf-8")
             new = text
             for m in REF_RE.finditer(text):
@@ -298,7 +298,7 @@ def main():
         # uid -> the ref must carry it.
         added = 0
         for rel, tgt, want in missing_uid:
-            p = REPO / rel.replace("/", "\\")
+            p = REPO / rel
             text = p.read_text(encoding="utf-8")
             m = re.search(
                 r'\[ext_resource type="([^"]+)" path="res://' + re.escape(tgt) + r'"',

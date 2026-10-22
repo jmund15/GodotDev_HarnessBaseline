@@ -22,6 +22,13 @@ from self_eval_archive_guard import (  # noqa: E402
 ARCHIVE_MAX_BYTES = 256 * 1024
 ARCHIVE_MAX_ROTATIONS = LEDGER_ROTATIONS
 LOCK_TIMEOUT_SECONDS = 10.0
+DEFAULT_PATTERNS = {
+    "A": "Discipline failure: clear docs exist, follow existing rules",
+    "B": "Documentation gap: the missing documentation is added",
+    "C": "Clean session: system stable, resist context bloat",
+    "D": "Tooling/documentation mismatch: consuming commands must document artifacts",
+    "E": "Infrastructure failure cascade: a tooling bug causes a multi-session recovery burden",
+}
 
 
 def ledger_path(archive):
@@ -61,7 +68,17 @@ def _read_ledger_entries(archive):
     return rows
 
 
+def empty_document():
+    return {
+        "Self_Evaluate_Themes": {"patterns": dict(DEFAULT_PATTERNS)},
+        "legacy_entries": [],
+        "structured_entries": [],
+    }
+
+
 def _load_archive_unlocked(archive):
+    if not os.path.lexists(archive):
+        return empty_document(), _read_ledger_entries(archive)
     try:
         with open(archive, encoding="utf-8") as handle:
             document = json.load(handle)

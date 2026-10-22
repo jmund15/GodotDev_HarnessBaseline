@@ -1149,12 +1149,14 @@ def workflow_result_select(archive: dict, ids: list[str]) -> dict:
     duplicates = [value for index, value in enumerate(ids) if value in ids[:index]]
     if duplicates:
         raise ValueError("duplicate workflow selector(s): " + ", ".join(dict.fromkeys(duplicates)))
-    available = {row["id"]: row for row in archive["items"]}
+    available = {}
+    for row in archive["items"]:
+        available.setdefault(row["id"], []).append(row)
     missing = [value for value in ids if value not in available]
     if missing:
         raise ValueError("unknown workflow selector(s): " + ", ".join(missing))
     out = _workflow_envelope(archive)
-    out.update({"selectors": list(ids), "rows": [available[value] for value in ids]})
+    out.update({"selectors": list(ids), "rows": [row for value in ids for row in available[value]]})
     return out
 
 

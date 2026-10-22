@@ -830,16 +830,31 @@ async function check(name, test) {
     assert.deepEqual(rows.outside.gapTexts, ['src/Core/ImpactPhysics.cs (outside-lens)'])
     assert.ok(!out.flags.some(f => f.kind === 'lens-unread-must-read' || f.kind === 'lens-invalid-gaps'), JSON.stringify(out.flags))
   })
-  await check('MR3 a free-text gap, an unlisted item or an unknown reason fails the seat', async () => {
+  await check('MR3 a gap that excuses no listed entry is a note on a seat that read its list, and fails nothing', async () => {
     const read = checked({ toolsUsed: ['Read:src/a.cs', 'Read:src/Core/ImpactPhysics.cs'] })
     const out = await run({
       text: { findings: [], checked: read, gaps: ['could not trace callers'] },
-      unlisted: { findings: [], checked: read, gaps: [{ item: 'src/other.cs', reason: 'outside-lens' }] },
+      unlisted: { findings: [], checked: read, gaps: [{ item: 'src/other.cs', reason: 'capability' }] },
       reason: { findings: [], checked: read, gaps: [{ item: 'src/a.cs', reason: 'ran out of time' }] },
       extra: { findings: [], checked: read, gaps: [{ item: 'src/a.cs', reason: 'capability', note: 'free text' }] },
-    }, { agents: [listed('text', MUST), listed('unlisted', MUST), listed('reason', MUST), listed('extra', MUST)] })
-    for (const row of out.perAgent) assert.equal(row.status, 'failed', row.key)
-    assert.ok(out.flags.some(f => f.lens === 'text' && f.kind === 'lens-invalid-gaps'))
+      short: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs'] }), gaps: [{ item: 'src/other.cs', reason: 'outside-lens' }] },
+    }, { agents: ['text', 'unlisted', 'reason', 'extra', 'short'].map(k => listed(k, MUST)) })
+    const rows = Object.fromEntries(out.perAgent.map(r => [r.key, r]))
+    for (const key of ['text', 'unlisted', 'reason', 'extra']) assert.equal(rows[key].status, 'completed', key)
+    assert.equal(rows.short.status, 'failed')
+    assert.deepEqual(rows.unlisted.gapNotes, ['src/other.cs (capability)'])
+    assert.ok(out.flags.some(f => f.lens === 'text' && f.kind === 'lens-gap-notes'))
+    assert.ok(!out.flags.some(f => f.kind === 'lens-invalid-gaps'), JSON.stringify(out.flags))
+  })
+  await check('MR3b a gap with an item and no reason is a note that names no undefined reason', async () => {
+    const read = checked({ toolsUsed: ['Read:src/a.cs', 'Read:src/Core/ImpactPhysics.cs'] })
+    const out = await run({
+      bare: { findings: [], checked: read, gaps: [{ item: 'src/other.cs' }] },
+    }, { agents: ['bare'].map(k => listed(k, MUST)) })
+    const rows = Object.fromEntries(out.perAgent.map(r => [r.key, r]))
+    assert.equal(rows.bare.status, 'completed')
+    assert.deepEqual(rows.bare.gapNotes, ['src/other.cs (no reason)'])
+    assert.ok(!out.flags.some(f => f.detail && f.detail.includes('undefined')), JSON.stringify(out.flags))
   })
   await check('MR4 every seat is told its entries with their line counts, the range form and the closed gap reasons; a malformed mustRead refuses the run', async () => {
     const prompts = {}

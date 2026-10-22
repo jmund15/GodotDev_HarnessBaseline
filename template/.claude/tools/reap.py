@@ -42,7 +42,8 @@ it cannot (incident: auto-memory/archive/feedback_guard_denial_of_justified_work
                             ollama), `*_sidecar.sh` launcher or dispatch shim in its tree, and no live process
                             outside it carrying its job id (REAP_JOB_ID, or a sidecar's SIDECAR_LAUNCH_ID, set
                             by its launcher at spawn, so detached members count). A target with no job id
-                            refuses. Stopping it loses no work, so an owned job waiting its turn stops on this.
+                            refuses. Stopping it loses no paid or model work, so an owned job waiting its turn
+                            stops on this.
                 owner       --why is the owner's stop order, verbatim from this session's transcript (case and
                             whitespace ignored): an owner-typed message that passes kill_guard's stop-order
                             test (a stop verb, no keep word), or the question of an AskUserQuestion the owner
