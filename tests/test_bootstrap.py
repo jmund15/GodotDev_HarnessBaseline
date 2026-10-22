@@ -213,7 +213,7 @@ def test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine()
                                    .read_text(encoding="utf-8"))["memory_domains"]
             assert [d["name"] for d in installed] == domains, f"{layers}: domains {[d['name'] for d in installed]}"
             crashes = _hook_crashes(target)
-            assert not crashes, f"{layers}: hooks crash in a fresh project: " + "; ".join(crashes[:6])
+            assert not crashes, f"{layers}: hooks crash in a fresh project: " + "; ".join(crashes)
             composed = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
             assert composed.get("outputStyle") == "terse", f"{layers}: outputStyle {composed.get('outputStyle')}"
             assert (target / ".claude" / "output-styles" / "terse.md").is_file(), f"{layers}: terse.md not installed"
@@ -429,6 +429,62 @@ def test_fresh_bootstrap_contains_none_of_the_range_deleted_files() -> None:
         assert not present, present
 
 
+def test_untracked_dev_file_in_a_git_checkout_is_not_installed() -> None:
+    with _Baseline() as b:
+        stray = b.baseline / "template" / ".claude" / "dev_scratch_note.txt"
+        stray.write_text("scratch" + chr(10), encoding="utf-8", newline=chr(10))
+        target = b.temp_root / "StrayGame"
+        result = b.run("--target", _to_posix(target), "--project-name", "StrayGame", "--layers", "pure")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not (target / ".claude" / "dev_scratch_note.txt").exists(), "an untracked dev file was installed"
+        assert (target / ".claude" / "tools" / "baseline_sync.py").is_file(), "a tracked file was not installed"
+
+
+def test_ignored_delivered_files_are_staged_in_a_fresh_target() -> None:
+    with _Baseline() as b:
+        target = b.temp_root / "StagedGame"
+        result = b.run("--target", _to_posix(target), "--project-name", "StagedGame", "--layers", "pure")
+        assert result.returncode == 0, result.stdout + result.stderr
+        listed = subprocess.run(["git", "-C", str(target), "ls-files", ".claude/tests"],
+                                capture_output=True, text=True).stdout.split()
+        assert ".claude/tests/_case_pool.py" in listed, listed[:5]
+        hidden = subprocess.run(["git", "-C", str(target), "ls-files", "--others", "--ignored", "--exclude-standard",
+                                 "--", ".claude/tests"], capture_output=True, text=True).stdout.split()
+        assert not hidden, hidden[:5]
+
+
+def test_a_100755_template_entry_is_installed_executable_and_staged_executable() -> None:
+    hook = ".claude/githooks/commit-msg"
+    with _Baseline() as b:
+        planted = subprocess.run(["git", "update-index", "--chmod=+x", "template/" + hook],
+                                 cwd=b.baseline, capture_output=True, text=True)
+        assert planted.returncode == 0, planted.stderr
+        target = b.temp_root / "ExecGame"
+        result = b.run("--target", _to_posix(target), "--project-name", "ExecGame", "--layers", "pure")
+        assert result.returncode == 0, result.stdout + result.stderr
+        staged = subprocess.run(["git", "-C", str(target), "ls-files", "-s", "--", hook],
+                                capture_output=True, text=True).stdout.split()
+        assert staged[:1] == ["100755"], staged
+        if os.name == "posix":
+            assert (target / hook).stat().st_mode & 0o111, "an installed 100755 entry lost its executable bit"
+
+
+def test_hook_smoke_lists_every_crashing_hook() -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="bootstrap_hooks_"))
+    try:
+        target = temp_root / "proj"
+        (target / ".claude").mkdir(parents=True)
+        hooks = {"SessionStart": [{"hooks": [
+            {"type": "command", "command": "python3 -c \"raise RuntimeError('first')\""},
+            {"type": "command", "command": "python3 -c \"print('fine')\""},
+            {"type": "command", "command": "python3 -c \"raise RuntimeError('second')\""}]}]}
+        (target / ".claude" / "settings.json").write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+        crashes = _hook_crashes(target)
+        assert len(crashes) == 2 and "first" in crashes[0] and "second" in crashes[1], crashes
+    finally:
+        _rmtree_writable(temp_root)
+
+
 def main() -> int:
     cases = [test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean,
              test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine,
@@ -436,7 +492,11 @@ def main() -> int:
              test_every_written_file_is_lf,
              test_forced_rerun_is_idempotent_and_keeps_seeds,
              test_bootstrap_sets_up_git_ignore_worklog_and_memory_directory,
-             test_fresh_bootstrap_contains_none_of_the_range_deleted_files]
+             test_fresh_bootstrap_contains_none_of_the_range_deleted_files,
+             test_untracked_dev_file_in_a_git_checkout_is_not_installed,
+             test_ignored_delivered_files_are_staged_in_a_fresh_target,
+             test_a_100755_template_entry_is_installed_executable_and_staged_executable,
+             test_hook_smoke_lists_every_crashing_hook]
     failures = []
     for case in cases:
         try:

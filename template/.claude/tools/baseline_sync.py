@@ -393,6 +393,7 @@ class BaselineSource:
     path: Path
     sha: str
     batch: _BatchReader
+    _exec: frozenset[str] | None = None
 
     def read(self, relpath: str) -> bytes | None:
         return self.batch.read(relpath)
@@ -400,6 +401,14 @@ class BaselineSource:
     def read_at(self, commit: str, relpath: str) -> bytes | None:
         """`relpath` at another commit of the same object store; None when absent or unreadable."""
         return self.batch.read(relpath, commit)
+
+    def exec_relpaths(self) -> frozenset[str]:
+        """Template relpaths the pinned commit stores as 100755."""
+        if self._exec is None:
+            out = _git(self.path, ["ls-tree", "-r", "-z", self.sha, "--", "template"], check=False).stdout
+            entries = (e.decode("utf-8", errors="replace").split("\t", 1) for e in out.split(b"\0") if e)
+            self._exec = frozenset(path[len("template/"):] for meta, path in entries if meta.startswith("100755"))
+        return self._exec
 
     def close(self) -> None:
         self.batch.close()
@@ -891,6 +900,17 @@ def _pull_targets(root: Path, lock: dict, baseline: BaselineSource,
     return targets
 
 
+def _ignored_untracked(root: Path, relpaths: list[str]) -> list[str]:
+    """The paths a `.gitignore` rule hides from `git add` and the index does not already hold."""
+    found: set[str] = set()
+    for start in range(0, len(relpaths), 200):
+        chunk = relpaths[start:start + 200]
+        result = _git(root, ["check-ignore", "--", *chunk], check=False)
+        if result.returncode == 0:
+            found.update(_lf(result.stdout).decode("utf-8", errors="replace").splitlines())
+    return [relpath for relpath in relpaths if relpath in found]
+
+
 def cmd_pull(root: Path, lock: dict, baseline: BaselineSource,
              relpaths: list[str], layers: list[str]) -> None:
     targets = _pull_targets(root, lock, baseline, relpaths, layers)
@@ -1375,6 +1395,50 @@ def _strict_findings(root: Path, source: BaselineSource, lock: dict,
     return findings
 
 
+_TOOL_RELPATH = re.compile(r"\.claude/(hooks|tools|scripts)/(lib/)?[^/_][^/]*\.(py|sh|ps1|js|mjs)$")
+
+
+def _harness_tests():
+    scripts = str(_TOOLS_DIR.parent / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import harness_tests
+    return harness_tests
+
+
+def _bound_proofs(root: Path, files: dict, tools: list[str]) -> dict[str, list[str]]:
+    """Each tool's proof rows bound by name or importer, never by a mention, whatever their status."""
+    ht = _harness_tests()
+    return {tool: [rel for rel in ht.shipped_proofs(str(root), tool) if rel in files and rel.count("/") == 2]
+            for tool in tools}
+
+
+def unproven_tools(root: Path, files: dict, candidates: list[str]) -> list[str]:
+    """The shipped (tracked or forked) tool rows among `candidates` with no shipped proof bound to them."""
+    tools = [rel for rel in candidates
+             if _TOOL_RELPATH.search(rel) and rel in files and _entry_status(files[rel]) in ("tracked", "forked")]
+    bound = _bound_proofs(root, files, tools)
+    return [tool for tool in tools
+            if not any(_entry_status(files[proof]) in ("tracked", "forked") for proof in bound[tool])]
+
+
+def _refuse_unproven_new_tool(root: Path, files: dict, relpath: str, shas: dict[str, str | None],
+                              pushing: dict[str, str], commit: str | None) -> None:
+    """A new tool row publishes with a proof: one that ships, or one judged push at its current sha."""
+    bound = _bound_proofs(root, files, [relpath])[relpath]
+    unread = [proof for proof in bound if proof not in shas]
+    if unread:
+        shas.update(_commit_shas(root, commit, unread) if commit else _content_shas(root, unread))
+    for proof in bound:
+        judged = files[proof].get("judged") or {}
+        if (_entry_status(files[proof]) in ("tracked", "forked") or proof in pushing
+                or (judged.get("verdict") == "push" and judged.get("sha") == shas.get(proof))):
+            return
+    raise BaselineError(
+        f"new tool has no shipped proof: {relpath}; judge push, in this call, a proof named "
+        f"test_{os.path.splitext(relpath.rsplit('/', 1)[1])[0]}* with it")
+
+
 def layer_closure_findings(root: Path, lock: dict, source: BaselineSource | Path) -> list[str]:
     """Each tracked row's citation of a file its consumers lack: the fetched manifest overlaid by this
     project's shipped rows, the view publish's `audit_baseline.py` closure step refuses."""
@@ -1391,6 +1455,8 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
     findings =_strict_findings(root, source, lock, results) if strict or not as_json else []
     findings = list(findings) + [(rel, "unimported-layer-file") for rel in unimported]
     findings += [(line, "layer-closure") for line in closure]
+    unproven = unproven_tools(root, lock.get("files", {}), list(results)) if strict or not as_json else []
+    findings += [(rel, "unproven") for rel in unproven]
     if as_json:
         payload = {
             "baseline_commit": baseline_commit(source),
@@ -1402,6 +1468,8 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             payload["unimported_layer_files"] = unimported
         if closure:
             payload["layer_closure"] = closure
+        if unproven:
+            payload["unproven"] = unproven
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         buckets: dict[str, list[str]] = {}
@@ -1428,6 +1496,8 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             print("layer-closure (a tracked row cites a file its consumers lack; publish refuses it):")
             for line in closure:
                 print("  " + line)
+        for relpath in unproven:
+            print("unproven: " + relpath)
         print("\nclean" if not residual and not findings else "\nfindings")
         if set(layers) != set(FULL_LAYERS):
             print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")
@@ -1641,6 +1711,166 @@ def _commit_blob(root: Path, commit: str, relpath: str) -> bytes | None:
     return blobs[0] if blobs else None
 
 
+_DEPENDENCY_MEANING = {
+    "local": "it never ships, so consumers lack it",
+    "watch": "it never ships, so consumers lack it",
+    "local-modified": "it differs from the baseline copy, so consumers get older bytes",
+    "unpublished": "the baseline lacks it, so consumers lack it",
+}
+
+
+def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None, lock: dict,
+                                   source: BaselineSource | None, pushing: set[str],
+                                   commit: str | None) -> None:
+    """A row publishes with what it imports and cites: each dependency that is a lock row is in sync
+    with the baseline, judged push at its current sha (here or in this call), forked, or a `local` row
+    the baseline ships (a seed): a forked or shipped-local dependency reaches every consumer as the
+    baseline's copy."""
+    files = lock.get("files", {})
+    text = data.decode("utf-8", errors="replace") if data is not None else None
+    layers = None
+    shipped: dict[str, dict] = {}
+    if source is not None:
+        shipped = _manifest_items_v2(source)
+        layers = layer_closure.consumer_layers(lock, {"files": list(shipped.values())})
+        layers.setdefault(relpath, (files.get(relpath) or {}).get("layer") or "pure")
+    try:
+        deps = [dep for dep in layer_closure.row_dependencies(root, relpath, layers, text) if dep in files]
+    except (OSError, ValueError) as exc:
+        print(f"dependency check skipped for {relpath}: {exc}", file=sys.stderr)
+        return
+    states = {}
+    for dep in deps:
+        if dep in pushing:
+            continue
+        entry = files[dep]
+        state = _v2_state(root, source, lock, dep, entry) if source is not None else _entry_status(entry)
+        if state in ("in-sync", "in-sync-lock-stale", "forked") or (state == "local" and dep in shipped):
+            continue
+        judged = entry.get("judged") or {}
+        current = (_commit_shas(root, commit, [dep]) if commit else _content_shas(root, [dep])).get(dep)
+        if judged.get("verdict") == "push" and judged.get("sha") == current:
+            continue
+        states[dep] = state
+    if states:
+        lines = [f"  {dep}: {state}; {_DEPENDENCY_MEANING.get(state, 'it is not in sync with the baseline')}; "
+                 f"run `judge {dep} --verdict push`" for dep, state in states.items()]
+        raise BaselineError(f"{relpath} depends on rows consumers would not receive:\n" + "\n".join(lines))
+
+
+def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, profile: dict,
+                    subs: dict, source: BaselineSource | None, source_error: str | None,
+                    accept_hits: list[str] | None, lock: dict, pushing: set[str],
+                    commit: str | None = None) -> None:
+    hit = _classify_identity_hit(root, relpath, profile, data, subs)
+    if hit is not None and hit.id not in (accept_hits or []):
+        raise BaselineError(
+            f"identity scan hit in {relpath}:{hit.line} ({hit.token_kind}): {hit.excerpt}; "
+            f"fix the source, or pass --accept-hit {hit.id} for a legitimate generic use")
+    if entry.get("layer") not in FULL_LAYERS:
+        if source is None:
+            raise BaselineError(f"row has no layer and the baseline cannot be read to see "
+                                f"whether it ships: {relpath} ({source_error})")
+        if _upstream_sha(source, relpath, subs) is None:
+            raise BaselineError(
+                f"new row has no layer and publish refuses it; record one first: "
+                f"classify {relpath} --status tracked --layer pure|coding|godot")
+    _refuse_unshipped_dependencies(root, relpath, data, lock, source, pushing, commit)
+
+
+def _carry_walk(root: Path, base: str, head: str, relpath: str,
+                start_sha: str | None) -> tuple[str | None, bytes | str | None, bytes | None]:
+    """(final sha, first carried commit's blob before it, final blob), or (None, reason, None)
+    where the reason is the `not carried` text. Walks first-parent commits oldest first."""
+    commits = _git_text(root, ["rev-list", "--reverse", "--first-parent", f"{base}..{head}"]).split()
+    cursor, first_before, final = start_sha, None, None
+    changed = False
+    for commit in commits:
+        pair = _cat_file_many(root, [f"{commit}^:{relpath}", f"{commit}:{relpath}"]) or [None, None]
+        before, after = pair
+        if before is None and after is not None:
+            return None, "added by the range", None
+        if before is not None and after is None:
+            return None, "deleted by the range", None
+        if before is None or after is None or content_sha(relpath, before) == content_sha(relpath, after):
+            continue
+        changed = True
+        if cursor is None or content_sha(relpath, before) != cursor:
+            return None, "chain broken", None
+        if first_before is None:
+            first_before = before
+        cursor, final = content_sha(relpath, after), after
+    if not changed:
+        return None, "unchanged by the range", None
+    return cursor, first_before, final
+
+
+def _diff_stat(before: bytes, after: bytes) -> tuple[int, int]:
+    added = removed = 0
+    for line in difflib.ndiff(before.decode("utf-8", errors="replace").splitlines(),
+                              after.decode("utf-8", errors="replace").splitlines()):
+        if line.startswith("+ "):
+            added += 1
+        elif line.startswith("- "):
+            removed += 1
+    return added, removed
+
+
+def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | None = None,
+             accept_hits: list[str] | None = None) -> int:
+    _validate_relpaths(relpaths)
+    base, head = carry.split("..", 1)
+    for rev in (base, head):
+        if _git(root, ["rev-parse", "--verify", "-q", rev + "^{commit}"], check=False).returncode != 0:
+            raise BaselineError(f"--carry names a revision git cannot read: {rev}")
+    source, source_error = _try_source(root, baseline_dir)
+    snapshots: dict[str, dict] = {}
+    report: list[str] = []
+
+    def apply(lock: dict):
+        snapshots["before"] = copy.deepcopy(lock)
+        report.clear()
+        files = lock.get("files", {})
+        subs = lock.get("substitutions", {})
+        profile = None
+        carried = []
+        carrying = {rel for rel in relpaths if (files.get(rel, {}).get("judged") or {}).get("verdict") == "push"}
+        for relpath in relpaths:
+            if relpath not in files:
+                raise BaselineError(f"not a row: {relpath}")
+            entry = files[relpath]
+            old = entry.get("judged") or {}
+            if old.get("verdict") != "push":
+                report.append(f"not carried: {relpath} (judged {old.get('verdict') or 'never'}, not push)")
+                continue
+            final_sha, first_before, final = _carry_walk(root, base, head, relpath, old.get("sha"))
+            if final_sha is None:
+                report.append(f"not carried: {relpath} ({first_before})")
+                continue
+            if profile is None:
+                profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
+            _push_preflight(root, relpath, entry, final, profile, subs, source, source_error, accept_hits,
+                            lock, carrying)
+            added, removed = _diff_stat(first_before, final)
+            report.append(f"carried: {relpath} (+{added} -{removed}) {old['sha'][:8]}..{final_sha[:8]}")
+            decision = _decision(root, relpath, "push", sha_value=final_sha)
+            decision["carried_from"] = old["sha"]
+            entry["judged"] = decision
+            carried.append(relpath)
+        snapshots["after"] = copy.deepcopy(lock)
+        return carried or NO_CHANGE
+
+    try:
+        mutate_lock(root, apply)
+        for line in report:
+            print(line)
+        _print_closure_delta(root, snapshots.get("before"), snapshots.get("after"), source, source_error)
+    finally:
+        if source is not None:
+            source.close()
+    return 0
+
+
 def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
               confirm: bool, force: bool, commit: str | None = None,
               baseline_dir: str | None = None, accept_hits: list[str] | None = None) -> int:
@@ -1668,6 +1898,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
             if old.get("sha") == current_sha and old.get("verdict") not in (None, verdict) and not force:
                 raise BaselineError(f"different verdict for the same content; use --force: {relpath}")
         subs = lock.get("substitutions", {})
+        pushing = {rel: current[rel] for rel in relpaths} if verdict == "push" else {}
         profile = None  # built on the first pushed row: it reads the pinned template tree
         changed = []
         for relpath, current_sha in decisions.items():
@@ -1692,19 +1923,11 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                 if profile is None:
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
                 data = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
-                hit = _classify_identity_hit(root, relpath, profile, data, subs)
-                if hit is not None and hit.id not in (accept_hits or []):
-                    raise BaselineError(
-                        f"identity scan hit in {relpath}:{hit.line} ({hit.token_kind}): {hit.excerpt}; "
-                        f"fix the source, or pass --accept-hit {hit.id} for a legitimate generic use")
-                if entry.get("layer") not in FULL_LAYERS:
-                    if source is None:
-                        raise BaselineError(f"row has no layer and the baseline cannot be read to see "
-                                            f"whether it ships: {relpath} ({source_error})")
-                    if _upstream_sha(source, relpath, subs) is None:
-                        raise BaselineError(
-                            f"new row has no layer and publish refuses it; record one first: "
-                            f"classify {relpath} --status tracked --layer pure|coding|godot")
+                _push_preflight(root, relpath, entry, data, profile, subs, source, source_error, accept_hits,
+                                lock, set(pushing), commit)
+                if (_TOOL_RELPATH.search(relpath) and source is not None
+                        and _upstream_sha(source, relpath, subs) is None):
+                    _refuse_unproven_new_tool(root, files, relpath, dict(current), pushing, commit)
             entry["judged"] = _decision(
                 root, relpath, verdict, sha_value=current_sha,
                 borderline=borderline, confirmed_at=confirmed_at,
@@ -1956,6 +2179,11 @@ def _merge3(local: str, base: str, upstream: str) -> tuple[str, int]:
     return result.stdout.decode("utf-8", errors="replace"), result.returncode
 
 
+def _apply_source_mode(root: Path, source: BaselineSource, relpath: str) -> None:
+    if relpath in source.exec_relpaths():
+        os.chmod(root / relpath, 0o755)
+
+
 def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
             merge: bool = False) -> int:
     _validate_relpaths(relpaths)
@@ -2058,6 +2286,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
             if action == "seed":
                 if upstream is not None:
                     _write_lf(root / relpath, upstream)
+                    _apply_source_mode(root, source, relpath)
                 else:
                     kept_seeds.append(relpath)
                 seeds.append(relpath)
@@ -2092,12 +2321,14 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                     conflicts.append((relpath, f"{hunks} hunks", copy_path))
                     continue
                 _write_lf(root / relpath, text)
+                _apply_source_mode(root, source, relpath)
                 files[relpath]["hash"] = sha(upstream.encode("utf-8"))
                 merged.append(relpath)
                 changed.append(relpath)
                 continue
             destination = root / relpath
             _write_lf(destination, upstream)
+            _apply_source_mode(root, source, relpath)
             upstream_hash = sha(upstream.encode("utf-8"))
             if action is None:
                 files[relpath] = {
@@ -2144,6 +2375,10 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 print(f"merged: {relpath}")
             else:
                 print(f"pulled: {relpath}")
+        written = [relpath for relpath in result
+                   if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
+        for relpath in _ignored_untracked(root, written):
+            print(f"ignored: {relpath} (add with git add -f)")
     for relpath in dict.fromkeys(unrowed_differs):
         print(f"skipped (local file differs, no lock row): {relpath}")
     for relpath, state in dict.fromkeys(held):
@@ -3015,8 +3250,21 @@ def _doctor_lane_agents(root: Path, lock: dict) -> dict:
     return _doctor_row(item, "ok", f"{len(names)} lane agent file(s) current with local rows")
 
 
+def _doctor_delivered_ignored(root: Path, lock: dict) -> dict:
+    delivered = sorted(relpath for relpath, entry in lock["files"].items()
+                       if entry.get("status") in ("tracked", "composed") and (root / relpath).is_file())
+    hidden = _ignored_untracked(root, delivered)
+    if not hidden:
+        return _doctor_row("delivered-ignored", "ok", "every delivered file a .gitignore rule matches is tracked")
+    return _doctor_row("delivered-ignored", "fail",
+                       f"{len(hidden)} delivered file(s) are untracked and ignored, so a commit drops them: "
+                       + ", ".join(hidden),
+                       "git add -f " + " ".join(hidden))
+
+
 def doctor_rows(root: Path, lock: dict) -> list[dict]:
     return [_doctor_substitutions(lock), _doctor_seeds(root, lock), *_doctor_git(root),
+            _doctor_delivered_ignored(root, lock),
             _doctor_worklog(root, lock),
             _doctor_script(root, "user-scope", "user_scope.py", ["check", "--repo", str(root)],
                            "user_scope.py check is green"),
@@ -3091,8 +3339,18 @@ def _validate_cli_usage(args) -> list[str] | None:
         raise UsageError("classify requires --status")
     if args.status is not None and args.op == "classify" and args.status not in V2_STATUSES:
         raise UsageError("--status must be tracked, local, forked or composed")
-    if args.op == "judge" and not args.verdict:
-        raise UsageError("judge requires --verdict")
+    if args.carry is not None:
+        if args.op != "judge":
+            raise UsageError("--carry is only valid with judge")
+        for flag, given in (("--verdict", args.verdict), ("--commit", args.commit),
+                            ("--borderline", args.borderline), ("--confirm", args.confirm)):
+            if given:
+                raise UsageError(f"--carry cannot be combined with {flag}")
+        parts = args.carry.split("..")
+        if len(parts) != 2 or not parts[0] or not parts[1] or parts[1].startswith("."):
+            raise UsageError("--carry must be <base>..<head>")
+    elif args.op == "judge" and not args.verdict:
+        raise UsageError("judge requires --verdict or --carry")
     if args.verdict is not None and args.op == "judge" and args.verdict not in VERDICTS:
         raise UsageError("--verdict must be push, keep-local or fork")
     if args.layer is not None:
@@ -3236,6 +3494,7 @@ def main(argv=None) -> int:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--judged-since")
     ap.add_argument("--commit")
+    ap.add_argument("--carry", metavar="BASE..HEAD")
     ap.add_argument("--repo")
     ap.add_argument("--ref", default="main")
     ap.add_argument("--sub", action="append", default=[], metavar="PLACEHOLDER=VALUE")
@@ -3243,7 +3502,7 @@ def main(argv=None) -> int:
     ap.add_argument("--abbrev", action="append", default=[])
     ap.add_argument("--project")
     try:
-        args = ap.parse_args(argv)
+        args = ap.parse_intermixed_args(argv)
         inputs = _validate_cli_usage(args)
         if args.op == "upgrade":
             if not args.project or args.relpaths:
@@ -3300,6 +3559,8 @@ def main(argv=None) -> int:
                                 args.force, args.baseline_dir, args.layer, args.relayer)
         if args.op == "ignore":
             return v2_classify(root, args.relpaths, "local", None, None, args.force, args.baseline_dir)
+        if args.op == "judge" and args.carry:
+            return v2_carry(root, args.relpaths, args.carry, args.baseline_dir, args.accept_hit)
         if args.op == "judge":
             return v2_judge(root, args.relpaths, args.verdict, args.borderline, args.confirm, args.force,
                             args.commit, args.baseline_dir, args.accept_hit)

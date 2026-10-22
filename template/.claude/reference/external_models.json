@@ -6,7 +6,6 @@
   "transports": {
     "deepseek": {
       "baseUrl": "https://api.deepseek.com/anthropic",
-      "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "DEEPSEEK_API_KEY",
       "capacityProbe": {
         "command": "python",
@@ -83,7 +82,6 @@
       "effortValues": ["low", "medium", "high", "xhigh", "max"],
       "_effortValuesNote": "Claude Code request vocabulary, not measured effective effort. Model-specific recommendations remain in the role ladder.",
       "launcher": ".claude/scripts/opencode_sidecar.sh",
-      "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "OPENCODE_API_KEY",
       "costModel": "marginal-usd",
       "capacityUnsupported": {
@@ -93,7 +91,6 @@
     },
     "go": {
       "baseUrl": "https://opencode.ai/zen/go/v1",
-      "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "OPENCODE_API_KEY",
       "costModel": "plan-quota",
       "launcher": ".claude/scripts/opencode_sidecar.sh",
@@ -155,9 +152,7 @@
       "configDir": "~/.claude-console-primary",
       "launcher": ".claude/scripts/anthropic_console_sidecar.sh",
       "costModel": "plan-quota",
-      "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "ANTHROPIC_CONSOLE_KEY_PRIMARY",
-      "credit": {"grantUSD": 200, "cycleStart": "2026-10-17", "cycleEnd": "2026-11-20"},
       "capacityProbe": {
         "command": "python",
         "args": [".claude/scripts/console_credit_probe.py"],
@@ -176,9 +171,7 @@
       "configDir": "~/.claude-console-secondary",
       "launcher": ".claude/scripts/anthropic_console_secondary_sidecar.sh",
       "costModel": "plan-quota",
-      "credentialFile": "~/.env.ai-worker.cmd",
       "credentialVar": "ANTHROPIC_CONSOLE_KEY_SECONDARY",
-      "credit": {"grantUSD": 100, "cycleStart": "2026-10-10", "cycleEnd": "2026-10-31"},
       "capacityProbe": {
         "command": "python",
         "args": [".claude/scripts/console_credit_probe.py"],
@@ -715,7 +708,7 @@
       "_rolesComment": "Orchestrator: owner ruling 2026-10-08; Opus 5.5 does orchestration well.",
       "effort": {
         "avoid": ["low", "max"],
-        "avoidRef": "`max` is confirmed wasteful on this row's family, and the ladder's effort cell cites the evidence; `low` has no pick: the cell starts every shape at `medium`, and checked low-thought work goes to haiku at `medium` for less.",
+        "avoidRef": "`max` is confirmed wasteful on this row's family; `low` has no pick: no shape in the cell starts at `low`, and checked low-thought work goes to haiku at `medium` for less.",
         "evidence": "see-ladder"
       },
       "price": {
@@ -782,7 +775,7 @@
       "_rolesComment": "fanout carries the family's claim; executor and architect are an owner-directed real-world trial (2026-09-28: 'For any further dispatches, use sonnet 5.5 as I would like some real world use'; 'Make sonnet review tier too (want to test that)') resting on the vendor's release evidence (https://www.anthropic.com/claude-sonnet-5-5). The vendor ranks it below Opus 5.5 on complex, open-ended judgment, so read each architect-tier return with that in mind. Re-judge all three from the trial's ratings and our battery cells.",
       "effort": {
         "avoid": ["low", "max"],
-        "avoidRef": "`max` is confirmed wasteful on this row's family; `low` has no pick haiku at `medium` does not take for less (validation, parity refactor, checked low-thought work); the ladder's effort cell cites the evidence.",
+        "avoidRef": "`max` is confirmed wasteful on this row's family; `low` has no pick: haiku at `medium` takes validation, parity refactor and other checked low-thought work for less.",
         "evidence": "see-ladder"
       },
       "price": {
@@ -835,7 +828,7 @@
       "id": "claude-haiku-5-5",
       "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000, "compactAtTokens": 217000},
       "_limitsSource": "Anthropic first-party, read 2026-10-07: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K, default effort medium)",
-      "_compactAtComment": "Owner-chosen operating point (2026-10-12: 'Ideally a literal 250k ctx window (to real usage around 220k)', so a 250000 client window that compacts at 217000 input; earlier 200K from 2026-10-07: 'I'm thinking 200/250k context compaction could be a good middle ground'). Native Workflow agents take no compaction option. A `claude -p --settings` launch carrying `modelSettings.claude-haiku-5-5.autoCompactWindow` reaches them; the same key in the user settings file did not compact the Workflow Haiku seats of an interactive session, which ran past 400K (auto-memory gotcha_native_workflow_agent_compaction), so the in-session route runs uncompacted until a run shows otherwise. Measured on Haiku max plan-review seats at this point (2026-10-14, H3, three runs): every seat compacted, re-read its subject after each compaction, and each run lost one seat; the runs cost 3-29% more and took about 3x longer than uncompacted seats, whose working sets reached 325K-547K. Basis reasoned: past the 100K price step a cached turn still costs about a quarter of a Sonnet 5.5 turn of the same size, while compacting at the step (about 95K usable, 20.6K of it the bare harness, 37.7K the full one; probe .claude/scratch/haiku55/out_probe*) would compact a long or ingesting job every few turns. Move it from measured jobs: sidecar records carry peakRequestTokens, cost and the job's rating; lower it if jobs past the step rate no better than jobs that stayed under it, raise it if compacted jobs rate worse. Battery evidence (plan review at `high`, about three runs per point, RESULTS-BOARD T11): compacting at 150K hurts under rail 3 (median 23.5) and less under rail 4 (41.2); at 100K no run completes; at 250K and 320K under rail 2 the medians are 44.1 and 52.9; rail 2 and rail 3 at the default window give 50 and 58.8; the plain pin gives 44.1 and 35.3. The shipped point (200K, rail 4) has no battery cell yet. Owner ruling 2026-10-14 (Q21, five runs: H3 r1/r3/r4 and A2b rail250/rail130, ledger Claude/Meta/Benchmark/ladder-ingest/plan-review-pin-ab-ledger.md): a job that must keep one subject resident (a review seat, a design, a plan, chained research; a benchmark cell of such a task) runs uncompacted on every route, with no autoCompactWindow (a `review` job by its shape, any other by SIDECAR_RESIDENT_SUBJECT=1); every measured compaction of such a seat cost more than it saved (a compaction at this point is itself a request past the price step, took 3-6 min, and the seat re-read its subject after it, with or without a results-ledger summary; at 130K the client's thrash detector ended 2 of 3 seats), while past the step a cached Haiku turn still costs about a quarter of a Sonnet turn. The point serves lanes of independent items, where a results ledger let an agent finish with no re-reads and nearly every request under the step (A2 probe). The route to the step for a review seat is a smaller working set per seat (one mandate), measured on the next real plan checks.",
+      "_compactAtComment": "Owner-chosen operating point (2026-10-12: 'Ideally a literal 250k ctx window (to real usage around 220k)', so a 250000 client window that compacts at 217000 input; earlier 200K from 2026-10-07: 'I'm thinking 200/250k context compaction could be a good middle ground'). Native Workflow agents take no compaction option. A `claude -p --settings` launch carrying `modelSettings.claude-haiku-5-5.autoCompactWindow` reaches them; the same key in the user settings file did not compact the Workflow Haiku seats of an interactive session, which ran past 400K (auto-memory gotcha_native_workflow_agent_compaction), so the in-session route runs uncompacted until a run shows otherwise. Measured on Haiku max plan-review seats at this point (2026-10-14, H3, three runs): every seat compacted, re-read its subject after each compaction, and each run lost one seat; the runs cost 3-29% more and took about 3x longer than uncompacted seats, whose working sets reached 325K-547K. Basis reasoned: past the 100K price step a cached turn still costs about a quarter of a Sonnet 5.5 turn of the same size, while compacting at the step (about 95K usable, 20.6K of it the bare harness, 37.7K the full one; probe .claude/scratch/haiku55/out_probe*) would compact a long or ingesting job every few turns. Move it from measured jobs: sidecar records carry peakRequestTokens, cost and the job's rating; lower it if jobs past the step rate no better than jobs that stayed under it, raise it if compacted jobs rate worse. Battery evidence (plan review at `high`, about three runs per point, RESULTS-BOARD T11): compacting at 150K hurts under rail 3 (median 23.5) and less under rail 4 (41.2); at 100K no run completes; at 250K and 320K under rail 2 the medians are 44.1 and 52.9; rail 2 and rail 3 at the default window give 50 and 58.8; the plain pin gives 44.1 and 35.3. The shipped point (200K, rail 4) has no battery cell yet. Owner ruling 2026-10-14 (Q21, five runs: H3 r1/r3/r4 and A2b rail250/rail130, ledger Claude/Meta/Benchmark/ladder-ingest/plan-review-pin-ab-ledger.md): a job that must keep one subject resident (a review seat, a design, a plan, chained research; a benchmark cell of such a task) never takes this point; it compacts at model_registry.RESIDENT_COMPACT_WINDOW, the logins' 500K default (owner 2026-10-21, Q2-O1: a failsafe for every model, with watch_records flagging a cycle), as an explicit autoCompactWindow (a `review` job by its shape, any other by SIDECAR_RESIDENT_SUBJECT=1); every measured compaction of such a seat cost more than it saved (a compaction at this point is itself a request past the price step, took 3-6 min, and the seat re-read its subject after it, with or without a results-ledger summary; at 130K the client's thrash detector ended 2 of 3 seats), while past the step a cached Haiku turn still costs about a quarter of a Sonnet turn. The point serves lanes of independent items, where a results ledger let an agent finish with no re-reads and nearly every request under the step (A2 probe). The route to the step for a review seat is a smaller working set per seat (one mandate), measured on the next real plan checks.",
       "railTier": "detailed",
       "railTierEvidence": {"evidence": "unmeasured"},
       "_railTierComment": "Carried from the claude-haiku-4-5-20251001 row, the tier Haiku delegates ran on before this row existed.",

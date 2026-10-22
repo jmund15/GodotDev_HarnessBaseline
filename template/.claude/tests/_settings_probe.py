@@ -1,13 +1,13 @@
 """Resolve the settings a proof should assert against, in a consumer OR in the template.
 
 A consumer carries a composed `.claude/settings.json`. The baseline template carries only
-`settings.base.json`, the layers' `settings.<layer>.json` overlays and `settings.project.json`, and composes at install time (S8), so a proof that
+`settings.base.json`, the layers' `settings.<layer>.json` overlays and `settings.project.json`, and composes at install time, so a proof that
 opens `settings.json` directly cannot run upstream -- it fails with FileNotFoundError inside the
 publication's battery, which is how eleven proofs went red the first time this project published
 them.
 
 `settings_path(claude_dir)` returns the composed file when one exists, and otherwise composes the
-base and project layers into a temp file and returns that. The temp file lives for the process, so
+base, overlay and project layers into a temp file and returns that. The temp file lives for the process, so
 a caller may hand the path to a subprocess.
 """
 import json

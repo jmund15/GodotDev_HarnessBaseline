@@ -454,19 +454,25 @@ class Subject:
         rev = snap.get("head") if snap["kind"] == "blobs" else snap.get("base")
         return bool(rev) and _ledger().blob_at(self.root, rev, rel) is not None
 
-    def hits(self, cited):
-        """The subject files a cited path names: an exact path first, else a relative citation as a path suffix.
-        An absolute citation names a file only when it is that file. Case-insensitive on every OS, as
-        review_fanout.js routedTo; tests/fold_routing_vectors.json holds both."""
+    def exact_hits(self, cited):
+        """The subject files a cited path names exactly. An absolute citation names a file only when it is that
+        file. Case-insensitive on every OS, as review_fanout.js routedTo; tests/fold_routing_vectors.json holds both."""
         text = _slash(_cited(cited))
         if not text:
             return []
         if Path(text).is_absolute():
             return [item for item in self.files if path_key(item, self.root).lower() == path_key(text).lower()]
         wanted = _key(text)
-        exact = [item for item in self.files if _key(item) == wanted]
-        if exact:
+        return [item for item in self.files if _key(item) == wanted]
+
+    def hits(self, cited):
+        """The subject files a cited path names: an exact path first, else a relative citation as a path suffix.
+        `route` asks every subject for an exact hit before any suffix hit."""
+        exact = self.exact_hits(cited)
+        text = _slash(_cited(cited))
+        if exact or not text or Path(text).is_absolute():
             return exact
+        wanted = _key(text)
         return [item for item in self.files if ("/" + _key(item)).endswith("/" + wanted)]
 
     def file_of(self, row):
@@ -612,6 +618,15 @@ def workflow_jobs(run_dir, required=True):
     return jobs
 
 
+_SOURCES = ("finding", "adapted", "fold", "ruling")
+
+
+def _source_of(entry):
+    """The applied entry's source; a missing or unknown value is the finding's own fix."""
+    source = entry.get("source")
+    return source if source in _SOURCES else "finding"
+
+
 def _sources(row):
     merged = row.get("merged_from")
     if isinstance(merged, list) and merged and all(isinstance(i, str) and i for i in merged):
@@ -630,8 +645,11 @@ def route(rows, subjects):
             else:
                 unrouted.append(row["id"])
             continue
-        hits = [i for i, subject in enumerate(subjects) if subject.hits(row["file"])]
-        if len(hits) == 1 and len(subjects[hits[0]].hits(row["file"])) == 1:
+        found = [subject.exact_hits(row["file"]) for subject in subjects]
+        if not any(found):
+            found = [subject.hits(row["file"]) for subject in subjects]
+        hits = [i for i, files in enumerate(found) if files]
+        if len(hits) == 1 and len(found[hits[0]]) == 1:
             routed[row["id"]] = hits[0]
         elif hits:
             ambiguous.append(row["id"])
@@ -760,7 +778,7 @@ def check_job(job, rows, independent, failures):
     entries = {}
     for entry in digest["applied"]:
         entries.setdefault(entry["id"], entry)
-    sources = {i: entries[i].get("source") or "finding" for i in applied}
+    sources = {i: _source_of(entries[i]) for i in applied}
     for i in applied:
         row = by_id[i]
         held = hold_class(row)
@@ -1045,7 +1063,7 @@ def next_round(job, mine, failures):
     file_of = {i: subject.application_file(row, entries.get(i, {})) for i, row in by_id.items()}
     notest_code = {d.get("id") for d in applied if d.get("noTest")
                    and file_of.get(d.get("id")) and is_code_path(file_of[d["id"]])}
-    sources = {d.get("id"): d.get("source") or "finding" for d in applied}
+    sources = {d.get("id"): _source_of(d) for d in applied}
     sources.update({i: "adapted" for i in reworded})
     fold_units = {i for i, source in sources.items() if source in ("fold", "ruling")} | reworded
     units = sorted((fold_units | notest_code | failed) & ids)

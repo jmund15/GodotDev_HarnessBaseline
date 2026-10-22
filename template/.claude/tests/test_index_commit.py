@@ -310,6 +310,35 @@ def case_peer_and_resync(tmp):
           and not (root / ".git" / "index-resync.paths.json").exists())
 
 
+def case_changed_row_travels_with_its_path(tmp):
+    """A committed path's existing row that changed in the working lock (a pull's new hash) is committed and kept."""
+    root, env = scene(tmp, "rowchange")
+    work = json.loads((root / LOCK).read_text(encoding="utf-8"))
+    pulled = dict(work["files"]["keep_a.py"], hash="a" * 64)
+    work["files"]["keep_a.py"] = pulled
+    work["files"]["keep_b.py"] = dict(work["files"]["keep_b.py"], hash="b" * 64)
+    (root / LOCK).write_text(json.dumps(work, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / "keep_a.py").write_text("pulled\n", encoding="utf-8", newline="\n")
+    proc = tool(root, env, ["stage", "--name", "rowchange", "--", "keep_a.py"])
+    check("row-change scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
+    if proc.returncode != 0:
+        return
+    private = lock_at(root, "", idx_env(env, root, "rowchange"))["files"]
+    check("the committed path's changed row is in the lock blob", private.get("keep_a.py") == pulled,
+          private.get("keep_a.py"))
+    check("an unnamed path's changed row stays out of the lock blob",
+          private.get("keep_b.py", {}).get("hash") != "b" * 64, private.get("keep_b.py"))
+    commit = commit_index(root, env, "rowchange", "pull")
+    check("row-change scene: the private-index commit lands", commit.returncode == 0, commit.stderr)
+    res = tool(root, env, ["resync", "--name", "rowchange"])
+    check("row-change scene: resync exits 0", res.returncode == 0, res.stdout + res.stderr)
+    after = json.loads((root / LOCK).read_text(encoding="utf-8"))["files"]
+    check("resync keeps the committed row change in the working lock", after.get("keep_a.py") == pulled,
+          after.get("keep_a.py"))
+    check("resync keeps the unnamed row change in the working lock",
+          after.get("keep_b.py", {}).get("hash") == "b" * 64, after.get("keep_b.py"))
+
+
 def case_peer_staged_same_path(tmp):
     """The peer staged its own content of a path this commit carries through --blob."""
     root, env = scene(tmp, "samepath")
@@ -678,7 +707,7 @@ def main():
         return 1
     with tempfile.TemporaryDirectory(prefix="index_commit_proof_") as tmp:
         for case in (case_new_gitignored_file, case_deleted_path, case_forget_row_of_earlier_deletion,
-                     case_lock_path_refused, case_peer_and_resync,
+                     case_lock_path_refused, case_peer_and_resync, case_changed_row_travels_with_its_path,
                      case_peer_staged_same_path, case_head_moved, case_seeded_from_recorded_base, case_head_moved_lock_rows,
                      case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
                      case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,

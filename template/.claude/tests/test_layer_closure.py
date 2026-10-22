@@ -64,11 +64,39 @@ def worktree_pinned_manifest():
             git(main, "worktree", "remove", "--force", str(tree))
 
 
+def dependencies(files, layers, relpath):
+    """`row_dependencies(root, relpath)` over a planted tree whose lock ships `layers`."""
+    with tempfile.TemporaryDirectory() as root:
+        for rel, text in files.items():
+            path = Path(root, rel)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        lock = {"files": {rel: {"status": "tracked", "layer": layer} for rel, layer in layers.items()}}
+        Path(root, ".claude", "baseline.lock.json").parent.mkdir(parents=True, exist_ok=True)
+        Path(root, ".claude", "baseline.lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        return lc.row_dependencies(Path(root), relpath)
+
+
 def kinds(findings):
     return sorted((f.source, f.kind, f.target) for f in findings)
 
 
 def main():
+    row, helper, fenced = ".claude/tools/row.py", ".claude/tools/helper.py", ".claude/tools/fenced.py"
+    got = dependencies({row: "import helper\nimport json\n", helper: "x = 1\n"},
+                       {row: "pure", helper: "pure"}, row)
+    check("row_dependencies returns the shipped module a python row imports", got == [helper], got)
+    got = dependencies({row: "import helper\n", helper: "x = 1\n"}, {row: "pure"}, row)
+    check("row_dependencies returns an imported module no layer ships", got == [helper], got)
+    got = dependencies({row: "import json, os\n"}, {row: "pure"}, row)
+    check("row_dependencies is empty for stdlib-only imports", got == [], got)
+    doc_row = ".claude/commands/runs.md"
+    got = dependencies({doc_row: "Run:\n```\npython3 \"$CLAUDE_PROJECT_DIR/.claude/tools/fenced.py\"\n```\n",
+                        fenced: "x = 1\n"}, {doc_row: "pure", fenced: "pure"}, doc_row)
+    check("row_dependencies returns the path a fenced doc block cites", got == [fenced], got)
+    got = dependencies({}, {row: "pure"}, row)
+    check("row_dependencies is empty for a row with no file", got == [], got)
+
     skill = ".claude/skills/testing/SKILL.md"
     cmd = ".claude/commands/regression_gate.md"
     base = {skill: "# t\n", cmd: "# g\n"}
@@ -158,6 +186,9 @@ def main():
 
     got = planted({doc: "Writes `logs/pre_compact.json` and `baseline.lock.json`.\n"}, {doc: "pure"})
     check("generated runtime state is exempt", got == [], kinds(got))
+    got = planted({doc: "Record it in `tools/load_census.project.json` or `index_composition_baseline.json`.\n"},
+                  {doc: "pure"})
+    check("a project data file a harness step writes is exempt", got == [], kinds(got))
     writer = ".claude/tools/writer.py"
     got = planted({writer: 'OUT = "families.md"\n'}, {writer: "pure"}, extra=(".claude/generated/families.md",))
     check("a bare data literal whose only local match is generated output is exempt", got == [], kinds(got))
@@ -223,6 +254,33 @@ def main():
                   {sh: "pure", guard: "godot"})
     check("a script executing a higher-layer file fails",
           kinds(got) == [(sh, "needs-godot", ".claude/hooks/tres_guard.py")], kinds(got))
+
+    x_hook = ".claude/hooks/x.py"
+    got = planted({doc: '```\npython3 "$CLAUDE_PROJECT_DIR/.claude/hooks/x.py"\n```\n', x_hook: "x = 1\n"},
+                  {doc: "pure", x_hook: "godot"})
+    check("a fenced $CLAUDE_PROJECT_DIR/.claude path to a higher-layer file fails",
+          kinds(got) == [(doc, "needs-godot", x_hook)], kinds(got))
+
+    got = planted({doc: "```\n$ROOT/.claude/hooks/x.py\n```\n", x_hook: "x = 1\n"}, {doc: "pure", x_hook: "godot"})
+    check("a fenced $ROOT/.claude path to a higher-layer file fails",
+          kinds(got) == [(doc, "needs-godot", x_hook)], kinds(got))
+
+    got = planted({doc: "Run `python3 $CLAUDE_PROJECT_DIR/.claude/hooks/x.py` first.\n", x_hook: "x = 1\n"},
+                  {doc: "pure", x_hook: "godot"})
+    check("an inline $CLAUDE_PROJECT_DIR/.claude span to a higher-layer file fails",
+          kinds(got) == [(doc, "needs-godot", x_hook)], kinds(got))
+
+    got = planted({doc: '```\npython3 "$CLAUDE_PROJECT_DIR/.claude/hooks/x.py"\n```\n', x_hook: "x = 1\n"},
+                  {doc: "pure", x_hook: "pure"})
+    check("a fenced path in the doc's own layer closes", got == [], kinds(got))
+
+    got = planted({doc: '```\npython3 "$HOME/.claude/hooks/x.py"\n```\n', x_hook: "x = 1\n"},
+                  {doc: "pure", x_hook: "godot"})
+    check("a fenced $HOME path is not a project reference", got == [], kinds(got))
+
+    got = planted({doc: '```\npython3 "$ROOT/tools/x.py"\n```\n', x_hook: "x = 1\n"},
+                  {doc: "pure", x_hook: "godot"})
+    check("a fenced path outside .claude/ is not a reference", got == [], kinds(got))
 
     registry = ".claude/tools/lens_registry.py"
     agents = ".claude/commands/agents/scene_agents.md"

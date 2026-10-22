@@ -800,6 +800,26 @@ def main():
           "review: every TABS entry appears in eval_dashboard.md, which names nine tabs and a Review calibration section",
           repr(eval_dashboard.TABS))
 
+    effort_rows = [
+        {"model": "fixture-a", "tier": "executor", "effort": "high", "outcome": "clean", "effort_fit": "under"},
+        {"model": "fixture-a", "tier": "executor", "effort": "high", "outcome": "defects", "effort_fit": "fit"},
+        {"model": "fixture-a", "tier": "executor", "effort": "high", "outcome": "clean", "effort_fit": "over"},
+        {"model": "fixture-a", "tier": "executor", "effort": "high", "outcome": "clean"},
+        {"model": "fixture-b", "shape": "right", "effort": "low", "outcome": "clean", "effort_fit": "fit"},
+        {"model": "fixture-a", "effort": "low", "outcome": "unrated"},
+    ]
+    groups, missing = eval_dashboard.effort_fit_rollup(effort_rows)
+    check(groups == {("fixture-a", "executor", "high"): {"under": 1, "over": 1}} and missing == 3,
+          "effort fit: groups by (model, tier or shape, effort), counts each miss, and counts rated rows with none "
+          "(a legacy fit value included)",
+          repr((groups, missing)))
+    lines = eval_dashboard.effort_fit_lines(effort_rows)
+    check(any("fixture-a" in l and "executor" in l and "high" in l and "1" in l for l in lines)
+          and not any("fixture-b" in l for l in lines)
+          and any("no effort miss: 3" in l for l in lines),
+          "effort fit: the printed lines name each group and the rated rows with no effort miss",
+          "\n".join(lines))
+
     total = len(ran)
     print("\n%d/%d cases pass" % (total - len(failures), total))
     for line in failures:

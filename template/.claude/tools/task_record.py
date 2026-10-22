@@ -35,7 +35,8 @@ refuses the write and prints its replacement; legacy reproduction commands are n
     task_record.py open <task_id> --session <sid> --title <t>
     task_record.py set <task_id> [--phase P] [--next N] [--owner O] [--files PATH ...] [--rigor light|normal|thorough]
     task_record.py add <task_id> requirement|exclusion|decision|artifact "<text>" [--evidence P ...]
-    task_record.py add <task_id> decision "<text>" --evidence-item '<json>' [--evidence-item '<json>' ...]
+    task_record.py add <task_id> decision "<text>" --evidence-item '<json>' [--evidence-item '<json>' ...] [--supersedes <Dn> ...]
+    task_record.py supersede <task_id> <Dn> --by <Dm>
     task_record.py job <task_id> --run RID --label L --source workflow|sidecar|session --state S
                        [--role architect|drafter|transcriber|executor|fold] [--subject PATH]... [--input PATH]...
     task_record.py slice <task_id> --id S --state pending|in_progress|completed
@@ -310,10 +311,36 @@ def _evidence_detail(verdict):
                      for item in verdict["items"] if item["verdict"] != "VERIFIED")
 
 
-def add_item(task_id, kind, text, evidence=None, reproduction=None, evidence_items=None):
+def _archive_superseded(state, task_id, old_id, by):
+    """Move live decision `old_id` to `archived`, marked with the decision that replaces it."""
+    live = state.setdefault("decisions", [])
+    old = next((d for d in live if d.get("id") == old_id), None)
+    if old is None:
+        raise KeyError("%s names no live decision in %s" % (old_id, task_id))
+    live.remove(old)
+    state.setdefault("archived", []).append(dict(old, supersededBy=by))
+
+
+def supersede(task_id, old_id, by):
+    """Archive an existing decision under a live replacement recorded before it."""
+    def mutation(state):
+        _require(state, task_id)
+        if old_id == by:
+            raise KeyError("%s cannot supersede itself in %s" % (by, task_id))
+        if not any(d.get("id") == by for d in state.get("decisions", [])):
+            raise KeyError("%s names no live decision in %s" % (by, task_id))
+        _archive_superseded(state, task_id, old_id, by)
+        return {"archived": old_id, "supersededBy": by}
+
+    return _mutate(task_id, mutation)
+
+
+def add_item(task_id, kind, text, evidence=None, reproduction=None, evidence_items=None, supersedes=None):
     field = ITEM_KINDS[kind]
     if reproduction is not None:
         raise EvidenceRefused(REPRODUCTION_REPLACEMENT)
+    if supersedes and kind != "decision":
+        raise EvidenceRefused("--supersedes is only for a decision")
     context = None
     if evidence_items is not None:
         if kind != "decision":
@@ -333,6 +360,8 @@ def add_item(task_id, kind, text, evidence=None, reproduction=None, evidence_ite
                    "at": now()}
             if context is not None:
                 row.update(context)
+            for old_id in supersedes or []:
+                _archive_superseded(state, task_id, old_id, row["id"])
             state.setdefault("decisions", []).append(row)
             return row
         state.setdefault(field, []).append(text)
@@ -791,7 +820,10 @@ def main(argv=None):
     p = sub.add_parser("add"); p.add_argument("task_id"); p.add_argument("kind", choices=sorted(ITEM_KINDS))
     p.add_argument("text"); p.add_argument("--evidence", nargs="*")
     p.add_argument("--evidence-item", action="append", help="decision evidence JSON; repeat for each item")
+    p.add_argument("--supersedes", action="append", help="a live decision id this decision replaces; it moves to the archive")
     p.add_argument("--reproduction", help=argparse.SUPPRESS)
+    p = sub.add_parser("supersede"); p.add_argument("task_id"); p.add_argument("old_id")
+    p.add_argument("--by", required=True, help="the live decision that replaces old_id")
     p = sub.add_parser("job"); p.add_argument("task_id"); p.add_argument("--run", required=True)
     p.add_argument("--label", required=True); p.add_argument("--source", choices=("workflow", "sidecar", "session"), required=True)
     p.add_argument("--role", choices=JOB_ROLES)
@@ -825,6 +857,8 @@ def main(argv=None):
         elif a.cmd == "set":
             set_fields(a.task_id, phase=a.phase, next_action=a.next, owner=a.owner, files=a.files, rigor=a.rigor)
             print(json.dumps(load(a.task_id), indent=1))
+        elif a.cmd == "supersede":
+            print(json.dumps(supersede(a.task_id, a.old_id, a.by), indent=1))
         elif a.cmd == "add":
             if a.reproduction is not None:
                 raise EvidenceRefused(REPRODUCTION_REPLACEMENT)
@@ -833,7 +867,7 @@ def main(argv=None):
             except json.JSONDecodeError as exc:
                 raise EvidenceRefused("--evidence-item needs JSON: %s" % exc.msg)
             print(json.dumps(add_item(a.task_id, a.kind, a.text, a.evidence,
-                                      evidence_items=items), indent=1))
+                                      evidence_items=items, supersedes=a.supersedes), indent=1))
         elif a.cmd == "job":
             print(json.dumps(add_job(a.task_id, a.run, a.label, a.source, a.state, role=a.role,
                                      subject=a.subject, inputs=a.inputs), indent=1))

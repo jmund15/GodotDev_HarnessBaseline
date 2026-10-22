@@ -1,0 +1,32 @@
+{
+  "review_mandates": {
+    "cq.C": {"home": "commands/checklists/code_quality.md#Compliance (C)", "interaction": false},
+    "cq.D": {"home": "commands/checklists/code_quality.md#Design (D)", "interaction": false},
+    "cq.S": {"home": "commands/checklists/code_quality.md#Semantics (S)", "interaction": false},
+    "cq.R": {"home": "commands/checklists/code_quality.md#Robustness (R)", "interaction": false},
+    "cq.P": {"home": "commands/checklists/code_quality.md#Performance (P)", "interaction": false},
+    "cq.I": {"home": "commands/checklists/code_quality.md#Intuitiveness (I)", "interaction": false},
+    "tq": {"home": "commands/checklists/test_quality.md", "interaction": false},
+    "parity": {"home": "commands/checklists/parity.md", "interaction": false},
+    "api-consume": {"home": "commands/pr_ready.md#Step 1b", "interaction": true},
+    "worklog-roadmap": {"home": "commands/pr_ready.md#Step 1b", "interaction": false},
+    "doc-coverage": {"home": "commands/pr_ready.md#Step 1b", "interaction": false},
+    "architecture-sweep": {"home": "commands/agents/session_audit_agents.md#sa-architecture-sweep", "interaction": false},
+    "harness-quality": {"home": "commands/agents/session_audit_agents.md#sa-harness-quality", "interaction": false},
+    "holistic": {"home": "commands/agents/session_audit_agents.md#sa-holistic", "interaction": false},
+    "plc-memory-alignment": {"home": "commands/agents/plan_check_agents.md#plc-memory-alignment", "interaction": false},
+    "plc-pattern-fit": {"home": "commands/agents/plan_check_agents.md#plc-pattern-fit", "interaction": false},
+    "plc-test-readiness": {"home": "commands/agents/plan_check_agents.md#plc-test-readiness", "interaction": false},
+    "plc-architecture-quality": {"home": "commands/agents/plan_check_agents.md#plc-architecture-quality", "interaction": false},
+    "plc-evidence-grounding": {"home": "commands/agents/plan_check_agents.md#plc-evidence-grounding", "interaction": false},
+    "plc-instruction-quality": {"home": "commands/agents/plan_check_agents.md#plc-instruction-quality", "interaction": false},
+    "plc-doctrine-consistency": {"home": "commands/agents/plan_check_agents.md#plc-doctrine-consistency", "interaction": false},
+    "rt-systemic": {"home": "commands/agents/redteam_agents.md#rt-systemic", "interaction": false},
+    "rt-vision": {"home": "commands/agents/redteam_agents.md#rt-vision", "interaction": false},
+    "rt-boundary": {"home": "commands/agents/redteam_agents.md#rt-boundary", "interaction": false},
+    "rt-abstraction": {"home": "commands/agents/redteam_agents.md#rt-abstraction", "interaction": false},
+    "rt-failuremode": {"home": "commands/agents/redteam_agents.md#rt-failuremode", "interaction": false},
+    "rt-yagni-scope": {"home": "commands/agents/redteam_agents.md#rt-yagni-scope", "interaction": false},
+    "rt-testability": {"home": "commands/agents/redteam_agents.md#rt-testability", "interaction": false}
+  }
+}

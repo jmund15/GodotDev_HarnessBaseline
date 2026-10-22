@@ -222,6 +222,41 @@ def test_pull_that_changes_an_agent_input_renders_and_a_noop_pull_writes_nothing
         assert "wrote" not in T._out(again)
 
 
+def _ignored_consumer(path: Path, rows: dict[str, str], *, add_force: tuple[str, ...] = ()) -> Path:
+    root = _fixed_consumer(path)
+    T._write(root / ".gitignore", GITIGNORE_BLOCK.encode() + b".claude/tests/" + bytes([10]))
+    lock = T._load_lock(root)
+    for rel, status in rows.items():
+        T._write(root / rel, b"x" + bytes([10]))
+        lock["files"][rel] = {"status": status, "layer": "pure"}
+    T._write_json(root / ".claude" / "baseline.lock.json", lock)
+    for rel in add_force:
+        T._git(root, "add", "-f", rel)
+    return root
+
+
+def test_doctor_reports_an_untracked_ignored_delivered_row() -> None:
+    tracked = ".claude/tests/test_a.py"
+    composed = ".claude/tests/test_b.py"
+    with T._fixture() as path:
+        root = _ignored_consumer(path, {tracked: "tracked", composed: "composed"})
+        code, rows = _doctor(root)
+        row = rows["delivered-ignored"]
+        assert code != 0 and row["status"] == "fail", row
+        assert tracked in row["detail"] and composed in row["detail"], row
+        assert "git add -f" in row["fix"], row
+
+
+def test_doctor_allows_a_tracked_ignored_row_and_a_local_ignored_row() -> None:
+    delivered = ".claude/tests/test_a.py"
+    local = ".claude/tests/test_mine.py"
+    with T._fixture() as path:
+        root = _ignored_consumer(path, {delivered: "tracked", local: "local"}, add_force=(delivered,))
+        code, rows = _doctor(root)
+        assert rows["delivered-ignored"]["status"] == "ok", rows["delivered-ignored"]
+        assert code == 0, rows
+
+
 def main() -> int:
     return run_cases([
         test_doctor_reports_every_gap_of_a_planted_consumer,
@@ -232,6 +267,8 @@ def main() -> int:
         test_doctor_fails_a_block_that_lags_the_shipped_entries,
         test_init_and_pull_write_the_ignore_block_and_keep_project_lines,
         test_pull_keeps_this_proofs_planted_tokens,
+        test_doctor_reports_an_untracked_ignored_delivered_row,
+        test_doctor_allows_a_tracked_ignored_row_and_a_local_ignored_row,
         test_init_renders_lane_agents_with_local_rows,
         test_pull_that_changes_an_agent_input_renders_and_a_noop_pull_writes_nothing,
     ])

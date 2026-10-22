@@ -218,16 +218,28 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
       mandates: seat.mandates || [], mustRead: seat.mustRead || [],
     }]))
     if (new Set(seats.map(seat => seat.label)).size !== seats.length) throw new Error('duplicate launched seat label')
-    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(sys.argv[2] + "\\n", encoding="utf-8", newline="\\n")'
+    // The agent Bash route cuts a command near 8K characters mid-quote, so the seats file is written in parts.
+    const COMMAND_BUDGET = 6000
+    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); f=p.open(sys.argv[2], encoding="utf-8", newline=""); f.write(sys.argv[3]); f.close()'
+    const writes = []
+    for (let rest = JSON.stringify(launched); rest.length;) {
+      const prefix = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + (writes.length ? 'a' : 'w') + ' '
+      if ((prefix + "'{}'").length > COMMAND_BUDGET) throw new Error('verifier seats-file path leaves no room within the command budget')
+      let size = rest.length
+      while ((prefix + quoteArg(rest.slice(0, size))).length > COMMAND_BUDGET) size = Math.max(1, Math.floor(size * 0.9))
+      if (size < rest.length && /[\uD800-\uDBFF]/.test(rest[size - 1])) size -= 1
+      writes.push(prefix + quoteArg(rest.slice(0, size)))
+      rest = rest.slice(size)
+    }
     if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
     const printer = 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"status": r["status"], "counts": r["counts"], "verdicts": {k: v["verdict"] for k, v in r["verdicts"].items()}}))'
-    command = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + quoteArg(JSON.stringify(launched)) + ' && ' + command
-      + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
+    command = cdRootPrefix(A) + command + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
     log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
-    verification = await verifierAgent('Run exactly this command with Bash: ' + command
+    verification = await verifierAgent('Run each seats-file write below with Bash first, one call per line, in order:\n' + writes.join('\n')
+      + '\nRun exactly this command with Bash: ' + command
       + '\nIts last output line is one JSON object holding status, counts and verdicts, read from the --out file; it prints even when the check exits 1.'
       + ' Return ONLY {status, counts, verdicts, report, note}: copy status, counts and verdicts from that line unchanged. Set report to the --out path and nothing else; put any observation in note (optional).'
-      + ' Do not check evidence yourself, change permissions, or run another command.',
+      + ' Do not check evidence yourself, change permissions, or run any other command.',
     { label, phase: 'Verify', agentType: profile.agentType, model, effort, schema })
     if (!verification || !['pass', 'fail'].includes(verification.status) || !reportsOut(verification.report)
       || !verification.verdicts || !verification.counts
@@ -385,7 +397,7 @@ const BASE_CONTRACT = (a) => [
   CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout; your delegate rails name this project\'s) — use Grep/Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight'
     + (NO_SHELL_AGENT_TYPES.includes(effectiveType(a)) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file, not harness_tests.py (its machine slots are shared; rules/harness_tooling.md).')
     + ' If your mandate requires a single-flight run, STOP and report that it needs a serialized dispatch.' : null,
-  'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`, and each Read as `Read:<path>:<first>-<last>`, the lines it returned; a Read entry with no range counts as lines 1-' + READ_WINDOW + ', the Read tool\'s default window. `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Each `gaps` entry is `{"item": <the path you did not read>, "reason": "outside-lens" | "capability" | "missing"}`: another seat\'s lens owns the item, it needs a tool you lack (running code, a shell, the engine), or the path does not exist. A free-text gap, a gap naming an item outside your MUST-READ list, or any other reason fails this seat. Empty findings without positive checked provenance are UNCOVERED, not clean.',
+  'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`, and each Read as `Read:<path>:<first>-<last>`, the lines it returned; a Read entry with no range counts as lines 1-' + READ_WINDOW + ', the Read tool\'s default window. `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Each `gaps` entry is `{"item": <the path you did not read>, "reason": "outside-lens" | "capability" | "missing"}`: another seat\'s lens owns the item, it needs a tool you lack (running code, a shell, the engine), or the path does not exist. Only such a gap excuses a MUST-READ entry; state any other limit (a check you could not run, a file outside the list) in `checked.basis`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
   'MUST-READ: you are done only when your Read ranges in `checked.toolsUsed` together cover every line of each entry below, or a `gaps` item names the entry with a legal reason. Read a file past the default window in ranges. A shell read of the file counts whole; a search covers no line. An entry read only in part fails this seat whatever `checked.stoppedAt` says, and the panel does not re-run a failed seat. Entries: ' + (a.mustRead || []).map(entry => entry.path + ' (' + entry.lines + ' lines)').join(', '),
   mandateKeysOf(a).length > 0 ? 'MANDATES: `checked.mandates` maps each of ' + mandateKeysOf(a).join(', ') + ' to `findings`, `clean` or `not-reached`. Report `not-reached` for a mandate you did not read every changed file for; a missing or unknown key voids the map.' : null,
   'Evidence: ' + EVIDENCE_RULES,
@@ -750,18 +762,19 @@ const entrySpans = (entry, reads) => {
 const isGap = (gap, mustRead) => isRecord(gap) && Object.keys(gap).length === 2
   && typeof gap.item === 'string' && !!gap.item.trim() && GAP_REASONS.includes(gap.reason)
   && mustRead.some(entry => samePath(targetPath('Read:' + entry.path), targetPath('Read:' + gap.item)))
-// {legal, bad, unread, unreadText}: the gaps with a listed item and a closed reason, every other gap entry, the
-// paths of the must-read entries whose lines the `reads` ({path, spans}) do not cover and no legal gap names, and
-// each such path with the lines its seat did read.
+// {legal, notes, unread, unreadText}: the gaps with a listed item and a closed reason; every other gap entry, which
+// excuses nothing and is a note (every seat here has a must-read list); the paths of the must-read entries whose
+// lines the `reads` ({path, spans}) do not cover and no legal gap names; and each such path with the lines its seat
+// did read.
 const gapVerdict = (gaps, mustRead, reads) => {
   const legal = []
-  const bad = []
-  if (gaps !== undefined && !Array.isArray(gaps)) bad.push(gaps)
-  else for (const gap of (gaps || [])) (isGap(gap, mustRead) ? legal : bad).push(gap)
+  const notes = []
+  if (gaps !== undefined && !Array.isArray(gaps)) notes.push(gaps)
+  else for (const gap of (gaps || [])) (isGap(gap, mustRead) ? legal : notes).push(gap)
   const named = legal.map(gap => targetPath('Read:' + gap.item))
   const short = mustRead.filter(entry => !covers(entrySpans(entry, reads), entry.lines)
     && !named.some(n => samePath(targetPath('Read:' + entry.path), n)))
-  return { legal, bad, unread: short.map(entry => entry.path),
+  return { legal, notes, unread: short.map(entry => entry.path),
     unreadText: short.map(entry => entry.path + ' (read ' + spansText(entrySpans(entry, reads)) + ' of ' + entry.lines + ')') }
 }
 const isMandateMap = (value, keys) => isRecord(value) && keys.length > 0
@@ -866,11 +879,9 @@ for (let i = 0; i < resolved.length; i++) {
   const gapTexts = verdict.legal.map(gap => gap.item + ' (' + gap.reason + ')')
   for (const text of gapTexts) flags.push({ kind: 'lens-gaps', lens, detail: text })
   const capability = verdict.legal.filter(gap => gap.reason === 'capability').length
-  if (verdict.bad.length) {
-    flags.push({ kind: 'lens-invalid-gaps', lens, detail: verdict.bad.length + ' gap entr' + (verdict.bad.length === 1 ? 'y names' : 'ies name')
-      + ' no listed item with a legal reason (outside-lens, capability or missing), so this seat failed: '
-      + verdict.bad.map(gap => String(JSON.stringify(gap)).slice(0, 200)).join('; ') })
-  }
+  const gapNotes = verdict.notes.map(gap => isRecord(gap) && typeof gap.item === 'string'
+    ? gap.item + ' (' + (gap.reason === undefined ? 'no reason' : String(gap.reason).slice(0, 80)) + ')' : String(JSON.stringify(gap)).slice(0, 200))
+  for (const text of gapNotes) flags.push({ kind: 'lens-gap-notes', lens, detail: text })
   if (verdict.unread.length) {
     flags.push({ kind: 'lens-unread-must-read', lens, detail: 'must-read entries not read in full, with no legal gap: ' + verdict.unreadText.join(', ')
       + '; stoppedAt=' + (checked ? checked.stoppedAt : 'invalid') + ' does not excuse them. This seat failed: its coverage is uncovered, and the panel does not re-run it.' })
@@ -887,7 +898,7 @@ for (let i = 0; i < resolved.length; i++) {
     rowStatus = valid > 0 || (namedBlock && checked.toolsUsed.length > 0) ? 'partial' : 'uncovered'
     flags.push({ kind: 'lens-incomplete-coverage', lens, detail: 'stoppedAt=' + checked.stoppedAt + ' with ' + checked.toolsUsed.length + ' checked targets; this axis is not complete.' })
   }
-  if (verdict.bad.length || verdict.unread.length) rowStatus = 'failed'
+  if (verdict.unread.length) rowStatus = 'failed'
   // Capability-partial (computed here, the one home of this fact): a seat that did not fail, no rejected entry, valid provenance, a valid
   // mandate map, and a shortfall that is the seat's own limit: a capability gap, or a blocked stop its map names.
   // A map's `not-reached` key is that limit, not a disqualifier.
@@ -900,6 +911,7 @@ for (let i = 0; i < resolved.length; i++) {
     toolsUsed: checked ? checked.toolsUsed.length : null,
     gaps: gapTexts.length,
     gapTexts,
+    gapNotes,
     unread: verdict.unread,
     capabilityPartial,
     mandates: seatMandates(lens, rowStatus, valid, checked, map, capabilityPartial),
@@ -1188,7 +1200,7 @@ const foldSubject = async (job, jobFinal) => {
     'Prompt file: ' + FOLD_FILES.promptPath,
     'Write the CONSOLIDATED FINDINGS JSON array exactly to the Findings file. Run `' + cdRootPrefix(A) + 'python3 .claude/tools/verify_claims.py --findings ' + FOLD_FILES.findings + ' --out ' + FOLD_FILES.verdicts + '` and read the verdicts file (template steps 1 and 5).',
     'Read each cited source and decide whether it supports the finding (template step 3). A refuting finding with no evidence is deferred, never applied.',
-    'Apply each supported FIX edit and each PLAN\'s options[0]. Hold exactly the cases step 4 of the template lists and a finding whose evidence is not VERIFIED (`unverified`), and name the hold class in deferred.',
+    'Apply each supported FIX edit and each PLAN\'s options[0]. Hold exactly the cases steps 4 and 5 of the template list, and name the hold class in deferred.',
     '',
     findingsBlock,
   ].filter(l => l !== null).join('\n') + authorRef(job.label, FOLD_PIN.model, [
@@ -1239,10 +1251,9 @@ if (FOLD_PIN) {
         .filter(p => FOLD_PIN.repoRoot && routeKey(FOLD_PIN.repoRoot + '/' + job.subject.root + '/' + p) === absolute).map(() => job))
     }
     const file = routeKey(cited)
-    return FOLD_PIN.jobs.flatMap(job => {
-      const exact = job.subject.files.filter(p => routeKey(p) === file)
-      return (exact.length ? exact : job.subject.files.filter(p => ('/' + routeKey(p)).endsWith('/' + file))).map(() => job)
-    })
+    const exact = FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => routeKey(p) === file).map(() => job))
+    return exact.length ? exact
+      : FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => ('/' + routeKey(p)).endsWith('/' + file)).map(() => job))
   }
   const routes = final.map(f => ({ f, jobs: routedTo(f) }))
   // A relative citation no subject holds is a file the review read and the fold may not edit (a commit message, a task
@@ -1255,7 +1266,7 @@ if (FOLD_PIN) {
   if (unrouted.length || ambiguous.length) {
     const absolute = routes.some(r => r.jobs.length === 0 && /^([a-z]:)?\//i.test(String(r.f.file || '').trim().replace(/\\/g, '/')))
     const hint = absolute ? ' An absolute citation routes only when it is exactly <args.fold.repoRoot>/<subject root>/<file>' + (FOLD_PIN.repoRoot ? '.' : '; this call passed no args.fold.repoRoot.') : ''
-    flags.push({ kind: 'fold-routing', detail: 'every finding\'s file must be one file of exactly one subject (' + FOLD_PIN.jobs.map(j => j.subject.files.join('+')).join(', ') + '); no subject file: ' + (unrouted.join(', ') || '-') + '; several: ' + (ambiguous.join(', ') || '-') + '. Those findings were not folded.' + hint })
+    flags.push({ kind: 'fold-routing', detail: 'no subject file: ' + (unrouted.join(', ') || '-') + '; several: ' + (ambiguous.join(', ') || '-') + '. Those findings were not folded: every finding\'s file must be one file of exactly one subject (' + FOLD_PIN.jobs.map(j => j.subject.root + ': ' + j.subject.files.length + ' files').join(', ') + ').' + hint })
   }
   const jobFinal = (job) => routes.filter(r => r.jobs.length === 1 && r.jobs[0] === job).map(r => r.f)
   if (final.length > 0 && FOLD_PIN.jobs.some(job => jobFinal(job).length)) phase('Fold')

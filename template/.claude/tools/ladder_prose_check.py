@@ -184,6 +184,28 @@ def coverage_gaps(path, data=None):
     return out
 
 
+def avoided_efforts(path, data=None):
+    """(line, model, effort) per effort an effort cell names that every current registry row of its family avoids.
+
+    A retired version (`lifecycle` other than current) stays out: it carries no avoid list and no pin reaches it."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import model_registry           # noqa: E402
+
+    data = data if data is not None else model_registry.load()
+    out = []
+    for line_no, model, col, text in cells(path) or []:
+        if col != "effort":
+            continue
+        members = model_registry.ladder_rows(model, data)
+        members = [m for m in members if m.get("lifecycle") == "current"] or members
+        if not members:
+            continue
+        avoided = set.intersection(*(set((m.get("effort") or {}).get("avoid") or []) for m in members))
+        for level in sorted({m.group(1) for m in re.finditer(r"`(" + RUNG + r")`", text)} & avoided):
+            out.append((line_no, model, level))
+    return out
+
+
 def _has_table(lines):
     """Is there a Role guidance table at all? Distinguishes 'no rows' from 'no table'."""
     return any(raw.strip() == HEADING for raw in lines)
@@ -234,6 +256,10 @@ def main(argv, data=None):
         bad += 1
         print("%s:%d  %s  [effort]  claims %s but names no starting effort for %s -- give one, marked (unmeasured) "
               "when no source measured it" % (path, line, model.split("(")[0].strip(), tier, shape))
+    for line, model, level in avoided_efforts(path, data):
+        bad += 1
+        print("%s:%d  %s  [effort]  names `%s`, which the row's registry effort.avoid lists -- end the range or "
+              "move the shape to an effort the row allows" % (path, line, model.split("(")[0].strip(), level))
     print("\n%d cell(s) checked across %s, %d prose-contract hit(s)"
           % (len(rows), " + ".join(CHECKED_COLUMNS), bad))
     if bad:

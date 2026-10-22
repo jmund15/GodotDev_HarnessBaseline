@@ -18,6 +18,7 @@ import copy
 import importlib.util
 import io
 import os
+import shutil
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -226,9 +227,9 @@ def _anthropic_window_cli(argv):
 
 
 def _full_window_cli(argv):
-    """True when the CLI sets the compaction window to the model's full window, never leaving it unset."""
+    """True when the CLI sets the resident compaction window explicitly on the model's full window, never leaving it unset."""
     out = _anthropic_window_cli(argv)
-    return out.get("autoCompactWindow") == out.get("contextWindow") == 1000000
+    return out.get("autoCompactWindow") == mr.RESIDENT_COMPACT_WINDOW and out.get("contextWindow") == 1000000
 
 
 _TIERED = {"limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
@@ -662,11 +663,11 @@ CASES = [
                                  "limits": {"contextTokens": 1000000, "compactAtTokens": 200000}},
                                 compact_override=117000)["autoCompactWindow"] == 150000),
 
-    ("a review-shaped job compacts only at the model's full window, set explicitly so a login's autoCompactWindow setting cannot apply, named review-shape",
+    ("a review-shaped job compacts at the resident window, set explicitly so a login's per-model autoCompactWindow cannot apply, named review-shape",
      lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
                                             "compactAtTokens": 200000}}, shape="review") == {
-         "model": "claude-haiku-test[1m]", "autoCompactWindow": 1000000, "maxContextTokens": None,
+         "model": "claude-haiku-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
          "contextWindow": 1000000, "contextWindowSource": "review-shape"}),
     ("an author-shaped job keeps the compaction window",
      lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
@@ -680,11 +681,15 @@ CASES = [
      lambda: _full_window_cli(["synthetic", "--shape", "review"])
      and _anthropic_window_cli(["synthetic"])["autoCompactWindow"] == 233000
      and _anthropic_window_cli(["synthetic", "--max", "--shape", "author"])["autoCompactWindow"] == 233000),
-    ("a job marked resident-subject compacts only at the model's full window whatever its tool-profile shape",
+    ("a resident window never exceeds a smaller model's full window",
+     lambda: mr.anthropic_window({"id": "claude-test", "longContextTier": None,
+                                 "limits": {"contextTokens": 200000, "maxOutputTokens": 64000}},
+                                resident=True)["autoCompactWindow"] == 200000),
+    ("a job marked resident-subject compacts at the resident window whatever its tool-profile shape",
      lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
                                             "compactAtTokens": 200000}}, shape="arm", resident=True) == {
-         "model": "claude-haiku-test[1m]", "autoCompactWindow": 1000000, "maxContextTokens": None,
+         "model": "claude-haiku-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
          "contextWindow": 1000000, "contextWindowSource": "resident-subject"}),
     ("SIDECAR_RESIDENT_SUBJECT=1 reaches the resolver through the launcher's environment; unset keeps the point",
      lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1"},
@@ -1407,6 +1412,70 @@ def run_price_fresh_off_peak(data):
     return next(m for m in data["models"] if m["alias"] == "flash")["price"]["cacheMissPer1M"] * 0.5
 
 
+def _overlay_cases():
+    """The `external_models.local.json` overlay: a project's account fields merged over the shipped
+    registry, read only beside the file `load` was given. Fixtures copy the raw shipped file."""
+    import json
+    import tempfile
+
+    raw = json.loads(mr.find_registry().read_text(encoding="utf-8"))
+    console = "anthropic-console"
+    base = tempfile.mkdtemp(prefix="mr_overlay_")
+
+    def registry_dir(name, overlay=None):
+        folder = os.path.join(base, name)
+        os.makedirs(folder)
+        with open(os.path.join(folder, "external_models.json"), "w", encoding="utf-8") as fh:
+            json.dump(raw, fh)
+        if overlay is not None:
+            with open(os.path.join(folder, "external_models.local.json"), "w", encoding="utf-8") as fh:
+                fh.write(overlay if isinstance(overlay, str) else json.dumps(overlay))
+        return os.path.join(folder, "external_models.json")
+
+    def load_error(path):
+        try:
+            mr.load(path=path)
+        except mr.RegistryError as exc:
+            return str(exc)
+        return ""
+
+    account = {"credentialFile": "~/.planted.cmd", "credit": {"grantUSD": 7, "cycleStart": "2026-01-01", "cycleEnd": "2026-02-01"}}
+    merged = mr.load(path=registry_dir("merged", {"transports": {console: account}}))["transports"][console]
+    plain = mr.load(path=registry_dir("plain"))
+    untouched = {k: v for k, v in raw["transports"][console].items() if k not in account}
+    sibling_kept = mr.load(path=registry_dir("sibling", {"transports": {console: account}}))["transports"]["deepseek"]
+
+    beside = registry_dir("beside", {"transports": {console: account}})
+    stray = registry_dir("stray")
+    shutil.copy(os.path.join(os.path.dirname(beside), "external_models.local.json"),
+                os.path.join(base, "external_models.local.json"))
+
+    cases = [
+        ("overlay: a transport's overlay fields merge over the shipped entry",
+         merged.get("credentialFile") == account["credentialFile"] and merged.get("credit") == account["credit"]
+         and all(merged.get(k) == v for k, v in untouched.items())),
+        ("overlay: a transport the overlay leaves out is unchanged",
+         sibling_kept == raw["transports"]["deepseek"]),
+        ("overlay: an absent overlay changes nothing", plain == raw),
+        ("overlay: invalid JSON raises RegistryError naming the file",
+         "external_models.local.json" in load_error(registry_dir("badjson", "{not json"))),
+        ("overlay: a non-object raises RegistryError", bool(load_error(registry_dir("badtop", "[1]")))),
+        ("overlay: a transport the registry lacks raises RegistryError",
+         bool(load_error(registry_dir("ghost", {"transports": {"no-such-transport": {"credentialFile": "x"}}})))),
+        ("overlay: a top-level key beyond transports raises RegistryError",
+         bool(load_error(registry_dir("extra", {"models": []})))),
+        ("overlay: a transport entry that is not an object raises RegistryError",
+         bool(load_error(registry_dir("badrow", {"transports": {console: "x"}})))),
+        ("overlay: an explicit load(path=) reads the overlay beside that file only",
+         mr.load(path=stray) == raw and mr.load(path=beside)["transports"][console].get("credentialFile") == account["credentialFile"]),
+    ]
+    failed = 0
+    for name, ok in cases:
+        failed += not ok
+        print("%s %s" % ("ok  " if ok else "FAIL", name))
+    return failed, len(cases)
+
+
 def _non_thinking_cases():
     """`effort.nonThinking`: the rungs at which a row does not think, validated against the rungs its
     transport forwards. Planted rows on a synthetic `host` transport; the last case reads the LIVE
@@ -2033,6 +2102,9 @@ def main():
     nt_failed, nt_total = _non_thinking_cases()
     failed += nt_failed
 
+    ov_failed, ov_total = _overlay_cases()
+    failed += ov_failed
+
     av_failed, av_total = _avoid_cases()
     failed += av_failed
 
@@ -2046,7 +2118,7 @@ def main():
     failed += supp_failed
 
     total = len(CASES) + 3 + 3 + len(invalid_limit_cases) + 5
-    total += sched_total + ident_total + nt_total + av_total + fam_total + prob_total + supp_total
+    total += sched_total + ident_total + nt_total + ov_total + av_total + fam_total + prob_total + supp_total
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

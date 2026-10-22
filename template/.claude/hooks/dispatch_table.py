@@ -205,7 +205,7 @@ def _audit_rows(value, label="", *, mode="claims"):
     import post_check
     if isinstance(value, str):
         # Like the in-run reader, a text result holds claims only in fenced blocks; JSON text such as a
-        # fold digest's `applied` and `decisions` rows is never a claim.
+        # fold digest's `applied` and `deferred` rows is never a claim.
         return post_check.result_claims(label, value, preserve=True)
     if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
         # The host's list of agents' text returns: each holds claims only in fenced blocks, like one text result.
@@ -1751,7 +1751,7 @@ def _unwatched_rosters_reason(payload):
                       if (unit.get("roster") or {}).get("state") == "LIVE")
     except Exception as exc:
         return None, ("⚠ the bench roster check did not run (%s: %s); a live roster this session started "
-                      "would go unwatched. Arm the session watcher if one runs." % (type(exc).__name__, exc))
+                      "would go unwatched." % (type(exc).__name__, exc))
     return (NO_WATCHER_ROSTER_REASON % ", ".join(live) if live else None), None
 
 

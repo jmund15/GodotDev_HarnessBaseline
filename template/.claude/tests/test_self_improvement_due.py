@@ -286,7 +286,8 @@ def main():
               proc.stdout)
 
         print("case 8 — --stamp refuses on an unreadable archive")
-        os.remove(archive)
+        with open(archive, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
         proc = run(base, "--stamp")
         check("--stamp exits 2 when the archive cannot be read", proc.returncode == 2, str(proc.returncode))
         check("--stamp names the refusal", "REFUSED" in proc.stdout, proc.stdout)

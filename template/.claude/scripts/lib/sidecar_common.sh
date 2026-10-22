@@ -38,7 +38,7 @@
 #   same -l label or -R record) or resumes this -r session (sc_check_duplicate_launch); nothing started.
 #   Stop the old run first with the printed tools/reap.py command; no flag overrides it
 #   14 RETIRED (never reuse the code).
-#   15 re-pay refused: the spend ledger already holds a FINISHED row for this work key (tools/work_key.py:
+#   15 re-pay refused: the spend ledger already holds a FINISHED row for this work key, or exists but cannot be read (tools/work_key.py:
 #   the brief's bytes, the harness revision, the pin and the label, or the key the starting tool declared in
 #   SIDECAR_WORK_KEY); nothing started. A deliberate repeat is different work: give it its own label. A
 #   resume (-r) and a --check are never refused. No flag overrides it

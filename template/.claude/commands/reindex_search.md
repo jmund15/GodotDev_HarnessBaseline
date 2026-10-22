@@ -26,11 +26,11 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
 
    The rebuild walks the working tree, drops the existing `.search-index/search.db`, and rebuilds AST chunks + embeddings + 6-signal scoring tables. Each rebuild is a full walk, not an incremental update.
 
-3. Regenerate the abstraction-family manifest — the same staleness window as the index, so it refreshes on the same cadence:
+3. Run the project's index prebuild commands — generated files that go stale on the same window as the index:
    ```bash
-   python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/generate_family_manifest.py"
+   python3 "$CLAUDE_PROJECT_DIR/.claude/tools/adaptation.py" run index_prebuild
    ```
-   Rewrites `.claude/generated/abstraction_families.md` wholesale (every first-party abstract class / interface with 1+ implementors, plus the shared test doubles). Engine-free and deterministic; the file is generated, never hand-edited. Report the family/implementor counts it prints. A failure here does NOT block — report it and continue, same as a partial re-index.
+   With no `index_prebuild` entry the step prints nothing. Report the counts the commands print. A failing command is reported and the rest still run; none of it blocks the re-index.
 
 4. Report composition — what the corpus is now made of, top buckets by chunk count plus
    `.claude/auto-memory`'s share, read straight from the rebuilt db:
@@ -39,7 +39,7 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
    ```
    Print the table as-is. It is the only routine signal that the corpus has drifted; recall
    degrades silently otherwise, so a number every rebuild is what makes drift visible.
-   Flag a bucket that has become disproportionate against §Corpus hygiene below.
+   Flag a bucket that has become disproportionate against §Corpus hygiene below. On `no baseline set`, judge the corpus against §Corpus hygiene and, when healthy, run `python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py" --set-baseline`.
 
 5. Report:
    - Time elapsed

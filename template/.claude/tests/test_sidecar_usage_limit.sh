@@ -129,7 +129,9 @@ printf '{"firstSeen":"stale"}\n' > "${SC_RECORD}.usage"
 bg=$!
 first=""; waited=0
 while kill -0 "$bg" 2>/dev/null && [ "$waited" -lt 80 ]; do
-  if [ -f "${SC_RECORD}.usage" ] && [ "$(usage_field firstSeen)" != stale ]; then first="$(cat "${SC_RECORD}.usage")"; break; fi
+  # The launch removes the stale marker before the first retry writes the new one; an empty read is that gap.
+  seen="$(usage_field firstSeen)"
+  if [ -n "$seen" ] && [ "$seen" != stale ]; then first="$(cat "${SC_RECORD}.usage")"; break; fi
   sleep 0.25; waited=$((waited + 1))
 done
 alive=no; kill -0 "$bg" 2>/dev/null && alive=yes

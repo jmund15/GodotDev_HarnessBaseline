@@ -523,6 +523,17 @@ def _seed_worktree_root(path: Path, remote: Path, baseline_commit: str) -> Path:
     return root
 
 
+def _classify_rows(root: Path, relpaths: list[str], layer: str = "pure") -> None:
+    """A new template row needs a consumer lock layer before publish, from either source kind
+    (`_new_row_layers`). `baseline_sync.py classify` writes it; this does the same."""
+    lock_path = root / ".claude" / "baseline.lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    for relpath in relpaths:
+        lock["files"][relpath] = {"status": "tracked", "layer": layer, "judged": None}
+    _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
+    _commit(root, "classify new rows")
+
+
 def _make_author_worktree(path: Path, root: Path, remote: Path, name: str) -> tuple[Path, Path, str]:
     """Clone `remote` into `root`'s baseline cache (reusing it across calls for the same
     root) and add a linked worktree at the resolved pinned sha, mirroring `author start`
@@ -629,6 +640,40 @@ def test_collect_without_rows_takes_only_push_verdicts() -> None:
             pass
         else:
             raise AssertionError("a listed row without a push verdict was collected")
+
+
+def test_materialize_keeps_a_100755_source_entry_executable() -> None:
+    exec_rel = ".claude/scripts/fixture_run.sh"
+    plain_rel = ".claude/tools/fixture_plain.py"
+    with _fixture() as path:
+        cache = path / "cache"
+        _init_repo(cache)
+        _write(cache / "template" / ".gitkeep", b"")
+        baseline_sha = _commit(cache, "seed")
+        root = path / "consumer"
+        _init_repo(root)
+        _write(root / exec_rel, b"#!/bin/sh\ntrue\n")
+        _write(root / plain_rel, b"value = 1\n")
+        _git(root, "add", "-A")
+        _git(root, "update-index", "--chmod=+x", exec_rel)
+        _git(root, "commit", "-q", "-m", "consumer")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        worktree = path / "publish-worktree"
+        records = [{"relpath": rel, "source_path": rel, "dest_path": "template/" + rel,
+                    "kind": "lock", "op": "A"} for rel in (exec_rel, plain_rel)]
+        publish._materialize(
+            root, {"kind": "commit", "repo": str(root), "commit": commit}, records,
+            {"substitutions": {}, "files": {rel: {"layer": "pure"} for rel in (exec_rel, plain_rel)}},
+            cache, baseline_sha, worktree, "publish/x",
+        )
+
+        def staged_mode(rel: str) -> str:
+            return _git(worktree, "ls-files", "-s", "template/" + rel).decode().split()[0]
+
+        _git(worktree, "add", "-A")
+        assert staged_mode(exec_rel) == "100755", staged_mode(exec_rel)
+        assert staged_mode(plain_rel) == "100644", staged_mode(plain_rel)
 
 
 def test_materialize_writes_source_bytes_unsubstituted() -> None:
@@ -1337,6 +1382,7 @@ def test_author_history_never_publishes_ancestor_token() -> None:
         remote, baseline_commit = _seed_bare_baseline(path)
         root = _seed_worktree_root(path, remote, baseline_commit)
         cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-history")
+        _classify_rows(root, [".claude/tools/secret_bearer.py"])
 
         token = "planted" + "-token" + "-ancestor-only"
         target = worktree / "template" / ".claude" / "tools" / "secret_bearer.py"
@@ -1367,6 +1413,7 @@ def test_from_worktree_publishes_root_files_and_lock_rows() -> None:
         remote, baseline_commit = _seed_bare_baseline(path)
         root = _seed_worktree_root(path, remote, baseline_commit)
         cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-rootfiles")
+        _classify_rows(root, [".claude/tools/newthing.py", ".claude/tests/test_newthing.py"])
 
         _write(worktree / "template" / ".claude" / "tools" / "newthing.py", b"x = 1\n")
         _write(worktree / "template" / ".claude" / "tests" / "test_newthing.py",
@@ -1387,10 +1434,9 @@ def test_from_worktree_publishes_root_files_and_lock_rows() -> None:
         assert _git(remote, "show", "main:template/.claude/tools/newthing.py") == b"x = 1\n"
         assert _git(remote, "show", "main:tools/newtool.py") == b"print('hi')\n"
 
-        # root files carry no lock row, and a brand-new `.claude/` file's row is created by
-        # the consumer's own `pull`, never by `publish` (§5).
+        # root files carry no lock row; `publish` adds no row beyond the consumer's classified ones (§5).
         lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
-        assert ".claude/tools/newthing.py" not in lock["files"]
+        assert sorted(lock["files"]) == [".claude/tests/test_newthing.py", ".claude/tools/newthing.py"], lock["files"]
         assert "tools/newtool.py" not in lock["files"]
 
 
@@ -1400,6 +1446,7 @@ def test_publish_strips_memory_provenance_keys_from_the_published_file() -> None
         remote, baseline_commit = _seed_bare_baseline(path)
         root = _seed_worktree_root(path, remote, baseline_commit)
         cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-memory")
+        _classify_rows(root, [memory])
         _write(worktree / "template" / memory,
                b"---\nname: rule\ntype: feedback\nmetadata:\n  node_type: memory\n"
                b"  originSessionId: session-one\n  modified: 2026-01-01T00:00:00Z\n---\nBody line\n")
@@ -1422,6 +1469,7 @@ def test_battery_count_mismatch_is_detected() -> None:
         remote, baseline_commit = _seed_bare_baseline(path, voided_discovery=True)
         root = _seed_worktree_root(path, remote, baseline_commit)
         cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-battery")
+        _classify_rows(root, [".claude/tests/test_a.py", ".claude/tests/test_b.py"])
 
         _write(worktree / "template" / ".claude" / "tests" / "test_a.py", b"import sys\nsys.exit(0)\n")
         _write(worktree / "template" / ".claude" / "tests" / "test_b.py", b"import sys\nsys.exit(0)\n")
@@ -1490,6 +1538,7 @@ def test_publish_does_not_alter_cache_clone_shared_identity() -> None:
         remote, baseline_commit = _seed_bare_baseline(path)
         root = _seed_worktree_root(path, remote, baseline_commit)
         cache, worktree, pinned = _make_author_worktree(path, root, remote, "s5-identity")
+        _classify_rows(root, [".claude/tools/identity_check.py"])
 
         # An author's own identity, already configured on the shared cache clone (which
         # every linked worktree, including the one `_materialize` creates, shares
@@ -1795,6 +1844,37 @@ def test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_workt
         assert not worktree.exists(), "the refusal must come before the worktree exists"
 
 
+def _worktree_layer_fixture(path: Path, fresh_layer: str | None):
+    root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, fresh_layer)
+    return root, {**source, "kind": "worktree"}, records, lock, cache, baseline_sha, fresh
+
+
+def test_worktree_source_refuses_a_new_row_without_a_layer_before_creating_the_worktree() -> None:
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _worktree_layer_fixture(path, None)
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        try:
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        except publish.PublishError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("materialize accepted a worktree-source new row without a layer")
+        assert fresh in message and "--layer" in message, message
+        assert not worktree.exists(), "the refusal must come before the worktree exists"
+
+
+def test_worktree_source_records_a_layered_new_row() -> None:
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _worktree_layer_fixture(path, "coding")
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(path / "calls.json")}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "coding"}, entries
+
+
 def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
     publish = _load_publish()
     with _fixture() as path:
@@ -2019,8 +2099,30 @@ def test_battery_mode_a_workflow_row_alone_is_scoped_and_a_root_row_beside_it_is
     assert publish._battery_mode([workflow], True) == ("full", "flag")
 
 
+def test_pr_body_lists_each_carried_row() -> None:
+    publish = _load_publish()
+    lock = {"files": {
+        ".claude/tools/a.py": {"judged": {"sha": "b" * 64, "verdict": "push", "carried_from": "a" * 64}},
+        ".claude/tools/b.py": {"judged": {"sha": "c" * 64, "verdict": "push"}},
+    }}
+    rows = [".claude/tools/a.py", ".claude/tools/b.py"]
+    with tempfile.TemporaryDirectory() as tmp:
+        body = Path(tmp) / "pr.md"
+        publish._write_pr_body(body, "id1", {"kind": "commit", "repo": "r", "commit": "x"}, rows, [],
+                               publish._carried_rows(lock, rows))
+        text = body.read_text(encoding="utf-8")
+        plain = Path(tmp) / "plain.md"
+        publish._write_pr_body(plain, "id2", {"kind": "commit", "repo": "r", "commit": "x"}, rows[1:], [],
+                               publish._carried_rows(lock, rows[1:]))
+        plain_text = plain.read_text(encoding="utf-8")
+    assert "## Carried rows" in text and "- .claude/tools/a.py: judged aaaaaaaa, carried to bbbbbbbb" in text, text
+    assert ".claude/tools/b.py: judged" not in text, text
+    assert "## Carried rows" not in plain_text, plain_text
+
+
 def main() -> int:
     cases = [
+        test_pr_body_lists_each_carried_row,
         test_scoped_validate_runs_bound_proof_and_records_evidence,
         test_battery_mode_triggers,
         test_a_red_preview_makes_validate_red_with_preview_evidence,
@@ -2039,11 +2141,14 @@ def main() -> int:
         test_tracer_publishes_one_row_to_fixture_remote,
         test_peer_edit_after_the_source_commit_leaves_step_eight_green,
         test_collect_without_rows_takes_only_push_verdicts,
+        test_materialize_keeps_a_100755_source_entry_executable,
         test_materialize_writes_source_bytes_unsubstituted,
         test_materialize_records_new_row_layers_and_regenerates_manifest,
         test_materialize_records_a_layer_move_for_an_existing_row,
         test_materialize_records_no_entry_for_an_unmoved_existing_row,
         test_materialize_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
+        test_worktree_source_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
+        test_worktree_source_records_a_layered_new_row,
         test_local_merge_refuses_remote_url,
         test_no_ci_refuses_when_workflow_exists,
         test_step_failures_1_through_5_leave_fixture_main_unchanged,

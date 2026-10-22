@@ -10,6 +10,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import test_load_census as census_cases
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 MODULE_PATH = TOOLS / "close_predicates.py"
@@ -321,6 +324,31 @@ class PredicateTests(unittest.TestCase):
         text = cp.PREDICATES["hot_set_review"][1]
         self.assertIn("oversized skill or command body", text)
         self.assertIn("tripwire budget", text)
+
+    def test_hot_set_review_not_configured_is_null_with_basis_error(self):
+        original = cp._load_tool
+        census = original("load_census")
+        try:
+            class Unconfigured(StubCensus):
+                NotConfigured = census.NotConfigured
+
+                def over_baseline(self, report):
+                    raise self.NotConfigured("no tripwire baseline")
+
+            cp._load_tool = lambda name: Unconfigured()
+            row = run("hot_set_review", self.repo)
+            self.assertIsNone(row["value"])
+            self.assertEqual(row["basis"], {"error": "not-configured"})
+        finally:
+            cp._load_tool = original
+
+    def test_hot_set_review_on_a_consumer_without_a_tripwire_is_not_configured(self):
+        root = self.repo / ".claude"
+        home = census_cases.make_complete_root(root)
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            row = run("hot_set_review", self.repo)
+        self.assertIsNone(row["value"])
+        self.assertEqual(row["basis"], {"error": "not-configured"})
 
     def test_sync_subsystems_shape_density_false_null(self):
         tr = session_repo(self.repo)
