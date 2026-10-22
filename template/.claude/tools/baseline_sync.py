@@ -189,7 +189,8 @@ NETWORK_RETRY_DELAYS = (2, 5)
 _TRANSIENT_NETWORK = re.compile(
     r"connection (?:was )?reset|could not resolve host|timed out|timeout|early eof|"
     r"unexpected disconnect|remote end hung up|rpc failed|failed to connect|"
-    r"\bssl\b|\btls\b|returned error: 5\d\d|http 50\d|i/o timeout",
+    r"ssl_read|ssl_error_syscall|tls handshake timeout|gnutls_handshake\(\) failed|schannel: failed to receive|"
+    r"returned error: 5\d\d|http 50\d",
     re.IGNORECASE,
 )
 _REMOTE_GIT = ("fetch", "push", "clone", "ls-remote", "pull")

@@ -2897,6 +2897,24 @@ def test_three_transient_fetch_failures_raise_the_existing_error() -> None:
     assert len(calls) == 3, calls
 
 
+def test_fetch_does_not_retry_a_permanent_tls_certificate_failure() -> None:
+    for text in (b"SSL certificate problem: unable to get local issuer certificate",
+                 b"SSL certificate problem: certificate verify failed"):
+        err = b"fatal: unable to access 'https://example.invalid/x.git/': " + text + b"\n"
+        _engine, calls, _err, _pinned, exc = _resolve_with([(128, err)])
+        assert exc is not None and "could not fetch baseline ref main" in str(exc), exc
+        assert len([c for c in calls if "fetch" in c]) == 1, calls
+
+
+def test_fetch_still_retries_a_transient_tls_failure() -> None:
+    for text in (b"Recv failure: SSL_ERROR_SYSCALL", b"OpenSSL SSL_read: Connection was reset, errno 10054",
+                 b"OpenSSL SSL_read: SSL_ERROR_SYSCALL, errno 104"):
+        err = b"fatal: unable to access 'https://example.invalid/x.git/': " + text + b"\n"
+        _engine, calls, _err, _pinned, exc = _resolve_with([(128, err), (0, b""), (0, b"")])
+        assert exc is None, (text, exc)
+        assert len([c for c in calls if "fetch" in c]) == 2, (text, calls)
+
+
 def test_clone_retries_a_reset_then_succeeds() -> None:
     from unittest import mock
     engine = _load_engine()
@@ -3028,6 +3046,8 @@ def main() -> int:
         test_a_non_network_subcommand_is_not_retried_on_reset_looking_stderr,
         test_three_transient_fetch_failures_raise_the_existing_error,
         test_clone_retries_a_reset_then_succeeds,
+        test_fetch_does_not_retry_a_permanent_tls_certificate_failure,
+        test_fetch_still_retries_a_transient_tls_failure,
     ]
     return run_cases(cases)
 

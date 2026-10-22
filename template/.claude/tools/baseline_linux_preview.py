@@ -39,8 +39,9 @@ CACHE = REPO / ".claude" / ".cache" / "baseline-publish"
 LOG_DIR = REPO / ".claude" / "scratch" / "linux_preview"
 WORKFLOW = Path(".github") / "workflows" / "baseline.yml"
 STEP_EOF = "PREVIEW_STEP_EOF"
-# Width of the one slot pool all preview lanes share (HARNESS_MACHINE_SLOTS). Measured on a 24-CPU,
-# 30 GB WSL machine; re-measure when the machine changes.
+# Width of the one slot pool all preview lanes share (HARNESS_MACHINE_SLOTS). Width 8 timed out a proof
+# on a 24-CPU, 30 GB WSL machine while the Windows leg ran beside the lanes; a lone manual rerun at a
+# wider pool is unmeasured. Re-measure when the machine changes.
 PREVIEW_SLOTS = 4
 # WSL appends the Windows PATH under /mnt; a CI runner has none of it, so a proof that finds a Windows
 # binary there (claude.cmd) passes here and fails in CI.
