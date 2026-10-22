@@ -5,6 +5,7 @@ the worktree resolver. WSL itself is not started; the script text is asserted in
     python3 .claude/tests/test_baseline_linux_preview.py
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,10 @@ jobs:
 """
 
 
+def script_of_two(blp):
+    return blp.preview_script("/mnt/c/w/tree", [("a", [("s", "true")]), ("b", [("s", "true")])])
+
+
 def main():
     cases = []
 
@@ -80,7 +85,7 @@ def main():
                   blp.wsl_path(r"C:\Users\x\a b") == "/mnt/c/Users/x/a b"
                   and blp.wsl_path("D:/w/t") == "/mnt/d/w/t"))
 
-    script = blp.preview_script("/mnt/c/w/tree", steps)
+    script = blp.preview_script("/mnt/c/w/tree", jobs)
     cases.append(("the snapshot lives under $HOME, never /tmp (delete guards admit temp paths)",
                   '"$HOME/baseline-linux-preview"' in script and "/tmp" not in script))
     cases.append(("ci-tools python, node and pwsh lead PATH",
@@ -102,7 +107,7 @@ def main():
                   all("::step %s" % n in script for n, _ in steps)))
     cases.append(("a step body with quotes survives as a heredoc, not an argument",
                   "<<'PREVIEW_STEP_EOF'" in script and "pwsh -NoProfile -Command 'exit 0'" in script))
-    with_exec = blp.preview_script("/mnt/c/w/tree", steps, None, ["a/run.sh", "it's.sh"])
+    with_exec = blp.preview_script("/mnt/c/w/tree", jobs, None, ["a/run.sh", "it's.sh"])
     cases.append(("a 100755 entry gets chmod +x after the 644 reset and before the commit",
                   "chmod +x 'a/run.sh' 'it'\\''s.sh'" in with_exec
                   and with_exec.index("chmod 644") < with_exec.index("chmod +x") < with_exec.index("git init")))
@@ -115,7 +120,7 @@ def main():
     subprocess.run(["git", "-C", str(index_repo), "update-index", "--chmod=+x", "run.sh"], check=True)
     cases.append(("exec_paths_of lists the 100755 index entries and not the 100644 ones",
                   blp.exec_paths_of(index_repo) == ["run.sh"]))
-    with_origin = blp.preview_script("/mnt/c/w/tree", steps, "https://example.invalid/b.git")
+    with_origin = blp.preview_script("/mnt/c/w/tree", jobs, "https://example.invalid/b.git")
     cases.append(("the snapshot carries the worktree's origin, as checkout does (test_bootstrap reads it)",
                   "git remote add origin 'https://example.invalid/b.git'" in with_origin
                   and with_origin.index("git remote add origin") < with_origin.index("::step")))
@@ -134,9 +139,9 @@ def main():
     cases.append(("an empty cache resolves to None",
                   blp.resolve_worktree(Path(tempfile.mkdtemp(prefix="blp_empty_")), None) is None))
 
-    quoted = blp.preview_script("/mnt/c/w/tree", [("say \"hi\" 'now'", "true")])
+    quoted = blp.preview_script("/mnt/c/w/tree", [("j", [("say \"hi\" 'now'", "true")])])
     cases.append(("one sanitized label names a step on its ::step, ::pass and ::fail lines",
-                  "::step say hi now'" in quoted and "::pass say hi now'" in quoted
+                  "::step say hi now'" in quoted and '::pass say hi now ' in quoted
                   and '::fail say hi now rc=' in quoted))
 
     real_cache = blp.CACHE
@@ -187,6 +192,39 @@ def main():
     cases.append(("setup verifies both downloads before unpacking",
                   "sha256sum -c" in blp.SETUP_SCRIPT and blp.SETUP_SCRIPT.count("sha256sum") >= 2
                   and "iconv -f UTF-16" in blp.SETUP_SCRIPT))
+
+
+    def run_lanes(job_list, tag):
+        home = Path(tempfile.mkdtemp(prefix="blp_home_"))
+        tree = Path(tempfile.mkdtemp(prefix="blp_tree_"))
+        (tree / "f.txt").write_text("x\n", encoding="utf-8", newline="\n")
+        posix = lambda p: (subprocess.run([bash_exe(), "-c", 'cygpath -u "$1"', "_", str(p)],
+                                          capture_output=True, text=True).stdout.strip()
+                           if os.name == "nt" else str(p))
+        env = dict(os.environ, HOME=str(home))
+        env.pop("HARNESS_MACHINE_SLOTS", None)
+        out = subprocess.run([bash_exe(), "--noprofile", "--norc", "-c", blp.preview_script(posix(tree), job_list(posix(home))) ],
+                             capture_output=True, text=True, env=env, timeout=120)
+        return out
+
+    wait_a = ('for i in $(seq 1 100); do [ -e "$M" ] && exit 0; sleep 0.1; done; exit 1')
+    two = lambda h: [("a", [("wait for b", 'M=%s/marker\n%s' % (h, wait_a))]),
+                     ("b", [("write marker", "touch %s/marker" % h)])]
+    out = run_lanes(two, "two")
+    cases.append(("two jobs run at once: A sees B's marker, so the run passes", out.returncode == 0))
+    cases.append(("a two-lane run's stdout holds both ::lane lines",
+                  "::lane a " in out.stdout and "::lane b " in out.stdout
+                  and out.stdout.index("::lane a ") < out.stdout.index("::lane b ")))
+    cases.append(("a pass line carries elapsed seconds", re.search(r"::pass write marker \d+s", out.stdout) is not None))
+    red = lambda h: [("ok", [("fine", "true")]), ("bad", [("boom", "exit 7"), ("after", "true")])]
+    out = run_lanes(red, "red")
+    cases.append(("a red lane exits 1 and later steps in that lane still run",
+                  out.returncode == 1 and "::pass after" in out.stdout))
+    cases.append(("the fail line sits inside its own lane's log block",
+                  re.search(r"::lane ok \d+s\n(?:.*\n)*?::fail boom rc=7 \d+s\n(?:.*\n)*?::lane bad \d+s", out.stdout) is not None))
+    cases.append(("each lane gets its own HOME and the shared slot dir and width",
+                  'HOME="$D/a.home"' in script_of_two(blp) and 'HARNESS_SLOT_DIR="$D/.slots"' in script_of_two(blp)
+                  and "PREVIEW_SLOTS" in dir(blp) and blp.PREVIEW_SLOTS == 4))
 
     failed = 0
     for label, ok in cases:

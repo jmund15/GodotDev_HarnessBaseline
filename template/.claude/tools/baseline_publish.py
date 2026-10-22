@@ -15,6 +15,7 @@ reaches the published tree.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import fnmatch
 import hashlib
 import importlib.util
@@ -54,11 +55,15 @@ def _now() -> str:
 
 def _git(repo: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        result = sync.run_with_network_retry(
+            f"git {' '.join(args)}",
+            lambda: subprocess.run(
+                ["git", "-C", str(repo), *args],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            ),
+            retryable=sync.is_remote_git(args),
         )
     except OSError as exc:
         raise PublishError(f"git {' '.join(args)} failed: {exc}") from exc
@@ -488,10 +493,6 @@ def _run_python_args(worktree: Path, args: list[str], label: str) -> str:
     return out
 
 
-_PREVIEW_EXECUTABLE = (".py", ".sh", ".ps1", ".js", ".mjs")
-_PREVIEW_TAIL_LINES = 40
-
-
 def _is_workflow_row(relpath: str) -> bool:
     return relpath.startswith(".github/workflows/")
 
@@ -517,144 +518,86 @@ def _battery_mode(records: list[dict], full_battery: bool) -> tuple[str, str]:
     return "scoped", "published rows"
 
 
-def _preview_owed(worktree: Path, records: list[dict], mode: str) -> bool:
-    """The Linux preview is owed when the battery runs in full, a published row is executable, or a
-    row is a CI workflow (the preview and CI are the only runs that test one). A tree with no baseline
-    workflow has no CI lane to preview."""
-    if not (worktree / ".github" / "workflows" / "baseline.yml").is_file():
-        return False
-    if mode == "full":
-        return True
-    for record in records:
-        relpath = record["relpath"].replace("\\", "/")
-        if relpath.endswith(_PREVIEW_EXECUTABLE) or _is_workflow_row(relpath):
-            return True
-    return False
-
-
-class _Preview:
-    """The Linux preview as a child process. Its output goes to a temp file, so the child never blocks
-    on a full pipe while the Windows checks run."""
-
-    def __init__(self, worktree: Path) -> None:
-        self._out = tempfile.TemporaryFile()
-        try:
-            self._proc = subprocess.Popen(
-                [sys.executable, str(TOOLS_DIR / "baseline_linux_preview.py"), "--worktree", str(worktree)],
-                stdout=self._out, stderr=subprocess.STDOUT,
-            )
-        except Exception:
-            self._out.close()
-            raise
-
-    def wait(self) -> tuple[int, str]:
-        rc = self._proc.wait()
-        self._out.seek(0)
-        text = _lf(self._out.read()).decode("utf-8", errors="replace").strip()
-        self._out.close()
-        return rc, text
-
-    def kill(self) -> None:
-        if self._proc.poll() is None:
-            self._proc.kill()
-        self._proc.wait()
-        self._out.close()
-
-
-def _start_preview(worktree: Path) -> _Preview:
-    return _Preview(worktree)
-
-
-def _preview_verdict(rc: int, text: str) -> tuple[str, str]:
-    """`(status, detail)`: exit 0 green; exit 3 could not run; anything else red, a crash included."""
-    tail = "\n".join(text.splitlines()[-_PREVIEW_TAIL_LINES:])
-    if rc == 0:
-        return "green", ""
-    if rc == 3:
-        return "not run", tail
-    return "red", tail
-
-
 def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
-    """Run every check without stopping at a red: manifest, audit, baseline tests, the battery and the
-    Linux preview (started first, joined last). All reds go into one PublishError."""
+    """Run every check without stopping at a red: manifest, audit, baseline tests and the battery.
+    All reds go into one PublishError. The Linux check is CI's lanes on the PR."""
     mode, reason = _battery_mode(records, full_battery)
-    owed = _preview_owed(worktree, records, mode)
-    preview = None
-    preview_failure = ""
-    preview_start = time.monotonic()
-    if owed:
-        try:
-            preview = _start_preview(worktree)
-        except Exception as exc:
-            preview_failure = f"could not start: {exc}"
-    try:
-        reds: list[str] = []
-        outputs: list[str] = []
+    reds: list[str] = []
+    outputs: list[str] = []
+    harness_script = worktree / "template" / ".claude" / "scripts" / "harness_tests.py"
+    has_battery = harness_script.is_file()
 
-        def check(args: list[str], label: str, cwd: Path = worktree) -> str:
-            try:
-                return _run_python_args(cwd, args, label)
-            except Exception as exc:
-                reds.append(str(exc))
-                return ""
+    def run_check(args: list[str], label: str) -> str:
+        return _run_python_args(worktree, args, label)
 
-        checks_start = time.monotonic()
-        outputs.append(check(["tools/gen_manifest.py", "--check"], "gen_manifest.py --check"))
-        outputs.append(check(["tools/audit_baseline.py", "--strict"], "audit_baseline.py --strict"))
-        tests_root = worktree / "tests"
-        if tests_root.is_dir():
-            for test_path in sorted(tests_root.glob("test_*.py")):
-                outputs.append(check([str(test_path.relative_to(worktree))], f"tests/{test_path.name}"))
-        harness_script = worktree / "template" / ".claude" / "scripts" / "harness_tests.py"
-        if harness_script.is_file():
-            try:
-                _battery_counts_match(worktree)
-            except Exception as exc:
-                reds.append(str(exc))
-        checks_elapsed = time.monotonic() - checks_start
+    def counts_check() -> str:
+        _battery_counts_match(worktree)
+        return ""
 
-        battery_elapsed = 0.0
-        battery_output = "no harness runner"
-        battery_failed = False
-        if harness_script.is_file():
-            if mode == "full":
-                args, label, battery_cwd = ["template/.claude/scripts/harness_tests.py"], "harness_tests.py", worktree
-            else:
-                rows = [r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"]
-                args = [".claude/scripts/harness_tests.py", "--proofs-for", *rows]
-                label, battery_cwd = "harness_tests.py --proofs-for", worktree / "template"
-            battery_start = time.monotonic()
-            try:
-                battery_output = _run_python_args(battery_cwd, args, label)
-            except Exception as exc:
-                battery_failed = True
-                battery_output = str(exc)
-                reds.append(battery_output)
-            battery_elapsed = time.monotonic() - battery_start
-
-        if not owed:
-            preview_status, preview_detail = "not owed", ""
-        elif preview is None:
-            preview_status, preview_detail = "not run", preview_failure
+    # (label, callable, is_battery) in the order reds and outputs are reported.
+    tasks: list[tuple[str, object, bool]] = [
+        ("gen_manifest.py --check", lambda: run_check(["tools/gen_manifest.py", "--check"], "gen_manifest.py --check"), False),
+        ("audit_baseline.py --strict",
+         lambda: run_check(["tools/audit_baseline.py", "--strict"], "audit_baseline.py --strict"), False),
+    ]
+    tests_root = worktree / "tests"
+    if tests_root.is_dir():
+        for test_path in sorted(tests_root.glob("test_*.py")):
+            rel, name = str(test_path.relative_to(worktree)), f"tests/{test_path.name}"
+            tasks.append((name, lambda rel=rel, name=name: run_check([rel], name), False))
+    battery_label = ""
+    if has_battery:
+        tasks.append(("battery counts", counts_check, False))
+        if mode == "full":
+            args, battery_label, battery_cwd = ["template/.claude/scripts/harness_tests.py"], "harness_tests.py", worktree
         else:
-            joined, preview = preview, None
-            preview_status, preview_detail = _preview_verdict(*joined.wait())
-        if preview_status == "red":
-            reds.append("preview red:\n" + preview_detail)
-        elif preview_status == "not run":
-            reds.append("preview not run (an owed preview that did not run is not green)"
-                        + (": " + preview_detail if preview_detail else ""))
-        preview_elapsed = time.monotonic() - preview_start
-    finally:
-        if preview is not None:
-            preview.kill()
+            rows = [r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"]
+            args = [".claude/scripts/harness_tests.py", "--proofs-for", *rows]
+            battery_label, battery_cwd = "harness_tests.py --proofs-for", worktree / "template"
+        tasks.append((battery_label, lambda: _run_python_args(battery_cwd, args, battery_label), True))
+
+    # Longest known first, so the pool's start order puts the long tasks ahead of the short ones.
+    head = (battery_label, "tests/test_bootstrap.py", "tests/test_audit_baseline.py", "audit_baseline.py --strict")
+    submit_order = sorted(range(len(tasks)), key=lambda i: head.index(tasks[i][0]) if tasks[i][0] in head else len(head))
+    spans: dict[int, tuple[float, float]] = {}
+    results: dict[int, tuple[str, str]] = {}
+
+    def run_task(index: int) -> None:
+        start = time.monotonic()
+        try:
+            results[index] = (tasks[index][1](), "")
+        except Exception as exc:
+            results[index] = ("", str(exc))
+        spans[index] = (start, time.monotonic())
+
+    windows_start = time.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
+        for future in [pool.submit(run_task, i) for i in submit_order]:
+            future.result()
+    windows_elapsed = time.monotonic() - windows_start
+
+    battery_elapsed = 0.0
+    battery_output = "no harness runner"
+    battery_failed = False
+    check_spans = [spans[i] for i, task in enumerate(tasks) if not task[2]]
+    checks_elapsed = max(e for _, e in check_spans) - min(s for s, _ in check_spans) if check_spans else 0.0
+    task_times: list[str] = []
+    for index, (label, _, is_battery) in enumerate(tasks):
+        output, red = results[index]
+        task_times.append(f"{label}={spans[index][1] - spans[index][0]:.3f}s")
+        if red:
+            reds.append(red)
+        if is_battery:
+            battery_elapsed = spans[index][1] - spans[index][0]
+            battery_failed = bool(red)
+            battery_output = red or output
+        elif output:
+            outputs.append(output)
     selected = [line.strip() for line in battery_output.splitlines()
                 if (mode == "scoped" or battery_failed) and line.startswith(("OK ", "FAIL ", "CANNOT-RUN "))]
-    proofs = ", ".join(selected) or ("none selected" if mode == "scoped" and harness_script.is_file() else "full battery")
+    proofs = ", ".join(selected) or ("none selected" if mode == "scoped" and has_battery else "full battery")
     header = (f"mode={mode}; reason={reason}; proofs={proofs}; checks={checks_elapsed:.3f}s; "
-              f"battery={battery_elapsed:.3f}s; preview={preview_status}"
-              + (f" ({preview_elapsed:.3f}s)" if owed else ""))
+              f"battery={battery_elapsed:.3f}s; windows={windows_elapsed:.3f}s; {'; '.join(task_times)}")
     if reds:
         raise PublishError(f"{header}; {len(reds)} red(s):\n" + "\n".join(f"RED {r}" for r in reds))
     return header + "; " + "; ".join(o for o in outputs if o)
@@ -677,10 +620,10 @@ def _merge_local(repo: str, branch: str, expected_head: str, work_parent: Path) 
     if merge_dir.exists():
         shutil.rmtree(merge_dir, ignore_errors=True)
     merge_dir.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
+    result = sync.run_with_network_retry("git clone", lambda: subprocess.run(
         ["git", "clone", "--no-checkout", str(repo), str(merge_dir)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-    )
+    ))
     if result.returncode != 0:
         detail = _lf(result.stderr).decode(errors="replace").strip()
         raise PublishError("could not clone merge checkout" + (": " + detail if detail else ""))
@@ -703,21 +646,45 @@ def _resolve_gh() -> str:
     return found
 
 
+_GH_READ_ONLY = {("pr", "checks"), ("pr", "view"), ("pr", "list"), ("run", "view"),
+                 ("run", "list"), ("repo", "view")}
+
+
+def _gh_reads_only(args: list[str]) -> bool:
+    """True for a gh call that cannot change remote state, so a rerun after a reset is safe."""
+    if args[:1] == ["api"]:
+        for index, item in enumerate(args):
+            if item in ("-X", "--method") and args[index + 1:index + 2] and args[index + 1].upper() != "GET":
+                return False
+            if item.upper().startswith(("-XPOST", "-XPATCH", "-XPUT", "-XDELETE")):
+                return False
+            if item.startswith("--method=") and item.split("=", 1)[1].upper() != "GET":
+                return False
+        return not any(item in ("-f", "-F", "--field", "--raw-field", "--input") for item in args)
+    if "--watch" in args:
+        return False  # `_watch_checks` owns the re-watch of a dropped watch
+    return tuple(args[:2]) in _GH_READ_ONLY
+
+
 def _gh(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[bytes]:
     exe = _resolve_gh()
     cmd = [exe, *args]
     use_shell = os.name == "nt" and exe.lower().endswith((".cmd", ".bat"))
-    try:
+
+    def _once() -> subprocess.CompletedProcess[bytes]:
         if use_shell:
-            result = subprocess.run(
+            return subprocess.run(
                 subprocess.list2cmdline(cmd), cwd=str(cwd), shell=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
             )
-        else:
-            result = subprocess.run(
-                cmd, cwd=str(cwd),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
+        return subprocess.run(
+            cmd, cwd=str(cwd),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+
+    try:
+        result = sync.run_with_network_retry(
+            f"gh {' '.join(args[:2])}", _once, retryable=_gh_reads_only(args))
     except OSError as exc:
         raise PublishError(f"gh {' '.join(args)} failed: {exc}") from exc
     return result
