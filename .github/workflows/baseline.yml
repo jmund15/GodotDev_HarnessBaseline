@@ -7,8 +7,7 @@ on:
       - main
 
 jobs:
-  baseline:
-    name: baseline
+  root:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,18 +44,84 @@ jobs:
             python3 "$f"
           done
 
+  template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
+      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      - name: verify pwsh is on PATH
+        run: pwsh -NoProfile -Command 'exit 0'
+
+      # The runner executes pytest-style proofs with `python -m pytest`.
+      - name: install pytest
+        run: python3 -m pip install pytest
+
       - name: template harness battery
         run: python3 template/.claude/scripts/harness_tests.py
 
-      # The template battery above runs the full godot layer, so it cannot prove a non-godot consumer.
-      # Each step bootstraps a scratch project at one profile and runs that project's own
-      # battery. A proof that reaches a member the profile does not install fails the step.
+  # The template battery runs the full godot layer, so it cannot prove a non-godot consumer.
+  # Each profile lane bootstraps a scratch project at one layer list and runs that project's own
+  # battery. A proof that reaches a member the profile does not install fails the lane.
+  pure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
+      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      - name: verify pwsh is on PATH
+        run: pwsh -NoProfile -Command 'exit 0'
+
+      # The runner executes pytest-style proofs with `python -m pytest`.
+      - name: install pytest
+        run: python3 -m pip install pytest
+
       - name: pure profile battery
         run: |
           set -euo pipefail
           target="$(mktemp -d)/ProfileProbe-pure"
           bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure
           cd "$target" && python3 .claude/scripts/harness_tests.py
+
+  pure-coding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
+      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      - name: verify pwsh is on PATH
+        run: pwsh -NoProfile -Command 'exit 0'
+
+      # The runner executes pytest-style proofs with `python -m pytest`.
+      - name: install pytest
+        run: python3 -m pip install pytest
 
       - name: pure,coding profile battery
         run: |
@@ -65,9 +130,46 @@ jobs:
           bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure,coding
           cd "$target" && python3 .claude/scripts/harness_tests.py
 
+  pure-coding-godot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ubuntu-latest ships pwsh preinstalled; the template's `.claude/tests/`
+      # battery discovers `.ps1` proofs, so the harness runner below needs it on PATH.
+      - name: verify pwsh is on PATH
+        run: pwsh -NoProfile -Command 'exit 0'
+
+      # The runner executes pytest-style proofs with `python -m pytest`.
+      - name: install pytest
+        run: python3 -m pip install pytest
+
       - name: pure,coding,godot profile battery
         run: |
           set -euo pipefail
           target="$(mktemp -d)/ProfileProbe-pure-coding-godot"
           bash bootstrap.sh --target "$target" --project-name ProfileProbe --layers pure,coding,godot
           cd "$target" && python3 .claude/scripts/harness_tests.py
+
+  # The ruleset requires the status context `baseline`: this job keeps that name and goes red when any lane does.
+  baseline:
+    name: baseline
+    needs: [root, template, pure, pure-coding, pure-coding-godot]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: every lane succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            [ "$r" = success ] || { echo "lane result: $r"; exit 1; }
+          done

@@ -823,6 +823,9 @@ def test_dry_run_then_resume_continues_at_step_six_and_records_owner_confirmed()
         assert "reason=flag" in resumed["steps"][4]["evidence"]
         assert resumed["dry_run"] is False
         assert resumed["owner_confirmed_at"] is not None
+        kept = resumed["steps"][4].get("attempts", [])
+        assert len(kept) == 1 and kept[0]["status"] == "green", resumed["steps"][4]
+        assert kept[0]["started_at"] and kept[0]["finished_at"] and kept[0]["evidence"], kept
         assert _git(remote, "show", "main:template/" + rel)
 
 
@@ -1283,6 +1286,37 @@ def test_resume_redoes_steps_after_deleted_worktree() -> None:
             resumed = publish2.run(root, None, None, [], False, False, journal["id"])
         assert all(s["status"] == "green" for s in resumed["steps"]), resumed["steps"]
         assert Path(resumed["worktree"]["path"]).exists()
+        for index in (2, 3, 4):
+            kept = resumed["steps"][index].get("attempts", [])
+            assert len(kept) == 1 and kept[0]["status"] == "green", (index, resumed["steps"][index])
+
+
+def test_step_keeps_the_red_attempt_when_it_reruns_green() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        journal_path = path / "journal.json"
+        journal = {"steps": [{"name": "s", "status": "pending", "started_at": None,
+                              "finished_at": None, "evidence": ""}]}
+
+        def boom() -> None:
+            raise RuntimeError("red evidence")
+
+        try:
+            publish._step(journal, journal_path, 0, boom)
+        except RuntimeError:
+            pass
+        item = journal["steps"][0]
+        assert "attempts" not in item, item
+        first_start = item["started_at"]
+        publish._step(journal, journal_path, 0, lambda: None)
+        item = journal["steps"][0]
+        assert item["status"] == "green", item
+        assert len(item["attempts"]) == 1, item
+        attempt = item["attempts"][0]
+        assert attempt["status"] == "red" and attempt["evidence"] == "red evidence", attempt
+        assert attempt["started_at"] == first_start and attempt["finished_at"], attempt
+        saved = json.loads(journal_path.read_text(encoding="utf-8"))
+        assert len(saved["steps"][0]["attempts"]) == 1, saved
 
 
 def test_corrupt_journal_resume_exits_nonzero() -> None:
@@ -2168,6 +2202,7 @@ def main() -> int:
         test_ci_checks_that_never_register_fail_step_six_after_the_wait,
         test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes,
         test_resume_redoes_steps_after_deleted_worktree,
+        test_step_keeps_the_red_attempt_when_it_reruns_green,
         test_corrupt_journal_resume_exits_nonzero,
         test_from_worktree_refuses_dirty_foreign_nondescendant_sibling_and_nested,
         test_author_history_never_publishes_ancestor_token,

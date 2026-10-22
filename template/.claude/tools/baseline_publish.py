@@ -151,10 +151,17 @@ def _new_journal(source: dict, rows: list[str], row_meta: dict[str, dict],
     }
 
 
+def _archive_attempt(item: dict) -> None:
+    if item.get("started_at"):
+        item.setdefault("attempts", []).append({key: item.get(key) for key in
+                                                ("status", "started_at", "finished_at", "evidence")})
+
+
 def _step(journal: dict, path: Path, index: int, action) -> object:
     item = journal["steps"][index]
     if item["status"] == "green":
         return None
+    _archive_attempt(item)
     item["started_at"] = _now()
     item["status"] = "pending"
     _write_json_atomic(path, journal)
@@ -1174,6 +1181,7 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
         journal["full_battery"] = True
         for index in range(4, len(journal["steps"])):
             step = journal["steps"][index]
+            _archive_attempt(step)
             step.update(status="pending", started_at=None, finished_at=None, evidence="")
         _write_json_atomic(journal_path, journal)
     if _journal_complete(journal):
@@ -1237,8 +1245,10 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
         if worktree.exists():
             _remove_dir(worktree)
         for index in (2, 3, 4):
+            _archive_attempt(steps[index])
             steps[index] = {"name": steps[index]["name"], "status": "pending",
-                             "started_at": None, "finished_at": None, "evidence": ""}
+                             "started_at": None, "finished_at": None, "evidence": "",
+                             **({"attempts": steps[index]["attempts"]} if "attempts" in steps[index] else {})}
         journal["worktree"]["committed"] = False
         _write_json_atomic(journal_path, journal)
 

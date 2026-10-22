@@ -20,8 +20,7 @@ on:
   pull_request:
 
 jobs:
-  baseline:
-    name: baseline
+  a:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,15 +40,33 @@ jobs:
             python3 "$f"
           done
 
+  b:
+    runs-on: ubuntu-latest
+    steps:
       - name: template harness battery
         run: python3 template/.claude/scripts/harness_tests.py --allow-cannot-run tests/platform_only.json
+
+  baseline:
+    name: baseline
+    needs: [a, b]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: gate
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do [ "$r" = success ] || exit 1; done
 """
 
 
 def main():
     cases = []
 
-    steps = blp.ci_steps(WORKFLOW)
+    jobs = blp.ci_jobs(WORKFLOW)
+    steps = [step for _, job_steps in jobs for step in job_steps]
+    cases.append(("each lane job keeps its steps; a needs: gate job is skipped",
+                  [j for j, _ in jobs] == ["a", "b"] and [len(s) for _, s in jobs] == [2, 1]))
     cases.append(("uses: steps are skipped; every run: step is kept, in order",
                   [n for n, _ in steps] == ["verify pwsh is on PATH", "baseline-repo-root proofs",
                                             "template harness battery"]))
@@ -57,7 +74,7 @@ def main():
                   steps[0][1] == "pwsh -NoProfile -Command 'exit 0'"))
     cases.append(("a block run is dedented and keeps its lines",
                   steps[1][1] == 'set -e\nfor f in tests/test_*.py; do\n  python3 "$f"\ndone'))
-    cases.append(("a workflow with no run: step parses to []", blp.ci_steps("jobs: {}\n") == []))
+    cases.append(("a workflow with no run: step parses to []", blp.ci_jobs("jobs: {}\n") == []))
 
     cases.append(("a drive path maps under /mnt",
                   blp.wsl_path(r"C:\Users\x\a b") == "/mnt/c/Users/x/a b"

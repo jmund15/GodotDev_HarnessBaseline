@@ -7,7 +7,7 @@
 
 Windows validation cannot see Linux-only failures: a `C:/` path is relative on POSIX, and real
 symlinks exist. Each one otherwise surfaces only as a red PR check, costing a closed PR and a
-fresh dry run. This tool runs every `run:` step of the worktree's own
+fresh dry run. This tool runs every `run:` step of every job in the worktree's own
 `.github/workflows/baseline.yml` in order, so it tracks CI without a copied step list. Unlike
 CI, it runs every step after a failure.
 
@@ -75,16 +75,11 @@ UV_PYTHON_INSTALL_DIR="$T/pythons" "$T/uv/uv" venv --seed --managed-python py
 """
 
 
-def ci_steps(text: str) -> list[tuple[str, str]]:
-    """`(name, script)` for every step carrying `run:`, in order. Handles a one-line `run:` and a
-    `run: |` block; `uses:` steps are skipped. Covers the shape baseline.yml uses, not all YAML."""
+def _run_steps(lines: list[str]) -> list[tuple[str, str]]:
+    """`(name, script)` for every step carrying `run:` in one job's lines."""
     steps: list[tuple[str, str]] = []
-    lines = text.splitlines()
-    starts = [n for n, line in enumerate(lines) if line.strip() == "steps:"]
-    if not starts:
-        return steps
     name = None
-    i = starts[0] + 1
+    i = 0
     while i < len(lines):
         stripped = lines[i].strip()
         if stripped.startswith("- "):
@@ -108,6 +103,29 @@ def ci_steps(text: str) -> list[tuple[str, str]]:
             steps.append((name or "run %d" % (len(steps) + 1), value))
         i += 1
     return steps
+
+
+def ci_jobs(text: str) -> list[tuple[str, list[tuple[str, str]]]]:
+    """`(job id, [(name, script)])` for every job with a `run:` step, in file order. A job that
+    declares `needs:` is skipped: it gates other jobs' results, and this tool's exit code is that
+    gate. Handles a one-line `run:` and a `run: |` block; `uses:` steps are skipped. Covers the
+    shape baseline.yml uses, not all YAML."""
+    lines = text.splitlines()
+    try:
+        start = next(n for n, line in enumerate(lines) if line.rstrip() == "jobs:") + 1
+    except StopIteration:
+        return []
+    heads = [n for n in range(start, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[n])]
+    jobs: list[tuple[str, list[tuple[str, str]]]] = []
+    for k, head in enumerate(heads):
+        body = lines[head + 1:heads[k + 1] if k + 1 < len(heads) else len(lines)]
+        if any(re.match(r"^    needs:", line) for line in body):
+            continue
+        at = next((n for n, line in enumerate(body) if line.strip() == "steps:"), None)
+        steps = _run_steps(body[at + 1:]) if at is not None else []
+        if steps:
+            jobs.append((lines[head].strip()[:-1], steps))
+    return jobs
 
 
 def wsl_path(path: str) -> str:
@@ -221,7 +239,8 @@ def main(argv: list[str]) -> int:
     if not workflow.is_file():
         print("error: %s has no %s" % (worktree, WORKFLOW.as_posix()), file=sys.stderr)
         return 3
-    steps = ci_steps(workflow.read_text(encoding="utf-8"))
+    jobs = ci_jobs(workflow.read_text(encoding="utf-8"))
+    steps = [step for _, job_steps in jobs for step in job_steps]
     if not steps:
         print("error: no run: step parsed from %s; a preview of nothing is not green"
               % (worktree / WORKFLOW).as_posix(), file=sys.stderr)
