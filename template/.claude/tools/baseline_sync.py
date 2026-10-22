@@ -1413,13 +1413,23 @@ def _bound_proofs(root: Path, files: dict, tools: list[str]) -> dict[str, list[s
             for tool in tools}
 
 
+def _proves_at_layer(files: dict, tool: str, proof: str) -> bool:
+    """A shipped proof counts for a tool only when every consumer of the tool's layer also receives it."""
+    if _entry_status(files[proof]) not in ("tracked", "forked"):
+        return False
+    tool_layer, proof_layer = files[tool].get("layer"), files[proof].get("layer")
+    if tool_layer in FULL_LAYERS and proof_layer in FULL_LAYERS:
+        return FULL_LAYERS.index(proof_layer) <= FULL_LAYERS.index(tool_layer)
+    return True
+
+
 def unproven_tools(root: Path, files: dict, candidates: list[str]) -> list[str]:
-    """The shipped (tracked or forked) tool rows among `candidates` with no shipped proof bound to them."""
+    """The shipped (tracked or forked) tool rows among `candidates` with no shipped proof bound to them at or
+    below their own layer."""
     tools = [rel for rel in candidates
              if _TOOL_RELPATH.search(rel) and rel in files and _entry_status(files[rel]) in ("tracked", "forked")]
     bound = _bound_proofs(root, files, tools)
-    return [tool for tool in tools
-            if not any(_entry_status(files[proof]) in ("tracked", "forked") for proof in bound[tool])]
+    return [tool for tool in tools if not any(_proves_at_layer(files, tool, proof) for proof in bound[tool])]
 
 
 def _refuse_unproven_new_tool(root: Path, files: dict, relpath: str, shas: dict[str, str | None],
@@ -1446,14 +1456,25 @@ def layer_closure_findings(root: Path, lock: dict, source: BaselineSource | Path
     return [f.render() for f in layer_closure.lock_findings(root, lock, manifest)]
 
 
+def layer_drift(lock: dict, source: BaselineSource | Path) -> list[tuple[str, str, str]]:
+    """Shipped rows whose lock layer differs from the manifest's: a pull never rewrites an existing row's
+    layer, so an upstream relayer leaves it stale, and a local relayer stays unpublished until a publish."""
+    manifest = _manifest_layers_v2(source, None)
+    return [(rel, entry.get("layer"), manifest[rel]) for rel, entry in sorted(lock.get("files", {}).items())
+            if _entry_status(entry) in ("tracked", "forked") and manifest.get(rel)
+            and entry.get("layer") != manifest[rel]]
+
+
 def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
               layers: list[str], strict: bool) -> int:
     results, outside = _check_results(root, lock, source, layers)
     residual = residual_placeholders(root, lock)
     unimported = unimported_layer_files(root)
     closure = layer_closure_findings(root, lock, source)
+    drift = layer_drift(lock, source)
     findings =_strict_findings(root, source, lock, results) if strict or not as_json else []
-    findings = list(findings) + [(rel, "unimported-layer-file") for rel in unimported]
+    findings = list(findings) + [(rel, "layer-drift") for rel, _lock, _manifest in drift]
+    findings += [(rel, "unimported-layer-file") for rel in unimported]
     findings += [(line, "layer-closure") for line in closure]
     unproven = unproven_tools(root, lock.get("files", {}), list(results)) if strict or not as_json else []
     findings += [(rel, "unproven") for rel in unproven]
@@ -1470,6 +1491,8 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             payload["layer_closure"] = closure
         if unproven:
             payload["unproven"] = unproven
+        if drift:
+            payload["layer_drift"] = [{"path": rel, "lock": was, "manifest": now} for rel, was, now in drift]
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         buckets: dict[str, list[str]] = {}
@@ -1498,6 +1521,11 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
                 print("  " + line)
         for relpath in unproven:
             print("unproven: " + relpath)
+        for relpath, was, now in drift:
+            print(f"layer-drift: {relpath} (lock {was}, manifest {now})")
+        for relpath, state in findings:
+            if state == "needs-judgment":
+                print("needs-judgment: " + relpath)
         print("\nclean" if not residual and not findings else "\nfindings")
         if set(layers) != set(FULL_LAYERS):
             print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")

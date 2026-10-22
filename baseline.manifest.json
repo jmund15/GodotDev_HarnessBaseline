@@ -4528,7 +4528,7 @@
     },
     {
       "path": ".claude/tests/test_post_edit_dispatch.py",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -4548,12 +4548,12 @@
     },
     {
       "path": ".claude/tests/test_pre_edit_dispatch.py",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_pre_read_dispatch.py",
-      "layer": "coding",
+      "layer": "pure",
       "sync": "auto"
     },
     {

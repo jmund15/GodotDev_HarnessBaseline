@@ -15,7 +15,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BASH = shutil.which("bash")
+sys.path.insert(0, str(ROOT / ".claude" / "tools"))
+from sidecar_launch import git_bash  # noqa: E402
+
+BASH = git_bash()
 VERSION = "9.9.9-contract"
 
 

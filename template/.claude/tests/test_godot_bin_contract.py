@@ -15,7 +15,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BASH = shutil.which("bash")
+sys.path.insert(0, str(ROOT / ".claude" / "tools"))
+from sidecar_launch import git_bash  # noqa: E402
+
+BASH = git_bash()
 NODE = shutil.which("node")
 STUB = "const fs = require('fs');\nfs.writeFileSync(process.env.STUB_OUT, JSON.stringify({ argv: process.argv.slice(2), userdir: process.env.USERDIR }));\n"
 

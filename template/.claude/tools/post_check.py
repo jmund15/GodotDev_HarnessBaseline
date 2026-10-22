@@ -636,7 +636,10 @@ def review(args, *, independent=None):
     roles_note, unseated = None, []
     seats = [seat for block in blocks for seat in block["seats"]]
     if args.stage and args.subject and args.roster:
-        cwd, subjects, foreign = ledger_home(subjects, Path(args.root or REPO))
+        home_root = Path(args.root or REPO)
+        if not args.root and subjects and _common_dir(home_root) not in {_common_dir(s.root) for s in subjects}:
+            home_root = subjects[0].root  # no --root and no subject here: the review is of the subjects' repository
+        cwd, subjects, foreign = ledger_home(subjects, home_root)
         if foreign:
             ledger_report["notRecorded"] = sorted(str(s.root) for s in foreign)
         roster = load_roster(args.roster)

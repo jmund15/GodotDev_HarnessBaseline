@@ -37,13 +37,17 @@ ROOT = os.path.abspath(os.path.join(CLAUDE, ".."))
 HOOKS = os.path.join(CLAUDE, "hooks")
 TOOLS = os.path.join(CLAUDE, "tools")
 sys.path.insert(0, TOOLS)
+sys.path.insert(0, HOOKS)
 from sidecar_launch import git_bash  # noqa: E402
+import _optional_hooks  # noqa: E402
 
+# pattern_enforcer ships with a higher layer; a consumer without it runs only the dispatcher's own cases.
+ENFORCER = _optional_hooks.present("pattern_enforcer")
 DISPATCH = os.path.join(HOOKS, "pre_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
-SUBHOOKS = ("pattern_enforcer.py", "harness_edit_skill_reminder.py",
-            "readonly_lens_write_guard.py", "running_script_edit_guard.py")
+SUBHOOKS = ("pattern_enforcer", "harness_edit_skill_reminder",
+            "readonly_lens_write_guard", "running_script_edit_guard")
 
 # Assembled, never spelled: pattern_enforcer denies any Write whose content carries it.
 EXPORT_NULL_VIOLATION = "[Export] public Node Thing = " + "null" + "!;"
@@ -116,7 +120,7 @@ def registration_cases():
     yield ("settings.json registers pre_edit_dispatch.py for Write|Edit",
            any("pre_edit_dispatch.py" in c for c in commands))
     yield ("no consolidated sub-hook keeps its own Write|Edit registration",
-           not any(name in c for c in commands for name in SUBHOOKS))
+           not any(name + ".py" in c for c in commands for name in SUBHOOKS))
     yield ("the Write|Edit PreToolUse surface is exactly one command", len(commands) == 1)
 
 
@@ -180,7 +184,9 @@ def test_s13_floor_fault_blocks_in_both_dispatchers():
 
 def test_actual_pattern_edit_fault_stays_advisory(monkeypatch):
     module = load_dispatch_module()
-    import pattern_enforcer
+    pattern_enforcer = _optional_hooks.load("pattern_enforcer")
+    if pattern_enforcer is None:
+        return
     def boom(_payload):
         raise RuntimeError('planted actual edit fault')
     monkeypatch.setattr(pattern_enforcer, 'process', boom)
@@ -217,10 +223,11 @@ def main():
                   rc == 0 and out in ("", "{}") and err == ""))
 
     # --- pattern_enforcer: hard block, first in the chain ------------------
-    rc, out, err = run(edit(game_cs, 'GD.' + 'Print("x");'), env)
-    cases.append(("pattern_enforcer still blocks with exit 2 + stderr",
-                  rc == 2 and "BLOCKED" in err))
-    cases.append(("a blocked call emits no advisory on stdout", out in ("", "{}")))
+    if ENFORCER:
+        rc, out, err = run(edit(game_cs, 'GD.' + 'Print("x");'), env)
+        cases.append(("pattern_enforcer still blocks with exit 2 + stderr",
+                      rc == 2 and "BLOCKED" in err))
+        cases.append(("a blocked call emits no advisory on stdout", out in ("", "{}")))
 
     # --- harness_edit_skill_reminder: deny, then advisory ------------------
     harness_md = os.path.join(CLAUDE, "commands", "explore.md")
@@ -385,12 +392,13 @@ def main():
                   rc == 0 and json.loads(out)["hookSpecificOutput"]["updatedInput"] == rewritten
                   and seen == ["fixed"] and "fixed note" in out))
 
-    resource_input = {"file_path": os.path.join(tmp, 'new.tres'),
-                      "content": '[gd_resource load_steps=9 type="Resource" format=3]\n\n[resource]\n'}
-    rc, out, err = module.dispatch({'tool_name': 'Write', 'tool_input': resource_input})
-    resource_updated = (json.loads(out).get('hookSpecificOutput') or {}).get('updatedInput') if out else None
-    cases.append(('S12: resource normalization reaches PreToolUse stdout',
-                  rc == 0 and resource_updated and 'load_steps' not in resource_updated['content']))
+    if ENFORCER:
+        resource_input = {"file_path": os.path.join(tmp, 'new.tres'),
+                          "content": '[gd_resource load_steps=9 type="Resource" format=3]\n\n[resource]\n'}
+        rc, out, err = module.dispatch({'tool_name': 'Write', 'tool_input': resource_input})
+        resource_updated = (json.loads(out).get('hookSpecificOutput') or {}).get('updatedInput') if out else None
+        cases.append(('S12: resource normalization reaches PreToolUse stdout',
+                      rc == 0 and resource_updated and 'load_steps' not in resource_updated['content']))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

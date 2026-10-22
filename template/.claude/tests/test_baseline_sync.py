@@ -788,6 +788,52 @@ def test_check_strict_counts_a_local_proof_as_no_proof() -> None:
         assert "unproven: " + tool in _out(_run_baseline(root, baseline, "check", "--strict"))
 
 
+def test_check_strict_counts_a_proof_above_its_tools_layer_as_no_proof() -> None:
+    """A pure consumer receives the pure tool and not its godot proof, so it reads the tool unproven;
+    a checkout holding every layer must report that gap too."""
+    high, level = ".claude/tools/high.py", ".claude/tools/level.py"
+    rows = {
+        high: {"upstream": b"x = 1\n", "layer": "pure"},
+        ".claude/tests/test_high.py": {"upstream": b"pass\n", "layer": "godot"},
+        level: {"upstream": b"x = 2\n", "layer": "coding"},
+        ".claude/tests/test_level.py": {"upstream": b"pass\n", "layer": "coding"},
+    }
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        text = _out(_run_baseline(root, baseline, "check", "--strict"))
+        assert "unproven: " + high in text, text
+        assert "unproven: " + level not in text, text
+
+
+def test_check_strict_names_a_shipped_row_whose_layer_differs_from_the_manifest() -> None:
+    """A pull never rewrites an existing row's layer, so an upstream relayer leaves the lock stale; the
+    layer-closure and unproven checks then read the stale layer."""
+    drifted, kept = ".claude/commands/drifted.md", ".claude/commands/kept.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {drifted: {"layer": "pure"}, kept: {"layer": "pure"}})
+        lock = _load_lock(root)
+        lock["files"][drifted]["layer"] = "godot"
+        (root / ".claude" / "baseline.lock.json").write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+        result = _run_baseline(root, baseline, "check", "--strict")
+        text = _out(result)
+        assert result.returncode == 1, text
+        assert "layer-drift: " + drifted + " (lock godot, manifest pure)" in text, text
+        assert kept not in text, text
+
+
+def test_check_text_names_every_strict_finding() -> None:
+    """A strict finding the state buckets do not list (a row needing judgment) still prints its path."""
+    rel = ".claude/commands/judge_me.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {rel: {"upstream": b"one\n"}})
+        (root / rel).write_bytes(b"two\n")
+        _commit(root, "local edit")
+        (root / rel).write_bytes(b"one\n")  # the working file matches upstream; the committed bytes differ
+        text = _out(_run_baseline(root, baseline, "check", "--strict"))
+        assert "needs-judgment: " + rel in text, text
+
+
 def _new_tool_fixture(path: Path, proof_status: str):
     tool, proof = ".claude/tools/fresh.py", ".claude/tests/test_fresh.py"
     rows = _proof_rows((tool, "local", b"x = 1\n"), (proof, proof_status, b"pass\n"))
