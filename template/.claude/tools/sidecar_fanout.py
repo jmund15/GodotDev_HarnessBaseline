@@ -988,6 +988,12 @@ def inputs_of(argv):
     return sorted(set(found))
 
 
+def _head_of(workdir):
+    done = subprocess.run(["git", "-C", workdir, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL)
+    return done.stdout.strip() if done.returncode == 0 and done.stdout.strip() else None
+
+
 def workdir_of(argv):
     """The `-d` operand: what the child actually reads, not what the job dict claimed."""
     try:
@@ -1179,9 +1185,11 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     inventory = {"schemaVersion": 1, "fanoutId": fanout_id,
                  "parentSessionId": parent_session, "fanoutProcess": process_line, "afterSeats": after_seats,
                  # Absolute: the inventory's readers (the Stop hook, the watcher) run from other cwds.
-                 # `workdir` lets the close tell a job writing in a worktree from one writing in its checkout.
+                 # `workdir` lets the close tell a job writing in a worktree from one writing in its checkout;
+                 # `startHead` is the commit it was cut from, the base of the changes the job made.
                  "jobs": [dict({"label": label, "launchId": launch_id, "recordPath": os.path.abspath(record_path)},
-                               **({"workdir": os.path.abspath(workdir_of(argv))} if workdir_of(argv) else {}))
+                               **({"workdir": os.path.abspath(workdir_of(argv)), "startHead": _head_of(workdir_of(argv))}
+                                  if workdir_of(argv) else {}))
                           for label, argv, _, launch_id, record_path in allocated]}
     try:
         with open(inventory_path, "x", encoding="utf-8") as fh:

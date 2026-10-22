@@ -16,7 +16,7 @@ PRINT_LIMIT = 20
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
-from self_eval_archive_store import load_archive  # noqa: E402
+from self_eval_archive_store import DEFAULT_PATTERNS, load_archive  # noqa: E402
 sys.path.insert(0, os.path.join(TOOLS, "..", "hooks"))
 from self_eval_archive_guard import OUTCOMES, LEGACY_MAX_ID, RULE_MISS_KINDS, check_recurrences  # noqa: E402
 
@@ -27,7 +27,7 @@ class AnalysisError(ValueError):
 
 METADATA_FIELDS = ("domains", "skills_used", "memory_hits")
 DURATION_EDGES = (300, 700)
-BASE_PATTERNS = ("A", "B", "C", "D", "E", "none")
+BASE_PATTERNS = (*DEFAULT_PATTERNS, "none")
 DATED = re.compile(r"^\d{4}-\d{2}-\d{2}")
 # Rows name a hit as a bare stem, a path, a `.md` name or any of those plus a reason.
 MEMORY_HIT_HEAD = re.compile(

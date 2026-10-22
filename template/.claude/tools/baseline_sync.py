@@ -406,8 +406,8 @@ class BaselineSource:
         """Template relpaths the pinned commit stores as 100755."""
         if self._exec is None:
             out = _git(self.path, ["ls-tree", "-r", "-z", self.sha, "--", "template"], check=False).stdout
-            entries = (e.decode("utf-8", errors="replace").split("\t", 1) for e in out.split(b"\0") if e)
-            self._exec = frozenset(path[len("template/"):] for meta, path in entries if meta.startswith("100755"))
+            self._exec = frozenset(path[len("template/"):] for path, mode in baseline_identity.file_modes(out).items()
+                                   if mode == "100755")
         return self._exec
 
     def close(self) -> None:
@@ -1765,8 +1765,7 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
     try:
         deps = [dep for dep in layer_closure.row_dependencies(root, relpath, layers, text) if dep in files]
     except (OSError, ValueError) as exc:
-        print(f"dependency check skipped for {relpath}: {exc}", file=sys.stderr)
-        return
+        raise BaselineError(f"dependency check failed for {relpath}: {exc}")
     states = {}
     for dep in deps:
         if dep in pushing:
@@ -1788,7 +1787,7 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
 
 def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, profile: dict,
                     subs: dict, source: BaselineSource | None, source_error: str | None,
-                    accept_hits: list[str] | None, lock: dict, pushing: set[str],
+                    accept_hits: list[str] | None, lock: dict, pushing: dict[str, str],
                     commit: str | None = None) -> None:
     hit = _classify_identity_hit(root, relpath, profile, data, subs)
     if hit is not None and hit.id not in (accept_hits or []):
@@ -1804,6 +1803,8 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
                 f"new row has no layer and publish refuses it; record one first: "
                 f"classify {relpath} --status tracked --layer pure|coding|godot")
     _refuse_unshipped_dependencies(root, relpath, data, lock, source, pushing, commit)
+    if _TOOL_RELPATH.search(relpath) and source is not None and _upstream_sha(source, relpath, subs) is None:
+        _refuse_unproven_new_tool(root, lock.get("files", {}), relpath, {}, pushing, commit)
 
 
 def _carry_walk(root: Path, base: str, head: str, relpath: str,
@@ -1862,12 +1863,11 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
         subs = lock.get("substitutions", {})
         profile = None
         carried = []
-        carrying = {rel for rel in relpaths if (files.get(rel, {}).get("judged") or {}).get("verdict") == "push"}
+        walks: dict[str, tuple[str, bytes | str | None, bytes | None]] = {}
         for relpath in relpaths:
             if relpath not in files:
                 raise BaselineError(f"not a row: {relpath}")
-            entry = files[relpath]
-            old = entry.get("judged") or {}
+            old = files[relpath].get("judged") or {}
             if old.get("verdict") != "push":
                 report.append(f"not carried: {relpath} (judged {old.get('verdict') or 'never'}, not push)")
                 continue
@@ -1875,6 +1875,13 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
             if final_sha is None:
                 report.append(f"not carried: {relpath} ({first_before})")
                 continue
+            walks[relpath] = (final_sha, first_before, final)
+        # Only rows whose carry succeeded are being pushed at their final sha; a named dependency whose carry
+        # failed is judged at its current blob like any other dependency.
+        carrying = {rel: walk[0] for rel, walk in walks.items()}
+        for relpath, (final_sha, first_before, final) in walks.items():
+            entry = files[relpath]
+            old = entry.get("judged") or {}
             if profile is None:
                 profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
             _push_preflight(root, relpath, entry, final, profile, subs, source, source_error, accept_hits,
@@ -1952,10 +1959,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
                 data = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
                 _push_preflight(root, relpath, entry, data, profile, subs, source, source_error, accept_hits,
-                                lock, set(pushing), commit)
-                if (_TOOL_RELPATH.search(relpath) and source is not None
-                        and _upstream_sha(source, relpath, subs) is None):
-                    _refuse_unproven_new_tool(root, files, relpath, dict(current), pushing, commit)
+                                lock, pushing, commit)
             entry["judged"] = _decision(
                 root, relpath, verdict, sha_value=current_sha,
                 borderline=borderline, confirmed_at=confirmed_at,
@@ -2212,6 +2216,12 @@ def _apply_source_mode(root: Path, source: BaselineSource, relpath: str) -> None
         os.chmod(root / relpath, 0o755)
 
 
+def _write_row(root: Path, source: BaselineSource, relpath: str, data: bytes | str) -> None:
+    """Every pull write of a delivered row: its content and the baseline's executable bit, in one call."""
+    _write_lf(root / relpath, data)
+    _apply_source_mode(root, source, relpath)
+
+
 def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
             merge: bool = False) -> int:
     _validate_relpaths(relpaths)
@@ -2313,8 +2323,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 continue
             if action == "seed":
                 if upstream is not None:
-                    _write_lf(root / relpath, upstream)
-                    _apply_source_mode(root, source, relpath)
+                    _write_row(root, source, relpath, upstream)
                 else:
                     kept_seeds.append(relpath)
                 seeds.append(relpath)
@@ -2348,15 +2357,12 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                     _write_lf(_merge_base_marker(copy_path), sha(upstream.encode("utf-8")) + "\n")
                     conflicts.append((relpath, f"{hunks} hunks", copy_path))
                     continue
-                _write_lf(root / relpath, text)
-                _apply_source_mode(root, source, relpath)
+                _write_row(root, source, relpath, text)
                 files[relpath]["hash"] = sha(upstream.encode("utf-8"))
                 merged.append(relpath)
                 changed.append(relpath)
                 continue
-            destination = root / relpath
-            _write_lf(destination, upstream)
-            _apply_source_mode(root, source, relpath)
+            _write_row(root, source, relpath, upstream)
             upstream_hash = sha(upstream.encode("utf-8"))
             if action is None:
                 files[relpath] = {

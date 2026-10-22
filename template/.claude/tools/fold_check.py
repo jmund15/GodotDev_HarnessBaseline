@@ -29,7 +29,7 @@ Checks, each a failure kind in the report:
                           applied refutation has no verified evidence, unless `--ruled` names it
   fold-not-applied        an applied old/new pair whose `old` is still present: it occurs as often as in the
                           snapshot bytes of its file (an `adapted`, `fold` or `ruling` source may keep it on a
-                          line that changed). A pair whose `old`
+                          line that changed). A `finding`-sourced pair whose `old`
                           is gone but whose `new` is not verbatim is recorded `adapted` for the next round's
                           re-review, never a failure
   fold-old-missing        an applied FIX whose `old` occurs zero times in its file's snapshot bytes,
@@ -108,7 +108,7 @@ from typing import Literal
 Scope = Literal["id", "file", "path", "finding", "subject", "none", "run"]
 FAILURE_SCOPE: dict[str, Scope] = {
     "fold-not-applied": "id", "fold-applied-unverified": "id", "fold-old-missing": "id",
-    "fold-applied-held": "id", "fold-application-unattributed": "subject",
+    "fold-applied-held": "id", "fold-application-unattributed": "id",
     "fold-test-order": "id", "fold-untested-code": "id", "fold-unchanged-file": "file",
     "fold-out-of-subject": "path", "fold-id-coverage": "id", "fold-routing": "finding",
     "fold-invalid-shape": "subject", "fold-snapshot-missing": "subject",

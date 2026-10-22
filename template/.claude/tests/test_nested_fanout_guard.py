@@ -153,6 +153,11 @@ def main():
             "  - Context: run /explore rather than hand-rolling the sweep.\n  - Where: .claude/commands/explore.md\n\nReturn JSON.")])),
         ("imperative after 'you must' still denies", DENY, agent(
             "For each lens you must dispatch it through .claude/workflows/dispatch.js and merge the results.")),
+        # Measured false positive 2026-10-22 (F27231): an audit brief's file-list label.
+        ("a label line listing engine files is data", ALLOW, agent(
+            "Seams:\n- Dispatch verification: tools/dispatch_result.py, workflows/dispatch.js\n- Ledger: tools/review_ledger.py")),
+        ("a list item ordering a dispatch still denies", DENY, agent(
+            "Steps:\n- Dispatch these lenses through workflows/dispatch.js, then merge the results.")),
     ]
 
     # A real generated lens brief must pass: lens_briefs.py strips the caller-facing spawn rules.

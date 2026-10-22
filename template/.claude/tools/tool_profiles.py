@@ -735,6 +735,10 @@ FENCED_RE = re.compile(r"```.*?```", re.S)
 # An engine file inside a code span that a shell tool opens (`node --check …/review_fanout.js`,
 # `git diff -- …/dispatch.js`) is a file being checked or read, never a dispatch.
 SHELL_SPAN_RE = re.compile(r"`\s*(?:node|python3?|git|cat|grep|rg|sed|head|tail|wc|ls|diff)\b[^`\n]*$")
+# A label of two or three words whose line holds only paths after its colon (`- Dispatch
+# verification: tools/x.py, workflows/dispatch.js`) lists files; its first word is a noun.
+PATH_LIST_LABEL_RE = re.compile(r"^[ \t]*(?:[-*+]\s+)?\w+(?:[ \t]+\w+){1,2}:[ \t]+"
+                                r"`?[\w./\-]+`?(?:[ \t]*,[ \t]*`?[\w./\-]+`?)*[ \t]*$")
 
 
 def instruction_text(text):
@@ -769,6 +773,12 @@ def _shell_argument(text, match, target_re):
     line_start = text.rfind("\n", 0, match.start()) + 1
     before = text[line_start:match.start() + last.start()]
     return before.count("`") % 2 == 1 and bool(SHELL_SPAN_RE.search(before))
+
+
+def _path_list_label(text, match):
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_end = text.find("\n", match.start())
+    return bool(PATH_LIST_LABEL_RE.match(text[line_start:line_end if line_end >= 0 else len(text)]))
 
 
 _VERB_ANY = re.compile(r"(?<![\w/\-])(?:dispatch|fan[- ]?out|spawn|launch|invoke|execute|run|use|follow)\b", re.I)
@@ -814,7 +824,8 @@ def nested_fanout_hits(text, root=None, fanout=True):
     nested, named = _grammar(grants, engines=fanout)
     hits = []
     for m in nested.finditer(body):
-        if _shell_argument(body, m, named) or _negated_dispatch(body, m, named):
+        if (_shell_argument(body, m, named) or _negated_dispatch(body, m, named)
+                or _path_list_label(body, m)):
             continue
         targets = list(named.finditer(m.group(0)))
         target = targets[-1] if targets[-1].end() == len(m.group(0)) else targets[0]

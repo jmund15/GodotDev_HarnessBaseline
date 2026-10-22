@@ -30,7 +30,7 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
    ```bash
    python3 "$CLAUDE_PROJECT_DIR/.claude/tools/adaptation.py" run index_prebuild
    ```
-   With no `index_prebuild` entry the step prints nothing. Report the counts the commands print. A failing command is reported and the rest still run; none of it blocks the re-index.
+   Report the counts the commands print and any failing command; neither blocks the re-index.
 
 4. Report composition — what the corpus is now made of, top buckets by chunk count plus
    `.claude/auto-memory`'s share, read straight from the rebuilt db:
@@ -39,7 +39,7 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
    ```
    Print the table as-is. It is the only routine signal that the corpus has drifted; recall
    degrades silently otherwise, so a number every rebuild is what makes drift visible.
-   Flag a bucket that has become disproportionate against §Corpus hygiene below. On `no baseline set`, judge the corpus against §Corpus hygiene and, when healthy, run `python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py" --set-baseline`.
+   Flag a bucket that has become disproportionate against §Corpus hygiene below. On `no baseline set` and a corpus §Corpus hygiene judges healthy, run `python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py" --set-baseline`.
 
 5. Report:
    - Time elapsed

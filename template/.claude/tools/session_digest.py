@@ -595,18 +595,19 @@ def build_evidence_index(d: dict) -> dict:
 
 
 def select_evidence(d: dict, ids: list[str]) -> list[dict]:
-    """Return exact full rows by stable source-line ID; unknown IDs fail loudly."""
+    """Return exact full rows by stable source-line ID; unknown IDs fail loudly. A friction ID
+    selects every row on its line: parallel tool calls answer on one transcript line."""
     available = {}
     for kind, prefix, key in (("prompt", "U", "user_messages"), ("friction", "F", "friction")):
         for row in d.get(key) or []:
             evidence_id = _evidence_id(prefix, row)
-            if evidence_id in available:
+            if evidence_id in available and kind == "prompt":
                 raise ValueError(f"duplicate evidence id: {evidence_id}")
-            available[evidence_id] = {"id": evidence_id, "kind": kind, "row": row}
+            available.setdefault(evidence_id, []).append({"id": evidence_id, "kind": kind, "row": row})
     missing = [evidence_id for evidence_id in ids if evidence_id not in available]
     if missing:
         raise ValueError("unknown evidence id(s): " + ", ".join(missing))
-    return [available[evidence_id] for evidence_id in ids]
+    return [entry for evidence_id in ids for entry in available[evidence_id]]
 
 
 def evidence_page(index: dict, kind: str, page: int, page_size: int) -> dict:

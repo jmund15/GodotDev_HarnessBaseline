@@ -654,7 +654,7 @@ def _load_json(path: str, label: str) -> dict:
     return data
 
 
-def _load_files_from(path: str) -> list[str]:
+def load_files_from(path: str) -> list[str]:
     try:
         text = Path(path).read_text(encoding="utf-8-sig")
     except OSError as exc:
@@ -3201,7 +3201,7 @@ def main(argv=None) -> int:
     try:
         args = _build_parser().parse_args(sys.argv[1:] if argv is None else argv)
         if getattr(args, "files_from", None) is not None:
-            args.files = (args.files or []) + _load_files_from(args.files_from)
+            args.files = (args.files or []) + load_files_from(args.files_from)
         if args.command == "uncovered" and args.files is None:
             raise ToolError("uncovered needs --files or --files-from")
         repo = Path(getattr(args, "repo", None) or Path.cwd())

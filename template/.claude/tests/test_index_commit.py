@@ -378,6 +378,28 @@ def case_head_moved(tmp):
           res.returncode != 0 and "keep_b.py" in out and "revert" in out, out)
 
 
+def case_resync_after_later_commit(tmp):
+    """The private-index commit landed, then a later commit changed the same path before resync."""
+    root, env = scene(tmp, "later")
+    (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
+    proc = tool(root, env, ["stage", "--name", "later", "--", "keep_a.py"])
+    check("later scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
+    if proc.returncode != 0:
+        return
+    commit_index(root, env, "later", "mine")
+    (root / "keep_a.py").write_text("later fix\n", encoding="utf-8", newline="\n")
+    git(root, ["commit", "-q", "-m", "later", "--", "keep_a.py"], env)
+    res = tool(root, env, ["resync", "--name", "later"])
+    out = res.stdout + res.stderr
+    check("resync after a later commit on the same path exits 0, not 'did not land'",
+          res.returncode == 0 and "did not land" not in out, out)
+    check("the later commit's path has no staged change left", "keep_a.py" not in names(root, env, cached=True),
+          names(root, env, cached=True))
+    check("later scene: resync removes the private index and its sidecar",
+          not (root / ".git" / "index-later").exists()
+          and not (root / ".git" / "index-later.paths.json").exists())
+
+
 RACE_DRIVER = """
 import subprocess, sys
 sys.argv = ["index_commit.py", "stage", "--name", "race", "--", "keep_a.py"]
@@ -708,7 +730,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="index_commit_proof_") as tmp:
         for case in (case_new_gitignored_file, case_deleted_path, case_forget_row_of_earlier_deletion,
                      case_lock_path_refused, case_peer_and_resync, case_changed_row_travels_with_its_path,
-                     case_peer_staged_same_path, case_head_moved, case_seeded_from_recorded_base, case_head_moved_lock_rows,
+                     case_peer_staged_same_path, case_head_moved, case_resync_after_later_commit,
+                     case_seeded_from_recorded_base, case_head_moved_lock_rows,
                      case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
                      case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,
                      case_resync_nochange_entry, case_failed_stage_keeps_peer_rows, case_resync_transaction):

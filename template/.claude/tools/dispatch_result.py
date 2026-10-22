@@ -596,7 +596,8 @@ def _sidecar_origin(root, source, label, brief):
     if paths is None:
         raise Refused("consume reads a Workflow run dir, a sidecar fan-out out dir or a -R record")
     record_path, stdout_path, out_dir = paths
-    workdir = _inventory_job(out_dir, label).get("workdir") if Path(source).is_dir() else None
+    job = _inventory_job(out_dir, label) if Path(source).is_dir() else {}
+    workdir = job.get("workdir")
     if not brief:
         raise Refused("a sidecar source needs --brief: its record and inventory hold no brief path")
     try:
@@ -616,7 +617,7 @@ def _sidecar_origin(root, source, label, brief):
             "seed_jobs": [{"label": label, "model": record.get("requestedModel"), "effort": record.get("effort")}],
             "session": None, "record_dir": record_path.parent, "run": None,
             "claims_path": Path(str(record_path) + ".claims.json"),
-            "workdir": Path(workdir) if workdir else None}
+            "workdir": Path(workdir) if workdir else None, "startHead": job.get("startHead")}
 
 
 def _read_task(brief_file):
@@ -715,7 +716,7 @@ def _judge(root, label, origin, check_timeout, result):
     work = origin.get("workdir") or root
     base = "HEAD"
     if origin.get("workdir"):
-        base = _git(work, "rev-list", "-1", f"--before={int(origin['start_s'])}", "HEAD").strip() or "HEAD"
+        base = origin.get("startHead") or _git(work, "rev-list", "-1", f"--before={int(origin['start_s'])}", "HEAD").strip() or "HEAD"
     result.update(deliverable=deliverable.as_posix(),
                   digest="\n".join(text.splitlines()[:DIGEST_LINES])[:DIGEST_CHARS],
                   changed=_changed_rows(work, task.get("writeSet", []), returned, origin["start_s"], base))

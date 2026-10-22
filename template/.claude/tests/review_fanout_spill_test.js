@@ -119,8 +119,8 @@ function checkFallback(label, runResult, expected = ['strong source', 'weak sour
 // result carries: the fingerprint covers the result, every agent() option and every log line in full and bounded modes.
 const crypto = require('crypto')
 const NO_FOLD_FINGERPRINTS = {
-  full: 'bf698e204a078ceea87dfd17c3fbfa596a954f26bda0d68bcf562d0df46982a2',
-  bounded: '06aa73c8cac6f885e0d444f284d0a0bdcefe55bb4fd63d0e186c8032266db524',
+  full: '687729f46e749172aea2350a51da892148d7d48c4588cb89d3f4e342d7e6fe66',
+  bounded: 'f7a81629c672a801dfdb9a35f4734c8285dd7804fba0157176098f5031e19401',
 }
 const fingerprint = (r) => crypto.createHash('sha256').update(JSON.stringify({
   result: r.result, opts: r.calls.map(c => c.opts), logs: r.logs,
@@ -184,6 +184,14 @@ async function foldCases() {
       && grouped.result.verification.counts.UNVERIFIED === 1
       && grouped.result.findings[0].verdict === 'UNVERIFIED', JSON.stringify(grouped.result))
   } finally { fs.rmSync(tmp, { recursive: true, force: true }) }
+  const clean = await run({ ...noFoldArgs('full'), fold: FOLD,
+    __toolProfiles: { verify: { agentType: 'general-purpose', tier: 'fanout' } } },
+  (prompt, opts) => opts.phase === 'Verify' ? { status: 'pass', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: 0 },
+    verdicts: {}, report: prompt.match(/--out ([\w./:-]+)/)[1] } : { findings: [] })
+  const cleanVerify = clean.calls.find(call => call.opts.phase === 'Verify')
+  check('a clean review skips the fold and still names each fold subject\'s snapshot to the post-check',
+    clean.result.fold.status === 'skipped' && cleanVerify && cleanVerify.prompt.includes("--reviewed-snapshot '" + SNAPSHOT + "'"),
+    JSON.stringify({ fold: clean.result.fold && clean.result.fold.status, prompt: cleanVerify && cleanVerify.prompt.slice(0, 600) }))
   const ruling = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
     applied: [{ id: 'F1', change: 'owner wording', source: 'ruling' }],
     designDelta: [PLAN_P + ': owner wording'],
@@ -908,7 +916,7 @@ async function verificationCases() {
     holdPrompt && holdPrompt.prompt.slice(0, 1600))
   check('the fold prompt defers the not-VERIFIED hold and its --ruled exception to template step 5',
     holdPrompt && holdPrompt.prompt.includes('steps 4 and 5') && !holdPrompt.prompt.includes('not VERIFIED (`unverified`)')
-      && foldTemplate.includes('apply it only with a VERIFIED verdict') && foldTemplate.includes('--ruled'),
+      && foldTemplate.includes('applied only with a VERIFIED verdict') && foldTemplate.includes('--ruled'),
     holdPrompt && holdPrompt.prompt.slice(0, 400))
 
   const altReply = (_prompt, opts) => opts.phase === 'Fold'

@@ -36,7 +36,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
-from sidecar_argv import literal_launcher_body, executable_index
+try:
+    from sidecar_argv import literal_launcher_body, executable_index
+except Exception:  # each guard that needs the parser imports it itself and denies on its failure
+    literal_launcher_body = executable_index = None
 
 try:
     from _command_text import executable_text, executable_spans, command_words, executable_word, strip_heredocs
@@ -303,6 +306,8 @@ def resolve_index(git_env, cwd):
 
 
 def _launcher_context(segment, cwd, exported, assignments):
+    if executable_index is None:
+        return None
     parsed = command_words(segment)
     if parsed is None:
         tokens = _tokens(segment)
@@ -341,7 +346,7 @@ def _launcher_context(segment, cwd, exported, assignments):
 def _body_source(segment, body):
     """Safe literal body word and decoded-character boundaries in its segment."""
     parsed = command_words(segment)
-    if parsed is None:
+    if parsed is None or executable_index is None:
         return None
     words = parsed[0]
     tokens, index = executable_index([word.value for word in words])

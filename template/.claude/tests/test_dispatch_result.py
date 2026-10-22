@@ -437,6 +437,30 @@ case("a fan-out job's commits in its workdir since the run start list as changed
      lambda: "CHANGED unchanged marker.txt" not in _wd_run[1] and "marker.txt" in _wd_run[1]
      and "+job" in _wd_run[1])
 
+# The worktree's commits are dated after the run start, so no commit precedes it: the recorded start head is the base.
+_hd_record, _hd_brief, _hd_dir = plant_sidecar("sc_start_head", {"check": [_wd_check], "writeSet": ["marker.txt"]})
+open(os.path.join(_hd_dir, "w1.out.json"), "w", encoding="utf-8").write('{"type":"result","result":"sidecar final"}\n')
+_hd = os.path.join(TMP, "sc_start_head_tree")
+os.makedirs(_hd)
+_later = dict(os.environ, GIT_AUTHOR_DATE="2099-01-01T00:00:00Z", GIT_COMMITTER_DATE="2099-01-01T00:00:00Z")
+for _args in (("init", "-q"), ("config", "user.email", "proof@example.com"), ("config", "user.name", "proof")):
+    subprocess.run(["git", "-C", _hd, *_args], check=True, capture_output=True)
+open(os.path.join(_hd, "marker.txt"), "w", encoding="utf-8").write("base\n")
+subprocess.run(["git", "-C", _hd, "add", "marker.txt"], check=True, capture_output=True)
+subprocess.run(["git", "-C", _hd, "commit", "-q", "-m", "cut"], check=True, capture_output=True, env=_later)
+_hd_start = subprocess.run(["git", "-C", _hd, "rev-parse", "HEAD"], check=True, capture_output=True,
+                           text=True).stdout.strip()
+open(os.path.join(_hd, "marker.txt"), "w", encoding="utf-8").write("job\n")
+subprocess.run(["git", "-C", _hd, "commit", "-q", "-am", "the job's commit"], check=True, capture_output=True,
+               env=_later)
+with open(os.path.join(_hd_dir, "fanout-a.inventory.json"), "w", encoding="utf-8") as fh:
+    json.dump({"schemaVersion": 1, "jobs": [{"label": "w1", "recordPath": _hd_record, "workdir": _hd,
+                                             "startHead": _hd_start}]}, fh)
+_hd_run = cli("consume", _hd_dir, "--label", "w1", "--brief", _hd_brief, "--check-timeout", "20")
+case("a fan-out job's commits since its recorded start head list as changed, though dated after the run start",
+     lambda: "CHANGED unchanged marker.txt" not in _hd_run[1] and "marker.txt" in _hd_run[1]
+     and "+job" in _hd_run[1])
+
 # ---- consume: the claims check on a sidecar fan-out out dir -------------------------------------
 def plant_fanout_claims(name, claims_by_label):
     """A fan-out out dir with one terminal job per label; a label's value is its claims file body, or None for none."""
