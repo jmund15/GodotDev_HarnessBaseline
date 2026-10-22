@@ -30,11 +30,16 @@ CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
 ROOT = os.path.abspath(os.path.join(CLAUDE, ".."))
 HOOKS = os.path.join(CLAUDE, "hooks")
 DISPATCH = os.path.join(HOOKS, "post_edit_dispatch.py")
+sys.path.insert(0, HOOKS)
+import _optional_hooks  # noqa: E402
+
+# check_logger_tag_prefix ships with a higher layer; a consumer without it runs only the dispatcher's own cases.
+LOGGER_TAGS = _optional_hooks.present("check_logger_tag_prefix")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
-SUBHOOKS = ("check_logger_tag_prefix.py", "plan_memory_reminder.py",
-            "design_surface_reminder.py", "harness_growth_guard.py",
-            "self_eval_archive_guard.py", "retire_trigger_advisory.py")
+SUBHOOKS = ("check_logger_tag_prefix", "plan_memory_reminder",
+            "design_surface_reminder", "harness_growth_guard",
+            "self_eval_archive_guard", "retire_trigger_advisory")
 
 GAME_PLAN = """# Spell AI status behavior
 
@@ -132,7 +137,7 @@ def registration_cases():
     yield ("settings.json registers post_edit_dispatch.py for Write|Edit",
            any("post_edit_dispatch.py" in c for c in commands))
     yield ("no consolidated sub-hook keeps its own Write|Edit registration",
-           not any(name in c for c in commands for name in SUBHOOKS))
+           not any(name + ".py" in c for c in commands for name in SUBHOOKS))
     yield ("the Write|Edit PostToolUse surface is exactly one command", len(commands) == 1)
 
 
@@ -152,12 +157,13 @@ def main():
     cases.append(("a clean edit emits nothing and exits 0", rc == 0 and out in ("", "{}")))
 
     # --- check_logger_tag_prefix ------------------------------------------
-    logger_payload = written(clean_cs, 'JmoLogger.Info(this, "plain message");', tool="Edit")
-    logger_payload["tool_input"] = {"file_path": clean_cs, "old_string": "var x = 1;",
-                                    "new_string": 'JmoLogger.Info(this, "plain message");'}
-    rc, out, err = run(logger_payload, env)
-    cases.append(("check_logger_tag_prefix still warns about an untagged call",
-                  rc == 0 and "[logger_tag_prefix]" in context(out)))
+    if LOGGER_TAGS:
+        logger_payload = written(clean_cs, 'JmoLogger.Info(this, "plain message");', tool="Edit")
+        logger_payload["tool_input"] = {"file_path": clean_cs, "old_string": "var x = 1;",
+                                        "new_string": 'JmoLogger.Info(this, "plain message");'}
+        rc, out, err = run(logger_payload, env)
+        cases.append(("check_logger_tag_prefix still warns about an untagged call",
+                      rc == 0 and "[logger_tag_prefix]" in context(out)))
 
     # --- plan_memory_reminder ---------------------------------------------
     plan_path = os.path.join(tmp, "repo", ".claude", "plans", "b2-game-fixture.md")
