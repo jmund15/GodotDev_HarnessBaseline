@@ -9,7 +9,7 @@ root, the Integration quarantine filter, memory domains, paired repos, the rule 
 scopes, structure exceptions, PR domains, content nouns, the work-triage tag registry
 (`sensitivity_tags`, read by `tools/triage.py`), the citation checker's code extensions and
 vocabulary words (`source_extensions`, `symbol_stopwords`, read by `tools/verify_doc_citations.py`), the rule-text scope and row-file location (`instruction_scope`, read by `tools/extract_numbers.py` and `tools/restate_scan.py`), the review mandate catalog and
-ledger path scope (`review_mandates`, `review_scope`, read by `tools/review_ledger.py` and `tools/escape_log.py`), the proof runner's excluded/timeout tables and the directories a project proof scans whole (`proof_corpus`, {proof: [dir, ...]}), the absolute document roots the project reads outside the repo (`doc_roots`, re-injected after compaction by `hooks/compact_directive_anchor.py`), and the mandates a later review round seats for added facts and changed seams (`later_round_roles`, {stage: {grounding, coherence: {meta, code}}}, read by `tools/post_check.py`, which reports `roles: omitted` for a stage with no row), the key prefix a registry's lens headings share (`lens_prefixes`, {registry: prefix}, read by `tools/lens.py`; a registry with no row takes every heading), the doctrine files a project attaches to a lens beyond its header `preload:` lines (`lens_preloads`, {lens key: [path relative to `.claude/`]}, read by `tools/lens.py`). The baseline tracks only this file's default seed (manifest `sync: seed`);
+ledger path scope (`review_mandates`, `review_scope`, read by `tools/review_ledger.py` and `tools/escape_log.py`), the proof runner's excluded/timeout tables and the directories a project proof scans whole (`proof_corpus`, {proof: [dir, ...]}), the absolute document roots the project reads outside the repo (`doc_roots`, re-injected after compaction by `hooks/compact_directive_anchor.py`), and the mandates a later review round seats for added facts and changed seams (`later_round_roles`, {stage: {grounding, coherence: {meta, code}}}, read by `tools/post_check.py`, which fails with Unusable for a ledgered stage with no row), the key prefix a registry's lens headings share (`lens_prefixes`, {registry: prefix}, read by `tools/lens.py`; a registry with no row takes every heading), the doctrine files a project attaches to a lens beyond its header `preload:` lines (`lens_preloads`, {lens key: [path relative to `.claude/`]}, read by `tools/lens.py`). The baseline tracks only this file's default seed (manifest `sync: seed`);
 each consumer's copy is `local` and never published.
 
 Framework data the shipped tools need lives beside it in `adaptation.<layer>.defaults.json`
@@ -145,7 +145,7 @@ def adaptation_path(claude_dir) -> Path:
 
 _CACHE: dict = {}
 
-LAYER_ORDER = ("pure", "coding", "godot")
+LAYER_ORDER = ("pure", "coding", "godot")  # keep in step with baseline_compose.settings_overlay_files; generalize that walk when a third consumer appears
 
 
 def _adaptation_files(claude_dir) -> list:

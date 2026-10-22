@@ -1751,7 +1751,7 @@ def _unwatched_rosters_reason(payload):
                       if (unit.get("roster") or {}).get("state") == "LIVE")
     except Exception as exc:
         return None, ("⚠ the bench roster check did not run (%s: %s); a live roster this session started "
-                      "would go unwatched." % (type(exc).__name__, exc))
+                      "would go unwatched. If one is live, arm `python3 .claude/tools/watch_records.py --session --wake` with run_in_background." % (type(exc).__name__, exc))
     return (NO_WATCHER_ROSTER_REASON % ", ".join(live) if live else None), None
 
 

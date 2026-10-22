@@ -2710,8 +2710,63 @@ def test_carry_refuses_a_row_whose_dependency_is_local() -> None:
         assert _load_lock(root)["files"][_DEP_CITER]["judged"]["sha"] == _sha(_DEP_CITES)
 
 
+def test_carry_refuses_a_new_tool_whose_proof_is_local() -> None:
+    with _fixture() as path:
+        tool, proof = ".claude/tools/fresh.py", ".claude/tests/test_fresh.py"
+        rows = _proof_rows((tool, "local", b"x = 1\n"), (proof, "local", b"pass\n"))
+        rows[tool]["judged"] = _judged_push(b"x = 1\n")
+        root, baseline, _r, _c = _v2_fixture(path, rows)
+        base = _head(root)
+        _write(root / tool, b"x = 2\n")
+        _commit(root, "edit tool")
+        result = _run_baseline(root, baseline, "judge", tool, "--carry", f"{base}..{_head(root)}")
+        assert result.returncode == 1, _out(result)
+        assert "shipped proof" in _out(result), _out(result)
+        assert _load_lock(root)["files"][tool]["judged"]["sha"] == _sha(b"x = 1\n")
+
+
+def test_carry_refuses_a_citer_whose_named_dependency_is_not_carried() -> None:
+    # A named dependency judged push at an older blob, which this range does not carry, must not pass the
+    # citer's S-deps check: it is not being pushed at its current sha.
+    with _fixture() as path:
+        rows = _dep_rows(_dep_helpers()["local"])
+        rows[_DEP_CITER]["judged"] = _judged_push(_DEP_CITES)
+        rows[_DEP_HELPER]["judged"] = _judged_push(_DEP_OLD)
+        root, baseline, _r, _c = _v2_fixture(path, rows)
+        base = _head(root)
+        _write(root / _DEP_CITER, _DEP_CITES + b"More.\n")
+        _commit(root, "edit citer")
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, _DEP_HELPER, "--carry", f"{base}..{_head(root)}")
+        assert result.returncode == 1, _out(result)
+        assert _DEP_HELPER in _out(result), _out(result)
+
+
+def test_dependency_check_failure_refuses_the_push() -> None:
+    # An unreadable dependency scan must refuse, never let the citer pass unchecked.
+    sys.path.insert(0, str(ENGINE.parent))
+    import baseline_sync as bs
+    real = bs.layer_closure.row_dependencies
+
+    def unreadable(*_args, **_kwargs):
+        raise OSError("planted unreadable manifest")
+
+    bs.layer_closure.row_dependencies = unreadable
+    try:
+        try:
+            bs._refuse_unshipped_dependencies(Path("."), _DEP_CITER, _DEP_CITES, {"files": {}}, None, {}, None)
+        except bs.BaselineError as exc:
+            assert "dependency check failed" in str(exc), str(exc)
+            return
+        raise AssertionError("an unreadable dependency scan passed the push")
+    finally:
+        bs.layer_closure.row_dependencies = real
+
+
 def main() -> int:
     cases = [
+        test_carry_refuses_a_new_tool_whose_proof_is_local,
+        test_carry_refuses_a_citer_whose_named_dependency_is_not_carried,
+        test_dependency_check_failure_refuses_the_push,
         test_pull_chmods_a_100755_entry_and_leaves_a_100644_entry,
         test_pull_keeps_the_posix_exec_bit_of_a_100755_entry,
         test_pull_prints_each_written_row_the_gitignore_matches,

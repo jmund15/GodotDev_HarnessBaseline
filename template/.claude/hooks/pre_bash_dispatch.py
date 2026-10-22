@@ -45,6 +45,9 @@ try:
     _bootstrap = '_git_commit'
     import _git_commit  # noqa: E402
 
+    _bootstrap = 'sidecar_argv'  # _git_commit tolerates its absence; the shell guards need it
+    import sidecar_argv  # noqa: E402,F401
+
     _bootstrap = '_optional_hooks'
     import _optional_hooks  # noqa: E402
 except Exception as exc:
@@ -54,9 +57,10 @@ except Exception as exc:
         _payload = None
     if isinstance(_payload, dict) and _payload.get('tool_name') in ('Bash', 'PowerShell'):
         sys.stderr.write(
-            'BLOCKED shell call -- %s failed to import (%s: %s). Repair hooks/%s.py; '
+            'BLOCKED shell call -- %s failed to import (%s: %s). Repair %s/%s.py; '
             'no shell call runs until it imports cleanly.\n' %
-            (_bootstrap, type(exc).__name__, exc, _bootstrap))
+            (_bootstrap, type(exc).__name__, exc,
+             'tools' if _bootstrap == 'sidecar_argv' else 'hooks', _bootstrap))
         sys.exit(2)
     sys.exit(0)
 

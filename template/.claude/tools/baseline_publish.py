@@ -80,9 +80,8 @@ def _git_show(repo: Path, commit: str, relpath: str) -> bytes | None:
 
 
 def _git_mode(repo: Path, commit: str, relpath: str) -> str | None:
-    result = _git(repo, ["ls-tree", commit, "--", relpath], check=False)
-    fields = result.stdout.decode("utf-8", errors="replace").split(None, 1)
-    return fields[0] if result.returncode == 0 and fields else None
+    result = _git(repo, ["ls-tree", "-z", commit, "--", relpath], check=False)
+    return baseline_identity.file_modes(result.stdout).get(relpath) if result.returncode == 0 else None
 
 
 def _write_lf(path: Path, data: bytes | str) -> None:

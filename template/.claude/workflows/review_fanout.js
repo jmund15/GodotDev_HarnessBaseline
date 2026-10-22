@@ -61,7 +61,7 @@ const EVIDENCE_SCHEMA = {
           "command",
           "output"
         ],
-        "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED.",
+        "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED. One leading `git -C <dir>` (an existing repository-relative directory, where the command then runs) and `check-ignore --no-index` are allowed.",
         "properties": {
           "command": {
             "type": "string",
@@ -201,6 +201,10 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
     if (fold && fold.findings) {
       if (fold.digest) command += ' --digest ' + quoteArg(fold.digest)
       if (fold.snapshot) command += ' --snapshot ' + quoteArg(fold.snapshot)
+    }
+    // A subject the fold skipped writes no digest, so each subject's snapshot also names the files the review read.
+    for (const subject of (fold && !fold.findings && Array.isArray(fold.subjects) ? fold.subjects : [])) {
+      if (subject && subject.snapshot) command += ' --reviewed-snapshot ' + quoteArg(subject.snapshot)
     }
     if (root) command += ' --root ' + quoteArg(root)
     if (spillDir) command += ' --spill-dir ' + quoteArg(rootedPath(A, spillDir))

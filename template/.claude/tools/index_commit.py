@@ -25,9 +25,10 @@ copy, for a file whose working copy holds a peer's edits beside yours.
   --blob keeps HEAD's mode (100644 for a new path), for deliberate bytes-only overlays.
 
 `resync` reads the path list `stage` saved beside the private index (`.git/index-<name>.paths.json`)
-and refuses if HEAD does not hold the staged tree for those paths, so a commit that never landed
-cannot pass for one that did. A committed path whose shared-index entry differs from both the old
-and the new HEAD blob is a peer's staged change: it is reported and left alone. It prints
+and refuses if no commit since the stage base holds the staged tree for those paths, so a commit
+that never landed cannot pass for one that did; a later commit that changed those paths again is
+accepted. A committed path whose shared-index entry differs from the old, the staged and the current
+HEAD blob is a peer's staged change: it is reported and left alone. It prints
 `RESYNC OK` when every committed path is clean, otherwise it names each mismatch and exits non-zero.
 The stage record also names the base HEAD the index was read from, at `<index>.paths.json`;
 `hooks/git_guardrails.py` refuses to commit that index over any other HEAD. Should a commit land over
@@ -351,26 +352,41 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
     return 0
 
 
-def _reverted_by_head(root, base_head, staged_paths):
-    """Paths a commit landed after `base_head` changed and HEAD sets back to their `base_head` blob.
+def _landing_commit(root, base_head, records):
+    """The commit whose tree holds every staged path's staged entry: HEAD, else the first commit since
+    `base_head` (a later commit changed those paths again before resync ran); None when none does."""
+    revs = ["HEAD"]
+    if base_head:
+        rc, out, _ = _git(root, ["rev-list", "--reverse", "%s..HEAD" % base_head], check=False)
+        revs += out.split() if rc == 0 else []
+    for rev in revs:
+        at = _tree_entries(root, rev, list(records))
+        if all(_record_matches(at.get(rel), records[rel], 'after') for rel in records):
+            return rev
+    return None
+
+
+def _reverted_by_head(root, base_head, staged_paths, tip="HEAD"):
+    """Paths a commit landed after `base_head` changed and `tip` (the private-index commit) sets back
+    to their `base_head` blob.
 
     The private index is HEAD at stage time; when another commit lands before the private-index commit,
     that commit's tree still carries the old blobs for every path it did not stage."""
-    if base_head and _git(root, ['rev-parse', 'HEAD'])[1].strip() == base_head:
+    if base_head and _git(root, ['rev-parse', tip])[1].strip() == base_head:
         return []
-    rc, parent, _ = _git(root, ["rev-parse", "HEAD^"], check=False)
+    rc, parent, _ = _git(root, ["rev-parse", tip + "^"], check=False)
     if not base_head or rc != 0 or parent.strip() == base_head:
         return []
-    _, changed, _ = _git(root, ["diff", "--name-only", "-z", base_head, "HEAD^"])
+    _, changed, _ = _git(root, ["diff", "--name-only", "-z", base_head, tip + "^"])
     candidates = [p for p in changed.split("\0") if p and p not in staged_paths]
     if not candidates:
         return []
     at_base = _tree_entries(root, base_head, candidates)
-    at_parent = _tree_entries(root, 'HEAD^', candidates)
-    at_head = _tree_entries(root, 'HEAD', candidates)
+    at_parent = _tree_entries(root, tip + '^', candidates)
+    at_head = _tree_entries(root, tip, candidates)
     reverted = sorted(p for p in candidates if at_head.get(p) == at_base.get(p) and at_parent.get(p) != at_base.get(p))
     if LOCK_RELPATH in candidates and LOCK_RELPATH not in reverted:
-        rows = [_lock_rows_at(root, ref) for ref in (base_head, "HEAD^", "HEAD")]
+        rows = [_lock_rows_at(root, ref) for ref in (base_head, tip + "^", tip)]
         reverted += ["%s row %s" % (LOCK_RELPATH, key) for key in sorted(set(rows[0]) | set(rows[1]))
                      if key not in staged_paths and rows[0].get(key) != rows[1].get(key)
                      and rows[2].get(key) == rows[0].get(key)]
@@ -408,7 +424,8 @@ def _reset_shared_index(root, git_dir, entries):
             peer_left, reset = [], []
             for rel in entries:
                 entry = shared.get(rel)
-                if entry is not None and not any(_record_matches(entry, entries[rel], side) for side in ('before', 'after')):
+                sides = ('before', 'after', 'head') if 'head' in entries[rel] else ('before', 'after')
+                if entry is not None and not any(_record_matches(entry, entries[rel], side) for side in sides):
                     peer_left.append(rel)
                 else:
                     reset.append(rel)
@@ -442,12 +459,13 @@ def cmd_resync(args):
     paths = sorted(records)
 
     head_now = _tree_entries(root, 'HEAD', paths)
-    unlanded = [rel for rel in paths if not _record_matches(head_now.get(rel), records[rel], 'after')]
-    if unlanded:
-        raise IndexCommitError("the commit did not land for: %s (HEAD does not hold the staged tree; "
-                               "commit the private index again, or rebuild it)" % ", ".join(unlanded))
+    landed = _landing_commit(root, record.get("base_head"), records)
+    if landed is None:
+        unlanded = [rel for rel in paths if not _record_matches(head_now.get(rel), records[rel], 'after')]
+        raise IndexCommitError("the commit did not land for: %s (no commit since the stage base holds the "
+                               "staged tree; commit the private index again, or rebuild it)" % ", ".join(unlanded))
 
-    reverted = _reverted_by_head(root, record.get("base_head"), paths)
+    reverted = _reverted_by_head(root, record.get("base_head"), paths, landed)
     if reverted:
         raise IndexCommitError(
             "HEAD moved between stage and commit, and the private-index commit reverts %s (changed after "
@@ -459,6 +477,12 @@ def cmd_resync(args):
     entries = dict(records)
     if record.get("lock"):
         entries[LOCK_RELPATH] = record["lock"]
+    if landed != "HEAD":
+        # A later commit moved these paths on; the shared index may already follow its blobs.
+        later = _tree_entries(root, 'HEAD', list(entries))
+        for rel in entries:
+            mode, oid = later.get(rel) or ("", None)
+            entries[rel] = dict(entries[rel], head=oid, head_mode=mode)
     peer_left = _reset_shared_index(root, git_dir, entries)
 
     head_lock = _head_lock(root)

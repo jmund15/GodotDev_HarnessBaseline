@@ -14,7 +14,7 @@ CI, it runs every step after a failure.
 The worktree is copied, without `.git`, to `~/baseline-linux-preview` and committed to a fresh
 repo, as `actions/checkout` gives. Never `/tmp`: the delete guards admit temp paths as safe
 targets, which flips the proofs that plant an unsafe path. `~/.local/ci-tools/{py/bin,node/bin,pwsh}`
-lead PATH, and WSL's Windows `/mnt` entries are dropped from it, as a runner has none; `--setup` downloads the latest Python (a uv-managed venv, as setup-python's `3.x`), Node 20
+lead PATH. WSL's Windows `/mnt` entries are dropped from it, as a runner has none. `--setup` downloads the latest Python (a uv-managed venv, as setup-python's `3.x`), Node 20
 and the latest PowerShell there and checks their SHA-256.
 
 Full output: `.claude/scratch/linux_preview/<worktree>.log`. Stdout carries each step's verdict,
@@ -30,6 +30,9 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import baseline_identity  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 CACHE = REPO / ".claude" / ".cache" / "baseline-publish"
@@ -121,8 +124,7 @@ def _quote(value: str) -> str:
 def exec_paths_of(worktree: Path) -> list[str]:
     """The worktree's 100755 index entries: the files checkout gives the executable bit."""
     out = subprocess.run(["git", "-C", str(worktree), "ls-files", "-s", "-z"], capture_output=True).stdout
-    entries = (e.decode("utf-8", "replace").split("\t", 1) for e in out.split(b"\0") if e)
-    return [path for meta, path in entries if meta.startswith("100755")]
+    return [path for path, mode in baseline_identity.file_modes(out).items() if mode == "100755"]
 
 
 def preview_script(src: str, steps: list[tuple[str, str]], origin: str | None = None,

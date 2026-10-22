@@ -8,7 +8,7 @@ check its code can; the checks that need disk or shell run here, over inputs the
   post_check.py review   (--run-label L | --workflow-dir D | --sidecar-dir D |
                           --result F | --findings F [--digest G --snapshot M]...)
                          [--root R --spill-dir S --expect-total N --expect-sources N]
-                         [--seats-file S --premise-commits C --head H --blobs B]
+                         [--reviewed-snapshot M]... [--seats-file S --premise-commits C --head H --blobs B]
                          [--stage S --subject X --roster R [--task T] [--no-new-decision]] --out OUT
   post_check.py claims   (--run-label L | --workflow-dir D | --sidecar-dir D | --result F)
                          [--root R --spill-dir S] --out OUT
@@ -623,6 +623,7 @@ def review(args, *, independent=None):
         checked = verify_claims.check_claims(checker_rows, root=args.root or REPO)
     independent = {key: value['verdict'] for key, value in checked['verdicts'].items()}
     subjects = [job["subject"] for job in src.jobs]
+    subjects += [fold_check.subject_from_manifest(m) for m in getattr(args, "reviewed_snapshot", None) or []]
     changed = sorted({rel for block in blocks for rel in block["changedFiles"]})
     changed_paths = set()
     for job in src.jobs:
@@ -995,6 +996,8 @@ def build_parser():
     snap.add_argument("--files", nargs="+")
     snap.add_argument("--base", help="a rev snapshot: the base revision, with the `--files` findings may route to")
     snap.add_argument("--new-paths", nargs="+", help="files the fold may create, test files included")
+    snap.add_argument("--files-from", help="a file of paths, one per line; the same list as --files")
+    snap.add_argument("--new-paths-from", help="a file of paths, one per line; the same list as --new-paths")
     snap.add_argument("--out", required=True)
     rev = subs.add_parser("review", help="verify a findings dispatch and close its fold")
     rev.add_argument("--run-label")
@@ -1009,8 +1012,11 @@ def build_parser():
     rev.add_argument("--applied", action="append", default=[])
     rev.add_argument("--ruled", action="append", default=[])
     rev.add_argument("--files", nargs="+")
+    rev.add_argument("--files-from", help="a file of paths, one per line; the same list as --files")
     rev.add_argument("--digest", action="append", default=[])
     rev.add_argument("--snapshot", action="append", default=[])
+    rev.add_argument("--reviewed-snapshot", action="append", default=[],
+                     help="a subject the review read and no fold changed; its files and blobs join the ledger row")
     rev.add_argument("--stage")
     rev.add_argument("--subject")
     rev.add_argument("--roster")
@@ -1034,6 +1040,19 @@ def build_parser():
     return ap
 
 
+def _expand_path_lists(args):
+    """Fold the `--files-from` and `--new-paths-from` listings into `--files` and `--new-paths`, so a long
+    subject list never meets the argument-length limit."""
+    import review_ledger
+    try:
+        if getattr(args, "files_from", None):
+            args.files = (args.files or []) + review_ledger.load_files_from(args.files_from)
+        if getattr(args, "new_paths_from", None):
+            args.new_paths = (args.new_paths or []) + review_ledger.load_files_from(args.new_paths_from)
+    except review_ledger.ToolError as exc:
+        raise Unusable(str(exc)) from exc
+
+
 def main(argv=None, *, independent=None):
     args = build_parser().parse_args(argv)
     for field in ("root", "out", "workflow_dir", "sidecar_dir", "findings", "result", "spill_dir",
@@ -1044,6 +1063,7 @@ def main(argv=None, *, independent=None):
         if getattr(args, field, None):
             setattr(args, field, [str(Path(value).resolve()) for value in getattr(args, field)])
     try:
+        _expand_path_lists(args)
         if args.command == "snapshot":
             return snapshot(args)
         if args.command == "claims":

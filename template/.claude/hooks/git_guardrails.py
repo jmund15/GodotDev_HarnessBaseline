@@ -316,7 +316,7 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
                 "discards uncommitted worktree edits, which may be another session's. Copy the file aside "
                 "(`cp <path> .claude/scratch/`), then edit your own change back out in place; for an edit "
                 "that is not yours, ask the owner in one message naming each file by its absolute path and the word "
-                "discard, reset, restore or revert (their next reply approving it lets this exact-path discard through). "
+                "discard, reset, restore or revert; their next reply approving it lets this exact-path discard through. "
                 "`git restore --staged` alone is "
                 "allowed.")
 
@@ -630,7 +630,9 @@ REVERT_SCAN_CAP = 500  # staged paths checked; one stale file is enough to deny
 def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     """Deny an index commit that reverts a peer's commit because its index was read from an older HEAD.
 
-    Three signatures, each a path whose content the commit changes, so a mode-only change is no revert: its working tree still matches HEAD; its staged blob is the version one of HEAD's last REVERT_HISTORY commits replaced, which holds even when a peer kept editing the file; or it is a staged
+    Three signatures, each a path whose content the commit changes (a mode-only change is no revert):
+    its working tree still matches HEAD; its staged blob is the version one of HEAD's last REVERT_HISTORY
+    commits replaced, which holds even when a peer kept editing the file; or it is a staged
     addition the working tree lacks and HEAD's history deleted. Only index-publishing commits are
     judged; a pathspec or `-a` commit takes the working tree. Staged deletions are skipped, because
     `git rm --cached` has the same shape on purpose. A git failure skips that signature. A blob only
@@ -742,6 +744,13 @@ def _revert_message(stale):
 ADVISORIES = []  # commit advisories `main()` prints as additionalContext when no check denies
 
 
+def _unexpanded_hint(text):
+    if "$" not in str(text or ""):
+        return ""
+    return (" The guard reads the command before the shell expands `$`; run it with the ref and "
+            "directory written literally (one call per ref in a loop).")
+
+
 def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=None, refs_pending=()):
     """Quick commit checks and an advisory, budgeted run of authored harness paths' bound proofs."""
     if bypass_declared(inline_env, BYPASS_VAR):
@@ -760,7 +769,7 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
     root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
     if root is None:
         return ("BLOCKED harness commit — `git rev-parse --show-toplevel` failed; cannot "
-                "verify commit scope.")
+                "verify commit scope." + _unexpanded_hint(cwd))
     repo_root = root.strip()
 
     if publishes_index(sub, rest):
@@ -773,7 +782,8 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         # yet, and a bare merge is never denied on content below.
         return None
     if paths is None:
-        return "BLOCKED harness commit — `git %s` failed; cannot verify commit scope." % failed_cmd
+        return ("BLOCKED harness commit — `git %s` failed; cannot verify commit scope." % failed_cmd
+                + _unexpanded_hint(failed_cmd))
 
     touched = sorted(p for p in paths if p.replace("\\", "/").startswith(".claude/"))
     surfaces = sorted(p for p in paths if _setup_surface(p))

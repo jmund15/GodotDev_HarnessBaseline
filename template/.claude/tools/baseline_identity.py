@@ -641,6 +641,17 @@ def _consumer_label(baseline_repo: str, root_name: str) -> str:
     return hashlib.sha256(f"{baseline_repo}|{root_name}".encode("utf-8")).hexdigest()[:12]
 
 
+def file_modes(ls_output: bytes) -> dict[str, str]:
+    """{path: mode} from NUL-separated `git ls-tree -z` or `git ls-files -s -z` output: the one reader of
+    which paths are executable (a `100755` mode)."""
+    modes: dict[str, str] = {}
+    for entry in ls_output.split(b"\0"):
+        if entry:
+            meta, _, path = entry.decode("utf-8", errors="replace").partition("\t")
+            modes[path] = meta.split(" ", 1)[0]
+    return modes
+
+
 def _write_lf(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
