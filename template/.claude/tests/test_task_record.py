@@ -316,6 +316,42 @@ def main():
     check("a different path with the same basename and label is a second job",
           len([j for j in tr.all_jobs("s1-drive") if j.get("label") == "m1"]) == 2)
 
+    # A superseding decision moves the decision it replaces out of the live record into the archive file.
+    old = tr.add_item("s1-drive", "decision", "first ruling")
+    new = tr.add_item("s1-drive", "decision", "corrected ruling", supersedes=[old["id"]])
+    live = [d["id"] for d in tr.load("s1-drive")["decisions"]]
+    archived = [r for r in tr.archived_rows("s1-drive") if r.get("id") == old["id"]]
+    check("--supersedes moves the old decision to the archive with the id that replaced it",
+          old["id"] not in live and new["id"] in live and archived and archived[0].get("supersededBy") == new["id"],
+          (live, archived))
+    check("an archived decision still resolves by id",
+          {d["id"]: d["text"] for d in tr.all_decisions("s1-drive")}.get(old["id"]) == "first ruling")
+    try:
+        tr.add_item("s1-drive", "decision", "replaces nothing", supersedes=["D999"])
+        check("--supersedes of an unknown live decision is refused", False, "no refusal")
+    except KeyError as exc:
+        check("--supersedes of an unknown live decision is refused", "D999" in str(exc), str(exc))
+    check("the refused supersede wrote nothing", "replaces nothing" not in [d["text"] for d in tr.load("s1-drive")["decisions"]])
+    earlier = tr.add_item("s1-drive", "decision", "ruling recorded before its correction")
+    later = tr.add_item("s1-drive", "decision", "the correction, recorded first")
+    tr.supersede("s1-drive", earlier["id"], by=later["id"])
+    moved = [r for r in tr.archived_rows("s1-drive") if r.get("id") == earlier["id"]]
+    check("supersede moves an existing decision to the archive under a live replacement",
+          earlier["id"] not in [d["id"] for d in tr.load("s1-drive")["decisions"]]
+          and moved and moved[0].get("supersededBy") == later["id"], moved)
+    try:
+        tr.supersede("s1-drive", later["id"], by="D998")
+        check("supersede by a decision that is not live is refused", False, "no refusal")
+    except KeyError as exc:
+        check("supersede by a decision that is not live is refused", "D998" in str(exc), str(exc))
+    try:
+        tr.supersede("s1-drive", later["id"], by=later["id"])
+        check("supersede of a decision by itself is refused", False, "no refusal")
+    except KeyError as exc:
+        check("supersede of a decision by itself is refused", later["id"] in str(exc), str(exc))
+    check("the self-supersede refusal left the decision live",
+          later["id"] in [d["id"] for d in tr.load("s1-drive")["decisions"]])
+
     big = "x" * (tr.MAX_BYTES + 200)
     try:
         tr.add_item("s1-drive", "requirement", big)

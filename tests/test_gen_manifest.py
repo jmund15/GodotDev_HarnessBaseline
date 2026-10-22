@@ -162,6 +162,22 @@ def test_sync_kind_offers_memory_and_seeds_its_index() -> None:
         sys.modules.pop("gen_manifest", None)
 
 
+def test_adaptation_defaults_are_auto_at_their_layer_and_seeds_stay_seed() -> None:
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import gen_manifest as gm
+        base = ".claude/skills/project_subsystems/"
+        for layer in ("pure", "coding", "godot"):
+            rel = "%sadaptation.%s.defaults.json" % (base, layer)
+            assert gm.sync_kind(rel) == "auto", (rel, gm.sync_kind(rel))
+            assert gm.classify(rel) == layer, (rel, gm.classify(rel))
+        for name in ("SKILL.md", "adaptation.json", "adaptation.coding.json", "adaptation.godot.json"):
+            assert gm.sync_kind(base + name) == "seed", (name, gm.sync_kind(base + name))
+    finally:
+        sys.path.remove(str(ROOT / "tools"))
+        sys.modules.pop("gen_manifest", None)
+
+
 def main() -> int:
     cases = [
         test_check_passes_on_the_committed_tree,
@@ -171,6 +187,7 @@ def main() -> int:
         test_exact_layer_entry_classifies_a_path_no_pattern_matches,
         test_invalid_layer_entry_exits_1_naming_the_path,
         test_sync_kind_offers_memory_and_seeds_its_index,
+        test_adaptation_defaults_are_auto_at_their_layer_and_seeds_stay_seed,
     ]
     failures = []
     for case in cases:

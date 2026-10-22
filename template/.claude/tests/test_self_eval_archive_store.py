@@ -389,6 +389,39 @@ def main():
                   present_rule.returncode == 0 and "WARN" not in present_rule.stderr
                   and json.loads(present_rule.stdout or "{}").get("id") == 320))
 
+    # S7: a consumer with no snapshot file reads an empty document and the default enum; a
+    # directory at the snapshot path stays refused.
+    bare = os.path.join(root, "bare", ".claude")
+    os.makedirs(bare)
+    bare_archive = os.path.join(bare, "self_evaluate_archive.json")
+    lookup = subprocess.run([sys.executable, STORE_PATH, "--archive", bare_archive,
+                             "--lookup", "nobody"], capture_output=True, text=True, timeout=120)
+    cases.append(("lookup with no snapshot exits 1", lookup.returncode == 1))
+    dir_archive = os.path.join(root, "dir-archive.json")
+    os.makedirs(dir_archive)
+    dir_lookup = subprocess.run([sys.executable, STORE_PATH, "--archive", dir_archive,
+                                 "--lookup", "nobody"], capture_output=True, text=True, timeout=120)
+    cases.append(("a directory at the snapshot path stays refused",
+                  dir_lookup.returncode == 2 and "REFUSED" in dir_lookup.stdout))
+    spec_a = importlib.util.spec_from_file_location(
+        "analyze_eval_archive", os.path.join(HERE, "..", "tools", "analyze_eval_archive.py"))
+    analyze = importlib.util.module_from_spec(spec_a)
+    spec_a.loader.exec_module(analyze)
+    try:
+        stats = analyze.compute(os.path.join(root, "bare"))
+        analyzed = isinstance(stats, dict)
+    except analyze.AnalysisError:
+        analyzed = False
+    cases.append(("analyze_eval_archive with no snapshot loads the empty document", analyzed))
+    try:
+        empty_doc, empty_rows = store.load_archive(bare_archive)
+        default_enum = (empty_rows == [] and empty_doc["structured_entries"] == []
+                        and set(empty_doc["Self_Evaluate_Themes"]["patterns"]) == set("ABCDE")
+                        and empty_doc["Self_Evaluate_Themes"]["patterns"] == store.DEFAULT_PATTERNS)
+    except (ValueError, AttributeError, KeyError):
+        default_enum = False
+    cases.append(("the empty document carries the default enum", default_enum))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

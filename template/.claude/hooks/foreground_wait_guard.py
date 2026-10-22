@@ -629,19 +629,36 @@ BLIND_REASON = (
 )
 
 
+def _invoked_script(words):
+    """The basename of the script `words` execute (`python <script>`, `pwsh [-File] <script>`, `./x.ps1`), else None.
+    A command that only names a script (a git pathspec, a grep target) executes none."""
+    if not words:
+        return None
+    program = words[0].strip("'\"").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if _PYTHON.match(words[0]) or program in ("pwsh", "pwsh.exe", "powershell", "powershell.exe"):
+        rest = words[1:]
+        while rest and rest[0].startswith("-") and rest[0].lower() != "-file":
+            rest = rest[1:]
+        if rest and rest[0].lower() == "-file":
+            rest = rest[1:]
+        target = rest[0] if rest else None
+    else:
+        target = words[0] if program.endswith(".ps1") else None
+    return target.strip("'\"").replace("\\", "/").rsplit("/", 1)[-1] if target else None
+
+
 def _producer(words):
     """A label when `words` run a job that streams progress for as long as it runs, else None."""
     args = _runner_args(words)
     if args is not None:
         return "harness_tests.py run" if (not args or "--close" in args or "--all" in args) else None
-    if not words:
+    script = _invoked_script(words)
+    if not script:
         return None
-    paths = [w.strip("'\"").replace("\\", "/").rsplit("/", 1)[-1] for w in words]
     flags = {w.lower() for w in words if w.startswith("-")}
-    script = next((p for p in paths if p.lower().endswith(".ps1")), None)
-    if script and "-watch" in flags:
+    if script.lower().endswith(".ps1") and "-watch" in flags:
         return "%s -Watch" % script
-    if "sidecar_fanout.py" in paths and not flags & {"--detach", "--status", "--dry-run", "--review-artifact", "--help"}:
+    if script == "sidecar_fanout.py" and not flags & {"--detach", "--status", "--dry-run", "--review-artifact", "--help"}:
         return "sidecar_fanout.py run"
     return None
 

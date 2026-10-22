@@ -39,8 +39,8 @@ Caller artifact flags become absolute at intake against the invoking cwd; subjec
 the consolidated review count before the host record exists; `--expect-sources` is the raw source count. An unfolded
 branch that reads consolidated findings checks `--expect-total`, one that reads raw seat rows checks `--expect-sources`,
 and each ignores the flag for a count it does not read. A folded run fails routing only when the engine's consolidated
-count exceeds the archive's originals, since consolidation only merges; fold_check holds by id each original finding
-no fold job read. And `--seats-file` supplies the review sources'
+count exceeds the archive's originals, since consolidation only merges. fold_check holds by id each original finding
+no fold job read. `--seats-file` supplies the review sources'
 numbering (launch order); a multi-source fold with neither the record nor the seats fails `fold-id-order-unknown`. Missing or unreadable sources write unavailable.
 
 `claims --run-label` finds the live journal by the independent verifier's started, unreturned label.
@@ -447,6 +447,22 @@ def reviewed_blobs(subject):
     return out
 
 
+def _common_dir(root):
+    done = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    return Path(done.stdout.strip()).resolve() if done.returncode == 0 and done.stdout.strip() else None
+
+
+def ledger_home(subjects, root):
+    """(ledger checkout, subjects it records, subjects from another repository). The ledger lives in the
+    invoking repository: the first subject in it (a worktree subject records in its own checkout), else `root`.
+    A subject from another repository is never the home, since the frozen head and premises name this one."""
+    home_repo = _common_dir(root)
+    recorded = [s for s in subjects if home_repo is not None and _common_dir(s.root) == home_repo]
+    foreign = [s for s in subjects if s not in recorded]
+    return (recorded[0].root if recorded else Path(root)), recorded, foreign
+
+
 def record_panel(cwd, args, src, subjects):
     """The panel's rows over every subject file, hashed as the snapshot bytes the panel read. A row over
     the folded disk would claim bytes no seat read, and `plan` could then find no earlier blob to merge a later
@@ -620,7 +636,9 @@ def review(args, *, independent=None):
     roles_note, unseated = None, []
     seats = [seat for block in blocks for seat in block["seats"]]
     if args.stage and args.subject and args.roster:
-        cwd = subjects[0].root if subjects else Path(args.root or REPO)
+        cwd, subjects, foreign = ledger_home(subjects, Path(args.root or REPO))
+        if foreign:
+            ledger_report["notRecorded"] = sorted(str(s.root) for s in foreign)
         roster = load_roster(args.roster)
         wanted = {m for seat in roster for m in seat.get("mandates") or []}
         before = len(ledger_rows(cwd, args.subject))

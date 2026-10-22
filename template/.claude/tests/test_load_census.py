@@ -768,5 +768,73 @@ class TransitiveLoadHeuristicTests(unittest.TestCase):
                              (root / "reference" / "always.md").stat().st_size)
 
 
+class OverBaselineTests(unittest.TestCase):
+    """over_baseline reads only the project's tripwire baselines and the oversized bodies; the shipped caps never trip."""
+
+    def planted(self, **overrides):
+        report = {
+            "root": "/nowhere",
+            "listing": {"total_bytes": 100},
+            "standing": {"total_bytes": 100},
+            "hook_chain": {"edit_subprocesses": 1},
+            "prompt_emission_steady_bytes": 10,
+            "rules": {"bundles": {}},
+            "oversized_bodies": [],
+            "tripwires": {},
+            "budgets": dict(lc.BUDGETS),
+        }
+        report.update(overrides)
+        return report
+
+    def test_no_tripwire_and_no_oversized_row_raises_not_configured(self):
+        with self.assertRaises(lc.NotConfigured):
+            lc.over_baseline(self.planted())
+
+    def test_tripwire_over_its_baseline_gives_its_row(self):
+        rows = lc.over_baseline(self.planted(tripwires={"listing_bytes": (30_464, 50)}))
+        self.assertEqual(rows, [{"budget": "listing_bytes", "measured": 100, "baseline": 50, "delta": 50}])
+
+    def test_tripwire_the_report_cannot_measure_gives_an_unmeasured_row(self):
+        rows = lc.over_baseline(self.planted(tripwires={"no_such_budget": (1, 1)}))
+        self.assertEqual(rows, [{"budget": "no_such_budget", "measured": None, "baseline": 1, "delta": None,
+                                 "error": "unmeasured"}])
+
+    def test_tripwire_at_its_baseline_gives_no_row(self):
+        self.assertEqual(lc.over_baseline(self.planted(tripwires={"listing_bytes": (30_464, 100)})), [])
+
+    def test_shipped_caps_never_trip(self):
+        report = self.planted(listing={"total_bytes": lc.BUDGETS["listing_bytes"][1] + 1})
+        with self.assertRaises(lc.NotConfigured):
+            lc.over_baseline(report)
+
+    def test_selectorless_oversized_body_gives_its_row_without_a_tripwire(self):
+        body = {"path": ".claude/skills/big/SKILL.md", "bytes": 25_000, "has_selector": False,
+                "known": False, "known_bytes": None}
+        rows = lc.over_baseline(self.planted(oversized_bodies=[body]))
+        self.assertEqual(rows, [{"budget": "oversized_body", "measured": 25_000,
+                                 "baseline": lc.OVERSIZED_THRESHOLD,
+                                 "delta": 25_000 - lc.OVERSIZED_THRESHOLD,
+                                 "files": [body["path"]]}])
+
+    def test_project_profile_budgets_become_tripwires_through_build_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            home = make_complete_root(root)
+            write(root / "tools" / "load_census.project.json", json.dumps({"budgets": {"listing_bytes": [30464, 5]}}))
+            report = lc.build_report(root, home=home)
+            self.assertEqual(report["tripwires"], {"listing_bytes": (30464, 5)})
+            rows = lc.over_baseline(report)
+            self.assertEqual(rows[0]["budget"], "listing_bytes")
+            self.assertEqual(rows[0]["baseline"], 5)
+
+    def test_profile_less_consumer_raises_not_configured(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            home = make_complete_root(root)
+            (root / "tools" / "load_census.fixture.json").unlink()
+            with self.assertRaises(lc.NotConfigured):
+                lc.over_baseline(lc.build_report(root, home=home))
+
+
 if __name__ == "__main__":
     unittest.main()

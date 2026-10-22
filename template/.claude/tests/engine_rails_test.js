@@ -108,6 +108,14 @@ async function prompts(file, args, logs) {
   const badTier = await prompts('dispatch.js', { jobs: [{ ...JOB, railTier: 'strict' }], __rails: RAILS })
   check('dispatch.js: an unknown railTier is rejected before dispatch',
     badTier.seen.length === 0 && !!(badTier.result && badTier.result.error), JSON.stringify(badTier.result).slice(0, 200))
+  // The choices block is for a writing job; a read-only job (Explore, no write tool) does not get it.
+  const chainJob = (agentType) => ({ chains: [{ name: 'c', jobs: [{ ...JOB, agentType }] }] })
+  const writing = await prompts('dispatch_chains.js', chainJob('general-purpose'))
+  check('dispatch_chains.js: a writing job gets the CHOICES block', (writing.seen[0] || '').includes('=== CHOICES'),
+    writing.result && writing.result.error || (writing.seen[0] || '').slice(-300))
+  const reading = await prompts('dispatch_chains.js', chainJob('Explore'))
+  check('dispatch_chains.js: a read-only job gets no CHOICES block', !(reading.seen[0] || '').includes('=== CHOICES'),
+    reading.result && reading.result.error || (reading.seen[0] || '').slice(-300))
   console.log('\n' + (total - failed) + '/' + total + ' passed')
   process.exit(failed ? 1 : 0)
 })()

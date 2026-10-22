@@ -47,9 +47,6 @@ def make_repo(root):
 
 def main():
     cases = []
-    if os.name != 'nt':
-        print('SKIP: uid_cache_audit joins repo paths with backslashes; the proof runs on Windows only')
-        return False
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / 'repo'
         root.mkdir()

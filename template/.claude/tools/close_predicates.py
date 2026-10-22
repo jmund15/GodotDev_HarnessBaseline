@@ -418,7 +418,10 @@ def predicate_hot_set_review(ctx):
     report = census.build_report(ctx.repo / ".claude", profile_hooks_flag=False, need_budget_hooks=True)
     if report.get("source_errors"):
         return None, {"error": "census source errors", "source_errors": report["source_errors"]}
-    rows = census.over_baseline(report)
+    try:
+        rows = census.over_baseline(report)
+    except census.NotConfigured:
+        return None, {"error": "not-configured"}
     unmeasured = report.get("prompt_hooks_unmeasured") or []
     if unmeasured and not rows:
         return None, {"error": "prompt hooks unmeasured", "prompt_hooks_unmeasured": unmeasured}

@@ -261,6 +261,10 @@ _ok_run, _ok_spill, _ = plant_consume("pass", "done\n", {"check": [PY_OK]})
 _pass = consume(_ok_run, "w1")
 case("consume prints PASS for a passing check and exits 0",
      lambda: _pass[0] == 0 and "CHECK 1 PASS" in _pass[1])
+_indented = consume(plant_consume("indented", "done\n", None, brief_body=
+                                  "```task\n" + json.dumps({"check": [PY_OK], "writeSet": ["a.py"]}, indent=1) + "\n```\n")[0], "w1")
+case("a task block printed over several lines is one JSON object and runs",
+     lambda: _indented[0] == 0 and "CHECK 1 PASS" in _indented[1])
 _bare = consume(plant_consume("strcheck", "done\n", {"check": PY_OK})[0], "w1")
 case("a check given as one string runs as a one-entry list",
      lambda: _bare[0] == 0 and "CHECK 1 PASS" in _bare[1])
@@ -401,6 +405,37 @@ open(os.path.join(_sc_dir, "w1.out.json"), "w", encoding="utf-8").write('{"type"
 _fan_side = cli("consume", _sc_dir, "--label", "w1", "--brief", _sc_brief, "--check-timeout", "20")
 case("a fan-out out dir with --brief runs its checks: CHECK PASS, exit 0",
      lambda: _fan_side[0] == 0 and "CHECK 1 PASS" in _fan_side[1])
+
+
+def git_in(work, *args):
+    subprocess.run(["git", "-C", work, *args], check=True, capture_output=True,
+                   env=dict(os.environ, GIT_AUTHOR_DATE="2001-01-01T00:00:00Z", GIT_COMMITTER_DATE="2001-01-01T00:00:00Z")
+                   if args[0] == "commit" and "base" in args else None)
+
+
+_wd_check = "python3 -c \"import sys; sys.exit(open('marker.txt').read().strip() != 'job')\""
+_wd_record, _wd_brief, _wd_dir = plant_sidecar("sc_workdir", {"check": [_wd_check], "writeSet": ["marker.txt"]})
+open(os.path.join(_wd_dir, "w1.out.json"), "w", encoding="utf-8").write('{"type":"result","result":"sidecar final"}\n')
+_wd = os.path.join(TMP, "sc_workdir_tree")
+os.makedirs(_wd)
+git_in(_wd, "init", "-q")
+git_in(_wd, "config", "user.email", "proof@example.com")
+git_in(_wd, "config", "user.name", "proof")
+open(os.path.join(_wd, "marker.txt"), "w", encoding="utf-8").write("base\n")
+git_in(_wd, "add", "marker.txt")
+git_in(_wd, "commit", "-q", "-m", "base")
+open(os.path.join(_wd, "marker.txt"), "w", encoding="utf-8").write("job\n")
+git_in(_wd, "commit", "-q", "-am", "the job's commit")
+for _inv_name, _entry in (("fanout-a.inventory.json", {"label": "w1", "recordPath": _wd_record, "workdir": _wd}),
+                          ("fanout-b.inventory.json", {"label": "w1", "recordPath": _wd_record})):
+    with open(os.path.join(_wd_dir, _inv_name), "w", encoding="utf-8") as fh:
+        json.dump({"schemaVersion": 1, "jobs": [_entry]}, fh)
+_wd_run = cli("consume", _wd_dir, "--label", "w1", "--brief", _wd_brief, "--check-timeout", "20")
+case("a fan-out job with an inventory workdir runs its checks in that workdir, not the repo root",
+     lambda: _wd_run[0] == 0 and "CHECK 1 PASS" in _wd_run[1])
+case("a fan-out job's commits in its workdir since the run start list as changed, with their diff",
+     lambda: "CHANGED unchanged marker.txt" not in _wd_run[1] and "marker.txt" in _wd_run[1]
+     and "+job" in _wd_run[1])
 
 # ---- consume: the claims check on a sidecar fan-out out dir -------------------------------------
 def plant_fanout_claims(name, claims_by_label):

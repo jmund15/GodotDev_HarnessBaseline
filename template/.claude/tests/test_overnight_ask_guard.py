@@ -9,8 +9,9 @@ import time
 import unittest
 from pathlib import Path
 
+import _scan_fixtures as fx
+
 HOOK = Path(__file__).resolve().parents[1] / "hooks/overnight_ask_guard.py"
-TOKEN = "{" + "{%s}" + "}"
 
 
 class OvernightTests(unittest.TestCase):
@@ -356,7 +357,7 @@ class OvernightTests(unittest.TestCase):
                                      encoding="utf-8")
         (self.root / ".claude").mkdir()
         (self.root / ".claude/baseline.lock.json").write_text(json.dumps(
-            {"substitutions": {TOKEN % "VAULT_ROOT": str(vault), TOKEN % "PROJECT_NAME": "Proj"}}), encoding="utf-8")
+            {"substitutions": {fx.placeholder("VAULT_ROOT"): str(vault), fx.placeholder("PROJECT_NAME"): "Proj"}}), encoding="utf-8")
         result = self.call("--open-questions")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(1, json.loads(result.stdout)["docs_scanned"])

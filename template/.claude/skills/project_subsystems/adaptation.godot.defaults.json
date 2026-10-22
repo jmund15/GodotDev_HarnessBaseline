@@ -1,0 +1,10 @@
+{
+  "index_prebuild": [
+    "python3 .claude/hooks/generate_family_manifest.py"
+  ],
+  "lens_preloads": {
+    "plc-architecture-quality": [
+      "rules/scene_authoring.md"
+    ]
+  }
+}

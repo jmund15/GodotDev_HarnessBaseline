@@ -360,7 +360,8 @@ def build_facts(root, today, run_sessions=None):
                                       registry=registry or {"models": []}, root=root, today=today)
     facts = {"today": today, "month": today[:7], "stats": stats, "months": months, "agents": overall,
             "ladder": readout(rows + side), "ledger": ledger_row(root, overall, diagnostics, today),
-            "registry": registry_input, "review": review, "review_inputs": [escape_input, ledger_input]}
+            "registry": registry_input, "review": review, "review_inputs": [escape_input, ledger_input],
+            "effort_fit_rows": rows + side}
     try:
         findings_src = eval_findings.load(root)
         facts["findings"] = eval_findings.compute(findings_src, today=today, since=eval_findings.dashboard_since(today))
@@ -390,6 +391,37 @@ def unrated_reasons(rows):
         if reason and reason != 'sampled-out':
             counts[reason] = counts.get(reason, 0) + 1
     return {name: counts[name] for name in orchestration_metrics.UNRATED_REASONS if name in counts}
+
+
+def effort_fit_rollup(rows):
+    """({(model, role, effort): {under, over}}, count of rated rows with no effort miss). The role is the
+    tier a row records, else its job shape, else '?'. A rated row is one whose outcome is not unrated; a legacy
+    `fit` value counts as no miss."""
+    groups, missing = {}, 0
+    for row in rows:
+        if orchestration_metrics.outcome_of(row) == 'unrated':
+            continue
+        fit = row.get('effort_fit')
+        if fit not in orchestration_metrics.EFFORT_FITS:
+            missing += 1
+            continue
+        key = (row.get('model') or '?', row.get('tier') or row.get('shape') or '?', row.get('effort') or '?')
+        groups.setdefault(key, {name: 0 for name in orchestration_metrics.EFFORT_FITS})[fit] += 1
+    return groups, missing
+
+
+def effort_fit_lines(rows):
+    """The printed effort-fit rollup: one line per group, then the rated rows that carry no effort miss."""
+    groups, missing = effort_fit_rollup(rows)
+    lines = ['effort fit (model, tier or shape, effort):']
+    for key in sorted(groups):
+        counts = groups[key]
+        lines.append(f"  {key[0]:<24} {key[1]:<10} {key[2]:<7} "
+                     + "  ".join(f"{name} {counts[name]}" for name in orchestration_metrics.EFFORT_FITS))
+    if not groups:
+        lines.append('  no rated row carries an effort miss')
+    lines.append(f"  rated rows with no effort miss: {missing}")
+    return lines
 
 
 def _write(path, text):
@@ -487,6 +519,8 @@ def main(argv=None):
     except OSError as exc:
         print("write failed: %s" % exc)
         return 1
+    for line in effort_fit_lines(facts["effort_fit_rows"]):
+        print(line)
     for item in facts["inputs"]:
         if item["status"] in DEGRADED:
             print("input %s: %s" % (item["source"], item["status"]))

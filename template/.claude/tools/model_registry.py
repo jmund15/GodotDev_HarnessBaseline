@@ -239,6 +239,32 @@ def find_registry(start=None):
 _cache = {}
 
 
+def _merge_overlay(data, target):
+    """Merge `<registry stem>.local.json` beside `target` into `data`: a project's account fields
+    (`credentialFile`, `credit`), keyed `{"transports": {<name>: {<field>: <value>}}}`. Absent is a
+    no-op; anything unreadable or naming a transport the registry lacks raises."""
+    overlay_path = target.with_name(target.stem + ".local.json")
+    if not overlay_path.is_file():
+        return
+    try:
+        with open(overlay_path, encoding="utf-8") as fh:
+            overlay = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RegistryError(f"overlay unreadable at {overlay_path}: {exc}")
+    if not isinstance(overlay, dict) or set(overlay) - {"transports"}:
+        raise RegistryError(f"{overlay_path}: top level must be an object holding only 'transports'")
+    rows = overlay.get("transports", {})
+    if not isinstance(rows, dict):
+        raise RegistryError(f"{overlay_path}: 'transports' must be an object")
+    transports = data.get("transports") if isinstance(data, dict) else None
+    for name, fields in rows.items():
+        if not isinstance(fields, dict):
+            raise RegistryError(f"{overlay_path}: transport '{name}' must be an object")
+        if not isinstance(transports, dict) or not isinstance(transports.get(name), dict):
+            raise RegistryError(f"{overlay_path}: transport '{name}' is not in the registry")
+        transports[name].update(fields)
+
+
 def load(path=None, start=None):
     """Parse and validate. Raises RegistryError on anything unusable."""
     target = Path(path) if path else find_registry(start)
@@ -252,6 +278,7 @@ def load(path=None, start=None):
             data = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
         raise RegistryError(f"registry unreadable at {target}: {exc}")
+    _merge_overlay(data, target)
     _validate(data, target)
     _cache[key] = data
     return data
@@ -2968,6 +2995,11 @@ def _tier_of(entry):
     return long_context_tier(entry) if "longContextTier" in entry or entry.get("transport") else None
 
 
+# The logins' top-level autoCompactWindow, the window every job without a per-model setting compacts at.
+# A cycle at this window shows in watch_records.
+RESIDENT_COMPACT_WINDOW = 500000
+
+
 def anthropic_window(entry, use_max=False, max_output=None, compact_override=None, shape=None, resident=False):
     r"""Claude Code 2.1.291 window contract, extracted from claude.exe on 2026-10-08.
 
@@ -2984,9 +3016,9 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     A Claude row between 200K and 1M cannot prove the client's belief: report unknown rather
     than its catalog window. Non-Claude names retain the existing MAX_CONTEXT_TOKENS contract.
 
-    A job that keeps one subject resident compacts only at the model's full contextTokens, passed as an explicit
-    autoCompactWindow: left unset, the client falls back to the login's `autoCompactWindow` setting (global or
-    per-model `modelSettings`), which the env value overrides. A
+    A job that keeps one subject resident compacts at RESIDENT_COMPACT_WINDOW (capped at the model's full
+    contextTokens), passed as an explicit autoCompactWindow: left unset, the client falls back to the login's
+    per-model `modelSettings` window, which cycles such a job, and the env value overrides it. A
     `review` shape is one (source `review-shape`); `resident` marks any other (source `resident-subject`):
     the launcher's SIDECAR_RESIDENT_SUBJECT=1, set from the job's data (a benchmark task's archetype, a
     fan-out job's `resident`). An explicit compact_override (-K) still applies.
@@ -3003,7 +3035,8 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
         known = full > 0 and (full <= 200000 or native_1m)
         if native_1m and not model.lower().endswith("[1m]"):
             model += "[1m]"
-        return {"model": model, "autoCompactWindow": min(full, 1000000) if known else None, "maxContextTokens": None,
+        return {"model": model, "autoCompactWindow": min(full, RESIDENT_COMPACT_WINDOW) if known else None,
+                "maxContextTokens": None,
                 "contextWindow": full if known else None,
                 "contextWindowSource": ("review-shape" if shape == "review" else "resident-subject")
                 if known else "unknown"}

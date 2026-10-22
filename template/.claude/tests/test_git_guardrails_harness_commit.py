@@ -322,6 +322,12 @@ def index_cases():
         "G2 untracking a file (`git rm --cached`) is not a revert -> allow",
         run_hook("git commit -F msg", repo), ALLOW))
 
+    repo = make_repo()
+    git(repo, ["update-index", "--chmod=+x", "README.md"])
+    failures.append(case(
+        "G2 a mode-only change (`update-index --chmod=+x`) keeps its blob and is not a revert -> allow",
+        run_hook("git commit -F msg", repo), ALLOW))
+
     failures.extend(base_cases())
     return failures
 

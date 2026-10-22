@@ -2246,7 +2246,7 @@ def main(argv=None):
             if entry["status"] == "failed":
                 unread = entry.get("unread") or []
                 text += (f"\nuncovered: {entry['label']} failed — "
-                         + (f"unread {', '.join(unread)}" if unread else "a gap names no listed item with a legal reason")
+                         + (f"unread {', '.join(unread)}" if unread else "a gap has no legal reason and the seat has no must-read list")
                          + "; fix the cause before any second run")
         if review["status"] != "complete":
             code = 1

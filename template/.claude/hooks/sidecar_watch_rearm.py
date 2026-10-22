@@ -4,10 +4,8 @@
 Reads this session's dispatch_table_pending registry, not the transcript. Finished runs are
 read immediately; a missing process identity is never proof a launch did not start. One
 additionalContext carries every exceptional record, a `running or queued (no live watcher)`
-group, and the session-wake command that covers them. Non-notices and fully covered runs are
-silent. Advisory errors log to stderr and do not block the prompt. Measured through
-prompt_dispatch's 5 s member budget, median of 7 reps: killed 18 ms, stopped 18 ms,
-ordinary 10 ms; the emitted text is empty when no notice fires.
+group, and the session-wake command that covers them. A running Workflow run is covered only by a
+live session-wide watcher. Non-notices and fully covered runs are silent. Advisory errors log to stderr and do not block the prompt. The emitted text is empty when no notice fires.
 """
 import glob
 import json
@@ -59,13 +57,18 @@ def advice(payload):
     if not sid:
         return None
     state = _state(dispatch_table.read_table(sid))
-    pending = [e for e in state.get("dispatch_table_pending", []) if isinstance(e, dict) and e.get("kind") == "sidecar"]
+    pending = [e for e in state.get("dispatch_table_pending", [])
+               if isinstance(e, dict) and e.get("kind") in ("sidecar", "workflow")]
     if not pending:
         return None
     watchers = state.get("sidecar_watchers") or []
     groups = {key: [] for key in ("finished", "never started", "died", "unknown")}
     uncovered = []
     for entry in pending:
+        if entry.get("kind") == "workflow":
+            if watch_records.workflow_running(entry) and not watch_records.session_watcher_live(state):
+                uncovered.append(entry.get("run_dir"))
+            continue
         dispatch_table.resolve_sidecar_record(entry, sid, pending)
         record = entry.get("record")
         if not record:

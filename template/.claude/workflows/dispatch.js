@@ -334,7 +334,10 @@ if (NORMAL_SPILL_DIR && (/(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR) || !/^\.claud
   return { error: 'dispatch: spillDir must be repository-relative and contained by .claude/scratch/ (for example .claude/scratch/<task>/spill). Received: ' + SPILL_REL }
 }
 const DIGEST_WORDS = Number.isFinite(A.spillDigestWords) ? A.spillDigestWords : 200
-const SPILL_DIR = SPILL_REL && repoRootOf(A) ? repoRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
+// A job dispatched from a linked worktree (<project>/.claude/worktrees/<name>) reports under the project root,
+// where the brief's own paths point, not under the worktree it runs in.
+const projectRootOf = (a) => repoRootOf(a).replace(/\/\.claude\/worktrees\/[^/]+$/, '')
+const SPILL_DIR = SPILL_REL && projectRootOf(A) ? projectRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
 const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.md'
 
 // `Explore` and `Plan` are granted every tool EXCEPT Edit/Write/NotebookEdit, so the spill contract
@@ -562,16 +565,28 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
       mandates: seat.mandates || [], mustRead: seat.mustRead || [],
     }]))
     if (new Set(seats.map(seat => seat.label)).size !== seats.length) throw new Error('duplicate launched seat label')
-    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(sys.argv[2] + "\\n", encoding="utf-8", newline="\\n")'
+    // The agent Bash route cuts a command near 8K characters mid-quote, so the seats file is written in parts.
+    const COMMAND_BUDGET = 6000
+    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); f=p.open(sys.argv[2], encoding="utf-8", newline=""); f.write(sys.argv[3]); f.close()'
+    const writes = []
+    for (let rest = JSON.stringify(launched); rest.length;) {
+      const prefix = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + (writes.length ? 'a' : 'w') + ' '
+      if ((prefix + "'{}'").length > COMMAND_BUDGET) throw new Error('verifier seats-file path leaves no room within the command budget')
+      let size = rest.length
+      while ((prefix + quoteArg(rest.slice(0, size))).length > COMMAND_BUDGET) size = Math.max(1, Math.floor(size * 0.9))
+      if (size < rest.length && /[\uD800-\uDBFF]/.test(rest[size - 1])) size -= 1
+      writes.push(prefix + quoteArg(rest.slice(0, size)))
+      rest = rest.slice(size)
+    }
     if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
     const printer = 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"status": r["status"], "counts": r["counts"], "verdicts": {k: v["verdict"] for k, v in r["verdicts"].items()}}))'
-    command = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + quoteArg(JSON.stringify(launched)) + ' && ' + command
-      + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
+    command = cdRootPrefix(A) + command + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
     log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
-    verification = await verifierAgent('Run exactly this command with Bash: ' + command
+    verification = await verifierAgent('Run each seats-file write below with Bash first, one call per line, in order:\n' + writes.join('\n')
+      + '\nRun exactly this command with Bash: ' + command
       + '\nIts last output line is one JSON object holding status, counts and verdicts, read from the --out file; it prints even when the check exits 1.'
       + ' Return ONLY {status, counts, verdicts, report, note}: copy status, counts and verdicts from that line unchanged. Set report to the --out path and nothing else; put any observation in note (optional).'
-      + ' Do not check evidence yourself, change permissions, or run another command.',
+      + ' Do not check evidence yourself, change permissions, or run any other command.',
     { label, phase: 'Verify', agentType: profile.agentType, model, effort, schema })
     if (!verification || !['pass', 'fail'].includes(verification.status) || !reportsOut(verification.report)
       || !verification.verdicts || !verification.counts

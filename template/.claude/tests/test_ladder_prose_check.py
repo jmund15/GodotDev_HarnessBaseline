@@ -94,6 +94,22 @@ def coverage_code(effort_cell):
     return lpc.main([path], data=COVER_REG)
 
 
+# A planted row whose registry avoids two efforts, and claims no tier, so only the avoid check can fire.
+# The older version carries no avoid list, as a family's retired version does; only the current one decides.
+AVOID_REG = {"models": [{"id": "x-amodel", "family": "amodel", "alias": "amodel", "lifecycle": "current",
+                         "effort": {"avoid": ["low", "max"], "avoidRef": "planted"}},
+                        {"id": "x-amodel-old", "family": "amodel", "lifecycle": "retired"}]}
+
+
+def avoid_code(effort_cell):
+    """Exit code for a one-row table whose row's registry avoids `low` and `max`."""
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(HEAD + "| amodel | a role | %s | + fine |\n\n## Next section\n" % effort_cell)
+    return lpc.main([path], data=AVOID_REG)
+
+
 def top_level_code(text):
     path = table("+ ordinary tendency")
     with open(path, "r+", encoding="utf-8", newline="\n") as fh:
@@ -261,6 +277,12 @@ CASES = [
      lambda: coverage_code("`max` surveys and debugging / `low` converged execution and extraction") == 1),
     ("every claimed shape named passes",
      lambda: coverage_code("`max` surveys, debugging and an added review seat / `low` converged execution and extraction") == 0),
+    ("an effort cell naming an effort its registry row avoids fails",
+     lambda: avoid_code("`medium` planning · `max` an added review seat") == 1),
+    ("a range ending at an avoided effort fails",
+     lambda: avoid_code("`medium`–`max` chained research") == 1),
+    ("a cell naming only allowed efforts passes",
+     lambda: avoid_code("`medium` planning · `high`–`xhigh` chained research") == 0),
 
     # ---- the live file ----------------------------------------------------
     ("the shipped ladder is clean", lambda: lpc.main([LIVE]) == 0),

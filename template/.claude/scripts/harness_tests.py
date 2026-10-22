@@ -771,6 +771,17 @@ def bindings(repo_root, touched, include_excluded=False, proofs=None):
     return result
 
 
+def shipped_proofs(repo_root, tool):
+    """Repo-relative paths of the non-fixture proofs bound to `tool` by name or by an importer's name,
+    never by a mention: a proof that only names the tool in its source does not prove it."""
+    stems = {os.path.splitext(tool.rsplit("/", 1)[-1])[0]}
+    if tool.endswith(".py"):
+        stems |= {os.path.splitext(n.rsplit("/", 1)[-1])[0]
+                  for n in _importers(tool, _module_sources(repo_root))}
+    return [_norm(os.path.relpath(p, repo_root)) for p in discover(os.path.join(repo_root, ".claude", "tests"))
+            if any(_named_for(os.path.basename(p), stem) for stem in stems)]
+
+
 def _behavior_plan(repo_root, paths=None):
     try:
         import extract_numbers

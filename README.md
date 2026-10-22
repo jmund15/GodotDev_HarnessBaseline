@@ -220,6 +220,16 @@ keeps this list honest: its judgment pass flags adaptation-shaped files missing 
   (your scene roots) that `/pr_ready`'s playtest-route blocker reads.
   Its sibling `adaptation.json` (seed) holds the other adaptation tables this list names —
   one skill folder owns both files.
+- [pure] `skills/project_subsystems/adaptation.<layer>.defaults.json` (`pure`, `coding`, `godot`; tracked, `sync: auto`) —
+  framework data the shipped tools read, such as the godot layer's `index_prebuild` commands that
+  `/reindex_search` runs through `tools/adaptation.py run index_prebuild`; `adaptation.load` merges them
+  under your `adaptation.json`, so put project values in `adaptation.json`, never in these files.
+- [pure] `reference/external_models.local.json` (local) — this machine's provider account fields (credit,
+  credentialFile) layered over the shipped `reference/external_models.json`, which holds none.
+- [pure] `index_composition_baseline.json` (local, written by `tools/index_composition.py --set-baseline`) — the
+  corpus size and auto-memory share `/reindex_search` compares against; absent, the report prints `no baseline set`.
+- [pure] `tools/load_census.project.json` (local) — your project's load-census budgets and tripwires over the
+  generic caps in `tools/load_census.py`.
 - [godot, coding] `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
   folder-layout rules read the registry above, plus `adaptation.json` `structure_exceptions`
   for justified folder/namespace-alias exceptions.

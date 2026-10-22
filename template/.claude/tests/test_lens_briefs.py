@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Proof for tools/lens_briefs.py: seat keys resolve against every shipped registry.
+"""Proof for tools/lens_briefs.py: seat keys resolve against a registry set, and an unknown key is refused.
 
 A registry whose file a layer-stripped consumer never received is skipped, so an unknown key gets the
 `no such lens` refusal instead of a missing-registry exit.

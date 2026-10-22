@@ -45,8 +45,9 @@ store exists.
 
 Outcomes record whether output was accepted (clean), corrected (defects),
 reworked (rework), or thrown away (discarded). An optional shape judgment is
-separate: right, over (less width, model or effort would deliver the same result),
-or under (the result needed more). No shape judgment is inferred from outcome.
+separate: right, over (less width or a cheaper model would deliver the same result),
+or under (the result needed more). The effort alone is judged by the optional
+effort fit: under or over. No judgment is inferred from outcome.
 Aggregate over-pin candidates remain comparisons to judge, not pin decisions.
 Legacy verdict words (right-sized/overshoot/undershoot/wasted) map through.
 
@@ -186,6 +187,7 @@ ARCHIVE_LOCK_TIMEOUT_SECONDS = 10.0
 OUTCOMES = ('clean', 'defects', 'rework', 'discarded')
 FALSIFYING = model_tier_readout.FALSIFYING
 SHAPES = ('right', 'over', 'under')
+EFFORT_FITS = ('under', 'over')
 LEGACY_VERDICTS = {'right-sized': 'clean', 'overshoot': 'clean',
                    'undershoot': 'rework', 'wasted': 'discarded',
                    # fit-vocabulary used by consumption-time rich verdicts
@@ -529,6 +531,10 @@ def apply_verdict(r, ent):
                 for field in ('shape', 'shape_profile', 'shape_model', 'shape_rated_at'):
                     if ent.get(field) is not None:
                         r[field] = ent[field]
+            if ent.get('effort_fit') in EFFORT_FITS:
+                r['effort_fit'] = ent['effort_fit']
+                if ent.get('effort_fit_note'):
+                    r['effort_fit_note'] = ent['effort_fit_note']
             for field in ('mandates', 'note'):
                 if ent.get(field):
                     r[field] = ent[field]
@@ -1315,11 +1321,16 @@ def _rating_spec(req):
     """(spec, refusal line) for one rating request: the validated, normalized fields `_rate_row` writes."""
     label, outcome = req.get('label'), req.get('outcome')
     shape, effort, tier, mandates = req.get('shape'), req.get('effort'), req.get('tier'), req.get('mandates')
+    effort_fit, effort_fit_note = req.get('effort_fit'), req.get('effort_fit_note')
     note = req.get('note')
     if not label or not isinstance(label, str):
         return None, 'REFUSED: every rating needs a label.'
     if shape is not None and shape not in SHAPES:
         return None, f"REFUSED: unknown shape '{shape}'; use {'|'.join(SHAPES)}."
+    if effort_fit is not None and effort_fit not in EFFORT_FITS:
+        return None, f"REFUSED: unknown effort_fit '{effort_fit}'; use {'|'.join(EFFORT_FITS)}."
+    if effort_fit_note is not None and effort_fit is None:
+        return None, 'REFUSED: effort_fit_note needs effort_fit (' + '|'.join(EFFORT_FITS) + ') beside it.'
     norm = norm_outcome(outcome)
     if norm not in OUTCOMES:
         return None, f"REFUSED: unknown outcome '{outcome}'; use one of {', '.join(OUTCOMES)}."
@@ -1361,7 +1372,8 @@ def _rating_spec(req):
     if norm != 'clean' and not note:
         return None, f"REFUSED: '{norm}' needs --note naming what went wrong (cite the task-record decision)."
     return dict(label=label, norm=norm, passed=passed, precision=precision, note=note, effort=effort,
-                tier=tier, mandates=mandates, shape=shape, probe=bool(req.get('probe')),
+                tier=tier, mandates=mandates, shape=shape, effort_fit=effort_fit,
+                effort_fit_note=effort_fit_note, probe=bool(req.get('probe')),
                 measurement=bool(req.get('measurement'))), None
 
 
@@ -1411,7 +1423,9 @@ def _rate_row(rows, pending_pairs, spec):
         return None, None, [], [f"REFUSED: {row['run']}:{row['label']} has no recorded effort pin; pass --effort <pin>."]
     extra = {k: v for k, v in (('note', spec['note']), ('effort', effort), ('tier', spec['tier']),
                                ('mandates', spec['mandates']), ('probe', True if spec['probe'] else None),
-                               ('measurement', True if spec['measurement'] else None)) if v}
+                               ('measurement', True if spec['measurement'] else None),
+                               ('effort_fit', spec['effort_fit']),
+                               ('effort_fit_note', spec['effort_fit_note'])) if v}
     if spec['shape'] is not None:
         extra.update(shape=spec['shape'], shape_model=row.get('model'),
                      shape_profile=_sidecar_shape(row) if row.get('source') == 'sidecar' else row.get('profile'),
@@ -1429,7 +1443,7 @@ def _rate_row(rows, pending_pairs, spec):
 
 def rate_batch(session_dir, requests, with_sidecar=True):
     """Record each request's outcome under its exact key, reading the session's dispatches once for all.
-    A request is {label, outcome, note?, effort?, tier?, shape?, mandates?, probe?, measurement?}; one that
+    A request is {label, outcome, note?, effort?, tier?, shape?, effort_fit?, effort_fit_note?, mandates?, probe?, measurement?}; one that
     fails validation or names no single unarchived dispatch is refused and the rest are still written, and
     a dispatch an earlier request of the batch rated is no longer a match. Returns 0 when every request
     was rated, else 1."""
@@ -1464,11 +1478,11 @@ def rate_batch(session_dir, requests, with_sidecar=True):
 
 
 def rate(session_dir, label, outcome, note=None, effort=None, tier=None, mandates=None,
-         probe=False, with_sidecar=True, shape=None, measurement=False):
-    """Record one consumed dispatch's outcome and optional shape judgment under its exact key."""
+         probe=False, with_sidecar=True, shape=None, measurement=False, effort_fit=None, effort_fit_note=None):
+    """Record one consumed dispatch's outcome and optional shape and effort-fit judgments under its exact key."""
     return rate_batch(session_dir, [dict(label=label, outcome=outcome, note=note, effort=effort, tier=tier,
-                                         mandates=mandates, probe=probe, shape=shape,
-                                         measurement=measurement)], with_sidecar)
+                                         mandates=mandates, probe=probe, shape=shape, effort_fit=effort_fit,
+                                         effort_fit_note=effort_fit_note, measurement=measurement)], with_sidecar)
 
 
 def load_rating_batch(path):
@@ -1486,7 +1500,8 @@ def load_rating_batch(path):
     if not isinstance(data, list) or not data or not all(
             isinstance(r, dict) and r.get('label') and r.get('outcome') for r in data):
         return None, ('REFUSED: --rate-batch needs a non-empty JSON list of objects each with "label" and '
-                      '"outcome" (optional note, effort, tier, shape, mandates, probe, measurement).')
+                      '"outcome" (optional note, effort, tier, shape, effort_fit, effort_fit_note, mandates, '
+                      'probe, measurement).')
     return data, None
 
 
@@ -3762,12 +3777,17 @@ def main():
                          'clean|defects|rework|discarded; written under its exact run_id:label key')
     ap.add_argument('--rate-batch', metavar='FILE',
                     help='rate many consumed dispatches in one call: FILE (or - for stdin) is a JSON list of '
-                         '{label, outcome, note?, effort?, tier?, shape?, mandates?, probe?, measurement?}; '
+                         '{label, outcome, note?, effort?, tier?, shape?, effort_fit?, effort_fit_note?, mandates?, probe?, measurement?}; '
                          'each entry follows --rate, a refused entry does not stop the rest. mandates (an object '
                          'or its JSON string) is {mandate: {outcome: findings|clean|not-reached, unique, duplicate}}'
                          ', as --mandates takes it')
     ap.add_argument('--shape', choices=SHAPES,
-                    help='with --rate: right, over (a cheaper width/model/effort sufficed), or under (needed more)')
+                    help='with --rate: right, over (a narrower width or cheaper model sufficed), or under '
+                         '(needed more width or a stronger model)')
+    ap.add_argument('--effort-fit', choices=EFFORT_FITS,
+                    help='with --rate: under (the result missed what more effort would plausibly have caught) '
+                         'or over (a lower effort would have done)')
+    ap.add_argument('--effort-fit-note', help='with --rate --effort-fit: one clause naming why')
     ap.add_argument('--note', help='with --rate (required for non-clean) or --accept-rest')
     ap.add_argument('--effort', help='with --rate: the effort pin when the record has none')
     ap.add_argument('--tier', help='with --rate: the row\'s role tier (orchestrator|architect|executor|fanout|'
@@ -3901,7 +3921,8 @@ def main():
                 return 1
             return rate_batch(session, requests)
         return rate(session, a.rate[0], a.rate[1], note=a.note, effort=a.effort, tier=a.tier,
-                    mandates=a.mandates, probe=a.probe, shape=a.shape, measurement=a.measurement)
+                    mandates=a.mandates, probe=a.probe, shape=a.shape, measurement=a.measurement,
+                    effort_fit=a.effort_fit, effort_fit_note=a.effort_fit_note)
 
     if a.pending:
         session = find_session_dir(a.session)

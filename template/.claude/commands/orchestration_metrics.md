@@ -43,11 +43,13 @@ Calibration cannot consume.
 **The rule:** rate at consumption, when you accept a dispatch's result, send it back or throw it away.
 Consume what a watcher wake delivered (`reference/sidecar_dispatch.md` step 6 lists it; its closing `UNRATED` line names the session's unrated labels), then write all its verdicts in one `--rate-batch` call per wake. A lone result may use
 `--rate`. The outcome rates the task's result, never the process exit. The tool resolves the label to its exact `run_id:label` key and takes model, tokens
-and cost from the records at archive time; optional `--shape right|over|under` records a separate judgment (`over`: cheaper width, model or effort sufficed; `under`: the result needed more), while an omitted shape and `--accept-rest` leave it unjudged:
+and cost from the records at archive time; optional `--shape right|over|under` records a separate judgment (`over`: a narrower width or cheaper model sufficed; `under`: the result needed more width or a stronger model), while an omitted shape and `--accept-rest` leave it unjudged:
 
 ```bash
-python3 .claude/tools/orchestration_metrics.py --rate <label|run_id:label> <clean|defects|rework|discarded> [--note "<D13>"] [--effort <pin>] [--shape <right|over|under>]
+python3 .claude/tools/orchestration_metrics.py --rate <label|run_id:label> <clean|defects|rework|discarded> [--note "<D13>"] [--effort <pin>] [--shape <right|over|under>] [--effort-fit <under|over>] [--effort-fit-note "<clause>"]
 ```
+
+Set `--effort-fit` when a consumed result shows an effort miss: `under` when it missed something more effort would plausibly have caught, `over` when the work was simple enough that a lower effort would have done. Leave it off otherwise: a "the effort was right" verdict certifies only that nothing visibly went wrong. `--shape` judges width and model; `--effort-fit` judges the effort alone.
 
 - A non-`clean` outcome needs `--note`; name the task-record decision instead of restating it.
 - A record with no effort pin needs `--effort`.
@@ -55,7 +57,7 @@ python3 .claude/tools/orchestration_metrics.py --rate <label|run_id:label> <clea
 - `--measurement` marks a comparison arm (native arms declaring `args.measurement` are marked automatically); a measurement row on a tier its model does not claim in registry `roles` stays out of the model x tier readout and is counted as `off-role measurement`.
 - An ambiguous bare label is refused with the exact keys to use. A label that names no pending dispatch is refused with the pending keys and record paths that contain it, and the count of the rest.
 - A run that ended with an empty record (stopped through `reap.py`, a killed launcher) is pending with no model, effort, tokens or cost.
-- Several results at once: `--rate-batch <file|->` takes a JSON list of `{label, outcome, note?, effort?, tier?, shape?, mandates?, probe?, measurement?}`. Each entry follows `--rate`, and a refused entry is printed while the others are written.
+- Several results at once: `--rate-batch <file|->` takes a JSON list of `{label, outcome, note?, effort?, tier?, shape?, effort_fit?, effort_fit_note?, mandates?, probe?, measurement?}`. Each entry follows `--rate`, and a refused entry is printed while the others are written.
 
 A review-panel seat adds `--tier <role tier> --mandates '<json>'`, one call per seat. The role tier is one of orchestrator, architect, executor, fanout or scout (`validation` folds onto `fanout`):
 
@@ -117,7 +119,7 @@ log('PINS ' + JSON.stringify(Object.fromEntries(JOBS.map(j => [j.label, j.effort
 
 `discarded` is the highest-signal outcome: it usually indicts the *spec*, not the tier (an open decision pushed into an agent instead of settled first).
 
-*Why outcomes, not verdicts:* "was the effort right?" is a counterfactual no participant can observe — the agent only experienced its own pin, and a flawless high-effort output is consistent with both "high was needed" and "medium would have sufficed". What IS observable is whether the output was accepted, corrected, reworked, or thrown away. Undershoot is derived from the falsification outcomes above; overshoot is derived at the aggregate (see *Over-pin candidates*). Legacy verdict words map through: `right-sized`→`clean`, `overshoot`→`clean`, `undershoot`→`rework`, `wasted`→`discarded`.
+*Why outcomes, not verdicts:* "was the effort right?" is a counterfactual no participant can observe — the agent only experienced its own pin, and a flawless high-effort output is consistent with both "high was needed" and "medium would have sufficed". What IS observable is whether the output was accepted, corrected, reworked, or thrown away. Undershoot is derived from the falsification outcomes above; an overshoot no single result shows is derived at the aggregate (see *Over-pin candidates*), and one a result does show is recorded with `--effort-fit over`. Legacy verdict words map through: `right-sized`→`clean`, `overshoot`→`clean`, `undershoot`→`rework`, `wasted`→`discarded`.
 
 Anything already recorded on consumption (see *Incremental rating*) is merged automatically. This step
 covers only what is still unrated: `--rate` each one (or `--accept-rest`, as at phase close). For a batch
