@@ -96,6 +96,12 @@ def main():
     check("row_dependencies returns the path a fenced doc block cites", got == [fenced], got)
     got = dependencies({}, {row: "pure"}, row)
     check("row_dependencies is empty for a row with no file", got == [], got)
+    width = ".claude/skills/orchestration/reference/review_width.md"
+    fixture_copy = ".claude/tests/fixtures/evidence/r1/tree/" + width
+    got = dependencies({doc_row: "See `orchestration` `reference/review_width.md` §Coverage.\n",
+                        width: "x\n", fixture_copy: "x\n"}, {doc_row: "pure", width: "pure"}, doc_row)
+    check("a skill-scoped citation resolves to the shipped file, never a test fixture's copy",
+          got == [width], got)
 
     skill = ".claude/skills/testing/SKILL.md"
     cmd = ".claude/commands/regression_gate.md"
