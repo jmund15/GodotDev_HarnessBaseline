@@ -2925,8 +2925,71 @@ def test_clone_retries_a_reset_then_succeeds() -> None:
     assert len(calls) == 2, calls
 
 
+def test_network_retry_converts_a_timeout_into_a_retryable_failure() -> None:
+    from unittest import mock
+    engine = _load_engine()
+    calls = []
+
+    def _run():
+        calls.append(1)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=120)
+        return subprocess.CompletedProcess(["git", "fetch"], 0, stdout=b"", stderr=b"")
+
+    with mock.patch.object(engine, "NETWORK_RETRY_DELAYS", (0, 0)), contextlib.redirect_stderr(io.StringIO()):
+        result = engine.run_with_network_retry("git fetch", _run)
+    assert result.returncode == 0 and len(calls) == 2, calls
+    calls.clear()
+
+    def _always():
+        calls.append(1)
+        raise subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=120)
+
+    with mock.patch.object(engine, "NETWORK_RETRY_DELAYS", (0, 0)), contextlib.redirect_stderr(io.StringIO()):
+        result = engine.run_with_network_retry("git fetch", _always, retryable=False)
+    assert result.returncode == 124 and b"timed out after 120 s" in result.stderr and len(calls) == 1, (result, calls)
+
+
+def test_remote_git_carries_the_network_timeout_and_local_git_does_not() -> None:
+    from unittest import mock
+    engine = _load_engine()
+    seen = []
+
+    def _run(cmd, *args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    with mock.patch.object(subprocess, "run", _run):
+        engine._git(Path("cache"), ["fetch", "origin"], check=False)
+        engine._git(Path("cache"), ["status"], check=False)
+    assert seen == [engine.NETWORK_CALL_TIMEOUT_S, None], seen
+
+
+def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
+    # A file holding NUL bytes is binary: no line-ending rewrite, no UTF-8 round trip, no substitution.
+    name_token = "{{" + "PROJECT_NAME" + "}}"
+    binary = b"\x00asm\x01\x00\x00\x00\r\n\r\xff\xfe\x80" + name_token.encode() + bytes(range(256))
+    rel = ".claude/tools/grammar.wasm"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {rel: {"upstream": binary, "local": None}})
+        lock = _load_lock(root)
+        lock["substitutions"] = {name_token: "Game"}
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "consumer substitutions")
+        pulled = _run_baseline(root, baseline, "pull", rel)
+        assert pulled.returncode == 0, pulled.stderr.decode(errors="replace")
+        assert (root / rel).read_bytes() == binary, "pull changed the bytes of a binary row"
+        again = _run_baseline(root, baseline, "check")
+        assert _load_lock(root)["files"][rel]["hash"] == hashlib.sha256(binary).hexdigest(), "a binary row's hash is the sha of its bytes"
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert b"needs-judgment" not in strict.stdout, strict.stdout
+        report = again.stdout.decode(errors="replace")
+        assert "in-sync: 1 file(s)" in report and "placeholder" not in report and "modified" not in report, report
+
+
 def main() -> int:
     cases = [
+        test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
         test_carry_refuses_a_new_tool_whose_proof_is_local,
         test_carry_refuses_a_citer_whose_named_dependency_is_not_carried,
@@ -3044,6 +3107,8 @@ def main() -> int:
         test_fetch_retries_a_connection_reset_then_succeeds,
         test_fetch_does_not_retry_repository_not_found,
         test_a_non_network_subcommand_is_not_retried_on_reset_looking_stderr,
+        test_network_retry_converts_a_timeout_into_a_retryable_failure,
+        test_remote_git_carries_the_network_timeout_and_local_git_does_not,
         test_three_transient_fetch_failures_raise_the_existing_error,
         test_clone_retries_a_reset_then_succeeds,
         test_fetch_does_not_retry_a_permanent_tls_certificate_failure,
