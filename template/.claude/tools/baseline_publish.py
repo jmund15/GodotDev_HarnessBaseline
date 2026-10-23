@@ -910,8 +910,7 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
         content = _git_show(baseline_repo, baseline_sha_after, "template/" + relpath)
         if content is None:
             raise PublishError(f"merged baseline is missing: {relpath}")
-        rendered = sync.forward_for(relpath, content.decode("utf-8", errors="replace"), substitutions)
-        merged_hash = sync.content_sha(relpath, rendered.encode("utf-8"))
+        merged_hash = sync.content_sha(relpath, sync.rendered_upstream(relpath, content, substitutions).encode("utf-8"))
         if from_worktree:
             local = sync.local_text(root, relpath)
             local_hash = sync.content_sha(relpath, local.encode("utf-8")) if local is not None else None
@@ -956,8 +955,8 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
             source_content = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
             if source_content is None:
                 raise PublishError(f"check missing source row: {record['relpath']}")
-            expected_merged = sync.reverse_for(
-                record["relpath"], source_content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
+            expected_merged = sync.rendered_for_upstream(
+                record["relpath"], source_content, lock.get("substitutions", {})
             ).encode("utf-8")
             if sync.content_sha(record["relpath"], content) != sync.content_sha(record["relpath"], expected_merged):
                 raise PublishError(
@@ -967,11 +966,9 @@ def _check(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
             continue
         if record["relpath"] not in lock.get("files", {}):
             continue  # new upstream row — no local counterpart until the consumer's own `pull` (§5)
-        expected = sync.forward_for(
-            record["relpath"], content.decode("utf-8", errors="replace"), lock.get("substitutions", {})
-        )
+        expected = sync.rendered_upstream(record["relpath"], content, lock.get("substitutions", {}))
         published = _git_show(Path(source["repo"]), source["commit"], record["source_path"])
-        published_text = _lf(published).decode("utf-8", errors="replace") if published is not None else None
+        published_text = sync.row_text(record["relpath"], published) if published is not None else None
         if published_text is None or (
                 sync.content_sha(record["relpath"], published_text.encode("utf-8"))
                 != sync.content_sha(record["relpath"], expected.encode("utf-8"))):

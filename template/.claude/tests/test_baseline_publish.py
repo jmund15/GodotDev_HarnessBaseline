@@ -53,7 +53,7 @@ def _run_sync(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 
 
 def _sha(data: bytes) -> str:
-    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+    return hashlib.sha256(data if b"\x00" in data else data.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -2238,6 +2238,26 @@ def test_unknown_check_bucket_fails_step_six_closed() -> None:
         assert green is False and "baseline" in detail, (record, green, detail)
 
 
+def test_publishing_a_binary_row_records_the_sha_of_its_bytes() -> None:
+    """update-lock and check read a binary row through the engine's binary reader, never a UTF-8 decode."""
+    rel = ".claude/tools/grammar.wasm"
+    old = b"\x00asm\x01\x00\x00\x00old"
+    new = b"\x00asm\x01\x00\x00\x00\r\n\r\xff\xfe\x80" + bytes(range(256))
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(path, rel, old, new)
+        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                                  [rel], [], False, True, None)
+        steps = _field(journal, "steps")
+        assert all(step["status"] == "green" for step in steps), steps
+        assert _git(remote, "show", "main:template/" + rel) == new
+        row = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))["files"][rel]
+        assert row["hash"] == hashlib.sha256(new).hexdigest(), row
+
+
 def test_binary_bytes_survive_the_publish_copy() -> None:
     # The first binary row (a WASM grammar) grew 5.35 MB to 6.19 MB: line endings and UTF-8 replacement
     # rewrote it, and the consumer's checksum then failed.
@@ -2254,6 +2274,7 @@ def test_binary_bytes_survive_the_publish_copy() -> None:
 def main() -> int:
     cases = [
         test_binary_bytes_survive_the_publish_copy,
+        test_publishing_a_binary_row_records_the_sha_of_its_bytes,
         test_unknown_check_bucket_fails_step_six_closed,
         test_pr_body_lists_each_carried_row,
         test_scoped_validate_runs_bound_proof_and_records_evidence,
