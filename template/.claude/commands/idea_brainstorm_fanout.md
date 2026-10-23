@@ -85,7 +85,7 @@ Workflow({
 })
 ```
 
-**Model:** pin every generator and `args.critic` by the ladder's selection line: divergence is design work (architect tier), and criticism is a rubric check (fanout tier). A mechanical lens may take a fanout-tier row, with its `tier` beside the `model`.
+**Model:** pin every generator and `args.critic` by the ladder's selection line: divergence is open-ended design no check scores (architect tier), and criticism is a rubric check (fanout tier). A mechanical lens may take a fanout-tier row, with its `tier` beside the `model`.
 
 **Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** write each generator's flat prompt (CONTEXT + its lens mandate inline, under the `GEN_GUARD` discipline: work from CONTEXT only, no self-filter, no condense) to a scratch file and run them as one `/delegate` dispatch, each job pinned by the ladder's selection line. Merge and critique by hand.
 
