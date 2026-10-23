@@ -501,6 +501,55 @@ def main():
         rc, hso = run_gate(command)
         cases.append((label, rc == 0 and not hso))
 
+    os.environ.pop("HARNESS_TEST_STAMP", None)
+    stamp = root / ".claude" / "logs" / "harness_tests_stamp.json"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    proved, other = "c" * 40, "d" * 40
+
+    def plant(close):
+        stamp.write_text(json.dumps({"close": close} if close is not None else {}), encoding="utf-8")
+
+    green = {"verdict": "green", "head": proved, "red": []}
+    plant(green)
+    for label, command in (
+        ("a push of the green close's commit is approved", "git push origin %s:main" % proved),
+        ("the -u spelling is approved", "git push -u origin %s:main" % proved),
+        ("a full refs/heads target is approved", "git push origin %s:refs/heads/main" % proved),
+        ("a feature-branch target is approved", "git push origin %s:fix/done" % proved),
+    ):
+        rc, hso = run_gate(command)
+        cases.append((label, rc == 0 and hso.get("permissionDecision") == "allow"))
+    push_judge = approving_gates._proved_push_shape
+    for label, argv in (
+        ("a commit the close did not prove is refused", ["git", "push", "origin", other + ":main"]),
+        ("an abbreviated sha is refused", ["git", "push", "origin", proved[:12] + ":main"]),
+        ("a symbolic source is refused", ["git", "push", "origin", "HEAD:main"]),
+        ("a force refspec is refused", ["git", "push", "origin", "+" + proved + ":main"]),
+        ("a force flag is refused", ["git", "push", "--force", "origin", proved + ":main"]),
+        ("another remote is refused", ["git", "push", "upstream", proved + ":main"]),
+        ("two refspecs are refused", ["git", "push", "origin", proved + ":main", proved + ":dev"]),
+        ("a branch-name push is refused", ["git", "push", "origin", "main"]),
+        ("an option-shaped target is refused", ["git", "push", "origin", proved + ":--mirror"]),
+    ):
+        cases.append((label, not push_judge(argv, str(root))[0]))
+    for label, close in (
+        ("a red close is refused", dict(green, verdict="red")),
+        ("a green close listing reds is refused", dict(green, red=[{"proof": "x"}])),
+        ("an incomplete close is refused", dict(green, verdict="incomplete")),
+        ("a missing close is refused", None),
+    ):
+        plant(close)
+        cases.append((label, not push_judge(["git", "push", "origin", proved + ":main"], str(root))[0]))
+    stamp.write_text("{not json", encoding="utf-8")
+    cases.append(("an unreadable stamp is refused",
+                  not push_judge(["git", "push", "origin", proved + ":main"], str(root))[0]))
+    cases.append(("a refspec push is owned by the proved-push contract",
+                  (approving_gates.owning_contract(["git", "push", "origin", proved + ":main"], str(root))
+                   or approving_gates.CONTRACTS[0]).name == "proved-push"))
+    plant(green)
+    rc, hso = run_gate("git push origin %s:main && git push origin main" % proved)
+    cases.append(("a chained proved push falls through", rc == 0 and not hso))
+
     parser_source = (HERE.parent / "tools" / "session_digest.py").read_text(encoding="utf-8")
     import re
     parser_options = set(re.findall(r'add_argument\(["\'](--[a-z0-9-]+)', parser_source))

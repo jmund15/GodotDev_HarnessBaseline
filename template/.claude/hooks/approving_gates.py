@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Canonical-shape approval for harness actions the owner authorized by class: read-only
 sidecar launches and digests, read-only git searches piped through text filters, the
-scratch-message `git commit`, a submodule PR merge, and deleting a merged PR's remote branch.
+scratch-message `git commit`, a submodule PR merge, deleting a merged PR's remote branch, and pushing
+the commit a green harness close proved.
 Process class: an unmet contract falls through to the classifier, never a deny."""
 import json
 import os
@@ -393,6 +394,46 @@ def _merged_branch_delete_shape(argv, _root):
     return True, ""
 
 
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def _green_close_head(root):
+    """The commit the stored close proved green with no reds, else None."""
+    from _hook_state import read_json_salvage
+    path = os.environ.get("HARNESS_TEST_STAMP") or os.path.join(str(root), ".claude", "logs",
+                                                               "harness_tests_stamp.json")
+    try:
+        close = (read_json_salvage(path) or {}).get("close")
+    except Exception:
+        return None
+    if not isinstance(close, dict) or close.get("verdict") != "green" or close.get("red"):
+        return None
+    head = close.get("head")
+    return head if isinstance(head, str) and _FULL_SHA.fullmatch(head) else None
+
+
+def _proved_push_shape(argv, root):
+    """`git push [-u] origin <full sha>:<branch>` where the sha is the commit the stored green close proved.
+    git_guardrails still checks that close's base and paths against the outgoing range."""
+    if argv[:2] != ["git", "push"]:
+        return False, "the command is not `git push`"
+    rest = argv[2:]
+    if rest[:1] in (["-u"], ["--set-upstream"]):
+        rest = rest[1:]
+    if len(rest) != 2 or rest[0] != "origin":
+        return False, "the shape must be `git push [-u] origin <sha>:<branch>`"
+    source, _, target = rest[1].partition(":")
+    branch = target.removeprefix("refs/heads/")
+    if not _FULL_SHA.fullmatch(source) or not _BRANCH_NAME.fullmatch(branch) or branch == "HEAD":
+        return False, "the refspec must be a full commit sha and a branch name"
+    proved = _green_close_head(root)
+    if proved is None:
+        return False, "no green close result is stored"
+    if source != proved:
+        return False, "the green close proved %s, not %s" % (proved[:12], source[:12])
+    return True, ""
+
+
 def _git_commit_args(argv):
     """`_git_commit.git_invocation` for an argv whose subcommand is `commit`, else None."""
     parsed = _git_commit.git_invocation(shlex.join(argv))
@@ -589,6 +630,8 @@ def owning_contract(argv, root):
         return next(c for c in CONTRACTS if c.name == "submodule-pr-merge")
     if argv[:2] == ["git", "push"] and "--delete" in argv:
         return next(c for c in CONTRACTS if c.name == "merged-branch-delete")
+    if argv[:2] == ["git", "push"] and any(":" in arg for arg in argv[2:]):
+        return next(c for c in CONTRACTS if c.name == "proved-push")
     if argv[0] == "git" and _git_commit_args(argv) is not None:
         return next(c for c in CONTRACTS if c.name == "git-commit")
     if argv[0] == "git" and _probe_subcommand(argv)[0] is not None:
@@ -791,6 +834,9 @@ CONTRACTS = (
              "approving_gates"),
     Contract("merged-branch-delete", _merged_branch_delete_shape,
              "`git push origin --delete <branch>` for one branch whose PR merged, its remote tip unchanged",
+             "approving_gates"),
+    Contract("proved-push", _proved_push_shape,
+             "`git push [-u] origin <full sha>:<branch>` for the commit the stored green close proved",
              "approving_gates"),
 )
 
