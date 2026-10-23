@@ -436,6 +436,9 @@ def _scan_python(tree: Tree, source: str, text: str):
     except SyntaxError:
         return
     seen = set()
+    for name in sorted(optional):
+        if not (tree.by_base.get(name + ".py") or tree.local_with_suffix("/" + name + ".py")):
+            yield Finding(source, "missing", name + ".py")
     for name in sorted(imports - optional):
         cands = tree.by_base.get(name + ".py") or tree.local_with_suffix("/" + name + ".py")
         if cands and name not in seen:
