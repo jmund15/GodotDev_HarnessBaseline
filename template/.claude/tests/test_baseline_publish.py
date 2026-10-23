@@ -221,10 +221,10 @@ file (`GH_FAKE_STATE`) and performs `pr merge` against a local bare remote by re
 specific failure shapes a real GitHub PR lifecycle can produce:
 
     GH_FAKE_FAIL_STEP=create|checks|merge   that gh subcommand exits 1 immediately (`pr checks --json` reports FAILURE)
-    GH_FAKE_MAIN_MOVE_ON_CHECKS=1           `pr checks` pushes a peer commit to main first
-    GH_FAKE_NO_CHECKS_CALLS=N               the first N `pr checks` calls report no checks yet (exit 1)
-    GH_FAKE_WATCH_DROPS=N                   the first N `pr checks --watch` calls lose the connection
-                                            (exit 1) while `--json` still reports the check PENDING
+    GH_FAKE_MAIN_MOVE_ON_CHECKS=1           the first readable `pr checks` poll pushes a peer commit to main
+    GH_FAKE_NO_CHECKS_CALLS=N               the first N `pr checks --json` polls report no checks yet (exit 1)
+    GH_FAKE_UNREADABLE_POLLS=N              the next N polls (after any no-checks polls) lose the connection (exit 1)
+    GH_FAKE_PENDING_POLLS=N                 the first N readable polls report the check PENDING (exit 8)
     GH_FAKE_FAIL_AFTER_MERGE=1              `pr merge` performs the real merge, then exits 1
 """
 import importlib.util
@@ -319,33 +319,38 @@ def main(argv):
         return 0
 
     if sub == "checks":
-        if "--json" in argv:
-            # Real gh shape (read from a live PR): one object per check, `link` is the job URL.
-            failed = os.environ.get("GH_FAKE_FAIL_STEP") == "checks"
-            drops = int(os.environ.get("GH_FAKE_WATCH_DROPS", "0") or 0)
-            dropped = drops and state.get("watch_calls", 0) <= drops
-            print(json.dumps([{"name": "baseline",
-                               "state": "PENDING" if dropped else ("FAILURE" if failed else "SUCCESS"),
-                               "workflow": "baseline",
-                               "link": "https://example.invalid/actions/runs/77/job/1"}]))
-            return 0
-        pending = int(os.environ.get("GH_FAKE_NO_CHECKS_CALLS", "0") or 0)
+        if "--json" not in argv:
+            print("fake gh: pr checks requires --json", file=sys.stderr)
+            return 1
+        fields = argv[argv.index("--json") + 1].split(",")
         state["checks_calls"] = state.get("checks_calls", 0) + 1
+        calls = state["checks_calls"]
+        no_checks = int(os.environ.get("GH_FAKE_NO_CHECKS_CALLS", "0") or 0)
+        unreadable = int(os.environ.get("GH_FAKE_UNREADABLE_POLLS", "0") or 0)
         _save_state(state)
-        if state["checks_calls"] <= pending:
+        if calls <= no_checks:
             # Real gh right after `pr create`: the workflow run is not registered yet.
             print("no checks reported on the '%s' branch" % _current_branch(cwd), file=sys.stderr)
             return 1
-        drops = int(os.environ.get("GH_FAKE_WATCH_DROPS", "0") or 0)
-        state["watch_calls"] = state.get("watch_calls", 0) + 1
-        _save_state(state)
-        if state["watch_calls"] <= drops:
+        if calls <= no_checks + unreadable:
             print('Post "https://api.github.com/graphql": read tcp: connection timed out', file=sys.stderr)
             return 1
-        if os.environ.get("GH_FAKE_FAIL_STEP") == "checks":
-            print("fake gh: injected checks failure", file=sys.stderr)
+        state["readable_polls"] = state.get("readable_polls", 0) + 1
+        _save_state(state)
+        failed = os.environ.get("GH_FAKE_FAIL_STEP") == "checks"
+        pending = state["readable_polls"] <= int(os.environ.get("GH_FAKE_PENDING_POLLS", "0") or 0)
+        verdict = ("PENDING", "pending") if pending else (("FAILURE", "fail") if failed else ("SUCCESS", "pass"))
+        # Real gh shape (read from a live PR): one object per check, `link` is the job URL.
+        record = {"name": "baseline", "state": verdict[0], "bucket": verdict[1], "workflow": "baseline",
+                  "link": "https://example.invalid/actions/runs/77/job/1"}
+        print(json.dumps([{k: v for k, v in record.items() if k in fields}]))
+        if pending:
+            return 8
+        if failed:
             return 1
-        if os.environ.get("GH_FAKE_MAIN_MOVE_ON_CHECKS") == "1":
+        if os.environ.get("GH_FAKE_MAIN_MOVE_ON_CHECKS") == "1" and not state.get("main_moved"):
+            state["main_moved"] = True
+            _save_state(state)
             remote = _git(cwd, "remote", "get-url", "origin").stdout.strip()
             scratch = STATE_PATH.parent / "gh-fake-peer-clone"
             subprocess.run(["git", "clone", "-q", remote, str(scratch)], check=True)
@@ -1149,13 +1154,11 @@ def test_ci_checks_not_yet_registered_are_waited_for() -> None:
                                   [rel], [], False, False, None)
         assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
         state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
-        assert state.get("checks_calls") == 3, state.get("checks_calls")
+        assert state.get("checks_calls") == 4, state.get("checks_calls")  # 2 unregistered + 1 green + run-url read
 
 
-def test_a_dropped_ci_watch_is_watched_again_while_checks_are_pending() -> None:
-    # `gh pr checks --watch` exits 1 on a lost connection exactly as on a red check; the first
-    # CI-on B publication went red on a graphql timeout while CI was still running. A watch that
-    # ends while `--json` still reports a pending check has no verdict, so step 6 watches again.
+def test_pending_checks_are_polled_until_green() -> None:
+    # Step 6 polls short `--json` reads; a pending check has no verdict, so it polls again until green.
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
@@ -1163,13 +1166,51 @@ def test_a_dropped_ci_watch_is_watched_again_while_checks_are_pending() -> None:
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         env = dict(_install_fake_gh(path))
-        env["GH_FAKE_WATCH_DROPS"] = "2"
+        env["GH_FAKE_PENDING_POLLS"] = "2"
         with _patched_env(env):
             journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
                                   [rel], [], False, False, None)
         assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
         state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
-        assert state.get("watch_calls") == 3, state.get("watch_calls")
+        assert state.get("readable_polls") == 4, state.get("readable_polls")  # 3 polls + run-url read
+
+
+def test_unreadable_poll_answers_are_polled_again() -> None:
+    # A poll that times out or returns junk has no verdict either; step 6 polls again.
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        publish.CHECKS_POLL_S = 0.05
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_UNREADABLE_POLLS"] = "2"
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                                  [rel], [], False, False, None)
+        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+        state = json.loads(Path(env["GH_FAKE_STATE"]).read_text(encoding="utf-8"))
+        assert state.get("checks_calls") == 4, state.get("checks_calls")  # 2 unreadable + 1 green + run-url read
+
+
+def test_unreadable_poll_answers_fail_step_six_after_the_wait() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_path, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        publish.CHECKS_POLL_S = 0.05
+        publish.CHECKS_REGISTER_WAIT_S = 0.3
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_UNREADABLE_POLLS"] = "100000"
+        with _patched_env(env):
+            try:
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                            [rel], [], False, False, None)
+            except publish.PublishError as exc:
+                assert "no readable CI answer" in str(exc), exc
+            else:
+                raise AssertionError("expected step 6 to fail when no poll answer is readable")
 
 
 def test_ci_on_publish_records_the_ci_run_url() -> None:
@@ -2139,11 +2180,37 @@ def test_gh_pr_checks_is_retried_on_a_reset() -> None:
     assert result.returncode == 0 and len(calls) == 2, calls
 
 
-def test_gh_pr_checks_watch_is_left_to_its_own_rewatch_loop() -> None:
-    _p, calls, _result = _with_replay(
-        [(1, _RESET_STDERR)],
-        lambda publish: publish._gh(Path("wt"), ["pr", "checks", "url", "--watch", "--fail-fast"]))
-    assert len(calls) == 1, calls
+def test_a_gh_read_that_times_out_is_retried() -> None:
+    from unittest import mock
+    publish = _load_publish()
+    calls = []
+
+    def _run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"[]", stderr=b"")
+
+    with mock.patch.object(publish.sync, "NETWORK_RETRY_DELAYS", (0, 0)), \
+            mock.patch.object(subprocess, "run", _run), \
+            mock.patch.object(publish, "_resolve_gh", lambda: "gh"), \
+            contextlib.redirect_stderr(io.StringIO()):
+        result = publish._gh(Path("wt"), ["pr", "checks", "url", "--json", "name,state"])
+    assert result.returncode == 0 and len(calls) == 2, calls
+
+
+def test_gh_carries_the_network_timeout() -> None:
+    from unittest import mock
+    seen = []
+
+    def _run(cmd, *args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    publish = _load_publish()
+    with mock.patch.object(subprocess, "run", _run), mock.patch.object(publish, "_resolve_gh", lambda: "gh"):
+        publish._gh(Path("wt"), ["pr", "view", "url"])
+    assert seen == [publish.sync.NETWORK_CALL_TIMEOUT_S], seen
 
 
 def test_gh_api_post_is_never_retried_and_api_get_is() -> None:
@@ -2157,8 +2224,37 @@ def test_gh_api_post_is_never_retried_and_api_get_is() -> None:
     assert len(calls) == 2, calls
 
 
+def test_unknown_check_bucket_fails_step_six_closed() -> None:
+    # A bucket outside pass/skipping/pending (missing, or one gh adds later) is not a green verdict.
+    publish = _load_publish()
+    for record in ({"name": "baseline", "state": "ODD", "bucket": "mystery"}, {"name": "baseline", "state": "ODD"}):
+        answer = subprocess.CompletedProcess([], 0, json.dumps([record]).encode(), b"")
+        original = publish._gh
+        publish._gh = lambda _cwd, _args, answer=answer: answer
+        try:
+            green, detail = publish._wait_for_checks(Path("."), "https://example.invalid/pr/1")
+        finally:
+            publish._gh = original
+        assert green is False and "baseline" in detail, (record, green, detail)
+
+
+def test_binary_bytes_survive_the_publish_copy() -> None:
+    # The first binary row (a WASM grammar) grew 5.35 MB to 6.19 MB: line endings and UTF-8 replacement
+    # rewrote it, and the consumer's checksum then failed.
+    publish = _load_publish()
+    binary = b"\x00asm\x01\x00\x00\x00\r\n\r\xff\xfe\x80" + bytes(range(256))
+    assert publish._lf(binary) == binary
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "grammar.wasm"
+        publish._write_lf(target, binary)
+        assert target.read_bytes() == binary
+    assert publish._lf(b"a\r\nb\rc") == b"a\nb\nc"
+
+
 def main() -> int:
     cases = [
+        test_binary_bytes_survive_the_publish_copy,
+        test_unknown_check_bucket_fails_step_six_closed,
         test_pr_body_lists_each_carried_row,
         test_scoped_validate_runs_bound_proof_and_records_evidence,
         test_battery_mode_triggers,
@@ -2193,7 +2289,9 @@ def main() -> int:
         test_resume_finds_and_reuses_pr_after_crash_before_pr_url_written,
         test_gh_pr_merge_then_fail_marks_step_red_then_resume_completes,
         test_ci_checks_not_yet_registered_are_waited_for,
-        test_a_dropped_ci_watch_is_watched_again_while_checks_are_pending,
+        test_pending_checks_are_polled_until_green,
+        test_unreadable_poll_answers_are_polled_again,
+        test_unreadable_poll_answers_fail_step_six_after_the_wait,
         test_ci_on_publish_records_the_ci_run_url,
         test_ci_red_checks_record_the_ci_run_url,
         test_ci_checks_that_never_register_fail_step_six_after_the_wait,
@@ -2219,7 +2317,8 @@ def main() -> int:
         test_a_push_that_resets_once_is_retried,
         test_gh_pr_create_is_never_retried,
         test_gh_pr_checks_is_retried_on_a_reset,
-        test_gh_pr_checks_watch_is_left_to_its_own_rewatch_loop,
+        test_a_gh_read_that_times_out_is_retried,
+        test_gh_carries_the_network_timeout,
         test_gh_api_post_is_never_retried_and_api_get_is,
     ]
     # The fixtures run a copied harness_tests.py, which takes machine slots; peers holding the shared

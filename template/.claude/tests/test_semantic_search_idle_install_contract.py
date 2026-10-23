@@ -32,6 +32,7 @@ def stub_spawns(module):
     contract = {"contract": "planted"}
     module.proxy_contract = lambda paths, plugin_root: dict(contract)
     module.stock_contract = lambda paths, plugin_root: dict(contract)
+    module.csharp_contract = lambda paths, hook, plugin_root: {}
 
 
 def planted_home(module, directory):
@@ -61,6 +62,8 @@ def planted_home(module, directory):
     (repo / ".claude" / "tools").mkdir(parents=True)
     (repo / module.PROXY_SOURCE).write_text("// planted shim\n", encoding="utf-8")
     (repo / module.CHECKER_SOURCE).write_text("# planted checker\n", encoding="utf-8")
+    for name in module.CSHARP_ASSETS:
+        (repo / module.PROXY_SOURCE.parent / name).write_text("planted " + name + "\n", encoding="utf-8")
     module.repo_root = lambda: repo
     return ["--home", str(home), "--registry", str(registry), "--state-dir", str(state_dir),
             "--settings", str(settings), "--user-config", str(user_config), "--node", "node"], state_dir

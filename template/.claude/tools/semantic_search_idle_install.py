@@ -10,8 +10,9 @@ SessionStart checker runs, so drift reaches the user as one warning line and not
 
 What it installs: a copy of `tools/semantic_search_idle_proxy.mjs` under
 `<login>/semantic-search-idle/`, and one rewritten entry — the plugin's own
-`mcpServers.semantic-search` — in the ACTIVE user-scope plugin's `.mcp.json`. The plugin
-is never patched: its `command` stays `node` and only the script argument changes.
+`mcpServers.semantic-search` — in the ACTIVE user-scope plugin's `.mcp.json`.
+The plugin cache's JavaScript stays unchanged: its `command` stays `node`, only the
+script argument changes, and the shim loads a checked C# customization hook in its child.
 
 `--config-dir <login>` names the Anthropic login (a `CLAUDE_CONFIG_DIR`; default `<home>/.claude`).
 The state dir, `settings.json` and the plugin registry resolve under it, and so does the user config:
@@ -51,6 +52,13 @@ from pathlib import Path
 PLUGIN_KEY = "semantic-search@dreb"
 PROXY_SOURCE = Path(".claude/tools/semantic_search_idle_proxy.mjs")
 CHECKER_SOURCE = Path(".claude/tools/semantic_search_idle_install.py")
+CSHARP_HOOK_NAME = "semantic_search_csharp_hook.mjs"
+CSHARP_ASSETS = (
+    CSHARP_HOOK_NAME,
+    "tree-sitter-c_sharp.wasm",
+    "tree-sitter-c_sharp.LICENSE",
+    "tree-sitter-c_sharp.provenance.json",
+)
 SHIM_NAME = "proxy.mjs"
 CHECKER_NAME = "check.py"
 STATE_NAME = "install.json"
@@ -255,6 +263,23 @@ def stock_contract(paths: Paths, plugin_root: Path) -> dict:
     return _mcp_contract([paths.node, str(Path(plugin_root) / "bin" / "server.js")], Path(plugin_root))
 
 
+def csharp_contract(paths: Paths, hook: Path, plugin_root: Path) -> dict:
+    try:
+        out = subprocess.run([paths.node, str(hook), "--check", str(plugin_root)],
+                             capture_output=True, text=True, encoding="utf-8", timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Drift(f"C# hook probe failed: {exc}") from exc
+    if out.returncode != 0:
+        raise Drift(out.stderr.strip() or "C# hook probe failed without a diagnostic")
+    try:
+        report = json.loads(out.stdout)
+    except ValueError as exc:
+        raise Drift("C# hook probe did not return JSON") from exc
+    if report.get("fileType") != "csharp" or not report.get("parseFailureRejected"):
+        raise Drift("C# hook probe did not prove AST injection and fail-loud parsing")
+    return report
+
+
 def contract_drift(installed: dict, live: dict) -> list[str]:
     """Every field of the contract and of its tool, compared by value."""
     problems = []
@@ -306,6 +331,13 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
     elif sha256_file(paths.checker) != state.get("checker_sha256"):
         problems.append(f"installed checker content changed: {paths.checker}")
 
+    for name in CSHARP_ASSETS:
+        asset = paths.state_dir / name
+        if not asset.exists():
+            problems.append(f"C# asset missing: {asset}")
+        elif sha256_file(asset) != (state.get("csharp_sha256") or {}).get(name):
+            problems.append(f"C# asset content changed or unpinned: {asset}")
+
     manifest_path = Path(state.get("manifest", install_path / ".mcp.json"))
     if not manifest_path.exists():
         problems.append(f"plugin manifest missing: {manifest_path}")
@@ -335,6 +367,7 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
         return problems
 
     try:
+        csharp_contract(paths, paths.state_dir / CSHARP_HOOK_NAME, install_path)
         shim = proxy_contract(paths, install_path)
         live = stock_contract(paths, install_path)
     except Drift as exc:
@@ -352,9 +385,11 @@ def install(paths: Paths, plugin_root: Path | None = None) -> dict:
     root = repo_root()
     source_proxy = root / PROXY_SOURCE
     source_checker = root / CHECKER_SOURCE
-    for needed in (source_proxy, source_checker):
+    source_assets = [source_proxy.parent / name for name in CSHARP_ASSETS]
+    for needed in (source_proxy, source_checker, *source_assets):
         if not needed.exists():
             raise Drift(f"installer source missing: {needed}")
+    csharp_contract(paths, source_proxy.parent / CSHARP_HOOK_NAME, install_path)
 
     manifest_path = install_path / ".mcp.json"
     if not manifest_path.exists():
@@ -375,6 +410,8 @@ def install(paths: Paths, plugin_root: Path | None = None) -> dict:
 
     write_bytes_atomic(paths.proxy, source_proxy.read_bytes())
     write_bytes_atomic(paths.checker, source_checker.read_bytes())
+    for source in source_assets:
+        write_bytes_atomic(paths.state_dir / source.name, source.read_bytes())
 
     rewritten = json.loads(manifest_bytes.decode("utf-8"))
     rewritten.setdefault("mcpServers", {})[MCP_ENTRY] = expected_manifest(paths)["mcpServers"][MCP_ENTRY]
@@ -388,6 +425,7 @@ def install(paths: Paths, plugin_root: Path | None = None) -> dict:
         "backup": str(backup),
         "proxy_sha256": sha256_file(paths.proxy),
         "checker_sha256": sha256_file(paths.checker),
+        "csharp_sha256": {name: sha256_file(paths.state_dir / name) for name in CSHARP_ASSETS},
         "installed_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     write_json_atomic(paths.state, state)

@@ -105,7 +105,27 @@ class UsageError(RuntimeError):
 
 
 def _lf(data: bytes) -> bytes:
+    if is_binary(data):
+        return data
     return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def is_binary(data: bytes) -> bool:
+    return b"\x00" in data
+
+
+class BinaryText(str):
+    """A binary row inside the text pipeline: latin-1 text for hashing, the raw bytes for every write."""
+
+    raw: bytes
+
+    def __new__(cls, raw: bytes):
+        text = super().__new__(cls, raw.decode("latin-1"))
+        text.raw = raw
+        return text
+
+    def encode(self, *args, **kwargs) -> bytes:
+        return self.raw  # every hash site encodes the text: a row's hash is the sha of its raw bytes
 
 
 def normalize(data: bytes) -> bytes:
@@ -176,7 +196,9 @@ def content_sha(relpath: str, data: bytes) -> str:
 
 def _write_lf(path: Path, data: bytes | str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(data, str):
+    if isinstance(data, BinaryText):
+        data = data.raw
+    elif isinstance(data, str):
         data = data.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     path.write_bytes(_lf(data))
 
@@ -186,6 +208,8 @@ def _repo_arg(path: Path) -> str:
 
 
 NETWORK_RETRY_DELAYS = (2, 5)
+# Far above a healthy call (cloning the baseline repo takes about 3 s); a stuck call dies here and retries.
+NETWORK_CALL_TIMEOUT_S = 120.0
 _TRANSIENT_NETWORK = re.compile(
     r"connection (?:was )?reset|could not resolve host|timed out|timeout|early eof|"
     r"unexpected disconnect|remote end hung up|rpc failed|failed to connect|"
@@ -214,8 +238,17 @@ def is_remote_git(args: list[str]) -> bool:
 def run_with_network_retry(label: str, run, retryable: bool = True):
     """Call `run()` (returns a CompletedProcess); rerun it after a transient network failure.
 
-    Only stderr is matched. Anything else, and the last attempt of a transient run, returns as is."""
-    result = run()
+    Only stderr is matched. Anything else, and the last attempt of a transient run, returns as is.
+    A `subprocess.TimeoutExpired` becomes a returncode-124 "timed out" result, so it retries like any transient failure."""
+    def attempt_run():
+        try:
+            return run()
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(
+                args=exc.cmd, returncode=124, stdout=exc.stdout or b"",
+                stderr=f"timed out after {int(exc.timeout)} s".encode())
+
+    result = attempt_run()
     if not retryable:
         return result
     for attempt, delay in enumerate(NETWORK_RETRY_DELAYS, start=1):
@@ -229,22 +262,29 @@ def run_with_network_retry(label: str, run, retryable: bool = True):
         print(f"{label}: transient network error ({found.group(0)!r}); retry {attempt}/"
               f"{len(NETWORK_RETRY_DELAYS)} in {delay}s", file=sys.stderr)
         time.sleep(delay)
-        result = run()
+        result = attempt_run()
     return result
+
+
+def run_git_network(cmd: list[str], args: list[str], label: str | None = None) -> subprocess.CompletedProcess[bytes]:
+    """Run git `cmd` (its subcommand and options are `args`); a remote subcommand gets the call timeout and retries."""
+    remote = is_remote_git(args)
+    return run_with_network_retry(
+        label or f"git {' '.join(args)}",
+        lambda: subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=NETWORK_CALL_TIMEOUT_S if remote else None,
+        ),
+        retryable=remote,
+    )
 
 
 def _git(repo: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = run_with_network_retry(
-            f"git {' '.join(args)}",
-            lambda: subprocess.run(
-                ["git", "-C", _repo_arg(repo), *args],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            ),
-            retryable=is_remote_git(args),
-        )
+        result = run_git_network(["git", "-C", _repo_arg(repo), *args], args)
     except OSError as exc:
         raise BaselineError(f"git {' '.join(args)} failed: {exc}") from exc
     if check and result.returncode != 0:
@@ -314,15 +354,8 @@ def _has_linked_worktree(path: Path) -> bool:
 def _clone_no_checkout(repo: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        result = run_with_network_retry(
-            "git clone",
-            lambda: subprocess.run(
-                ["git", "clone", "--no-checkout", repo, str(destination)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            ),
-        )
+        result = run_git_network(
+            ["git", "clone", "--no-checkout", repo, str(destination)], ["clone"], "git clone")
     except OSError as exc:
         raise BaselineError(f"could not clone baseline: {exc}") from exc
     if result.returncode != 0:
@@ -725,6 +758,8 @@ def upstream_text(baseline: BaselineSource | Path, relpath: str, subs: dict) -> 
     data = _read_upstream_bytes(baseline, relpath)
     if data is None:
         return None
+    if is_binary(data):
+        return BinaryText(data)
     text = strip_provenance(relpath, _lf(data)).decode("utf-8", errors="replace")
     return forward_for(relpath, text, subs)
 
@@ -732,9 +767,12 @@ def upstream_text(baseline: BaselineSource | Path, relpath: str, subs: dict) -> 
 def local_text(root: Path, relpath: str) -> str | None:
     path = root / relpath
     try:
-        return strip_provenance(relpath, _lf(path.read_bytes())).decode("utf-8", errors="replace")
+        data = path.read_bytes()
     except OSError:
         return None
+    if is_binary(data):
+        return BinaryText(data)
+    return strip_provenance(relpath, _lf(data)).decode("utf-8", errors="replace")
 
 
 ADAPTATION_JSON_RELPATH = ".claude/skills/project_subsystems/adaptation.json"
@@ -853,7 +891,7 @@ def residual_placeholders(root: Path, lock: dict) -> list[tuple[str, list[str]]]
         if entry.get("status") not in ("tracked", "watch") or relpath in PLACEHOLDER_OK:
             continue
         text = local_text(root, relpath)
-        if text is None:
+        if text is None or isinstance(text, BinaryText):
             continue
         found = sorted(key for key in keys if key in text)
         if found:
@@ -3269,11 +3307,12 @@ def _doctor_git(root: Path) -> list[dict]:
 
 
 def _doctor_worklog(root: Path, lock: dict) -> dict:
-    text = local_text(root, ".claude/CLAUDE.md") or ""
-    match = WORKLOG_RE.search(text)
+    # /worklog acts on the path its own command names; CLAUDE.md's Worklog Location is the older home.
+    sources = (".claude/commands/worklog.md", ".claude/CLAUDE.md")
+    match = next(filter(None, (WORKLOG_RE.search(local_text(root, rel) or "") for rel in sources)), None)
     if not match:
-        return _doctor_row("worklog", "fail", ".claude/CLAUDE.md names no Worklog.md path",
-                           "name the vault Worklog.md path in CLAUDE.md under The Worklog")
+        return _doctor_row("worklog", "fail", " and ".join(sources) + " name no Worklog.md path",
+                           "name the vault Worklog.md path in .claude/commands/worklog.md")
     named = match.group(1)
     vault = (lock.get("substitutions") or {}).get("{{VAULT_ROOT}}")
     if ABS_PATH_RE.match(named):
