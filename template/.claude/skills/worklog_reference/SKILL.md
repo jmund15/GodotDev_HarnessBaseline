@@ -22,7 +22,7 @@ Doc topology (Active / Ledger / Future Scope buckets, opaque `Worklog-Archive.md
 
 **The mirror is a discovery index, not a spec.** When planning or scoping a logged item, read its full `Context` / `Where` / `Source` block in `Worklog.md` — the title-only mirror (`worklog-titles.md`) can mislead about scope entirely (a title naming one concept whose Context is about a different subsystem). Plan from the source block, not the mirror line.
 
-**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the relevance check that CLAUDE.md §The Worklog names; `.claude/workflows/worklog_relevance.prompt.md` defines it. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before routing an overlap.
+**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the relevance check that `CLAUDE.core.md` §The Worklog names; `.claude/workflows/worklog_relevance.prompt.md` defines it. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before routing an overlap.
 
 ## Classification (required on every item)
 
@@ -103,7 +103,7 @@ If an item genuinely doesn't fit, use `Other` — never invent a new domain with
 
 ## Full Trigger Catalog (auto-detect signals)
 
-These signals extend CLAUDE.md §The Worklog; treat each as a candidate, run the Do-now gate first, and propose `/worklog add` only when a defer reason holds.
+These signals extend `CLAUDE.core.md` §The Worklog; treat each as a candidate, run the Do-now gate first, and propose `/worklog add` only when a defer reason holds.
 
 ### Do-now gate (runs before any logging)
 
