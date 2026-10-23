@@ -754,14 +754,28 @@ def _read_upstream_bytes(baseline: BaselineSource | Path, relpath: str) -> bytes
         batch.close()
 
 
-def upstream_text(baseline: BaselineSource | Path, relpath: str, subs: dict) -> str | None:
-    data = _read_upstream_bytes(baseline, relpath)
-    if data is None:
-        return None
+def row_text(relpath: str, data: bytes) -> str:
+    """A row's bytes as the text every hash and comparison reads: a binary row keeps its raw bytes."""
     if is_binary(data):
         return BinaryText(data)
-    text = strip_provenance(relpath, _lf(data)).decode("utf-8", errors="replace")
-    return forward_for(relpath, text, subs)
+    return strip_provenance(relpath, _lf(data)).decode("utf-8", errors="replace")
+
+
+def rendered_upstream(relpath: str, data: bytes, subs: dict) -> str:
+    """Baseline bytes in this project's form: placeholders substituted; a binary row is never substituted."""
+    text = row_text(relpath, data)
+    return text if isinstance(text, BinaryText) else forward_for(relpath, text, subs)
+
+
+def rendered_for_upstream(relpath: str, data: bytes, subs: dict) -> str:
+    """This project's bytes in the baseline's form: placeholders restored; a binary row is never substituted."""
+    text = row_text(relpath, data)
+    return text if isinstance(text, BinaryText) else reverse_for(relpath, text, subs)
+
+
+def upstream_text(baseline: BaselineSource | Path, relpath: str, subs: dict) -> str | None:
+    data = _read_upstream_bytes(baseline, relpath)
+    return None if data is None else rendered_upstream(relpath, data, subs)
 
 
 def local_text(root: Path, relpath: str) -> str | None:
@@ -770,9 +784,7 @@ def local_text(root: Path, relpath: str) -> str | None:
         data = path.read_bytes()
     except OSError:
         return None
-    if is_binary(data):
-        return BinaryText(data)
-    return strip_provenance(relpath, _lf(data)).decode("utf-8", errors="replace")
+    return row_text(relpath, data)
 
 
 ADAPTATION_JSON_RELPATH = ".claude/skills/project_subsystems/adaptation.json"
@@ -2305,7 +2317,7 @@ def _merge_base_text(source: BaselineSource, relpath: str, base_hash: str | None
         data = source.read_at(commit, relpath)
         if data is None:
             continue
-        text = forward_for(relpath, _lf(data).decode("utf-8", errors="replace"), subs)
+        text = rendered_upstream(relpath, data, subs)
         if sha(text.encode("utf-8")) == base_hash:
             return text
     return None
@@ -2482,6 +2494,9 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 changed.append(relpath)
                 continue
             if action == "merge":
+                if isinstance(upstream, BinaryText):
+                    conflicts.append((relpath, "binary row; keep the local copy or take upstream with pull --force", None))
+                    continue
                 subs = lock.get("substitutions", {})
                 base = _merge_base_text(source, relpath, files[relpath].get("hash"), subs)
                 local = local_text(root, relpath) or ""

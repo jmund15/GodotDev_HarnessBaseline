@@ -2285,6 +2285,21 @@ def test_pull_merge_combines_both_sides_of_a_diverged_row() -> None:
         assert f"merged: {rel}" in _out(pull), _out(pull)
 
 
+def test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched() -> None:
+    rel = ".claude/tools/grammar.wasm"
+    base, local, upstream = b"\x00asm base\n", b"\x00asm local\r\n\xff", b"\x00asm upstream\r\n\xfe"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": base}})
+        _diverge(root, baseline, rel, local, upstream)
+        before = _load_lock(root)["files"][rel]["hash"]
+        pull = _run_baseline(root, baseline, "pull", "--merge", rel)
+        out = _out(pull)
+        assert pull.returncode == 1, out
+        assert f"conflict: {rel} (binary row" in out, out
+        assert (root / rel).read_bytes() == local
+        assert _load_lock(root)["files"][rel]["hash"] == before
+
+
 def test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched() -> None:
     rel = ".claude/rules/clash.md"
     with _fixture() as path:
@@ -3045,6 +3060,7 @@ def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
 def main() -> int:
     cases = [
         test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes,
+        test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched,
         test_pull_updates_the_running_engine_first_and_reruns_with_it,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
