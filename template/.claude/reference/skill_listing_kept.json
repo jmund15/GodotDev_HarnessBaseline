@@ -5,6 +5,8 @@
     "workflow-authoring": "the Workflow tool's reference; load it before writing a workflow script",
     "code-review": "/code-review ultra is the owner's multi-agent cloud review",
     "loop": "/loop drives self-paced recurring work (ScheduleWakeup)",
-    "schedule": "cloud routines on a cron schedule"
+    "schedule": "cloud routines on a cron schedule",
+    "artifact-design": "the Artifact tool requires loading it before it publishes a page",
+    "artifact-capabilities": "the Artifact tool requires loading it before a page declares runtime capabilities or calls window.claude"
   }
 }
