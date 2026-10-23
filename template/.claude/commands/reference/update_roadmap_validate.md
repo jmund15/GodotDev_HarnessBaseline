@@ -24,8 +24,8 @@ Per [`roadmap_triggers_mvp.md §6.10`](../../skills/_brainstorm_shared/roadmap_t
 
 ## Batch-shape checks
 
-- [ ] **Sibling-arch-pending batch** — if this batch adds more than one NEW Part at State=`arch-pending`, emit `⚠ Several arch-pending Parts in one batch — apply the [Arch-pending consolidation litmus](../../skills/architecture_brainstorm/reference/part_authoring.md#arch-pending-consolidation-litmus--symptoms-and-full-rule): do their open questions roll up to one session? If yes, consolidate into one Part with per-fork inventory in its Trigger.`
-- [ ] **Intra-batch speculative dep** — if a new Part's Deps include another NEW Part in this same batch with State ∈ {`arch-pending`, `idea-pending`, `workshop-pending`}, emit `⚠ This Part depends on a *-pending sibling being added in the same batch — apply the [Downstream-of-fork guard](../../skills/architecture_brainstorm/reference/part_authoring.md#downstream-of-fork-guard--full-rule). If this Part's scope would change based on the upstream session's decision, remove it and push inventory into the upstream Trigger instead.`
+- [ ] **Sibling-arch-pending batch** — if this batch adds more than one NEW Part at State=`arch-pending`, emit `⚠ Several arch-pending Parts in one batch — apply the Arch-pending consolidation litmus ([`architecture_brainstorm/SKILL.md`](../../skills/architecture_brainstorm/SKILL.md) §Arch-pending consolidation litmus): do their open questions roll up to one session? If yes, consolidate into one Part with per-fork inventory in its Trigger.`
+- [ ] **Intra-batch speculative dep** — if a new Part's Deps include another NEW Part in this same batch with State ∈ {`arch-pending`, `idea-pending`, `workshop-pending`}, emit `⚠ This Part depends on a *-pending sibling being added in the same batch — apply the Downstream-of-fork guard ([`architecture_brainstorm/SKILL.md`](../../skills/architecture_brainstorm/SKILL.md) §Downstream-of-fork guard). If this Part's scope would change based on the upstream session's decision, remove it and push inventory into the upstream Trigger instead.`
 
 ## Wikilink coherence
 
