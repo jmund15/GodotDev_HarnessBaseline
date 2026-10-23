@@ -46,6 +46,8 @@ class PublishError(RuntimeError):
 
 
 def _lf(data: bytes) -> bytes:
+    if b"\x00" in data:
+        return data  # binary: line-ending rewrite would corrupt it
     return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
@@ -55,16 +57,7 @@ def _now() -> str:
 
 def _git(repo: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = sync.run_with_network_retry(
-            f"git {' '.join(args)}",
-            lambda: subprocess.run(
-                ["git", "-C", str(repo), *args],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            ),
-            retryable=sync.is_remote_git(args),
-        )
+        result = sync.run_git_network(["git", "-C", str(repo), *args], args)
     except OSError as exc:
         raise PublishError(f"git {' '.join(args)} failed: {exc}") from exc
     if check and result.returncode != 0:
@@ -434,6 +427,8 @@ def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
             continue
         original = destination.read_bytes()
         stripped = sync.strip_provenance(record["relpath"], original)
+        if sync.is_binary(original):
+            continue  # binary rows publish byte-for-byte: no provenance strip, no reverse substitution
         if record["kind"] == "lock":
             rendered = stripped.decode("utf-8", errors="replace")
             _write_lf(destination, sync.reverse_for(record["relpath"], rendered, lock.get("substitutions", {})))
@@ -620,10 +615,8 @@ def _merge_local(repo: str, branch: str, expected_head: str, work_parent: Path) 
     if merge_dir.exists():
         shutil.rmtree(merge_dir, ignore_errors=True)
     merge_dir.parent.mkdir(parents=True, exist_ok=True)
-    result = sync.run_with_network_retry("git clone", lambda: subprocess.run(
-        ["git", "clone", "--no-checkout", str(repo), str(merge_dir)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-    ))
+    result = sync.run_git_network(
+        ["git", "clone", "--no-checkout", str(repo), str(merge_dir)], ["clone"], "git clone")
     if result.returncode != 0:
         detail = _lf(result.stderr).decode(errors="replace").strip()
         raise PublishError("could not clone merge checkout" + (": " + detail if detail else ""))
@@ -661,8 +654,6 @@ def _gh_reads_only(args: list[str]) -> bool:
             if item.startswith("--method=") and item.split("=", 1)[1].upper() != "GET":
                 return False
         return not any(item in ("-f", "-F", "--field", "--raw-field", "--input") for item in args)
-    if "--watch" in args:
-        return False  # `_watch_checks` owns the re-watch of a dropped watch
     return tuple(args[:2]) in _GH_READ_ONLY
 
 
@@ -676,10 +667,12 @@ def _gh(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[bytes]:
             return subprocess.run(
                 subprocess.list2cmdline(cmd), cwd=str(cwd), shell=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                timeout=sync.NETWORK_CALL_TIMEOUT_S,
             )
         return subprocess.run(
             cmd, cwd=str(cwd),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            timeout=sync.NETWORK_CALL_TIMEOUT_S,
         )
 
     try:
@@ -729,47 +722,46 @@ def _pinned_has_ci_workflow(baseline_cache: Path, pinned_sha: str) -> bool:
 
 
 # GitHub registers a pull request's workflow run a few seconds after `pr create`; until then
-# `gh pr checks` exits 1 with "no checks reported". Step 6 polls until checks exist, within a bound.
+# `gh pr checks` exits 1 with "no checks reported". Step 6 polls until checks exist, and gives up
+# when no check registers, or no answer is readable, for this long.
 CHECKS_REGISTER_WAIT_S = 180.0
-CHECKS_POLL_S = 5.0
-_NO_CHECKS_YET = "no checks reported"
+CHECKS_POLL_S = 10.0  # gh's own watch default interval
 
 
-CHECKS_WATCH_RETRIES = 5
-_PENDING_CHECK_STATES = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"}
-
-
-def _checks_pending(worktree: Path, pr_url: str) -> bool:
-    """True when a check has no verdict yet, or when the answer itself is unreadable."""
-    listed = _gh(worktree, ["pr", "checks", pr_url, "--json", "name,state"])
-    if listed.returncode != 0:
-        return True
-    try:
-        checks = json.loads(_lf(listed.stdout).decode("utf-8", errors="replace") or "[]")
-    except json.JSONDecodeError:
-        return True
-    return any(str(check.get("state") or "").upper() in _PENDING_CHECK_STATES for check in checks)
-
-
-def _watch_checks(worktree: Path, pr_url: str) -> subprocess.CompletedProcess[bytes]:
-    """`--watch` exits non-zero on a lost connection as on a red check, so a non-zero watch
-    that leaves a check pending has no verdict: watch again, up to CHECKS_WATCH_RETRIES times."""
-    deadline = time.monotonic() + CHECKS_REGISTER_WAIT_S
-    rewatches = 0
+def _wait_for_checks(worktree: Path, pr_url: str) -> tuple[bool, str]:
+    """Poll `gh pr checks --json` with short calls. Returns (green, detail); detail names the failed checks."""
+    began = time.monotonic()
+    seen_checks = False
+    unreadable_since: float | None = None
     while True:
-        checks = _gh(worktree, ["pr", "checks", pr_url, "--watch", "--fail-fast"])
-        if checks.returncode == 0:
-            return checks
-        text = _lf(checks.stdout + checks.stderr).decode("utf-8", errors="replace")
-        if _NO_CHECKS_YET in text:
-            if time.monotonic() >= deadline:
+        polled = _gh(worktree, ["pr", "checks", pr_url, "--json", "name,state,bucket"])
+        out = _lf(polled.stdout).decode("utf-8", errors="replace")
+        err = _lf(polled.stderr).decode("utf-8", errors="replace")
+        try:
+            checks = json.loads(out or "[]")
+        except json.JSONDecodeError:
+            checks = None
+        if isinstance(checks, list) and checks:
+            seen_checks = True
+            unreadable_since = None
+            failed = [c for c in checks if c.get("bucket") not in ("pass", "skipping", "pending")]
+            if failed:
+                return False, ", ".join(f"{c.get('name')}: {c.get('state')}" for c in failed)
+            if not any(c.get("bucket") == "pending" for c in checks):
+                return True, ""
+        elif "no checks reported" in out + err:
+            unreadable_since = None
+            if not seen_checks and time.monotonic() - began >= CHECKS_REGISTER_WAIT_S:
                 raise PublishError(
                     f"no CI checks registered on {pr_url} within {int(CHECKS_REGISTER_WAIT_S)} s"
                 )
-        elif rewatches < CHECKS_WATCH_RETRIES and _checks_pending(worktree, pr_url):
-            rewatches += 1
         else:
-            return checks
+            if unreadable_since is None:
+                unreadable_since = time.monotonic()
+            elif time.monotonic() - unreadable_since > CHECKS_REGISTER_WAIT_S:
+                raise PublishError(
+                    f"no readable CI answer on {pr_url} for {int(CHECKS_REGISTER_WAIT_S)} s: {err.strip()}"
+                )
         time.sleep(CHECKS_POLL_S)
 
 
@@ -777,9 +769,7 @@ def _ci_run_url(worktree: Path, pr_url: str) -> str | None:
     """The workflow run behind the PR's checks, green or red: `gh pr checks --json` gives each check's job
     link (`.../actions/runs/<run>/job/<job>`); the run URL is that link without its job segment."""
     listed = _gh(worktree, ["pr", "checks", pr_url, "--json", "name,state,link"])
-    if listed.returncode != 0:
-        return None
-    try:
+    try:  # gh exits non-zero on a red or pending check and still prints the JSON
         checks = json.loads(_lf(listed.stdout).decode("utf-8", errors="replace") or "[]")
     except json.JSONDecodeError:
         return None
@@ -848,12 +838,11 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
 
     if not no_ci:
         start = time.monotonic()
-        checks = _watch_checks(worktree, pr_url)
+        green, detail = _wait_for_checks(worktree, pr_url)
         journal["ci_wait_s"] = round(journal.get("ci_wait_s", 0) + (time.monotonic() - start), 3)
         journal["ci_run_url"] = _ci_run_url(worktree, pr_url)
         _write_json_atomic(journal_path, journal)
-        if checks.returncode != 0:
-            detail = _lf(checks.stdout + checks.stderr).decode("utf-8", errors="replace").strip()
+        if not green:
             raise PublishError("gh pr checks failed" + ((": " + detail) if detail else ""))
 
     _git(worktree, ["fetch", "origin", "main"])

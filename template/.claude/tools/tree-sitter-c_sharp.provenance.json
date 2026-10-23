@@ -1,0 +1,16 @@
+{
+  "package": "tree-sitter-c-sharp",
+  "version": "0.23.5",
+  "repository": "https://github.com/tree-sitter/tree-sitter-c-sharp",
+  "tarball": "https://registry.npmjs.org/tree-sitter-c-sharp/-/tree-sitter-c-sharp-0.23.5.tgz",
+  "npm_integrity": "sha512-xJGOeXPMmld0nES5+080N/06yY6LQi+KWGWV4LfZaZe6srJPtUtfhIbRSN7EZN6IaauzW28v6W4QHFwmeUW6HQ==",
+  "tarball_sha256": "dde5d56fe441a7d64616462c8d741ab4af7874484de6aa74548ac5770c50c414",
+  "member": "package/tree-sitter-c_sharp.wasm",
+  "bytes": 5350581,
+  "sha256": "6f69e1cae44e1c32c1eccc170dc5a9778fb94ff716f71113fe1f8c4299aa2f40",
+  "license": "MIT",
+  "license_file": "tree-sitter-c_sharp.LICENSE",
+  "obtained": "2026-10-22",
+  "build": "Unmodified npm-shipped WASM; no local build or package scripts executed.",
+  "compatibility": "Parsed class, struct, interface, enum, record, record struct, method, constructor and property with installed web-tree-sitter 0.26.13 on Node 24.12.0. Repeat with semantic_search_csharp_hook.mjs --check <plugin-root>."
+}

@@ -2327,6 +2327,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/reference/semantic_search_idle.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/reference/sidecar_dispatch.md",
       "layer": "pure",
       "sync": "auto"
@@ -3568,6 +3573,21 @@
     },
     {
       "path": ".claude/tests/lean_type_fallback_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/lib/measure_common.ps1",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/measure_semantic_search_idle.ps1",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/measure_semantic_search_shared.ps1",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4822,7 +4842,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_semantic_search_csharp_hook.mjs",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_semantic_search_idle_install.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_semantic_search_idle_install_contract.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_semantic_search_idle_proxy.mjs",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5772,7 +5807,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/semantic_search_csharp_hook.mjs",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/semantic_search_idle_install.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/semantic_search_idle_proxy.mjs",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5863,6 +5908,21 @@
     },
     {
       "path": ".claude/tools/transcript_usage.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/tree-sitter-c_sharp.LICENSE",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/tree-sitter-c_sharp.provenance.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/tree-sitter-c_sharp.wasm",
       "layer": "pure",
       "sync": "auto"
     },
