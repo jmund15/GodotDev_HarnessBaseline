@@ -85,6 +85,7 @@ OPTIONAL_DATA = {
 }
 OPTIONAL_LOADER = "_optional_hooks"
 PLACEHOLDERS = {"foo", "bar", "baz", "example", "slug", "name", "x", "y"}
+FIXTURE_TREE = "/tests/fixtures/"
 SKIP_WALK = {".cache", "cache", "logs", "scratch", "worktrees", "sessions", "__pycache__", "plans"}
 
 
@@ -258,8 +259,9 @@ def _expand(tree: Tree, cands):
         else:
             out.append(c)
     if suffix and not any(c in tree.layers or tree.on_disk(c) for c in out):
-        out.extend(rel for rel in tree.layers if rel.endswith(suffix))
-        out.extend(tree.local_with_suffix(suffix))
+        # A fixture tree holds copies of real files; a suffix citation never means the copy.
+        out.extend(rel for rel in tree.layers if rel.endswith(suffix) and FIXTURE_TREE not in rel)
+        out.extend(rel for rel in tree.local_with_suffix(suffix) if FIXTURE_TREE not in rel)
     return out
 
 
