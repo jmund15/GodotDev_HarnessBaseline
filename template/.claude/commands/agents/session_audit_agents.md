@@ -163,7 +163,7 @@ Judge every hot item (bullet, hook line, numbered step or bold-lead rule), not o
 3. Staleness: a cited path, command, flag or symbol that no longer resolves, or a later rule that supersedes the item → FIX.
 4. An `oversized_body` row is a triggered body, not standing text: apply `instruction_quality` §5's split test (a typical invocation needs less than half → move detail layers to `reference/`, cited from the step that reads them) and §6's no-op test per unit. Report each move as a FIX that keeps the moved text verbatim; never propose deleting a load-bearing rule to reduce bytes.
 Each addition since the baseline commit that passes all three gets one line: `kept: <file>:<line> — <the decision it changes>`.
-The owner's introductory note in `CLAUDE.md` is not an item (`instruction_quality` §5).
+The owner's note, in `CLAUDE.core.md` and `CLAUDE.md`, is not an item (`instruction_quality` §5).
 
 {{HOT_SET}}   <!-- orchestrator: each over-baseline file whole, plus its hunks since that budget's baselineCommit -->
 {{HARNESS_HUNKS}}   <!-- orchestrator: the session's harness diff (committed + uncommitted), one block per file, headed by before/after byte counts; count units yourself -->

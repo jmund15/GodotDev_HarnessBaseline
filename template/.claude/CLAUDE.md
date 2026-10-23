@@ -13,8 +13,8 @@
 ## 3. Obsidian (The Design Source)
 Read and search `DevProjects/{{PROJECT_NAME}}`, plus any vault path the user, a skill or a command names; native file tools work even while Obsidian is open. Search before choosing a path. Project-specific writes go to `{{PROJECT_NAME}}/Claude/`. Load `obsidian_conventions`; `environment_bootstrap` owns machine paths. Never invent a formula absent from the design source.
 
-## The Worklog (Live Todo Doc)
-`DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` is authoritative; `.claude/worklog-titles.md` is the title-only lookup. `worklog_reference` and `/worklog` own operations. Do small in-context work now; propose genuine deferrals once, and complete an item when it finishes. The once-per-session relevance check fires when production scope becomes nameable; skip meta-only work and a single known mechanical fix.
+## Worklog Location
+`DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` is authoritative; `.claude/worklog-titles.md` is the title-only lookup. `worklog_reference` and `/worklog` own operations; `CLAUDE.core.md` §The Worklog owns when to log.
 
 ## Project Domains
 Add your content domains to `.claude/skills/project_subsystems/adaptation.json`'s `memory_domains` key; it is the only source, feeding both `reference/memory_domains.md` and `hooks/plan_memory_reminder.py` `DOMAINS`.
