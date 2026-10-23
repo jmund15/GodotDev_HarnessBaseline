@@ -43,7 +43,7 @@ Use named anchors rather than fragile line/section-number references for new lin
 ### 5. Size proportional to load mode
 Budget actual loaded bytes, including catalogs, invoked bodies and transitive references. A smaller file is not a saving if every caller reads its replacement unconditionally. A skill that only ever fires by name is a command — move it.
 
-CLAUDE.md carries the owner's introductory note verbatim, under whatever heading: never condense, reword or relocate it, and any reference codes it defines stay there.
+The owner's note is verbatim in two homes: its universal part opens `CLAUDE.core.md` (§A Note from the Owner), its project part opens the project's `CLAUDE.md`. Never condense, reword or relocate either, and the reference codes stay in the core part.
 
 Always-loaded admission:
 - **A1:** measure bytes and the before/after delta, not line count alone.
