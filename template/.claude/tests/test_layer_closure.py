@@ -227,6 +227,15 @@ def main():
                   {hook: "pure", guard: "godot", helper: "pure"})
     check("a name passed to the optional loader is optional", got == [], kinds(got))
 
+    gone = "import _optional_hooks\nHOOKS = _optional_hooks.load('gone_hook')\n"
+    got = planted({hook: gone, helper: "def load(*n): pass\n"}, {hook: "pure", helper: "pure"})
+    check("an optional-loader name no layer ships and no file provides is missing",
+          kinds(got) == [(hook, "missing", "gone_hook.py")], kinds(got))
+
+    got = planted({hook: gone, helper: "def load(*n): pass\n"}, {hook: "pure", helper: "pure"},
+                  extra=(".claude/hooks/gone_hook.py",))
+    check("an optional-loader name a local file provides is not missing", got == [], kinds(got))
+
     chain = 'CHAIN = (("tres_guard", "enforcement"),)\n'
     got = planted({hook: chain, guard: "x = 1\n"}, {hook: "pure", guard: "godot"})
     check("a module named by a bare string literal is a dependency",
