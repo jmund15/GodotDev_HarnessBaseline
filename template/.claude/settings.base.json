@@ -487,7 +487,6 @@
       "Skill(worklog)"
     ],
     "deny": [
-      "Glob(.claude/worktrees/**)",
       "Read(.claude/worktrees/**)",
       "Grep(.claude/worktrees/**)",
       "Agent",
