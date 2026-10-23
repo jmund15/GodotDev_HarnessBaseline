@@ -2212,6 +2212,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/video_read_hint.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/wide_test_guard.py",
       "layer": "godot",
       "sync": "auto"
@@ -2669,6 +2674,11 @@
     {
       "path": ".claude/scripts/verify.ps1",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/video_frames.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -3219,6 +3229,11 @@
     {
       "path": ".claude/skills/vfx_patterns/reference/interfaces_and_files.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/video_frames/SKILL.md",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -5243,6 +5258,16 @@
     },
     {
       "path": ".claude/tests/test_verify_transport_status_reason.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_video_frames.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_video_read_hint.py",
       "layer": "pure",
       "sync": "auto"
     },

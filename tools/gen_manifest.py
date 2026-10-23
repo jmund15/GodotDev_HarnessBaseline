@@ -282,6 +282,12 @@ PURE_PATTERNS = [
     # Sidecar/tooling trio consumed by any harness (pure):
     ".claude/reference/external_models.json",
     ".claude/scripts/claude_profile_functions.ps1",
+    # Video contact sheets; pre_read_dispatch imports the hint module:
+    ".claude/scripts/video_frames.py",
+    ".claude/hooks/video_read_hint.py",
+    ".claude/skills/video_frames/*",
+    ".claude/tests/test_video_frames.py",
+    ".claude/tests/test_video_read_hint.py",
     ".claude/auto-memory/MEMORY.md",
     ".claude/auto-memory/archive/*",
     ".claude/auto-memory/diagnose_specific_objection_before_pivot.md",

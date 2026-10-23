@@ -105,6 +105,9 @@ SURFACE_NOUN_EXEMPT = {
     ".claude/commands/ingest_conversation.md": {
         r"\bYouTube\b": "a transcript source URL the command accepts, not the consumer's domain",
     },
+    ".claude/skills/video_frames/SKILL.md": {
+        r"\bYouTube\b": "an input URL the tool downloads, not the consumer's domain",
+    },
 }
 CORE_DOMAIN_ALLOWLIST = {
     ".claude/CLAUDE.md",            # seed: consumer replaces domain sections
