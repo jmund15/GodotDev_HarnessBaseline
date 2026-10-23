@@ -242,6 +242,11 @@
       "sync": "offer"
     },
     {
+      "path": ".claude/auto-memory/archive/feedback_live_hook_edits_keep_each_state_importable.md",
+      "layer": "pure",
+      "sync": "offer"
+    },
+    {
       "path": ".claude/auto-memory/archive/feedback_lsp_default_for_csharp.md",
       "layer": "godot",
       "sync": "offer"

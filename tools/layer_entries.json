@@ -33,6 +33,7 @@
     ".claude/auto-memory/archive/feedback_gate_invalid_targeted_verification.md": "coding",
     ".claude/auto-memory/archive/feedback_godot_signal_test_via_emitsignal.md": "godot",
     ".claude/auto-memory/archive/feedback_harness_rules_are_agent_actionable.md": "pure",
+    ".claude/auto-memory/archive/feedback_live_hook_edits_keep_each_state_importable.md": "pure",
     ".claude/auto-memory/archive/feedback_model_agnostic_core_scoped_overlays.md": "pure",
     ".claude/auto-memory/archive/feedback_move_destination_must_be_read.md": "coding",
     ".claude/auto-memory/archive/feedback_no_performative_agreement.md": "pure",

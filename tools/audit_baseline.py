@@ -329,7 +329,9 @@ def check_surface_domain_nouns(f: Findings, manifest: dict) -> None:
         if hits:
             f.add("WARN", "surface-domain-noun", rel,
                   f"{layer}-tagged surface that loads on every turn names {', '.join(hits)} -- "
-                  "reword domain-neutrally or move the rule to the godot layer")
+                  "reword domain-neutrally or move the rule to the godot layer; when the noun names an "
+                  "input or tool the file handles, not a consumer's domain, add a SURFACE_NOUN_EXEMPT row "
+                  "with that reason instead of rewording it")
 
 
 def check_layer_closure(f: Findings, manifest: dict, template: Path = TEMPLATE) -> None:
