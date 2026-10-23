@@ -632,15 +632,6 @@ test('S2.3 warm, post-idle and unwrapped stock results are identical', async () 
 	}
 })
 
-test('S2.4 a call that runs past 60 seconds is not aborted, and its backend is not closed in flight', async () => {
-	const { res, elapsed, alive, logPath } = await slowCall
-	assert.notEqual(res.isError, true, `the shim aborted a >60s call: ${resultText(res)}`)
-	assert.match(resultText(res), /^fake:slow:pid=\d+$/)
-	assert.ok(elapsed >= 60000, `the fake backend returned early after ${elapsed}ms`)
-	assert.ok(alive, 'the child was closed while a request was in flight')
-	assert.match(readFileSync(logPath, 'utf8'), /answered/)
-})
-
 test('S2.5 concurrent calls are both served and do not boot a second child', async () => {
 	const fakeRoot = buildFakePlugin(path.join(SCRATCH, 'fake-plugin-concurrent'))
 	const fe = await startFrontend({ cwd: fx, pluginRoot: fakeRoot, env: { SEMANTIC_SEARCH_IDLE_DEBUG: '1', FAKE_DELAY_MS: '1500', ...IDLE_ENV } })
@@ -1316,4 +1307,15 @@ test('S3.17 a departing guest\'s longer idle window stops counting', { timeout: 
 		await b.close()
 		await a.close()
 	}
+})
+
+// Last on purpose: its 65 s call starts in `before` and runs while every other case does, so awaiting it
+// here costs only what the rest of the suite has not already covered.
+test('S2.4 a call that runs past 60 seconds is not aborted, and its backend is not closed in flight', async () => {
+	const { res, elapsed, alive, logPath } = await slowCall
+	assert.notEqual(res.isError, true, `the shim aborted a >60s call: ${resultText(res)}`)
+	assert.match(resultText(res), /^fake:slow:pid=\d+$/)
+	assert.ok(elapsed >= 60000, `the fake backend returned early after ${elapsed}ms`)
+	assert.ok(alive, 'the child was closed while a request was in flight')
+	assert.match(readFileSync(logPath, 'utf8'), /answered/)
 })
