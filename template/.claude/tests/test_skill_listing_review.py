@@ -68,6 +68,14 @@ class SkillListingReview(unittest.TestCase):
         write_transcript(self.transcripts, "a.jsonl", [LIVE_ROW], 100)
         self.assertEqual("", slr.banner(self.transcripts, claude))
 
+    def test_entry_the_settings_hide_is_ruled_before_a_fresh_listing_drops_it(self):
+        claude = plant_claude(self.root, {"semantic-search:search": "", "loop": ""})
+        (claude / "settings.json").write_text(json.dumps({"skillOverrides": {
+            "dataviz": "user-invocable-only", "anthropic-skills:pdf": "off", "anthropic-skills:docx": "on"}}),
+            encoding="utf-8")
+        write_transcript(self.transcripts, "a.jsonl", [LIVE_ROW], 100)
+        self.assertEqual(["anthropic-skills:docx"], slr.unruled(self.transcripts, claude))
+
     def test_newest_transcript_with_a_listing_wins(self):
         claude = plant_claude(self.root, {})
         old = dict(LIVE_ROW, attachment=dict(LIVE_ROW["attachment"], names=["dataviz"]))

@@ -257,23 +257,44 @@ _PYTEST_CASE_RE = re.compile(r"^(?:async\s+)?def\s+test\w*\s*\(|^class\s+Test\w*
 _MAIN_GUARD_RE = re.compile(r"""^if\s+__name__\s*==\s*['"]__main__['"]""", re.MULTILINE)
 
 
-def _pytest_style(path):
-    """A Python proof with top-level pytest cases and no `__main__` block: `python <file>` defines its
-    cases and exits 0 having run none, so it runs under pytest."""
+_TOP_TEST_RE = re.compile(r"^(?:async\s+)?def\s+(test\w*)\s*\(\s*(\S?)", re.MULTILINE)
+_PYTEST_HANDOFF_RE = re.compile(r"pytest\.main\(\s*\[\s*__file__")
+_GLOBALS_COLLECTOR_RE = re.compile(r"globals\(\)[\s\S]{0,200}?startswith\(\s*['\"]test_")
+
+
+def _pytest_cases(path):
+    """The pytest node ids a run of the proof needs: the whole file for a proof with top-level pytest cases and no
+    `__main__` block (`python <file>` would define its cases and run none); for a proof with one, each top-level
+    `test*` function its `main` cannot reach. A `main` reaches every case when it hands the file to
+    `pytest.main`, each no-argument case when it collects `test_` names from `globals()`, and otherwise only the
+    cases the file names outside their own `def` line."""
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
-        return False
-    return bool(_PYTEST_CASE_RE.search(text)) and not _MAIN_GUARD_RE.search(text)
+        return []
+    if not _MAIN_GUARD_RE.search(text):
+        return [path] if _PYTEST_CASE_RE.search(text) else []
+    if _PYTEST_HANDOFF_RE.search(text):
+        return []
+    collector = bool(_GLOBALS_COLLECTOR_RE.search(text))
+    return [path + "::" + name for name, first in _TOP_TEST_RE.findall(text)
+            if len(re.findall(r"\b%s\b" % name, text)) == 1 and not (collector and first == ")")]
+
+
+def _runner_cmds(path):
+    """The commands that run the proof, in order; the first failing one decides its result."""
+    if path.endswith(".py"):
+        cases = _pytest_cases(path)
+        # Without a confcutdir, a proof outside the cwd has pytest walk conftests through their common ancestor.
+        pytest = [[sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                   "--confcutdir=" + os.path.dirname(os.path.abspath(path))] + cases] if cases else []
+        return pytest if cases == [path] else [[sys.executable, path]] + pytest
+    return [_runner_cmd(path)]
 
 
 def _runner_cmd(path):
     if path.endswith(".py"):
-        if _pytest_style(path):
-            # Without a confcutdir, a proof outside the cwd has pytest walk conftests through their common ancestor.
-            return [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                    "--confcutdir=" + os.path.dirname(os.path.abspath(path)), path]
         return [sys.executable, path]
     if path.endswith(".js"):
         return ["node", path]
@@ -479,10 +500,13 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
     start = time.time()
     out = ""
     try:
-        command = _runner_cmd(path)
-        # pytest's exit 2 is an interrupted run or a collection error, a red; only a proof's own exit 2 means cannot-run.
-        pytest_run = command[1:3] == ["-m", "pytest"]
-        returncode, out = _run_child(command, env, timeout, os.path.join(temp_root, "proof_output.txt"), cwd=root)
+        for command in _runner_cmds(path):
+            # pytest's exit 2 is an interrupted run or a collection error, a red; only a proof's own exit 2 means cannot-run.
+            pytest_run = command[1:3] == ["-m", "pytest"]
+            returncode, part = _run_child(command, env, timeout, os.path.join(temp_root, "proof_output.txt"), cwd=root)
+            out += part
+            if returncode != 0:
+                break
         if log_dir:
             reads_sink.update(events=_read_events(log_dir), temp=temp_root)
         if returncode is None:

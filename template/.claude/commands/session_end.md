@@ -86,7 +86,7 @@ Gate: `--only regression_gate`. Run the project's regression gate once per drive
 
 ## Phase 5.4: Roadmap Atlas
 
-Gate: `--only roadmap_atlas`. Run the project's roadmap-atlas generator where it ships one: first its `--render` form, then its `--json` form redirected to `logs/roadmap_atlas_<sid8>.json`; `--render` prints no JSON. Keep its output for Phase 5.5 and report Health findings on touched roadmaps. Errors are non-blocking; a failed render is not completion. Its vault files do not belong in the git commit.
+Gate: `--only roadmap_atlas`. Run the project's roadmap-atlas generator where it ships one: first its `--render` form, then its `--json` form redirected to `logs/roadmap_atlas_<sid8>.json`; `--render` prints no JSON. Keep its output for Phase 5.5 and report Health findings on touched roadmaps. A project that ships no generator, or a failed render, records the phase blocked with that reason; it never blocks the close, and Phase 5.5 then reads the roadmap directly. Its vault files do not belong in the git commit.
 
 ## Phase 5.5: Roadmap Drift
 

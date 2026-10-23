@@ -769,6 +769,23 @@ def _journal_results(directory):
     return [(labels[agent], results.get(agent)) for agent in latest.values()]
 
 
+def _journal_has_phase(directory, phase):
+    """Whether any agent of the journal started in `phase`; explore_fanout stamps its lenses 'Explore' whatever the caller's labelPrefix."""
+    journal = Path(directory) / "journal.jsonl"
+    try:
+        lines = journal.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise Unusable(f"workflow journal unreadable: {journal}: {exc}") from None
+    for line in lines:
+        try:
+            event = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "started" and event.get("phase") == phase:
+            return True
+    return False
+
+
 def _sidecar_results(directory):
     """(label, deliverable text) per job of a sidecar fan-out out dir: `<label>.md` beside each `<label>.out.json`."""
     import dispatch_result
@@ -915,7 +932,7 @@ def claims_rows(args):
     if directory is not None:
         results = _journal_results(directory)
         session_id = directory.parents[2].name
-        if any(label.startswith('explore:') for label, _ in results):
+        if _journal_has_phase(directory, 'Explore'):
             import session_digest
             archive = session_digest.build_workflow_result_archive(directory, 'explore', root=args.root, verify=False)
             rows = [dict(id=f"{item['lens']}#{item['index']}", evidence=verify_claims.items_of(item['claim'], root=args.root or REPO),

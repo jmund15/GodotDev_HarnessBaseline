@@ -30,7 +30,7 @@ Each Part the design authored maps to a Parts table row:
 | Part with open arch design questions (architectural fork) | `arch-pending` |
 | Part needing creative ideation (creative fork) | `idea-pending` |
 | Part awaiting user decision | `workshop-pending` |
-| Part blocked on a feel-fork the design can't grill (per the `architecture_brainstorm` skill's Part-readiness gate feel-fork detour trigger) | `prototype-pending` |
+| Part blocked on a feel-fork the design can't grill (per [`part_authoring.md`](../../skills/architecture_brainstorm/reference/part_authoring.md) §Part-readiness gate, feel-fork row) | `prototype-pending` |
 | Part marked user-owned (per the `architecture_brainstorm` skill's Part-authoring user-owned-question rule) | `user-owned` |
 
 Each Part inherits Deps from the design doc's enumerated dependencies and gets a Source link to the design section.

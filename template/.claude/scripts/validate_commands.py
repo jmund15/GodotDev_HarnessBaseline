@@ -34,8 +34,8 @@ def check_file_references() -> list[str]:
 
     for md_file in COMMANDS_DIR.rglob("*.md"):
         content = md_file.read_text(encoding="utf-8")
-        # Match ](relative/path.md) — relative links within commands
-        for match in re.finditer(r'\]\(([^)]+\.md)\)', content):
+        # Match ](relative/path.md) and ](relative/path.md#anchor) — relative links within commands
+        for match in re.finditer(r'\]\(([^)#\s]+\.md)(?:#[^)]*)?\)', content):
             target = match.group(1)
             # Skip absolute paths (skill references like /.claude/skills/...)
             if target.startswith("/") or target.startswith("http"):
@@ -65,6 +65,11 @@ KNOWN_INJECTIONS = {
     "TEST_QUALITY_CHECKLIST": ["review_pr.md", "session_audit.md"],
     "CODE_QUALITY_CHECKLIST": ["../tools/lens_briefs.py"],
     "DESIGN_LIST": ["reference/session_audit_seats.md"],
+    "SHORT_PLAN": ["session_audit.md"],
+    "DOCTRINE_COMMITS": ["session_audit.md", "reference/session_audit_seats.md"],
+    "HOT_SET": ["reference/session_audit_seats.md"],
+    "HARNESS_HUNKS": ["session_audit.md", "reference/session_audit_seats.md"],
+    "UNIT_LIST": ["session_audit.md", "reference/session_audit_seats.md"],
 }
 
 

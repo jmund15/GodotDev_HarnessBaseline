@@ -10,7 +10,8 @@ authors (a skill dir, a command path, a workflow's `meta.name`), drops every ent
 Rule each reported entry: keep it (add it to `kept` with the reason it applies here), or hide it. Hide a
 skill with a `skillOverrides` entry in `.claude/settings.project.json`, which every checkout shares, then run `python3 .claude/tools/baseline_sync.py compose`
 (`user-invocable-only` keeps it typable, `off` removes it); a plugin's skills through `/plugin`; claude.ai synced skills with
-`syncClaudeAiSkills: false` in user settings. A hidden entry leaves the listing, so it never reports again.
+`syncClaudeAiSkills: false` in user settings. A `skillOverrides` hide stops the report at once, before a fresh
+listing drops the entry: the check also reads the composed `settings.json`.
 
 Usage: python3 .claude/tools/skill_listing_review.py [--transcripts <dir>]   (prints the banner, or nothing)
 """
@@ -24,6 +25,7 @@ CLAUDE_DIR = Path(__file__).resolve().parent.parent
 LEDGER = Path("reference") / "skill_listing_kept.json"
 NEWEST_FILES = 8      # transcripts to try, newest first
 ROWS_PER_FILE = 400   # the initial listing sits near a transcript's top
+HIDING_MODES = {"user-invocable-only", "off"}
 WORKFLOW_NAME = re.compile(r"""^\s*name:\s*['"]([^'"]+)['"]""", re.M)
 
 
@@ -60,14 +62,23 @@ def listed_names(transcripts: Path):
     return None
 
 
+def hidden(claude: Path) -> set:
+    """Names the composed settings hide; a listing recorded before the hide still carries them."""
+    settings = claude / "settings.json"
+    if not settings.is_file():
+        return set()
+    overrides = json.loads(settings.read_text(encoding="utf-8")).get("skillOverrides") or {}
+    return {name for name, mode in overrides.items() if mode in HIDING_MODES}
+
+
 def unruled(transcripts: Path, claude: Path = CLAUDE_DIR) -> list:
-    """Sorted listing entries neither authored here nor kept by the ledger. Raises on an unreadable ledger."""
+    """Sorted listing entries neither authored here, kept by the ledger, nor hidden. Raises on an unreadable ledger."""
     names = listed_names(transcripts)
     if not names:
         return []
     kept = json.loads((claude / LEDGER).read_text(encoding="utf-8"))["kept"]
-    ours = authored(claude)
-    return sorted({n for n in names if n not in ours and n not in kept})
+    ruled = authored(claude) | set(kept) | hidden(claude)
+    return sorted({n for n in names if n not in ruled})
 
 
 def banner(transcripts: Path, claude: Path = CLAUDE_DIR) -> str:

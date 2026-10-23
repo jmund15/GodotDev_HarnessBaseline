@@ -46,7 +46,7 @@ PHASES = [
     ("3.7 Hot-set review",        "hot_set_review",        False),
     ("4   Sync subsystems",       "sync_subsystems",       False),
     ("5   Regression gate",       "regression_gate",       True),
-    ("5.4 Roadmap atlas",         "roadmap_atlas",         True),
+    ("5.4 Roadmap atlas",         "roadmap_atlas",         False),
     ("5.5 Roadmap drift",         "update_roadmap",        False),
     ("5.6 Harness prune",         "harness_prune",         True),
     ("6   Worklog sweep",         "worklog",               True),

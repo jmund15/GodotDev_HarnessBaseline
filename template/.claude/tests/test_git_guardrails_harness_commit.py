@@ -1175,6 +1175,20 @@ def baseline_owned_cases():
     failures.append(case("B6 block arm: the same dense .md differing from its lock row still advises",
                          run_hook("git commit -F msg", dense_repo(dense_md + "extra\n")), ALLOW,
                          ("audit trigger", ".claude/hooks/guide.md")))
+
+    # A pull commit: HEAD holds the old row and file, the worktree the pulled ones, nothing staged.
+    repo = dense_repo("old\n")
+    write(repo, ".claude/baseline.lock.json", json.dumps({"schema": 2, "files": {".claude/hooks/guide.md": {
+        "status": "tracked", "layer": "pure", "hash": hashlib.sha256(b"old\n").hexdigest()}}}))
+    git(repo, ["add", "-A"])
+    git(repo, ["commit", "-q", "-m", "adopt"])
+    write(repo, ".claude/baseline.lock.json", json.dumps({"schema": 2, "files": {".claude/hooks/guide.md": {
+        "status": "tracked", "layer": "pure", "hash": hashlib.sha256(dense_md.encode()).hexdigest()}}}))
+    write(repo, ".claude/hooks/guide.md", dense_md)
+    verdict, text = run_hook("git commit -F msg -- .claude/baseline.lock.json .claude/hooks/guide.md", repo)
+    failures.append(case("B7 a pathspec pull commit judges pulled rows by the worktree lock: no density advisory",
+                         (verdict, text), ALLOW) or ("" if "audit trigger" not in text
+                         else "B7: density advisory printed for a pulled baseline .md"))
     return failures
 
 
