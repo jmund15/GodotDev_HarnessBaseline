@@ -2592,6 +2592,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/go_quota_probe.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/godot_bin.sh",
       "layer": "godot",
       "sync": "auto"
@@ -4158,6 +4163,11 @@
     },
     {
       "path": ".claude/tests/test_go_plan_cap_display.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_go_quota_probe.py",
       "layer": "pure",
       "sync": "auto"
     },

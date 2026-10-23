@@ -5,24 +5,48 @@
 """
 from __future__ import annotations
 
+import atexit
 import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GEN_MANIFEST = ROOT / "tools" / "gen_manifest.py"
-MANIFEST = ROOT / "baseline.manifest.json"
 
 if not GEN_MANIFEST.exists():
     print("CANNOT-RUN: %s is missing" % GEN_MANIFEST, file=sys.stderr)
     sys.exit(2)
 
+# The root .gitignore ignores these, so skipping them leaves the mirror's template file list unchanged.
+_MIRROR_SKIP = shutil.ignore_patterns("__pycache__", "*.pyc", "logs", ".cache", "sessions", "worktrees",
+                                      "plans", "scratch", ".search-index")
+_mirror_root: Path | None = None
 
-def _run_check() -> subprocess.CompletedProcess:
+
+def _mirror() -> Path:
+    """A private git copy of tools/, template/ and the manifest, for every case that plants a file or
+    rewrites layer_entries.json. The publish runner runs all baseline checks at once on one checkout,
+    so a plant in the shared tree reds whichever scan overlaps it."""
+    global _mirror_root
+    if _mirror_root is None:
+        root = Path(tempfile.mkdtemp(prefix="gen_manifest_proof_"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        for name in ("tools", "template"):
+            shutil.copytree(ROOT / name, root / name, ignore=_MIRROR_SKIP)
+        for name in (".gitignore", "baseline.manifest.json"):
+            shutil.copy2(ROOT / name, root / name)
+        subprocess.run(["git", "init", "-q", str(root)], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _mirror_root = root
+    return _mirror_root
+
+
+def _run_check(root: Path = ROOT) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(GEN_MANIFEST), "--check"], cwd=ROOT,
+        [sys.executable, str(root / "tools" / "gen_manifest.py"), "--check"], cwd=root,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
@@ -33,17 +57,19 @@ def test_check_passes_on_the_committed_tree() -> None:
 
 
 def test_check_exits_1_on_unclassified_file_and_writes_nothing() -> None:
-    planted = ROOT / "template" / ".claude" / (
+    root = _mirror()
+    manifest = root / "baseline.manifest.json"
+    planted = root / "template" / ".claude" / (
         "s3_proof_" + "planted" + "_marker.unclassified"
     )
     assert not planted.exists(), "planted-file fixture path already exists"
-    before = MANIFEST.read_bytes()
+    before = manifest.read_bytes()
     try:
         planted.write_text("unclassified fixture content\n", encoding="utf-8", newline="\n")
-        result = _run_check()
+        result = _run_check(root)
         assert result.returncode == 1, result.stdout + result.stderr
         assert planted.name in result.stderr.decode("utf-8", errors="replace"), result.stderr
-        after = MANIFEST.read_bytes()
+        after = manifest.read_bytes()
         assert after == before, "gen_manifest.py --check must write nothing on failure"
     finally:
         if planted.exists():
@@ -52,16 +78,18 @@ def test_check_exits_1_on_unclassified_file_and_writes_nothing() -> None:
 
 def test_planted_ignored_file_under_template_changes_no_check_result() -> None:
     # `.search-index/` is gitignored at the repo root, so git never lists a file in it.
-    ignored_dir = ROOT / "template" / ".claude" / ".search-index"
+    root = _mirror()
+    manifest = root / "baseline.manifest.json"
+    ignored_dir = root / "template" / ".claude" / ".search-index"
     assert not ignored_dir.exists(), "planted-file fixture directory already exists"
-    before = MANIFEST.read_bytes()
+    before = manifest.read_bytes()
     try:
         ignored_dir.mkdir()
         (ignored_dir / ("s10_proof_" + "ignored_marker.unclassified")).write_text(
             "ignored fixture content\n", encoding="utf-8", newline="\n")
-        result = _run_check()
+        result = _run_check(root)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert MANIFEST.read_bytes() == before, "gen_manifest.py --check must write nothing"
+        assert manifest.read_bytes() == before, "gen_manifest.py --check must write nothing"
     finally:
         shutil.rmtree(ignored_dir, ignore_errors=True)
 
@@ -77,69 +105,70 @@ def test_classify_returns_none_for_an_unknown_path() -> None:
         sys.modules.pop("gen_manifest", None)
 
 
-LAYER_ENTRIES = ROOT / "tools" / "layer_entries.json"
-
-
-def _with_layer_entries(entries: dict, action) -> None:
-    """Run `action` with `entries` MERGED into `tools/layer_entries.json`, then restore the file.
+def _with_layer_entries(root: Path, entries: dict, action) -> None:
+    """Run `action` with `entries` MERGED into `root`'s `tools/layer_entries.json`, then restore the file.
 
     Merged rather than replaced: a publication records every new row's layer in this file before it
     runs the battery, so replacing the file strands those rows unclassified and fails the case for a
     reason that has nothing to do with what it tests."""
-    before = LAYER_ENTRIES.read_bytes() if LAYER_ENTRIES.exists() else None
+    layer_entries = root / "tools" / "layer_entries.json"
+    before = layer_entries.read_bytes() if layer_entries.exists() else None
     merged = dict(json.loads(before.decode("utf-8")).get("entries") or {}) if before else {}
     merged.update(entries)
     try:
-        LAYER_ENTRIES.write_text(json.dumps({"version": 1, "entries": merged}, indent=2) + "\n",
+        layer_entries.write_text(json.dumps({"version": 1, "entries": merged}, indent=2) + "\n",
                                  encoding="utf-8", newline="\n")
         action()
     finally:
         if before is None:
-            LAYER_ENTRIES.unlink(missing_ok=True)
+            layer_entries.unlink(missing_ok=True)
         else:
-            LAYER_ENTRIES.write_bytes(before)
+            layer_entries.write_bytes(before)
 
 
 def test_exact_layer_entry_classifies_a_path_no_pattern_matches() -> None:
     # A publication adds template files no pattern list names; their layer arrives as data.
+    root = _mirror()
+    manifest = root / "baseline.manifest.json"
     rel = ".claude/" + "s9_proof_" + "layer_entry" + "_marker.unclassified"
-    planted = ROOT / "template" / rel
+    planted = root / "template" / rel
     assert not planted.exists(), "planted-file fixture path already exists"
-    before = MANIFEST.read_bytes()
+    before = manifest.read_bytes()
 
     def action() -> None:
         planted.write_text("layer entry fixture content\n", encoding="utf-8", newline="\n")
-        result = _run_check()
+        result = _run_check(root)
         err = result.stderr.decode("utf-8", errors="replace")
         assert result.returncode == 1, result.stdout + result.stderr
         assert "stale" in err and rel not in err, err
-        sys.path.insert(0, str(ROOT / "tools"))
+        sys.path.insert(0, str(root / "tools"))
         try:
             sys.modules.pop("gen_manifest", None)
             import gen_manifest as gm
             assert gm.classify(rel) == "coding"
         finally:
-            sys.path.remove(str(ROOT / "tools"))
+            sys.path.remove(str(root / "tools"))
             sys.modules.pop("gen_manifest", None)
-        assert MANIFEST.read_bytes() == before, "gen_manifest.py --check must write nothing"
+        assert manifest.read_bytes() == before, "gen_manifest.py --check must write nothing"
 
     try:
-        _with_layer_entries({rel: "coding"}, action)
+        _with_layer_entries(root, {rel: "coding"}, action)
     finally:
         if planted.exists():
             planted.unlink()
 
 
 def test_invalid_layer_entry_exits_1_naming_the_path() -> None:
+    root = _mirror()
     rel = ".claude/" + "s9_proof_" + "bad_layer" + ".md"
 
     def action() -> None:
-        result = _run_check()
+        result = _run_check(root)
         err = result.stderr.decode("utf-8", errors="replace")
         assert result.returncode == 1, result.stdout + result.stderr
         assert rel in err and "universal" in err, err
 
-    _with_layer_entries({rel: "universal"}, action)
+    _with_layer_entries(root, {rel: "universal"}, action)
 
 
 def test_sync_kind_offers_memory_and_seeds_its_index() -> None:
