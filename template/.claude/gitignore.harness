@@ -9,6 +9,7 @@ logs/
 .claude/cache/
 .claude/tmp/
 .claude/scratch/
+# Semantic search skips gitignored files, so this keeps proofs out of its index; a pull or new proof is staged with `git add -f`.
 .claude/tests/
 .claude/orchestration_verdicts.json
 .claude/tools/_battery_responses.json

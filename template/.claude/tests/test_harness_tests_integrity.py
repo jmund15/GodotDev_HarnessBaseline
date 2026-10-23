@@ -302,6 +302,48 @@ class HarnessIntegrityTests(unittest.TestCase):
         self.assertEqual(status, 'pass')
         self.assertFalse(survived, 'a process the proof left running outlived it')
 
+    def _hybrid(self, tmp, unreached_body):
+        proof = Path(tmp) / 'test_hybrid.py'
+        proof.write_text(
+            'import sys\n'
+            'from pathlib import Path\n'
+            'def test_reached():\n'
+            '    with open(Path(__file__).with_name("count.txt"), "a") as fh:\n'
+            '        fh.write("x")\n'
+            'def test_unreached(tmp_path):\n'
+            '    ' + unreached_body + '\n'
+            'def main():\n'
+            '    test_reached()\n'
+            '    return 0\n'
+            'if __name__ == "__main__":\n'
+            '    sys.exit(main())\n', encoding='utf-8')
+        return proof
+
+    def test_a_hybrid_proofs_unreached_pytest_case_runs_and_fails_the_proof(self):
+        with tempfile.TemporaryDirectory(prefix='harness-hybrid-') as tmp:
+            status, _, detail = runner.run_proof(str(self._hybrid(tmp, 'assert False, "unreached ran"')), timeout=120)
+        self.assertEqual(status, 'fail', detail)
+        self.assertIn('unreached ran', detail)
+
+    def test_a_hybrid_proof_runs_its_main_cases_once(self):
+        with tempfile.TemporaryDirectory(prefix='harness-hybrid-') as tmp:
+            status, _, detail = runner.run_proof(str(self._hybrid(tmp, 'assert tmp_path.is_dir()')), timeout=120)
+            count = (Path(tmp) / 'count.txt').read_text()
+        self.assertEqual(status, 'pass', detail)
+        self.assertEqual(count, 'x')
+
+    def test_a_main_that_hands_off_to_pytest_or_collects_globals_reaches_its_cases(self):
+        with tempfile.TemporaryDirectory(prefix='harness-hybrid-') as tmp:
+            proof = Path(tmp) / 'test_reach.py'
+            guard = 'if __name__ == "__main__":\n    sys.exit(main())\n'
+            cases = 'def test_plain():\n    pass\ndef test_fixture(tmp_path):\n    pass\n'
+            proof.write_text(cases + 'def main():\n    return pytest.main([__file__, "-q"])\n' + guard,
+                             encoding='utf-8')
+            self.assertEqual(runner._pytest_cases(str(proof)), [])
+            proof.write_text(cases + 'def main():\n    for name, fn in sorted(globals().items()):\n'
+                             '        if name.startswith("test_"):\n            fn()\n' + guard, encoding='utf-8')
+            self.assertEqual(runner._pytest_cases(str(proof)), [str(proof) + '::test_fixture'])
+
     def test_proofs_get_a_narrower_case_pool_than_standalone(self):
         with patch.object(runner, '_run_child', return_value=(0, '')) as process, \
                 patch.dict(runner.os.environ, {}, clear=False):

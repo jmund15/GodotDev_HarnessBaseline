@@ -2580,6 +2580,23 @@ def test_carry_names_a_broken_chain() -> None:
         assert _load_lock(root)["files"][rel]["judged"]["sha"] == _sha(b"v = 0\n")
 
 
+def test_carry_starts_from_a_pulled_row_whose_judged_sha_is_older() -> None:
+    rel = ".claude/tools/pulled.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            rel: {"upstream": b"p = 1\n", "local": b"p = 1\n", "judged": _judged_push(b"p = 0\n")},
+        })
+        base = _head(root)
+        _write(root / rel, b"p = 2\n")
+        _commit(root, "edit the pulled copy")
+        result = _run_baseline(root, baseline, "judge", rel, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert "carried: " + rel in out, out
+        judged = _load_lock(root)["files"][rel]["judged"]
+        assert judged["sha"] == _sha(b"p = 2\n") and judged["carried_from"] == _sha(b"p = 1\n"), judged
+
+
 def test_carry_refuses_an_identity_hit_and_a_layerless_new_row() -> None:
     leaky, fresh = ".claude/commands/carry_leaky.md", ".claude/tools/carry_fresh.py"
     subsystem_id = "brew" + "Cauldron"
@@ -2965,6 +2982,44 @@ def test_remote_git_carries_the_network_timeout_and_local_git_does_not() -> None
     assert seen == [engine.NETWORK_CALL_TIMEOUT_S, None], seen
 
 
+def test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes() -> None:
+    rel = ".claude/reference/repulled.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            rel: {"upstream": b"v2\n", "local": b"v1\n", "hash": _sha(b"v1\n"), "judged": _judged_push(b"v1\n")},
+        })
+        result = _run_baseline(root, baseline, "pull")
+        assert result.returncode == 0, _out(result)
+        row = _load_lock(root)["files"][rel]
+        assert row["hash"] == row["judged"]["sha"] == _sha(b"v2\n"), row
+        assert row["judged"]["verdict"] == "push", row
+
+
+def test_pull_updates_the_running_engine_first_and_reruns_with_it() -> None:
+    engine_rel = ".claude/tools/baseline_sync.py"
+    old = ENGINE.read_bytes()
+    anchor = b"_TOOLS_DIR = Path(__file__).resolve().parent\n"
+    new = old.replace(anchor, anchor + b'Path.cwd().joinpath(".new_engine_ran").write_text("1")\n', 1)
+    assert new != old
+    other = ".claude/reference/other.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            engine_rel: {"upstream": new, "local": old, "hash": _sha(old)},
+            other: {"upstream": b"new other\n", "local": b"old other\n", "hash": _sha(b"old other\n")},
+        })
+        for module in ENGINE.parent.glob("*.py"):
+            if module.name != "baseline_sync.py":
+                shutil.copy(module, root / ".claude" / "tools" / module.name)
+        _commit(root, "engine siblings")
+        result = subprocess.run([sys.executable, str(root / engine_rel), "pull", "--baseline-dir", str(baseline)],
+                                cwd=root, env=_env(root), stdin=subprocess.DEVNULL, capture_output=True)
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert (root / engine_rel).read_bytes() == new, "the engine row was not pulled"
+        assert (root / ".new_engine_ran").exists(), "the rest of the pull did not run on the pulled engine: " + out
+        assert (root / other).read_bytes() == b"new other\n", out
+
+
 def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
     # A file holding NUL bytes is binary: no line-ending rewrite, no UTF-8 round trip, no substitution.
     name_token = "{{" + "PROJECT_NAME" + "}}"
@@ -2989,6 +3044,8 @@ def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
 
 def main() -> int:
     cases = [
+        test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes,
+        test_pull_updates_the_running_engine_first_and_reruns_with_it,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
         test_carry_refuses_a_new_tool_whose_proof_is_local,
@@ -3113,6 +3170,12 @@ def main() -> int:
         test_clone_retries_a_reset_then_succeeds,
         test_fetch_does_not_retry_a_permanent_tls_certificate_failure,
         test_fetch_still_retries_a_transient_tls_failure,
+        test_relpaths_after_an_option_parse_on_every_python,
+        test_check_strict_counts_a_proof_above_its_tools_layer_as_no_proof,
+        test_check_strict_names_a_shipped_row_whose_layer_differs_from_the_manifest,
+        test_check_text_names_every_strict_finding,
+        test_carry_leaves_a_row_judged_keep_local_alone,
+        test_carry_starts_from_a_pulled_row_whose_judged_sha_is_older,
     ]
     return run_cases(cases)
 

@@ -531,6 +531,13 @@ def main():
         rc, out = run_final()
         check("a blocked reindex does not fail the final close",
               rc == 0 and "[blocked]" in line_with(out, "reindex_search"), detail=out[-500:])
+        # Phase 5.4's errors are non-blocking, and a project that ships no atlas generator can only block it.
+        atlas = checker.make_receipt(final_sid, "roadmap_atlas", "blocked", [str(ev)], [str(ev)],
+                                     "the project ships no roadmap-atlas generator")
+        (receipts_dir / "roadmap_atlas.json").write_text(json.dumps(atlas))
+        rc, out = run_final()
+        check("a blocked roadmap atlas does not fail the final close",
+              rc == 0 and "[blocked]" in line_with(out, "roadmap_atlas"), detail=out[-500:])
         gate_path = receipts_dir / "regression_gate.json"
         gate_before = gate_path.read_bytes() if gate_path.exists() else None
         gate_blocked = checker.make_receipt(final_sid, "regression_gate", "blocked", [str(ev)], [str(ev)],

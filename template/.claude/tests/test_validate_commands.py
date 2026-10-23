@@ -82,6 +82,29 @@ def count_checks(vc):
             vc.CHECKLISTS_DIR, vc.EXPECTED_COUNTS, vc.EXPECTED_CODE_QUALITY_TOTAL, vc.EXPECTED_TEST_QUALITY_TOTAL = saved
 
 
+def reference_checks(vc):
+    with tempfile.TemporaryDirectory() as tmp:
+        commands = Path(tmp) / "commands"
+        write(commands / "here.md", "# Here\n\n## Kept rule\n")
+        saved = vc.COMMANDS_DIR
+        vc.COMMANDS_DIR = commands
+        try:
+            write(commands / "a.md", "[ok](here.md) [ok](here.md#kept-rule)\n")
+            out = "\n".join(vc.check_file_references())
+            check("a link to a present file passes, with or without an anchor", out.startswith("[PASS]"), out)
+            write(commands / "a.md", "[gone](gone.md#some-rule)\n")
+            out = "\n".join(vc.check_file_references())
+            check("an anchored link to an absent file fails", out.startswith("[FAIL]") and "gone.md" in out, out)
+            write(commands / "a.md", "[gone](gone.md)\n")
+            out = "\n".join(vc.check_file_references())
+            check("a bare link to an absent file fails", out.startswith("[FAIL]") and "gone.md" in out, out)
+        finally:
+            vc.COMMANDS_DIR = saved
+    for label, run in (("links", vc.check_file_references), ("template variables", vc.check_template_variables)):
+        out = "\n".join(run())
+        check(f"the shipped command tree's {label} pass", out.startswith("[PASS]"), out)
+
+
 def registry_checks(vc):
     check("the registry check exists", hasattr(vc, "check_external_model_registry"))
     if not hasattr(vc, "check_external_model_registry"):
@@ -112,6 +135,7 @@ def main():
     vc = load_validator()
     variable_checks(vc)
     count_checks(vc)
+    reference_checks(vc)
     registry_checks(vc)
     check("the fixture selector `I+test` is valid", "I+test" in vc.VALID_CHECKLIST_SECTIONS)
     if FAILURES:

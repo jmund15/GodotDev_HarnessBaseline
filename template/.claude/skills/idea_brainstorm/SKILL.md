@@ -80,7 +80,7 @@ Run the pipeline once per natural cluster. Clusters map to user-surfaced themes;
 
    **Not a filter criterion:** "Conflicts with an adjacent prior doc." Those are priors to validate — the `architecture_brainstorm` skill's Socratic-and-approaches Step 1 procedure *adjacent-design-space* + §6 *deference-filter*. Litmus: a cut rationale using *only words from the prior doc* rather than the idea's own merit (tone / pillar / mechanic conflict) deferred, it did not filter.
 
-3. **Hone** — refine each survivor into one specific sentence grounded in named game systems, numbers, or lore framing. *"+1 slot"* is divergence output; *"+1 slot — a new wedge in the radial-craft menu's outer ring; cost varies per archetype"* is presentation-ready.
+3. **Hone** — refine each survivor into one specific sentence grounded in named game systems, numbers, or lore framing. *"+1 slot"* is divergence output; *"+1 slot — a new wedge in the radial-craft menu's outer ring; cost varies per archetype"* is presentation-ready. Specific means concrete in mechanism, never narrow in scope: a work type, person or project the sources name is an example, so the survivor covers its whole class unless a stated reason narrows it, and a per-type variant is a setup of the shared base unless a stated reason sets it apart.
 
 4. **Cluster & rank** — group survivors by sub-theme and rank them for presentation.
 

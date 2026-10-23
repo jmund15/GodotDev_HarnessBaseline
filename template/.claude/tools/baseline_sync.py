@@ -1921,11 +1921,12 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
 
 
 def _carry_walk(root: Path, base: str, head: str, relpath: str,
-                start_sha: str | None) -> tuple[str | None, bytes | str | None, bytes | None]:
+                start_shas: set[str]) -> tuple[str | None, bytes | str | None, bytes | None]:
     """(final sha, first carried commit's blob before it, final blob), or (None, reason, None)
-    where the reason is the `not carried` text. Walks first-parent commits oldest first."""
+    where the reason is the `not carried` text. Walks first-parent commits oldest first; the first change
+    must start from one of `start_shas`."""
     commits = _git_text(root, ["rev-list", "--reverse", "--first-parent", f"{base}..{head}"]).split()
-    cursor, first_before, final = start_sha, None, None
+    cursor, first_before, final = None, None, None
     changed = False
     for commit in commits:
         pair = _cat_file_many(root, [f"{commit}^:{relpath}", f"{commit}:{relpath}"]) or [None, None]
@@ -1937,7 +1938,7 @@ def _carry_walk(root: Path, base: str, head: str, relpath: str,
         if before is None or after is None or content_sha(relpath, before) == content_sha(relpath, after):
             continue
         changed = True
-        if cursor is None or content_sha(relpath, before) != cursor:
+        if content_sha(relpath, before) not in ({cursor} if first_before is not None else start_shas):
             return None, "chain broken", None
         if first_before is None:
             first_before = before
@@ -1984,7 +1985,9 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
             if old.get("verdict") != "push":
                 report.append(f"not carried: {relpath} (judged {old.get('verdict') or 'never'}, not push)")
                 continue
-            final_sha, first_before, final = _carry_walk(root, base, head, relpath, old.get("sha"))
+            # A pulled row's recorded upstream copy is already published, so a chain may start there too.
+            starts = {sha for sha in (old.get("sha"), files[relpath].get("hash")) if sha}
+            final_sha, first_before, final = _carry_walk(root, base, head, relpath, starts)
             if final_sha is None:
                 report.append(f"not carried: {relpath} ({first_before})")
                 continue
@@ -2000,9 +2003,10 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
             _push_preflight(root, relpath, entry, final, profile, subs, source, source_error, accept_hits,
                             lock, carrying)
             added, removed = _diff_stat(first_before, final)
-            report.append(f"carried: {relpath} (+{added} -{removed}) {old['sha'][:8]}..{final_sha[:8]}")
+            start = content_sha(relpath, first_before)
+            report.append(f"carried: {relpath} (+{added} -{removed}) {start[:8]}..{final_sha[:8]}")
             decision = _decision(root, relpath, "push", sha_value=final_sha)
-            decision["carried_from"] = old["sha"]
+            decision["carried_from"] = start
             entry["judged"] = decision
             carried.append(relpath)
         snapshots["after"] = copy.deepcopy(lock)
@@ -2335,6 +2339,27 @@ def _write_row(root: Path, source: BaselineSource, relpath: str, data: bytes | s
     _apply_source_mode(root, source, relpath)
 
 
+ENGINE_RELPATH = ".claude/tools/baseline_sync.py"
+ENGINE_UPDATED_ENV = "BASELINE_SYNC_ENGINE_UPDATED"
+
+
+def _pending_engine_rows(root: Path, source: BaselineSource, lock: dict, layers: list[str]) -> list[str]:
+    """The `.claude/tools/*.py` rows a bare pull would write, when the running engine is this project's own and
+    one of them is the engine: pulled first, so the rest of the pull runs on the code it brings (a binary row
+    written by an engine that predates binary rows is rewritten as text). Empty on the rerun."""
+    if os.environ.get(ENGINE_UPDATED_ENV) or Path(__file__).resolve() != (root / ENGINE_RELPATH).resolve():
+        return []
+    files = lock.get("files", {})
+    rows = [path for path, entry in sorted(files.items())
+            if path.startswith(".claude/tools/") and path.endswith(".py") and in_profile(entry, layers)
+            and _v2_state(root, source, lock, path, entry) in ("upstream-updated", "new-upstream")]
+    rows += [path for path, item in sorted(_manifest_items_v2(source).items())
+             if path not in files and path.startswith(".claude/tools/") and path.endswith(".py")
+             and item.get("sync") not in ("offer", "seed") and (not item.get("layer") or item["layer"] in layers)
+             and not (root / path).exists()]
+    return rows if ENGINE_RELPATH in rows else []
+
+
 def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
             merge: bool = False) -> int:
     _validate_relpaths(relpaths)
@@ -2496,6 +2521,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                     files[relpath].pop("absent", None)
                 else:
                     files[relpath]["hash"] = upstream_hash
+                    # A tracked row follows upstream: its verdict judges the copy just written, as a new row's does.
+                    files[relpath]["judged"] = _decision(root, relpath, "push", sha_value=upstream_hash)
             changed.append(relpath)
         # Seed rows are decided after every write, so a composed settings.json row sees the
         # settings.base.json this same pull delivered.
@@ -3733,7 +3760,15 @@ def main(argv=None) -> int:
                 cmd_diff(root, lock, source, args.relpaths[0], layers)
                 return 0
             if args.op == "pull":
-                return v2_pull(root, source, args.relpaths, layers, args.force, args.merge)
+                engine = _pending_engine_rows(root, source, lock, layers) if not args.relpaths else []
+                if not engine:
+                    return v2_pull(root, source, args.relpaths, layers, args.force, args.merge)
+                v2_pull(root, source, engine, layers, False)
+                source.close()
+                source = None
+                print("engine updated; the rest of the pull runs on it")
+                return subprocess.run([sys.executable, str(root / ENGINE_RELPATH), *raw_argv], cwd=root,
+                                      env=dict(os.environ, **{ENGINE_UPDATED_ENV: "1"})).returncode
             if args.op == "migrate":
                 return v2_migrate(root, source, resolve_layers_v2({}, args.layers), args.abbrev)
             if args.op == "triage":

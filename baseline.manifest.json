@@ -2787,6 +2787,21 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/architecture_brainstorm/reference/doc_and_review.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/architecture_brainstorm/reference/part_authoring.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/architecture_brainstorm/reference/red_team.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/architecture_philosophy/SKILL.md",
       "layer": "coding",
       "sync": "auto"

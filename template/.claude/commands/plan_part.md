@@ -242,7 +242,7 @@ After emitting, /plan_part is done. The drafting agent reads the briefing as fro
 - [`reference/plan_part_composition.md`](reference/plan_part_composition.md) — §Workflow Composition (read at the Phase 5 hand-off) and §Anti-patterns (read before skipping or softening any phase)
 
 - [`_brainstorm_shared/common.md §6`](../skills/_brainstorm_shared/common.md) — roadmap.md schema (Parts table, State vocab §6.3, Source-cell anchor rules §6.2)
-- [`architecture_brainstorm/SKILL.md`](../skills/architecture_brainstorm/SKILL.md) — Step 5 readiness gate, API + Test Pin sub-procedure, *Plan-production handoff requirement* (this command operationalizes that prose)
+- [`architecture_brainstorm/reference/part_authoring.md`](../skills/architecture_brainstorm/reference/part_authoring.md) — Step 5 readiness gate, API + Test Pin sub-procedure; [`doc_and_review.md`](../skills/architecture_brainstorm/reference/doc_and_review.md) — *Plan-production handoff requirement* (this command operationalizes that prose)
 - [`/update_roadmap`](update_roadmap.md) — companion executor; invoked via `/update_roadmap transition <part> to arch-rework` when macro drift fires
 - [`/plan_check`](plan_check.md) — post-draft audit (Memory gotchas + abstraction discovery); composes with this command (pre-draft setup)
 - [`project_subsystems` skill](../skills/project_subsystems/SKILL.md) — Integration touch points cross-reference (≤2 subsystem boundaries per arch Step 5)

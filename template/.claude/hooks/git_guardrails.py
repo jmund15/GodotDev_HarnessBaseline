@@ -80,7 +80,7 @@ except Exception as _exc:
 from _git_commit import (  # noqa: E402
     git_environ,
     git_invocation, git_invocations, executable_text, run_git,
-    staged_paths, incoming_paths, bypass_declared, parse_commit_args, resolve_index,
+    staged_paths, incoming_paths, bypass_declared, parse_commit_args, resolve_index, commit_source,
     resolve_cd, expand_literal, ref_resolves, refs_created, ref_names_created,
 )
 
@@ -536,29 +536,36 @@ def _behavior_unchanged(repo_root, norm, git_env=None, *, ignore_strings=False):
             == _code_ast(work, ignore_strings=ignore_strings))
 
 
-def _baseline_unchanged(repo_root, norm, git_env=None):
-    """True when the staged and working copies equal the `tracked` row of the staged baseline lock:
+def _baseline_unchanged(repo_root, norm, git_env=None, source="index"):
+    """True when the published copy equals the `tracked` row of the published baseline lock:
     adopted or pulled baseline content, authored and owed its proof upstream.
 
-    The hash is the lock's: sha256 of the LF-normalized bytes (`tools/baseline_sync.py` `sha`). A missing
-    or unparseable lock, a row that is not `tracked`, or a differing copy reads as authored here.
+    `source` is `commit_source`'s: an index commit publishes the staged lock and copy, a pathspec or `-a`
+    commit the working ones, so a pull committed by pathspec is judged by the lock it brings. The hash is
+    the lock's: sha256 of the LF-normalized bytes (`tools/baseline_sync.py` `sha`). An unknown source, a
+    missing or unparseable lock, a row that is not `tracked`, or a differing copy reads as authored here.
     """
-    lock = run_git(["show", ":.claude/baseline.lock.json"], repo_root, git_env)
+    def read(rel):
+        if source == "index":
+            text = run_git(["show", ":" + rel], repo_root, git_env)
+            return None if text is None else text.encode("utf-8")
+        try:
+            with open(os.path.join(repo_root, rel), "rb") as fh:
+                return fh.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        except OSError:
+            return None
+
+    if source not in ("index", "worktree"):
+        return False
+    lock = read(".claude/baseline.lock.json")
     try:
         row = json.loads(lock)["files"][norm] if lock else None
     except (ValueError, KeyError, TypeError):
         return False
     if not isinstance(row, dict) or row.get("status") != "tracked" or not row.get("hash"):
         return False
-    staged = run_git(["show", ":" + norm], repo_root, git_env)
-    try:
-        with open(os.path.join(repo_root, norm), "rb") as fh:
-            work = fh.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    except OSError:
-        return False
-    return (staged is not None
-            and hashlib.sha256(staged.encode("utf-8")).hexdigest() == row["hash"]
-            == hashlib.sha256(work).hexdigest())
+    copy = read(norm)
+    return copy is not None and hashlib.sha256(copy).hexdigest() == row["hash"]
 
 
 def _skill_verdict(session_id, touched):
@@ -803,11 +810,12 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
 
     # Advisories, never denies: whether the skill's checks were applied and whether a dense unit is
     # needed are judgments (instruction_quality §3). A setup surface alone never reaches them.
-    skill = _skill_verdict(session_id, touched) if touched else None
+    source = commit_source(rest, cwd, git_env)
+    changed = [p for p in touched if not _baseline_unchanged(repo_root, p, git_env, source)]
+    skill = _skill_verdict(session_id, changed) if changed else None
     if skill:
         ADVISORIES.append(skill)
 
-    changed = [p for p in touched if not _baseline_unchanged(repo_root, p, git_env)]
     dense = _md_density_verdict(repo_root, changed, git_env)
     if dense:
         ADVISORIES.append(dense)
@@ -825,7 +833,7 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
                 if (not name.startswith("_") and not _has_proof(tests_dir, name, git_env)
                         and not _removed(repo_root, norm, git_env)
                         and not _behavior_unchanged(repo_root, norm, git_env)
-                        and not _baseline_unchanged(repo_root, norm, git_env)):
+                        and norm in changed):
                     if _behavior_unchanged(repo_root, norm, git_env, ignore_strings=True):
                         ADVISORIES.append("[harness commit] no proof for %s: if a changed string is a pattern "
                                           "it matches or a value it decides on, add the proof "
