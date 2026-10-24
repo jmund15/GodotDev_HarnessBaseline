@@ -1925,6 +1925,13 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
                     commit: str | None = None) -> list[str]:
     """Refuses the row's first unaccepted identity hit; returns the accepted hit ids its content carries,
     which the verdict records so `publish` honors them."""
+    content = data if data is not None else _content_bytes(root, relpath)
+    text = content.decode("utf-8", errors="replace") if content is not None and not is_binary(content) else ""
+    literal = sorted(key for key in subs if key.startswith("{{") and key in text) if relpath not in PLACEHOLDER_OK else []
+    if literal:
+        raise BaselineError(
+            f"{relpath} holds {', '.join(literal)} literally, which a consumer's pull renders, so the row can never "
+            f"match the baseline again; build the token from parts (\"{{{{\" + name + \"}}}}\")")
     hits = _identity_hits(root, relpath, profile, data, subs)
     for hit in hits:
         if hit.id not in (accept_hits or []):

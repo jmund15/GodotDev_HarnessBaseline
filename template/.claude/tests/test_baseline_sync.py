@@ -719,6 +719,24 @@ def test_v2_classify_tracked_scans_the_reverse_substituted_text() -> None:
         assert _load_lock(root)["files"][rel]["status"] == "tracked"
 
 
+def test_push_refuses_a_literal_placeholder_a_pull_would_render() -> None:
+    rel = ".claude/tests/literal_placeholder.py"
+    token = "{{" + "PROJECT_NAME" + "}}"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"x = 1\n"}})
+        lock = _load_lock(root)
+        lock["substitutions"] = {token: "Zorb" + "laxian"}
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _write(root / rel, ("name = '" + token + "'\n").encode())
+        _git(root, "add", "-A")
+        refused = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        assert refused.returncode == 1 and token in _out(refused), _out(refused)
+        _write(root / rel, b"name = '{{' + 'PROJECT_NAME' + '}}'\n")
+        _git(root, "add", "-A")
+        built = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        assert built.returncode == 0, _out(built)
+
+
 def test_v2_judge_success_refusal_and_repeat() -> None:
     rel = ".claude/tools/judge.py"
     with _fixture() as path:
@@ -3166,6 +3184,7 @@ def main() -> int:
         test_triage_lists_every_identity_hit_the_push_scan_would_refuse,
         test_bare_pull_refreshes_a_lock_stale_row,
         test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged,
+        test_push_refuses_a_literal_placeholder_a_pull_would_render,
         test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks,
         test_j3_write_prints_the_layer_closure_it_adds,
         test_j3_keep_local_on_an_unshipped_tracked_row_sets_local,
