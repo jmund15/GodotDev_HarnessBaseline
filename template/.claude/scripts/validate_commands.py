@@ -56,6 +56,10 @@ def check_file_references() -> list[str]:
 # Variables assembled at runtime by orchestrators — NOT defined in template files
 RUNTIME_VARS = {"CONTEXT", "PR_NUM", "BRANCH", "TRANSCRIPT_CORRECTIONS"}
 
+# The baseline's sync placeholders: a consumer's pull renders them from its lock `substitutions`, so a
+# baseline copy carries them unrendered (sync_baseline §Placeholders).
+SYNC_PLACEHOLDERS = {"PROJECT_NAME", "PROJECT_NAMESPACE", "VAULT_ROOT", "PROJECT_ROOT"}
+
 # Known injection mappings: variable -> which orchestrator(s) inject it
 # Update this when adding new template variables.
 KNOWN_INJECTIONS = {
@@ -91,7 +95,7 @@ def check_template_variables() -> list[str]:
             count += 1
             rel = os.path.relpath(agent_file, COMMANDS_DIR)
 
-            if var_name in RUNTIME_VARS:
+            if var_name in RUNTIME_VARS or var_name in SYNC_PLACEHOLDERS:
                 continue
             if var_name not in KNOWN_INJECTIONS:
                 errors.append(f"  {rel}: {{{{{var_name}}}}} has no known injection source")
