@@ -48,7 +48,7 @@ Seven steps in order. Read each step's reference file at the step that runs it �
 - The profile asserts behavior only — mental state, personality type, and clinical framing stay out at every tier, including the `## Standing read` synthesis.
 - The profile is derived, so a wrong line is repaired by correcting the digest evidence behind it and re-deriving, never by editing the conclusion alone.
 - The outside read addresses **decisions, never persons** — equal standing across participants, structurally free to land against the gate-holder's position.
-- The outside read cites the transcript, the repo, and prior digests (trend facts live there) — **never profile lines**: the digest folder is shareable with participants, the profile is not.
+- The outside read cites its sources as `reference/ingest_conversation_verify.md` §Step 3.7 *Compare and write `## Outside read`* lists them (trend facts live in prior digests) — **never profile lines**: the digest folder is shareable with participants, the profile is not.
 - Vault folders may be created programmatically; renames route through the Obsidian UI (wikilink auto-update is UI-only — `obsidian_conventions`).
 
 ## Cross-references

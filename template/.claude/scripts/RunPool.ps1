@@ -90,15 +90,22 @@ function Get-SuiteChildOutPath {
     Join-Path (Join-Path $ResultsRoot (Get-SafeRunLabel -Label $Label -Repo $script:PoolRepo -ResultsRoot $ResultsRoot)) 'wrapper.out'
 }
 
+function Get-SuiteChildArgv {
+    param([Parameter(Mandatory)] $Unit, [Parameter(Mandatory)] [string] $ResultsRoot, [switch] $Held, [switch] $RecompilePass,
+          [string] $Verbosity = 'quiet')
+    $childArgs = @('-Label', $Unit.label, '-Filter', $Unit.filter, '-TimeoutMs', [string] $Unit.timeoutMs, '-ResultsRoot', $ResultsRoot,
+              '-IgnoreEditor', '-Verbosity', $Verbosity) + @(if ($Held) { '-HeldCheckout' }) + @(if ($RecompilePass) { '-RecompilePass' })
+    Get-RunnerArgv -Script $script:SuiteWrapperPath -Repo $script:PoolRepo -ScriptArgs $childArgs
+}
+
 # The one child launcher: run_test_suite.ps1 for one unit under -ResultsRoot, always -IgnoreEditor (the pool's owner
 # owns editor policy through -OnPoll). -Held makes it a gate's held child; -RecompilePass is the single held child
 # admitted before the checkout is stamped recompiled. Without -Held it is an ordinary lock-taking run.
 function Start-SuiteChild {
-    param([Parameter(Mandatory)] $Unit, [Parameter(Mandatory)] [string] $ResultsRoot, [switch] $Held, [switch] $RecompilePass)
+    param([Parameter(Mandatory)] $Unit, [Parameter(Mandatory)] [string] $ResultsRoot, [switch] $Held, [switch] $RecompilePass,
+          [string] $Verbosity = 'quiet')
     if ($RecompilePass -and -not $Held) { throw 'Start-SuiteChild: -RecompilePass is valid only with -Held' }
-    $argv = @('-NoProfile', '-File', $script:SuiteWrapperPath, '-Repo', $script:PoolRepo, '-Label', $Unit.label, '-Filter', $Unit.filter,
-              '-TimeoutMs', [string] $Unit.timeoutMs, '-ResultsRoot', $ResultsRoot, '-IgnoreEditor') +
-            @(if ($Held) { '-HeldCheckout' }) + @(if ($RecompilePass) { '-RecompilePass' })
+    $argv = Get-SuiteChildArgv -Unit $Unit -ResultsRoot $ResultsRoot -Held:$Held -RecompilePass:$RecompilePass -Verbosity $Verbosity
     $out = Get-SuiteChildOutPath -ResultsRoot $ResultsRoot -Label $Unit.label
     New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
     # Start-Process joins its arguments with spaces, so a spaced value is quoted to stay one argument.

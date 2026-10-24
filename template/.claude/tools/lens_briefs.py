@@ -298,9 +298,10 @@ def sections(path: Path, letters: set[str]) -> str:
 
 
 def with_companion(path: Path, render) -> str:
-    """`render(file)` over a checklist plus, when the godot layer ships one, its `<stem>_godot.md` companion."""
+    """`render(file)` over a checklist plus, when the godot layer ships one, its `<stem>_godot.md` companion.
+    A layer profile that ships neither (a pure-only consumer) renders empty."""
     companion = path.with_name(f"{path.stem}_godot.md")
-    parts = [render(path)] + ([render(companion)] if companion.exists() else [])
+    parts = [render(f) for f in (path, companion) if f.exists()]
     return "\n".join(part for part in parts if part.strip())
 
 
@@ -745,7 +746,7 @@ def main() -> None:
         if grounding and k in grounding_seats:
             lens_part += "\n" + grounding
         preloaded = lens.doctrine([found[key] for key in seats[k]])
-        tier = tier_overrides.get(k) or a.tier or lens.seat_tier(k)
+        tier = lens.seat_tier(k) or tier_overrides.get(k) or a.tier
         if k not in overrides and a.effort is None:
             why = (f"{k}: {a.target} review needs --effort or --effort-for from the ladder; "
                    "the lens tier does not select a reasoning rung")

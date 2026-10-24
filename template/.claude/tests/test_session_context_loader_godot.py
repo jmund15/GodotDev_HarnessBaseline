@@ -257,6 +257,30 @@ def main():
         check("the fixture checkout's own fingerprint tool answers the marker question",
               scg.cloud_setup_current(root) is False)
 
+    # cloud-setup.sh writes .cloud-install.json under its prefix; the loader reads its paths from there
+    # and falls back to the probes only when no manifest exists.
+    with tempfile.TemporaryDirectory(prefix="scg_manifest_") as tmp:
+        prefix = Path(tmp)
+        dotnet_root, godot_dir = prefix / "dotnet", prefix / "godot"
+        (dotnet_root).mkdir()
+        (dotnet_root / "dotnet").write_text("", encoding="utf-8")
+        godot_dir.mkdir()
+        godot_bin = godot_dir / "godot-bin"
+        godot_bin.write_text("", encoding="utf-8")
+        manifest = prefix / ".cloud-install.json"
+        manifest.write_text(json.dumps({"dotnet_root": str(dotnet_root), "godot_bin": str(godot_bin)}),
+                            encoding="utf-8")
+        with patch.dict(os.environ), patch.object(scg, "CLOUD_INSTALL_DIRS", (prefix,)), \
+                patch.object(scg, "CLOUD_DOTNET_ROOTS", (prefix / "absent",)):
+            os.environ.pop("GODOT_BIN", None)
+            os.environ.pop("DOTNET_ROOT", None)
+            check("the manifest names the godot binary", scg.get_godot_bin() == str(godot_bin), scg.get_godot_bin())
+            check("the manifest names the dotnet root ahead of the probes",
+                  scg.adopt_cloud_dotnet() == str(dotnet_root), scg.adopt_cloud_dotnet())
+            manifest.write_text("{not json", encoding="utf-8")
+            check("a torn manifest reads as absent, not an error", scg.cloud_install() == {})
+            check("without a manifest the probe finds no dotnet root", scg.adopt_cloud_dotnet() == "")
+
     # CLAUDE_ENV_FILE lines must export: a sourced plain assignment never reaches child processes.
     with tempfile.TemporaryDirectory(prefix="scg_env_") as tmp:
         env_file = os.path.join(tmp, "env")

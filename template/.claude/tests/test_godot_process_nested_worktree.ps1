@@ -19,5 +19,35 @@ foreach ($c in $cases) {
     $got = Test-UnderRoot $c[1] $root
     if ($got -eq $c[2]) { Write-Host "ok   $($c[0])" } else { Write-Host "FAIL $($c[0]) (got $got)"; $failed++ }
 }
-Write-Host "`n$($cases.Count - $failed)/$($cases.Count) cases pass"
-exit ([int]($failed -gt 0))
+function New-PlantedProc([int] $ProcId, [int] $ParentId, [string] $CommandLine, [datetime] $Created) {
+    [pscustomobject]@{ ProcessId = $ProcId; ParentProcessId = $ParentId; Name = 'Godot_v4.exe'; CommandLine = $CommandLine; CreationDate = $Created }
+}
+function Get-GodotCandidate { param([hashtable] $Map) @($Map.Values | Where-Object { $_.CommandLine -match '^PLANT' }) }
+$t0 = [datetime]'2026-01-01T10:00:00'
+# Rooted on the running platform: a drive path is unrooted on Linux, so its checkout would resolve to none.
+$repoA, $repoB = if ($IsWindows) { 'C:\repoA', 'C:\repoB' } else { '/repoA', '/repoB' }
+$attrib = @(
+    @{ n = 'a parent editor is attributed to its child''s --path: another checkout sees none'; kids = @($repoB); ask = $repoA; want = 0 },
+    @{ n = 'a parent editor is live on the checkout its child names (parent and child)'; kids = @($repoB); ask = $repoB; want = 2 },
+    @{ n = 'a parent editor with no child --path still matches every checkout'; kids = @(); ask = $repoA; want = 1 }
+)
+$total = $cases.Count
+foreach ($a in $attrib) {
+    $map = @{}
+    $map[10] = New-PlantedProc 10 1 'PLANT godot -e' $t0
+    $i = 11
+    foreach ($k in $a.kids) { $map[$i] = New-PlantedProc $i 10 "PLANT godot --path $k" $t0.AddSeconds(5); $i++ }
+    $got = @(Get-LiveEditor -Checkout $a.ask -Map $map -CandidateRoots @($a.ask)).Count
+    if ($got -eq $a.want) { Write-Host "ok   $($a.n)" } else { Write-Host "FAIL $($a.n) (got $got)"; $failed++ }
+    $total++
+}
+Write-Host "`n$($total - $failed)/$total cases pass"
+
+$real = Test-InteractiveSessionLocked
+$lockFailed = 0
+foreach ($planted in '0', '1') {
+    $env:HARNESS_SESSION_LOCKED = $planted
+    try { $got = Test-InteractiveSessionLocked } finally { Remove-Item Env:HARNESS_SESSION_LOCKED -ErrorAction SilentlyContinue }
+    if ($got -eq $real) { Write-Host "ok   the real Test-InteractiveSessionLocked ignores HARNESS_SESSION_LOCKED=$planted" } else { Write-Host "FAIL the real Test-InteractiveSessionLocked honors HARNESS_SESSION_LOCKED=$planted (got $got, real $real)"; $lockFailed++ }
+}
+exit ([int](($failed + $lockFailed) -gt 0))

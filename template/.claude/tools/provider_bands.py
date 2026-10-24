@@ -22,8 +22,8 @@ or unreadable plan drops out, named with why: unreadable is never ranked as room
 plan is a candidate like any other and wins a tie, since it saves a hop and a cold start. With no
 plan left, the fit `marginal-usd` rows come back as `payOptions`. Its top row is a computed choice,
 so only a tool choosing which plan pays for one fixed row reads it (the bench's launcher choice);
-a dispatch-facing caller reads `ranked`, the facts: `hooks/_dispatch_checks.currency`,
-`hooks/workflow_provider_guard._pick_route` and the `room` CLI.
+a dispatch-facing caller reads `facts` (every plan in registry order, no choice): `room_facts`,
+`hooks/workflow_provider_guard._cross_plan_route` and the `room` CLI.
 
 FAIL POSTURE: every failure returns an empty/None reading. A budget advisory that raises
 would block a dispatch over a hint, and a probe that spawns a subprocess has many ways to
@@ -31,7 +31,8 @@ fail that have nothing to do with the allowance it was asked about.
 
 Provider-capacity execution, cache freshness and fallback live in `provider_capacity.py`.
 
-Human-readable plan entries show quota left and time left, never a derived ratio or gap.
+Human-readable plan entries show quota left, time left, and for the routing window the share its recent
+rate leaves unused at the reset (`unused_at_reset`), never a bare ratio.
 
 CLI:
     provider_bands.py list                      each plan-quota transport's band and pressure
@@ -51,9 +52,18 @@ from cli_usage import usage  # noqa: E402
 import model_registry  # noqa: E402
 import provider_capacity  # noqa: E402
 import quota_bands  # noqa: E402
+try:
+    import usage_samples  # noqa: E402
+except Exception:  # no sample reader: every projection falls back to a bound or the average
+    usage_samples = None
 
 DEFAULT_TTL_S = 600  # compatibility parameter; provider_capacity owns freshness
 USED_RESOLUTION = 1.0  # percentage points: providers report usedPercent in whole percents
+RECENT_HORIZON_S = 86400.0  # recent use is the plan's last day of samples, never its early burst
+RECENT_MIN_SPAN_S = 3600.0  # two samples closer than this cannot state a rate
+RESET_TOLERANCE_S = 900.0  # samples of one period agree on its reset to within this
+SAMPLES_TTL_S = 30.0  # one prompt reads many plans, so the samples file is read once per turn
+_SAMPLES_CACHE = {"at": None, "rows": []}
 # What one sidecar job is assumed to take from its plan's tightest window, in percentage points. Room is a
 # pace ratio and says nothing about a burst: on 2026-10-14 a 5h window at 24% left read room 0.97, 13 jobs
 # went to it, and 6+ hit the limit within 15 minutes (about 4 points a job). Thin basis: one burst.
@@ -145,6 +155,151 @@ def room(window, now=None):
     return (100.0 - used) / (100.0 * min(left, 1.0))
 
 
+def _samples():
+    """The plan-usage samples, read at most once per SAMPLES_TTL_S; [] when the reader cannot load."""
+    now = time.time()
+    if _SAMPLES_CACHE["at"] is not None and now - _SAMPLES_CACHE["at"] < SAMPLES_TTL_S:
+        return _SAMPLES_CACHE["rows"]
+    rows = []
+    if usage_samples is not None:
+        try:
+            rows = usage_samples.read()
+        except Exception:
+            rows = []
+    _SAMPLES_CACHE.update(at=now, rows=rows)
+    return rows
+
+
+def _recent_rate(transport, window, now, samples):
+    """The plan's own rate, in percentage points per second, from its samples of `window` in the
+    current reset period over the last day; None when the samples cannot state one.
+
+    The rate is the least-squares slope of `used` over time. The reset filter already confines the
+    samples to one period, so a dip is two writers rounding one plan apart, never a roll."""
+    reset = provider_capacity._epoch(window.get("resetsAt"))
+    plan_of = usage_samples.plan_of if usage_samples is not None else (
+        lambda s: s.get("plan") or s.get("provider"))
+    rows = []
+    for s in samples or []:
+        if not isinstance(s, dict) or (window.get("name") and s.get("window") != window.get("name")):
+            continue
+        if plan_of(s) != transport:
+            continue
+        ts, used = s.get("ts"), s.get("used")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            continue
+        if isinstance(used, bool) or not isinstance(used, (int, float)):
+            continue
+        if not now - RECENT_HORIZON_S <= ts <= now + 300:
+            continue
+        seen_reset = provider_capacity._epoch(s.get("resets_at"))
+        if reset is None or seen_reset is None or abs(seen_reset - reset) > RESET_TOLERANCE_S:
+            continue
+        rows.append((float(ts), float(used)))
+    if len(rows) < 2 or max(r[0] for r in rows) - min(r[0] for r in rows) < RECENT_MIN_SPAN_S:
+        return None
+    mean_ts = sum(r[0] for r in rows) / len(rows)
+    mean_used = sum(r[1] for r in rows) / len(rows)
+    spread = sum((r[0] - mean_ts) ** 2 for r in rows)
+    return max(0.0, sum((r[0] - mean_ts) * (r[1] - mean_used) for r in rows) / spread)
+
+
+def _bound_rate(window, windows, now):
+    """(rate, source window name) capped by the closest shorter window with an hour of elapsed time,
+    or None. A shorter window's cap is never larger than a longer one's, so its used share over its
+    elapsed time bounds how fast the longer window can be draining."""
+    longer = window.get("windowDurationMins")
+    if isinstance(longer, bool) or not isinstance(longer, (int, float)) or longer <= 0:
+        return None
+    best = None
+    for other in windows or []:
+        if not isinstance(other, dict) or other is window:
+            continue
+        minutes, used = other.get("windowDurationMins"), other.get("usedPercent")
+        reset = provider_capacity._epoch(other.get("resetsAt"))
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or not 0 < minutes < longer:
+            continue
+        if isinstance(used, bool) or not isinstance(used, (int, float)) or not 0 <= used <= 100:
+            continue
+        if reset is None or reset <= now:
+            continue
+        elapsed = minutes * 60.0 - (reset - now)
+        if elapsed < RECENT_MIN_SPAN_S:
+            continue
+        if best is None or minutes > best[0]:
+            best = (minutes, used / elapsed, other)
+    return None if best is None else (best[1], window_name(best[2]))
+
+
+def unused_at_reset(transport, window, now=None, samples=None, windows=None):
+    """{pct, basis, daysLeft} for `window`: the share of its allowance the plan's recent rate leaves
+    at its reset, or None when the window cannot say (no used share, length or future reset).
+
+    `basis` is the shortest honest one that applies. `recent`: the plan's own samples of this window,
+    in its current reset period, over the last day (`RECENT_HORIZON_S`), at least two an hour apart;
+    rate is their change in `used` over time. With no such samples, `average` is the window's own
+    used share over its elapsed time, and `bound` replaces it when `_bound_rate`'s cap from the
+    closest shorter window (`from` names it) is lower: a cap above the average says nothing. `pct` is `left - rate x time left`, clamped to the allowance left.
+    `samples` defaults to `_samples()`; `windows` defaults to the plan's cached reading."""
+    if not isinstance(window, dict):
+        return None
+    now = time.time() if now is None else now
+    used = window.get("usedPercent")
+    if isinstance(used, bool) or not isinstance(used, (int, float)) or not 0 <= used <= 100:
+        return None
+    reset = provider_capacity._epoch(window.get("resetsAt"))
+    minutes = window.get("windowDurationMins")
+    if reset is None or reset <= now:
+        return None
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0:
+        return None
+    if windows is None:
+        try:
+            windows = ((provider_capacity.cached(transport) or {}).get("quota") or {}).get("windows")
+        except Exception:
+            windows = None
+    left = 100.0 - used
+    time_left = reset - now
+    if minutes * 60.0 - time_left < RECENT_MIN_SPAN_S:
+        return None  # a window that just rolled says nothing about the rate it will spend at
+    rate = _recent_rate(transport, window, now, _samples() if samples is None else samples)
+    basis, source = "recent", None
+    if rate is None:
+        rate, basis = used / (minutes * 60.0 - time_left), "average"
+        bound = _bound_rate(window, windows, now)
+        if bound is not None and bound[0] < rate:
+            rate, source, basis = bound[0], bound[1], "bound"
+    projection = {"pct": min(left, max(0.0, left - rate * time_left)), "basis": basis,
+                  "daysLeft": time_left / 86400.0}
+    if source:
+        projection["from"] = source
+    return projection
+
+
+def _basis_text(projection):
+    """The readout's name for a projection's basis."""
+    if projection.get("basis") == "recent":
+        return "recent use"
+    if projection.get("basis") == "average":
+        return "this window's average"
+    return "this week's use" if projection.get("from") == "7d" else "this %s window's use" % projection.get("from")
+
+
+def _unused_clause(plan, capacity, window, now):
+    """`, ~N% goes unused at reset (<basis>)` for the routing window, else ""."""
+    quota = (capacity or {}).get("quota") or {}
+    name = quota.get("routingWindow")
+    if not name or window.get("name") != name:
+        return ""
+    projection = unused_at_reset(plan, window, now, windows=quota.get("windows") or [])
+    if projection is None:
+        return ""
+    pct = int(round(projection.get("pct") or 0))
+    if pct < USED_RESOLUTION:
+        return ""
+    return ", ~%d%% goes unused at reset (%s)" % (pct, _basis_text(projection))
+
+
 def read_capacity(transport, data=None, live=True):
     """A transport's normalized reading: the fresh cache first, else `provider_capacity.reading` when `live`
     (itself cache-first, one live read per transport at a time)."""
@@ -170,7 +325,9 @@ def _plan_room(transport, data, read, now):
     if status == "exhausted":
         return {"transport": transport, "room": None, "why": "exhausted"}
     if status != "available":
-        return {"transport": transport, "room": None, "why": "unreadable: status %s" % status}
+        cause = str((got.get("error") or {}).get("message") or "") if isinstance(got.get("error"), dict) else ""
+        return {"transport": transport, "room": None,
+                "why": "unreadable: status %s" % status + (": %s" % cause if cause else "")}
     quota = got.get("quota") if isinstance(got.get("quota"), dict) else {}
     name = quota.get("routingWindow")
     window = next((w for w in quota.get("windows") or []
@@ -193,6 +350,9 @@ def _plan_room(transport, data, read, now):
                            if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)),
            "daysLeft": (reset - now) / 86400.0 if reset is not None else None,
            "planType": got.get("planType")}
+    projection = unused_at_reset(transport, window, now, windows=windows)
+    if projection is not None:
+        row["unusedAtReset"] = projection
     gates = [(room(w, now), w.get("name")) for w in windows if w is not window and _gates(w, now)]
     tightest = min((g for g in gates if g[0] < value), default=None)
     if tightest:
@@ -218,14 +378,22 @@ def pick_key(row, placed=0):
     """Sort key (best last) for a fan-out pick of the plan `row` describes, with `placed` jobs already on it.
 
     A plan fits while its tightest window, `headroom`, still holds the `placed` jobs and this one at
-    `JOB_DRAIN_PCT` each; fitting plans rank by `rank_room`. A plan that no longer fits ranks below every
-    one that does, the least overdrawn first: it is picked only when no plan fits. A row with no
-    `headroom` reading fits, so it keeps the pace ranking it had."""
+    `JOB_DRAIN_PCT` each. Among fitting plans, one whose quota projects `USED_RESOLUTION` or more unused
+    at its reset ranks above one that does not -- that quota is lost at the reset either way -- and those
+    rank by the earliest reset; the rest keep `rank_room`. Percentages are never compared across plans,
+    whose allowances differ. A plan that no longer fits ranks below every one that does, the least
+    overdrawn first: it is picked only when no plan fits. A row with no `headroom` reading fits, so it
+    keeps the ranking it had."""
     headroom = row.get("headroom")
-    if not isinstance(headroom, (int, float)):
-        return (1, rank_room(row))
-    spare = headroom - (placed + 1) * JOB_DRAIN_PCT
-    return (1, rank_room(row)) if spare >= 0 else (0, spare)
+    overdrawn = headroom - (placed + 1) * JOB_DRAIN_PCT if isinstance(headroom, (int, float)) else None
+    if overdrawn is not None and overdrawn < 0:
+        return (0, overdrawn)
+    projection = row.get("unusedAtReset")
+    pct = projection.get("pct") if isinstance(projection, dict) else None
+    if isinstance(pct, (int, float)) and round(pct) >= USED_RESOLUTION:
+        days = projection.get("daysLeft")
+        return (1, 1, -days if isinstance(days, (int, float)) else float("-inf"))
+    return (1, 0, rank_room(row))
 
 
 def plan_rows(data=None, read=None, now=None):
@@ -233,18 +401,6 @@ def plan_rows(data=None, read=None, now=None):
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
     return [_plan_room(name, data, read or read_capacity, now) for name in plan_quota_transports(data)]
-
-
-def spare(row):
-    """The % of a plan's window that even-pace spending leaves unused at its reset, or None.
-
-    Even pace spends the share of the window that time has left, `left / room`, so the rest,
-    `left x (1 - 1/room)`, expires. None at or below even pace, and for an unreadable row.
-    """
-    value, left = row.get("room"), row.get("left")
-    if not isinstance(value, (int, float)) or not isinstance(left, (int, float)) or value <= 1.0:
-        return None
-    return left * (1.0 - 1.0 / value)
 
 
 def display_windows(capacity, now=None):
@@ -323,8 +479,9 @@ def window_figures(window, now=None):
 
 def plan_entry(plan, capacity, now=None, label=None):
     """`<plan> (<label>) <band>: <figures>` for a plan's capacity reading: the worst window's band, then each
-    `display_windows` row's `window_figures` (`left` and `timeLeft` are percents from 0 to 100). A reading
-    with no readable window is `band unknown`, naming the cold cache."""
+    `display_windows` row's `window_figures` (`left` and `timeLeft` are percents from 0 to 100). The routing
+    window's figures carry `_unused_clause` when its projection reaches `USED_RESOLUTION`. A reading with no
+    readable window is `band unknown`, naming the cold cache."""
     windows = display_windows(capacity, now)
     heading = plan + (" (%s)" % label if label else "")
     if (capacity or {}).get("status") == "dispatch-floor":
@@ -332,24 +489,23 @@ def plan_entry(plan, capacity, now=None, label=None):
     if not windows:
         return heading + " band unknown (cache cold; preflight probes before spend)"
     return "%s %s: %s" % (heading, windows[0]["band"],
-                           "; ".join(window_figures(w, now) for w in windows))
+                           "; ".join(window_figures(w, now) + _unused_clause(plan, capacity, w, now)
+                                     for w in windows))
 
 
 def _lead(row, capacity, now=None):
     return plan_entry(row["transport"], capacity, now, row.get("planType"))
 
 
-def pick(tier, session_plan=None, data=None, read=None, now=None):
-    """{transport, room, ranked, payOptions, reason}: which plan pays for a `tier` job.
+def facts(tier, session_plan=None, data=None, read=None, now=None):
+    """{tiers, plans, payOptions, capacities}: every plan that can pay for a `tier` job, in registry order, with its
+    room facts and no choice among them. `tier` is a tier name or a list of them (their union: a job whose shape
+    implies no tier is fit wherever its row's claimed tiers are served).
 
-    `tier` is a tier name or a list of them (their union: a job whose shape implies no tier is
-    fit wherever its row's claimed tiers are served). Candidates are the live plans able to pay
-    for an available row whose `roles` claim it, availability judged from `session_plan`'s route.
-    `read(transport, data)` returns a normalized reading; the default is `read_capacity` (fresh
-    cache, else live). `ranked` holds every fit plan, readable ones by `rank_room` descending (the returned `room` is the pick's `rank_room`; each ranked row's `room` stays its routing window's), then the
-    dropped ones with `why`. The returned `transport` is the PAYING PLAN, which can differ from
-    the row's transport; it is None when no fit plan has room, and `payOptions` then lists the
-    fit marginal-usd rows as {alias, id, transport}, and is empty otherwise.
+    Candidates are the live plans able to pay for an available row whose `roles` claim it, availability judged from
+    `session_plan`'s route. `plans` holds each readable plan's `_plan_room` row and each dropped one with `why`
+    (`room` None). `payOptions` lists the fit marginal-usd rows as {alias, id, transport}, and only when no plan
+    has room. `read(transport, data)` returns a normalized reading; the default is `read_capacity`.
     """
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
@@ -376,11 +532,26 @@ def pick(tier, session_plan=None, data=None, read=None, now=None):
         capacities[name] = read(name, data)
         return capacities[name]
 
-    rows = [_plan_room(name, data, captured_read, now) for name in sorted(plans)]
-    ready = sorted((r for r in rows if r["room"] is not None),
-                   key=lambda r: (-round(rank_room(r), 2), r["transport"] != session_plan,
-                                  r["transport"]))
-    dropped = [r for r in rows if r["room"] is None]
+    rows = registry_order([_plan_room(name, data, captured_read, now) for name in plans], data)
+    options = [] if any(r["room"] is not None for r in rows) else [
+        {"alias": r.get("alias"), "id": r.get("id"), "transport": r.get("transport")} for r in pay]
+    return {"tiers": tiers, "plans": rows, "payOptions": options, "capacities": capacities}
+
+
+def pick(tier, session_plan=None, data=None, read=None, now=None):
+    """{transport, room, ranked, payOptions, reason}: which plan pays for a `tier` job, the computed choice over `facts`.
+
+    `ranked` holds every fit plan, readable ones by `rank_room` descending (the returned `room` is the pick's
+    `rank_room`; each ranked row's `room` stays its routing window's), then the dropped ones with `why`. The returned
+    `transport` is the PAYING PLAN, which can differ from the row's transport; it is None when no fit plan has room.
+    """
+    data = data if data is not None else model_registry.load()
+    now = time.time() if now is None else now
+    got = facts(tier, session_plan, data=data, read=read, now=now)
+    capacities = got["capacities"]
+    ready = sorted((r for r in got["plans"] if r["room"] is not None),
+                   key=lambda r: (-round(rank_room(r), 2), r["transport"] != session_plan, r["transport"]))
+    dropped = [r for r in got["plans"] if r["room"] is None]
     top = ready[0] if ready else None
     dropped_text = "".join(" | " + (plan_entry(r["transport"], capacities.get(r["transport"]), now)
                                   if r["why"].startswith("exhausted") else
@@ -388,15 +559,12 @@ def pick(tier, session_plan=None, data=None, read=None, now=None):
     if top:
         reason = " | ".join([_lead(top, capacities.get(top["transport"]), now)] +
                             [_lead(r, capacities.get(r["transport"]), now) for r in ready[1:]])
-        options = []
     else:
-        options = [{"alias": r.get("alias"), "id": r.get("id"), "transport": r.get("transport")}
-                   for r in pay]
-        reason = "no fit plan has quota for %s" % "/".join(tiers)
-        if options:
-            reason += "; pay per token: " + ", ".join(o["alias"] or o["id"] for o in options)
+        reason = "no fit plan has quota for %s" % "/".join(got["tiers"])
+        if got["payOptions"]:
+            reason += "; pay per token: " + ", ".join(o["alias"] or o["id"] for o in got["payOptions"])
     return {"transport": top["transport"] if top else None, "room": rank_room(top) if top else None,
-            "ranked": ready + dropped, "payOptions": options, "reason": reason + dropped_text}
+            "ranked": ready + dropped, "payOptions": got["payOptions"], "reason": reason + dropped_text}
 
 
 def registry_order(rows, data=None):
@@ -405,14 +573,14 @@ def registry_order(rows, data=None):
     return sorted(rows, key=lambda r: order.get(r.get("transport"), len(order)))
 
 
-def room_facts(got, read=None, now=None, data=None):
-    """{plans, entries, low, payOptions} from a `pick` result: each plan's room facts and its owner-facing
+def room_facts(got, read=None, now=None):
+    """{plans, entries, low, payOptions} from a `facts` result: each plan's room facts and its owner-facing
     entry in registry order, with no choice among them. `low` is True when no plan paying for the tier's rows
     has allowance."""
     read = read or (lambda name: read_capacity(name, live=False))
-    rows = registry_order(got.get("ranked") or [], data)
-    plans = [{k: r.get(k) for k in ("transport", "room", "bindingRoom", "left", "daysLeft", "why") if k in r}
-             for r in rows]
+    rows = got.get("plans") or []
+    plans = [{k: r.get(k) for k in ("transport", "room", "bindingRoom", "left", "daysLeft", "why",
+                                    "unusedAtReset") if k in r} for r in rows]
     entries = [plan_entry(r["transport"], read(r["transport"]), now, r.get("planType")) if r.get("room") is not None
                else "%s %s" % (r["transport"], r.get("why")) for r in rows]
     return {"plans": plans, "entries": entries, "low": not any(r.get("room") is not None for r in plans),
@@ -476,7 +644,8 @@ def lean_candidates(tier, session_plan, data=None, read=None, now=None, ladder=N
                 continue
             if name not in plan_rooms:
                 plan_rooms[name] = _plan_room(name, data, read, now)
-            found.append({"plan": name, "room": rank_room(plan_rooms[name])})
+            found.append({"plan": name, "room": rank_room(plan_rooms[name]),
+                          "unusedAtReset": plan_rooms[name].get("unusedAtReset")})
         return found
 
     routes, only, plans_by_route, marginal, claimant_routes = {}, {}, {}, [], set()
@@ -538,17 +707,16 @@ def main(argv):
         except Exception as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        got = pick(tier, session_plan())
         if argv[0] == "pick":
-            print(json.dumps(got, indent=2))
+            print(json.dumps(pick(tier, session_plan()), indent=2))
             return 0
-        facts = room_facts(got)
+        view = room_facts(facts(tier, session_plan()))
         if "--json" in argv:
-            print(json.dumps(dict(facts, tier=tier), indent=2))
+            print(json.dumps(dict(view, tier=tier), indent=2))
         else:
-            for line in facts["entries"]:
+            for line in view["entries"]:
                 print(line)
-            if facts["low"]:
+            if view["low"]:
                 print("low: no plan paying for a %s row has allowance left" % tier)
         return 0
     if argv[0] == "lean":

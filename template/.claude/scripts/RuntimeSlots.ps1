@@ -60,6 +60,7 @@ $script:CheckoutLockPrefix = 'Global\gdunit4-runlock-'
 $script:RuntimeSlotRecordRoot = ''     # '' = $env:TEMP\harness-activity\runtime-slots
 $script:RuntimeSlotOverrideFile = ''   # '' = <git-common-dir>\runtime-slots
 $script:OverlapSignatureKinds = @('testhost-native-crash', 'executor-connect', 'run-aborted', 'cache-file-error')
+$script:RecompileSnapshotReads = 0
 
 function Get-RuntimeSlotNames {
     Set-StrictMode -Version Latest
@@ -300,23 +301,55 @@ function New-SlotRecord {
     }
 }
 
+function Read-RecompileSnapshotCache {
+    param([string] $Path)
+    Set-StrictMode -Version Latest
+    $files = @{}
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $files }
+        $cache = [IO.File]::ReadAllText($Path) | ConvertFrom-Json
+        if ($cache.schema -ne 1) { return @{} }
+        foreach ($property in $cache.files.PSObject.Properties) {
+            $value = $property.Value
+            if ($value.entry -isnot [string] -or $null -eq $value.length -or $null -eq $value.ticks) { return @{} }
+            $files[$property.Name] = @{ length = [long] $value.length; ticks = [long] $value.ticks; entry = $value.entry }
+        }
+    } catch { return @{} }
+    $files
+}
+
+function Write-RecompileSnapshotCache {
+    param([string] $Path, [hashtable] $Files)
+    Set-StrictMode -Version Latest
+    $temp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path)) | Out-Null
+        [IO.File]::WriteAllText($temp, ([ordered] @{ schema = 1; files = $Files } | ConvertTo-Json -Depth 5 -Compress))
+        [IO.File]::Move($temp, $Path, $true)
+    } catch {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # The persistent editor-pass stamp is separate from the live gate record, which is removed at release.
 function Get-RecompileSnapshot {
     param([Parameter(Mandatory)] [string] $Repo)
     Set-StrictMode -Version Latest
     $root = [IO.Path]::GetFullPath($Repo).TrimEnd('\', '/')
-    $paths = [Collections.Generic.List[string]]::new()
-    $pending = [Collections.Generic.Stack[string]]::new()
-    $pending.Push($root)
+    $cachePath = Join-Path $root '.godot/recompile_snapshot_cache.json'
+    $paths = [Collections.Generic.List[IO.FileInfo]]::new()
+    $pending = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $pending.Push([IO.DirectoryInfo]::new($root))
     while ($pending.Count -gt 0) {
         $dir = $pending.Pop()
-        foreach ($child in [IO.Directory]::EnumerateDirectories($dir)) {
-            if ([IO.Path]::GetFileName($child) -in @('.git', '.godot', '.claude', 'bin', 'obj', 'TestResults')) { continue }
-            if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "recompile snapshot cannot follow linked directory $child" }
-            $pending.Push($child)
-        }
-        foreach ($file in [IO.Directory]::EnumerateFiles($dir)) {
-            if ([IO.Path]::GetExtension($file).ToLowerInvariant() -in @('.cs', '.gd', '.tscn', '.tres', '.import')) { $paths.Add($file) }
+        foreach ($child in $dir.EnumerateFileSystemInfos()) {
+            if ($child -is [IO.DirectoryInfo]) {
+                if ($child.Name -in @('.git', '.godot', '.claude', 'bin', 'obj', 'TestResults')) { continue }
+                if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "recompile snapshot cannot follow linked directory $($child.FullName)" }
+                $pending.Push($child)
+            } elseif ($child.Extension.ToLowerInvariant() -in @('.cs', '.gd', '.tscn', '.tres', '.import')) {
+                $paths.Add($child)
+            }
         }
     }
     $cs = [Collections.Generic.List[string]]::new()
@@ -324,29 +357,46 @@ function Get-RecompileSnapshot {
     $names = [Collections.Generic.List[string]]::new()
     $resources = [Collections.Generic.List[string]]::new()
     $hash = { param([string] $text) [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))) }
-    foreach ($file in @($paths | Sort-Object)) {
+    $cache = Read-RecompileSnapshotCache -Path $cachePath
+    $fresh = @{}
+    $dirty = $false
+    foreach ($info in @($paths | Sort-Object { $_.FullName })) {
+        $file = $info.FullName
         $relative = [IO.Path]::GetRelativePath($root, $file) -replace '\\', '/'
-        $ext = [IO.Path]::GetExtension($file).ToLowerInvariant()
-        if ($ext -eq '.cs') {
-            $cs.Add($relative)
-            $text = [IO.File]::ReadAllText($file)
-            $code = Remove-CSharpLiterals -Text $text
-            $declarations = @([regex]::Matches($code, '(?s)(?:\[[^\]]*\]\s*)+(?:(?:public|internal|private|protected|abstract|sealed|partial|static|new|file)\s+)*class\s+[^\{;]+') |
-                Where-Object { $_.Value -match '\b(?:Godot\s*\.\s*)?GlobalClass(?:Attribute)?\b' } | ForEach-Object { $_.Value -replace '\s+', ' ' })
-            if ($declarations.Count -gt 0) {
-                $namespaces = @([regex]::Matches($code, '\bnamespace\s+[\w.]+') | ForEach-Object { $_.Value -replace '\s+', ' ' })
-                $globals.Add("$relative=$(& $hash (($namespaces + $declarations) -join "`n"))")
-            } elseif ($code -match '\bGlobalClass(?:Attribute)?\b') {
-                # Unrecognized declaration syntax cannot safely be reduced to a class header.
-                $globals.Add("$relative=$(& $hash $code)")
-            }
-        } elseif ($ext -eq '.gd') {
-            $declarations = @([regex]::Matches([IO.File]::ReadAllText($file), '(?m)^\s*class_name\s+[^\r\n#]+') | ForEach-Object { ($_.Value -replace '\s+', ' ').Trim() })
-            if ($declarations.Count -gt 0) { $names.Add("$relative=$(& $hash ($declarations -join "`n"))") }
+        $ext = $info.Extension.ToLowerInvariant()
+        if ($ext -eq '.cs') { $cs.Add($relative) }
+        # Length and write time come from the directory listing, taken before the read: an edit during the read leaves a stale key, which the next call recomputes.
+        $length = $info.Length
+        $ticks = $info.LastWriteTimeUtc.Ticks
+        if ($cache.ContainsKey($relative) -and $cache[$relative].length -eq $length -and $cache[$relative].ticks -eq $ticks) {
+            $entry = $cache[$relative].entry
         } else {
-            $resources.Add("$relative=$([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($file))))")
+            $dirty = $true
+            $script:RecompileSnapshotReads++
+            $entry = 'none'
+            if ($ext -eq '.cs') {
+                $code = Remove-CSharpLiterals -Text ([IO.File]::ReadAllText($file))
+                $declarations = @([regex]::Matches($code, '(?s)(?:\[[^\]]*\]\s*)+(?:(?:public|internal|private|protected|abstract|sealed|partial|static|new|file)\s+)*class\s+[^\{;]+') |
+                    Where-Object { $_.Value -match '\b(?:Godot\s*\.\s*)?GlobalClass(?:Attribute)?\b' } | ForEach-Object { $_.Value -replace '\s+', ' ' })
+                if ($declarations.Count -gt 0) {
+                    $namespaces = @([regex]::Matches($code, '\bnamespace\s+[\w.]+') | ForEach-Object { $_.Value -replace '\s+', ' ' })
+                    $entry = "$relative=$(& $hash (($namespaces + $declarations) -join "`n"))"
+                } elseif ($code -match '\bGlobalClass(?:Attribute)?\b') {
+                    # Unrecognized declaration syntax cannot safely be reduced to a class header.
+                    $entry = "$relative=$(& $hash $code)"
+                }
+            } elseif ($ext -eq '.gd') {
+                $declarations = @([regex]::Matches([IO.File]::ReadAllText($file), '(?m)^\s*class_name\s+[^\r\n#]+') | ForEach-Object { ($_.Value -replace '\s+', ' ').Trim() })
+                if ($declarations.Count -gt 0) { $entry = "$relative=$(& $hash ($declarations -join "`n"))" }
+            } else {
+                $entry = "$relative=$([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($file))))"
+            }
         }
+        $fresh[$relative] = @{ length = $length; ticks = $ticks; entry = $entry }
+        if ($entry -eq 'none') { continue }
+        if ($ext -eq '.cs') { $globals.Add($entry) } elseif ($ext -eq '.gd') { $names.Add($entry) } else { $resources.Add($entry) }
     }
+    if ($dirty -or $cache.Count -ne $fresh.Count) { Write-RecompileSnapshotCache -Path $cachePath -Files $fresh }
     [pscustomobject] @{ CsPaths = @($cs.ToArray()); GlobalClasses = @($globals.ToArray()); ClassNames = @($names.ToArray()); Resources = @($resources.ToArray()) }
 }
 
@@ -403,6 +453,34 @@ function Set-RecompileStamp {
             snapshot = $Snapshot
         })
     } catch { }
+}
+
+# The wrapper's recompile decision: Skip, the RECOMPILE= line it prints, and the Decision whose Snapshot a completed
+# pass stamps. A held child never reads the stamp; it keeps the holder's record (-HeldRecompiled) unless forced.
+function Resolve-RunRecompile {
+    param([Parameter(Mandatory)] [string] $Repo, [switch] $Held, [switch] $HeldRecompiled, [switch] $Force, [switch] $RecompilePass)
+    Set-StrictMode -Version Latest
+    $decision = $null
+    if (-not $Held) {
+        $decision = Get-RecompileDecision -Repo $Repo -Force:$Force
+        $skip = [bool] $decision.Skip
+        $reason = $decision.Reason
+    } else {
+        $skip = [bool] $HeldRecompiled -and -not $Force
+        if (-not $skip) {
+            try { $decision = [pscustomobject] @{ Snapshot = Get-RecompileSnapshot -Repo $Repo } } catch { }
+        }
+        $reason = if ($RecompilePass) { 'gate-sanity' } elseif ($Force) { 'forced' } else { 'held-recompiled' }
+    }
+    [pscustomobject] @{ Skip = $skip; Decision = $decision; Line = "RECOMPILE=$(if ($skip) { 'SKIP' } else { 'RUN' }) reason=$reason" }
+}
+
+function Save-RecompilePassStamp {
+    param([Parameter(Mandatory)] [string] $Repo, $Decision, [switch] $SkipRecompile, [switch] $SilentSkip, [string] $Trx)
+    Set-StrictMode -Version Latest
+    if ($Decision -and -not $SkipRecompile -and -not $SilentSkip) {
+        Set-RecompileStamp -Repo $Repo -Snapshot $Decision.Snapshot -Trx $Trx
+    }
 }
 
 # ------------------------------------------------------------------ held checkout

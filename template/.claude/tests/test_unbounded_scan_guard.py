@@ -89,9 +89,11 @@ def outside_git_cases(env):
     cmd, _, _ = rewritten("grep -rn -m 3 foo " + target)
     cases.append(("the caller's -m replaces the default bound", cmd.count("--max-count") == 1 and "--max-count 3" in cmd))
 
-    for label, command in (("--include", "grep -r --include=*.jsonl foo " + target),
-                           ("--exclude-dir", "grep -rn --exclude-dir=y foo " + target),
-                           ("-P", "grep -rnP 'fo+' " + target),
+    cmd, _, _ = rewritten("grep -r --include=*.jsonl foo " + target)
+    cases.append(("outside git, --include runs as an rg glob", cmd.startswith("rg ") and "-g '*.jsonl'" in cmd))
+    cmd, _, _ = rewritten("grep -rn --exclude-dir=y foo " + target)
+    cases.append(("outside git, --exclude-dir runs as an rg glob", cmd.startswith("rg ") and "-g '!y/'" in cmd))
+    for label, command in (("-P", "grep -rnP 'fo+' " + target),
                            ("-z", "grep -rnz foo " + target),
                            ("an unknown flag", "grep -rn --color=always foo " + target),
                            ("a BRE alternation", "grep -rn 'a\\|b' " + target),
@@ -217,6 +219,16 @@ def main():
     out = scan('find .', env, session=SID + '-real-find')
     cases.append(('real find dot still warns on both axes',
                   'UNBOUNDED RECURSIVE SCAN' in out and 'GITIGNORE-BLIND SCAN' in out))
+
+    # The word `find` in prose is not a walk: only a command word at a separator starts one.
+    cases.append(('quoted prose noun find is silent on the scope axis',
+                  'GITIGNORE-BLIND' not in scan('echo "the find decision"', env, session=SID + '-noun')))
+    cases.append(('a find after && still warns on the scope axis',
+                  'GITIGNORE-BLIND SCAN' in scan('cd Jmodot && find . -name "*.md"', env, session=SID + '-and')))
+    cases.append(('a find behind xargs still warns on the scope axis',
+                  'GITIGNORE-BLIND SCAN' in scan('ls | xargs find . -name "*.md"', env, session=SID + '-xargs')))
+    cases.append(('a find inside a command substitution still warns on the scope axis',
+                  'GITIGNORE-BLIND SCAN' in scan('f=$(find . -name "*.md")', env, session=SID + '-subst')))
 
     cases += outside_git_cases(env)
 

@@ -254,10 +254,7 @@ def main():
             tr._mutate("roles", lambda state: state.setdefault("archived", []).append(state["decisions"].pop()))
             archived = [r for r in tr.archived_rows("roles") if r.get("kind") == "decision"]
             check("archive preserves decision evidence for lineage joins", archived[0].get("evidence") == d["evidence"], archived)
-            try:
-                check("all decisions deduplicate archive references", len(tr.all_decisions("roles")) == 1)
-            except AttributeError as exc:
-                check("all decisions deduplicate archive references", False, str(exc))
+            check("all decisions deduplicate archive references", len(tr.all_decisions("roles")) == 1)
             with patch.object(review_ledger, "_journal_source", return_value=({}, {}, {},
                     {"fold": {"served_model": "gpt-6.1-sol"}}, {})):
                 native = tr.add_job("roles", "native-fold", "fold", "workflow", "accepted", role="fold",
@@ -481,8 +478,7 @@ def main():
                    cwd=root, env=tri_env(session))
 
     def for_session(session):
-        fn = getattr(tr, "triage_for_session", None)
-        return fn(session) if fn else {"missing": "triage_for_session"}
+        return tr.triage_for_session(session)
 
     def stored(name):
         return (((tr.load("tri-1") or {}).get("triage") or {}).get("fields") or {}).get(name)
@@ -840,6 +836,39 @@ def main():
           out.stderr)
     bad = cli("slice", "sl-1", "--id", "S3", "--state", "bogus", cwd=root, env=dict(os.environ))
     check("the slice CLI refuses an unknown state", bad.returncode != 0)
+
+    tr.open_record("adm-1", session_id="s1", title="Admissions")
+    planted = dict(check="candidate-lenses", admitted=True, width="sized", rigor="normal", reach="local",
+                   kind="decision", size="x" * (tr.MAX_BYTES + 200))
+    refusal = None
+    try:
+        tr.record_admission("adm-1", planted)
+    except tr.RecordTooLarge as exc:
+        refusal = str(exc)
+    check("an oversized admission is recorded, not refused", refusal is None, refusal)
+    check("the record stays under its byte cap after an oversized admission",
+          len(json.dumps(tr.load("adm-1")).encode("utf-8")) <= tr.MAX_BYTES)
+    spill = os.path.join(root, "adm-1.admissions.jsonl")
+    spilled = []
+    if os.path.exists(spill):
+        with open(spill, encoding="utf-8") as fh:
+            spilled = [json.loads(line) for line in fh if line.strip()]
+    check("the spill file holds the full oversized admission", spilled == [planted], spilled[:1])
+    refused_at = []
+    for i in range(300):
+        try:
+            tr.record_admission("adm-1", dict(check="iq-audit", admitted=bool(i % 2), width=None, rigor="normal",
+                                              reach="local", kind="decision", size="one-context"))
+        except tr.RecordTooLarge:
+            refused_at.append(i)
+    check("300 admissions are never refused", not refused_at, refused_at[:3])
+    stored = tr.load("adm-1")
+    check("the record stays under its byte cap after 300 admissions",
+          len(json.dumps(stored).encode("utf-8")) <= tr.MAX_BYTES)
+    check("the record keeps only the newest 20 admission summaries", len(stored["admissions"]) == 20,
+          len(stored["admissions"]))
+    spilled_count = sum(1 for line in open(spill, encoding="utf-8") if line.strip()) if os.path.exists(spill) else 0
+    check("the spill file keeps every admission", spilled_count == 301, spilled_count)
 
     print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
     for f in FAILURES:

@@ -11,14 +11,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import reap  # noqa: E402
+import _platform_skip  # noqa: E402
 
 KEY = b"REAP_NATIVE_ENV_PROBE="
 
 
 def main():
     if os.name != "nt":
-        print("SKIP: native Windows environment block")
-        return 0
+        _platform_skip.skip_proof("native Windows environment block", "Windows only")
     token = uuid.uuid4().hex
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                             env=dict(os.environ, REAP_NATIVE_ENV_PROBE=token))

@@ -136,6 +136,16 @@
       {
         "hooks": [
           {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/brief_deliverable_guard.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write"
+      },
+      {
+        "hooks": [
+          {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_edit_dispatch.py\"",
             "timeout": 60,
             "type": "command"

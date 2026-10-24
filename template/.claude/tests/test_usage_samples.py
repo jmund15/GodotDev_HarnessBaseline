@@ -41,6 +41,26 @@ def test_the_last_kept_sample_is_per_provider_and_window():
     assert len(lines(path)) == 4, lines(path)
 
 
+def test_two_plans_of_one_provider_keep_separate_last_kept_rows():
+    path = fresh()
+    first = dict(sample(NOW - 5), plan="anthropic")
+    second = dict(sample(NOW - 5), plan="anthropic-secondary")
+    assert us.record([first, second], now=NOW, path=path) == 2
+    assert us.record([dict(sample(NOW - 4), plan="anthropic")], now=NOW, path=path) == 1
+    assert us.record([dict(sample(NOW - 5), plan="anthropic-secondary")], now=NOW, path=path) == 0
+    assert us.record([dict(sample(NOW - 3), plan="anthropic-secondary")], now=NOW, path=path) == 1
+    assert [s.get("plan") for s in lines(path)] == ["anthropic", "anthropic-secondary",
+                                                    "anthropic", "anthropic-secondary"]
+
+
+def test_a_legacy_sample_without_a_plan_reads_under_its_provider():
+    path = fresh()
+    us.record([sample(NOW - 1)], now=NOW, path=path)
+    rows = us.read(path)
+    assert [us.plan_of(s) for s in rows] == ["anthropic"], rows
+    assert us.plan_of({"plan": "anthropic-secondary", "provider": "anthropic"}) == "anthropic-secondary"
+
+
 def test_retention_prunes_on_the_first_append_of_each_day_only():
     path = fresh()
     with open(path, "w", encoding="utf-8") as fh:

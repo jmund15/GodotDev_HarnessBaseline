@@ -31,6 +31,7 @@ if str(HOOKS) not in sys.path:
     sys.path.insert(0, str(HOOKS))
 
 import _hook_state  # noqa: E402
+from cli_usage import usage  # noqa: E402
 
 PLATFORM = sys.platform
 REPO = Path(__file__).resolve().parents[2]
@@ -517,7 +518,7 @@ def adopt(items, home, scope, item_id):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["check", "install", "adopt", "lint"])
     parser.add_argument("item_id", nargs="?")
     parser.add_argument("--home", default=str(Path.home()))

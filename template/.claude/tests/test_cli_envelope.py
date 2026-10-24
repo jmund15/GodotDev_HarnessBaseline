@@ -55,6 +55,13 @@ class CliEnvelopeTests(unittest.TestCase):
         evts = [{'type': 'result', 'session_id': MINE}, {'type': 'user', 'session_id': PEER}]
         self.assertEqual(env.session_id(evts), MINE)
 
+    def test_synthetic_last_result_yields_to_the_real_one(self):
+        real = {'type': 'result', 'result': 'real', 'usage': {'input_tokens': 5}}
+        synth = {'type': 'result', 'synthetic': True, 'result': 'limit'}
+        self.assertEqual(env.result_event([real, synth]), real)
+        self.assertEqual(env.result_event([synth]), synth)
+        self.assertEqual(env.result_event([synth, real]), real)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -71,8 +71,15 @@ PROTECTED = (
     (r"(?:^|[\s/\\\"])claude\.exe|(?:^|[\s/\\\"])claude(?:\s|$)",
      "a Claude Code session — possibly a peer's", "billed"),
     (r"claude-code-proxy", "a transport proxy other sessions may be routing through", "billed"),
-    (r"run_grid(?:\.snapshot[\w.-]*)?\.sh", "a benchmark grid — its in-flight cell is a billed arm", "billed"),
+    # Bound to the command word: a grid named as a proof input (`harness_tests.py --for run_grid.sh`) is data.
+    (r"(?:^|[;&|(\n]\s*)(?:(?:nohup|exec|setsid)\s+)?(?:(?:bash|sh|pwsh|powershell)\s+(?:-\S+\s+)*)?[\"']?"
+     r"(?:\S*[/\\])?run_grid(?:\.snapshot[\w.-]*)?\.sh",
+     "a benchmark grid — its in-flight cell is a billed arm", "billed"),
 )
+# A proof's own temp root (harness_tests.py mkdtemp prefix). A process running there is the proof's sandbox
+# copy, not a grid this session launched, so it does not make a proof run billed.
+PROOF_SANDBOX_RE = re.compile(r"[\\/]harness_(?:proof|commit)_\w+[\\/]")
+CAT_SUBST_RE = re.compile(r"\$\(\s*cat\s+(\"[^\"]+\"|'[^']+'|[^\s)\"']+)\s*\)")
 # Local scripts a shell command runs. Their TEXT is scanned too: a background `bash waiter.sh` that
 # calls a sidecar holds a billed arm exactly as a direct launch does.
 # Glob characters are excluded: `find -name "*.py"` names a pattern, not a script to read.
@@ -498,8 +505,15 @@ def _work_texts(command, cwd):
     those are each segment's first script (`_run_refs`); in a script's text, every script it names.
     `unreadable` names the first script that blocks the exception: one the command itself runs, or a
     nested one built from a variable (`$HERE/x.sh`), whose body could launch anything. Any other nested
-    reference that cannot be read is skipped; only its name, in the parent text, meets PROTECTED."""
+    reference that cannot be read is skipped; only its name, in the parent text, meets PROTECTED. A `$(cat file)`
+    substitution runs that file's text, so the file is read as a script the command runs."""
     texts, frontier, seen = [command], [(command, 0)], set()
+    for token in CAT_SUBST_RE.findall(command):
+        body = _read_script(token.strip("\"'"), cwd)
+        if body is None:
+            return texts, token
+        texts.append(body)
+        frontier.append((body, 0))
     while frontier:
         text, depth = frontier.pop()
         if depth >= MAX_SCRIPT_DEPTH:
@@ -578,6 +592,8 @@ def quiet_shell_blocker(transcript_path, tool_input, cwd=None):
         return "not a background shell or monitor this session launched"
     command = str(launch[1].get("command") or "")
     live = _live_tree(command)
+    if live is not None:
+        live = [cmd for cmd in live if not PROOF_SANDBOX_RE.search(cmd)]
     texts, unreadable = ([command] + live, None) if live is not None else _work_texts(command, cwd)
     local = None
     for text in texts:

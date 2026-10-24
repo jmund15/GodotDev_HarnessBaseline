@@ -20,7 +20,6 @@ import watch_records  # noqa: E402
 from watch_records import _covered  # noqa: E402
 import dispatch_table  # noqa: E402
 
-WAKE_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
 
 STATUS = re.compile(r"<task-notification\b[^>]*>.*?<status>\s*(killed|stopped)\s*</status>.*?</task-notification>",
                     re.DOTALL)
@@ -91,9 +90,9 @@ def advice(payload):
             lines.append("%s%s: %s" % (group, action, ", ".join(paths)))
     if uncovered:
         lines.append("running or queued (no live watcher): " + ", ".join(dict.fromkeys(uncovered)))
-        lines.append("Arm the session watcher as its own Bash call with run_in_background: true and timeout 7200000: %s. "
+        lines.append("Arm the session watcher %s: %s. "
                      "Started any other way (foreground, &, nohup, disown) it never wakes you and blocks a correct arm."
-                     % WAKE_COMMAND)
+                     % (watch_records.ARM_CALL, watch_records.ARM_COMMAND))
     return "\n".join(lines) if len(lines) > 1 else None
 
 

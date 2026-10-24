@@ -32,7 +32,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import executable_text, _REDIRECTION  # noqa: E402
-from _regenerable_clone import is_regenerable_clone, is_retired_worktree, session_created_worktree  # noqa: E402
+from _regenerable_clone import (empty_leftover, is_regenerable_clone, is_retired_worktree,  # noqa: E402
+                                lossless_orphan_worktree, session_created_worktree)
 from _owner_text import classify, owner_consent  # noqa: E402
 from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
 
@@ -293,15 +294,24 @@ def _owner_approved_scratch(token: str, target: str, transcript_path: str | None
 
 def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
                            reasons: list[str] | None = None) -> bool:
-    """A pushed clone or an owned/owner-approved retired worktree; optionally explain failure."""
+    """A pushed clone, a lossless orphaned worktree directory (needs no approval: nothing in it is
+    unheld by git or a non-regenerable ignored file), an empty leftover directory under scratch (no file,
+    no `.git`), or a retired worktree this session created or the owner approved by name; optionally
+    explain failure."""
     root = _project_root()
     if is_regenerable_clone(token, cwd or root, root):
         return True
     target = resolve_cd(cwd or root, token)
     if _strictly_under(_norm(target), _norm(os.path.join(root, '.claude', 'scratch'))):
+        if empty_leftover(_norm(target)):
+            return True
         return _owner_approved_scratch(token, target, transcript_path, reasons)
+    orphan_loss: list[str] = []
+    if lossless_orphan_worktree(token, cwd or root, root, orphan_loss):
+        return True
     if not (_owner_approved_removal(token, transcript_path) or session_created_worktree(target, transcript_path)):
         if reasons is not None:
+            reasons.extend(orphan_loss)
             reasons.append('ownership not proven: this session did not create it, and the owner has not approved its '
                            'removal. Ask the owner in one message naming each worktree and the word remove; their '
                            'next reply approving it lets this delete through')

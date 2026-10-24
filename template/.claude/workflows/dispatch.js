@@ -437,7 +437,7 @@ const results = await parallel(jobs.map(j => () => {
     + 'Evidence: ' + EVIDENCE_RULES + '\n'
     + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
     + '\n' + RELAY_LINE
-    + (shapeOf(j) === 'author' ? '\n' + AMEND_LINE(j.promptPath) : '')
+    + (shapeOf(j) === 'author' ? '\n' + AMEND_LINE(rootedPath(A, j.promptPath)) : '')
     + (readOnlyOf(j) ? readOnlyGuard(j) : '')
     + concurrencyGuard(j)
     + guardRef(j)

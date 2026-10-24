@@ -10,6 +10,7 @@ inside a worktree.
 
 from __future__ import annotations
 
+import os
 import re
 
 
@@ -72,3 +73,8 @@ def harness_tail(path: str) -> str | None:
     if not matches:
         return None
     return norm[matches[-1].end():]
+
+
+def is_cloud() -> bool:
+    """True in a Claude Code cloud session (CLAUDE_CODE_REMOTE set to 1, true or yes)."""
+    return os.environ.get("CLAUDE_CODE_REMOTE", "").lower() in ("1", "true", "yes")

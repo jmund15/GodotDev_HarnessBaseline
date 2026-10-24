@@ -17,6 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lock_rows import project_owned  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".claude" / "tools"))
+import adaptation  # noqa: E402
+
+PAIRED = adaptation.get(ROOT / ".claude", "paired_repos")
 COMMANDS = [ROOT / ".claude" / "commands" / "commit_push.md"]
 CLEAN_PUSH = ROOT / ".claude" / "commands" / "clean_push.md"
 
@@ -70,6 +74,38 @@ def clean_problems(text):
     return found
 
 
+UNTRACKED_DETECT = "git ls-files --others --exclude-standard"
+SUBMODULE_SYNC = "git submodule update --init --recursive"
+
+
+def pull_problems(text):
+    found = []
+    task = text.split("## Your task", 1)[-1]
+    tools = allowed_tools(text) or ""
+    for grant in ("Bash(git ls-tree:*)", "Bash(git ls-files:*)", "Bash(git submodule:*)", "Bash(git -C:*)", "Bash(mv:*)"):
+        if grant not in tools:
+            found.append("allowed-tools lacks %s" % grant)
+    if UNTRACKED_DETECT not in task:
+        found.append("no untracked-blocker check")
+    elif task.index(UNTRACKED_DETECT) > task.index("`git pull`"):
+        found.append("untracked-blocker check runs after the pull")
+    if "--diff-filter=A" not in task:
+        found.append("blocker check does not diff upstream-added paths")
+    if "`.bak`" not in task:
+        found.append("blockers are not moved aside to .bak")
+    if SUBMODULE_SYNC not in task:
+        found.append("no submodule sync step")
+    elif task.index(SUBMODULE_SYNC) < task.index("`git pull`"):
+        found.append("submodule sync runs before the pull")
+    if "ls-tree" not in task or task.index("ls-tree") > task.index("`git pull`"):
+        found.append("no pre-pull gitlink record")
+    if "paired_repos" not in task:
+        found.append("paired repos are not read from adaptation.json")
+    if any(name in task for name in PAIRED):
+        found.append("a paired repo path is hardcoded")
+    return found
+
+
 def mutants(text):
     gate, push = gate_and_push(text)
     late_gate = text
@@ -106,6 +142,19 @@ def main():
                               clean.replace(", Bash(python3:*)", "") + "\nBash(python3:*)\n"}.items():
         cases.append(("clean_push.md: planted mutant detected: %s" % label,
                       mutant != clean and bool(clean_problems(mutant)), label))
+
+    pull = (ROOT / ".claude" / "commands" / "clean_pull.md").read_text(encoding="utf-8")
+    real = pull_problems(pull)
+    cases.append(("clean_pull.md checks untracked blockers and syncs paired repos around the pull", not real, str(real)))
+    pull_mutants = {"untracked check removed": pull.replace(UNTRACKED_DETECT, "git status --short"),
+                    "submodule sync removed": pull.replace(SUBMODULE_SYNC, "git status --short"),
+                    "mv grant dropped": pull.replace(", Bash(mv:*)", "")}
+    for name in PAIRED:
+        pull_mutants["paired path %s hardcoded" % name] = pull + "\nRun `git -C %s fetch` first.\n" % name
+    for label, mutant in pull_mutants.items():
+        new = [p for p in pull_problems(mutant) if p not in real]
+        cases.append(("clean_pull.md: planted mutant detected: %s" % label,
+                      mutant != pull and bool(new), str(new)))
 
     overnight = (ROOT / '.claude/commands/overnight.md').read_text(encoding='utf-8')
     park = overnight.split('## Step 2', 1)[-1].split('## Step 3', 1)[0].lower()

@@ -60,8 +60,12 @@ function Get-DigestStatusPaths {
     foreach ($line in $lines) {
         if (-not $line -or $line.Length -lt 4) { continue }
         $p = $line.Substring(3).Trim()
+        $untracked = $line.StartsWith('??')
         foreach ($side in @($p -split '\s->\s')) {
             $q = $side.Trim().Trim('"') -replace '\\', '/'
+            # The test host writes <X>.cs.uid for a .cs it has not seen: a gate beside any untracked .cs
+            # would invalidate itself.
+            if ($untracked -and $q.EndsWith('.cs.uid')) { continue }
             if ($q -and -not (Test-DigestExcluded $q)) { [void]$out.Add($q) }
         }
     }

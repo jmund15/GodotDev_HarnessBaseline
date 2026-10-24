@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import _optional_hooks
-from _claude_scope import harness_tail
+from _claude_scope import harness_tail, is_cloud
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
 
@@ -204,7 +204,7 @@ def grep_target_family(tool_input: dict) -> str:
 
 def is_cloud_session() -> bool:
     """Cloud sessions disable LSP."""
-    return os.environ.get("CLAUDE_CODE_REMOTE", "").lower() in ("1", "true", "yes")
+    return is_cloud()
 
 
 # === Cue-word checkers (consolidating duplicate logic across hooks) ==========

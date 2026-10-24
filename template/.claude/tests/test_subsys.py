@@ -36,6 +36,7 @@ def planted_root():
     (root / ".claude" / "tools").mkdir(parents=True)
     (root / ".claude" / "skills" / "project_subsystems" / "reference").mkdir(parents=True)
     shutil.copyfile(TOOL, root / ".claude" / "tools" / "subsys.py")
+    shutil.copyfile(TOOL.with_name("cli_usage.py"), root / ".claude" / "tools" / "cli_usage.py")
     (root / ".claude" / "skills" / "project_subsystems" / "reference" / "subsystem_details.md").write_text(
         CATALOG, encoding="utf-8")
     return root

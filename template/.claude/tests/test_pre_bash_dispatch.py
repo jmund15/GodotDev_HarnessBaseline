@@ -380,10 +380,10 @@ def main():
     # triage_commit_check. SUB_HOOKS above derives from HOOKS, so the parity cases below already run
     # it standalone; these two cases pin the registration and its import posture.
     names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
-    check("duplicate_commit_check.py is registered directly after triage_commit_check.py",
-          "triage_commit_check.py" in names and "duplicate_commit_check.py" in names
-          and names.index("duplicate_commit_check.py") == names.index("triage_commit_check.py") + 1,
-          repr(names))
+    check("duplicate_commit_check.py and triage_commit_check.py are both registered",
+          "triage_commit_check.py" in names and "duplicate_commit_check.py" in names, repr(names))
+    check("bash_backslash_fidelity.py stays last: it rewrites the command, so every deny must win first",
+          names[-1] == "bash_backslash_fidelity.py", repr(names))
     check("its import did not fall back to the stub",
           getattr(pre_bash_dispatch, "_DUPLICATE_CHECK_IMPORT_ERROR", "unset") is None)
     dup_code, dup_out, dup_err = pre_bash_dispatch.run_hook(
@@ -469,9 +469,30 @@ def main():
           planted[0] == 0 and decision_of(planted).get("permissionDecision") == "deny"
           and decision_of(planted).get("permissionDecisionReason", "").startswith("planted deny wins"),
           planted[2])
-    check("a deny reason reaches the model unchanged, with no dispatcher appendix",
-          decision_of(planted).get("permissionDecisionReason", "").rstrip().endswith("planted deny wins"),
+    check("a deny reason keeps the guard's text and adds one line: nothing in the command ran",
+          decision_of(planted).get("permissionDecisionReason", "") == "planted deny wins\nNothing in this command ran.",
           decision_of(planted).get("permissionDecisionReason", "")[-200:])
+
+    def planted_block_main():
+        sys.stderr.write("planted block\n")
+        return 2
+
+    planted_block = SimpleNamespace(__name__="planted_block", __file__="planted_block.py",
+                                    main=planted_block_main)
+    blocked = pre_bash_dispatch.dispatch(digest_payload, hooks=((planted_block, ()),))
+    check("an exit-2 block keeps its stderr and adds the same nothing-ran line",
+          blocked[0] == 2 and blocked[2] == "planted block\nNothing in this command ran.",
+          repr(blocked))
+    def echoed_deny_main():
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "guard text\nNothing in this command ran."}}))
+
+    echoed_deny = SimpleNamespace(__name__="echoed_deny", __file__="echoed_deny.py", main=echoed_deny_main)
+    echoed = pre_bash_dispatch.dispatch(digest_payload, hooks=((echoed_deny, ()),))
+    check("a reason that already ends with the line does not print it twice",
+          decision_of(echoed).get("permissionDecisionReason", "").count("Nothing in this command ran.") == 1,
+          repr(echoed))
 
     # One tool call reads one repo state: the chain runs inside _git_commit.memoized(), so the sub-hooks'
     # repeated read-only git queries spawn git once.

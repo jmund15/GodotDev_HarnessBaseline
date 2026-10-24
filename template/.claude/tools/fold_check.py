@@ -173,6 +173,9 @@ def _cited(value):
     return _LINE.sub("", str(value or "").strip())
 
 
+_WORKTREE_ROOT = re.compile(r"\.claude/worktrees/[^/]+$")
+
+
 _FOLD_DIGEST_NAME = re.compile(r"(fold\d*_)digest\.json")
 
 
@@ -454,10 +457,21 @@ class Subject:
         rev = snap.get("head") if snap["kind"] == "blobs" else snap.get("base")
         return bool(rev) and _ledger().blob_at(self.root, rev, rel) is not None
 
+    def own_prefix(self):
+        """The `.claude/worktrees/<name>/` that a worktree subject's root ends in, else None: a citation written
+        from the main checkout names the subject's file through it."""
+        match = _WORKTREE_ROOT.search(_slash(self.root_text))
+        return match[0] + "/" if match else None
+
+    def subject_text(self, cited):
+        text = _slash(_cited(cited))
+        prefix = self.own_prefix()
+        return text[len(prefix):] if prefix and text.startswith(prefix) else text
+
     def exact_hits(self, cited):
         """The subject files a cited path names exactly. An absolute citation names a file only when it is that
         file. Case-insensitive on every OS, as review_fanout.js routedTo; tests/fold_routing_vectors.json holds both."""
-        text = _slash(_cited(cited))
+        text = self.subject_text(cited)
         if not text:
             return []
         if Path(text).is_absolute():
@@ -469,7 +483,7 @@ class Subject:
         """The subject files a cited path names: an exact path first, else a relative citation as a path suffix.
         `route` asks every subject for an exact hit before any suffix hit."""
         exact = self.exact_hits(cited)
-        text = _slash(_cited(cited))
+        text = self.subject_text(cited)
         if exact or not text or Path(text).is_absolute():
             return exact
         wanted = _key(text)

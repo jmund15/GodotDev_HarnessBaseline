@@ -22,6 +22,8 @@ class SettingsProof(unittest.TestCase):
             lib = root / "scripts/lib/sidecar_common.sh"
             lib.parent.mkdir(parents=True)
             shutil.copyfile(CLAUDE / "scripts/lib/sidecar_common.sh", lib)
+            (root / "hooks").mkdir()
+            shutil.copyfile(CLAUDE / "hooks/_checkout_root.py", root / "hooks/_checkout_root.py")
             config = root / "skills/project_subsystems/adaptation.json"
             config.parent.mkdir(parents=True)
             base = {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": []}]}, "model": "planted"}
@@ -35,7 +37,8 @@ class SettingsProof(unittest.TestCase):
             def merge(data, shape="planted", prompt="a brief's path", armed="1", **extra):
                 config.write_text(json.dumps(data), encoding="utf-8")
                 env = dict(os.environ, BENCH_ARM="", BENCH_RULER_SCOPE="", **extra)
-                proc = subprocess.run([bash, "-c", 'source "$1"; unset BENCH_ARM BENCH_RULER_SCOPE; BENCH_ARM="$5"; BENCH_RULER_SCOPE="$5"; SC_SHAPE="$2" SC_PROMPT_FILE="$3" sc_settings_with_bench_guard "$4"',
+                # Sourcing sets SC_WORKDIR to the cwd; a linked-worktree cwd would add the launcher's workdir guard.
+                proc = subprocess.run([bash, "-c", 'source "$1"; SC_WORKDIR=""; unset BENCH_ARM BENCH_RULER_SCOPE; BENCH_ARM="$5"; BENCH_RULER_SCOPE="$5"; SC_SHAPE="$2" SC_PROMPT_FILE="$3" sc_settings_with_bench_guard "$4"',
                                        "_", lib.as_posix(), shape, prompt, json.dumps(base), armed],
                                       env=env, capture_output=True, text=True)
                 self.assertEqual(proc.returncode, 0, proc.stderr)

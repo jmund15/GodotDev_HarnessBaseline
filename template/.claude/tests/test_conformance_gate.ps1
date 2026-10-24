@@ -55,6 +55,9 @@ try {
         function Test-RecompileEvidence($R) { $false }
         function Set-GateRecompiled { $script:Recompiled=$true }
         function Emit($Text) { }
+        function Get-RendererTaggedClasses { param($Repo) @() }
+        function Format-RenderExclusions { param($Classes) '' }
+        $repo = 'fixture'
         $script:Calls=0; $script:Recompiled=$false; $suiteTimeoutMs=1
         $start = @($gate.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | Where-Object { $_.Extent.Text -eq "Assert-NoEditor -Phase 'suite:Sanity'" })[0].Extent.StartOffset
         $end = @($gate.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | Where-Object { $_.Extent.Text.StartsWith('Assert-NotContention -R $r') })[0].Extent.StartOffset

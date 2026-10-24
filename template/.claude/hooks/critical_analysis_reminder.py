@@ -30,6 +30,7 @@ import re
 import sys
 
 from _hook_state import read_json_salvage, state_path, update_json_locked
+from _owner_text import strip_pasted
 
 
 PROPOSAL_PATTERNS = [
@@ -80,12 +81,9 @@ RELAYED_PATTERNS = [
 SESSION_FIRED_FLAG = "critical_analysis_session_fired"
 
 
-PASTED = re.compile(r"<pasted_content\b[^>]*>.*?</pasted_content\b[^>]*>", re.S)
-
-
 def _is_challenge(prompt: str) -> bool:
     """True when the owner's own words question a decision; text the owner pasted from elsewhere is not theirs."""
-    lowered = PASTED.sub(" ", prompt).lower()
+    lowered = strip_pasted(prompt).lower()
     if any(re.match(pat, lowered) for pat in SKIP_PATTERNS + RELAYED_PATTERNS):
         return False
     return any(re.search(pat, lowered) for pat in CHALLENGE_PATTERNS)

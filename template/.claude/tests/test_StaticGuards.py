@@ -64,6 +64,9 @@ def main(tmp):
     plant(tmp, lambda name: 0)
     rc, out, _ = drive(RUN, tmp, env)
     check("six passing guards are all OK", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
+    plant(tmp, lambda name: "(0 if __import__('sys').argv[1:3] == ['--repo', __import__('os').environ['PROOF_TMP']] else 4)")
+    rc, out, _ = drive(RUN, tmp, env)
+    check("every guard receives the target as --repo", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
 
 
 if __name__ == "__main__":

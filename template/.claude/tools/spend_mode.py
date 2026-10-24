@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The owner's spend posture: `lean` makes every dispatch pin each tier's cheapest admitted row.
 
-Only the owner sets it, on the owner's own words (a turn of this session holds the quote), and it is scoped:
+Only the owner sets it, on the owner's literal token (a turn of this session holds `--lean` or `--normal`, word-bounded, outside a
+<pasted_content> block), and it is scoped:
 `session` (the default) ends with the session; `task` (`--task T`) requires an `--until` and records a `spend`
 condition on the task, so a later session that resumes the task reads the same posture. `current()` reads the
 posture a session has now: its session record first, else the latest `spend` condition on the session's newest
@@ -12,7 +13,7 @@ Lean changes pins, never fields, admission or review width. This module states t
 take are `provider_bands.py lean <tier>`'s facts, and the agent chooses (`orchestration`
 reference `spend_lean.md`).
 
-    spend_mode.py set lean|normal --quote "<owner words>" [--task T] [--until-reset PLAN | --until ISO]
+    spend_mode.py set lean|normal [--task T] [--until-reset PLAN | --until ISO]
     spend_mode.py show
     spend_mode.py clear
 
@@ -23,6 +24,7 @@ lean condition for this session.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -32,6 +34,7 @@ for _d in (os.path.join(HERE, "..", "hooks"), HERE):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 import _hook_state  # noqa: E402
+import _owner_text  # noqa: E402
 import provider_bands  # noqa: E402
 import provider_capacity  # noqa: E402
 import task_record  # noqa: E402
@@ -97,21 +100,19 @@ def current(session_id, root=None, now=None):
             "quote": posture.get("quote"), "expired": expired}
 
 
-def _verify_quote(session_id, quote, transcript=None):
-    """The owner turn of this session that holds `quote`: (its uuid, the stripped quote). Refuses a quote no
-    owner turn holds, or a transcript that cannot be read."""
-    quote = (quote or "").strip()
-    if not quote:
-        raise SpendRefused("set needs the owner's words in --quote")
+def _verify_token(session_id, mode, transcript=None):
+    """The owner turn of this session that holds the literal token `--<mode>` (word-bounded, outside a pasted
+    block): (its uuid, the token). Refuses when no owner turn holds it, or a transcript that cannot be read."""
+    quote = "--" + mode
     if not session_id:
         raise SpendRefused("no session id: set CLAUDE_CODE_SESSION_ID")
     transcript = transcript or task_record._session_transcript(session_id)
     turns = task_record._owner_turns(transcript)
     if turns is None:
         raise SpendRefused("cannot read the session transcript %s" % transcript)
-    holders = [uuid for uuid, text in turns if quote in text]
+    holders = [uuid for uuid, text in turns if _owner_text.holds_token(text, mode)]
     if not holders:
-        raise SpendRefused("no owner turn in this session holds the quote")
+        raise SpendRefused("no owner turn in this session holds the token %s outside a pasted block" % quote)
     return holders[-1], quote
 
 
@@ -146,8 +147,8 @@ def _write_session(session_id, posture):
         raise OSError("could not write the spend posture to %s" % path)
 
 
-def set_spend(mode, quote, scope_task=None, until=None, until_reset=None, session_id=None, transcript=None):
-    """Set this session's spend posture to `mode` on the owner's words; returns the stored posture.
+def set_spend(mode, scope_task=None, until=None, until_reset=None, session_id=None, transcript=None):
+    """Set this session's spend posture to `mode` on the owner's literal `--<mode>` token; returns the stored posture.
 
     A `--task` scope also records a `spend` condition on that task (`task_record.record_condition` refuses a
     delegate, a missing until and a bad effect); the session record is written either way, so the session reads
@@ -157,7 +158,7 @@ def set_spend(mode, quote, scope_task=None, until=None, until_reset=None, sessio
     if os.environ.get("CLAUDE_CODE_SIDECAR"):
         raise SpendRefused("a delegate cannot set the owner's spend posture; the owner sets lean or normal")
     session_id = session_id or _session_id()
-    holder, quote = _verify_quote(session_id, quote, transcript)
+    holder, quote = _verify_token(session_id, mode, transcript)
     if until is not None and until_reset is not None:
         raise SpendRefused("give one expiry: --until or --until-reset")
     if until_reset is not None:
@@ -190,7 +191,6 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="The owner's spend posture: lean or normal, scoped and expiring.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("set"); p.add_argument("mode", choices=MODES)
-    p.add_argument("--quote", required=True, help="the owner's words, held by a turn of this session")
     p.add_argument("--task", help="also record the posture on this task, so a resumed session reads it")
     expiry = p.add_mutually_exclusive_group()
     expiry.add_argument("--until-reset", dest="until_reset", metavar="PLAN",
@@ -201,7 +201,7 @@ def main(argv=None):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     try:
         if a.cmd == "set":
-            print(json.dumps(set_spend(a.mode, a.quote, scope_task=a.task, until=a.until,
+            print(json.dumps(set_spend(a.mode, scope_task=a.task, until=a.until,
                                        until_reset=a.until_reset), indent=1))
         elif a.cmd == "show":
             print(json.dumps(current(_session_id()), indent=1))

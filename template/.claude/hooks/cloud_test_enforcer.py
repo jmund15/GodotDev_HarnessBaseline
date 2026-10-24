@@ -21,10 +21,7 @@ import json
 import os
 import sys
 
-
-def is_cloud() -> bool:
-    """Return True if running in a Claude Code cloud environment."""
-    return os.environ.get("CLAUDE_CODE_REMOTE", "").lower() == "true"
+from _claude_scope import is_cloud
 
 
 def main():

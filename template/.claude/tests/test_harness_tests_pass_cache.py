@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -564,6 +565,27 @@ def case_a_quoted_shell_script_spawn_splits_as_its_child_reads_it():
           and manifest.get("static") == [".claude/tools/gamma.py"], str(manifest))
 
 
+def case_a_non_python_child_running_a_temp_copy_is_opaque():
+    """`node <temp>/x.js` runs a copy outside the repo: no recorder follows a non-Python child and the copy
+    is outside the static reach, so its reads of the real repo go unkeyed. Mark the manifest opaque, as a
+    Python child whose script lies outside the repo already is. A repo script the child names stays keyed."""
+    repo, proof, _counter = make_repo()
+    cache = harness_tests._pass_cache(repo, [proof])
+    scratch = tempfile.mkdtemp(prefix="harnesspasscache_scratch_")
+    copy = write(scratch, "x.js", "// copy of a repo script\n")
+    alpha = ["r", os.path.join(repo, ".claude", "tools", "alpha.py")]
+    manifest = cache.manifest(proof, {"events": [alpha, ["s", {"argv": ["node", copy], "cwd": repo}]],
+                                      "temp": scratch})
+    check("a non-Python child running a temp copy marks the manifest opaque",
+          isinstance(manifest, dict) and manifest.get("opaque") is True, str(manifest))
+    repo_script = os.path.join(repo, ".claude", "tools", "gamma.py")
+    manifest = cache.manifest(proof, {"events": [alpha, ["s", {"argv": ["node", repo_script], "cwd": repo}]],
+                                      "temp": scratch})
+    check("a non-Python child running a repo script keys it statically, not opaque",
+          isinstance(manifest, dict) and not manifest.get("opaque")
+          and manifest.get("static") == [".claude/tools/gamma.py"], str(manifest))
+
+
 def _recorded_python(code, pythonpath, log, cwd):
     """Run `code` in a Python whose PYTHONPATH is `pythonpath`, recording into `log`."""
     env = dict(os.environ, HARNESS_READ_LOG=log, PYTHONPATH=os.pathsep.join(pythonpath))
@@ -619,6 +641,59 @@ def case_a_child_whose_first_sitecustomize_is_another_is_not_recorded():
                                                                          "temp": root})
     check("that unrecorded inline child makes the manifest opaque",
           isinstance(manifest, dict) and manifest.get("opaque") is True, str(manifest))
+
+
+def case_a_node_proofs_reads_key_its_manifest():
+    """A JS proof's reads and its node children's are recorded by the Node preload, so a repo file it
+    reads keys the pass and an edit to an unread file does not rerun it."""
+    repo, proof, _counter = make_repo()
+    write(repo, ".claude/tools/data.txt", "x\n")
+    write(repo, ".claude/tools/child.js", "require('fs').readFileSync(process.argv[2]);\n")
+    js = write(repo, ".claude/tests/child_test.js",
+               "const fs = require('fs'), cp = require('child_process'), path = require('path');\n"
+               "const tools = path.join(__dirname, '..', 'tools');\n"
+               "fs.readFileSync(path.join(tools, 'table.json'));\n"
+               "fs.readdirSync(tools);\n"
+               "cp.execFileSync('node', [path.join(tools, 'child.js'), path.join(tools, 'data.txt')]);\n")
+    sink = {}
+    status = harness_tests.run_proof(js, root=repo, reads_sink=sink)[0]
+    manifest = harness_tests._pass_cache(repo, [js]).manifest(js, sink) if sink.get("events") else None
+    check("a recorded JS proof passes", status == "pass", status)
+    check("a JS proof's own read and its node child's read join the observed files",
+          isinstance(manifest, dict) and not manifest.get("opaque")
+          and {".claude/tools/table.json", ".claude/tools/data.txt"} <= set(manifest.get("files", [])),
+          str(manifest))
+    check("a JS proof's directory listing joins the observed dirs",
+          isinstance(manifest, dict) and ".claude/tools" in manifest.get("dirs", []), str(manifest))
+    check("a JS proof's node child is not keyed statically",
+          isinstance(manifest, dict) and manifest.get("static") == [], str(manifest))
+
+
+def case_a_node_recorder_in_a_spaced_path_still_records():
+    """--require <path> splits at a space; the path is quoted on both sides, so a checkout path with a space
+    still starts node and the node child is recorded."""
+    repo, proof, _counter = make_repo()
+    spaced = os.path.join(repo, "spaced dir")
+    os.makedirs(spaced)
+    recorder = os.path.join(spaced, "node_recorder.js")
+    shutil.copyfile(harness_tests._NODE_RECORDER, recorder)
+    write(repo, ".claude/tools/data.txt", "x\n")
+    write(repo, ".claude/tools/child.js", "require('fs').readFileSync(process.argv[2]);\n")
+    js = write(repo, ".claude/tests/spaced_test.js",
+               "const cp = require('child_process'), path = require('path');\n"
+               "const tools = path.join(__dirname, '..', 'tools');\n"
+               "cp.execFileSync('node', [path.join(tools, 'child.js'), path.join(tools, 'data.txt')]);\n")
+    sink = {}
+    saved = harness_tests._NODE_RECORDER
+    harness_tests._NODE_RECORDER = recorder
+    try:
+        status = harness_tests.run_proof(js, root=repo, reads_sink=sink)[0]
+    finally:
+        harness_tests._NODE_RECORDER = saved
+    manifest = harness_tests._pass_cache(repo, [js]).manifest(js, sink) if sink.get("events") else None
+    check("a JS proof passes with the recorder in a spaced path", status == "pass", status)
+    check("the node child's read is still recorded",
+          isinstance(manifest, dict) and ".claude/tools/data.txt" in manifest.get("files", []), str(manifest))
 
 
 def case_a_long_run_prints_its_progress():
@@ -1013,15 +1088,18 @@ def main():
     case_a_close_checkout_pass_outlives_its_removed_checkout()
     case_an_unparseable_spawn_marks_the_manifest_opaque()
     case_a_quoted_shell_script_spawn_splits_as_its_child_reads_it()
+    case_a_non_python_child_running_a_temp_copy_is_opaque()
     case_the_recorder_runs_the_sitecustomize_it_shadows()
     case_a_file_copied_with_copy2_is_a_read()
     case_a_child_whose_first_sitecustomize_is_another_is_not_recorded()
+    case_a_node_proofs_reads_key_its_manifest()
     case_a_long_run_prints_its_progress()
     case_progress_states_the_time_left_at_recorded_durations()
     case_qualified_and_relative_imports_join_the_reach()
     case_a_comment_or_docstring_mention_is_not_a_load()
     case_an_unrecorded_childs_data_argument_is_keyed_by_its_bytes()
     case_pytests_own_cache_leaves_the_reads_observable()
+    case_a_node_recorder_in_a_spaced_path_still_records()
     case_a_deadline_skipped_proof_exits_3_not_2()
     case_an_unusable_slot_store_is_reported_not_waited_on()
     case_a_corpus_scanning_proof_is_keyed_by_the_corpus_it_scans()

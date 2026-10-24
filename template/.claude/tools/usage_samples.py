@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """The plan-window usage samples file: the one locked writer and the one reader.
 
-Each line is one observation of a provider's plan window:
-    {"ts": <epoch>, "provider": "anthropic"|"codex", "window": "five_hour"|"seven_day"|<slot>,
-     "used": <percent>, "resets_at": <epoch>, ...}
+Each line is one observation of a plan window:
+    {"ts": <epoch>, "provider": "anthropic"|"codex", "plan": <registry transport>,
+     "window": "five_hour"|"seven_day"|<slot>, "used": <percent>, "resets_at": <epoch>, ...}
 
-Writers: hooks/budget_posture.py appends the Anthropic windows at each UserPromptSubmit, from the
-statusline capture (`ts` is its `captured_at`); scripts/codex_quota_probe.py appends the Codex
-windows of each successful reading (`ts` is its `observedAt`). Reader: tools/plan_usage_calc.py.
+`plan` names the paying plan (the registry transport), so two plans of one provider keep separate rows;
+a legacy row without one is read under its `provider` (`plan_of`). Writers: hooks/budget_posture.py
+appends the Anthropic windows at each UserPromptSubmit, from the statusline capture (`ts` is its
+`captured_at`); scripts/codex_quota_probe.py appends the Codex windows of each successful reading
+(`ts` is its `observedAt`); tools/provider_capacity.py appends every window of every plan-quota
+transport's fresh reading. Reader: tools/plan_usage_calc.py.
 
 Path: HARNESS_USAGE_SAMPLES when set, else ~/.claude/usage_samples.jsonl. User-level rather than a
 per-project log, because a plan window is account-wide. A proof sets the override; none writes the
 real file.
 
 `record` skips a sample older than MAX_AGE_SECONDS and one no newer than the last kept sample for
-its provider and window. The last-kept map lives in `<path>.state.json`, and the compare and the
+its plan and window. The last-kept map lives in `<path>.state.json`, and the compare and the
 append run under that file's lock (`_hook_state.update_json_locked`), so concurrent sessions reading
 one capture write one line. The first append of each UTC day drops lines older than RETENTION_DAYS.
 Every failure returns None and never raises: a sampler failure costs only the sample.
@@ -35,6 +38,12 @@ RETENTION_DAYS = 35
 
 def samples_path():
     return os.environ.get("HARNESS_USAGE_SAMPLES") or os.path.expanduser("~/.claude/usage_samples.jsonl")
+
+
+def plan_of(sample):
+    """The plan a sample observes: its `plan`, else its `provider` for a legacy row, else None."""
+    plan = (sample or {}).get("plan")
+    return plan if isinstance(plan, str) and plan else (sample or {}).get("provider")
 
 
 def _number(value):
@@ -73,7 +82,7 @@ def record(samples, now=None, path=None):
         last = state.get("last") if isinstance(state.get("last"), dict) else {}
         kept = []
         for s in fresh:
-            key = "%s/%s" % (s.get("provider"), s.get("window"))
+            key = "%s/%s" % (plan_of(s), s.get("window"))
             prior = _number(last.get(key))
             if prior is not None and s["ts"] <= prior:
                 continue

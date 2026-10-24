@@ -501,7 +501,7 @@ def _check_command(item, ctx):
         found = _match(prepare(stdout), output)
         return _result("command", VERIFIED if found else UNVERIFIED, "output-found" if found else "output-absent")
     if stdout.strip():
-        return _result("command", UNVERIFIED, "output-differs")
+        return _result("command", UNVERIFIED, "output-differs", inputs=_command_inputs(ctx, cwd, pathspecs))
     for spec in pathspecs:
         try:
             code, listed, stderr = _run_git(["ls-files", "--", spec], cwd, ctx.timeout)
@@ -511,7 +511,42 @@ def _check_command(item, ctx):
             return _result("command", UNCHECKED, "not-runnable")
         if code != 0 or stderr.strip() or not listed.strip():
             return _result("command", UNCHECKED, "vacuous-scope", detail=f"pathspec {spec} matches no tracked path")
-    return _result("command", VERIFIED, "empty-over-tracked-scope")
+    return _result("command", VERIFIED, "empty-over-tracked-scope", inputs=_command_inputs(ctx, cwd, pathspecs))
+
+
+def _command_inputs(ctx, cwd, pathspecs):
+    """{"files": N, "digest": sha1} over the tracked files the pathspecs name, so an edit moves the digest; None
+    when the command names no path or its listing fails. A clean file contributes its index blob id; only a file
+    `git diff` reports changed is read, as working-tree bytes. One digest, not a per-file map: a `-- .`
+    pathspec names every tracked file, and the record is reloaded by each Stop audit."""
+    if not pathspecs:
+        return None
+    inputs = {}
+    for spec in pathspecs:
+        try:
+            code, listed, stderr = _run_git(["ls-files", "-s", "-z", "--", spec], cwd, ctx.timeout)
+            dcode, changed, dstderr = _run_git(["diff", "--name-only", "--relative", "-z", "--", spec], cwd, ctx.timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if code != 0 or stderr.strip() or dcode != 0 or dstderr.strip():
+            return None
+        dirty = set(changed.split("\0"))
+        for entry in listed.split("\0"):
+            meta, _, name = entry.partition("\t")
+            if not name:
+                continue
+            if name not in dirty:
+                inputs[name] = meta.split()[1]
+                continue
+            try:
+                data = (Path(cwd) / name).read_bytes()
+                inputs[name] = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
+            except OSError:
+                inputs[name] = None
+    if not inputs:
+        return None
+    digest = hashlib.sha1("".join(f"{name}\0{blob}\n" for name, blob in sorted(inputs.items())).encode("utf-8"))
+    return {"files": len(inputs), "digest": digest.hexdigest()}
 
 
 # ---- owner leg -----------------------------------------------------------------------------------------

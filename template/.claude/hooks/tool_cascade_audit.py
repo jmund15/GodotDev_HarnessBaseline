@@ -472,6 +472,10 @@ def classify(name, types, required, kind_memo):
 
 
 def main():
+    if "--repo" in sys.argv:
+        i = sys.argv.index("--repo")
+        os.chdir(sys.argv.pop(i + 1))
+        sys.argv.pop(i)
     args = sys.argv[1:]
     inventory_only = "--inventory-only" in args
     quiet = "--quiet" in args

@@ -360,6 +360,34 @@ class ReviewIngestionTests(unittest.TestCase):
             self.assertEqual(review_result.target_path(f'Bash:{command}', top), 'NPCs/Entity.cs')
             self.assertEqual(review_result.target_spans(f'Bash:{command}'), [review_result.WHOLE])
 
+    def test_sed_line_ranges_and_head_counts_are_reads_of_their_lines_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stream = Path(directory) / 'progress.jsonl'
+            target = Path(directory) / 'context.md'
+            target.write_text('source', encoding='utf-8')
+            path = str(target).replace('\\', '/')
+            reads = {
+                f"sed -n '2,4p' '{target}'": [(2, 4)],
+                f"sed -n 7p '{target}'": [(7, 7)],
+                f"head -n 3 '{target}'": [(1, 3)],
+                f"head -3 '{target}'": [(1, 3)],
+            }
+            for command, spans in reads.items():
+                with self.subTest(command=command):
+                    stream.write_text(''.join(json.dumps(e) + '\n' for e in captured_events(
+                        'Bash', {'command': command})), encoding='utf-8')
+                    self.assertEqual(review_result.called_reads(stream), [(path, spans)])
+                    self.assertTrue(review_result.prove_engagement(stream, [str(target)]))
+            refused = [f"sed -i 's/a/b/' '{target}'", f"sed 's/a/b/' '{target}'",
+                       f"sed -n '1,3p' '{target}' | cat", f"sed -n '1,3p' '{target}' > out.md",
+                       f"head -n 3 '{target}' other.md", f"head -c 3 '{target}'", f"head -n 0 '{target}'"]
+            for command in refused:
+                with self.subTest(command=command):
+                    stream.write_text(''.join(json.dumps(e) + '\n' for e in captured_events(
+                        'Bash', {'command': command})), encoding='utf-8')
+                    self.assertEqual(review_result.called_reads(stream), [])
+                    self.assertFalse(review_result.prove_engagement(stream, [str(target)]))
+
     def test_engagement_requires_successful_read_of_each_context_file(self):
         self.assertTrue(hasattr(review_result, "prove_engagement"))
         with tempfile.TemporaryDirectory() as directory:
@@ -797,6 +825,39 @@ class ReviewIngestionTests(unittest.TestCase):
         self.assertEqual(result["counts"]["valid"], 2)
         self.assertEqual([r["id"] for r in result["sources"]], ["F1", "F2"])
         self.assertEqual([r["finding"]["description"] for r in result["sources"]], ["A", "B"])
+
+
+class EngagementPathTests(unittest.TestCase):
+    """The launcher embeds a review job's contextFiles in its prompt, so a seat never Reads them; a job with a
+    must-read list proves engagement by reading those entries instead."""
+
+    def _stream(self, root, paths):
+        stream = root / "s.stream"
+        rows = []
+        for n, path in enumerate(paths):
+            rows.append({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t%d" % n, "name": "Read", "input": {"file_path": path}}]}})
+            rows.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t%d" % n, "content": "1\tx"}]}})
+        stream.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        return stream
+
+    def test_a_seat_that_read_its_must_read_diff_but_not_the_embedded_index_engaged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            index = root / "index.md"
+            index.write_text("x", encoding="utf-8")
+            job = {"contextFiles": [str(index)], "mustRead": [{"path": "a.diff", "lines": 9}]}
+            self.assertTrue(review_result.engaged(job, self._stream(root, ["a.diff"])))
+            self.assertFalse(review_result.engaged(job, self._stream(root, [])))
+
+    def test_without_a_must_read_list_every_context_file_must_be_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = root / "c.md"
+            context.write_text("x", encoding="utf-8")
+            job = {"contextFiles": [str(context)]}
+            self.assertFalse(review_result.engaged(job, self._stream(root, ["other.md"])))
 
 
 if __name__ == "__main__":

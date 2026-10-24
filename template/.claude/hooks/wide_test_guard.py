@@ -24,7 +24,7 @@ transcript, or a sidecar's prompt file (CLAUDE_CODE_SIDECAR_PROMPT_FILE, set by 
 `.amend.md`. Text the checked agent writes is never read.
 
 Reach: the command, `bash -c`/`pwsh -Command` bodies, a Python `-c` body or `.py` file (literal `subprocess`/`os` process-call arguments only), and (to depth 2) the other script files the command runs, so a
-loop in a script is caught; a `.ps1` file's `<# #>` help blocks are not scanned. The `.ps1` entry points call this file's `--entry` mode through
+loop in a script is caught; a `.ps1` file's `<# #>` help blocks are not scanned, and a launcher inside a quoted value (`x = "..."`) or a print argument (`Write-Host "..."`) on a script line is printed text, not a run. The `.ps1` entry points call this file's `--entry` mode through
 `scripts/WideRunGuard.ps1`, which covers sidecar children at any depth. Not seen from the hook: a script that
 builds its command at runtime, and a subagent's script chain deeper than the scan.
 Fail posture: a crash here reports the lost check through additionalContext and admits the call.
@@ -234,6 +234,22 @@ def _python_runs(text, cwd, depth):
             yield from command_runs(value, cwd, depth + 1)
 
 
+PRINTED_OPEN = re.compile(r"(?:=|\b(?:write-host|write-output|write-warning|write-error|echo|printf))\s*$", re.IGNORECASE)
+
+
+def _in_printed_string(text):
+    """True when `text` ends inside a quote that opened as a value or a print argument, so a run name after
+    it is printed text. A quote opened as a command argument (`-ArgumentList '...'`) is still a run."""
+    quote, opened = None, 0
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote, opened = ch, i
+    return quote is not None and bool(PRINTED_OPEN.search(text[:opened]))
+
+
 def _file_runs(path, cwd, depth):
     """Wide runs inside a script file the command executes."""
     for base in (cwd, ROOT):
@@ -263,7 +279,7 @@ def _file_runs(path, cwd, depth):
         if found:
             continue
         for entry in ENTRIES:
-            if entry in line and LAUNCHER_RE.search(line[:line.index(entry)]):
+            if entry in line and LAUNCHER_RE.search(line[:line.index(entry)]) and not _in_printed_string(line[:line.index(entry)]):
                 wide = classify(entry, _words(line[line.index(entry) + len(entry):]))
                 if wide:
                     yield wide

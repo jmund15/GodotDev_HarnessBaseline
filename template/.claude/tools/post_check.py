@@ -62,6 +62,7 @@ REPO = TOOLS.parents[1]
 sys.path.insert(0, str(TOOLS))
 import adaptation  # noqa: E402
 import fold_check  # noqa: E402
+from cli_usage import usage  # noqa: E402
 
 Unusable = fold_check.Unusable
 HOLD_CLASSES = ("owner-input", "own-design", "unbased-number", "new-mechanism", "path-scope",
@@ -1005,7 +1006,7 @@ def snapshot(args):
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(prog="post_check.py", description=__doc__,
+    ap = argparse.ArgumentParser(prog="post_check.py", description=usage(__doc__),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     subs = ap.add_subparsers(dest="command", required=True)
     snap = subs.add_parser("snapshot", help="write the pre-fold manifest (blobs, or a base revision)")

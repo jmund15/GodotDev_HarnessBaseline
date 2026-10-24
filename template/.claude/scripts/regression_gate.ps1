@@ -64,11 +64,8 @@
 [CmdletBinding()]
 param(
     [string] $Repo = '',
-    # Run preflight + guards + build only, then stop. ~20s; holds the checkout lease from entry through its build.
-    # The correct gate for a pure-data commit that skips the .cs-triggered path.
-    # The gate's ONLY remaining width knob, and it is a different QUESTION ("do the
-    # guards and the build pass"), not a cheaper answer to the same one. Narrow test
-    # runs live in verify.ps1 and never produce a gate verdict.
+    # Run preflight + guards + build + DOCS only; a bare STATIC_PASS never satisfies .cs.
+    # Token-identical changes can earn automatic comment-only PASS with or without this flag.
     [switch]   $StaticOnly,
     # Evaluate and report WITHOUT writing Tests/regression_baseline.json. A recording
     # flag, not a width flag: coverage is unchanged, so it forks the reuse key but never
@@ -176,12 +173,14 @@ $script:RunTree      = $null
 $script:RunStartedUtc = (Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
 $script:Mode         = $null   # normalized coverage contract; set below
 $script:BaselineAction = 'unknown'   # threaded to the result record by Complete-Gate
+$script:CommentOnlyEvidence = $null
 $script:ReusedFrom   = $null   # producer record id when this run reused a verdict
 $script:ReusedFailedTests = @() # producer's failing tests on a reused-FAIL
 $script:PeersSeen    = $false  # any suite-boundary peer snapshot non-empty
 $script:ActivityKind = 'waiter' # 'waiter' until Enter-GateHeld holds the lease, then 'gate': a waiting gate holds nothing
 $script:GateOwnerRoot = $null  # Resolve-GateOwnerRoot, once, before the first activity write
 $script:PeersSeenList = @()    # the peer records behind PeersSeen, for the starved BUSY line
+$script:Load        = $null    # peers and slot holders observed at the verdict, recorded in the ledger
 $script:Waited       = $false  # Enter-GateHeld saw a busy checkout; a gate that waited re-checks REUSE
 $script:WaitTickSec  = 60      # how often a long wait prints its WAIT line
 $suiteResults        = [ordered]@{}
@@ -224,11 +223,23 @@ function Complete-Gate {
             }
         }
     } catch { }
+    # Machine load at the verdict, so a slow gate shows whether peers shared the machine.
+    try {
+        $loadPeers = @(@($script:PeersSeenList) | ForEach-Object { [int](Get-Prop $_ 'pid' 0) } | Where-Object { $_ -gt 0 } | Sort-Object -Unique).Count
+        $loadSlots = @(Get-SlotHolders).Count
+        $script:Load = [ordered]@{ peersSeen = $loadPeers; slotHoldersAtEnd = $loadSlots }
+        Add-Detail "Load: $loadPeers peer(s) seen at suite boundaries; $loadSlots other runtime-slot holder(s) at the end."
+    } catch { }
+    $commentEvidence = Get-Variable -Name CommentOnlyEvidence -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $isCommentPass = $Verdict -eq 'PASS' -and $null -ne $commentEvidence
+    $verdictSuffix = if ($isCommentPass) {
+        ' route=comment-only reason=tokens-identical base=' + $commentEvidence.base + ' files=' + (ConvertTo-Json -InputObject @($commentEvidence.files) -Compress)
+    } else { '' }
     $sessionId = if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } else { $env:CLAUDE_CODE_SESSION_ID }
     $header = @(
         "# Regression Gate detail — $((Get-Date).ToUniversalTime().ToString('u'))",
         "",
-        "VERDICT=$Verdict (exit $Code)",
+        "VERDICT=$Verdict$verdictSuffix (exit $Code)",
         "SESSION=$sessionId",
         ""
     )
@@ -245,7 +256,16 @@ function Complete-Gate {
             $sr = $suiteResults[$k]
             if ($sr.r.failedTests) { $ft += @($sr.r.failedTests) }
         }
+        $snapshot = $null
+        if ($Verdict -eq 'PASS' -and -not $isCommentPass -and -not $script:ReusedFrom -and
+            $script:Mode -like 'full*' -and $script:RunTree -and (Get-Command New-CommentGateSnapshot -ErrorAction SilentlyContinue)) {
+            $snapshot = New-CommentGateSnapshot -Repo $repo -Tree $script:RunTree
+        }
+        $coverage = if ($isCommentPass) { 'comment-only' } elseif ($script:Mode -like 'static-only*') { 'static-only' } else { 'full' }
         $rec = [ordered]@{
+            coverage       = $coverage
+            commentOnly    = $(if ($isCommentPass) { $commentEvidence } else { $null })
+            fullGreenSnapshot = $snapshot
             id             = $runId
             status         = $Verdict
             exitCode       = $Code
@@ -254,18 +274,20 @@ function Complete-Gate {
             # record. Guard: empty head/digest on early exits.
             head           = $(if ($script:RunTree) { $script:RunTree.head } else { '' })
             treeDigest     = $(if ($script:RunTree) { $script:RunTree.digest } else { '' })
+            importStamp    = (Get-ImportStamp -Repo $repo)
             startedAt      = $script:RunStartedUtc
-            finishedAt     = (Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
+            finishedAt     = (Get-Date -AsUTC -Format 'o')
             mode           = $script:Mode
             pid            = $PID
             sessionId      = $sessionId
+            load           = (Get-Variable -Name Load -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
             baselineAction = $script:BaselineAction
             detail         = $detailPath
             reusedFrom     = $script:ReusedFrom
             failedTests    = $(if ($ft.Count -gt 0) { @($ft) } else { $null })
         }
         New-Item -ItemType Directory -Force -Path $ledgerDir | Out-Null
-        Set-Content -Path (Join-Path $ledgerDir "$runId.result.json") -Value ($rec | ConvertTo-Json -Depth 5) -Encoding utf8
+        Set-Content -Path (Join-Path $ledgerDir "$runId.result.json") -Value ($rec | ConvertTo-Json -Depth 8) -Encoding utf8
     } catch { }
     if ($script:TwinSource) {
         foreach ($line in @(Copy-TwinOutputsBack -Source $script:TwinSource -Twin $repo -Paths $script:GateOutputs -Hashes $script:TwinHashes)) { Emit $line }
@@ -273,8 +295,26 @@ function Complete-Gate {
     Exit-TwinLock
     Exit-GateHeld
     Emit "DETAIL=$detailPath"
-    Emit "VERDICT=$Verdict"
+    Emit "VERDICT=$Verdict$verdictSuffix"
     exit $Code
+}
+
+function Exit-IfStaticRoute {
+    param($Route)
+    if ($Route.eligible) {
+        Assert-TreeStable -Phase 'comment-only'
+        $script:CommentOnlyEvidence = $Route
+        $script:BaselineAction = 'skipped:comment-only'
+        Add-Detail ('Comment-only route: preflight, guards, build and DOCS passed; C# tokens match full-green run ' + $Route.base + '. No other build inputs changed. Import and suites did not run. Files: ' + ($Route.files -join ', '))
+        Complete-Gate 'PASS' 0
+    }
+    Add-Detail ('Comment-only route unavailable: ' + $Route.reason)
+    if ($StaticOnly) {
+        Assert-TreeStable -Phase 'static-only'
+        $script:BaselineAction = 'skipped:static-only'
+        Add-Detail 'Static-only run: preflight, guards, build and DOCS passed; the .cs gate is NOT satisfied.'
+        Complete-Gate 'STATIC_PASS' 0
+    }
 }
 
 # ---------------------------------------------------------------- small utils
@@ -288,6 +328,19 @@ function Get-Prop {
     }
     if ($Obj.PSObject.Properties[$Name]) { return $Obj.$Name }
     $Default
+}
+# Identity of the engine's import output. Get-TreeDigest sees tracked content only, and .godot/imported is gitignored,
+# so a fixed import (--headless --import) changes no digest; a verdict reuses only on an equal stamp.
+function Get-ImportStamp {
+    param([string] $Repo)
+    $dir = Join-Path $Repo '.godot\imported'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return 'none' }
+    $lines = [string[]]@(Get-ChildItem -LiteralPath $dir -File | ForEach-Object { "$($_.Name)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+    [Array]::Sort($lines, [System.StringComparer]::Ordinal)
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try   { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))) }
+    finally { $sha.Dispose() }
+    (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 function Format-Short { param([string] $S) if ($S -and $S.Length -ge 10) { $S.Substring(0, 10) } else { $S } }
 # Engine probe — defined EARLY because the REUSE block (gate entry) calls it; the probe call
@@ -319,6 +372,8 @@ function Get-EngineProbe {
 # Test-DigestMatch and Get-TreeDigest come from the digest module: the REUSE decision is the one place here whose wrong
 # answer is a false green, so the tree comparison has one implementation and a test (.claude/tests/test_gate_tree_digest.ps1).
 . (Join-Path $PSScriptRoot 'TreeDigest.ps1')
+. (Join-Path $PSScriptRoot 'CommentOnlyGate.ps1')
+. (Join-Path $PSScriptRoot 'EngineErrors.ps1')
 
 # ---------------------------------------------------------------- identity
 # GodotProcess.ps1 is the ONLY home for "what is this Godot process, and whose
@@ -640,18 +695,6 @@ function Get-ProcPid {
     }
     0
 }
-# ---------------------------------------------------------------- detach arguments
-function Get-GateArgs {
-    # Plain array output, no comma-wrap: the -Detach launcher appends to it and hands it to Start-DetachedPwshScript,
-    # and a wrapped return would nest ([["-StaticOnly"]]) and die on an Object[] element inside ArgumentList.
-    $a = @('-Repo', $repo)
-    if ($StaticOnly)       { $a += '-StaticOnly' }
-    if ($NoBaselineUpdate) { $a += '-NoBaselineUpdate' }
-    if ($RetryOnly)        { $a += '-RetryOnly' }
-    if ($NoReuse)          { $a += '-NoReuse' }
-    $a
-}
-
 function Assert-TreeStable {
     # The gate builds ONCE (BUILD=OK above) and its held children run --no-build against that
     # build. A concurrent session's mid-run edit leaves the verdict describing a tree that no
@@ -756,16 +799,11 @@ function Assert-NotContention {
 if ($Detach) {
     $outPath = Join-Path $logDir "gate_run_$runId.out"
     $errPath = Join-Path $logDir "gate_run_$runId.err"
-    $childArgs = @(Get-GateArgs)
+    # Plain array output, no comma-wrap: a wrapped return would nest and die on an Object[] element inside ArgumentList.
+    $childArgs = @(Get-GateArgs -Repo $repo -StaticOnly:$StaticOnly -NoBaselineUpdate:$NoBaselineUpdate -RetryOnly:$RetryOnly -NoReuse:$NoReuse)
     if ($IgnoreEditor) { $childArgs += '-IgnoreEditor' }
     $childArgs += @('-WaitSec', "$WaitSec")
-    $child = Start-DetachedPwshScript -ScriptPath $PSCommandPath -Arguments $childArgs -OutPath $outPath -ErrPath $errPath
-    # The stage watcher's liveness signal: the run's own pid and start time beside its OUT (gate_run_<id>.pid).
-    try { "pid=$($child.Id) start=$($child.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))" | Set-Content -LiteralPath ([System.IO.Path]::ChangeExtension($outPath, '.pid')) -Encoding ascii } catch { }
-    Write-Output "DETACHED pid=$($child.Id) mode=$($script:Mode)"
-    Write-Output "OUT=$outPath"
-    Write-Output "ERR=$errPath"
-    Write-Output 'WAIT=poll OUT until a line begins VERDICT= (the run is over only then)'
+    Invoke-GateDetach -ScriptPath $PSCommandPath -ChildArgs $childArgs -OutPath $outPath -ErrPath $errPath -Mode $script:Mode
     exit 0
 }
 
@@ -844,14 +882,18 @@ if ($Watch) {
 function Invoke-LedgerReuse {
     if ($NoReuse) { return }
     $curDigest = (Get-TreeDigest -Repo $repo).digest
+    $curStamp  = Get-ImportStamp -Repo $repo
     $nowUtc    = (Get-Date).ToUniversalTime()
     $best      = $null
+    # -RetryOnly asks for the missing or red batches to re-run, so a red producer never serves it.
+    $servable  = if ($RetryOnly) { @('PASS', 'STATIC_PASS') } else { @('PASS', 'FAIL', 'WARN', 'STATIC_PASS') }
     foreach ($f in @(Get-ChildItem -Path $ledgerDir -Filter '*.result.json' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
         $rec = $null
         try { $rec = Get-Content -Path $f.FullName -Raw | ConvertFrom-Json } catch { continue }
         if ((Get-Prop $rec 'mode' '') -ne $script:Mode) { continue }
-        if ((Get-Prop $rec 'status' '') -notin @('PASS', 'FAIL', 'WARN', 'STATIC_PASS')) { continue }
+        if ((Get-Prop $rec 'status' '') -notin $servable) { continue }
         if (-not (Test-DigestMatch ([string](Get-Prop $rec 'treeDigest' '')) $curDigest)) { continue }
+        if (-not (Test-DigestMatch ([string](Get-Prop $rec 'importStamp' '')) $curStamp)) { continue }
         $fin = $null
         try { $fin = ([datetime](Get-Prop $rec 'finishedAt' '')).ToUniversalTime() } catch { }
         if (-not $fin) { continue }
@@ -879,6 +921,9 @@ function Invoke-LedgerReuse {
             } else {
                 Add-Detail "Producer record carries no failing-test list; its detail file: $(Get-Prop $best 'detail' '?')"
             }
+        }
+        if ((Get-Prop $best 'coverage' '') -eq 'comment-only') {
+            $script:CommentOnlyEvidence = Get-Prop $best 'commentOnly' $null
         }
         Complete-Gate ([string](Get-Prop $best 'status' 'PASS')) ([int](Get-Prop $best 'exitCode' 0))
     }
@@ -1037,6 +1082,10 @@ if (-not $probe.ok) {
     Complete-Gate 'BLOCKED' 4
 }
 Emit "ENGINE=OK ver=$sdk"
+if (Test-InteractiveSessionLocked) {
+    Emit "SESSION=LOCKED"
+    Add-Detail "The console session is locked (LogonUI.exe is running). Advisory only: a windowed engine runs about 40x slower on a locked desktop, and only the windowed Render unit is windowed; every other unit runs headless."
+}
 
 # ---------------------------------------------------------------- static guards
 $guardRun = Invoke-StaticGuards -Repo $repo -Hooks $hooks -Py $py
@@ -1069,7 +1118,6 @@ if ($script:HeldLease) {
     Set-CheckoutStamp -Repo $repo -Name built
     Emit 'HELD stamp=built'
 }
-if ($StaticOnly) { Exit-GateHeld }
 
 # ---------------------------------------------------------------- doc comments (DOCS)
 # XML-doc defects ship in a green build: the compiler reports them, ErrorsOnly used to discard the
@@ -1098,11 +1146,8 @@ if ($docHits.Count -gt 0) {
 }
 Emit 'DOCS=OK'
 
-if ($StaticOnly) {
-    $script:BaselineAction = 'skipped:static-only'
-    Add-Detail 'Static-only run: preflight, guards 1b-1h, and build passed. The three suites and the headless import gate did NOT run — this does NOT satisfy the gate for a .cs change.'
-    Complete-Gate 'STATIC_PASS' 0
-}
+$commentRoute = Get-CommentOnlyRoute -Repo $repo -Tree $script:RunTree -LedgerDir $ledgerDir
+Exit-IfStaticRoute -Route $commentRoute
 
 # ------------------------------------------- 4b. [Tool] cascade import gate
 # Runs before the suites so none of them loads resources from a stale import cache (a submodule move or new
@@ -1297,7 +1342,10 @@ $suiteTimeoutMs = 480000
 Assert-NoEditor -Phase 'suite:Sanity'
 $t0 = Get-Date
 $peers0 = @(Get-SuitePeers)
-$sanityUnit = @{ label = 'Sanity'; filter = 'FullyQualifiedName~Tests.Sanity'; timeoutMs = $suiteTimeoutMs; expectSec = 0 }
+$renderClasses = @(Get-RendererTaggedClasses -Repo $repo)
+if ($renderClasses.Count -gt 0) { Emit "RENDER classes=$($renderClasses.Count) unit=Render (windowed; excluded from every headless unit)" }
+$renderExcl = Format-RenderExclusions -Classes $renderClasses
+$sanityUnit = @{ label = 'Sanity'; filter = "FullyQualifiedName~Tests.Sanity$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = 0 }
 Invoke-GatePool -Units @($sanityUnit) -Phase 'sanity' -RecompilePass
 $r = ConvertTo-SuiteResult $script:PoolResults[0]
 $t = Test-SuiteTiers -R $r -Label 'Sanity'
@@ -1350,10 +1398,11 @@ if ($script:Recompiled -and -not $sanityRed) {
     $man = Read-BatchManifest -Path $manifestPath
     $quarantine = Get-AdaptationValue -Repo $repo -Key 'test_quarantine_filter' -Default ''
     if ($quarantine) { Emit "QUARANTINE filter=$quarantine" }
-    $plan = New-IntegrationPlan -Segments $allUnitSegs -Manifest $man -TargetBatchSec $intTargetSec -MaxBatchTests 380 -Quarantine $quarantine
+    $intSubUnits = Get-IntegrationSubUnits -Repo $repo -Segments $allUnitSegs -Manifest $man -MaxBatchTests 380
+    $plan = New-IntegrationPlan -Segments $allUnitSegs -Manifest $man -TargetBatchSec $intTargetSec -MaxBatchTests 380 -Quarantine $quarantine -SubUnits $intSubUnits -RenderClasses $renderClasses
     if ($RetryOnly) { foreach ($line in @(Restore-PriorGreens -Plan $plan -StatePath $intStatePath -TreeDigest $script:RunTree.digest)) { Emit $line } }
     # Logic has no measured duration home; its cap orders it first, as the longest unit.
-    $logicUnit = @{ label = 'Logic'; filter = 'FullyQualifiedName~Tests.Logic'; timeoutMs = $suiteTimeoutMs; expectSec = $suiteTimeoutMs / 1000 }
+    $logicUnit = @{ label = 'Logic'; filter = "FullyQualifiedName~Tests.Logic$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = $suiteTimeoutMs / 1000 }
     $poolT0 = Get-Date
     $poolPeers0 = @(Get-SuitePeers)
     $intSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1369,6 +1418,7 @@ if ($script:Recompiled -and -not $sanityRed) {
 
     $retryUnits = @(Select-RetryUnits -Plan $plan -CostCeilingMs $intMaxTimeoutMs -BatchWall $man.batchWall)
     foreach ($u in $retryUnits) { Emit "RETRY label=$($u.of) prior=$(@($plan | Where-Object { $_.label -eq $u.of })[0].status)" }
+    Emit (Format-RetryNoTrxLine -Plan $plan)
     $logicRetry = ($t.tier -in @('PARTIAL', 'INVALID') -and $r.status -ne 'HANG')
     if ($logicRetry) {
         Emit "SUITE Logic rerun=1 reason=$($t.tier)"
@@ -1401,7 +1451,7 @@ if ($script:Recompiled -and -not $sanityRed) {
     $bl = Read-IntegrationBaseline -Path $baselineP
     $verdict = Get-IntegrationVerdict -Plan $plan -Baseline $bl.baseline -Sentinel $bl.sentinel -ElapsedSec $intSw.Elapsed.TotalSeconds `
         -LockWaitMs $intLockMs -RunsRoot $script:RunDir
-    $fresh = if ($verdict.Exit -eq 0) { Get-FreshDurations -Plan $plan } else { $null }
+    $fresh = Get-FreshDurations -Plan $plan
     $manifestLine = Save-BatchManifest -Path $manifestPath -Plan $plan -Counters $counters -Fresh $fresh -AllSegments $allUnitSegs
     $bi = 0
     foreach ($p in $plan) {
@@ -1436,6 +1486,27 @@ if ($script:Recompiled -and -not $sanityRed) {
     $suiteResults['Integration'] = @{ r = $intR; t = $intT }
     Emit ("SUITE Integration passed={0} failed={1} tier={2} delta={3:+#;-#;+0} completeness={4} exit={5}" -f `
           $intPassed, $intFailed, $intT.tier, ($intPassed - [int]$baseline.suites.Integration.passed), $intComplete, $intCode)
+}
+
+# ---------------------------------------------------------------- engine errors (advisory)
+# Godot ERROR lines fail no suite. A full run counts them per signature against the baseline and reports growth; a
+# -RetryOnly run restores prior greens whose logs this run never produced, so it has no honest count.
+$engineProfile = $null
+if (-not $RetryOnly) {
+    try {
+        $engineProfile = Get-EngineErrorProfile -RunDir $script:RunDir
+        $ee = Compare-EngineErrors -Profile $engineProfile -Baseline (Get-Prop $baseline 'engine_errors' $null)
+        Emit ('ENGINE_ERRORS total={0} signatures={1} new={2} grown={3} baseline={4}' -f $ee.Total, $engineProfile.Signatures.Count, @($ee.New).Count, @($ee.Grown).Count, $(if ($ee.State -eq 'ok') { $ee.BaselineTotal } else { 'none' }))
+        if (@($ee.New).Count + @($ee.Grown).Count -gt 0) {
+            Add-Detail "## Engine ERROR growth (advisory, no verdict effect)`n"
+            foreach ($n in @($ee.New | Select-Object -First 10)) { Add-Detail "- new x$($n.Count): $($n.Signature)" }
+            foreach ($g in @($ee.Grown | Select-Object -First 10)) { Add-Detail "- grown $($g.Baseline) -> $($g.Count): $($g.Signature)" }
+            Add-Detail 'Trace each to its source under TRX_DIR (Integration_B*/godot_test.log). A green run lowers stored counts and records new signatures; it never raises one.'
+        }
+    } catch {
+        $engineProfile = $null
+        Add-Detail "ENGINE_ERRORS scan failed (advisory, no verdict effect): $($_.Exception.Message)"
+    }
 }
 
 # ---------------------------------------------------------------- adjudicate
@@ -1558,6 +1629,12 @@ if ($lowerings.Count -gt 0 -and (-not $testWip.readable -or $testWip.paths.Count
     Complete-Gate 'WARN' 3
 }
 $reestablish = ($stampTrust -eq 'UNTRUSTED')
+$engineRaw = $baselineRaw
+if ($engineProfile -and $engineProfile.Total -gt 0) {   # no ERROR line at all means no logs were read, not a clean engine
+    try { $engineRaw = Set-EngineErrorsText -Raw $baselineRaw -Profile $engineProfile -Previous (Get-Prop $baseline 'engine_errors' $null) }
+    catch { Add-Detail "engine_errors baseline not updated: $($_.Exception.Message)" }
+}
+$engineChanged = ($engineRaw -ne $baselineRaw)
 if ($NoBaselineUpdate) {
     $script:BaselineAction = 'skipped:flag'
     Emit 'BASELINE action=skipped reason=flag'
@@ -1568,14 +1645,14 @@ if ($NoBaselineUpdate) {
     $script:BaselineAction = 'skipped:uncommitted-test-changes'
     Add-Detail "The tree carries uncommitted test changes ($($testWip.paths.Count) file(s)) which may be a peer's — the baseline stays at its floor. The next clean-tree green run ratchets/re-establishes."
     Emit 'BASELINE action=skipped reason=uncommitted-test-changes'
-} elseif ($deltas.Count -eq 0 -and $lowerings.Count -eq 0 -and -not $reestablish) {
+} elseif ($deltas.Count -eq 0 -and $lowerings.Count -eq 0 -and -not $reestablish -and -not $engineChanged) {
     $script:BaselineAction = 'unchanged'
     Emit 'BASELINE action=unchanged'
 } else {
     # Targeted surgery, not a JSON round-trip: the tracked file carries
     # pre-existing mojibake in its description/notes strings, and
     # ConvertTo-Json would re-encode those into a spurious diff.
-    $new  = $baselineRaw
+    $new  = $engineRaw
     # Full sha, never --short: the abbreviation length is not stable across the
     # repo's lifetime, and this value is compared against a commit id later.
     $head = (& git -C $repo rev-parse HEAD 2>$null)
@@ -1597,6 +1674,7 @@ if ($NoBaselineUpdate) {
     }
     [System.IO.File]::WriteAllText($baselineP, $new, (New-Object System.Text.UTF8Encoding($false)))
     $act = if ($lowerings.Count -gt 0) { 'lowered' } elseif ($reestablish) { 're-established' } else { 'updated' }
+    if ($engineChanged) { $deltas += 'engine_errors' }
     $script:BaselineAction = "$act $($deltas -join ' ')"
     if ($lowerings.Count -gt 0) {
         foreach ($k in $lowerings.Keys) {

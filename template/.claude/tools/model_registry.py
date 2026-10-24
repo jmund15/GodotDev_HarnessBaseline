@@ -2497,11 +2497,51 @@ def tier_basis_known(basis):
         marker in str(basis) for marker in ('partial', 'unknown', 'estimate'))
 
 
+_reprice_cache = {}
+
+
+def _reprice_stamp(record, path, data):
+    """(size, mtime) of every file `record_requests` reads for this record, or None when one cannot be stat'd."""
+    transcript = session_transcript(record.get('sessionId'), record.get('transport'), data=data)
+    files = [Path(path)] + [p for p in _sibling_usage_paths(path) if p.is_file()]
+    if transcript:
+        files += [Path(transcript)] + sorted(Path(transcript).with_suffix('').glob('subagents/**/agent-*.jsonl'))
+    try:
+        return tuple((str(p), st.st_size, st.st_mtime_ns) for p in files for st in [p.stat()] if p.is_file())
+    except OSError:
+        return None
+
+
 def reprice_record(record, path, data=None, events=None):
-    """In-memory final-request pricing; old ledgers keep their spend/list semantics."""
+    """In-memory final-request pricing; old ledgers keep their spend/list semantics.
+
+    A repeat call on an unchanged record, registry and source set reuses the parse: a rating
+    collection reprices every record, and each parse re-reads the transcript and its subagents.
+    Caller-held `events` have no file stamp, so they always reprice.
+    """
+    data = data if data is not None else load()
+    if events is not None:
+        return _reprice_record(record, path, data, events)
+    try:
+        stamp = _reprice_stamp(record, path, data)
+    except (RegistryError, OSError, ValueError):
+        return _reprice_record(record, path, data, events)
+    if stamp is None:
+        return _reprice_record(record, path, data, events)
+    key = (str(path), json.dumps(record, sort_keys=True, default=str), id(data))
+    hit = _reprice_cache.get(key)
+    if hit and hit[0] is data and hit[1] == stamp:
+        return dict(hit[2])
+    rec = _reprice_record(record, path, data, events)
+    if len(_reprice_cache) >= 256:
+        _reprice_cache.clear()
+    _reprice_cache[key] = (data, stamp, rec)
+    return dict(rec)
+
+
+def _reprice_record(record, path, data, events):
     rec = dict(record)
     rec.setdefault('costTierBasis', 'untiered')
-    data = data if data is not None else load()
     try:
         view = record_requests(record, path, data=data, events=events)
         requests = view.pop('requests')
@@ -2706,8 +2746,8 @@ def _cmd_for_role(argv):
     if res["note"]:
         print(f"note: {res['note']}")
     print("Every row claims the tier; the order is the registry's, not a pick. Choose by the ladder's selection "
-          "line: `±` fit and quality set the floor, then cost and each plan's quota left against its window left "
-          "([budget-posture]) together.")
+          "line: `±` fit and quality set the floor; then the plan, one whose quota goes unused at reset first "
+          "([budget-posture]); then the cheapest fit row on that plan.")
 
     costs = ladder_costs(data)
 

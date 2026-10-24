@@ -54,6 +54,7 @@ _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_SCRIPTS_DIR)
 REPO_ROOT = os.path.dirname(_CLAUDE_DIR)
 _RECORDER_DIR = os.path.join(_SCRIPTS_DIR, "_read_recorder")
+_NODE_RECORDER = os.path.join(_RECORDER_DIR, "node_recorder.js")
 _PROGRESS_MIN, _PROGRESS_EVERY = 25, 25  # a scoped commit run stays quiet; a close reports about 20 lines
 
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "hooks"))
@@ -424,7 +425,7 @@ def _case_receipts(path, descriptors, output, file_status):
             if status:
                 seen.append((status, stripped))
         status = "fail" if any(s == "fail" for s, _ in seen) else "uncovered" if not seen or any(s == "uncovered" for s, _ in seen) else "pass"
-        if file_status in ("cannot-run", "skipped") or "TIMEOUT" in (output or ""):
+        if file_status in ("cannot-run", "skipped", "platform-skip") or "TIMEOUT" in (output or ""):
             status = "uncovered"
         observations.append({"proof": _norm(os.path.relpath(path, REPO_ROOT)), "caseId": cid,
                              "status": status, "inputKey": case["inputKey"],
@@ -450,10 +451,10 @@ def _read_events(log_dir):
 
 
 def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sink=None, reads_sink=None):
-    """(status, seconds, detail) — status is "pass", "cannot-run" or "fail".
+    """(status, seconds, detail) — status is "pass", "cannot-run", "platform-skip" or "fail".
 
-    A `reads_sink` dict turns on `scripts/_read_recorder` for a Python proof and its inheriting Python
-    children, and receives `events` (what they read, probed, listed and spawned) and `temp` (the
+    A `reads_sink` dict turns on `scripts/_read_recorder` for a Python or JS proof and its inheriting Python and
+    node children, and receives `events` (what they read, probed, listed and spawned) and `temp` (the
     proof's temp root) for the pass cache's observed key.
 
     Each proof runs with TMP, TEMP and TMPDIR pointed at its own temp root, deleted when the
@@ -477,6 +478,7 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
         env[STAMP_INDEX_ENV] = os.environ["GIT_INDEX_FILE"]
     temp_root = tempfile.mkdtemp(prefix="harness_proof_")
     env.setdefault("HARNESS_PROVIDER_GUARD_LOG", os.path.join(temp_root, "workflow_provider_guard.jsonl"))
+    env.setdefault("HARNESS_USAGE_SAMPLES", os.path.join(temp_root, "usage_samples.jsonl"))
     # The runner already runs proofs side by side; a proof's own case pool (tests/_case_pool.py) nests
     # inside it, and 4 x 4 git-spawning processes timed out proofs that pass alone.
     env.setdefault("HARNESS_CASE_JOBS", "2")
@@ -492,11 +494,12 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
     if root:
         env["CLAUDE_PROJECT_DIR"] = root
     log_dir = None
-    if reads_sink is not None and path.endswith(".py"):
+    if reads_sink is not None and path.endswith((".py", ".js")):
         log_dir = os.path.join(temp_root, "reads")
         env["HARNESS_READ_LOG"] = log_dir
         env["HARNESS_READ_RECORDER"] = _RECORDER_DIR
         env["PYTHONPATH"] = os.pathsep.join([_RECORDER_DIR] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        env["NODE_OPTIONS"] = " ".join(([env["NODE_OPTIONS"]] if env.get("NODE_OPTIONS") else []) + ["--require " + json.dumps(_NODE_RECORDER)])
     start = time.time()
     out = ""
     try:
@@ -511,6 +514,8 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
             reads_sink.update(events=_read_events(log_dir), temp=temp_root)
         if returncode is None:
             status, detail = "fail", "TIMEOUT after %ds" % timeout
+        elif returncode == 0 and _PLATFORM_SKIP_RE.search(out):
+            status, detail = "platform-skip", out
         elif returncode == 0:
             status, detail = "pass", ""
         elif returncode == 2 and not pytest_run:
@@ -1520,6 +1525,8 @@ class _PassCache:
             else:
                 found["static"] |= {rel} | self._repo_files(rest[1:], cwd, inside)
             return
+        if prog in ("node", "node.exe") and spawn.get("recorded"):
+            return
         tokens = []
         for arg in argv:
             tokens += arg.split() if any(ch.isspace() for ch in arg) else [arg]
@@ -1528,6 +1535,10 @@ class _PassCache:
             at_root = os.path.normcase(os.path.abspath(where)) == os.path.normcase(os.path.abspath(self.root))
             if at_root or inside(where) is not None:
                 found["git"] = True
+        elif temp and any(self._within(os.path.join(cwd, t), temp) is not None and os.path.isfile(os.path.join(cwd, t))
+                          for t in tokens[1:]):
+            # No recorder follows a non-Python child, and a temp copy sits outside the static reach.
+            found["opaque"] = True
         found["static"] |= self._repo_files(tokens, cwd, inside)
 
     @staticmethod
@@ -1846,7 +1857,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         launch_options = {"root": root} if root else {}
         if cases[path]:
             launch_options.update(behavior_cases=cases[path], receipt_sink=observations[path], root=behavior_root)
-        reads = {} if key and path.endswith(".py") else None
+        reads = {} if key and path.endswith((".py", ".js")) else None
         if reads is not None:
             launch_options["reads_sink"] = reads
         timing = {}
@@ -1918,7 +1929,8 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     if reused:
         print("harness_tests: %d of %d proofs reused from the pass cache (%s)"
               % (len(reused), len(selected), passes_path()))
-    label = {"pass": "OK", "cannot-run": "CANNOT-RUN", "fail": "FAIL", "skipped": "SKIPPED"}
+    label = {"pass": "OK", "cannot-run": "CANNOT-RUN", "fail": "FAIL", "skipped": "SKIPPED",
+             "platform-skip": "SKIPPED-PLATFORM"}
     for path, first_detail in flaky:
         tail = (first_detail or "").strip().splitlines()[-1:] or [""]
         print("FLAKY %s: failed in the pool (%s), passed alone; logged to %s"
@@ -1936,6 +1948,8 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
                 print("    | " + line)
         if status == "pass":
             passed += 1
+        elif status == "platform-skip":
+            pass  # printed SKIPPED-PLATFORM above; a proof this platform cannot run is neither green nor missing
         elif status in ("cannot-run", "skipped"):
             indeterminate.append(path)
         else:
@@ -1995,6 +2009,9 @@ def _last_line(detail):
 
 
 _FAILURE_MARK_RE = re.compile(r"FAIL|ERROR|AssertionError|not ok")
+# tests/_platform_skip.py's marker: a proof that skipped on this platform asserted nothing, so it is never a pass.
+# `node --test` in TAP mode prints a child's stdout line as a `# ` comment, so the marker may carry that prefix.
+_PLATFORM_SKIP_RE = re.compile(r"^(?:# )?PLATFORM-SKIP-PROOF ", re.M)  # tests/_platform_skip.skip_proof
 _UNITTEST_SUMMARY_RE = re.compile(r"^FAILED \(")
 _VOLATILE_RES = (
     (re.compile(r"(?:[A-Za-z]:)?[\\/][^\s'\"]*(?:harness_\w+|[Tt]emp|tmp)[\\/][^\s'\"]*"), "<path>"),
@@ -2097,6 +2114,10 @@ def _admin_gaps(checkout):
     return " (admin dir %s lacks: %s)" % (admin, ", ".join(n or "the dir itself" for n in missing)) if missing else ""
 
 
+def _never_committed(repo_root, rel):
+    return not _git(repo_root, ["log", "--all", "-1", "--format=%H", "--", rel]).strip()
+
+
 @contextmanager
 def _revision_checkout(repo_root, rev, proofs=()):
     """Private sparse checkout; copy only never-committed proofs absent at this revision."""
@@ -2120,7 +2141,7 @@ def _revision_checkout(repo_root, rev, proofs=()):
         for path in proofs:
             rel = _norm(os.path.relpath(path, repo_root))
             target = os.path.join(tmp, rel)
-            if not os.path.isfile(target) and not _git(repo_root, ["log", "--all", "-1", "--format=%H", "--", rel]).strip():
+            if not os.path.isfile(target) and _never_committed(repo_root, rel):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copyfile(path, target)
         yield tmp
@@ -2184,6 +2205,16 @@ def _default_ref(repo_root, remote="origin"):
     return None
 
 
+def default_base_covers(repo_root, base, head, remote="origin"):
+    """True when `base` is `remote`'s default-branch commit and `head` contains it: a branch that merged the
+    default branch may close against that commit, so the push guard accepts it as the base."""
+    ref = _default_ref(repo_root, remote)
+    if not base or not ref or base != _git_soft(repo_root, ["rev-parse", "--verify", "-q", ref + "^{commit}"]):
+        return False
+    return subprocess.run(["git", "-C", repo_root, "merge-base", "--is-ancestor", base, head],
+                          capture_output=True).returncode == 0
+
+
 def _default_merge_base(repo_root, head, base, remote="origin"):
     """The merge-base of `head` with `remote`'s default branch when a sync brought commits the close `base`
     lacks, else None: a red the branch inherited from that merge is the default branch's, not the branch's."""
@@ -2242,6 +2273,17 @@ def close_paths(repo_root, base, head, remote="origin"):
 
 def _progress(message):
     print("harness_tests: " + message, flush=True)
+
+
+def _selection_estimate(selected):
+    """The close's pre-run line: how many proofs it selected and the recorded seconds they need at this pool
+    width, before pass reuse. A proof with no recorded time is unknown, named as such, never counted as zero."""
+    durations = durations_path()
+    known = read_json_salvage(durations) if os.path.exists(durations) else {}
+    timed = [known[os.path.basename(p)] for p in selected
+             if isinstance(known.get(os.path.basename(p)), (int, float))]
+    return "close: %d selected proof(s), ~%ds at recorded times on %d job(s), %d with no recorded time (unknown)" % (
+        len(selected), sum(timed) / _jobs(), _jobs(), len(selected) - len(timed))
 
 
 def _input_commits(repo_root, base, head, reached, remote="origin"):
@@ -2381,7 +2423,8 @@ def run_close(repo_root, base=None, verbose=False, behavior_out=None, now=False)
             if (read_json_salvage(close_run_path()) or {}).get("token") != token:
                 print("harness_tests: a newer close superseded this one; it stops without a verdict", flush=True)
                 return 2
-            writers = watch_records.running_writers(os.environ.get("CLAUDE_CODE_SESSION_ID"), repo=repo_root)
+            writers = watch_records.running_writers(os.environ.get("CLAUDE_CODE_SESSION_ID"), repo=repo_root,
+                                                    own_launch=os.environ.get("SIDECAR_LAUNCH_ID") or None)
             for writer in writers:
                 identity = (writer["name"], tuple(writer["labels"]), writer["model"])
                 if identity not in seen:
@@ -2494,7 +2537,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
     try:
         head = _git(repo_root, ["rev-parse", "HEAD"]).strip()
         remote, target = push_destination(repo_root)
-        base = close_base(repo_root, base, remote=remote)
+        base = close_base(repo_root, base, push_ref="refs/remotes/%s/%s" % (remote, target), remote=remote)
         paths = close_paths(repo_root, base, head, remote)
         update_json_locked(STAMP_PATH, lambda doc: doc.update(close={
             "head": head, "base": base, "verdict": "incomplete", "red": [], "ts": time.time()}), raising=True)
@@ -2508,6 +2551,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             if paths and not selected:
                 raise RuntimeError("no proof bound to outgoing harness paths")
             statuses, details = {}, {}
+            _progress(_selection_estimate(selected))
             cache = _pass_cache(snapshot, selected)
             row = {}
             _run_selected(selected, verbose, statuses, details,
@@ -2516,6 +2560,11 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                 print("harness_tests: a newer close superseded this one; it stops without a verdict", flush=True)
                 return 2
             failing = [p for p in selected if statuses.get(p) == "fail"]
+            untracked_red = [os.path.basename(p) for p in failing
+                             if _never_committed(repo_root, _norm(os.path.relpath(p, snapshot)))]
+            failing = [p for p in failing if os.path.basename(p) not in untracked_red]
+            for name in untracked_red:
+                print("UNCOMMITTED PROOF RED %s (not in this push)" % name)
             base_reds = {} if _is_empty_base(repo_root, base) else _reds_at(snapshot, base, failing)
             main_base, main_reds = _default_merge_base(snapshot, head, base, remote), {}
             if main_base:
@@ -2585,7 +2634,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             return 2
         verdict = "red" if new_red else "incomplete" if incomplete else "green"
         result = {"ts": time.time(), "head": head, "base": base, "verdict": verdict,
-                  "red": new_red, "preExisting": old_red, "cannotRun": incomplete,
+                  "red": new_red, "preExisting": old_red, "cannotRun": incomplete, "uncommittedProofRed": untracked_red,
                   "paths": paths, "proofs": [os.path.basename(p) for p in selected],
                   "behavior": row.get('behavior'), "observations": row.get('observations', [])}
         update_json_locked(STAMP_PATH, lambda doc: doc.update(close=result), raising=True)

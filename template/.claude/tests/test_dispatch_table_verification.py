@@ -442,7 +442,13 @@ def test_worklog_checked_item_is_one_applied_item_not_a_container():
     (run_dir / 'journal.jsonl').write_bytes((fixture / 'journal.jsonl').read_bytes())
     report = Path(e.root) / 'in-run.json'
     report.write_text(json.dumps(dict(json.loads(report.read_text()), source=['--workflow-dir', str(run_dir)])))
-    e.run(stop_payload(), '--complete')
+    project = Path(tempfile.mkdtemp(prefix='worklog_project_'))
+    (project / '.claude').mkdir()
+    (project / '.claude/worklog-titles.md').write_text(
+        'Derived mirror of Obsidian `Claude/TODO/Worklog.md`.\n'
+        "- chore · 2 · Harness stamp survives a peer's red untracked test\n",
+        encoding='utf-8')
+    e.run(dict(stop_payload(), cwd=str(project)), '--complete')
     audit = json.loads((run_dir / 'verification_audit.json').read_text())
     assert not e.body and audit['outcome'] == 'match', (audit['mismatches'], audit['errors'])
     assert sorted(audit['verdicts']) == ['worklog:relevance#1', 'worklog:relevance#2', 'worklog:relevance#checked']
@@ -574,6 +580,31 @@ def test_deleted_upstream_quote_is_allowed_as_drift():
     Path(row['evidence'][0]['file']).unlink()
     e.run(stop_payload(), '--complete')
     assert not e.body and reports(e)
+
+
+def test_command_claim_output_change_over_an_edited_input_is_drift():
+    sys.path.insert(0, str(REPO / '.claude/hooks'))
+    import dispatch_table as dt
+    with tempfile.TemporaryDirectory(prefix='cmd_drift_') as tmp:
+        root = Path(tmp)
+        subprocess.run(['git', '-C', str(root), 'init', '-q'], check=True)
+        (root / 'sub').mkdir()
+        (root / 'sub/a.txt').write_text('hello\n', encoding='utf-8')
+        (root / 'other.txt').write_text('x\n', encoding='utf-8')
+        subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
+        scoped = [dict(id='x', evidence=[dict(command='git grep -n -F goodbye -- sub', output='')])]
+        before = dt._audit_check(scoped, root, SID, time.monotonic() + 60)['verdicts']['x']
+        assert before['verdict'] == 'VERIFIED', before
+        (root / 'sub/a.txt').write_text('hello\ngoodbye\n', encoding='utf-8')
+        after = dt._audit_check(scoped, root, SID, time.monotonic() + 60)['verdicts']['x']
+        assert dt._file_drift(before, after), 'an output change over an edited input is drift, not a mismatch'
+        unscoped = [dict(id='y', evidence=[dict(command='git grep -n -F missing', output='')])]
+        free_before = dt._audit_check(unscoped, root, SID, time.monotonic() + 60)['verdicts']['y']
+        assert free_before['verdict'] == 'VERIFIED', free_before
+        (root / 'other.txt').write_text('missing\n', encoding='utf-8')
+        free_after = dt._audit_check(unscoped, root, SID, time.monotonic() + 60)['verdicts']['y']
+        assert free_after['items'][0]['reason'] == 'output-differs', free_after
+        assert not dt._file_drift(free_before, free_after), 'a command that names no path has no recorded input to blame'
 
 
 def test_crash_is_advisory_and_other_entries_are_not_hidden():

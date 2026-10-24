@@ -89,6 +89,7 @@ only) and exits 0; each dispatch is checked in its own try, so one unreadable en
 others. The no-watcher block fails open with it: a missing decision lets the turn end, never traps
 the session. Proof: tests/test_dispatch_table.py.
 """
+import functools
 import glob
 import json
 import os
@@ -115,15 +116,16 @@ from _dispatch_pins import (  # noqa: E402
 
 STATE_KEY = "dispatch_table_pending"
 GONE_KEY = "dispatch_table_gone"  # expand_deferred's report lines (dropped or revived fan-outs) for complete
+ROSTER_OWNER_KEY = "dispatch_table_roster_owner"  # "<roster>:<pid>" -> whether this session started it; a pid's environment never changes
 UNKNOWN_KEY = "dispatch_table_unknown"  # deferred fan-outs expired with no checkable producer, revived if the file appears
 NO_WATCHER_REASON = (
     "%d sidecar(s) running with no live watcher, so nothing wakes you when one needs you. "
-    "Run `python3 .claude/tools/watch_records.py --session --wake` with run_in_background and timeout 7200000, "
+    "Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + ", "
     "then end the turn (reference/sidecar_dispatch.md §Procedure).")
 NO_WATCHER_ROSTER_REASON = (
     "Bench roster(s) this session started are running with no live watcher (%s), so nothing wakes you when "
-    "one ends or fails. Run `python3 .claude/tools/watch_records.py --session --wake` with run_in_background "
-    "and timeout 7200000, then end the turn (reference/sidecar_dispatch.md §Procedure).")
+    "one ends or fails. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + ", "
+    "then end the turn (reference/sidecar_dispatch.md §Procedure).")
 STALE_SECONDS = 24 * 3600
 MAX_PENDING = 50
 DONE_STATES = ("completed", "failed", "killed", "cancelled", "error", "stopped")
@@ -461,6 +463,13 @@ def _audit_source(entry, session, payload):
     return original, applied, verification, report_path, errors
 
 
+def _command_moved(old, new):
+    before, now = old.get('inputs'), new.get('inputs')
+    return (old.get('kind') == 'command' and old.get('verdict') == 'VERIFIED'
+            and new.get('reason') == 'output-differs' and bool(before) and isinstance(now, dict)
+            and before.keys() == now.keys() and before != now)
+
+
 def _file_drift(before, checked):
     if checked['verdict'] != 'UNVERIFIED':
         return False
@@ -471,6 +480,11 @@ def _file_drift(before, checked):
     changed = False
     for old, new in zip(original, current):
         if new['verdict'] == 'VERIFIED':
+            continue
+        if new['kind'] == 'command':
+            if not _command_moved(old, new):
+                return False
+            changed = True
             continue
         if (new['kind'] not in ('file', 'url') or new['verdict'] != 'UNVERIFIED'
                 or new.get('reason') not in ('quote-absent', 'missing-file')
@@ -1281,10 +1295,13 @@ def resolve_sidecar_record(entry, session_id, pending=None):
     after = inventory_written(entry) if record else None
     if record and after is None:
         return record
-    for written, path, found in _owned_records(entry, session_id, pending):
+    for written, path, found, launcher in _owned_records(entry, session_id, pending):
         if after is not None and written <= after:
             continue
         entry["record"], entry["inventory"] = found, path
+        if launcher:
+            for job in entry.get("jobs") or []:
+                job["launcher"] = launcher
         if not os.path.isfile(found + ".exit"):
             break
         after = written
@@ -1292,8 +1309,9 @@ def resolve_sidecar_record(entry, session_id, pending=None):
 
 
 def _owned_records(entry, session_id, pending):
-    """[(written, inventory, record)] for each inventory owned by `entry`'s call that names its
-    label, oldest first (`resolve_sidecar_record`'s identity rule)."""
+    """[(written, inventory, record, launcher)] for each inventory owned by `entry`'s call that names its
+    label, oldest first (`resolve_sidecar_record`'s identity rule). `launcher` is None for an inventory
+    written before jobs named one."""
     issued = _issued_at(entry, session_id)
     label, fanout_dir = _label(entry), os.path.normcase(os.path.abspath(entry["fanout_dir"]))
     rivals = [other for other in pending or ()
@@ -1320,7 +1338,8 @@ def _owned_records(entry, session_id, pending):
                     # An older inventory holds the path relative to the fan-out's cwd, not this
                     # hook's; the fan-out writes every record beside its inventory.
                     record = os.path.join(os.path.dirname(os.path.abspath(path)), os.path.basename(record))
-                owned.append((written, path, record))
+                launcher = job.get("launcher")
+                owned.append((written, path, record, launcher if isinstance(launcher, str) else None))
                 break
     return owned
 
@@ -1349,16 +1368,28 @@ def _deferred_jobs(jobs_path):
         return None, "its jobs file was refused"
 
 
+def _spill_dir(jobs_path):
+    try:
+        with open(jobs_path, encoding="utf-8") as fh:
+            spill = json.load(fh).get("spillDir")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return spill if isinstance(spill, str) and spill else None
+
+
 def _expanded(entry, labeled):
     d = entry["deferred"]
-    return [{"kind": "sidecar", "id": _fanout_entry_id(d["out_dir"], job.get("label"), d["call"]),
-             "record": None, "fanout_dir": d["out_dir"], "task_id": None,
+    # The launch read no spillDir from a file not yet written; sidecar_fanout refuses an --out-dir that differs from it.
+    spill = _spill_dir(d["jobs_path"])
+    out_dir = sidecar_argv.fanout_out_dir(d["jobs_path"], None, spill, _om()._PROJECT_DIR) if spill else d["out_dir"]
+    return [{"kind": "sidecar", "id": _fanout_entry_id(out_dir, job.get("label"), d["call"]),
+             "record": None, "fanout_dir": out_dir, "task_id": None,
              "writes": bool(entry.get("writes") or job.get("shape") == "author"),
              "launched_at": entry.get("launched_at"), "issued_at": entry.get("issued_at"),
              "jobs": [{"label": job.get("label"), "model": job.get("alias") or DEFAULT,
                        "effort": job.get("effort") or DEFAULT,
                        "launcher": str(job.get("transport") or "sidecar_fanout"), "record": None,
-                       "fanout_dir": d["out_dir"], "kind": "fanout"}]} for job in labeled]
+                       "fanout_dir": out_dir, "kind": "fanout"}]} for job in labeled]
 
 
 def expand_deferred(session_id, now=None, live=None):
@@ -1710,8 +1741,26 @@ def _uncovered_sidecars(running, session_id):
     return uncovered
 
 
+@functools.lru_cache(maxsize=1)
+def _ps_pids():
+    """The pids `ps -e` lists, or None when it cannot run: a roster writes its Git Bash (MSYS) pid, which `ps` lists.
+    Cached once per process: each Stop runs this hook as a fresh process, so the one snapshot is that Stop's.
+    A long-lived importer must call `_ps_pids.cache_clear()` before each check."""
+    try:
+        out = subprocess.run(["ps", "-e"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {int(line.split()[0]) for line in out.splitlines()[1:] if line.split() and line.split()[0].isdigit()}
+
+
+def _ps_alive():
+    """`roster_states`'s pid_alive over one `ps -e` set, or None to let it probe each pid itself."""
+    pids = _ps_pids()
+    return None if pids is None else (lambda pid: pid in pids)
+
+
 def _any_roster_pid_alive():
-    """True when some `<logs>/<name>.pid` names a live process: the cheap gate before reading every roster log.
+    """True when some roster is LIVE by its `<logs>/<name>.pid`: the cheap gate before the ownership read.
     False where the benchmark suite is not installed, since only that suite starts rosters."""
     scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
     if scripts not in sys.path:
@@ -1722,16 +1771,13 @@ def _any_roster_pid_alive():
         if exc.name != "bench_lib":
             raise
         return False
-    pids = {bench_lib._roster_pid(p) for p in glob.glob(os.path.join(bench_lib.roots.logs_dir(), "*.pid"))} - {None}
-    if not pids:
+    logs = bench_lib.roots.logs_dir()
+    if not glob.glob(os.path.join(logs, "*.pid")):
         return False
-    try:
-        # One `ps -e` for every pid file: a roster writes its Git Bash (MSYS) pid, which `ps` lists.
-        out = subprocess.run(["ps", "-e"], capture_output=True, text=True, timeout=10).stdout
-    except (OSError, subprocess.SubprocessError):
+    pid_alive = _ps_alive()
+    if pid_alive is None:
         return True
-    return any(line.split() and line.split()[0].isdigit() and int(line.split()[0]) in pids
-               for line in out.splitlines()[1:])
+    return any(row["state"] == "LIVE" for row in bench_lib.roster_states(logs, pid_alive=pid_alive))
 
 
 def _unwatched_rosters_reason(payload):
@@ -1747,11 +1793,17 @@ def _unwatched_rosters_reason(payload):
         state = _hook_state.read_json_salvage(_hook_state.state_path(session_id)) or {}
         if watch_records.session_watcher_live(state) or not _any_roster_pid_alive():
             return None, None
-        live = sorted(name[len("roster:"):] for name, unit in watch_records.session_rosters(session_id)().items()
+        verdicts = dict(state.get(ROSTER_OWNER_KEY) or {})
+        known = dict(verdicts)
+        units = watch_records.session_rosters(session_id, pid_alive=_ps_alive(), verdicts=verdicts)()
+        if verdicts != known:
+            _hook_state.update_json_locked(_hook_state.state_path(session_id),
+                                           lambda st: st.setdefault(ROSTER_OWNER_KEY, {}).update(verdicts))
+        live = sorted(name[len("roster:"):] for name, unit in units.items()
                       if (unit.get("roster") or {}).get("state") == "LIVE")
     except Exception as exc:
         return None, ("⚠ the bench roster check did not run (%s: %s); a live roster this session started "
-                      "would go unwatched. If one is live, arm `python3 .claude/tools/watch_records.py --session --wake` with run_in_background." % (type(exc).__name__, exc))
+                      "would go unwatched. If one is live, arm `%s` %s." % (type(exc).__name__, exc, watch_records.ARM_COMMAND, watch_records.ARM_CALL))
     return (NO_WATCHER_ROSTER_REASON % ", ".join(live) if live else None), None
 
 
@@ -1824,6 +1876,7 @@ def complete(payload):
                 if resolved:
                     e["record"] = resolved["record"]
                     e["inventory"] = resolved["inventory"]
+                    e["jobs"] = resolved["jobs"]
             return kept
         _update_pending(payload, change)
     running = [e for e in pending if (e.get("kind"), e.get("id")) not in done | audited]
@@ -1848,6 +1901,14 @@ def _elapsed(seconds):
     return "%dm" % minutes if minutes < 60 else "%dh%02dm" % (minutes // 60, minutes % 60)
 
 
+def _awaiting_launch(entry):
+    """A planned fan-out job whose launcher has not started: its inventory names the record, and the
+    record has neither the pid file a launch writes (`_never_started`'s test) nor an exit file."""
+    record = entry.get("record")
+    return bool(entry.get("fanout_dir") and record and not os.path.isfile(record + ".pid")
+                and not os.path.isfile(record + ".exit"))
+
+
 def _running_line(entry, now):
     """`name · pins · labels · elapsed` for one unfinished dispatch."""
     jobs = entry.get("jobs") or []
@@ -1863,6 +1924,8 @@ def _running_line(entry, now):
     if kind == "sidecar":
         shown = _sidecar_shown(job.get("model") or UNKNOWN)
         name = "%s sidecar" % (job.get("launcher") or "")
+        if _awaiting_launch(entry):
+            age = "queued"
     else:
         shown, name = _shown(job.get("model")), "Agent"
     return "  " + " · ".join([name.strip(), shown, str(job.get("effort") or UNKNOWN),

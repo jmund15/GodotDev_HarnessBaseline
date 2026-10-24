@@ -25,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 
+from _checkout_root import main_checkout_root as checkout_root
 from _hook_state import write_json_atomic
 from _owner_text import ENVELOPE_RE, LEADING_INJECTION_RE
 
@@ -56,7 +57,7 @@ REASON = (
 
 
 def _root():
-    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    return checkout_root(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 
 
 def overnight_dir(root=None):
@@ -292,7 +293,7 @@ def is_owner_prompt(text):
 
 def owner_return(payload):
     sid = payload.get("session_id", "")
-    root = payload.get("cwd") or _root()
+    root = checkout_root(payload.get("cwd") or _root())
     doc = owned_state(root, sid) if is_owner_prompt(payload.get("prompt")) else None
     if doc is None:
         return
@@ -355,7 +356,7 @@ def main(argv=None):
             return 0
         if not isinstance(payload, dict) or payload.get("tool_name") != "AskUserQuestion":
             return 0
-        root = payload.get("cwd") or _root()
+        root = checkout_root(payload.get("cwd") or _root())
         if armed(root, payload.get("session_id", "")):
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

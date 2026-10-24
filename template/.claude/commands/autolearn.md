@@ -6,7 +6,7 @@ Phase 2 of `/session_end`. This command owns discovery, the retirement pass and 
 
 ## When to activate
 
-Trigger on explicit requests:
+Trigger on `/session_end` Phase 2 or an explicit request:
 - "autolearn", "learn from this session", "update skills from these corrections"
 - "remember this pattern", "make sure you do X next time"
 
@@ -88,7 +88,7 @@ Before proposing any change, ask:
 4. Is this **new information** I wouldn't already know? Advice you would give any project does not belong here.
 5. **Falsifiable mechanism claim?** If the entry asserts how a tool/engine/API *behaves* ("X isolates Y", "Z is case-sensitive", "A causes B") — not a preference or observed event — it needs **direct evidence that isolated it**. A fix that changed more than one thing cannot isolate a mechanism (isolation means varying one factor), and a single observation is NOT verification. Run the falsification check now, or save only the observed fact — never the inferred mechanism. A saved mechanism claim MUST carry a `**Verified:** <the check that confirmed it>` line; a mechanism entry lacking it is a defect (greppable by the memory-claim audit).
 
-Only propose changes that pass all five, then `/codify` §Step 2's generalization gates.
+Only propose changes that pass questions 1–4, and 5 when the entry asserts a mechanism, then `/codify` §Step 2's generalization gates.
 
 ## Review packet
 

@@ -3,14 +3,16 @@
 
 dispatch_mechanism_guard (Workflow) and sidecar_dispatch_context (sidecar launches) deny a dispatch until the
 orchestration skill and the ladder are in this context: read in full, or printed as the per-tier slice
-(`model_registry.py ladder-slice <tier>...`) for every tier the call implies. Class: process guard, blocking
+(`model_registry.py ladder-slice <tier>...`) for every tier the call implies; a deny that reaches the session
+carries the slice of the missing tiers itself and records them. Class: process guard, blocking
 because the advisory that replaced it let the skip recur (instruction_quality §3)."""
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import LADDER_SLICE_KEY, ladder_slice_tiers, state_path, update_json_locked, skill_in_context  # noqa: E402
+from _hook_state import (LADDER_SLICE_KEY, ladder_slice_tiers, mark_ladder_slice, state_path,  # noqa: E402
+                         update_json_locked, skill_in_context)
 
 STATE_KEY = "model_ladder_ready"
 SLICE_COMMAND = "python3 .claude/tools/model_registry.py ladder-slice"
@@ -83,6 +85,7 @@ FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this
 # The load steps the deny names and the post-compaction rule (`doctrine_rule`) states: one string per step.
 SKILL_STEP = 'invoke Skill(skill="orchestration") (CLAUDE.core.md §9)'
 SLICE_STEP = 'print the ladder slice for {which}: `' + SLICE_COMMAND + ' {tiers}` (orchestration §5)'
+SLICE_BELOW_STEP = 'read the ladder slice for {which} below (orchestration §5)'
 READ_STEP = 'Read `{path}` in full, no offset or limit (orchestration §5)'
 
 
@@ -104,7 +107,21 @@ def _call_tiers(tiers):
     return sorted(named) or None
 
 
-def doctrine_check(payload, tiers=None):
+def _embedded_slice(session_id, missing):
+    """The ladder slice for `missing`, recorded as loaded for the session, else None when it cannot be produced
+    or recorded (the deny then names the command and records nothing)."""
+    try:
+        tools = str(Path(__file__).resolve().parents[1] / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import model_registry
+        text = model_registry.ladder_slice(missing)
+    except Exception:
+        return None
+    return text if mark_ladder_slice(session_id, missing) else None
+
+
+def doctrine_check(payload, tiers=None, embed_slice=False):
     """(deny reason, fault note) for a pinned dispatch. The reason names each doctrine not in this context, by its
     one load route: the orchestration skill (CLAUDE.core.md §9) and the ladder (orchestration §5). The step after
     the load is to check the call against them and re-issue it, because they exist to change the call. Both are
@@ -116,7 +133,11 @@ def doctrine_check(payload, tiers=None):
     The ladder is met by a full Read or by `model_registry.py ladder-slice` for every tier the call implies.
     `tiers` is a zero-argument callable returning those canonical tiers, evaluated only when the full Read is
     absent. When it names none (absent, failing or empty) the call's tiers are unknown, so only the full Read meets
-    the ladder; with tiers known, the deny names the slice command for the uncovered ones."""
+    the ladder; with tiers known and `embed_slice` True, the deny ends with the slice of the uncovered ones and
+    records them, so the re-issued call passes. Only a caller whose deny text reaches the session's context passes
+    True: the record is a side effect, and a slice recorded but never delivered lets the next call pass without the
+    doctrine in context. By default, and when the slice cannot be produced, the deny names the slice command and
+    records nothing."""
     session_id = payload.get('session_id') or ''
     written, state = update_json_locked(state_path(session_id), lambda state: (
         state.get(STATE_KEY) is True, state.get(LADDER_SLICE_KEY)))
@@ -124,7 +145,7 @@ def doctrine_check(payload, tiers=None):
         return None, FAULT_NOTE
     ladder_ready, covered = state
     covered = set(covered) if isinstance(covered, list) else set()
-    unmet = []
+    unmet, slice_text = [], None
     if not skill_in_context(session_id, 'orchestration', transcript_path=payload.get('transcript_path')):
         unmet.append(SKILL_STEP)
     if not ladder_ready:
@@ -134,14 +155,16 @@ def doctrine_check(payload, tiers=None):
         else:
             missing = [t for t in needed if t not in covered]
             if missing:
-                unmet.append(SLICE_STEP.format(
-                    which='the tier this call pins' if len(missing) == 1 else 'the tiers this call pins',
-                    tiers=' '.join(missing)))
+                which = 'the tier this call pins' if len(missing) == 1 else 'the tiers this call pins'
+                slice_text = _embedded_slice(session_id, missing) if embed_slice else None
+                unmet.append(SLICE_BELOW_STEP.format(which=which) if slice_text
+                             else SLICE_STEP.format(which=which, tiers=' '.join(missing)))
     if not unmet:
         return None, None
     return ('Dispatch DENIED: the dispatch doctrine is not in context since the session started or last compacted. '
             'Load it: ' + '; '.join(unmet) + '. Then check this call against it (route, jobs, '
-            'models, efforts, reading) and re-issue it with any change it calls for.'), None
+            'models, efforts, reading) and re-issue it with any change it calls for.'
+            + ('\n\n' + slice_text if slice_text else '')), None
 
 
 def tier_in_context(session_id, tier):

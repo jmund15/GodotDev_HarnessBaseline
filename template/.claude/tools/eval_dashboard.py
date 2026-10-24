@@ -430,6 +430,48 @@ def _write(path, text):
         handle.write(text)
 
 
+def _argument_problem(args, today):
+    """The first bad flag as a message, or None."""
+    if not _is_day(today):
+        return "--today must be a real date, YYYY-MM-DD: %r" % today
+    bad = [month for month in args.refreeze if not _is_day(month + "-01")]
+    if bad:
+        return "--refreeze must be YYYY-MM: %r" % bad
+    if args.sessions_root and not os.path.isdir(args.sessions_root):
+        return "--sessions-root is not a directory: %s" % args.sessions_root
+    return None
+
+
+def _publish_history(args, facts, verdict, today):
+    """(exit code, months, actions) after the history write; sets facts["history"]. None when the write failed."""
+    try:
+        result = eval_history.publish(args.root, facts, verdict, today, refreeze=tuple(args.refreeze))
+        facts["history"] = {"status": "ok"}
+        return 0, result["months"], result["actions"]
+    except eval_history.HistoryRefusedError as exc:
+        print("history refused: %s" % exc)
+        facts["history"] = {"status": "unparseable", "detail": str(exc)}
+        return 4, {m: dict(c, closed=False, backfilled=False, verdict=None) for m, c in facts["months"].items()}, {}
+    except eval_history.HistoryWriteError as exc:
+        print("history write failed: %s" % exc)
+        return None
+
+
+def _write_outputs(vault, facts, months, actions, view, shown, code):
+    """The report, the note and, unless the history was refused, the closed month notes. Raises OSError on a failed write."""
+    report_path = os.path.join(vault, REPORT_NAME)
+    note_path = os.path.join(vault, NOTE_NAME)
+    _write(report_path, eval_render.report(facts, months, view, shown))
+    _write(note_path, eval_render.note(facts, view, shown, pathlib.Path(os.path.abspath(report_path)).as_uri()))
+    print("wrote %s" % note_path)
+    print("wrote %s" % report_path)
+    if code != 4:
+        for month, snapshot, prev in eval_history.closed_pairs(months):
+            _write(os.path.join(vault, ARCHIVE_DIR, "Eval Dashboard %s.md" % month), eval_render.month_note(snapshot, prev))
+        print("month notes: %d in %s" % (len(view["closed"]), ARCHIVE_DIR))
+        print("history: %s" % ", ".join("%s %s" % item for item in sorted(actions.items())))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", default=ROOT, help="repo root holding .claude/")
@@ -446,15 +488,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     today = args.today or datetime.date.today().isoformat()
-    if not _is_day(today):
-        print("--today must be a real date, YYYY-MM-DD: %r" % today)
-        return 2
-    bad = [month for month in args.refreeze if not _is_day(month + "-01")]
-    if bad:
-        print("--refreeze must be YYYY-MM: %r" % bad)
-        return 2
-    if args.sessions_root and not os.path.isdir(args.sessions_root):
-        print("--sessions-root is not a directory: %s" % args.sessions_root)
+    problem = _argument_problem(args, today)
+    if problem:
+        print(problem)
         return 2
     try:
         verdict = load_verdict(args.verdict, today[:7]) if args.verdict else None
@@ -483,39 +519,18 @@ def main(argv=None):
     facts["rules_feed"] = rules_feed
     facts["rules"] = {key: len(rules_feed[key]) for key in ("fired", "malformed", "undecidable")} if rules_feed else None
     routing_row, facts["routing"] = read_routing(args.root, today)
-    code = 0
-    try:
-        result = eval_history.publish(args.root, facts, verdict, today, refreeze=tuple(args.refreeze))
-        months, actions = result["months"], result["actions"]
-        facts["history"] = {"status": "ok"}
-    except eval_history.HistoryRefusedError as exc:
-        print("history refused: %s" % exc)
-        months, actions, code = {m: dict(c, closed=False, backfilled=False, verdict=None)
-                                 for m, c in facts["months"].items()}, {}, 4
-        facts["history"] = {"status": "unparseable", "detail": str(exc)}
-    except eval_history.HistoryWriteError as exc:
-        print("history write failed: %s" % exc)
+    published = _publish_history(args, facts, verdict, today)
+    if published is None:
         return 1
+    code, months, actions = published
     facts["months"] = months
     facts["inputs"] = build_inputs(args.root, facts, today,
                                    rules_row(args.rules_json, rules_feed, today), routing_row, facts["history"])
     if code == 0 and any(item["status"] in DEGRADED for item in facts["inputs"]):
         code = 3
     shown = verdict or (months.get(today[:7]) or {}).get("verdict")
-    report_path = os.path.join(args.vault, REPORT_NAME)
-    note_path = os.path.join(args.vault, NOTE_NAME)
-    view = eval_history.compare(months, today)
     try:
-        _write(report_path, eval_render.report(facts, months, view, shown))
-        _write(note_path, eval_render.note(facts, view, shown, pathlib.Path(os.path.abspath(report_path)).as_uri()))
-        print("wrote %s" % note_path)
-        print("wrote %s" % report_path)
-        if code != 4:
-            for month, snapshot, prev in eval_history.closed_pairs(months):
-                _write(os.path.join(args.vault, ARCHIVE_DIR, "Eval Dashboard %s.md" % month),
-                       eval_render.month_note(snapshot, prev))
-            print("month notes: %d in %s" % (len(view["closed"]), ARCHIVE_DIR))
-            print("history: %s" % ", ".join("%s %s" % item for item in sorted(actions.items())))
+        _write_outputs(args.vault, facts, months, actions, eval_history.compare(months, today), shown, code)
     except OSError as exc:
         print("write failed: %s" % exc)
         return 1

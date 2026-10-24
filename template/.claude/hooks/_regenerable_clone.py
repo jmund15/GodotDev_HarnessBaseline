@@ -34,7 +34,7 @@ except ValueError:
     _GIT_TIMEOUT_S = 10
 
 
-def _git(args: list[str], cwd: Path) -> str | None:
+def _git(args: list[str], cwd: Path, stdin: str | None = None) -> str | None:
     """stdout of `git <args>` run in `cwd`, or None on any failure (fail closed).
 
     Read-only by construction:
@@ -45,8 +45,8 @@ def _git(args: list[str], cwd: Path) -> str | None:
     """
     env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(cwd.parent)}
     try:
-        proc = subprocess.run(["git", "--no-optional-locks", *args], cwd=str(cwd), capture_output=True,
-                              text=True, timeout=_GIT_TIMEOUT_S, env=env)
+        proc = subprocess.run(["git", "--no-optional-locks", *args], cwd=str(cwd), input=stdin,
+                              capture_output=True, text=True, timeout=_GIT_TIMEOUT_S, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -449,6 +449,13 @@ def _holds_no_file(path: Path) -> bool:
         return False
 
 
+def empty_leftover(path: str) -> bool:
+    """True when `path` is a directory holding no file and no `.git` at any depth: an interrupted removal's
+    empty shell, which loses nothing."""
+    root = Path(path)
+    return _holds_no_file(root) and not any(p.name == ".git" for p in root.rglob("*"))
+
+
 def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | None:
     """The first `git status --porcelain --ignored=matching` line whose deletion loses work, or None.
     Untracked Godot `.import` files, ignored regenerable caches and ignored directories holding no file
@@ -460,6 +467,23 @@ def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | N
         if line.startswith("!! ") and (allow_ignored or _regenerable_ignored(entry) or _holds_no_file(root / entry)):
             continue
         return line
+    return None
+
+
+def _first_unstored_loss(status: str, root: Path) -> str | None:
+    """`_first_loss` on the owner's removal pick: a dirty path loses nothing when its working file is gone
+    (an index blob is always in the store) or its content is already a blob in the object store, and a
+    submodule's gitlink is judged by that submodule's own checks."""
+    for line in status.splitlines():
+        if _first_loss(line, root, allow_ignored=True) is None:
+            continue
+        entry = line[3:].split(" -> ")[-1].strip().strip('"')
+        path = root / entry
+        if (path / ".git").exists() or not (path.is_file() or path.is_symlink()):
+            continue
+        unstored = worktree_unstored(str(root), [entry])
+        if unstored is None or unstored:
+            return line
     return None
 
 
@@ -531,10 +555,30 @@ def _orphan_admin(target: Path) -> Path | None:
     return None if admin.exists() else admin
 
 
-def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path) -> str | None:
+def unstored_files(files: list[str], run) -> list[str] | None:
+    """The files in `files` whose working-tree content the object store lacks, in order; None when git
+    cannot say. `run(args, stdin)` returns git's stdout, or None on failure."""
+    ids = run(["hash-object", "--stdin-paths"], "\n".join(files) + "\n")
+    if ids is None or len(ids.split()) != len(files):
+        return None
+    held = run(["cat-file", "--batch-check"], ids)
+    if held is None:
+        return None
+    return [path for path, line in zip(files, held.splitlines()) if line.endswith(" missing")]
+
+
+def worktree_unstored(cwd: str, files: list[str]) -> list[str] | None:
+    """`unstored_files` for the repository checked out at `cwd`."""
+    return unstored_files(files, lambda args, stdin: _git(args, Path(cwd), stdin))
+
+
+def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
+                 ignored_ok: bool = True) -> str | None:
     """The first non-ignored file under `work_tree` whose content `git_dir`'s object store lacks, or
     None. `absent_index` names no file, so git reads an empty index and writes nothing. A nested
-    checkout (a submodule) is judged against `root`'s `.git/modules/<path>` store."""
+    checkout (a submodule) is judged against `root`'s `.git/modules/<path>` store. Unless `ignored_ok`
+    (the owner approved the removal), an ignored file that is no regenerable cache is a loss too
+    (`_regenerable_ignored`, Godot `.import`; an ignored directory holding no file lists nothing)."""
     env = {**os.environ, "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(work_tree),
            "GIT_INDEX_FILE": str(absent_index), "GIT_CEILING_DIRECTORIES": str(work_tree.parent)}
 
@@ -556,9 +600,18 @@ def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path)
         store = root / ".git" / "modules" / sub
         if not store.is_dir():
             return sub + "/ (a populated submodule with no store at .git/modules/" + sub + ")"
-        loss = _unheld_file(store, work_tree / sub, root, absent_index)
+        loss = _unheld_file(store, work_tree / sub, root, absent_index, ignored_ok)
         if loss:
             return sub + "/" + loss
+    if not ignored_ok:
+        ignored = run(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
+        if ignored is None:
+            return "(cannot list ignored files)"
+        for entry in filter(None, ignored.split("\0")):
+            if any(entry == sub or entry.startswith(sub + "/") for sub in subs):
+                continue
+            if not (entry.endswith(_GENERATED_UNTRACKED_SUFFIXES) or _regenerable_ignored(entry)):
+                return entry + " (ignored, and not a regenerable cache)"
     listed = run(["ls-files", "--others", "--exclude-standard", "-z"])
     if listed is None:
         return "(cannot list files)"
@@ -569,16 +622,71 @@ def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path)
         return next(entry for entry in files if entry.endswith("/")) + " (a nested repository)"
     if not files:
         return None
-    ids = run(["hash-object", "--stdin-paths"], "\n".join(files) + "\n")
-    if ids is None or len(ids.split()) != len(files):
-        return "(cannot hash files)"
-    held = run(["cat-file", "--batch-check"], ids)
-    if held is None:
+    missing = unstored_files(files, run)
+    if missing is None:
         return "(cannot read the object store)"
-    for path, line in zip(files, held.splitlines()):
-        if line.endswith(" missing"):
-            return path
-    return None
+    return missing[0] if missing else None
+
+
+def _worktree_target(token: str, cwd: str, project_root: str, reject) -> tuple[Path, Path] | None:
+    """`(target, project root)` when `token` is a literal path to a directory directly under
+    `<project>/.claude/worktrees/`, else None after `reject(reason)`."""
+    def refuse(reason):
+        reject(reason)
+        return None
+
+    if not token or _UNSAFE_PATH_CHARS.search(token):
+        return refuse('target is not a literal path')
+    parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return refuse('target contains path traversal or has no path')
+    try:
+        target = Path(resolve_cd(cwd, token)).resolve(strict=True)
+        root = Path(project_root).resolve(strict=True)
+        home = (root / ".claude" / "worktrees").resolve(strict=True)
+    except OSError:
+        return refuse('target or worktree home cannot be resolved')
+    if not _same_path(target.parent, home):
+        return refuse('target is not a linked worktree directly under .claude/worktrees')
+    return target, root
+
+
+def _orphan_verdict(target: Path, root: Path, allow_ignored: bool, reject) -> bool | None:
+    """None when `target` has a live `.git` link (judge it by status). For an orphan (git pruned the
+    admin directory, or no `.git` link remains) True when nothing is lost, else `reject(reason)`: content
+    git lacks is always a loss, and so is an ignored file that is no regenerable cache unless
+    `allow_ignored`."""
+    if not (target / ".git").exists() and target.is_dir():
+        admin = target / ".git-absent"
+    elif (target / ".git").is_file():
+        admin = _orphan_admin(target)
+        if admin is None:
+            return None
+    else:
+        return reject('target is not a linked worktree directly under .claude/worktrees')
+    loss = _unheld_file(root / ".git", target, root, admin / "index", allow_ignored)
+    if loss is None:
+        return True
+    return reject('orphaned worktree holds content git does not have: ' + loss
+                  + ' (save it elsewhere or delete that file, then retry)')
+
+
+def lossless_orphan_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None) -> bool:
+    """True only for an orphaned worktree directory (git pruned its admin directory, or no `.git` link
+    remains) directly under `<project>/.claude/worktrees/` that holds nothing git lacks: every
+    non-ignored file, submodules included, is a blob in the object store, and every ignored file is a
+    regenerable cache. No session can work in an orphan, so it needs no owner approval or creation
+    proof. A worktree with a live `.git` link never qualifies. `reasons` receives the loss for an orphan and
+    the 'not a linked worktree' reason for a target that is neither an orphan nor a live worktree;
+    for a live worktree, or a target `_worktree_target` rejects (not a literal path, path traversal,
+    unresolvable, or not directly under `.claude/worktrees/`), it receives nothing."""
+    def reject(reason):
+        if reasons is not None:
+            reasons.append(reason)
+        return False
+
+    located = _worktree_target(token, cwd, project_root, lambda _reason: False)
+    return located is not None and _orphan_verdict(*located, False, reject) is True
 
 
 def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: bool = False,
@@ -591,12 +699,15 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     unlocked; its status may hold only untracked Godot `.import` files and ignored regenerable caches
     (`_REGENERABLE_IGNORED_SEGMENTS`, `_REGENERABLE_IGNORED_PAIRS`) or ignored directories holding no
     file, so ignored scratch evidence or local config blocks the delete unless `allow_ignored` (the
-    owner approved removing this worktree, so its ignored files may go with it); its HEAD and every populated
+    owner approved removing this worktree, so its ignored files may go with it, and so may a tracked or
+    untracked change whose content is already a blob in the object store or whose file is gone,
+    `_first_unstored_loss`); its HEAD and every populated
     submodule's HEAD must be on a remote (`_pushed`: by hash, or by patch for a rebased lane), and each
     submodule must be clean. An orphan (git pruned its admin directory, so status cannot be read)
-    passes only under `allow_ignored`, and only when every non-ignored file's content, submodules
-    included, is already a blob in the repository's object store: commits and branches live in the
-    shared store, so unsaved file content is the only loss. A leftover directory with no `.git` file
+    passes when every non-ignored file's content, submodules included, is already a blob in the
+    repository's object store (commits and branches live in the shared store, so unsaved file content
+    is the only loss) and every ignored file is a regenerable cache; `allow_ignored` lets any ignored
+    file go (`lossless_orphan_worktree` is that check alone). A leftover directory with no `.git` file
     (an interrupted removal) is judged the same way, and so is a submodule whose `.git` names a pruned
     admin directory, against the main checkout's `.git/modules/<path>` store. A submodule HEAD counts
     as pushed when the main checkout's copy of that submodule sees it on a remote branch. If supplied,
@@ -608,36 +719,13 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
             reasons.append(reason)
         return False
 
-    if not token or _UNSAFE_PATH_CHARS.search(token):
-        return reject('target is not a literal path')
-    parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
-    if not parts or ".." in parts:
-        return reject('target contains path traversal or has no path')
-    try:
-        target = Path(resolve_cd(cwd, token)).resolve(strict=True)
-        root = Path(project_root).resolve(strict=True)
-        home = (root / ".claude" / "worktrees").resolve(strict=True)
-    except OSError:
-        return reject('target or worktree home cannot be resolved')
-    if not _same_path(target.parent, home):
-        return reject('target is not a linked worktree directly under .claude/worktrees')
-    if not (target / ".git").exists() and target.is_dir():
-        # A leftover whose `.git` file is gone too (an interrupted removal): judged as an orphan.
-        if not allow_ignored:
-            return reject('worktree is orphaned (no .git link) and its removal is not owner-approved')
-        loss = _unheld_file(root / ".git", target, root, target / ".git-absent" / "index")
-        return True if loss is None else reject('orphaned worktree holds content git does not have: ' + loss
-                                                     + ' (save it elsewhere or delete that file, then retry)')
-    if not (target / ".git").is_file():
-        return reject('target is not a linked worktree directly under .claude/worktrees')
-
-    admin = _orphan_admin(target)
-    if admin is not None:
-        if not allow_ignored:
-            return reject('worktree is orphaned (git pruned its admin directory) and its removal is not owner-approved')
-        loss = _unheld_file(root / ".git", target, root, admin / "index")
-        return True if loss is None else reject('orphaned worktree holds content git does not have: ' + loss
-                                                     + ' (save it elsewhere or delete that file, then retry)')
+    located = _worktree_target(token, cwd, project_root, reject)
+    if located is None:
+        return False
+    target, root = located
+    verdict = _orphan_verdict(target, root, allow_ignored, reject)
+    if verdict is not None:
+        return verdict
     listing = _git(["worktree", "list", "--porcelain"], root)
     if listing is None:
         return reject('cannot read worktree registration')
@@ -652,7 +740,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     if status is None:
         return reject('cannot read worktree status')
     failed: list[str] = []
-    loss = _first_loss(status, target, allow_ignored)
+    loss = _first_unstored_loss(status, target) if allow_ignored else _first_loss(status, target)
     if loss:
         failed.append('worktree has local files or changes: ' + loss)
     _pushed(target, failed)
@@ -691,7 +779,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
             failed.append('submodule ' + name + ': cannot read status')
             continue
         _pushed(sub, failed, 'submodule ' + name + ': ', also=root / name)
-        loss = _first_loss(sub_status, sub, allow_ignored)
+        loss = _first_unstored_loss(sub_status, sub) if allow_ignored else _first_loss(sub_status, sub)
         if loss:
             failed.append('submodule ' + name + ' has local files or changes: ' + loss)
     if reasons is not None:
