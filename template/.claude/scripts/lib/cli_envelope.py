@@ -32,10 +32,16 @@ def events(raw):
 
 
 def result_event(evts):
-    """The last `{"type": "result"}` event, or the single object, else None."""
+    """The last `{"type": "result"}` event, or the single object, else None. A synthetic result (a
+    usage-limit stand-in with no usage) yields to the child's own last real result."""
+    last = None
     for row in reversed(evts):
         if isinstance(row, dict) and row.get("type") == "result":
-            return row
+            if not row.get("synthetic"):
+                return row
+            last = last or row
+    if last is not None:
+        return last
     if len(evts) == 1 and isinstance(evts[0], dict):
         return evts[0]
     return None

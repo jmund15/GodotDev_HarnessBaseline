@@ -7,11 +7,11 @@ allowed-tools: Bash, Monitor
 
 Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, `/review_pr`; also standalone. Rationale and non-negotiables: `change_control`. All mechanics live in `.claude/scripts/regression_gate.ps1`, whose header documents each invariant. **This file owns judgment only:** when the gate applies, failure adjudication, verdict rendering.
 
-**Phase order:** the gate holds the checkout through its build and test phases. After the build, a headless `--import` makes the import cache current (`IMPORT_GATE`), so no suite loads resources from a stale cache. Sanity runs first, alone, with the GdUnit4 recompile pass; a red Sanity ends the gate `FAIL` before the pool. Logic and pending Integration batches then run together in one held pool. §Retry policy owns retry eligibility. Every run under the hold writes its TRX under `TestResults/runs/gate-<runId>/`, printed as `TRX_DIR=<path>`; `python3 .claude/tools/test_profile.py <TRX_DIR>` reports the run's slowest tests.
+**Phase order:** the gate holds the checkout through build and tests. After the build, a headless `--import` refreshes the cache (`IMPORT_GATE`). Sanity runs first, alone, as the GdUnit4 recompile pass; a red Sanity ends the gate `FAIL` before the pool. Logic and pending Integration batches then run in one held pool, headless; `[RequiresRenderer]` classes run windowed as `Render`, the one unit a locked desktop (`SESSION=LOCKED`) slows. §Retry policy owns retry eligibility. Every run writes its TRX under `TestResults/runs/gate-<runId>/`, printed as `TRX_DIR=<path>`; `python3 .claude/tools/test_profile.py <TRX_DIR>` lists the slowest tests.
 
 ## When Required
 
-- **Code commits:** any commit touching `.cs` (Logic, Gameplay, Tests, Jmodot).
+- **Code commits:** any commit touching `.cs` (Logic, Gameplay, Tests, Jmodot), including comment- or whitespace-only edits.
 - **Data commits with code coupling:** `.tres`/`.tscn` changes affecting Logic Domain behavior.
 
 ## When Exempt
@@ -19,7 +19,7 @@ Single source of truth for regression verification. Called by `/session_end`, `/
 - Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness pushes use the close gate in `rules/harness_tooling.md`.
 - Pure configuration/asset commits with no code coupling
 
-A cloud session (`CLAUDE_CODE_REMOTE=true`) cannot run this Windows-bound gate. It runs the filtered verify in `rules/cloud_dev.md` instead, and its PR states that the local gate is still owed before merge.
+A cloud session (`CLAUDE_CODE_REMOTE=true`) cannot run this Windows-bound gate. It runs the filtered verify in `rules/cloud_dev.md` instead; its PR states the local gate is still owed.
 
 ## Invocation
 
@@ -27,7 +27,7 @@ A cloud session (`CLAUDE_CODE_REMOTE=true`) cannot run this Windows-bound gate. 
 pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
 ```
 
-**A gate run declares its chain position** — `hooks/gate_cadence_guard.py` exempts `-StaticOnly`, `-RetryOnly`, `-RouteOnly` and watch-only calls; other invocations without a marker receive an advisory:
+**A gate run declares its chain position** — `hooks/gate_cadence_guard.py` exempts `-StaticOnly`, `-RouteOnly` and watch-only calls, not `-RetryOnly`; other invocations without a marker receive an advisory:
 
 | Marker | Cap | Means |
 |---|---|---|
@@ -35,7 +35,7 @@ pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
 | `# gate: prepush` | — | Before push/PR. |
 | `# gate: checkpoint` | Long-drive exception; full gate; no numerical cap. |
 
-Every gate invocation runs the same full gate; there are no tiers to choose. `change_control` §Gate cadence owns slice/lane verification, Part/drive close and fix re-verification. The hook never blocks `verify.ps1` or raw `-Filter` runs.
+There are no tiers to choose: the script picks the route. A run whose C# differs from the last full-green snapshot only in comments or whitespace, with every other build input identical, ends `PASS route=comment-only` after the build and `DOCS`; any other tree, an absent or unreadable snapshot, or a lexer failure runs the full gate. The route ignores line numbers: a comment edit above a `[CallerLineNumber]` call (a logger or a guard helper) shifts the line it logs. `change_control` §Gate cadence owns slice/lane verification, Part/drive close and fix re-verification. The hook never blocks `verify.ps1` or raw `-Filter` runs.
 
 **`-Detach` is mandatory from an agent session.** A full gate outlives the 600 s foreground Bash ceiling, and a detached run survives a harness kill of the shell that launched it, which a `run_in_background` task does not. `-Detach` returns in ~1s with `OUT=<path>`, and the run is over only when a line begins `VERDICT=` in that file; a killed poller loses the wake-up, never the run.
 
@@ -50,10 +50,10 @@ It streams the stage lines and the finished-batch transitions with no repeat, th
 
 | Flag | Use |
 |---|---|
-| *(none)* | Full gate. The default; the only form that satisfies a `.cs` commit. When an editor is live on this checkout it runs in the checkout's twin (`TWIN=`) and copies a green run's baseline files back (`TWIN_WRITEBACK=`); a busy checkout is waited on (`WAIT`), up to `-WaitSec`, then ends `BUSY` (exit 7); when the twin cannot be synced, the editor is a holder (see exit 7). |
+| *(none)* | Full gate, or the comment-only route above. When an editor is live on this checkout it runs in the checkout's twin (`TWIN=`) and copies a green run's baseline files back (`TWIN_WRITEBACK=`); a busy checkout is waited on (`WAIT`), up to `-WaitSec`, then ends `BUSY` (exit 7); when the twin cannot be synced, the editor is a holder (see exit 7). |
 | `-Detach` | Spawn the run as a detached process and exit ~1s with `DETACHED pid=`, `OUT=`, `ERR=`. Survives a kill of the launching shell; forwards every other flag. The child runs the whole wait. |
 | `-Watch -Out <path>` | Read-only: stream lines selected by the stage-prefix pattern in `Invoke-StageWatch` and matching-run finished-batch transitions without repeats. The batch state file's `runId` must match the OUT's `gate_run_<runId>.out`. Exit 0 on `VERDICT=`. With usable PID metadata, a dead process without a verdict emits `WATCH_DEAD` and exits 1: rerun the gate. Missing or unusable PID metadata gives no dead-process termination guarantee; inspect OUT, ERR and the PID sidecar before leaving a watch unattended. Takes no lock and runs no gate. `-Batches <path>` overrides the batch state file; `-WatchIntervalSec <n>` sets the poll interval. |
-| `-StaticOnly` | Preflight + guards + build + `DOCS`, ~20s; holds the checkout lease from entry through its build, so it waits behind a running gate; `VERDICT=STATIC_PASS` at exit 0. The right check for a pure-data commit skipping the `.cs` path. Does NOT satisfy the gate for `.cs`. |
+| `-StaticOnly` | Preflight + guards + build + `DOCS`, ~20s; holds the checkout lease from entry through its verdict, so it waits behind a running gate; `VERDICT=STATIC_PASS` at exit 0. The right check for a pure-data commit skipping the `.cs` path. Does NOT satisfy the gate for `.cs`. A comment-only change still ends `PASS route=comment-only`, with or without this flag. |
 | `-RetryOnly` | Restore prior green Integration batches individually when the state digest matches and each batch's label and segment list match. Other batches run. Missing state, missing current digest or digest mismatch prints `RETRY_ONLY_IGNORED reason=<why>` and restores no greens. Composition mismatch leaves only the unmatched batches pending. The digest boundary is `change_control` §Gate cadence's. Logic and Sanity still run. |
 
 Read [`regression_gate_reference.md`](reference/regression_gate_reference.md) §Flags for `-IgnoreEditor`, `-RouteOnly`, `-WaitSec`, `-NoBaselineUpdate` and `-NoReuse`.
@@ -126,7 +126,7 @@ A pre-existing failure does not waive that block. Record any approval and use `V
 
 ## Baseline
 
-`Tests/regression_baseline.json` is **tracked data**; its `silent_skip_sentinels` floors detect a silent skip. The script writes it on a fully green run, including the explained deletion drops in the verdict table. Uncommitted test changes skip the write; FAIL/WARN never write. Stage its diff alongside the test changes, likewise `Tests/integration_batch_durations.json` and `.claude/hooks/tool_resource_classes.txt`.
+`Tests/regression_baseline.json` is **tracked data**; its `silent_skip_sentinels` floors detect a silent skip. The script writes it on a fully green run, including the explained deletion drops in the verdict table. Uncommitted test changes skip the write; FAIL/WARN never write. Its `engine_errors` map holds Godot ERROR-line counts per signature: a full run prints `ENGINE_ERRORS total=… new=… grown=…` and lists growth in the detail, advisory with no verdict effect; a green run lowers stored counts and never raises one. Stage its diff alongside the test changes, likewise `Tests/integration_batch_durations.json` and `.claude/hooks/tool_resource_classes.txt`.
 
 **Adding a top-level `Tests/<X>/` folder** requires renaming it under `Logic|Integration|Sanity`, or gating it (a filter call in the script + a `suites.X` baseline entry + the guard's `GATED` list), or an `EXCLUDED` entry with written rationale. Guard `1f` (`test_suite_gate_coverage_guard.py`) enforces this mechanically — an ungated suite is one the three filters never run.
 

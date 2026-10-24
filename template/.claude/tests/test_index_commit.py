@@ -19,7 +19,9 @@ Cases:
 - the tool's source carries no `commit` argv in any list/tuple literal (planted control first),
   and the printed command is the GIT_INDEX_FILE commit line;
 - usage errors: an unknown path, a path outside the repo, and an unreadable lock each exit
-  non-zero with a named error and stage nothing in the shared index.
+  non-zero with a named error and stage nothing in the shared index;
+- a submodule path with a checkout ahead of its gitlink stages as a gitlink at the checkout's
+  HEAD and deletes nothing; a submodule with no checkout is refused and names the pathspec route.
 
     python3 .claude/tests/test_index_commit.py
 """
@@ -723,6 +725,52 @@ def case_resync_transaction(tmp):
                   not lock.exists() and not list((root / '.git').glob('index-resync-*')))
 
 
+def case_submodule_gitlink(tmp):
+    root, env = scene(tmp, "gitlink")
+    sub = root / "Paired"
+    sub.mkdir()
+    git(sub, ["init", "-q", "-b", "main"], env)
+    (sub / "one.gd").write_text("one\n", encoding="utf-8", newline="\n")
+    git(sub, ["add", "-A"], env)
+    git(sub, ["commit", "-q", "-m", "sub one"], env)
+    pinned = git(sub, ["rev-parse", "HEAD"], env).stdout.strip()
+    git(root, ["update-index", "--add", "--cacheinfo", "160000,%s,Paired" % pinned], env)
+    git(root, ["commit", "-q", "-m", "pin Paired"], env)
+    (sub / "two.gd").write_text("two\n", encoding="utf-8", newline="\n")
+    git(sub, ["add", "-A"], env)
+    git(sub, ["commit", "-q", "-m", "sub two"], env)
+    ahead = git(sub, ["rev-parse", "HEAD"], env).stdout.strip()
+
+    proc = tool(root, env, ["stage", "--name", "gitlink", "--", "Paired"])
+    check("submodule path: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
+    if proc.returncode != 0:
+        return
+    private = idx_env(env, root, "gitlink")
+    listing = git(root, ["ls-files", "-s", "--", "Paired"], private).stdout.split()
+    check("private index holds the submodule as a gitlink at its checkout HEAD",
+          listing[:2] == ["160000", ahead], listing)
+    status = git(root, ["diff", "--cached", "--name-status"], private).stdout.split()
+    check("stage deletes nothing: the only staged change is a modification of the gitlink",
+          status == ["M", "Paired"], status)
+    commit = commit_index(root, env, "gitlink", "move Paired")
+    check("submodule path: the private-index commit lands", commit.returncode == 0, commit.stderr)
+    landed = git(root, ["ls-tree", "HEAD", "--", "Paired"], env).stdout.split()
+    check("HEAD holds the gitlink at the new sha", landed[:3] == ["160000", "commit", ahead], landed)
+
+
+def case_submodule_without_checkout(tmp):
+    root, env = scene(tmp, "nocheckout")
+    git(root, ["update-index", "--add", "--cacheinfo", "160000,%s,Paired" % ("1" * 40)], env)
+    git(root, ["commit", "-q", "-m", "pin Paired with no checkout"], env)
+    proc = tool(root, env, ["stage", "--name", "nocheckout", "--", "Paired"])
+    check("submodule without a checkout: stage refuses with a non-zero exit", proc.returncode == 2,
+          proc.returncode)
+    check("the refusal names the pathspec-commit route",
+          "git commit -m <msg> -- Paired" in proc.stderr, proc.stderr)
+    check("a refused submodule stage leaves no private index",
+          not (root / ".git" / "index-nocheckout").exists(), "")
+
+
 def main():
     if not TOOL.exists():
         print("FAIL tool missing: %s" % TOOL)
@@ -734,7 +782,8 @@ def main():
                      case_seeded_from_recorded_base, case_head_moved_lock_rows,
                      case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
                      case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,
-                     case_resync_nochange_entry, case_failed_stage_keeps_peer_rows, case_resync_transaction):
+                     case_resync_nochange_entry, case_failed_stage_keeps_peer_rows, case_resync_transaction,
+                     case_submodule_gitlink, case_submodule_without_checkout):
             try:
                 case(tmp)
             except Exception as exc:  # a case that cannot stage its fixture is a failure

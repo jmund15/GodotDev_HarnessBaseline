@@ -242,7 +242,7 @@ def _backslash_output(payload):
 
 def evaluate(payload):
     """Repair colon operands before applying the client-specific backslash repair."""
-    from _git_commit import segments, executable_text, _tokens
+    from _git_commit import segments, executable_text, join_continuations, _tokens
     if not isinstance(payload, dict) or payload.get('tool_name') != 'Bash':
         return None
     tool_input = payload.get('tool_input') or {}
@@ -256,8 +256,9 @@ def evaluate(payload):
                 'Run exactly: ' + PROBE_COMMAND}
     replacements, cursor = [], 0
     text = executable_text(command)
+    joined = join_continuations(command)
     for segment in segments(text):
-        at = command.find(segment, cursor)
+        at = joined.find(segment, cursor)
         if at < 0:
             continue
         cursor = at + len(segment)
@@ -269,7 +270,7 @@ def evaluate(payload):
             continue
         if any(not word.startswith('-') and '=' not in word
                and re.match(r'^(?![A-Za-z]:[/\\])[^:\s]*:(?!//)[^\s]+$', word) for word in words[1:]):
-            if 'MSYS_NO_PATHCONV=1' not in inline and (text == command or command.count(segment) == 1):
+            if 'MSYS_NO_PATHCONV=1' not in inline and (text == command or joined.count(segment) == 1):
                 replacements.append(at)
     prefixed = bool(replacements)
     if prefixed:

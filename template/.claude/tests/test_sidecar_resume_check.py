@@ -16,6 +16,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(HERE), "tools", "sidecar_resume_check.py")
+sys.path.insert(0, os.path.dirname(TOOL))  # the tool imports its sibling stream_events
 spec = importlib.util.spec_from_file_location("sidecar_resume_check_probe", TOOL)
 rc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rc)

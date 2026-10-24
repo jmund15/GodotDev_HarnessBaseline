@@ -70,20 +70,20 @@ adjectival: something reasons about each problem before seeing the chosen answer
    questions, and any decision adopted with no competing alternative voiced in the transcript —
    cheap convergence is where blind spots hide. For a video source the set is the `adopt` and
    `hybrid` verdicts, since those are where the project would change. **Empty set → no dispatch**: write the section with
-   its provenance header and a 2–3 sentence session-inline read.
+   its provenance header and a short session-inline read.
 2. **Write solution-stripped briefs** — one per item, one scratch file: the problem as posed,
    verbatim constraints both parties stated, premise-check repo facts. The participants' chosen
    answers are REMOVED — the blind brief is the de-biasing mechanism (the `--design_panel`
    blind-attempt structure).
 3. **Dispatch ONE blind job** through `/delegate` at the architect tier: its lowest ladder effort level for interpersonal or process contention,
    a higher effort level when a brief turns on repo facts the arm must discover. **Never use a fanout-tier row**: those fabricate
-   on open judgment (their `±` cells in `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: 2–3 directions
-   per brief with tradeoffs. Record the pin in the run report.
+   on open judgment (their `±` cells in `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: the distinct directions
+   per brief, each with tradeoffs. Record the pin in the run report.
 4. **Compare and write `## Outside read`** (session): delegate directions vs what was concluded vs
    the repo. Entry tiers: `missed direction` / `misframe` / `unpriced risk` /
-   `resolution proposal` (unresolved frictions only) / `concurrence` (≤2, and only carrying a
-   reason absent from the transcript — else omit). Every entry cites transcript lines or repo
-   paths; anything else is labeled speculation. **A null result is a valid result** — state "no
+   `resolution proposal` (unresolved frictions only) / `concurrence` (only when it carries a
+   reason absent from the transcript — else omit). Every entry cites transcript lines, repo
+   paths or prior digests; anything else is labeled speculation. **A null result is a valid result** — state "no
    missed direction found" plainly rather than manufacturing contrarianism.
 5. **Cross-track:** an entry implying concrete work is ALSO emitted as a step-4 candidate tagged
    `outside-read`, so wins land somewhere executable and ride the same single gate.

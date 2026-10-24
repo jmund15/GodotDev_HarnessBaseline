@@ -348,6 +348,7 @@ def _scan_line(path: str, line_no: int, content: str, digest_sets: dict) -> list
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _NEW_FILE_RE = re.compile(r"^\+\+\+ (?:b/(.+)|/dev/null)$")
+_NO_HEADER_PATH = "<diff with no file header>"
 
 
 def scan_changed(diff_text: str, profile: dict) -> list:
@@ -373,10 +374,9 @@ def scan_changed(diff_text: str, profile: dict) -> list:
             line_no = int(hunk_m.group(1))
             continue
         if raw.startswith("+"):
-            if path is None or line_no is None:
-                continue
-            hits.extend(_scan_line(path, line_no, raw[1:], digest_sets))
-            line_no += 1
+            hits.extend(_scan_line(path or _NO_HEADER_PATH, line_no or 0, raw[1:], digest_sets))
+            if line_no is not None:
+                line_no += 1
         elif raw.startswith(" "):
             if line_no is not None:
                 line_no += 1

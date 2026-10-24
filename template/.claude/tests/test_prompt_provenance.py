@@ -30,6 +30,11 @@ def main():
         ("a human mention of an agent-message tag remains user intent",
          is_user_intent_prompt(
              "Fix the routing bug shown by <agent-message from=\"reader\"> in this report.")),
+        ("a bracket cross-session idle notice is transport",
+         not is_user_intent_prompt(
+             '[Cross-session idle notice] "project-a2", which you asked to be notified about, is idle now')),
+        ("a human sentence that mentions a cross-session notice remains user intent",
+         is_user_intent_prompt("Why did the [Cross-session idle notice] fire twice?")),
         ("empty and non-string values are not user intent",
          not is_user_intent_prompt("") and not is_user_intent_prompt(None)),
     ]

@@ -826,6 +826,23 @@ def test_sidecar_fanout_whose_jobs_file_the_background_call_writes_later_is_trac
         and os.path.normcase(got[0].get("fanout_dir") or "") == os.path.normcase(out_dir), got
 
 
+def test_a_deferred_fanout_takes_the_spill_dir_its_late_jobs_file_names():
+    """With no --out-dir, the launch hook cannot read the jobs file's spillDir before the call writes it, so
+    the expansion reads it: an entry left at `<jobs dir>/fanout` never finds its record and wakes UNRESOLVED."""
+    e = Env()
+    jobs = os.path.join(e.root, "late.json")
+    spill = os.path.join(e.root, "spill")
+    payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s --detach" % jobs.replace("\\", "/"))
+    payload["tool_input"]["run_in_background"] = True
+    e.run(payload, "--launch")
+    json.dump({"spillDir": spill, "jobs": [{"label": "late", "alias": "muse", "effort": "max", "promptFile": "a.md"}]},
+              open(jobs, "w"))
+    e.watch()
+    e.run(stop_payload(), "--complete")
+    got = e.pending()
+    assert [os.path.normcase(p.get("fanout_dir") or "") for p in got] == [os.path.normcase(spill)], got
+
+
 def test_a_fanout_loop_after_an_earlier_launch_in_the_same_call_tracks_each_loop_value():
     """Each launch reads the loops open at its own segment, not at the call's first launch (2026-10-07: a
     launch before `for k in a b c` left `$k` in the loop's jobs path, three slices ran unwatched and the
@@ -1816,6 +1833,104 @@ def test_roster_gate_is_false_where_the_benchmark_suite_is_not_installed():
                 sys.modules["bench_lib"] = saved_mod
 
 
+def _bench_lib_with_planted_logs():
+    dt = _dispatch_table_module()
+    scoring = os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")
+    if scoring not in sys.path:
+        sys.path.insert(0, scoring)
+    try:
+        import bench_lib
+    except ImportError:  # the benchmark suite is project-local; its callers skip without it
+        return dt, None
+    return dt, bench_lib
+
+
+def test_roster_gate_asks_the_public_roster_states_with_one_ps_set():
+    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
+        return
+    with tempfile.TemporaryDirectory() as logs:
+        with open(os.path.join(logs, "r1.pid"), "w") as fh:
+            fh.write("4242")
+        dt, bench_lib = _bench_lib_with_planted_logs()
+        seen = {}
+        saved = (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib._roster_pid, getattr(dt, "_ps_pids", None))
+
+        def states(logs_dir, now=None, pid_alive=None):
+            seen["alive"] = (pid_alive(4242), pid_alive(1))
+            return [{"name": "r1", "state": "LIVE"}]
+
+        def private(path):
+            raise AssertionError("the gate read a private pid helper")
+        bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib._roster_pid = (lambda: logs), states, private
+        dt._ps_pids = lambda: {4242}
+        try:
+            assert dt._any_roster_pid_alive() is True
+        finally:
+            bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib._roster_pid, dt._ps_pids = saved
+        assert seen["alive"] == (True, False), seen
+
+
+def test_roster_ownership_verdict_is_read_once_across_stops():
+    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
+        return
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
+        with open(os.path.join(logs, "r1.pid"), "w") as fh:
+            fh.write("4242")
+        dt, bench_lib = _bench_lib_with_planted_logs()
+        saved_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
+        os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
+        calls = []
+        saved = (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
+                 getattr(dt, "_ps_pids", None), dt.watch_records.process_session)
+        bench_lib.roots.logs_dir = lambda: logs
+        bench_lib.roster_states = lambda logs_dir, now=None, pid_alive=None: [{"name": "r1", "state": "LIVE"}]
+        bench_lib.roster_running_cells = lambda *a, **k: []
+        dt._ps_pids = lambda: {4242}
+        dt.watch_records.process_session = lambda pid: calls.append(pid) or SID
+        try:
+            for _ in range(2):
+                reason, note = dt._unwatched_rosters_reason({"session_id": SID})
+                assert reason and "r1" in reason, (reason, note)
+        finally:
+            (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
+             dt._ps_pids, dt.watch_records.process_session) = saved
+            if saved_env is None:
+                os.environ.pop("HARNESS_HOOK_STATE_DIR")
+            else:
+                os.environ["HARNESS_HOOK_STATE_DIR"] = saved_env
+        assert calls == [4242], "the ownership read ran %d times across two Stops" % len(calls)
+
+
+def test_an_unreadable_roster_owner_is_asked_again_not_cached():
+    if not os.path.isdir(os.path.join(CLAUDE_DIR, "scripts", "benchmark_campaign", "scoring")):
+        return
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
+        with open(os.path.join(logs, "r1.pid"), "w") as fh:
+            fh.write("4242")
+        dt, bench_lib = _bench_lib_with_planted_logs()
+        saved_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
+        os.environ["HARNESS_HOOK_STATE_DIR"] = tmp
+        answers = [None, SID]
+        saved = (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
+                 getattr(dt, "_ps_pids", None), dt.watch_records.process_session)
+        bench_lib.roots.logs_dir = lambda: logs
+        bench_lib.roster_states = lambda logs_dir, now=None, pid_alive=None: [{"name": "r1", "state": "LIVE"}]
+        bench_lib.roster_running_cells = lambda *a, **k: []
+        dt._ps_pids = lambda: {4242}
+        dt.watch_records.process_session = lambda pid: answers.pop(0)
+        try:
+            dt._unwatched_rosters_reason({"session_id": SID})
+            reason, note = dt._unwatched_rosters_reason({"session_id": SID})
+        finally:
+            (bench_lib.roots.logs_dir, bench_lib.roster_states, bench_lib.roster_running_cells,
+             dt._ps_pids, dt.watch_records.process_session) = saved
+            if saved_env is None:
+                os.environ.pop("HARNESS_HOOK_STATE_DIR")
+            else:
+                os.environ["HARNESS_HOOK_STATE_DIR"] = saved_env
+        assert reason and "r1" in reason, "an unreadable owner was cached as not-ours: %r" % ((reason, note),)
+
+
 def test_a_failed_roster_read_is_reported_to_the_owner_not_only_stderr():
     dt = _dispatch_table_module()
     saved = dt._any_roster_pid_alive
@@ -1829,6 +1944,48 @@ def test_a_failed_roster_read_is_reported_to_the_owner_not_only_stderr():
         dt._any_roster_pid_alive = saved
     assert reason is None, reason
     assert note and "OSError" in note, note
+
+
+def _planned_fanout(e, label, launched):
+    """A fan-out job the inventory plans on `anthropic_secondary`, in the shape the writer now emits (the
+    trimmed real inventory's keys plus `launcher`). `launched` plants the pid file its launcher writes."""
+    entry = _fanout_pending(e, label, os.getpid())
+    record = os.path.join(entry["fanout_dir"], label + ".record.json")
+    json.dump({"schemaVersion": 1, "fanoutId": "proof-fanout", "parentSessionId": SID,
+               "fanoutProcess": _pid_line(os.getpid()), "afterSeats": False,
+               "jobs": [{"label": label, "launchId": "l-" + label, "recordPath": record,
+                         "launcher": "anthropic_secondary"}]},
+              open(os.path.join(entry["fanout_dir"], "fanout-proof.inventory.json"), "w", encoding="utf-8"))
+    if launched:
+        open(record + ".pid", "w").write(_pid_line(os.getpid()) + "\n")
+    e.watch()
+    return e.run(stop_payload(), "--complete")
+
+
+def _job_line(msg, label):
+    return next((line for line in msg.splitlines() if " · %s · " % label in line), "")
+
+
+def test_planned_fanout_job_line_names_its_launcher_and_says_queued_until_it_launches():
+    msg = _planned_fanout(Env(), "wl-waiting", launched=False)
+    line = _job_line(msg, "wl-waiting")
+    assert line.startswith("  anthropic_secondary sidecar · ") and line.endswith(" · wl-waiting · queued"), msg
+
+
+def test_planned_fanout_job_line_names_its_launcher_and_shows_elapsed_once_launched():
+    msg = _planned_fanout(Env(), "wl-going", launched=True)
+    line = _job_line(msg, "wl-going")
+    assert line.startswith("  anthropic_secondary sidecar · ") and line.endswith(" · wl-going · <1m"), msg
+
+
+def test_fanout_job_line_keeps_sidecar_fanout_before_any_inventory():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "wl-early", "alias": "muse", "promptFile": "a.md"}], open(jobs, "w"))
+    e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s" % jobs.replace("\\", "/")), "--launch")
+    e.watch()
+    line = _job_line(e.run(stop_payload(), "--complete"), "wl-early")
+    assert line.startswith("  sidecar_fanout sidecar · ") and line.endswith(" · wl-early · <1m"), line
 
 
 if __name__ == "__main__":

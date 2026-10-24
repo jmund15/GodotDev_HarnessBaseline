@@ -700,6 +700,16 @@ def test_materialize_writes_source_bytes_unsubstituted() -> None:
         assert (worktree / "template" / rel).read_bytes() == local_content
 
 
+def test_scrub_honors_the_hits_a_judge_accepted_on_each_row() -> None:
+    publish = _load_publish()
+    rel = ".claude/tests/test_tag.py"
+    records = [{"relpath": rel, "dest_path": "template/" + rel}, {"relpath": ".claude/x.md", "dest_path": "template/.claude/x.md"}]
+    lock = {"files": {rel: {"judged": {"verdict": "push", "accepted_hits": [rel + ":58:topology:04c54b07470c"]}},
+                      ".claude/x.md": {"judged": {"verdict": "push", "accepted_hits": [".claude/other.md:1:topology:aa"]}}}}
+    assert publish._judged_accepted_hits(records, lock) == {"template/" + rel + ":58:topology:04c54b07470c"}
+    assert publish._judged_accepted_hits(records, {"files": {}}) == set()
+
+
 def test_local_merge_refuses_remote_url() -> None:
     publish = _load_publish()
     with _fixture() as path:
@@ -2332,6 +2342,7 @@ def main() -> int:
         test_publish_refuses_malformed_adaptation_contract_fresh_run,
         test_publish_resume_refuses_malformed_adaptation_contract,
         test_published_forked_row_records_tracked_not_forked,
+        test_scrub_honors_the_hits_a_judge_accepted_on_each_row,
         test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
         test_worktree_deletion_leaves_every_row_for_the_consumer_pull,
         test_full_battery_upgrade_refuses_a_published_journal,

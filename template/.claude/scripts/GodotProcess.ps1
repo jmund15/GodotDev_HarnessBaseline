@@ -39,6 +39,35 @@ function Set-AgentEngineUserData {
     [Console]::Error.WriteLine("USERDIR=$($values.USERDIR)")
 }
 
+# The pwsh argv for a child tool run against the same target checkout: every runner forwards -Repo this way.
+function Get-RunnerArgv {
+    param([Parameter(Mandatory)] [string] $Script, [Parameter(Mandatory)] [string] $Repo, [string[]] $ScriptArgs = @())
+    @('-NoProfile', '-File', $Script, '-Repo', $Repo) + $ScriptArgs
+}
+
+# The flags a detached gate child re-receives from its launcher.
+function Get-GateArgs {
+    param([Parameter(Mandatory)] [string] $Repo, [switch] $StaticOnly, [switch] $NoBaselineUpdate, [switch] $RetryOnly, [switch] $NoReuse)
+    $a = @('-Repo', $Repo)
+    if ($StaticOnly)       { $a += '-StaticOnly' }
+    if ($NoBaselineUpdate) { $a += '-NoBaselineUpdate' }
+    if ($RetryOnly)        { $a += '-RetryOnly' }
+    if ($NoReuse)          { $a += '-NoReuse' }
+    $a
+}
+
+# The gate's -Detach hand-off: spawn the child detached, leave its liveness sidecar beside OUT, print the lines a caller polls.
+function Invoke-GateDetach {
+    param([Parameter(Mandatory)] [string] $ScriptPath, [Parameter(Mandatory)] [string[]] $ChildArgs,
+          [Parameter(Mandatory)] [string] $OutPath, [Parameter(Mandatory)] [string] $ErrPath, [string] $Mode = '')
+    $child = Start-DetachedPwshScript -ScriptPath $ScriptPath -Arguments $ChildArgs -OutPath $OutPath -ErrPath $ErrPath
+    try { "pid=$($child.Id) start=$($child.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))" | Set-Content -LiteralPath ([System.IO.Path]::ChangeExtension($OutPath, '.pid')) -Encoding ascii } catch { }
+    Write-Output "DETACHED pid=$($child.Id) mode=$Mode"
+    Write-Output "OUT=$OutPath"
+    Write-Output "ERR=$ErrPath"
+    Write-Output 'WAIT=poll OUT until a line begins VERDICT= (the run is over only then)'
+}
+
 # --- Detached launch -------------------------------------------------------------------
 # Start-Process with -RedirectStandard* spawns with handle inheritance on, so the child also holds
 # the CALLER's stdout: `regression_gate.ps1 -Detach | grep` blocked until the gate finished. Here the
@@ -95,6 +124,14 @@ if ($script:GatePinFiles.Count -gt 0) {
     }
 }
 
+# A locked desktop slows a windowed engine about 40x; the lock screen is a LogonUI.exe in this session.
+function Test-InteractiveSessionLocked {
+    try {
+        $sid = (Get-Process -Id $PID).SessionId
+        return (@(Get-Process -Name LogonUI -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sid }).Count -gt 0)
+    } catch { return $false }
+}
+
 function Assert-GateTargetCompatible {
     param([Parameter(Mandatory)] [string] $Repo)
     if ($script:GatePinFiles.Count -eq 0) { return }
@@ -112,61 +149,86 @@ $script:SuiteBootTimeoutMs = 90000
 $script:SuiteTimeoutFloorMs = 150000
 $script:SuiteDurationHeadroomFactor = 1.5
 $script:SuiteLastGreenExtraMs = 30000
+# A cold checkout's first GdUnit4 recompile pass; the 150 s floor plus this is the 400 s cap that cleared cold runs.
+$script:SuiteColdRecompileExtraMs = 250000
 $script:SuiteDurationExtraMs = 90000
 function Get-HeadroomMs {
     param([double] $ExpectedSec, [double] $ExtraMs)
     [int][math]::Ceiling([math]::Max($script:SuiteTimeoutFloorMs, ($ExpectedSec * $script:SuiteDurationHeadroomFactor * 1000 + $ExtraMs)))
 }
+function Read-SuiteManifest {
+    param([Parameter(Mandatory)] [string] $Path)
+    try { Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "Unreadable suite manifest $Path : $($_.Exception.Message)" }
+}
 function Get-SuiteTimeoutMs {
     param([string] $Repo, [string] $Filter, [string] $LastGreen = '')
     $expected = 0.0
-    try {
-        if ($LastGreen -and (Test-Path -LiteralPath $LastGreen)) {
-            $green = Get-Content -LiteralPath $LastGreen -Raw | ConvertFrom-Json
-            if ($green.filter -ceq $Filter -and [double] $green.elapsedSec -gt 0) {
-                return Get-HeadroomMs -ExpectedSec ([double] $green.elapsedSec) -ExtraMs $script:SuiteLastGreenExtraMs
+    if ($LastGreen -and (Test-Path -LiteralPath $LastGreen)) {
+        $green = Read-SuiteManifest -Path $LastGreen
+        if ($green.filter -ceq $Filter -and [double] $green.elapsedSec -gt 0) {
+            return Get-HeadroomMs -ExpectedSec ([double] $green.elapsedSec) -ExtraMs $script:SuiteLastGreenExtraMs
+        }
+    }
+    # A tier sub-filter takes its whole tier's duration, an upper bound. A part naming no known tier,
+    # unit or test file could select anything, so it adds the widest known duration: an unknown part
+    # reads as the longest run, never as zero (a name prefix such as `EngagementLadder` hung at the floor).
+    # `&` joins a selection to its exclusions; a conjunction runs at most its widest part, so each part
+    # estimates alone and a `!~` exclusion, which selects nothing, adds nothing.
+    $parts = @($Filter -replace '[()]', '' -split '[|&]' | Where-Object { $_ -notmatch '!' })
+    $tiers = @{}
+    $chosen = @{}
+    $unknown = 0
+    $man = $null
+    foreach ($part in $parts) {
+        # vstest reads an operator-less part as FullyQualifiedName~<part>.
+        if ($part -match '^[\w.]+$') { $part = "FullyQualifiedName~$part" }
+        # A class name, bare or dotted (Folder.Class, Class.Test), stands for the tier or unit its test
+        # file lives in: the rightmost segment that names a test file is the class.
+        if ($part -match '^FullyQualifiedName~([\w.]+)$' -and $Matches[1] -notmatch '^Tests(\.|$)') {
+            $testsRoot = (Get-Item -LiteralPath (Join-Path $Repo 'Tests')).FullName.TrimEnd('\', '/')
+            $segments = @($Matches[1].Trim('.') -split '\.')
+            [array]::Reverse($segments)
+            $file = $null
+            foreach ($segment in $segments) {
+                $file = Get-ChildItem -LiteralPath $testsRoot -Recurse -File -Filter "$segment.cs" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($file) { break }
             }
+            if (-not $file) { $unknown++; continue }
+            $rel = $file.FullName.Substring($testsRoot.Length + 1) -replace '\\', '/'
+            $part = 'FullyQualifiedName~Tests.' + (($rel -split '/' | Select-Object -SkipLast 1) -join '.')
         }
-        # A tier sub-filter takes its whole tier's duration, an upper bound; a part naming no known tier or
-        # unit adds nothing, so a mixed filter keeps the headroom of the parts it can estimate.
-        # `&` joins a selection to its exclusions; a conjunction runs at most its widest part, so each part
-        # estimates alone and a `!~` exclusion, which selects nothing, adds nothing.
-        $parts = @($Filter -replace '[()]', '' -split '[|&]' | Where-Object { $_ -notmatch '!' })
-        $tiers = @{}
-        $chosen = @{}
-        $man = $null
-        foreach ($part in $parts) {
-            # vstest reads an operator-less part as FullyQualifiedName~<part>.
-            if ($part -match '^[\w.]+$') { $part = "FullyQualifiedName~$part" }
-            # A class name, bare or dotted (Folder.Class, Class.Test), stands for the tier or unit its test
-            # file lives in: the rightmost segment that names a test file is the class.
-            if ($part -match '^FullyQualifiedName~([\w.]+)$' -and $Matches[1] -notmatch '^Tests(\.|$)') {
-                $testsRoot = (Get-Item -LiteralPath (Join-Path $Repo 'Tests')).FullName.TrimEnd('\', '/')
-                $segments = @($Matches[1].Trim('.') -split '\.')
-                [array]::Reverse($segments)
-                $file = $null
-                foreach ($segment in $segments) {
-                    $file = Get-ChildItem -LiteralPath $testsRoot -Recurse -File -Filter "$segment.cs" -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($file) { break }
-                }
-                if (-not $file) { continue }
-                $rel = $file.FullName.Substring($testsRoot.Length + 1) -replace '\\', '/'
-                $part = 'FullyQualifiedName~Tests.' + (($rel -split '/' | Select-Object -SkipLast 1) -join '.')
-            }
-            if ($part -match '^FullyQualifiedName~Tests\.(Logic|Sanity)(?:\.[\w.]*)?$') { $tiers[$Matches[1]] = $true; continue }
-            if ($part -notmatch '^FullyQualifiedName~Tests\.Integration(?:\.([\w]+)(?:\.[\w.]*)?)?$') { continue }
-            $segment = $Matches[1]
-            if (-not $man) { $man = Get-Content -LiteralPath (Join-Path $Repo 'Tests/integration_batch_durations.json') -Raw | ConvertFrom-Json }
-            $names = @($man.units.PSObject.Properties.Name | Where-Object { -not $segment -or $_ -eq $segment })
-            foreach ($name in $names) { $chosen[$name] = [double] $man.units.$name.seconds }
+        if ($part -match '^FullyQualifiedName~Tests\.(Logic|Sanity)(?:\.[\w.]*)?$') { $tiers[$Matches[1]] = $true; continue }
+        if ($part -notmatch '^FullyQualifiedName~Tests\.Integration(?:\.([\w]+)(?:\.[\w.]*)?)?$') { $unknown++; continue }
+        $segment = $Matches[1]
+        if (-not $man) { $man = Read-SuiteManifest -Path (Join-Path $Repo 'Tests/integration_batch_durations.json') }
+        $names = @($man.units.PSObject.Properties.Name | Where-Object { -not $segment -or $_ -eq $segment })
+        if (-not $names.Count) { $unknown++ }
+        foreach ($name in $names) { $chosen[$name] = [double] $man.units.$name.seconds }
+    }
+    if (-not $tiers.Count -and -not $chosen.Count -and -not $unknown) { return $script:SuiteTimeoutFloorMs }
+    $baselinePath = Join-Path $Repo 'Tests/regression_baseline.json'
+    $baseline = $null
+    if ($tiers.Count) {
+        $baseline = Read-SuiteManifest -Path $baselinePath
+        foreach ($tier in $tiers.Keys) { $expected += [double] $baseline.suites.$tier.duration_sec }
+    }
+    foreach ($value in $chosen.Values) { $expected += $value }
+    if ($unknown) {
+        # Only the manifests that exist inform the widest duration; with neither, no estimate exists.
+        $unitsPath = Join-Path $Repo 'Tests/integration_batch_durations.json'
+        if (-not $man -and (Test-Path -LiteralPath $unitsPath)) { $man = Read-SuiteManifest -Path $unitsPath }
+        if (-not $baseline -and (Test-Path -LiteralPath $baselinePath)) { $baseline = Read-SuiteManifest -Path $baselinePath }
+        $known = @()
+        if ($man) { $known += @($man.units.PSObject.Properties | ForEach-Object { [double] $_.Value.seconds }) }
+        if ($baseline) { $known += @($baseline.suites.PSObject.Properties | ForEach-Object { [double] $_.Value.duration_sec }) }
+        # No filter selects more than every known unit and tier together, so that sum bounds the estimate.
+        if ($known.Count) {
+            $widest = ($known | Measure-Object -Maximum).Maximum
+            $expected = [math]::Min($expected + $unknown * $widest, ($known | Measure-Object -Sum).Sum)
         }
-        if (-not $tiers.Count -and -not $chosen.Count) { return $script:SuiteTimeoutFloorMs }
-        if ($tiers.Count) {
-            $baseline = Get-Content -LiteralPath (Join-Path $Repo 'Tests/regression_baseline.json') -Raw | ConvertFrom-Json
-            foreach ($tier in $tiers.Keys) { $expected += [double] $baseline.suites.$tier.duration_sec }
-        }
-        foreach ($value in $chosen.Values) { $expected += $value }
-    } catch { return $script:SuiteTimeoutFloorMs }
+    }
+    if ($expected -le 0) { return $script:SuiteTimeoutFloorMs }
     Get-HeadroomMs -ExpectedSec $expected -ExtraMs $script:SuiteDurationExtraMs
 }
 
@@ -408,8 +470,7 @@ function Get-GodotRole {
     if ((Get-ProcVerdict $Proc $Map $script:GodotNoSuchRoot 1) -eq 'ORPHAN') { return 'Orphan' }
 
     # 7. A booting editor with no window yet and no -e token lands here: spared from killing,
-    #    invisible to Get-LiveEditor for those seconds. The queued path's continuous re-check
-    #    converts that miss into an abort-and-requeue once the window appears.
+    #    invisible to Get-LiveEditor for those seconds.
     return 'Unknown'
 }
 
@@ -441,6 +502,15 @@ function Resolve-GodotCheckout {
     #    nested-worktree guard included).
     foreach ($root in $norm) {
         if ((Get-ProcVerdict $Proc $Map $root 3) -eq 'MINE') { return $root }
+    }
+
+    # 2b. An editor-launcher parent carries no --path while its child window names one explicitly.
+    foreach ($kid in @($Map.Values | Where-Object { [int] $_.ParentProcessId -eq [int] $Proc.ProcessId -and [int] $_.ProcessId -ne [int] $Proc.ProcessId })) {
+        if ($kid.CreationDate -and $Proc.CreationDate -and $kid.CreationDate -lt $Proc.CreationDate) { continue }
+        $km = [regex]::Match([string] $kid.CommandLine, '--path\s+(?:"([^"]+)"|(\S+))')
+        if (-not $km.Success) { continue }
+        $kraw = if ($km.Groups[1].Success) { $km.Groups[1].Value } else { $km.Groups[2].Value }
+        if ([System.IO.Path]::IsPathRooted($kraw)) { return (Resolve-RootPath $kraw) }
     }
 
     # 3. Editor with no resolvable --path (project-manager or shortcut launch): the checkout whose

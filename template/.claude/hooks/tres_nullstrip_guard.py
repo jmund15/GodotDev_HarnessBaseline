@@ -455,6 +455,10 @@ def hook():
 
 
 def main():
+    if "--repo" in sys.argv:
+        i = sys.argv.index("--repo")
+        os.chdir(sys.argv.pop(i + 1))
+        sys.argv.pop(i)
     args = sys.argv[1:]
     if args and args[0] == "--hook":
         return hook()

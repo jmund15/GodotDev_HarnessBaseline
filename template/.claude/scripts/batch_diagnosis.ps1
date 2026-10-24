@@ -100,7 +100,7 @@ function Get-BatchDiagnosis {
     return [pscustomobject]@{
         verdict  = 'INSUFFICIENT_EVIDENCE'
         evidence = 'no per-test progress lines in the batch output — cannot name a suspect'
-        action   = 'add a -Verbosity normal passthrough to run_test_suite.ps1 and re-run the batch to capture per-test progress'
+        action   = 're-run the batch with -Verbosity normal to capture per-test progress'
     }
 }
 

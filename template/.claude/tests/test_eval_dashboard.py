@@ -5,6 +5,7 @@ with --today fixed, and asserts on the files it wrote.
 
     python3 .claude/tests/test_eval_dashboard.py
 """
+import datetime
 import json
 import os
 import re
@@ -819,6 +820,97 @@ def main():
           and any("no effort miss: 3" in l for l in lines),
           "effort fit: the printed lines name each group and the rated rows with no effort miss",
           "\n".join(lines))
+
+    sys.path.insert(0, os.path.join(CLAUDE, "tools"))
+    import eval_history
+    from eval_history import Metric
+
+    def fresh_root():
+        return tempfile.mkdtemp(prefix="evaldash_loader_")
+
+    def put(root_dir, rel, text):
+        target = os.path.join(root_dir, *rel.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        return target
+
+    absent_route = eval_dashboard.read_routing(fresh_root(), "2026-09-28")
+    unparse_root = fresh_root()
+    put(unparse_root, eval_dashboard.ROUTING_REL, '{"total_entries": 3}')
+    unparse_route = eval_dashboard.read_routing(unparse_root, "2026-09-28")
+    stale_root = fresh_root()
+    put(stale_root, eval_dashboard.ROUTING_REL, '{"generated_at": "2026-09-01T00:00:00", "total_entries": 4}')
+    stale_route = eval_dashboard.read_routing(stale_root, "2026-09-28")
+    ok_root = fresh_root()
+    put(ok_root, eval_dashboard.ROUTING_REL, '{"generated_at": "2026-09-27T10:00:00", "total_entries": 4, "silent_misses": 1}')
+    ok_route = eval_dashboard.read_routing(ok_root, "2026-09-28")
+    check(absent_route == ({"source": "routing audit", "path": eval_dashboard.ROUTING_REL, "rows": 0, "first": None,
+                            "last": None, "age_days": None, "status": "absent"}, None)
+          and unparse_route[0]["status"] == "unparseable" and unparse_route[1] is None
+          and stale_route[0]["status"] == "stale" and stale_route[0]["age_days"] == 27 and stale_route[1]["total_entries"] == 4
+          and ok_route[0]["status"] == "ok" and ok_route[0]["rows"] == 4 and ok_route[1]["silent_misses"] == 1,
+          "loaders: read_routing reads absent, unparseable, stale and ok routing stats",
+          repr((absent_route, unparse_route, stale_route, ok_route)))
+
+    good_rules = put(fresh_root(), "rules.json", '{"fired": [], "undecidable": [], "malformed": []}')
+    short_rules = put(fresh_root(), "short.json", '{"fired": []}')
+    bad_json = put(fresh_root(), "bad.json", "nope")
+    rules_errors = []
+    for path in (short_rules, bad_json):
+        try:
+            eval_dashboard.load_rules(path)
+        except eval_dashboard.InputError as exc:
+            rules_errors.append(str(exc))
+    check(eval_dashboard.load_rules(good_rules) == {"fired": [], "undecidable": [], "malformed": []}
+          and len(rules_errors) == 2 and all(path in msg for path, msg in zip((short_rules, bad_json), rules_errors)),
+          "loaders: load_rules returns a well-formed feed and raises InputError naming the file for a short or non-JSON one",
+          repr(rules_errors))
+
+    rule_mtime = datetime.date.fromtimestamp(os.path.getmtime(good_rules))
+    fresh_row = eval_dashboard.rules_row(good_rules, {"rules": 3}, rule_mtime.isoformat())
+    stale_row = eval_dashboard.rules_row(good_rules, {"rules": 3}, (rule_mtime + datetime.timedelta(days=30)).isoformat())
+    absent_row = eval_dashboard.rules_row(good_rules, None, "2026-09-28")
+    check(fresh_row["status"] == "ok" and fresh_row["rows"] == 3 and stale_row["status"] == "stale"
+          and absent_row["status"] == "absent" and absent_row["rows"] == 0,
+          "loaders: rules_row is ok, stale by file age, or absent when the feed is missing",
+          repr((fresh_row, stale_row, absent_row)))
+
+    pairs_months = {"2026-07": {"closed": False}, "2026-08": {"closed": True, "tag": "b"}, "2026-09": {"closed": True, "tag": "c"}}
+    pairs = list(eval_history.closed_pairs(pairs_months))
+    check([(m, snap["tag"], prev["closed"] if prev else None) for m, snap, prev in pairs]
+          == [("2026-08", "b", False), ("2026-09", "c", True)] and list(eval_history.closed_pairs({})) == [],
+          "loaders: closed_pairs yields each closed month oldest first with its previous stored month, and nothing when empty",
+          repr(pairs))
+
+    def point_under(make_metrics, key, snapshot):
+        saved = eval_history.METRICS
+        try:
+            eval_history.METRICS = make_metrics()
+            return eval_history.point(snapshot, key)
+        except Exception as exc:
+            return "raised %s" % type(exc).__name__
+        finally:
+            eval_history.METRICS = saved
+
+    session_snap = {"sessions": {"n": 4, "unknown": 0, "clean": 2, "correction": 1, "failure": 1, "causes": {"B": 1}},
+                    "agents": {"cells": [], "rows": 4, "sampled_out": 0, "unrated": 1}}
+    renamed_cause = point_under(lambda: (Metric("renamed_cause", "x", "pct", 1, None, False, None, "d", "B"),),
+                                "renamed_cause", session_snap)
+    renamed_agents = point_under(lambda: (Metric("renamed_agents", "y", "pct", 1, "lower", True, None, "d", None),),
+                                 "renamed_agents", session_snap)
+    real_points = (eval_history.point(session_snap, "cause_B") or {}).get("value"), \
+        (eval_history.point(session_snap, "unrated") or {}).get("value")
+    check(isinstance(renamed_cause, dict) and renamed_cause["value"] == 50.0
+          and isinstance(renamed_agents, dict) and renamed_agents["value"] == 25.0 and real_points == (50.0, 25.0),
+          "metrics: point routes by the metric's cause and agent fields, not its key name",
+          repr((renamed_cause, renamed_agents, real_points)))
+    check(all((m.key.startswith("cause_") or m.key == "correction") == (m.better is None)
+              for m in eval_history.METRICS if not m.agent)
+          and eval_history.METRICS[1].key == "correction" and eval_history.METRICS[1].better is None
+          and all(m.agent == (m.key in ("defect_rework", "unrated")) for m in eval_history.METRICS),
+          "metrics: the METRICS table keeps its better and agent values for the session, cause and agent rows",
+          repr([(m.key, m.better, m.agent) for m in eval_history.METRICS]))
 
     total = len(ran)
     print("\n%d/%d cases pass" % (total - len(failures), total))

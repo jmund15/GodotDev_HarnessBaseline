@@ -16,7 +16,7 @@ A stale worktree carries a **correctness** cost on top of disk: `.claude/worktre
 
 `git worktree list --porcelain`, then keep only entries whose path is under this repo's own `.claude/worktrees/`. Sibling checkouts share the same repo, so an unfiltered list returns other checkouts' worktrees — removing one of those destroys another session's working tree.
 
-Then list the directories under `.claude/worktrees/` that the porcelain output does not name. One whose `.git` file points at a missing admin directory is an **orphan**: git pruned its record, so `git -C <path>` cannot read it and no axis below applies. Bucket it `orphan`. Its removal is `rm -rf .claude/worktrees/<name>` alone, after the owner picks it by name (§4); the delete guard admits it only when git already holds every file's content, and its deny names the first file git lacks.
+Then list the directories under `.claude/worktrees/` that the porcelain output does not name. One whose `.git` file points at a missing admin directory is an **orphan**: git pruned its record, so `git -C <path>` cannot read it and no axis below applies. Bucket it `orphan`. Its removal is `rm -rf .claude/worktrees/<name>` alone. `CLAUDE.core.md` §Shell Discipline owns when the delete guard admits it without an owner pick.
 
 ### 2. Classify each
 
@@ -60,7 +60,7 @@ The report is done when the table prints. With no worktree under `.claude/worktr
 
 `git worktree remove` refuses any worktree carrying a submodule; `orchestration` reference `worktrees.md` owns the removal recipe for those and the delete guard's rules.
 
-Removal happens only after the owner picks which ones through one `AskUserQuestion` whose question names each worktree, with a remove option; the delete guard reads that pick and no typed reply. Armed `/overnight` is the exception: `commands/overnight.md` §Step 2 decides it. This command's own output is not the confirmation.
+Ask the owner one question naming each worktree to remove; `CLAUDE.core.md` §Shell Discipline owns what the delete guard then accepts. Armed `/overnight` is the exception: `commands/overnight.md` §Step 2 decides it. This command's own output is not the confirmation.
 
 ## Don'ts
 

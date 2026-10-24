@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +31,8 @@ TOP_FILES = 3
 CHECKLIST_FILES = 5  # the newest markdown files the job wrote that a checklist is looked for in
 NOTE_KEEP = 40
 SAID_KEEP = 400
+GIT_TIMEOUT = 10
+LOG_KEEP = 500  # the newest commits of a worktree's log a job's commits are read from
 
 # (pattern, group holding the failed count). A summary line a test runner or the project's gate prints.
 TEST_LINES = (
@@ -83,15 +86,26 @@ class Progress:
         self.reads = collections.Counter()  # path -> Read calls
         self.tests = []  # (epoch, failing, line)
         self.builds = []  # (epoch, failing)
-        self.commits = []  # (epoch, short sha)
+        self.commits = []  # (epoch, short sha) printed by a commit command
+        self.cwd = None  # the init row's working directory, when the stream has one
         self.said = []  # (epoch, text)
         self.notes = collections.deque(maxlen=NOTE_KEEP)  # (epoch, a tool call's own description)
         self.written = {}  # markdown path -> epoch of the job's latest write to it
+        self._made, self._made_key = [], None
         self._pending = {}  # tool_use id -> (tool name, command)
 
     @property
     def readable(self):
         return self.rows > 0
+
+    def made_commits(self):
+        """The job's commits: its linked worktree's git log since its first row, else the printed `[branch sha]` lines."""
+        key = (self.rows, self.cwd, self.first)
+        if self._made_key != key:
+            own = _worktree_commits(self.cwd, self.first)
+            self._made = self.commits if own is None else own
+            self._made_key = key
+        return self._made
 
     @property
     def writer(self):
@@ -117,6 +131,7 @@ class Progress:
             tools = row.get("tools")
             if row.get("subtype") == "init" and isinstance(tools, list):
                 self.tools = tools
+                self.cwd = row.get("cwd") if isinstance(row.get("cwd"), str) else None
         elif kind == "assistant":
             self._assistant(row, ts)
         elif kind == "user":
@@ -201,6 +216,29 @@ class Progress:
         if name.lower() in ("bash", "shell") and command and COMMIT_COMMAND.search(command):
             for found in COMMIT_LINE.finditer(text):
                 self.commits.append((ts, found.group(1)[:9]))
+
+
+def _worktree_commits(cwd, since):
+    """(epoch, short sha) of the commits at or after `since` in the git log of the linked worktree at `cwd`; None when
+    `cwd` is not a linked worktree or git cannot answer."""
+    if not cwd or since is None or not os.path.isdir(cwd):
+        return None
+    try:
+        dirs = subprocess.run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+                              capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        log = subprocess.run(["git", "-C", cwd, "log", "--format=%ct %h", "-n", str(LOG_KEEP)],
+                             capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    git_dir, common = (dirs.stdout.splitlines() + ["", ""])[:2]
+    if dirs.returncode != 0 or log.returncode != 0 or not git_dir or git_dir == common:
+        return None
+    commits = []
+    for line in log.stdout.splitlines():
+        stamp, _, sha = line.partition(" ")
+        if stamp.isdigit() and int(stamp) >= since:
+            commits.append((float(stamp), sha[:9]))
+    return commits
 
 
 _CACHE = {}
@@ -384,7 +422,7 @@ def clause(progress, *, now, window, age_min=None, shape=None, history=None, wri
         parts.append("build results %d (%d failing)" % (len(progress.builds), sum(1 for b in progress.builds if b[1])))
     writer = progress.writer if progress.writer is not None else writes
     if writer:
-        parts.append("commits %d" % len(progress.commits))
+        parts.append("commits %d" % len(progress.made_commits()))
     items = checklist(progress)
     if items:
         parts.append("items %d of %d in %s" % items)
@@ -403,6 +441,7 @@ def clause(progress, *, now, window, age_min=None, shape=None, history=None, wri
 def _hour_rows(progress, hours):
     """Per hour since the first row: calls, edits, test lines, failing test lines, commits, context at the hour's end."""
     start = progress.first
+    commits = progress.made_commits()
     rows = []
     for h in range(hours):
         low, high = start + h * 3600, start + (h + 1) * 3600
@@ -417,7 +456,7 @@ def _hour_rows(progress, hours):
             "edits": sum(1 for stamps in progress.edits.values() for ts in stamps if inside(ts)),
             "tests": sum(1 for t in progress.tests if inside(t[0])),
             "failing": sum(1 for t in progress.tests if inside(t[0]) and t[1]),
-            "commits": sum(1 for c in progress.commits if inside(c[0])),
+            "commits": sum(1 for c in commits if inside(c[0])),
             "context": context,
         })
     return rows
@@ -473,7 +512,7 @@ def digest(progress, label=None, max_hours=24, max_lines=30):
 
     listing("test result lines", progress.tests, lambda t: "%s %s" % (_clock(t[0]), t[2]))
     listing("builds", progress.builds, lambda b: "%s %s" % (_clock(b[0]), "failing" if b[1] else "ok"))
-    listing("commits", progress.commits, lambda c: "%s %s" % (_clock(c[0]), c[1]))
+    listing("commits", progress.made_commits(), lambda c: "%s %s" % (_clock(c[0]), c[1]))
     listing("said", progress.said, lambda s: '%s "%s"' % (_clock(s[0]), _quote(s[1], 160)))
     listing("tool call descriptions", list(progress.notes), lambda s: '%s "%s"' % (_clock(s[0]), _quote(s[1], 160)))
     items = checklist(progress)

@@ -347,6 +347,22 @@ def main():
             ["python3", ".claude/tools/session_digest.py", "--match-file", real.as_posix(),
              "--match", "x"], str(root))
         cases.append(("an absolute `~/.claude/projects` digest path is approved", ok))
+    config_dir = Path(tempfile.mkdtemp(prefix="ag_cfg_"))
+    second_transcript = config_dir / "projects" / "proj" / "s.jsonl"
+    second_transcript.parent.mkdir(parents=True)
+    second_transcript.write_text("{}\n", encoding="utf-8")
+    config_before = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    try:
+        ok, _ = approving_gates._digest_shape(
+            ["python3", ".claude/tools/session_digest.py", "--match-file", second_transcript.as_posix(),
+             "--match", "x"], str(root))
+    finally:
+        if config_before is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = config_before
+    cases.append(("a digest path under this session's CLAUDE_CONFIG_DIR projects is approved", ok))
     claimed = approving_gates.owning_contract(["git", "log", "--grep", "commit"], str(root))
     cases.append(("`git log` is not claimed by the git-commit gate",
                   claimed is None or claimed.name != "git-commit"))

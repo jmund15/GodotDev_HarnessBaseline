@@ -251,6 +251,28 @@ def split_submodule(top: Path, path: str):
     return None
 
 
+def split_worktree(top: Path, path: str):
+    """`(linked worktree directory, path inside it)` when `path` lies under `.claude/worktrees/<name>/` of `top`,
+    else None. A linked worktree shares `top`'s object store, so its files hash at any commit of `top`."""
+    parts = path.split("/", 3)
+    if len(parts) == 4 and parts[:2] == [".claude", "worktrees"] and (top / "/".join(parts[:3]) / ".git").exists():
+        return "/".join(parts[:3]), parts[3]
+    return None
+
+
+def row_blob(row: dict, path: str):
+    """The blob `row` recorded for `path`. A worktree subject's row keys its files worktree-relative, so a
+    main-rooted `.claude/worktrees/<name>/<rest>` key falls back to `<rest>`; the compare against the current
+    blob stays the content check."""
+    files = row.get("files") or {}
+    blob = files.get(path)
+    if blob is None:
+        parts = path.split("/", 3)
+        if len(parts) == 4 and parts[:2] == [".claude", "worktrees"]:
+            blob = files.get(parts[3])
+    return blob
+
+
 def owning_repo(top: Path, path: str) -> tuple[Path, str]:
     """`(checkout, path inside it)` for the deepest submodule checkout that holds `path`, else `(top, path)`."""
     found = split_submodule(top, path)
@@ -758,20 +780,37 @@ def mandate_doctrine(claude_dir: Path | None = None) -> dict[str, list[str]]:
     return {key: sorted(files) for key, files in sorted(found.items()) if files}
 
 
-def rule_hash(key: str, claude_dir: Path | None = None, catalog: dict | None = None):
-    """SHA-256 over the mandate's home section plus each file its lenses preload (`mandate_doctrine`); None for
-    a key outside the catalog."""
+def rule_text(key: str, claude_dir: Path | None = None, catalog: dict | None = None):
+    """The bytes `rule_hash` digests: the mandate's home section, then each file its lenses preload
+    (`mandate_doctrine`); None for a key outside the catalog."""
     claude_dir = claude_dir or _claude_dir()
     spec = (catalog if catalog is not None else load_catalog(claude_dir)).get(key)
     if not isinstance(spec, dict):
         return None
-    digest = hashlib.sha256(_home_text(spec["home"], claude_dir).encode("utf-8"))
+    data = _home_text(spec["home"], claude_dir).encode("utf-8")
     for rel in mandate_doctrine(claude_dir).get(key, []):
         try:
-            digest.update(b"\0" + (claude_dir / rel).read_bytes())
+            data += b"\0" + (claude_dir / rel).read_bytes()
         except OSError as exc:
             raise ToolError(f"{key}: cannot read preloaded file {rel}: {exc}") from exc
-    return "sha256:" + digest.hexdigest()
+    return data
+
+
+def rule_hash(key: str, claude_dir: Path | None = None, catalog: dict | None = None):
+    """SHA-256 over `rule_text`; None for a key outside the catalog."""
+    data = rule_text(key, claude_dir, catalog)
+    return None if data is None else "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def rule_blob(repo: Path, key: str, claude_dir: Path | None = None, catalog: dict | None = None):
+    """The git blob id of `rule_text`, written to `repo`'s object store so a later rule-delta can diff from it."""
+    data = rule_text(key, claude_dir, catalog)
+    if data is None:
+        return None
+    done = _git(repo, ["hash-object", "-w", "--stdin"], stdin=data)
+    if done.returncode != 0:
+        raise ToolError(f"{key}: git hash-object failed for the rule text: {done.stderr.decode().strip()}")
+    return done.stdout.decode().strip()
 
 
 def check_keys(catalog: dict, claude_dir: Path, lens_sets: dict) -> list[str]:
@@ -1019,9 +1058,11 @@ class Ctx:
     def _batch_check(self, repo: Path, revision: str, paths: list[str]) -> list[str]:
         """`cat-file --batch-check` lines for `revision:path` in `repo`. A path under a submodule is read from
         that submodule's object store at the commit the gitlink pins at `revision` (`missing` when it is
-        absent), since `revision:path` stops at the gitlink."""
-        splits = {p: split_submodule(repo, p) for p in paths}
-        flat = [p for p in paths if splits[p] is None]
+        absent), since `revision:path` stops at the gitlink. A path under a linked worktree is read from that
+        worktree at the same `revision`, since the worktree shares the object store."""
+        worktrees = {p: split_worktree(repo, p) for p in paths}
+        splits = {p: None if worktrees[p] else split_submodule(repo, p) for p in paths}
+        flat = [p for p in paths if splits[p] is None and worktrees[p] is None]
         lines = {}
         if flat:
             query = "".join(f"{revision}:{p}\n" for p in flat).encode("utf-8")
@@ -1030,8 +1071,15 @@ class Ctx:
             if len(found) != len(flat):
                 raise ToolError(f"cannot read {self.snapshot} blobs for {len(flat)} files")
             lines.update(zip(flat, found))
+        by_home = {}
         for path in paths:
-            if splits[path] is None:
+            if worktrees[path]:
+                by_home.setdefault(worktrees[path][0], []).append(path)
+        for home, members in by_home.items():
+            rests = [worktrees[p][1] for p in members]
+            lines.update(zip(members, self._batch_check(repo / home, revision, rests)))
+        for path in paths:
+            if worktrees[path] or splits[path] is None:
                 continue
             link, rest = splits[path]
             pinned = _git(repo, ["rev-parse", "--verify", "--quiet", f"{revision}:{link}"])
@@ -1112,6 +1160,7 @@ class Cover:
         self._resolved_rows = {}
         self._visiting = set()
         self._resolving_blob = None
+        self._rule_at = None
         self._premise = None
         self._registry = None
 
@@ -1119,6 +1168,10 @@ class Cover:
         if mandate not in self._rules:
             self._rules[mandate] = rule_hash(mandate, self.claude_dir, self.catalog)
         return self._rules[mandate]
+
+    def rule_in_force(self, mandate: str):
+        """The rule hash clause 1 judges against: the current rule, or the rule a `ruleFrom` predecessor was judged under."""
+        return self._rule_at if self._rule_at is not None else self.rule(mandate)
 
     def tiers(self):
         if self._tiers is None:
@@ -1135,6 +1188,8 @@ class Cover:
         try:
             if row.get("mandate") != mandate or not all(fn(self, row, mandate, path) for _, fn in CLAUSES):
                 return False
+            if "ruleFrom" in row and not self._rule_delta_holds(row, mandate, path, blob, seat):
+                return False
             if "from" not in row:
                 return not ((seat or {}).get("nonPanelRoot") and row.get("reviewer") == "panel")
             origins = row["from"]
@@ -1146,9 +1201,44 @@ class Cover:
         finally:
             self.seat, self._resolving_blob = saved
 
+    def _resolve_at(self, rule: str | None, mandate: str, path: str, blob: str, seat: dict | None):
+        saved, self._rule_at = self._rule_at, rule
+        try:
+            return self.resolve(mandate, path, blob, seat)
+        finally:
+            self._rule_at = saved
+
+    def _rule_delta_holds(self, row, mandate, path, blob, seat) -> bool:
+        """A `ruleFrom` row covers only when the resolver covers the pair at the rule its `ruleFrom` blob names."""
+        for old in self.rows:
+            if old is not row and old.get("mandate") == mandate and old.get("ruleBlob") == row["ruleFrom"] \
+                    and old.get("ruleHash") and self._resolve_at(old["ruleHash"], mandate, path, blob, seat):
+                return True
+        return False
+
+    def rule_after(self, mandate: str, path: str, seats: list):
+        """`ruleBlob` of the newest row that holds for every seat at the rule it was judged under, but not under the
+        current rule; None when no such row exists."""
+        blob = self.ctx.hash(path)
+        current = self.rule(mandate)
+        for row in reversed(self.rows):
+            judged = row.get("ruleHash")
+            if not row.get("ruleBlob") or judged in (None, current) or row.get("mandate") != mandate:
+                continue
+            if all(self._holds_at(judged, row, mandate, path, blob, seat) for seat in seats or [None]):
+                return row["ruleBlob"]
+        return None
+
+    def _holds_at(self, rule, row, mandate, path, blob, seat) -> bool:
+        saved, self._rule_at = self._rule_at, rule
+        try:
+            return self._row_holds(row, mandate, path, blob, seat)
+        finally:
+            self._rule_at = saved
+
     def resolve(self, mandate: str, path: str, blob: str, seat: dict | None):
         """Newest valid direct or derived row; every predecessor passes the same clauses."""
-        key = (mandate, path, blob, json.dumps(seat, sort_keys=True), self.subject_kind, self.design)
+        key = (mandate, path, blob, json.dumps(seat, sort_keys=True), self.subject_kind, self.design, self._rule_at)
         if key in self._resolved_rows:
             return self._resolved_rows[key]
         if key in self._visiting:
@@ -1215,7 +1305,7 @@ class Cover:
         if blob is None:
             return False
         return any(row.get("mandate") == mandate and row.get("reviewer") == "inline:fold"
-                   and (row.get("files") or {}).get(path) == blob
+                   and row_blob(row, path) == blob
                    and _clause_outcome(self, row, mandate, path) and _clause_rule_text(self, row, mandate, path)
                    for row in self.rows)
 
@@ -1256,7 +1346,7 @@ class Cover:
         Clause 6 is judged against each of `seats`, and passes when there are none."""
         current = self.ctx.hash(path)
         for row in reversed(self.rows):
-            blob = (row.get("files") or {}).get(path)
+            blob = row_blob(row, path)
             if blob and blob != current and all(
                     self.resolve(mandate, path, blob, seat) is not None for seat in seats or [None]):
                 return blob
@@ -1292,7 +1382,7 @@ class Cover:
 
 
 def _clause_rule_text(cover, row, mandate, path):
-    current = cover.rule(mandate)
+    current = cover.rule_in_force(mandate)
     return current is not None and row.get("ruleHash") == current
 
 
@@ -1305,7 +1395,7 @@ def _clause_content(cover, row, mandate, path):
         current = cover.ctx.hash(cover.design)
         return current is not None and (row.get("files") or {}).get(cover.design) == current
     current = cover._resolving_blob if cover._resolving_blob is not None else cover.ctx.hash(path)
-    return current is not None and (row.get("files") or {}).get(path) == current
+    return current is not None and row_blob(row, path) == current
 
 
 def _clause_reach(cover, row, mandate, path):
@@ -1471,7 +1561,7 @@ def cover_at(repo: Path, hashes: dict, base_ref: str = "origin/main") -> Cover:
 def reviewed_blob(cover: Cover, path: str, mandates, seats):
     """Newest blob covered by every mandate at all its roster depth seats, else None."""
     for row in reversed(cover.rows):
-        blob = (row.get("files") or {}).get(path)
+        blob = row_blob(row, path)
         if blob and all(cover.resolve(m, path, blob, seat) is not None
                         for m in mandates for seat in seats.get(m, []) or [{"nonPanelRoot": True}]):
             return blob
@@ -1564,6 +1654,8 @@ def cmd_uncovered(args, repo: Path) -> int:
             depth = _depth_seats(roster or [], pair[1])
             blob = reviewed_blob(cover, pair[0], [pair[1]], {pair[1]: depth or [None]})
             pair += (f"after:{blob}",) if blob else ()
+            rule = cover.rule_after(pair[1], pair[0], depth or [None])
+            pair += (f"rule-after:{rule}",) if rule else ()
         print("\t".join(pair))
     return 0
 
@@ -1921,7 +2013,7 @@ def cmd_plan(args, repo: Path) -> int:
     owed_pairs = []
     for seat in roster:
         cover.seat = {"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
-        left, owed = [], set()
+        left, owed, ruled = [], set(), []
         for mandate in seat["mandates"]:
             covering = [] if args.ignore_ledger or not files else [
                 cover.covering_row(mandate, path) for path in files]
@@ -1935,8 +2027,14 @@ def cmd_plan(args, repo: Path) -> int:
                 missing = [path for path, row in zip(files, covering) if row is None] if covering else files
                 owed.update(missing)
                 owed_pairs += [(len(kept), mandate, path) for path in missing]
+                for path in missing:
+                    ruled_from = cover.rule_after(mandate, path, [cover.seat])
+                    if ruled_from:
+                        ruled.append({"mandate": mandate, "file": path, "ruleFrom": ruled_from,
+                                      "ruleTo": rule_blob(cover.ctx.repo, mandate, catalog=catalog)})
         if left:
-            kept.append(dict(seat, mandates=left, uncoveredFiles=sorted(owed)))
+            kept.append(dict(seat, mandates=left, uncoveredFiles=sorted(owed),
+                             **({"ruleDelta": ruled} if ruled else {})))
     result = {"roster": kept, "dropped": dropped}
     earlier = {(index, mandate, path): cover.earlier_blob(mandate, path, _depth_seats(roster, mandate))
                for index, mandate, path in owed_pairs} if files and not args.ignore_ledger else {}
@@ -2594,7 +2692,8 @@ def _seat_rows(seat, seat_findings, record: _RecordContext) -> list:
             print(f"mandate {mandate} is not in the catalog: no row for seat {seat['seat']}", file=sys.stderr)
             continue
         outcome = seat["mandates"][mandate]
-        shared = dict(base, ts=stamp, mandate=mandate, ruleHash=rule, reviewer="panel",
+        shared = dict(base, ts=stamp, mandate=mandate, ruleHash=rule, ruleBlob=rule_blob(ctx.toplevel, mandate,
+                      catalog=catalog), reviewer="panel",
                       family=_family(seat["model"]), model=seat["model"] or "unknown",
                       modelObserved=seat["observed"], identityBasis=seat.get("identityBasis"),
                       record=seat.get("record"), tier=tier, effort=effort, seat=seat["seat"],
@@ -2732,7 +2831,7 @@ def cmd_record(args, repo: Path) -> int:
         rule = rule_hash(mandate, catalog=catalog)
         reviewer = f"script:{name}" if args.script else f"inline:{name}"
         rows.append(dict(base, id=f"{name}:{stamp}:{mandate}", ts=stamp, mandate=mandate, ruleHash=rule,
-                         reviewer=reviewer, family="none", model=None, modelObserved=False, tier=None, effort=None,
+                         ruleBlob=rule_blob(repo, mandate, catalog=catalog), reviewer=reviewer, family="none", model=None, modelObserved=False, tier=None, effort=None,
                          seat=name, seatMandates=[mandate], files=hashes, outcome=args.outcome,
                          findings=0, **({"from": origins} if origins is not None else {})))
     else:
@@ -2814,6 +2913,11 @@ def cmd_record(args, repo: Path) -> int:
         if not _finding_paths([by_id[finding_id]], ctx.toplevel)[0]:
             raise ToolError(f"--escaped {finding_id}: the finding cites no file")
     path = ledger_path(repo)
+    if args.rule_from:
+        if not re.fullmatch(r"[0-9a-f]{40}", args.rule_from):
+            raise ToolError(f"--rule-from takes the ruleBlob of the rule the rows replace, got {args.rule_from!r}")
+        for row in rows:
+            row["ruleFrom"] = args.rule_from
     if rows and not _append_rows(path, rows):
         raise ToolError(f"cannot append to review ledger {path}", 1)
     for item in candidates:
@@ -3160,6 +3264,8 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--degraded", action="store_true")
     record.add_argument("--no-new-decision", action="store_true")
     record.add_argument("--escaped", action="append")
+    record.add_argument("--rule-from", dest="rule_from",
+                        help="ruleBlob of the rule these rows replace: a rule-delta review of the changed rule text")
     common(record)
 
     uncovered = subs.add_parser("uncovered")

@@ -226,6 +226,64 @@ def _cellless(old):
     return dict(_upgraded(old), agents=dict({key: old["agents"][key] for key in ("rows",) + COVERAGE_BUCKETS}, cells=[]))
 
 
+class _Settle:
+    """Decides one month's stored snapshot for a publish and records the action taken on it in `actions`."""
+
+    def __init__(self, today, verdict, rules, refreeze):
+        self.current = today[:7]
+        self.verdict = verdict
+        self.rules = rules
+        self.refreeze = refreeze
+        self.actions = {}
+
+    def next_snapshot(self, month, old, new):
+        if old is not None and old.get("closed"):
+            if month not in self.refreeze or new is None:
+                return old
+            self.actions[month] = "refrozen"
+            return _refrozen(old, new, self.rules)
+        if old is None and new is None:
+            return None
+        if old is None and month != self.current:
+            self.actions[month] = "backfilled"
+            return _seal(dict(new, closed=True, backfilled=True, ladder=[], rules=None, verdict=None,
+                              attention=_kept_attention(new, True)))
+        base = old if new is None else new if old is None else _merged(old, new)
+        if month == self.current:
+            self.actions[month] = "written"
+            fresh = dict(base, closed=False, backfilled=False,
+                         verdict=self.verdict if self.verdict is not None else (old or {}).get("verdict"))
+            fresh.pop("rules", None)
+            return fresh
+        self.actions[month] = "closed"
+        return _seal(dict(base, closed=True, backfilled=False, rules=self.rules, verdict=old.get("verdict"),
+                          attention=_carry_stored(old, base.get("attention", []))))
+
+    def migrated(self, month, old, new):
+        self.actions[month] = "migrated"
+        if new is None:
+            return _cellless(old)
+        if old.get("closed"):
+            return _refrozen(old, new, old.get("rules"))
+        result = self.next_snapshot(month, _without_agents(_upgraded(old)), new)
+        self.actions[month] = "migrated"
+        return result
+
+
+def _merge_months(months, candidates, settle, legacy):
+    """Set each month's settled snapshot in `months`; a legacy-schema file is migrated, and months after the current one are skipped."""
+    for month in sorted(set(months) | set(candidates)):
+        old, new = months.get(month), candidates.get(month)
+        if legacy and old is not None:
+            result = settle.migrated(month, old, new if month <= settle.current else None)
+        elif month > settle.current:
+            continue
+        else:
+            result = settle.next_snapshot(month, old, new)
+        if result is not None:
+            months[month] = result
+
+
 def publish(root, facts, verdict, today, *, refreeze=()):
     """Write the history under the file lock; return {"months", "actions"}.
 
@@ -237,44 +295,8 @@ def publish(root, facts, verdict, today, *, refreeze=()):
     and for a closed month its stored skill-drift rows; a month with no live source keeps its counts and gets no
     cells. Raises HistoryRefusedError for a refused stored file (left untouched) and HistoryWriteError for a
     failed lock or write."""
-    current = today[:7]
-    rules = facts.get("rules")
     candidates = {month: c for month, c in facts["months"].items() if _has_rows(c)}
-    actions = {}
-
-    def next_snapshot(month, old, new):
-        if old is not None and old.get("closed"):
-            if month not in refreeze or new is None:
-                return old
-            actions[month] = "refrozen"
-            return _refrozen(old, new, rules)
-        if old is None and new is None:
-            return None
-        if old is None and month != current:
-            actions[month] = "backfilled"
-            return _seal(dict(new, closed=True, backfilled=True, ladder=[], rules=None, verdict=None,
-                              attention=_kept_attention(new, True)))
-        base = old if new is None else new if old is None else _merged(old, new)
-        if month == current:
-            actions[month] = "written"
-            fresh = dict(base, closed=False, backfilled=False,
-                         verdict=verdict if verdict is not None else (old or {}).get("verdict"))
-            fresh.pop("rules", None)
-            return fresh
-        actions[month] = "closed"
-        return _seal(dict(base, closed=True, backfilled=False, rules=rules, verdict=old.get("verdict"),
-                          attention=_carry_stored(old, base.get("attention", []))))
-
-    def migrated(month, old, new):
-        actions[month] = "migrated"
-        if new is None:
-            return _cellless(old)
-        if old.get("closed"):
-            return _refrozen(old, new, old.get("rules"))
-        result = next_snapshot(month, _without_agents(_upgraded(old)), new)
-        actions[month] = "migrated"
-        return result
-
+    settle = _Settle(today, verdict, facts.get("rules"), tuple(refreeze))
     failures = []
 
     def update(state):
@@ -283,19 +305,9 @@ def publish(root, facts, verdict, today, *, refreeze=()):
             stored = read_stored(root)
             months = state.get("months") if isinstance(state.get("months"), dict) else {}
             declared = stored.get("schema") if stored else SCHEMA
-            legacy = declared in PREVIOUS_SCHEMAS
             check_months(months, declared)
             state["schema"] = SCHEMA
-            for month in sorted(set(months) | set(candidates)):
-                old, new = months.get(month), candidates.get(month)
-                if legacy and old is not None:
-                    result = migrated(month, old, new if month <= current else None)
-                elif month > current:
-                    continue
-                else:
-                    result = next_snapshot(month, old, new)
-                if result is not None:
-                    months[month] = result
+            _merge_months(months, candidates, settle, declared in PREVIOUS_SCHEMAS)
             state["months"] = {key: _canonical(months[key]) for key in sorted(months)}
             return state["months"]
         except Exception as exc:
@@ -307,7 +319,7 @@ def publish(root, facts, verdict, today, *, refreeze=()):
         raise failures[0]
     if not written:
         raise HistoryWriteError("could not write %s" % HISTORY_REL)
-    return {"months": months, "actions": actions}
+    return {"months": months, "actions": settle.actions}
 
 
 FLOOR_MIN_ROWS = 8
@@ -368,18 +380,17 @@ def _pct_point(count, den, unfavorable):
     return {"value": 100.0 * count / den if den else None, "n": den, "count": count, "unfav": unfavorable, "rows": den}
 
 
-def _sessions_point(snapshot, kind):
+def _sessions_point(snapshot, key, cause):
     sessions = snapshot["sessions"]
     known = sessions["n"] - sessions["unknown"]
-    if kind in ("clean", "correction", "failure"):
-        count = sessions[kind]
-        return _pct_point(count, known, known - count if kind == "clean" else count)
+    if cause is None:
+        count = sessions[key]
+        return _pct_point(count, known, known - count if key == "clean" else count)
     non_clean = sessions["correction"] + sessions["failure"]
     causes = sessions.get("causes")
     if causes is None:
         return {"value": None, "n": non_clean, "count": None, "unfav": None, "rows": non_clean}
-    code = kind[len("cause_"):]
-    return _pct_point(other_causes(snapshot) if code == "other" else causes.get(code, 0), non_clean, None)
+    return _pct_point(other_causes(snapshot) if cause == "other" else causes.get(cause, 0), non_clean, None)
 
 
 def other_causes(snapshot):
@@ -403,37 +414,39 @@ def _agents_point(snapshot, kind):
     return _pct_point(agents["unrated"], open_rows, agents["unrated"])
 
 
-class Metric(namedtuple("Metric", "key label kind min_n better agent gloss definition")):
+class Metric(namedtuple("Metric", "key label kind min_n better agent gloss definition cause")):
     """One row of the comparison: `gloss` is the short reading printed beside the label in the note, and
-    `definition` the sentence the report shows under it. `better` is None where a rise is neither good nor bad."""
+    `definition` the sentence the report shows under it. `better` is None where a rise is neither good nor bad.
+    `agent` marks a row over dispatched agents; `cause` is the `/self_evaluate` code a session row counts, or
+    `other` for sessions with no named cause."""
 
 
-def _session_metric(key, label, gloss, definition):
-    return Metric(key, label, "pct", MIN_CMP_SESSIONS, None if key.startswith("cause_") or key == "correction" else "higher" if key == "clean" else "lower",
-                  False, gloss, definition)
+def _session_metric(key, label, gloss, definition, better, cause=None):
+    return Metric(key, label, "pct", MIN_CMP_SESSIONS, better, False, gloss, definition, cause)
 
 
 METRICS = (
     _session_metric("clean", "Clean sessions", "the owner made no correction",
-                    "Sessions where the owner made no correction, as a share of %s." % KNOWN_OUTCOME),
+                    "Sessions where the owner made no correction, as a share of %s." % KNOWN_OUTCOME, "higher"),
     _session_metric("correction", "Sessions with a correction", "the owner caught one or more issues",
-                    "Sessions where the owner caught one or more issues, as a share of %s." % KNOWN_OUTCOME),
+                    "Sessions where the owner caught one or more issues, as a share of %s." % KNOWN_OUTCOME, None),
     _session_metric("failure", "Failed sessions", "a critical failure: data loss, repeated frustration",
-                    "Sessions with a critical failure such as data loss or repeated frustration, as a share of %s." % KNOWN_OUTCOME),
+                    "Sessions with a critical failure such as data loss or repeated frustration, as a share of %s." % KNOWN_OUTCOME,
+                    "lower"),
 ) + tuple(
     _session_metric("cause_" + code, "%s: %s" % (code, name), None,
                     "Sessions that needed a correction or failed, where `/self_evaluate` recorded cause %s (%s), as a share "
-                    "of all such sessions." % (code, name))
+                    "of all such sessions." % (code, name), None, code)
     for code, name in CAUSES) + (
     _session_metric("cause_other", "No cause recorded", None,
                     "Sessions that needed a correction or failed, where `/self_evaluate` recorded none of the causes A, B, D or "
-                    "E, as a share of all such sessions."),
+                    "E, as a share of all such sessions.", None, "other"),
     Metric("defect_rework", "Rated agents with defects or rework", "pct", MIN_CMP_AGENTS, "lower", True, None,
            "Dispatched agents whose rating was defects or rework, as a share of rated agents, all models pooled. "
-           "The Agents tab shows each model at each effort."),
+           "The Agents tab shows each model at each effort.", None),
     Metric("unrated", "Unrated agents", "pct", MIN_CMP_AGENTS, "lower", True, None,
            "Dispatched agents nobody has rated, as a share of agents open to rating; agents sampled out of rating are "
-           "not counted."),
+           "not counted.", None),
 )
 
 
@@ -441,8 +454,10 @@ def point(snapshot, key):
     """One month's value for a metric: {"value", "n", "count", "unfav", "rows"}, or None when the month has no snapshot."""
     if snapshot is None:
         return None
-    kind = "agents" if key in ("defect_rework", "unrated") else "sessions"
-    return (_sessions_point if kind == "sessions" else _agents_point)(snapshot, key)
+    spec = {row.key: row for row in METRICS}[key]
+    if spec.agent:
+        return _agents_point(snapshot, key)
+    return _sessions_point(snapshot, key, spec.cause)
 
 
 def shift(delta, bad_rows_delta, better):

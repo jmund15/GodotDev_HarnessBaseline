@@ -604,6 +604,7 @@ def _settle(live, transport, cost_model, cache_path, now):
         raise CapacityError("invalid %s capacity result: %s" % (transport, "; ".join(errors)))
     if live.get("status") in CACHEABLE and live.get("sourceKind") == "live":
         _write_cache(cache_path, transport, copy.deepcopy(live))
+        _sample_usage(transport, cost_model, live, now, cache_path)
         return live
     if live.get("status") == "network-error":
         kind = (live.get("error") or {}).get("kind")
@@ -616,6 +617,35 @@ def _settle(live, transport, cost_model, cache_path, now):
                 raise CapacityError("generated cache fallback is invalid")
             return fallback
     return live
+
+
+def _sample_usage(transport, cost_model, reading, now, cache_path=None):
+    """Append one plan-usage sample per window of a fresh plan-quota reading, keyed by `transport`.
+
+    This is the one place a fresh reading is stored, so every plan's samples come from the same
+    observation the cache keeps. A reading settled into a cache other than the default one is
+    planted, so with no HARNESS_USAGE_SAMPLES its samples go beside that cache, never into the
+    account-wide file. Never raises: a sampler failure costs only the sample."""
+    if cost_model != "plan-quota":
+        return
+    path = None
+    default = str(ROOT / ".claude" / ".cache" / "provider_capacity.json")
+    if cache_path and not os.environ.get("HARNESS_USAGE_SAMPLES") \
+            and os.path.normcase(os.path.abspath(cache_path)) != os.path.normcase(default):
+        path = str(cache_path) + ".usage_samples.jsonl"
+    try:
+        import usage_samples
+        ts = _epoch(reading.get("observedAt"))
+        ts = now if ts is None else ts
+        rows = [{"ts": ts, "provider": transport, "plan": transport, "window": w.get("name"),
+                 "used": w.get("usedPercent"), "resets_at": _epoch(w.get("resetsAt")),
+                 "windowDurationMins": w.get("windowDurationMins")}
+                for w in ((reading.get("quota") or {}).get("windows") or [])
+                if isinstance(w, dict) and w.get("usedPercent") is not None and w.get("name")]
+        if rows:
+            usage_samples.record(rows, now=ts, path=path)
+    except Exception:
+        return
 
 
 def main(argv):

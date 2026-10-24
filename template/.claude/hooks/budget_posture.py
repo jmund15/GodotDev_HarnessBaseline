@@ -123,10 +123,10 @@ def start_warm(transports):
     if os.environ.get("HARNESS_CAPACITY_WARM") == "0" or not transports:
         return False
     try:
-        from _bounded_run import detach_options, job_env
+        from _bounded_run import detach_options
         subprocess.Popen([sys.executable, os.path.join(TOOLS, "provider_bands.py"), "warm", *transports],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         close_fds=True, env=job_env(), **detach_options())
+                         close_fds=True, **detach_options())
     except Exception:
         return False
     return True
@@ -623,16 +623,19 @@ def band_cli():
 USAGE_WINDOWS = ("five_hour", "seven_day")
 
 
-def sample_usage(rl, now):
-    """Append this capture's Anthropic windows to the plan-usage samples (tools/usage_samples.py)."""
+def sample_usage(rl, now, plan=None):
+    """Append this capture's Anthropic windows to the plan-usage samples, under this session's plan
+    (tools/usage_samples.py); an unidentified plan reads under the provider."""
     import usage_samples  # noqa: WPS433 - late, so a broken sampler costs only the sample
 
+    plan = plan if plan not in (None, _session_transport.UNKNOWN) else "anthropic"
     samples = []
     for window in USAGE_WINDOWS:
         w = rl.get(window)
         if isinstance(w, dict) and w.get("used_percentage") is not None:
-            samples.append({"ts": rl.get("captured_at"), "provider": "anthropic", "window": window,
-                            "used": w.get("used_percentage"), "resets_at": w.get("resets_at")})
+            samples.append({"ts": rl.get("captured_at"), "provider": "anthropic", "plan": plan,
+                            "window": window, "used": w.get("used_percentage"),
+                            "resets_at": w.get("resets_at")})
     usage_samples.record(samples, now)
 
 
@@ -870,7 +873,7 @@ def main():
         pass
 
     try:
-        sample_usage(rl, now)
+        sample_usage(rl, now, plan)
     except Exception:
         pass
 

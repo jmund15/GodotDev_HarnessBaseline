@@ -71,6 +71,9 @@ def main():
 
     root = Path(tempfile.mkdtemp(prefix="provider_capacity_"))
     cache = root / "capacity.json"
+    samples = root / "samples.jsonl"
+    saved_samples = os.environ.get("HARNESS_USAGE_SAMPLES")
+    os.environ["HARNESS_USAGE_SAMPLES"] = str(samples)
     now = 1_800_000_000.0
     data = {
         "transports": {
@@ -110,6 +113,47 @@ def main():
     cases.append(("the cache contains no credential-shaped keys",
                   not any(k.lower().endswith("token") or "credential" in k.lower()
                           for k in json.dumps(cached_blob).split('"'))))
+
+    def read_samples():
+        if not samples.is_file():
+            return []
+        with open(samples, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    recorded = read_samples()
+    cases.append(("a fresh plan-quota reading records a sample per window, keyed by its transport",
+                  [(r.get("plan"), r.get("window")) for r in recorded] == [("anthropic", "seven_day")]))
+    if [(r.get("plan"), r.get("window")) for r in recorded] != [("anthropic", "seven_day")]:
+        print("  recorded:", recorded)
+    two = quota()
+    two["observedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 600))
+    two["quota"]["windows"].append({"name": "five_hour", "usedPercent": 4.0,
+                                    "resetsAt": 1_800_000_000 + 3600, "windowDurationMins": 300,
+                                    "pressure": 0.08, "band": "Surplus", "runoutRatio": 0.08})
+    pc.reading("anthropic", data=data, now=now, cache_path=str(root / "two.json"),
+               runner=lambda _spec, _transport: two)
+    cases.append(("every window of the fresh reading is sampled",
+                  [(r.get("plan"), r.get("window")) for r in read_samples()][1:] == [
+                      ("anthropic", "seven_day"), ("anthropic", "five_hour")]))
+    pc.reading("deepseek", data=data, now=now, cache_path=str(root / "pay.json"), runner=live)
+    cases.append(("a pay-per-token transport records no plan sample", len(read_samples()) == 3))
+    blocked = root / "blocker"
+    blocked.write_text("x", encoding="utf-8")
+    os.environ["HARNESS_USAGE_SAMPLES"] = str(blocked / "s.jsonl")
+    resilient = pc.reading("anthropic", data=data, now=now, cache_path=str(root / "resilient.json"),
+                           runner=live)
+    os.environ["HARNESS_USAGE_SAMPLES"] = str(samples)
+    cases.append(("a sampler failure never raises and never drops the reading",
+                  resilient.get("status") == "available"))
+    # A planted cache is a planted reading: with no samples override its sample stays beside that
+    # cache, never in the account-wide file (observed 2026-10-24: proofs wrote 100% rows there).
+    os.environ.pop("HARNESS_USAGE_SAMPLES", None)
+    beside = root / "beside.json"
+    pc.reading("anthropic", data=data, now=now, cache_path=str(beside), runner=live)
+    os.environ["HARNESS_USAGE_SAMPLES"] = str(samples)
+    beside_samples = Path(str(beside) + ".usage_samples.jsonl")
+    cases.append(("a reading settled into a non-default cache samples beside that cache",
+                  beside_samples.is_file() and len(read_samples()) == 3))
 
     def network_failure(_spec, _transport):
         return {
@@ -505,6 +549,10 @@ def main():
                   and timeout_of({"timeoutSeconds": 20, "refresh": {"timeoutSeconds": 15}}) == 35
                   and timeout_of({"timeoutSeconds": 30, "refresh": {"timeoutSeconds": 15}}) == 35))
 
+    if saved_samples is None:
+        os.environ.pop("HARNESS_USAGE_SAMPLES", None)
+    else:
+        os.environ["HARNESS_USAGE_SAMPLES"] = saved_samples
     failed = [name for name, ok in cases if not ok]
     for name, ok in cases:
         print(("ok   " if ok else "FAIL ") + name)

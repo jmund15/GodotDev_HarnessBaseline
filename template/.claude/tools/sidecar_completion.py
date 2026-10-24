@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch_result
 import post_check
+from cli_usage import usage
 
 VERDICTS = ('VERIFIED', 'UNVERIFIED', 'UNCHECKED')
 REPO = Path(__file__).resolve().parents[2]
@@ -103,7 +104,7 @@ def complete_record(record, *, root=REPO, capture=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--record', required=True)
     parser.add_argument('--root', default=str(REPO))
     parser.add_argument('--capture', help='host capture before the durable raw output lands')

@@ -88,8 +88,8 @@ def build(data=None, read=None, session_plan=None, now=None):
     tiers = []
     for tier in model_registry.TIER_ORDER:
         try:
-            facts = provider_bands.room_facts(provider_bands.pick(tier, session_plan, data=data, read=cached_read,
-                                                                  now=now), read=cached_read, now=now, data=data)
+            facts = provider_bands.room_facts(provider_bands.facts(tier, session_plan, data=data, read=cached_read,
+                                                                   now=now), read=cached_read, now=now)
             pays = ", ".join(p["transport"] + ("" if p.get("room") is not None else " (%s)" % p.get("why"))
                              for p in facts["plans"])
         except Exception as exc:  # noqa: BLE001

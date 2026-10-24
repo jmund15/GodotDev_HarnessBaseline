@@ -12,8 +12,10 @@ configuration error, never a fake healthy sample.
     check --label <label>     exit 0 = proceed; 3 = refused (one REFUSED line); 2 = invalid configuration
     wait --label <label>      exit 0 = proceed; 2 = invalid configuration
 
-Environment: LAUNCH_MIN_COMMIT_GIB (default 12), LAUNCH_MIN_PHYSICAL_GIB (default 8),
-LAUNCH_MEMORY_POLL_SEC (default 20, seconds). A floor of 0 disables that metric.
+Environment: LAUNCH_MIN_COMMIT_GIB (default 12), LAUNCH_MIN_PHYSICAL_GIB (default 6),
+LAUNCH_MEMORY_POLL_SEC (default 20, seconds). A floor of 0 disables that metric. The physical
+default is the largest measured sidecar process tree (claude -p plus its tool and test processes:
+4.85 GiB private bytes, 12 live trees sampled every 5 s) plus 1 GiB.
 """
 from __future__ import annotations
 
@@ -29,7 +31,7 @@ COMMIT_ENV = "LAUNCH_MIN_COMMIT_GIB"
 PHYSICAL_ENV = "LAUNCH_MIN_PHYSICAL_GIB"
 POLL_ENV = "LAUNCH_MEMORY_POLL_SEC"
 DEFAULT_COMMIT_GIB = 12.0
-DEFAULT_PHYSICAL_GIB = 8.0
+DEFAULT_PHYSICAL_GIB = 6.0
 DEFAULT_POLL_SEC = 20.0
 _GIB = 1024 ** 3
 

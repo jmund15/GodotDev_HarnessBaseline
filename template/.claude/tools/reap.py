@@ -812,8 +812,10 @@ def justification(args, table, pid, targets, owner=None, sid=None):
         name = os.path.basename(args.artifact)
         # A job's outputs share its label stem (<label>.record.json, .out.json, .exit, ...), and
         # Windows paths ignore case: a stem in the tree's command lines is the job's own output.
+        # A script the tree runs is not an output: its stem names the command, not the job.
         stem = name.lower().split(".")[0]
-        if stem and any(stem in (table[member].get("cmd") or "").replace("\\", "/").lower()
+        runnable = name.lower().endswith((".ps1", ".py", ".sh", ".js", ".cmd", ".bat"))
+        if stem and not runnable and any(stem in (table[member].get("cmd") or "").replace("\\", "/").lower()
                         for member in [pid] + descendants(table, pid)):
             return False, ("artifact %s is the target's own output, still being written; stop it under "
                            "--reason queued once nothing in its tree is in flight" % name)

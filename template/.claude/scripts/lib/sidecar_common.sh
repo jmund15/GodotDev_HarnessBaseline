@@ -652,9 +652,12 @@ sc_resolve_tools() {
     printf '%s' "$SC_PROMPT" > "$_bf"
     brief_arg+=(--brief="$_bf")
   fi
-  for _bf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
-    brief_arg+=(--brief="$_bf")
-  done
+  # A review seat's -C files are the subject it judges, not instructions it runs.
+  if [ "${SC_SHAPE:-}" != "review" ]; then
+    for _bf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
+      brief_arg+=(--brief="$_bf")
+    done
+  fi
   out="$(python3 "$SC_ROOT/tools/tool_profiles.py" resolve --widen \
       --shape="${SC_SHAPE:-any}" --tools="${SC_TOOLS:-}" \
       ${base_arg[@]+"${base_arg[@]}"} ${brief_arg[@]+"${brief_arg[@]}"} \
@@ -921,7 +924,7 @@ sc_gate_availability() {
 # child gets: the CLI keeps only the last flag, so every fragment is merged here.
 # Project rows come from adaptation.json sidecar_hook_rows: matcher, command and optional when.
 # when maps environment names to exact values (null means nonempty); commands remain self-gated.
-# {root}, {shape}, {prompt} and {ruler_scope} expand to shell-quoted launcher values.
+# {root}, {shape}, {prompt}, {ruler_scope}, {workdir}, {main_root} and {spill_dir} expand to shell-quoted launcher values.
 #
 # The former T1 fragment — enabledPlugins.semantic-search@dreb=false for a non-arm child whose -t
 # named no search tool — is gone. Every launcher now passes --strict-mcp-config with the resolved
@@ -934,7 +937,7 @@ sc_gate_availability() {
 sc_drift_guard_active() { [ "${SC_SHAPE:-}" = "bench-score" ] && [ -n "${SC_PROMPT_FILE:-}" ]; }
 # BENCH_RULER_SCOPE adds the succession ruler's staged-file Read allowlist.
 sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on stdout ("" if nothing to pass)
-  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" <<'PY'
+  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" <<'PY'
 import json, os, shlex, sys
 from pathlib import Path
 base = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
@@ -955,9 +958,22 @@ try:
 except (OSError, ValueError):
     project = {}
 rows = project.get("sidecar_hook_rows", []) if isinstance(project, dict) else []
+# The launcher's own row: a child in a linked worktree may write only its workdir and spill dir.
+builtin = {"matcher": "Write|Edit|NotebookEdit|Bash", "when": {"SC_MAIN_ROOT": None},
+           "command": "python3 {root}/hooks/sidecar_workdir_guard.py {workdir} {main_root} {spill_dir}"}
+rows = [builtin] + [row for row in (rows if isinstance(rows, list) else [])
+                    if not (isinstance(row, dict) and "sidecar_workdir_guard.py" in str(row.get("command", "")))]
 env = dict(os.environ, SC_SHAPE=sys.argv[3], SC_PROMPT_FILE=sys.argv[4],
            BENCH_ARM=sys.argv[5], BENCH_RULER_SCOPE=sys.argv[6])
-values = {"root": root.as_posix(), "shape": sys.argv[3],
+sys.path.insert(0, (root / "hooks").as_posix())
+from _checkout_root import linked_main_root
+workdir = os.path.abspath(sys.argv[7]) if sys.argv[7] else ""
+main_root = linked_main_root(workdir) if workdir else ""
+main_root = Path(main_root).as_posix() if main_root else ""
+spill = os.path.dirname(os.path.abspath(sys.argv[8] or sys.argv[9])) if (sys.argv[8] or sys.argv[9]) else ""
+env["SC_MAIN_ROOT"] = main_root
+values = {"root": root.as_posix(), "shape": sys.argv[3], "workdir": workdir.replace("\\", "/"),
+          "main_root": main_root, "spill_dir": spill.replace("\\", "/"),
           "prompt": os.path.abspath(sys.argv[4]).replace("\\", "/") if sys.argv[4] else "",
           "ruler_scope": env.get("BENCH_RULER_SCOPE", "")}
 for row in rows if isinstance(rows, list) else []:
@@ -1273,6 +1289,7 @@ sc_prepare_record() {
   [ -n "$SC_RECORD" ] || return 0
   [ "${SC_LAUNCH_PREPARED:-0}" = 1 ] && return 0
   local launch record prepared
+  sc_ensure_launch_id || return 1
   record="$(sc_to_native "$SC_RECORD")" || return 1
   [ -n "$record" ] || return 1
   prepared="$(RECORD_V="$record" PARENT_V="$SC_PARENT_SESSION_ID" \
@@ -1280,7 +1297,7 @@ sc_prepare_record() {
     STALE_V="$SC_INVENTORY_STALE_SECONDS" LIMIT_V="$SC_INVENTORY_SWEEP_LIMIT" python3 - <<'PY'
 import json, os, pathlib, tempfile, time, uuid
 record = pathlib.Path(os.environ["RECORD_V"]).absolute()
-launch = os.environ["LAUNCH_V"] or str(uuid.uuid4())
+launch = os.environ["LAUNCH_V"]
 if str(uuid.UUID(launch)) != launch:
     raise ValueError("invalid launch identity")
 try:
@@ -1798,8 +1815,16 @@ if brief:
         content = Path(brief).read_bytes()
         tokens = dispatch_size.window_fit(None, len(content.decode('utf-8', errors='replace')))['tokens']
         print(f'brief: {len(content)} bytes; estimated tokens={tokens}')
+        size = dispatch_size.dispatch_size({'jobs': [{'promptPath': brief, 'model': model}]}, root=Path.cwd())
+        print(dispatch_size.format_line(size))
+        reading = size['perJob'][0]['readingTokens']
+        fit = dispatch_size.fit_tokens(model, reading)
+        if fit['usable']:
+            print(f"brief + named files: ~{reading} tokens of {fit['usable']} usable ({round(100 * reading / fit['usable'])}%)" + (f"; OVER by {max(0, reading - fit['usable'])} tokens" if reading > fit['usable'] else ''))
     except OSError as exc:
         print(f'brief: unreadable ({exc})')
+    except (KeyError, IndexError, ValueError) as exc:
+        print(f'brief: unsized ({type(exc).__name__}: {exc})')
 else:
     print('brief: not supplied')
 tier = _dispatch_checks.shape_tiers().get(profile)
@@ -1917,7 +1942,7 @@ sc_write_record() {
   ledger_default="$SC_LEDGER_DEFAULT"
   sc_check_completion "$SC_RECORD" "$SC_WORKDIR" "$raw_tmp"
 
-  RAW_V="$(sc_to_native "$raw_tmp")" EFFORT_V="$SC_EFFORT" MODEL_V="$SC_MODEL" RC_V="$rc" \
+  LIBDIR_V="$(sc_to_native "$SC_ROOT/scripts/lib")" RAW_V="$(sc_to_native "$raw_tmp")" EFFORT_V="$SC_EFFORT" MODEL_V="$SC_MODEL" RC_V="$rc" \
     PARENT_SESSION_V="$SC_PARENT_SESSION_ID" LAUNCH_ID_V="$SC_LAUNCH_ID" \
     HB_V="$hb" HS_V="$hs" DSHA_V="$dsha" REC_V="$(sc_to_native "$SC_RECORD")" \
     SCHEMA_V="$(sc_to_native "$SC_SCHEMA_FILE")" LEDGER_V="$SC_LEDGER" LABEL_V="$SC_LABEL" \
@@ -1927,14 +1952,16 @@ sc_write_record() {
     REGCLI_V="$SC_REGISTRY_CLI" PROGRESS_V="$(sc_to_native "${SC_PROGRESS:-}")" CTXWIN_V="${SC_CONTEXT_TOKENS:-}" CTXSOURCE_V="${SC_CONTEXT_WINDOW_SOURCE:-}" CTXOVERRIDE_V="${SIDECAR_COMPACT_AT_TOKENS:+${AC_AUTO_COMPACT_WINDOW:-}}" PRICE_AT_V="${SC_PRICE_AT_START:-}" \
     USAGE_LIMIT_V="${SC_USAGE_LIMITED:-0}" RESET_V="${SC_USAGE_LIMIT_RESET:-}" \
     PERM_V="${SC_PERM_MODE:-}" MAXOUT_V="${SC_MAX_OUTPUT:-}" STALL_V="${SC_STALL_SEC:-}" \
-    PINBASIS_V="${SC_PIN_BASIS:-}" \
+    PINBASIS_V="${SC_PIN_BASIS:-}" TOOLFRAME_V="${SC_TOOL_FRAME:-}" \
     RESUMED_V="${SC_RESUMED_FROM:-}" PROF_V="${SC_TOOL_PROFILE:-}" PROMPT_V="${SC_PROMPT_FILE:-}" \
     python3 - <<'PYEOF' || publish_rc=$?
 import json, os, sys, tempfile, time
 raw = open(os.environ["RAW_V"], encoding="utf-8", errors="replace").read()
 parser = os.environ.get("PARSER_V") or "claude"
 sys.path.insert(0, os.path.join(os.path.dirname(os.environ["REGCLI_V"])))
+sys.path.insert(0, os.environ["LIBDIR_V"])
 import model_registry as _reg
+import plugin_registry as _plugin_registry
 
 if parser == "codex":
     # `codex exec --json` emits a different stream from Claude Code's: JSONL of
@@ -1988,38 +2015,13 @@ if parser == "codex":
         "error": err,
     }
 else:
-    def _result_event(events):
-        # The record source is the result event. A synthetic usage-limit event carries no usage,
-        # so the child's own last result keeps the tokens.
-        data, real = {}, None
-        for o in events:
-            if isinstance(o, dict) and o.get("type") == "result":
-                data = o
-                if not o.get("synthetic"):
-                    real = o
-        return real if real is not None and data.get("synthetic") else data
-
-    def _events(lines):
-        for line in lines:
-            try:
-                yield json.loads(line)
-            except Exception:
-                continue
-
-    try:
-        data = json.loads(raw)
-    except Exception:
-        # stream-json: one event per line.
-        data = _result_event(_events(raw.splitlines()))
-    if isinstance(data, list):
-        # `-o json` under the user setting `"verbose": true` is an ARRAY of every event, not the
-        # single result object (live 2026-09-22: every launch died on data.get).
-        data = _result_event(data)
+    import cli_envelope
+    _evts = cli_envelope.events(raw)
+    data = cli_envelope.result_event(_evts) or {}
     if not data.get("session_id"):
         # A run that ended before its result event (killed, stalled, crashed) still names its session in every
         # other event; the record keeps it so the run can be resumed.
-        _sid = next((o.get("session_id") for o in reversed(list(_events(raw.splitlines())))
-                     if isinstance(o, dict) and o.get("session_id")), None)
+        _sid = cli_envelope.session_id(_evts)
         if _sid:
             data = dict(data, session_id=_sid)
     usage = data.get("usage") or {}
@@ -2105,16 +2107,13 @@ def _turn1_context(sid):
 turn1 = _turn1_context(data.get('session_id'))
 def _tool_versions(plan):
     # The search tooling the child's login ran, so a board can tell arms or judges on different plugin
-    # versions apart: the user-scope semantic-search@dreb in <login>/plugins/installed_plugins.json, null
-    # when that login lacks it or the child is not Claude Code (codex runs no Claude plugin).
+    # builds apart (the revision, not the version label): the user-scope semantic-search@dreb in
+    # <login>/plugins/installed_plugins.json, null when that login lacks it or the child is not Claude Code (codex runs no Claude plugin).
     version = None
     if parser == "claude":
         try:
             login = os.path.dirname(_projects_root(plan))
-            with open(os.path.join(login, "plugins", "installed_plugins.json"), encoding="utf-8") as fh:
-                entries = ((json.load(fh).get("plugins") or {}).get("semantic-search@dreb")) or []
-            user = [e for e in entries if isinstance(e, dict) and e.get("scope") == "user"]
-            version = user[0].get("version") if len(user) == 1 else None
+            version = _plugin_registry.build_identity(_plugin_registry.user_row(login, "semantic-search@dreb"))
         except Exception:
             version = None
     return {"semanticSearch": version}
@@ -2206,6 +2205,7 @@ record = {
     # mode, the output cap passed to the child (null = the client's own default, nothing passed), the
     # stall watchdog limit (-Z), and the session a -r run resumed (F144).
     "permissionMode": os.environ.get("PERM_V") or None,
+    "toolFrame": os.environ.get("TOOLFRAME_V") or None,
     "maxOutputTokens": int(os.environ["MAXOUT_V"]) if (os.environ.get("MAXOUT_V") or "").isdigit() else None,
     "stallSec": int(os.environ["STALL_V"]) if (os.environ.get("STALL_V") or "").isdigit() else None,
     "resumedFrom": os.environ.get("RESUMED_V") or None,

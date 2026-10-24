@@ -87,11 +87,11 @@ deletions and paths later reverted, except what the push remote's default branch
 branch's close proves what the branch changes, so a sync merge adds only its conflict resolutions; a red the
 merged-in commits bring is the default branch's and reads as pre-existing. The runner tests committed HEAD in a private checkout, not a
 peer's dirty working tree; selected proofs absent at that revision and never committed run their working copies against those inputs. Push requires a green `close` result for the pushed commit and that upstream: push the commit it proved (`git push origin <sha>:<branch>`, printed on green); commits landed since go out with the next close.
-A missing or stale result, a new red or unavailable coverage blocks push, not local commits.
+A missing or stale result, a new tracked red or unavailable coverage blocks push, not local commits.
 
 A failure whose marked lines also appear at the upstream base, or at the default branch's merge-base when a sync merged in commits that base lacks, is pre-existing: printed and logged
 to `harness_known_red.jsonl`, not new. An untracked, never-committed proof runs its working copy
-against the base's inputs. A new red is bisected through that proof's input-changing commits and
+against the base's inputs. Its red prints `UNCOMMITTED PROOF RED <proof> (not in this push)` and blocks neither push nor stamp: its own commit's close gates it. A new tracked red is bisected through that proof's input-changing commits and
 prints `FIRST RED <proof> at <sha> <subject>`. A red that passes in the shared checkout is rerun at committed HEAD with its dirty, untracked or ignored inputs planted. When planting makes it pass, the close prints `NEEDS UNCOMMITTED <proof>` naming those inputs, skips the bisect, counts it apart in the summary and still blocks push: commit an input that belongs to the change, and make the proof plant any input it reads from scratch or another session's work. When planting does not make it pass, the close prints `PASSES ONLY IN THE WORKING TREE <proof>` with an unknown cause (the checkout's location, or an input outside its reach) and bisects it like any other red. `/session_end` §7b
 leaves another session's in-progress red to its owner. A timeout or output without a
 failure-marked line never excuses a red. A close started while this session's author or fold dispatch writes in its checkout waits for it and names it; it then proves the committed HEAD of that moment once: a later commit never restarts it, and a newer `--close` supersedes it at once, waiting or running, so a commit never needs the close stopped. Before dispatching a fix for reds, run `--close --now`, which skips that wait, so each red arrives classified (pre-existing, or its FIRST RED commit and owner); map the new ones to fix jobs by cause and write set (`orchestration` §2).
@@ -117,7 +117,7 @@ commits (`merge`/`cherry-pick`/`revert --continue` included) and which paths a m
 
 ## A spawn on Windows keeps a console its children share
 
-A child of a console-less process allocates its own console, which Windows hands to the default terminal: a visible window per child, and a persistent error window when the child dies before the handoff finishes. A worker that outlives its launcher takes `detach_options()` (`hooks/_bounded_run.py`; `bench_lib.py` carries its twin, held equal by `test_spawn_console_shape.py`). Never `DETACHED_PROCESS`, `CREATE_NEW_CONSOLE`, Node `detached: true` or a `Start-Process` with neither `-WindowStyle Hidden` nor `-NoNewWindow`; the same proof scans for each. A new spawn shape proves itself the way the shape was found: spawn a console child, then count new terminal windows.
+A child of a console-less process allocates its own console, which Windows hands to the default terminal: a visible window per child, and a persistent error window when the child dies before the handoff finishes. A worker that outlives its launcher takes `detach_options()` (`hooks/_bounded_run.py`, which `bench_lib.py` re-exports; the keywords carry the worker's `env` with its job id, so a spawn is `**detach_options(env)`, never a hand-written `env=`). Never `DETACHED_PROCESS`, `CREATE_NEW_CONSOLE`, Node `detached: true` or a `Start-Process` with neither `-WindowStyle Hidden` nor `-NoNewWindow`; a spawn-shape proof scans for each. A new spawn shape proves itself the way the shape was found: spawn a console child, then count new terminal windows.
 
 ## Unknown values fail CLOSED, on the safe side of the comparison
 

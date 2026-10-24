@@ -25,9 +25,10 @@ import tempfile
 import time
 from pathlib import Path
 
+import _platform_skip
+
 if sys.platform != "win32":
-    print("SKIP launch-memory admission: sampling reads Windows commit memory and its seams need Git Bash")
-    sys.exit(0)
+    _platform_skip.skip_proof("launch-memory admission", "sampling reads Windows commit memory and its seams need Git Bash")
 
 HERE = Path(__file__).resolve().parent
 CLAUDE = HERE.parent
@@ -230,8 +231,8 @@ else:
     for k in saved:
         os.environ.pop(k, None)
     floors = mod.floors_from_env()
-    if (floors.commit_gib, floors.physical_gib, floors.poll_sec) == (12.0, 8.0, 20.0):
-        ok("defaults are 12 GiB commit, 8 GiB physical, 20s poll")
+    if (floors.commit_gib, floors.physical_gib, floors.poll_sec) == (12.0, 6.0, 20.0):
+        ok("defaults are 12 GiB commit, 6 GiB physical, 20s poll")
     else:
         bad("defaults", "%r" % (tuple(floors),))
 

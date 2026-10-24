@@ -226,6 +226,20 @@ class RollupTracerTests(unittest.TestCase):
         self.assertEqual(wall["buckets"]["idle:shell_other_bg"], 30.0)
         self.assertEqual(wall["buckets"]["owner"], 6.0)
 
+    def test_agent_tool_transcript_is_a_dispatch_row_with_inherited_effort(self):
+        write_jsonl(os.path.join(self.plant.session, "subagents", "agent-t1.jsonl"),
+                    agent_rows("t1", 100, 160, usage(inp=400000, out=1000)))
+        code, out, doc = self.plant.rollup()
+        self.assertEqual(code, 0, out)
+        dispatch = [r for r in doc["rows"] if r["id"].startswith("D")]
+        self.assertEqual(len(dispatch), 1)
+        row = dispatch[0]
+        self.assertEqual(row["engine"], "agent-tool")
+        self.assertEqual(row["effort"], "inherited-session")
+        self.assertEqual(row["tokens"]["fresh"], 400000)
+        self.assertAlmostEqual(row["list"], 1.62, places=6)
+        self.assertAlmostEqual(rows_by_id(doc)["T"]["list"]["agent_tool"], 1.62, places=6)
+
     def test_waste_minutes_are_the_union_of_parallel_agent_spans(self):
         self.plant.run(
             agents=[("a1", 10, 20, usage(inp=1)), ("a2", 10, 20, usage(inp=1)),

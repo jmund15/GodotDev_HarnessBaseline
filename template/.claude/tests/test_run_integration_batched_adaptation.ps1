@@ -258,7 +258,7 @@ $cases += @{ label = 'contract: a standalone batcher mints a verify- run id and 
 $cases += @{ label = 'contract: every batch and retry runs through Invoke-RunPool at width 1 under -ResultsRoot $runsRoot, launched by Start-SuiteChild'
              ok = (([regex]::Matches($src, 'Invoke-RunPool -Units @\(\$u\) -ResultsRoot \$runsRoot -MaxParallel 1 -Launch \$launch')).Count -eq 1 -and
                    $src -match 'Invoke-BatchUnit \$unitByLabel\[\$p\.label\]' -and $src -match 'Invoke-BatchUnit \$u\b' -and
-                   $src -match '\$launch = \{ param\(\$x\) Start-SuiteChild -Unit \$x -ResultsRoot \$runsRoot \}' -and $src -notmatch '& pwsh -NoProfile -File \$wrapper') }
+                   $src -match '\$launch = \{ param\(\$x\) Start-SuiteChild -Unit \$x -ResultsRoot \$runsRoot( -Verbosity \$Verbosity)? \}' -and $src -notmatch '& pwsh -NoProfile -File \$wrapper') }
 $gateSrc = Get-Content (Join-Path $here '..\scripts\regression_gate.ps1') -Raw
 # The gate's pool children run under this one dir (behaviour: test_regression_gate_held.ps1 G1); the gate no longer invokes the batcher.
 $cases += @{ label = 'gate: mints gate-<runId>, passes every pool child that dir as -ResultsRoot, and prints TRX_DIR'
@@ -423,6 +423,88 @@ Write-Output ('KEPT=' + (Save-BatchManifest -Path '$noWallMan' -Plan `$plan -Cou
     } finally { Remove-Item -Recurse -Force $noWallDir -ErrorAction SilentlyContinue }
     $cases += @{ label = "A6 manifest: a manifest without batch_wall still returns its MANIFEST_KEPT line ($out)"
                  ok = ($out -match 'KEPT=MANIFEST_KEPT reason=Integration_B1:trx-missing') }
+    # A red run still measures the batches that went GREEN, and a red batch's work wall is not recorded.
+    $redDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ribred_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Force -Path $redDir | Out-Null
+    try {
+        $redTrx = Join-Path $redDir 'b.trx'
+        Set-Content -Path $redTrx -Encoding utf8 -Value '<?xml version="1.0"?><TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results><UnitTestResult testName="{{PROJECT_NAME}}.Tests.Integration.B.T1" duration="00:00:04.0000000" outcome="Passed" /></Results></TestRun>'
+        $redMan = Join-Path $redDir 'durations.json'
+        Set-Content -Path $redMan -Encoding utf8 -Value '{"schema_version":3,"units":{"A":{"seconds":5,"tests":1}},"batch_wall":{}}'
+        $out = Invoke-IbChild -Body @"
+`$plan = @(
+    [pscustomobject]@{ label = 'Integration_B1'; status = 'GREEN'; ran = `$true; trx = '$redTrx'; workWall = 6 },
+    [pscustomobject]@{ label = 'Integration_B2'; status = 'RED'; ran = `$true; trx = '$redDir\absent.trx'; workWall = 90 })
+`$fresh = Get-FreshDurations -Plan `$plan
+Write-Output ('REDRUN=' + (Save-BatchManifest -Path '$redMan' -Plan `$plan -Counters @{} -Fresh `$fresh -AllSegments @('A', 'B')))
+`$mj = Get-Content -Raw '$redMan' | ConvertFrom-Json
+Write-Output ('REDMAN=' + `$mj.units.B.seconds + ':' + `$mj.units.A.seconds + ':' + (`$mj.batch_wall.PSObject.Properties.Name -join ','))
+"@
+    } finally { Remove-Item -Recurse -Force $redDir -ErrorAction SilentlyContinue }
+    $cases += @{ label = "A7 red run: the GREEN batch's units are measured into the manifest ($out)"
+                 ok = ($out -match '(?m)^REDMAN=4:5:Integration_B1$') }
+    $cases += @{ label = "A7 red run: the manifest update line names the measured units ($out)"
+                 ok = ($out -match 'REDRUN=MANIFEST_UPDATED measured=1 ') }
+    $gateSrc = Get-Content (Join-Path $here '..\scripts\regression_gate.ps1') -Raw
+    $cases += @{ label = 'A7 wiring: neither the batcher nor the gate measures only on an exit-0 verdict'
+                 ok = (-not (($src + $gateSrc) -match [regex]::Escape('if ($verdict.Exit -eq 0) { Get-FreshDurations'))) }
+
+    # An oversized segment (AI: 444 tests > 380) splits by sub-namespace: one unit per sub, plus a remainder unit that
+    # excludes every sub. Namespaces are read from the .cs files, so the split follows the filter the tests match.
+    $splitRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("ribsplit_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        foreach ($f in @(@('AI\Casting\A.cs', '{{PROJECT_NAME}}.Tests.Integration.AI.Casting'), @('AI\HSM\Wizard\W.cs', '{{PROJECT_NAME}}.Tests.Integration.AI.HSM.Wizard'),
+                         @('AI\Root.cs', '{{PROJECT_NAME}}.Tests.Integration.AI'), @('AI\Steering\S.cs', '{{PROJECT_NAME}}.Tests.Integration.AI.Steering'))) {
+            $p = Join-Path $splitRepo ('Tests\Integration\' + $f[0])
+            New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null
+            Set-Content -Path $p -Encoding utf8 -Value ("namespace " + $f[1] + "`n{ }")
+        }
+        $trxSteer = Join-Path $splitRepo 'steer.trx'
+        $trxRoot = Join-Path $splitRepo 'root.trx'
+        Set-Content -Path $trxSteer -Encoding utf8 -Value '<?xml version="1.0"?><TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results><UnitTestResult testName="{{PROJECT_NAME}}.Tests.Integration.AI.Steering.SteerTests.T1" duration="00:00:04.0000000" outcome="Passed" /></Results></TestRun>'
+        Set-Content -Path $trxRoot -Encoding utf8 -Value '<?xml version="1.0"?><TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results><UnitTestResult testName="{{PROJECT_NAME}}.Tests.Integration.AI.RootTests.T2" duration="00:00:02.0000000" outcome="Passed" /></Results></TestRun>'
+        $out = Invoke-IbChild -Body @"
+`$man = [pscustomobject]@{ seconds = @{ AI = 180.0; 'AI.Steering' = 90.0; Combat = 40.0 }; tests = @{ AI = 444; 'AI.Steering' = 300; Combat = 191 }; batchWall = @{}; counters = @{} }
+`$subs = Get-IntegrationSubUnits -Repo '$splitRepo' -Segments @('AI', 'Combat') -Manifest `$man -MaxBatchTests 380
+Write-Output ('SUBU=' + ((`$subs.Keys | Sort-Object | ForEach-Object { `$_ + ':' + (`$subs[`$_] -join '+') }) -join ','))
+`$plan = @(New-IntegrationPlan -Segments @('AI', 'Combat') -Manifest `$man -TargetBatchSec 60 -MaxBatchTests 380 -SubUnits `$subs)
+Write-Output ('SEGS=' + ((`$plan | ForEach-Object { `$_.segs -join '+' } | Sort-Object) -join ','))
+Write-Output ('CASTB=' + ((`$plan | Where-Object { `$_.segs -contains 'AI.Casting' } | ForEach-Object { `$_.segs -join '+' }) -join ','))
+Write-Output ('REMF=' + (`$plan | Where-Object { `$_.segs -eq 'AI' }).filter)
+Write-Output ('STEERF=' + (`$plan | Where-Object { `$_.segs -eq 'AI.Steering' }).filter)
+`$steer = @(Get-TrxUnitDurations -Path '$splitRepo\steer.trx' -SubUnits `$subs)
+`$root = @(Get-TrxUnitDurations -Path '$splitRepo\root.trx' -SubUnits `$subs)
+Write-Output ('TRXKEYS=' + ((@(`$steer[0].Keys) + @(`$root[0].Keys) | Sort-Object) -join ','))
+`$rows = @(
+    [pscustomobject]@{ label = 'Integration_B1'; segs = @('AI'); status = 'GREEN'; ran = `$true; trx = '$splitRepo\root.trx'; workWall = 3 },
+    [pscustomobject]@{ label = 'Integration_B2'; segs = @('AI.Steering'); status = 'GREEN'; ran = `$true; trx = '$splitRepo\steer.trx'; workWall = 5 })
+`$fresh = Get-FreshDurations -Plan `$rows
+Write-Output ('FRESH=' + ((`$fresh.durations.Keys | Sort-Object | ForEach-Object { `$_ + ':' + `$fresh.durations[`$_].seconds }) -join ','))
+`$retryMan = '$splitRepo\retry_durations.json'
+Write-Manifest -Path `$retryMan -Units @{ AI = [pscustomobject]@{ seconds = 180.0; tests = 144 }; 'AI.Steering' = [pscustomobject]@{ seconds = 90.0; tests = 300 } } -BatchWalls @{} -Counters @{}
+`$retryRows = @(
+    [pscustomobject]@{ label = 'Integration_B1'; segs = @('AI'); status = 'GREEN'; ran = `$true; trx = '$splitRepo\root.trx'; workWall = 3 },
+    [pscustomobject]@{ label = 'Integration_B2'; segs = @('AI.Steering'); status = 'PENDING'; ran = `$false; trx = ''; workWall = 0 })
+`$null = Save-BatchManifest -Path `$retryMan -Plan `$retryRows -Counters @{} -Fresh (Get-FreshDurations -Plan `$retryRows) -AllSegments @('AI', 'Combat')
+Write-Output ('RETRYKEYS=' + (((Get-Content -Raw `$retryMan | ConvertFrom-Json).units.PSObject.Properties.Name | Sort-Object) -join ','))
+"@
+    } finally { Remove-Item -Recurse -Force $splitRepo -ErrorAction SilentlyContinue }
+    $cases += @{ label = "A8 split: the sub-namespaces of an oversized segment are found from the .cs namespaces ($out)"
+                 ok = ($out -match '(?m)^SUBU=AI:Casting\+HSM\+Steering$') }
+    $cases += @{ label = 'A8 split: each sub is its own unit and the oversized segment keeps a remainder unit; the small segment stays whole'
+                 ok = ($out -match '(?m)^SEGS=AI,AI\.Casting,AI\.HSM,AI\.Steering,Combat$') }
+    $cases += @{ label = 'A8 split: a sub unit with no manifest entry gets its own batch'
+                 ok = ($out -match '(?m)^CASTB=AI\.Casting$') }
+    $cases += @{ label = 'A8 split: the remainder filter excludes every sub namespace, so the units partition the segment'
+                 ok = ($out -match '(?m)^REMF=\(FullyQualifiedName~Tests\.Integration\.AI\.\)&FullyQualifiedName!~Tests\.Integration\.AI\.Casting\.&FullyQualifiedName!~Tests\.Integration\.AI\.HSM\.&FullyQualifiedName!~Tests\.Integration\.AI\.Steering\.&') }
+    $cases += @{ label = 'A8 split: a sub unit filters on its own namespace'
+                 ok = ($out -match '(?m)^STEERF=\(FullyQualifiedName~Tests\.Integration\.AI\.Steering\.\)&') }
+    $cases += @{ label = 'A8 split: the TRX parser keys sub-namespace tests as seg.sub and the rest as the segment'
+                 ok = ($out -match '(?m)^TRXKEYS=AI,AI\.Steering$') }
+    $cases += @{ label = 'A8 split: a green run measures each split unit under its own key'
+                 ok = ($out -match '(?m)^FRESH=AI:2,AI\.Steering:4$') }
+    $cases += @{ label = "A8 split: a retry that reruns only the remainder keeps the subs it did not run ($out)"
+                 ok = ($out -match '(?m)^RETRYKEYS=AI,AI\.Steering$') }
     $wrapperSrc = Get-Content (Join-Path $here '..\scripts\run_test_suite.ps1') -Raw
     $poolSrc2 = Get-Content (Join-Path $here '..\scripts\RunPool.ps1') -Raw
     $cases += @{ label = 'A6 single writer: children never write plan, state or manifest (no writer in the wrapper or the pool)'
@@ -446,6 +528,18 @@ Write-Output ('LAUNCHES=' + `$script:Launches)
     $cases += @{ label = "A6 retry: a planted HANG and SILENT_SKIP unit are returned; RED, GREEN and LOCKED are not ($($out -split "`n" | Select-String 'RETRY='))"
                  ok = ($out -match '(?m)^RETRY=Integration_B2_retry<Integration_B2:f2,Integration_B3_retry<Integration_B3:f3$') }
     $cases += @{ label = 'A6 retry: selection launches nothing'; ok = ($out -match 'LAUNCHES=0') }
+
+    # A crashed unit (a Godot FATAL that leaves no TRX) retries exactly like a hang.
+    $crashPlan = '[{"label":"Integration_B6","segs":["F"],"expectedSec":40,"filter":"f6","status":"NO_TRX"},{"label":"Integration_B7","segs":["G"],"expectedSec":30,"filter":"f7","status":"RED"},' +
+                 '{"label":"Integration_B8","segs":["H"],"expectedSec":20,"filter":"f8","status":"NO_OUTPUT"}]'
+    $crashOut = Invoke-IbChild -Body @"
+`$units = @(Select-RetryUnits -Plan @('$crashPlan' | ConvertFrom-Json) -CostCeilingMs 300000)
+Write-Output ('RETRY=' + ((`$units | ForEach-Object { `$_.label + '<' + `$_.of + ':' + `$_.filter }) -join ','))
+Write-Output (Format-RetryNoTrxLine -Plan @('$crashPlan' | ConvertFrom-Json))
+"@
+    $cases += @{ label = "G6 retry: a NO_TRX unit is retried; RED and NO_OUTPUT are not ($($crashOut -split "`n" | Select-String 'RETRY='))"
+                 ok = ($crashOut -match '(?m)^RETRY=Integration_B6_retry<Integration_B6:f6$') }
+    $cases += @{ label = 'G6 count: the retry line counts the NO_TRX units in the plan'; ok = ($crashOut -match '(?m)^RETRY_NO_TRX=1$') }
 }
 $poolPathR = Join-Path $here '..\scripts\RunPool.ps1'
 $tagCmd = ". '$poolPathR'; `$a = Get-RunTag -Label 'Integration_B2'; `$b = Get-RunTag -Label 'Integration_B2_retry'; " +

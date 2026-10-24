@@ -1637,6 +1637,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_checkout_root.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_claude_scope.py",
       "layer": "pure",
       "sync": "auto"
@@ -1907,6 +1912,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/heredoc_quoting_advisory.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/indexed_reference_guard.py",
       "layer": "coding",
       "sync": "auto"
@@ -2133,6 +2143,11 @@
     },
     {
       "path": ".claude/hooks/sidecar_watch_rearm.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/sidecar_workdir_guard.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2447,6 +2462,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/CommentOnlyGate.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/EngineErrors.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/GodotProcess.ps1",
       "layer": "godot",
       "sync": "auto"
@@ -2489,6 +2514,11 @@
     {
       "path": ".claude/scripts/WideRunGuard.ps1",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/_read_recorder/node_recorder.js",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -3337,6 +3367,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/_platform_skip.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/_pwsh_drive.py",
       "layer": "pure",
       "sync": "auto"
@@ -3517,6 +3552,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/owner_text/live_rows.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/plan_check_doctrine_consistency_replay.spill.md",
       "layer": "coding",
       "sync": "auto"
@@ -3633,6 +3673,16 @@
     },
     {
       "path": ".claude/tests/test_CSharpSource.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_CommentOnlyGate.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_EngineErrors.ps1",
       "layer": "godot",
       "sync": "auto"
     },
@@ -3844,6 +3894,11 @@
     {
       "path": ".claude/tests/test_check_logger_tag_prefix.py",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_checkout_root.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -4302,6 +4357,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_heredoc_quoting_advisory.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_hook_state.py",
       "layer": "pure",
       "sync": "auto"
@@ -4573,6 +4633,11 @@
     },
     {
       "path": ".claude/tests/test_plan_usage_calc.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_plugin_registry.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5127,6 +5192,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_workdir_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_skill_listing_review.py",
       "layer": "coding",
       "sync": "auto"
@@ -5148,6 +5218,11 @@
     },
     {
       "path": ".claude/tests/test_stray_search_index_sweep.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_stream_events.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5742,6 +5817,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/plugin_registry.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/post_check.py",
       "layer": "pure",
       "sync": "auto"
@@ -5898,6 +5978,11 @@
     },
     {
       "path": ".claude/tools/spend_mode.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/stream_events.py",
       "layer": "pure",
       "sync": "auto"
     },

@@ -1157,7 +1157,7 @@ const authorRef = (label, model, writes, promptPath) => {
     '=== ENGINE CONTRACT ===',
     RELAY_LINE,
     'Write only: ' + writes.join(', ') + '. Every other file is read-only for you.',
-    AMEND_LINE(promptPath),
+    AMEND_LINE(rootedPath(A, promptPath)),
     'OUTPUT: return ONLY the JSON object the schema describes — no prose around it.',
   ].join('\n')
   const inline = inlineRails(label, 'author', tier)

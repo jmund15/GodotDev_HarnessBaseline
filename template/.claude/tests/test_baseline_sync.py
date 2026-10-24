@@ -893,7 +893,8 @@ def test_v2_triage_json_fields_and_truncation() -> None:
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         rows = _json_output(result)
         assert len(rows) == 1
-        assert set(rows[0]) == {"relpath", "status", "layer", "sha", "prior_verdict", "diff"}
+        assert set(rows[0]) == {"relpath", "status", "layer", "sha", "prior_verdict", "diff", "identity"}
+        assert rows[0]["identity"] == []
         assert rows[0]["relpath"] == rel
         assert rows[0]["status"] == "tracked"
         assert rows[0]["sha"] == _sha(local)
@@ -991,6 +992,38 @@ def test_v2_classify_local_declines_an_upstream_only_path() -> None:
         assert adopted.returncode == 0, (adopted.stdout + adopted.stderr).decode(errors="replace")
         assert (root / declined).read_bytes() == b"upstream body\n"
         assert "absent" not in _load_lock(root)["files"][declined]
+
+
+def test_v2_classify_local_declines_a_pulled_path_once_its_file_is_gone() -> None:
+    """A bare pull takes every new-upstream row, so a decline usually follows the pull: once the
+    consumer removes the pulled file, `classify --status local` records the decline without
+    `--force`, since no local content remains to protect. A tracked row whose file is still
+    present keeps the refusal."""
+    declined = ".claude/commands/declined.md"
+    kept = ".claude/commands/kept.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {declined: {"upstream": b"upstream body\n", "local": None},
+                   kept: {"upstream": b"kept body\n", "local": b"kept body\n"}}
+        )
+        lock = _load_lock(root)
+        del lock["files"][declined]
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "no row")
+        pulled = _run_baseline(root, baseline, "pull", declined)
+        assert pulled.returncode == 0, (pulled.stdout + pulled.stderr).decode(errors="replace")
+        assert _load_lock(root)["files"][declined]["status"] == "tracked"
+        _commit(root, "pulled")
+        (root / declined).unlink()
+        _commit(root, "declined after the pull")
+
+        gone = _run_baseline(root, baseline, "classify", declined, "--status", "local")
+        assert gone.returncode == 0, (gone.stdout + gone.stderr).decode(errors="replace")
+        row = _load_lock(root)["files"][declined]
+        assert row["status"] == "local" and row["absent"] is True
+
+        present = _run_baseline(root, baseline, "classify", kept, "--status", "local")
+        assert present.returncode == 1 and b"use --force" in present.stderr, present.stderr
 
 
 def test_v2_fork_success_and_repeat() -> None:
@@ -1155,6 +1188,27 @@ def test_v2_paths_filters_success_refusal_and_repeat() -> None:
         assert refusal.returncode == 2
 
 
+def test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged() -> None:
+    shipped = ".claude/tools/shipped_row.py"
+    old_judged = ".claude/tools/old_judged.py"
+    never = ".claude/tools/never_shipped.py"
+    kept = ".claude/tools/kept_row.py"
+    with _fixture() as path:
+        root, _baseline, _r, _c = _v2_fixture(path, {
+            shipped: {"upstream": b"one\n",
+                      "judged": {"sha": _sha(b"one\n"), "verdict": "push", "at": "2026-09-14T00:00:00Z"}},
+            old_judged: {"upstream": b"two\n", "local": b"two local\n",
+                         "judged": {"sha": _sha(b"two local\n"), "verdict": "push", "at": "2020-01-01T00:00:00Z"}},
+            never: {"manifest": False, "local": b"three\n", "hash": None,
+                    "judged": {"sha": _sha(b"three\n"), "verdict": "push", "at": "2020-01-01T00:00:00Z"}},
+            kept: {"upstream": b"four\n", "local": b"four local\n",
+                   "judged": {"sha": _sha(b"four local\n"), "verdict": "keep-local", "at": "2026-09-14T00:00:00Z"}},
+        })
+        result = _run(root, "paths", "--verdict", "push", "--unshipped", "--json")
+        assert result.returncode == 0, _out(result)
+        assert _json_output(result) == sorted([old_judged, never]), _out(result)
+
+
 def test_v2_pull_explicit_states_and_new_hash() -> None:
     existing = ".claude/tools/existing.py"
     new = ".claude/tools/new.py"
@@ -1190,8 +1244,10 @@ def test_v2_pull_explicit_states_and_new_hash() -> None:
         _write(root / existing, b"existing new\n")
         _commit(root, "stale local copy")
         stale = _run_baseline(root, baseline, "pull")
-        _assert_no_change(stale)
-        assert _load_lock(root)["files"][existing]["hash"] == old_hash
+        assert stale.returncode == 0, _out(stale)
+        assert old_hash != _sha(b"existing new\n")
+        assert _load_lock(root)["files"][existing]["hash"] == _sha(b"existing new\n")
+        assert (root / existing).read_bytes() == b"existing new\n"
         # Add a new upstream row after the consumer lock was created.
         _write(baseline / "template" / new, b"new\n")
         _commit(baseline, "new upstream")
@@ -2123,8 +2179,44 @@ def test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it() -> Non
         accepted = _run_baseline(root, baseline, "judge", rel, "--verdict", "push", "--accept-hit", hit_id)
         assert accepted.returncode == 0, _out(accepted)
         assert _load_lock(root)["files"][rel]["judged"]["verdict"] == "push"
+        assert _load_lock(root)["files"][rel]["judged"]["accepted_hits"] == [hit_id]
+        _write(root / rel, ("The " + subsystem_id + " owns this file.\nSo does " + subsystem_id + ".\n").encode())
+        _git(root, "add", "-A")
+        second = _run_baseline(root, baseline, "judge", rel, "--verdict", "push", "--accept-hit", hit_id)
+        assert second.returncode == 1 and ":2:" in _out(second), _out(second)
         kept = _run_baseline(root, baseline, "judge", rel, "--verdict", "keep-local", "--force")
         assert kept.returncode == 0, _out(kept)
+
+
+def test_triage_lists_every_identity_hit_the_push_scan_would_refuse() -> None:
+    rel = ".claude/commands/leaky_triaged.md"
+    subsystem_id = "brew" + "Cauldron"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"clean\n"}})
+        skill_md = "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: " + subsystem_id + "\n    paths: []\n```\n"
+        _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", skill_md.encode())
+        _write(root / rel, ("clean\nThe " + subsystem_id + " owns this.\nAgain " + subsystem_id + ".\n").encode())
+        _git(root, "add", "-A")
+        result = _run_baseline(root, baseline, "triage", "--json")
+        assert result.returncode == 0, _out(result)
+        row = next(r for r in _json_output(result) if r["relpath"] == rel)
+        assert [h["line"] for h in row["identity"]] == [2, 3], row["identity"]
+        assert all(set(h) == {"id", "line", "kind", "excerpt"} for h in row["identity"]), row["identity"]
+        refused = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        assert row["identity"][0]["id"] in _out(refused), _out(refused)
+
+
+def test_bare_pull_refreshes_a_lock_stale_row() -> None:
+    rel = ".claude/tools/stale.wasm"
+    data = b"\x00asm\x01\x00\x00\x00same"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": data, "local": data, "hash": "0" * 64}})
+        assert "in-sync-lock-stale" in _out(_run_baseline(root, baseline, "check"))
+        pulled = _run_baseline(root, baseline, "pull")
+        assert pulled.returncode == 0, _out(pulled)
+        assert _load_lock(root)["files"][rel]["hash"] != "0" * 64, _out(pulled)
+        assert (root / rel).read_bytes() == data
+        assert "in-sync-lock-stale" not in _out(_run_baseline(root, baseline, "check"))
 
 
 def test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks() -> None:
@@ -3071,6 +3163,9 @@ def main() -> int:
         test_pull_keeps_the_posix_exec_bit_of_a_100755_entry,
         test_pull_prints_each_written_row_the_gitignore_matches,
         test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it,
+        test_triage_lists_every_identity_hit_the_push_scan_would_refuse,
+        test_bare_pull_refreshes_a_lock_stale_row,
+        test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged,
         test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks,
         test_j3_write_prints_the_layer_closure_it_adds,
         test_j3_keep_local_on_an_unshipped_tracked_row_sets_local,

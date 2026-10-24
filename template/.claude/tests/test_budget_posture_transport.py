@@ -393,7 +393,7 @@ CASES = [
      lambda: "budget-posture" in CUR_COLD[0] and "budget-posture" not in CUR_COLD[1]
      and "budget-posture" not in CUR_COLD[2]),
 
-    # ---- a plan with more quota than time left: one plan entry, no derived clause ----
+    # ---- a plan with more quota than time left: one plan entry, no reset and no ratio in the figures ----
     ("a plan with more quota than time left prints its figures by its own band, with no reset and no spare clause",
      lambda: "codex Surplus: 7d 60% left, 20% to go" in SPARE and "resets" not in SPARE.split("codex Surplus")[1]
      and "spare" not in SPARE and "ahead of pace" not in SPARE),
@@ -516,7 +516,8 @@ CASES = [
      lambda: "tier: " not in CODEX and "(from the codex band)" not in CODEX),
 
     ("the 5h window is Anthropic's too, so it is labelled cross-hop rather than left bare",
-     lambda: "anthropic (hop) On pace: 7d 55% left, 50% to go; 5h 70% left, 50% to go" in CODEX),
+     lambda: "anthropic (hop) On pace: 7d 55% left, 50% to go, ~10% goes unused at reset "
+             "(this window's average); 5h 70% left, 50% to go" in CODEX),
 
     # `pressure` is optional in a probe reading; an unguarded format raised into main()'s blanket
     # except and deleted the ENTIRE line -- band, floor and rating-debt clause included.
@@ -790,7 +791,7 @@ def used_field_cases():
 # transcript shaped like a captured prompt row (session 7b8b1489, test_spend_mode.py's owner_prompt),
 # and the posture is written by the real spend_mode.set_spend / clear_spend, never a hand-built record.
 SPEND_SID = "bptspend1"
-SPEND_QUOTE = "Build job J3 of the lean-spend plan"
+SPEND_QUOTE = "Build job J3 of the lean-spend plan --lean"
 SPEND_FUTURE = "2031-01-01T00:00:00Z"
 SPEND_PAST = "2026-01-01T00:00:00Z"
 SPEND_LINE = ("spend: lean (owner, session, until %s) — pin rule: orchestration reference "
@@ -833,7 +834,7 @@ class SpendSession:
                     os.environ[key] = value
 
     def set(self, mode, until=None):
-        return self._in_state(lambda: self.sm.set_spend(mode, SPEND_QUOTE, until=until, session_id=SPEND_SID,
+        return self._in_state(lambda: self.sm.set_spend(mode, until=until, session_id=SPEND_SID,
                                                         transcript=self.transcript))
 
     def clear(self):

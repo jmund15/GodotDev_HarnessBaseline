@@ -47,6 +47,8 @@ import os
 import re
 import sys
 
+import plugin_registry
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO = os.path.dirname(_ROOT)
 TABLE_PATH = os.path.join(_ROOT, "guards", "tool_profiles.json")
@@ -234,7 +236,10 @@ def load_registrations(config_dir="", workdir="", plugin_root=None):
     candidates += list((state.get("mcpServers") or {}).items())
     plugins_dir = (os.path.join(cfg, "plugins") if cfg
                    else os.path.join(home, ".claude", "plugins"))
-    installed = load(os.path.join(plugins_dir, "installed_plugins.json")).get("plugins") or {}
+    try:
+        installed = plugin_registry.read(os.path.join(plugins_dir, "installed_plugins.json")).get("plugins") or {}
+    except (OSError, ValueError):
+        installed = {}
     for key, entries in installed.items():
         entry = next((e for e in entries if e.get("scope") in ("project", "local")
                       and same(e.get("projectPath"), wd)), None) \

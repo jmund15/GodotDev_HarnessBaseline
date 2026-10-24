@@ -384,6 +384,28 @@ def base_cases():
     return failures
 
 
+def conflict_rebase(resolution):
+    """A repo stopped on a rebase whose replayed commit conflicts on a hook: "ours" takes the upstream
+    side, anything else is written as authored content."""
+    repo = make_repo()
+    write(repo, ".claude/hooks/h.py", "h = 0\n")
+    git(repo, ["add", "-A"])
+    git(repo, ["commit", "-q", "-m", "base hook"])
+    git(repo, ["checkout", "-q", "-b", "upstream"])
+    write(repo, ".claude/hooks/h.py", "h = 2  # upstream\n")
+    git(repo, ["commit", "-q", "-am", "upstream"])
+    git(repo, ["checkout", "-q", "-"])
+    write(repo, ".claude/hooks/h.py", "h = 1  # work\n")
+    git(repo, ["commit", "-q", "-am", "work"])
+    subprocess.run(["git", "rebase", "-q", "upstream"], cwd=repo, capture_output=True)
+    if resolution == "ours":
+        git(repo, ["checkout", "--ours", "--", ".claude/hooks/h.py"])
+    else:
+        write(repo, ".claude/hooks/h.py", resolution)
+    git(repo, ["add", ".claude/hooks/h.py"])
+    return repo
+
+
 def conflict_merge(resolution):
     """A repo stopped on a conflicting merge of a hook both sides edited, resolved to `resolution`:
     "theirs" takes the incoming side, anything else is written as authored content."""
@@ -461,6 +483,16 @@ def must_allow_proof():
         "M2 block arm: the same conflict resolved to new hook content -> deny",
         run_hook("git merge --continue", conflict_merge("h = 3  # authored in the merge\n"), unguarded=True),
         DENY, "BLOCKED harness commit"))
+    failures.append(case(
+        "M2 `git rebase --continue` after a hook conflict resolved to the upstream side -> allow",
+        run_hook("git rebase --continue", conflict_rebase("ours"), unguarded=True), ALLOW))
+    failures.append(case(
+        "M2 block arm: `git rebase --continue` with the conflict resolved to new hook content -> deny",
+        run_hook("git rebase --continue", conflict_rebase("h = 3  # authored in the rebase\n"), unguarded=True),
+        DENY, "BLOCKED harness commit"))
+    failures.append(case(
+        "M2 a bare `git am` of a patch file that is not in the repo -> allow (no commit judged yet)",
+        run_hook("git am missing.mbox", make_repo(), unguarded=True), ALLOW))
     return failures
 
 
@@ -602,6 +634,11 @@ def inline_cases():
     failures.append(case(
         "a repo this command creates with `git init` skips the existing-index checks -> allow",
         run_hook('D=%s; mkdir -p $D && cd $D && git init -q; git add f && git commit -qm i' % fresh, repo),
+        ALLOW))
+    fresh_b = os.path.join(tempfile.mkdtemp(prefix="ggfresh_"), "probe").replace("\\", "/")
+    failures.append(case(
+        "`git init -q -b main <repo>` skips value-taking flags before the path -> allow",
+        run_hook('git init -q -b main %s && cd %s && git add f && git commit -qm i' % (fresh_b, fresh_b), repo),
         ALLOW))
 
     # 1. Commit of a non-harness path -> allow.

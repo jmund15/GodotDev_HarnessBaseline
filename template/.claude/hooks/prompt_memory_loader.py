@@ -42,7 +42,7 @@ HIGH_RISK_PATTERNS = [
     r"\bbroken\b",
     r"\btrace\b",
     r"\binvestigat",
-    r"\bcheck.*(log|output)\b",
+    r"\bcheck.{0,80}?(log|output)\b",
     r"\bwhy.*(not|isn't|doesn't)\b",
     # Refactoring
     r"\brefactor\b",

@@ -128,6 +128,18 @@ def test_doctor_owner_content_alone_exits_zero() -> None:
         assert code == 0 and rows["seeds"]["status"] == "pending", rows["seeds"]
 
 
+def test_doctor_reads_the_worklog_path_the_worklog_command_uses() -> None:
+    with T._fixture() as path:
+        root = _fixed_consumer(path)
+        T._write(root / SEED_REL, b"# Demo\n")
+        T._write(root / ".claude" / "commands" / "worklog.md", b"Source of truth: `" + WORKLOG.encode() + b"` (Obsidian).\n")
+        code, rows = _doctor(root)
+        assert rows["worklog"]["status"] == "ok", rows["worklog"]
+        (root / ".claude" / "commands" / "worklog.md").unlink()
+        code, rows = _doctor(root)
+        assert rows["worklog"]["status"] == "fail" and "commands/worklog.md" in rows["worklog"]["fix"], rows["worklog"]
+
+
 def test_doctor_names_a_wrong_auto_memory_directory() -> None:
     with T._fixture() as path:
         root = _fixed_consumer(path)
@@ -263,6 +275,7 @@ def main() -> int:
         test_doctor_without_a_repo_fails_git_repo,
         test_doctor_on_a_fixed_consumer_is_all_ok_and_exits_zero,
         test_doctor_owner_content_alone_exits_zero,
+        test_doctor_reads_the_worklog_path_the_worklog_command_uses,
         test_doctor_names_a_wrong_auto_memory_directory,
         test_doctor_fails_a_block_that_lags_the_shipped_entries,
         test_init_and_pull_write_the_ignore_block_and_keep_project_lines,

@@ -49,7 +49,7 @@ except Exception:  # pragma: no cover - a missing sibling degrades to raw matchi
 
 __all__ = [
     "CommitInvocation", "LauncherWord", "COMMIT_LIKE", "GLOBAL_FLAGS_WITH_VALUE",
-    "segments", "git_invocation", "git_invocations", "cd_target", "commit_invocations",
+    "segments", "join_continuations", "git_invocation", "base_rev", "git_invocations", "cd_target", "commit_invocations",
     "parse_commit_args", "run_git", "staged_paths", "incoming_paths", "bypass_declared",
     "commit_source", "commit_message",
     "export_assignments", "command_git_env", "resolve_index", "git_environ",
@@ -98,12 +98,21 @@ class CommitInvocation:
 
 
 _QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_CONTINUATION = re.compile(r"\\\r?\n")
+
+
+def join_continuations(command):
+    """`command` with each backslash-newline blanked to spaces of the same length, so every offset
+    still reads the source. A wrapped argument list then stays one segment and one token run."""
+    return _CONTINUATION.sub(lambda match: " " * len(match.group(0)), command)
 
 
 def segments(command):
     """Segments split at `||`, `&&`, `;`, `|`, a lone `&` and newlines outside quotes. A separator inside a
     quoted argument (a search pattern naming a git command) does not split. An unbalanced quote splits
-    at every separator, so a malformed command can only over-block."""
+    at every separator, so a malformed command can only over-block. A backslash-newline continues the
+    line, so it splits nothing."""
+    command = join_continuations(command)
     blanked = _QUOTED.sub(lambda match: " " * len(match.group(0)), command)
     if "'" in blanked or '"' in blanked:
         blanked = command
@@ -391,7 +400,7 @@ def _subcommand_end(segment, args):
 
 def _git_invocations(command, cwd, exported, inherited, source_offsets=None, body_path=()):
     found = []
-    text = strip_heredocs(command or '', preserve_offsets=True)
+    text = join_continuations(strip_heredocs(command or '', preserve_offsets=True))
     if source_offsets is None and body_path is not None:
         source_offsets = tuple(range(len(command or '') + 1))
     assigned_once = dict(inherited)
@@ -630,6 +639,14 @@ def _full_pathspec(rest, cwd, pathspec):
         return None, "pathspec-from-file " + spec_file
 
 
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def base_rev(cwd, env=None):
+    """`HEAD`, or git's empty tree (SHA-1 repos) while HEAD is unborn: a repo's first commit has no HEAD to diff."""
+    return "HEAD" if run_git(["rev-parse", "--verify", "-q", "HEAD"], cwd, env) is not None else EMPTY_TREE
+
+
 def staged_paths(rest, cwd, env=None):
     """Paths a `git commit <rest>` will publish. A pathspec commit (after `--`, bare, or from
     `--pathspec-from-file`) publishes only the pathspec's changed files, as git's default `--only`
@@ -668,9 +685,10 @@ def staged_paths(rest, cwd, env=None):
     if pathspec:
         # `git commit -- <pathspec>` commits the tracked files under the pathspec that differ
         # from HEAD — `ls-files` would demand every untouched file under a directory pathspec.
-        changed = run_git(["diff", "--name-only", "HEAD", "--"] + pathspec, cwd, env)
+        base = base_rev(cwd, env)
+        changed = run_git(["diff", "--name-only", base, "--"] + pathspec, cwd, env)
         if changed is None:
-            return None, "diff --name-only HEAD -- " + " ".join(pathspec)
+            return None, "diff --name-only %s -- %s" % (base, " ".join(pathspec))
         paths |= _lines(changed)
 
     return paths, None
@@ -927,8 +945,9 @@ def _first_ref(rest):
 def incoming_paths(sub, rest, cwd, env=None):
     """Paths a merge / cherry-pick / revert would commit. (paths, None) or (None, failing cmd).
     A `--no-commit` / `-n` run stages without committing and returns an empty set — the later
-    `git commit` is where the staged content gets judged."""
-    if any(a in ("--no-commit", "-n") for a in rest):
+    `git commit` is where the staged content gets judged. A bare rebase or am names no incoming ref
+    here, so it returns an empty set too."""
+    if sub not in ("merge", "cherry-pick", "revert") or any(a in ("--no-commit", "-n") for a in rest):
         return set(), None
     env, problem = resolve_index(env, cwd)
     if problem:

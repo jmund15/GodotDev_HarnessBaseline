@@ -30,7 +30,7 @@
 .OUTPUT CONTRACT (stdout, one line each; callers parse these)
   BATCH <n>/<N> label=... status=GREEN|HANG|RED|LOCKED|SILENT_SKIP|<incomplete> passed=P failed=F elapsed=Ss
                                (<incomplete>: NO_OUTPUT|NO_TRX|BAD_TRX|EDITOR_OPEN, RunPool.ps1; elapsed is the child's wall)
-  RETRY <n>/<N> label=... prior=HANG|SILENT_SKIP
+  RETRY <n>/<N> label=... prior=HANG|SILENT_SKIP|NO_TRX
   RETRY_ONLY_IGNORED reason=no-state|no-digest|digest-mismatch  (-RetryOnly kept no prior green)
   FAILED_TEST=<fqn>            (passed through from the wrapper on red batches)
   FAILED_MSG=<fqn> :: <first message line>  (passed through beside its FAILED_TEST=)
@@ -62,7 +62,7 @@
   increments on HANG/SILENT_SKIP, resets on GREEN, and persists on every exit
   path — it is the diagnosis trigger's "continuously hanging" ledger. RED
   (adjudicated) and LOCKED (machine contention) never count. Committed like
-  regression_baseline.json; auto-rewritten only on a fully-green run. Unknown units
+  regression_baseline.json; auto-rewritten by any run that measures a GREEN batch. Unknown units
   default to 3s. Bootstrap without running tests:
     pwsh -File run_integration_batched.ps1 -BootstrapFromTrx TestResults/test-result.trx
 #>
@@ -80,6 +80,7 @@ param(
     [switch] $DryRun,                # print the batch plan and exit without running
     [string[]] $Only,                # filter Integration units to the named domains' segments (mid-chain targeted runs). A domain resolves to its Tests/Integration/<D> folder segment(s) from the disk enumeration; unknown domains resolve to zero and emit COMPLETENESS=TARGETED batches=0
     [string] $BootstrapFromTrx = '', # build the manifest from an existing TRX, run nothing
+    [ValidateSet('quiet', 'minimal', 'normal', 'detailed', 'diagnostic')] [string] $Verbosity = 'quiet', # each child's dotnet verbosity
     # Skips this batcher's per-batch editor check. Children always run -IgnoreEditor (the pool's
     # owner owns editor policy), so the check lives here: a live editor on this checkout makes the
     # batch EDITOR_OPEN instead of launching it.
@@ -145,7 +146,10 @@ $man = Read-BatchManifest -Path $manifestPath
 # `adaptation.json` `test_quarantine_filter` (Design Doc §8); empty string = no exclusion.
 # Gate verdicts must state any exclusion set here.
 $quarantine = Get-AdaptationValue -Repo $repo -Key 'test_quarantine_filter' -Default ''
-$plan = New-IntegrationPlan -Segments $unitSegs -Manifest $man -TargetBatchSec $TargetBatchSec -MaxBatchTests $MaxBatchTests -Quarantine $quarantine
+$subUnits = Get-IntegrationSubUnits -Repo $repo -Segments $unitSegs -Manifest $man -MaxBatchTests $MaxBatchTests
+# Tagged classes run windowed as the Render unit and leave every batch; -Only keeps the ones in the selected segments.
+$renderClasses = @(Get-RendererTaggedClasses -Repo $repo | Where-Object { $c = $_; -not $Only -or @($unitSegs | Where-Object { ($c + ".").StartsWith("{{PROJECT_NAME}}.Tests.Integration.$_.") }).Count -gt 0 })
+$plan = New-IntegrationPlan -Segments $unitSegs -Manifest $man -TargetBatchSec $TargetBatchSec -MaxBatchTests $MaxBatchTests -Quarantine $quarantine -SubUnits $subUnits -RenderClasses $renderClasses
 
 if ($DryRun) {
     Write-Output "PLAN batches=$($plan.Count) units=$($unitSegs.Count) target=${TargetBatchSec}s"
@@ -181,7 +185,7 @@ $passThroughPattern = '^(FAILED_TEST|FAILED_MSG|OVERLAP_SIGNATURE|SLOT)='
 
 # ---------------------------------------------------------------- run batches, one at a time
 # Ordinary lock-taking children only: standalone runs take no held checkout, so no child skips its build (owner ruling 2026-09-29).
-$launch = { param($x) Start-SuiteChild -Unit $x -ResultsRoot $runsRoot }
+$launch = { param($x) Start-SuiteChild -Unit $x -ResultsRoot $runsRoot -Verbosity $Verbosity }
 function Invoke-BatchUnit {
     param($u)
     if (-not $IgnoreEditor -and @(Get-LiveEditor -Checkout $repo).Count -gt 0) {
@@ -216,7 +220,7 @@ foreach ($p in $plan) {
     Save-BatchState -StatePath $statePath -Plan $plan -TargetBatchSec $TargetBatchSec -TreeDigest $runDigest
 }
 
-# One retry pass for transient wedges (HANG / silent-skip), each under its <label>_retry run dir. RED never retries.
+# One retry pass for transient wedges and crashes (HANG / silent-skip / NO_TRX), each under its <label>_retry run dir. RED never retries.
 $retryUnits = @(Select-RetryUnits -Plan $plan -CostCeilingMs $CostCeilingMs -BatchWall $man.batchWall)
 $retryIdx = 0
 foreach ($u in $retryUnits) {
@@ -233,13 +237,13 @@ foreach ($u in $retryUnits) {
 
 # ---------------------------------------------------------------- counters, diagnosis, verdict, manifest
 # The committed manifest is the consecutive_failures ledger; it gets exactly one write per run, after the verdict:
-# a merge of fresh durations on a passing run, the counters alone otherwise.
+# a merge of fresh durations from the GREEN batches, the counters alone otherwise.
 $counters = Get-UpdatedCounters -Plan $plan -Counters $man.counters
 foreach ($line in @(Get-BatchDiagnosisLines -Plan $plan -Counters $counters -Manifest $man)) { Write-Output $line }
 $bl = Read-IntegrationBaseline -Path $baselinePath
 $verdict = Get-IntegrationVerdict -Plan $plan -Only $Only -Baseline $bl.baseline -Sentinel $bl.sentinel `
     -ElapsedSec $totalSw.Elapsed.TotalSeconds -LockWaitMs $lockWaitAccumMs -RunsRoot $runsRoot
-$fresh = if ($verdict.Exit -eq 0) { Get-FreshDurations -Plan $plan } else { $null }
+$fresh = Get-FreshDurations -Plan $plan
 $manifestLine = Save-BatchManifest -Path $manifestPath -Plan $plan -Counters $counters -Fresh $fresh -AllSegments $allUnitSegs
 foreach ($line in $verdict.Lines) { Write-Output $line }
 if ($manifestLine) { Write-Output $manifestLine }

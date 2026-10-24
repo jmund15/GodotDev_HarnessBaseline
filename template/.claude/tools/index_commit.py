@@ -7,7 +7,9 @@ This tool performs the safe cycle instead:
   stage   build `.git/index-<name>` from HEAD (read once, recorded as the base), force-add the named paths into it, stage the lock
           blob (HEAD's `baseline.lock.json` plus the rows for this commit's new `.claude/` paths and
           the working rows of its changed ones, minus the rows of its deleted ones), and print the `git commit` line to run next. A path an
-          earlier commit deleted, named alone, stages only the removal of its leftover row.
+          earlier commit deleted, named alone, stages only the removal of its leftover row. A submodule path with a
+          checkout stages as a gitlink (160000) at that checkout's HEAD, as `git add <submodule>` does; one without a
+          checkout is refused.
   resync  after that commit lands, reset the committed paths in the shared index and update the
           working `baseline.lock.json` so the committed rows equal HEAD's while every other row
           stays as it was.
@@ -42,7 +44,7 @@ paths to it, so each new `.claude/` path lands as a project-local row.
 
 Errors, each a printed `error: ...` and a non-zero exit: not inside a git repository; a `--name`
 that is not a plain fragment; a path outside the repo, or unknown to the working tree, HEAD and
-HEAD's lock; `baseline.lock.json` itself named as a path; a `--blob` argument without `=` or with an unreadable source; an unreadable
+HEAD's lock; a submodule with no checkout; `baseline.lock.json` itself named as a path; a `--blob` argument without `=` or with an unreadable source; an unreadable
 `baseline.lock.json` or one absent from HEAD; a classifier failure; and on `resync`, a missing
 sidecar or a commit that did not land. A refused `stage` discards its private index and leaves the
 shared index untouched.
@@ -144,6 +146,14 @@ def _index_entries(root, paths, index=None):
                 raise IndexCommitError('unmerged entry: ' + name)
             found[name] = (parts[0], parts[1])
     return found
+
+
+def _submodule_head(root, rel):
+    """The HEAD of a checked-out submodule at `rel`, or None when `rel` has no checkout of its own."""
+    if not (root / rel / ".git").exists():
+        return None
+    rc, out, _ = _git(root / rel, ["rev-parse", "--verify", "HEAD"], check=False)
+    return out.strip() if rc == 0 else None
 
 
 def _record_matches(entry, record, side):
@@ -253,9 +263,13 @@ def cmd_stage(args):
     head_lock = _head_lock(root, base_head)
     head_rows = head_lock.get("files") or {}
     for rel in paths:
-        if (rel not in sources and rel not in entries and not (root / rel).is_file() and not _tree_blobs(root, base_head, [rel])
-                and rel not in head_rows):
+        if rel in sources or rel in entries or _submodule_head(root, rel):
+            continue
+        if (not (root / rel).is_file() and not _tree_blobs(root, base_head, [rel]) and rel not in head_rows):
             raise IndexCommitError("unknown path: %s (not a file on disk, in HEAD or in HEAD's lock)" % rel)
+        if _tree_entries(root, base_head, [rel]).get(rel, ("",))[0] == "160000":
+            raise IndexCommitError("%s is a submodule with no checkout here, so its HEAD cannot be staged; "
+                                   "initialize it, or commit it by pathspec: git commit -m <msg> -- %s" % (rel, rel))
 
     lock_path = root / LOCK_RELPATH
     work_lock = _read_lock(lock_path, "the working lock")
@@ -286,6 +300,8 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
             sha = _git(root, ["hash-object", "-w", "--", str(sources[rel])])[1].strip()
             mode = (_git(root, ["ls-tree", base_head, "--", rel])[1].split() or ["100644"])[0]
             _git(root, ["update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, sha, rel)], index=index)
+        elif _submodule_head(root, rel):
+            _git(root, ["update-index", "--add", "--cacheinfo", "160000,%s,%s" % (_submodule_head(root, rel), rel)], index=index)
         elif (root / rel).is_file():
             _git(root, ["add", "-f", "--", rel], index=index)
         else:

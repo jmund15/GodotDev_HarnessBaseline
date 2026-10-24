@@ -62,7 +62,7 @@ for _p in (_HOOKS_DIR, _TOOLS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from _git_commit import (commit_invocations, parse_commit_args, resolve_index, run_git, staged_paths,
+from _git_commit import (base_rev, commit_invocations, parse_commit_args, resolve_index, run_git, staged_paths,
                          segments, git_invocation, executable_text, git_environ, resolve_cd,
                          commit_source)  # noqa: E402
 from _command_text import executable_spans, command_words, executable_word, comment_offset  # noqa: E402
@@ -123,9 +123,10 @@ def _committed_lock_text(rest: list, cwd: str, root: str, env: dict | None = Non
     if lock not in committed:
         return "", None
     include_dirty, _amend, pathspec = parse_commit_args(rest)
-    named = run_git(["diff", "--name-only", "HEAD", "--"] + pathspec, cwd, env) if pathspec else ""
+    base = base_rev(cwd, env)
+    named = run_git(["diff", "--name-only", base, "--"] + pathspec, cwd, env) if pathspec else ""
     if named is None:
-        return None, "diff --name-only HEAD -- " + " ".join(pathspec)
+        return None, "diff --name-only %s -- %s" % (base, " ".join(pathspec))
     if include_dirty or lock in {ln.strip() for ln in named.splitlines()}:
         return (Path(root) / lock).read_text(encoding="utf-8"), None
     new_text = run_git(["show", ":" + lock], cwd, env)

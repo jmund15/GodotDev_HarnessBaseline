@@ -28,8 +28,10 @@ from _git_commit import git_environ, run_git, staged_paths  # noqa: E402
 
 __all__ = ["authored_paths", "publishes_index", "writes_index", "merge_authored", "incoming_heads"]
 
-# The `--continue` that finishes a stopped merge / cherry-pick / revert runs `git commit` itself.
-_CONTINUE_SUBS = ("merge", "cherry-pick", "revert")
+# The `--continue` that finishes a stopped merge / cherry-pick / revert / rebase runs `git commit` itself;
+# am's `--continue` and `--resolved` (or `-r`) commit the resolved patch the same way.
+_CONTINUE_FLAGS = {"merge": ("--continue",), "cherry-pick": ("--continue",), "revert": ("--continue",),
+                   "rebase": ("--continue",), "am": ("--continue", "--resolved", "-r")}
 
 # The ref holding the incoming side of each operation: `git rev-parse <HEAD>:<path>` reads the
 # version that ref already committed. One exists only while its operation is mid-flight.
@@ -37,10 +39,10 @@ _INCOMING_HEADS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")
 
 
 def publishes_index(sub, rest):
-    """True when this invocation publishes the index: `git commit`, or the `--continue` closing a
-    merge / cherry-pick / revert. A bare `merge`/`cherry-pick`/`revert` re-commits content judged
-    on its own ref, or stops at a conflict for one of the forms above to finish."""
-    return sub == "commit" or (sub in _CONTINUE_SUBS and "--continue" in rest)
+    """True when this invocation publishes the index: `git commit`, or the continue form that closes a
+    merge / cherry-pick / revert / rebase / am. A bare `merge`/`cherry-pick`/`revert`/`rebase`
+    re-commits content judged on its own ref, or stops at a conflict for one of the forms above to finish."""
+    return sub == "commit" or any(a in _CONTINUE_FLAGS.get(sub, ()) for a in rest)
 
 
 # Subcommands that change the index or HEAD a later commit publishes against. `stash list|show` and a

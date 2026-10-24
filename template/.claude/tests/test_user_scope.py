@@ -30,6 +30,7 @@ def case(fn):
 
 
 def tool():
+    sys.path.insert(0, str(TOOL.parent))
     spec = importlib.util.spec_from_file_location("user_scope", TOOL)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

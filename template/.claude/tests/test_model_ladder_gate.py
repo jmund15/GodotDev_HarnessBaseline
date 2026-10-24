@@ -184,7 +184,7 @@ def test_a_slice_covers_every_tier_the_call_implies(tmp_path, monkeypatch):
 
 def test_a_slice_missing_a_pinned_tier_denies_naming_the_command_for_that_tier(tmp_path, monkeypatch):
     gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice003', ['architect'])
-    reason, fault = gate.doctrine_check(payload, tiers=lambda: ['architect', 'executor'])
+    reason, fault = gate.doctrine_check(payload, tiers=lambda: ['architect', 'executor'], embed_slice=False)
     assert fault is None and '%s executor' % SLICE_CMD in reason, reason
     assert 'architect' not in reason.split(SLICE_CMD)[1].split('.')[0], reason
     assert 're-issue' in reason
@@ -208,14 +208,15 @@ def test_a_call_whose_tiers_cannot_be_read_falls_back_to_the_full_read(tmp_path,
 def test_a_compaction_clears_the_slice(tmp_path, monkeypatch):
     gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'slice006', ['architect'])
     hooks_state.clear_compaction_keys('slice006')
-    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'])
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'], embed_slice=False)
     assert '%s architect' % SLICE_CMD in reason, reason
 
 
 def test_one_deny_names_the_skill_and_the_slice_together(tmp_path, monkeypatch):
     gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice007', [], skill=False)
-    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'])
-    assert 'Skill(skill="orchestration")' in reason and '%s architect' % SLICE_CMD in reason, reason
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'], embed_slice=True)
+    assert 'Skill(skill="orchestration")' in reason and 'slice for the tier this call pins below' in reason, reason
+    assert reason.index('## Role definitions') > reason.index('re-issue')
 
 
 def test_the_slice_record_is_per_session(tmp_path, monkeypatch):
@@ -223,6 +224,67 @@ def test_the_slice_record_is_per_session(tmp_path, monkeypatch):
     other = dict(payload, session_id='slice009')
     hooks_state.mark_skill_in_context('slice009', 'orchestration')
     assert gate.doctrine_check(other, tiers=lambda: ['architect'])[0] is not None
+
+
+def _tools_registry():
+    import sys
+    tools = str(HERE.parent / 'tools')
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import model_registry
+    return model_registry
+
+
+def test_the_deny_embeds_the_slice_for_the_missing_tier_only_and_records_it(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed001', ['fanout'])
+    registry = _tools_registry()
+    reason, fault = gate.doctrine_check(payload, tiers=lambda: ['fanout', 'executor'], embed_slice=True)
+    assert fault is None and reason.endswith(registry.ladder_slice(['executor'])), reason
+    assert SLICE_CMD not in reason and 're-issue' in reason and 'DENIED' in reason, reason
+    executor_lines = set(registry.ladder_slice(['executor']).splitlines())
+    only_architect = [l for l in registry.ladder_slice(['fanout']).splitlines() if l not in executor_lines]
+    assert only_architect and not any(l in reason for l in only_architect)
+    assert hooks_state.ladder_slice_tiers('embed001') == ['executor', 'fanout']
+
+
+def test_the_call_passes_once_the_deny_embedded_its_slice(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'embed002', [])
+    assert gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)[0] is not None
+    assert gate.doctrine_check(payload, tiers=lambda: ['executor']) == (None, None)
+
+
+def test_a_slice_failure_names_the_command_and_records_nothing(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed003', [])
+    registry = _tools_registry()
+
+    def broken(tiers, *a, **k):
+        raise registry.RegistryError('no ladder')
+    monkeypatch.setattr(registry, 'ladder_slice', broken)
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'])
+    assert '%s executor' % SLICE_CMD in reason, reason
+    assert hooks_state.ladder_slice_tiers('embed003') == []
+    assert gate.doctrine_check(payload, tiers=lambda: ['executor'])[0] is not None
+
+
+def test_a_caller_whose_deny_cannot_reach_the_session_gets_the_command_and_no_record(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed004', [])
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=False)
+    assert '%s executor' % SLICE_CMD in reason and hooks_state.ladder_slice_tiers('embed004') == []
+
+
+def test_unknown_tiers_and_the_skill_step_embed_nothing(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed005', [], skill=False)
+    reason, _ = gate.doctrine_check(payload)
+    assert 'Skill(skill="orchestration")' in reason and 'model_ladder_evidence.md' in reason
+    assert '## Role definitions' not in reason and hooks_state.ladder_slice_tiers('embed005') == []
+
+
+def test_the_default_records_no_slice_so_an_undelivered_deny_cannot_pass_the_next_call(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed006', [])
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'])
+    assert '%s executor' % SLICE_CMD in reason, reason
+    assert hooks_state.ladder_slice_tiers('embed006') == []
+    assert gate.doctrine_check(payload, tiers=lambda: ['executor'])[0] is not None
 
 
 if __name__ == "__main__":

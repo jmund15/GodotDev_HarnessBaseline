@@ -6,6 +6,9 @@ from pathlib import Path
 import shlex
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from cli_usage import usage
+
 
 def isolation(repo, env=None, platform=None):
     env = os.environ if env is None else env
@@ -31,7 +34,7 @@ def isolation(repo, env=None, platform=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--repo', required=True)
     parser.add_argument('--shell', action='store_true')
     args = parser.parse_args()

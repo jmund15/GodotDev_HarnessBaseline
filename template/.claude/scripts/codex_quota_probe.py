@@ -271,7 +271,8 @@ def sample_usage(reading):
         import usage_samples
         ts = calendar.timegm(time.strptime(reading["observedAt"], "%Y-%m-%dT%H:%M:%SZ"))
         usage_samples.record([
-            {"ts": ts, "provider": TRANSPORT, "window": w["name"], "used": w["usedPercent"],
+            {"ts": ts, "provider": TRANSPORT, "plan": TRANSPORT, "window": w["name"],
+             "used": w["usedPercent"],
              "resets_at": w["resetsAt"], "windowDurationMins": w["windowDurationMins"]}
             for w in (reading.get("quota") or {}).get("windows") or []
             if w.get("usedPercent") is not None], now=ts)

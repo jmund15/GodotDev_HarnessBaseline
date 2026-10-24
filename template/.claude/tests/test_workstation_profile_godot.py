@@ -107,6 +107,15 @@ def main():
         check("the CLI --write repairs it", wpg.main(["fingerprint", "--write", script]) == 0
               and wpg.main(["fingerprint", "--check", script]) == 0)
 
+    # The loader reads the manifest cloud-setup.sh writes; both must name the same file.
+    here = os.path.normpath(os.path.join(HERE, ".."))
+    with open(os.path.join(here, "cloud-setup.sh"), encoding="utf-8") as handle:
+        setup_text = handle.read()
+    with open(os.path.join(here, "hooks", "session_context_loader_godot.py"), encoding="utf-8") as handle:
+        loader_text = handle.read()
+    check("cloud-setup.sh writes the install manifest the loader reads",
+          '${PREFIX}/.cloud-install.json' in setup_text and 'CLOUD_INSTALL_NAME = ".cloud-install.json"' in loader_text)
+
     if failures:
         print("\nFAILED:\n  " + "\n  ".join(failures))
         sys.exit(1)

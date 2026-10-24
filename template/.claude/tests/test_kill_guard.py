@@ -596,6 +596,17 @@ def c_taskstop_live_tree_runs_launcher():
         os.unlink(table)
 
 
+@case("NEGATIVE: a grid child outside a harness proof sandbox root stays billed even under a proof launch")
+def c_taskstop_grid_child_outside_sandbox_blocked():
+    command = "python3 .claude/scripts/harness_tests.py --for x"
+    table = _planted_table([(100, 1, _wrapper(command)),
+                            (101, 100, "bash /home/dev/project/.claude/scripts/benchmark_campaign/run_grid.sh deepseek flash:1")])
+    try:
+        return "does not name" in (taskstop(rows=_launch_rows("bgsand2", command), task_id="bgsand2", table=table, cwd=PROJECT) or "")
+    finally:
+        os.unlink(table)
+
+
 @case("NEGATIVE: a table that holds no process carrying the launch falls back to the script text: blocked")
 def c_taskstop_live_tree_not_found():
     path = _queue_script()
@@ -627,6 +638,54 @@ def c_taskstop_own_harness_tests_allowed():
 def c_taskstop_own_grid_blocked():
     rows = _launch_rows("bggrid1", "bash .claude/scripts/benchmark_campaign/run_grid.sh deepseek-v41-flash flash:1")
     return "does not name" in (taskstop(rows=rows, task_id="bggrid1") or "")
+
+
+@case("a harness proof run that names a grid script as its input is stoppable: the grid is not run")
+def c_taskstop_own_harness_grid_input_allowed():
+    rows = _launch_rows("bgproof1", "python3 .claude/scripts/harness_tests.py --for .claude/scripts/benchmark_campaign/run_grid.sh")
+    return taskstop(rows=rows, task_id="bgproof1", cwd=PROJECT) is None
+
+
+@case("a harness proof run whose sandboxed child runs a grid under its temp root is stoppable: nothing is billed")
+def c_taskstop_sandboxed_proof_grid_child_allowed():
+    command = "python3 .claude/scripts/harness_tests.py --for x"
+    table = _planted_table([(100, 1, _wrapper(command)),
+                            (101, 100, "python3 .claude/scripts/harness_tests.py --for x"),
+                            (102, 101, "bash /tmp/harness_proof_k3j9x1/.claude/scripts/benchmark_campaign/run_grid.sh deepseek flash:1")])
+    try:
+        return taskstop(rows=_launch_rows("bgsand1", command), task_id="bgsand1", table=table, cwd=PROJECT) is None
+    finally:
+        os.unlink(table)
+
+
+@case("a grid launched through a $(cat file) indirection, with no readable live tree, is still billed")
+def c_taskstop_cat_indirection_grid_blocked():
+    path = _script("bash .claude/scripts/benchmark_campaign/run_grid.sh deepseek flash:1\n", suffix=".txt")
+    table = _planted_table([(300, 2, "python3 something_else.py")])
+    try:
+        command = "bash -c \"$(cat %s)\"" % path
+        return "does not name" in (taskstop(rows=_launch_rows("bgcat1", command), task_id="bgcat1", table=table) or "")
+    finally:
+        os.unlink(path)
+        os.unlink(table)
+
+
+@case("own $(cat file) launch whose file runs nothing PROTECTED is stoppable")
+def c_taskstop_cat_indirection_benign_allowed():
+    path = _script("echo hello\n", suffix=".txt")
+    table = _planted_table([(300, 2, "python3 something_else.py")])
+    try:
+        command = "bash -c \"$(cat %s)\"" % path
+        return taskstop(rows=_launch_rows("bgcat2", command), task_id="bgcat2", table=table) is None
+    finally:
+        os.unlink(path)
+        os.unlink(table)
+
+
+@case("a grid run by path after nohup and bash flags is still billed")
+def c_taskstop_grid_path_after_flag_blocked():
+    rows = _launch_rows("bggrid2", "nohup bash -x ./.claude/scripts/benchmark_campaign/run_grid.sh deepseek flash:1")
+    return "does not name" in (taskstop(rows=rows, task_id="bggrid2") or "")
 
 
 def _aged(rows, age_s):

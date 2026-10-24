@@ -213,6 +213,46 @@ def rule_hash_checks():
         check("a key outside the catalog has no hash", review_ledger.rule_hash("nope", root, catalog) is None)
 
 
+def tier_checks():
+    """A lens header's `tier:` line names its seat tier; a lens without one takes its registry's tier."""
+    text = (
+        "# Review agents\n\n## Agent Templates\n\n"
+        "### code-reviewer (code)\n\ntier: fanout\n\n```\nshipped prompt\n```\n"
+        "### plain-lens (code)\n\n```\nplain prompt\n```\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "review_agents.md").write_text(text, encoding="utf-8")
+        saved = lens.AGENTS, lens.REGISTRIES
+        lens.AGENTS, lens.REGISTRIES = root, {"review": ("review_agents.md", "")}
+        try:
+            parsed = {l.key: l for l in lens.parse("review")[1]}
+            check("tier: a declared header tier wins over the registry tier",
+                  parsed["code-reviewer"].tier == "fanout", parsed["code-reviewer"].tier)
+            check("tier: a lens with no tier line takes its registry tier",
+                  parsed["plain-lens"].tier == "executor", parsed["plain-lens"].tier)
+            check("tier: the tier line is not part of the lens brief",
+                  "tier:" not in parsed["code-reviewer"].body(), parsed["code-reviewer"].body())
+            check("tier: seat_tier reads the declared tier", lens.seat_tier("code-reviewer") == "fanout",
+                  lens.seat_tier("code-reviewer"))
+        finally:
+            lens.AGENTS, lens.REGISTRIES = saved
+
+
+def prefix_checks():
+    """lens_prefixes sets each registry's key prefix from its own row; a registry with no row keeps its literal."""
+    literals = {"review": "", "session_audit": "sa-", "explore": "exp-",
+                "plan_check": "plc-", "structure_audit": "stra-", "redteam": "rt-"}
+    for name, literal in literals.items():
+        row = lens.registries({name: "xx-"})
+        check(f"lens_prefixes: a {name} row sets its prefix", row[name][1] == "xx-", row[name])
+        check(f"lens_prefixes: a {name} registry with no row keeps {literal!r}",
+              lens.registries({})[name][1] == literal, lens.registries({})[name])
+        check(f"lens_prefixes: a {name} row leaves other registries on their literals",
+              all(lens.registries({name: "xx-"})[other][1] == prefix
+                  for other, prefix in literals.items() if other != name))
+
+
 def companion_checks():
     """A project-owned `<registry>.project.md` adds lenses to a shipped registry at read time."""
     shipped_text = (
@@ -322,6 +362,8 @@ def main():
     registry_checks()
     unshipped_registry_checks()
     rule_hash_checks()
+    tier_checks()
+    prefix_checks()
     companion_checks()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")

@@ -417,6 +417,18 @@ def _hit_id(hit) -> str:
     return getattr(hit, "id", None) or f"{hit['path']}:{hit['line']}:{hit['token_kind']}:{hit['token_digest']}"
 
 
+def _judged_accepted_hits(records: list[dict], lock: dict) -> set[str]:
+    """Hit ids a `judge --accept-hit` recorded on each published row, in the scan's worktree-path form."""
+    files = lock.get("files", {})
+    accepted = set()
+    for record in records:
+        judged = (files.get(record["relpath"]) or {}).get("judged") or {}
+        for hit_id in judged.get("accepted_hits", []):
+            if hit_id.startswith(record["relpath"] + ":"):
+                accepted.add(record["dest_path"] + hit_id[len(record["relpath"]):])
+    return accepted
+
+
 def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
            accept_hits: list[str], baseline_dir: Path) -> str:
     for record in records:
@@ -438,7 +450,7 @@ def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
     diff_text = _lf(_git(worktree, ["diff", "--cached"]).stdout).decode("utf-8", errors="replace")
     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_dir))
     hits = baseline_identity.scan_changed(diff_text, profile)
-    accepted = set(accept_hits)
+    accepted = set(accept_hits) | _judged_accepted_hits(records, lock)
     remaining = [hit for hit in hits if _hit_id(hit) not in accepted]
     if remaining:
         raise PublishError("identity scan found hit(s): " + ", ".join(_hit_id(h) for h in remaining))

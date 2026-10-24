@@ -91,7 +91,7 @@ CASES = [
     ("-Smoke is retired and names verify.ps1",
      GATE + " -Smoke  # gate: final", DENY, "verify.ps1"),
     ("-Targeted is retired",
-     GATE + " -Targeted NPCs  # gate: final", DENY, "verify.ps1"),
+     GATE + " -Targeted Domain  # gate: final", DENY, "verify.ps1"),
     ("-SkipStatic is retired",
      GATE + " -SkipStatic  # gate: final", DENY, "verify.ps1"),
     ("a retired flag is caught even with no marker at all",
@@ -99,13 +99,13 @@ CASES = [
 
     # --- the narrow instrument is never gated -------------------------------
     ("verify.ps1 needs no marker and is never denied",
-     VERIFY + " -Scope NPCs,AI", ALLOW, ""),
+     VERIFY + " -Scope Domain,AI", ALLOW, ""),
     ("whole-tier filter is nudged, not denied",
      'pwsh -File .claude/scripts/run_test_suite.ps1 '
      '-Filter "FullyQualifiedName~Tests.Integration" -Label x', NUDGE, "blast-zone"),
     ("blast-zone filter is silent",
      'pwsh -File .claude/scripts/run_test_suite.ps1 '
-     '-Filter "FullyQualifiedName~Tests.Integration.NPCs" -Label x', ALLOW, ""),
+     '-Filter "FullyQualifiedName~Tests.Integration.Domain" -Label x', ALLOW, ""),
 ]
 
 # Cases that depend on accumulated per-session state, run in order on one session.
@@ -151,6 +151,12 @@ COMPOUND = [
     ("unmarked gate then exempt gate nudged",
      GATE + "; " + GATE + " -StaticOnly", NUDGE, "declares no position"),
     ("narrowed flag is denied", GATE + " -Smoke  # gate: final", DENY, "verify.ps1"),
+    ("gate wrapped in bash -c without marker nudged",
+     "bash -c 'pwsh -File .claude/scripts/regression_gate.ps1'", NUDGE, "declares no position"),
+    ("gate wrapped in bash -c with marker allowed",
+     "bash -c 'pwsh -File .claude/scripts/regression_gate.ps1'  # gate: final", ALLOW, ""),
+    ("gate named inside echo executes nothing",
+     "echo 'pwsh -File .claude/scripts/regression_gate.ps1'", ALLOW, ""),
 ]
 
 
@@ -163,17 +169,17 @@ def stale_state_case():
         fh.write("{}")
     old = time.time() - 8 * 24 * 3600
     os.utime(stale, (old, old))
-    got = run(VERIFY + " -Scope NPCs", "sweep-session", repo)
+    got = run(VERIFY + " -Scope Domain", "sweep-session", repo)
     return got, not os.path.exists(stale)
 
 
-def write_gate_last(repo, verdict, age_sec=0, session='red001'):
-    """Plant a gate_last.md carrying `verdict`, aged `age_sec` seconds into the past."""
+def write_gate_last(repo, verdict, age_sec=0, session='red001', extra=''):
+    """Plant a gate_last.md carrying `verdict` and `extra` detail, aged `age_sec` seconds into the past."""
     d = os.path.join(repo, ".claude", "scratch", "test_runs")
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "gate_last.md")
     with open(p, "w", encoding="utf-8") as fh:
-        fh.write('# Regression Gate detail\n\nVERDICT=%s (exit 1)\n' % verdict)
+        fh.write('# Regression Gate detail\n\nVERDICT=%s (exit 1)\n%s' % (verdict, extra))
         if session is not None:
             fh.write('SESSION=%s\n' % session)
     stamp = time.time() - age_sec
@@ -191,14 +197,47 @@ def post_red_cases(run_one):
     out.append(("open red + no narrow run -> full gate denied",
                 run_one(GATE + "  # gate: final", "red001", repo), DENY, "nothing narrower has run"))
 
-    # 2. -RetryOnly is the sanctioned instrument, never blocked
-    out.append(("-RetryOnly is exempt while a red is open",
-                run_one(GATE + " -RetryOnly  # gate: final", "red002", repo), ALLOW, ""))
+    # 2. -RetryOnly is a gate-length rerun: it repairs nothing, so an own open red blocks it too
+    out.append(("-RetryOnly is denied while this session's red is open",
+                run_one(GATE + " -RetryOnly  # gate: final", "red001", repo), DENY, "nothing narrower"))
+    out.append(("-RetryOnly after another session's red advises, never denies",
+                run_one(GATE + " -RetryOnly", "red002", repo), NUDGE, "another session"))
+    repo_hang = tempfile.mkdtemp(prefix="postred_hang_")
+    write_gate_last(repo_hang, "HANG", session='red012')
+    out.append(("-RetryOnly after a HANG stays allowed: no failed test to repair",
+                run_one(GATE + " -RetryOnly", "red012", repo_hang), ALLOW, ""))
+
+    # 2b. one -RetryOnly after a red whose failures all carry a timeout signature
+    def timeout_red(msg, mode):
+        r = tempfile.mkdtemp(prefix="postred_t_")
+        write_gate_last(r, "FAIL", session='red020',
+                        extra='### Integration failing tests\n- Tests.Integration.Domain.Slow :: %s\n'
+                              '- Tests.Integration.Domain.Slower :: %s\n\nfailed=2\n' % (msg, msg))
+        if mode:
+            led = os.path.join(r, '.claude', 'scratch', 'gate_ledger')
+            os.makedirs(led)
+            with open(os.path.join(led, '20261023-100000-1.result.json'), 'w', encoding='utf-8') as fh:
+                json.dump(dict(id='20261023-100000-1', status='FAIL', mode=mode, treeDigest='a' * 40,
+                               sessionId='red020'), fh)
+        return r
+    slow = 'Test timed out after 30000ms'
+    out.append(("timeout-only FAIL admits one -RetryOnly",
+                run_one(GATE + " -RetryOnly", "red020", timeout_red(slow, 'full')), ALLOW, ""))
+    out.append(("timeout-only FAIL still denies a full gate",
+                run_one(GATE + "  # gate: final", "red020", timeout_red(slow, 'full')), DENY, "nothing narrower"))
+    out.append(("assertion FAIL denies -RetryOnly",
+                run_one(GATE + " -RetryOnly", "red020", timeout_red('Assert.Equal() Failure', 'full')),
+                DENY, "nothing narrower"))
+    out.append(("FAIL of the retry itself denies the next -RetryOnly",
+                run_one(GATE + " -RetryOnly", "red020", timeout_red(slow, 'full+retry-only')),
+                DENY, "nothing narrower"))
+    out.append(("timeout FAIL with no ledger record denies -RetryOnly",
+                run_one(GATE + " -RetryOnly", "red020", timeout_red(slow, None)), DENY, "nothing narrower"))
 
     # 3. a narrow run since the red clears the block
     repo2 = tempfile.mkdtemp(prefix="postred_b_")
     write_gate_last(repo2, "FAIL", age_sec=60, session='red003')
-    run_one(VERIFY + " -Scope NPCs", "red003", repo2)          # the narrow run
+    run_one(VERIFY + " -Scope Domain", "red003", repo2)          # the narrow run
     out.append(("narrow run since the red -> full gate allowed",
                 run_one(GATE + "  # gate: final", "red003", repo2), ALLOW, ""))
 
@@ -225,6 +264,54 @@ def post_red_cases(run_one):
     repo5 = tempfile.mkdtemp(prefix="postred_e_")
     out.append(("no prior verdict on disk -> allowed",
                 run_one(GATE + "  # gate: final", "red007", repo5), ALLOW, ""))
+
+    # 8. a WARN from a clean count drop has no failing test to rerun -> not a red
+    repo6 = tempfile.mkdtemp(prefix="postred_f_")
+    write_gate_last(repo6, "WARN", session='red008',
+                    extra='### Count drop\n\nfailed=0 — clean count drop, no failing test\n')
+    out.append(("WARN with zero failed tests does not open a red",
+                run_one(GATE + "  # gate: final", "red008", repo6), ALLOW, ""))
+
+    # 9. a WARN that lists a failing test is still an open red
+    repo7 = tempfile.mkdtemp(prefix="postred_g_")
+    write_gate_last(repo7, "WARN", session='red009',
+                    extra='### Integration failing tests\n\n- Tests.Integration.Domain.Boom :: assert\n\nfailed=1\n')
+    out.append(("WARN with a failed test stays an open red",
+                run_one(GATE + "  # gate: final", "red009", repo7), DENY, "nothing narrower"))
+
+    # 10. echoed suite text is not a suite run, so it cannot clear the red
+    repo8 = tempfile.mkdtemp(prefix="postred_h_")
+    write_gate_last(repo8, "FAIL", session='red010')
+    run_one("echo dotnet test", "red010", repo8)
+    out.append(("echoed suite text does not clear an open red",
+                run_one(GATE + "  # gate: final", "red010", repo8), DENY, "nothing narrower"))
+
+    # 11. an isolated-worktree gate writes only its own gate_last.md: the newest one across checkouts decides
+    repo9 = tempfile.mkdtemp(prefix="postred_main_")
+    wt = repo9 + "_wt"
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                 ["commit", "-q", "--allow-empty", "-m", "init"], ["worktree", "add", "-q", "--detach", wt, "HEAD"]):
+        subprocess.run(["git", "-C", repo9] + args, capture_output=True, check=True)
+    write_gate_last(repo9, "INVALID", age_sec=600, session='red013')
+    write_gate_last(wt, "FAIL", age_sec=60, session='red013',
+                    extra='failed=1\n### Integration failing tests\n- Tests.Integration.Domain.Boom :: assert\n')
+    out.append(("a FAIL in a linked worktree opens a red for the main checkout's guard",
+                run_one(GATE + "  # gate: final", "red013", repo9), DENY, "nothing narrower"))
+    out.append(("-RetryOnly after that worktree FAIL is denied too",
+                run_one(GATE + " -RetryOnly", "red013", repo9), DENY, "nothing narrower"))
+    write_gate_last(wt, "PASS", session='red013')
+    out.append(("a later PASS in the worktree closes the red",
+                run_one(GATE + "  # gate: final", "red013", repo9), ALLOW, ""))
+
+    # 12. with a parseable failure listing, an unrelated suite run no longer clears the red
+    repo10 = tempfile.mkdtemp(prefix="postred_i_")
+    write_gate_last(repo10, "FAIL", age_sec=60, session='red014',
+                    extra='failed=1\n### Integration failing tests\n- Tests.Integration.Domain.Boom :: assert\n')
+    run_one(VERIFY + " -Scope Domain", "red014", repo10)
+    out.append(("any narrow run clears a red only when its failure listing cannot be parsed",
+                run_one(GATE + "  # gate: final", "red014", repo10), DENY, "nothing narrower"))
+    out.append(("the deny tells the agent a flake passing alone has a cause to repair",
+                run_one(GATE + "  # gate: final", "red014", repo10), DENY, "repair it before another gate"))
 
     return out
 
@@ -328,9 +415,46 @@ Save-SuiteGreen -Repo $Repo -Path $Record -Trx $Trx -TreeDigest $Digest -DigestS
     out.append(('incomplete red failure listing stays denied', observed(record), DENY, 'nothing narrower'))
     gate.write_text(detail, encoding='utf-8')
     os.utime(gate, (red_at, red_at))
+    # A passing rerun on the red's own content shows a flake, not a repair. Shape from the gate's
+    # <ledgerDir>/<runId>.result.json (regression_gate.ps1 Complete-Gate).
+    ledger = repo / '.claude/scratch/gate_ledger'
+    ledger.mkdir(parents=True)
+    def red_run(tree_digest, status='FAIL', session='record-owner'):
+        (ledger / '20261022-181326-50980.result.json').write_text(
+            json.dumps(dict(id='20261022-181326-50980', status=status, treeDigest=tree_digest,
+                            sessionId=session)), encoding='utf-8')
+    red_run(digest)
+    out.append(('pass on the red\'s own content is not a repair', observed(record), DENY, 'content is unchanged'))
+    out.append(('unrepaired deny names the repair and the owner\'s known-failure acceptance',
+                observed(record), DENY, 'known failure'))
+    red_run('1' * 40)
+    out.append(('pass on content changed since the red clears it', observed(record), ALLOW, ''))
+    red_run('')
+    out.append(('red run with no recorded digest keeps the narrow-pass rule', observed(record), ALLOW, ''))
+    red_run(digest, status='PASS')
+    out.append(('newest ledger run that is not a red is no evidence of one', observed(record), ALLOW, ''))
+    (ledger / '20261022-181326-50980.result.json').unlink()
     # Even a once-valid record is stale after an input edit in this checkout.
     (repo / 'input.txt').write_text('changed after verification\n')
     out.append(('edited checkout does not inherit peer proof', observed(record), DENY, 'nothing narrower'))
+    # A red recorded in a linked worktree, the fix edited here: the narrow run's content is this checkout's,
+    # so the repair test reads this checkout's digest, not the worktree's.
+    peer_gate = Path(write_gate_last(str(peer), 'FAIL', age_sec=40, session='record-owner'))
+    with peer_gate.open('a', encoding='utf-8') as fh:
+        fh.write('\n## Integration — FAILING\n\nfailed=1 — genuine test failure, not a count-drift signal\n'
+                 '### Integration failing tests\n- ' + name + ' :: sight assertion\n')
+    peer_red_at = time.time() - 40
+    os.utime(peer_gate, (peer_red_at, peer_red_at))
+    peer_ledger = peer / '.claude/scratch/gate_ledger'
+    peer_ledger.mkdir(parents=True)
+    (peer_ledger / '20261022-181400-50981.result.json').write_text(
+        json.dumps(dict(id='20261022-181400-50981', status='FAIL', treeDigest=digest, sessionId='record-owner')),
+        encoding='utf-8')
+    fixed = subprocess.run(['pwsh', '-NoProfile', '-Command', ps], capture_output=True, text=True, env=env)
+    assert fixed.returncode == 0 and fixed.stdout.strip() != digest, fixed.stderr
+    out.append(('a fix edited in this checkout repairs a red recorded in a linked worktree',
+                observed(dict(record, treeDigest=fixed.stdout.strip(),
+                              startedAt=stamp(time.time() - 20), finishedAt=stamp(time.time() - 10))), ALLOW, ''))
     return out
 
 

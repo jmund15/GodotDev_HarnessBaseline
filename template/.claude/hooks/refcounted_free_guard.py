@@ -17,11 +17,19 @@ disagreeing with a narrow --filter run, or as a crash that appears and vanishes 
 batch manifest is rebalanced. None of those symptoms point back at the teardown that caused it, and
 the runner reports the aftermath as a runtime-executor connect failure, which is the wrong cause.
 
-Detection (deliberately narrow -- no type resolution, so only the idiom that actually caused this is
-matched): a `.Free()` whose receiver is a collection field/local declared `List<GodotObject>` /
+Detection: a `.Free()` / `?.Free()` whose receiver is (a) a field or local whose declared type
+descends from RefCounted, or (b) a collection field/local declared `List<GodotObject>` /
 `List<Resource>` / `HashSet<...>` of the same, or the loop variable of a `foreach` bound over one.
-A call already narrowed by `is Node` / `as Node` on the same line is safe by construction and is not
-flagged.
+Descent comes from a type map built from each class's `inherits` in the Godot class docs
+(`.claude/cache/godot-docs/doc/classes/*.xml`) plus every `class X : Y` in the repo's `.cs` sources
+each `adaptation.json` `paired_repos` entry's (generic arguments stripped). A type the map cannot trace to RefCounted -- unknown, or
+rooted at Node/Object -- is never flagged, and a name declared with mixed types in one file is
+flagged only when every declared type descends from RefCounted. A name with any declaration the
+regexes cannot type (tuple deconstruction, `out`, `foreach`, `var x = <not new T>`, lambda
+parameters) is unknown for the whole file, so it is never flagged: scoping is per file, not per
+method. The map is cached per file by
+mtime and size in `.claude/cache/refcounted_type_map.json`. A call already narrowed by `is Node` /
+`as Node` on the same line is safe by construction and is not flagged.
 
 Resolution: route the call through `TestObjectTeardown.FreeIfNode(x)`
 (Tests/Framework/Helpers/TestObjectTeardown.cs), or -- when the tracker is Resource-only -- delete
@@ -41,7 +49,10 @@ import json
 import os
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
+
+from _checkout_root import main_checkout_root
 
 REPO = Path(__file__).resolve().parents[2]
 _CLAUDE_DIR = REPO / ".claude"
@@ -88,13 +99,159 @@ FIELD_RE = re.compile(
 LOCAL_RE = re.compile(
     r"\bvar\s+(\w+)\s*=\s*new\s+(?:List|HashSet)<\s*(?:Godot\.)?(?:GodotObject|Resource)\s*>"
 )
+TYPED_DECL_RE = re.compile(r"\b([A-Z]\w*)(?:<[^<>]*>)?\??\s+(_?\w+)\s*[;=]")
+VAR_NEW_RE = re.compile(r"\bvar\s+(_?\w+)\s*=\s*new\s+(?:[\w.]+\.)?([A-Z]\w*)")
+CLASS_RE = re.compile(r"\bclass\s+(\w+)(?:<[^<>]*>)?\s*:\s*([\w.]+)")
+DOC_CLASS_RE = re.compile(r'<class\s+name="(\w+)"(?:\s+inherits="(\w+)")?')
 FOREACH_RE = re.compile(r"foreach\s*\(\s*(?:var|GodotObject|Resource)\s+(\w+)\s+in\s+(?:this\.)?(\w+)")
 FREE_RE = re.compile(r"(?:^|[^\w.])(?:this\.)?(\w+)(?:\?)?\.Free\s*\(\s*\)")
-NODE_NARROWED_RE = re.compile(r"\bis\s+Node\b|\bas\s+Node\b")
+TUPLE_RE = re.compile(r"\(([^()]*,[^()]*)\)\s*=(?![=>])")
+TUPLE_PART_RE = re.compile(r"^\s*(?:[\w.<>?\[\]]+\s+)?(\w+)\s*$")
+OUT_RE = re.compile(r"\bout\s+(?:[\w.<>?\[\]]+\s+)?(\w+)")
+FOREACH_ANY_RE = re.compile(r"foreach\s*\(\s*[\w.<>?\[\]]+\s+(\w+)\s+in\s+(?:this\.)?(\w+)?")
+VAR_OTHER_RE = re.compile(r"\bvar\s+(_?\w+)\s*=\s*(?!\s|new\s+(?:[\w.]+\.)?[A-Z])")
+LAMBDA_RE = re.compile(r"(?:\b(\w+)|\(([^()]*)\))\s*=>")
+PARAM_RE = re.compile(
+    r"[(,]\s*(?:(?:ref|in|out|params|this|readonly)\s+)?([A-Za-z_][\w.]*(?:<[^<>]*>)?\??(?:\[\])?)"
+    r"\s+(\w+)\s*(?=[,)=])"
+)
+PATTERN_RE = re.compile(r"\b(?:is|case)\s+(?:not\s+)?([A-Za-z_][\w.]*(?:<[^<>]*>)?)\s+(\w+)")
+NODE_NARROWED_RE =re.compile(r"\bis\s+Node\b|\bas\s+Node\b")
+
+_SKIP_DIRS = {"obj", "bin", "node_modules"}
+
+
+def _common_root():
+    return Path(main_checkout_root(REPO))
+
+
+def _cs_files(root):
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS]
+        for fn in files:
+            if fn.endswith(".cs"):
+                yield Path(dirpath) / fn
+
+
+def _source_roots():
+    roots = [REPO]
+    common = _common_root()
+    if common != REPO:
+        for name in adaptation.get(_CLAUDE_DIR, "paired_repos"):
+            if not next(_cs_files(REPO / name), None):
+                roots.append(common / name)
+    return roots
+
+
+def _docs_dir():
+    rel = Path(".claude") / "cache" / "godot-docs" / "doc" / "classes"
+    for root in (REPO, _common_root()):
+        if (root / rel).is_dir():
+            return root / rel
+    return None
+
+
+def _parents_of(path, doc):
+    try:
+        if doc:
+            with open(path, "rb") as fh:
+                head = fh.read(512).decode("utf-8", errors="ignore")
+            m = DOC_CLASS_RE.search(head)
+            return [[m.group(1), m.group(2)]] if m else []
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    return [[m.group(1), m.group(2).split(".")[-1]] for m in CLASS_RE.finditer(text)]
+
+
+def load_type_map():
+    cache_path = _CLAUDE_DIR / "cache" / "refcounted_type_map.json"
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8")).get("files", {})
+    except (OSError, ValueError, AttributeError):
+        cached = {}
+    fresh, dirty = {}, False
+    docs = _docs_dir()
+    sources = [(p, True) for p in sorted(docs.glob("*.xml"))] if docs else []
+    for root in _source_roots():
+        sources += [(p, False) for p in sorted(_cs_files(root))]
+    for path, doc in sources:
+        key = path.as_posix()
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        sig = [st.st_mtime_ns, st.st_size]
+        hit = cached.get(key)
+        if hit and hit[:2] == sig:
+            fresh[key] = hit
+        else:
+            fresh[key] = sig + [_parents_of(path, doc)]
+            dirty = True
+    if dirty or len(fresh) != len(cached):
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps({"files": fresh}), encoding="utf-8")
+        except OSError:
+            pass
+    parent = {}
+    for entry in fresh.values():
+        for cls, base in entry[2]:
+            parent.setdefault(cls, base)
+    return parent
+
+
+def _is_refcounted(parent, name):
+    for _ in range(40):
+        if name == "RefCounted":
+            return True
+        if name is None:
+            return False
+        name = parent.get(name)
+    return False
+
+
+def _type_name(t):
+    if t.endswith("[]"):
+        return "[]"
+    return re.sub(r"<.*", "", t).rstrip("?").split(".")[-1]
+
+
+def _untyped_names(text, loose):
+    names = set()
+    for m in TUPLE_RE.finditer(text):
+        for part in m.group(1).split(","):
+            pm = TUPLE_PART_RE.match(part)
+            if pm:
+                names.add(pm.group(1))
+    names |= {m.group(1) for m in OUT_RE.finditer(text)}
+    names |= {m.group(1) for m in FOREACH_ANY_RE.finditer(text) if m.group(2) not in loose}
+    names |= {m.group(1) for m in VAR_OTHER_RE.finditer(text)}
+    for m in LAMBDA_RE.finditer(text):
+        for part in (m.group(1) or m.group(2) or "").split(","):
+            pm = TUPLE_PART_RE.match(part)
+            if pm:
+                names.add(pm.group(1))
+    return names
+
+
+def _typed_suspects(text, parent, loose):
+    types = defaultdict(set)
+    for m in TYPED_DECL_RE.finditer(text):
+        types[m.group(2)].add(m.group(1))
+    for m in VAR_NEW_RE.finditer(text):
+        types[m.group(1)].add(m.group(2))
+    for rx in (PARAM_RE, PATTERN_RE):
+        for m in rx.finditer(text):
+            types[m.group(2)].add(_type_name(m.group(1)))
+    unknown = _untyped_names(text, loose)
+    return {n for n, ts in types.items()
+            if n not in unknown and all(_is_refcounted(parent, t) for t in ts)}
 
 
 def scan():
     findings = []
+    parent = load_type_map()
     for dirpath, _dirs, files in os.walk(TESTS_ROOT):
         for fn in sorted(files):
             if not fn.endswith(".cs"):
@@ -104,10 +261,13 @@ def scan():
             if rel in EXEMPT:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
-            loose = set(FIELD_RE.findall(text)) | set(LOCAL_RE.findall(text))
-            if not loose:
+            if ".Free()" not in text:
                 continue
+            loose = set(FIELD_RE.findall(text)) | set(LOCAL_RE.findall(text))
             suspects = loose | {m.group(1) for m in FOREACH_RE.finditer(text) if m.group(2) in loose}
+            suspects |= _typed_suspects(text, parent, loose)
+            if not suspects:
+                continue
             for i, line in enumerate(text.splitlines(), 1):
                 if ".Free()" not in line or NODE_NARROWED_RE.search(line):
                     continue
@@ -119,6 +279,14 @@ def scan():
 
 
 def main():
+    global REPO, _CLAUDE_DIR, _TESTS_ROOT_REL, TESTS_ROOT
+    if "--repo" in sys.argv:
+        i = sys.argv.index("--repo")
+        REPO = Path(sys.argv.pop(i + 1)).resolve()
+        sys.argv.pop(i)
+        _CLAUDE_DIR = REPO / ".claude"
+        _TESTS_ROOT_REL = adaptation.get(_CLAUDE_DIR, "tests_root")
+        TESTS_ROOT = REPO / _TESTS_ROOT_REL
     if not TESTS_ROOT.is_dir():
         print(f"refcounted_free: CANNOT-RUN (tests_root {_TESTS_ROOT_REL!r} is not an "
               "existing directory)")

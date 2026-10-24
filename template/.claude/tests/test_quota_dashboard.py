@@ -134,13 +134,13 @@ def main():
                     session_plan="anthropic", now=NOW)
     case("a read that raised puts its cause in the plan note", "probe died" in {r["plan"]: r for r in boom["plans"]}["codex"]["note"],
          boom["plans"])
-    real_pick = qd.provider_bands.pick
-    qd.provider_bands.pick = lambda *a, **k: (_ for _ in ()).throw(ValueError("pick broke"))
+    real_facts = qd.provider_bands.facts
+    qd.provider_bands.facts = lambda *a, **k: (_ for _ in ()).throw(ValueError("facts broke"))
     try:
         crashed = {r["tier"]: r for r in qd.build(data=REGISTRY, read=read, session_plan="anthropic", now=NOW)["tiers"]}
     finally:
-        qd.provider_bands.pick = real_pick
-    case("a plan read that raised prints its error, not `none`", "error: pick broke" in str(crashed.get("fanout", {}).get("pays")), crashed.get("fanout"))
+        qd.provider_bands.facts = real_facts
+    case("a plan read that raised prints its error, not `none`", "error: facts broke" in str(crashed.get("fanout", {}).get("pays")), crashed.get("fanout"))
     real_load = qd.model_registry.load
     qd.model_registry.load = lambda *a, **k: (_ for _ in ()).throw(qd.model_registry.RegistryError("bad registry"))
     try:

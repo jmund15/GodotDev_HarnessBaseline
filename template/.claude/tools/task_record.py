@@ -82,6 +82,8 @@ ITEM_KINDS = {"requirement": "requirements", "exclusion": "exclusions", "decisio
 SHOW = "python3 .claude/tools/task_record.py show %s"
 SLICE_STATES = ("pending", "in_progress", "completed")
 FINISHED_JOB_STATES = {"done", "accepted", "failed", "discarded", "stopped", "cancelled", "rejected"}
+ADMISSION_KEEP = 20
+ADMISSION_FIELD_CHARS = 80
 
 
 class RecordTooLarge(Exception):
@@ -501,12 +503,25 @@ def add_job(task_id, run_id, label, source, state, role=None, subject=None, *, b
     return _mutate(task_id, mutation)
 
 
+def admissions_path(task_id, *, directory=None):
+    return os.path.join(record_dir() if directory is None else directory, task_id + ".admissions.jsonl")
+
+
 def record_admission(task_id, row):
-    """Append a triage.admits result under the existing record lock and byte cap."""
+    """Record a triage.admits result. The full row spills to `<task_id>.admissions.jsonl`; the record keeps
+    the newest ADMISSION_KEEP rows with each string field cut to ADMISSION_FIELD_CHARS, so an admission
+    never fails on the record's cap."""
+    full = dict(row)
+    summary = {k: v[:ADMISSION_FIELD_CHARS] if isinstance(v, str) else v for k, v in full.items()}
+
     def mutation(state):
         _require(state, task_id)
-        state.setdefault("admissions", []).append(dict(row))
-        return row
+        with open(admissions_path(task_id), "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(full, ensure_ascii=True) + "\n")
+        rows = state.setdefault("admissions", [])
+        rows.append(summary)
+        del rows[:-ADMISSION_KEEP]
+        return full
 
     return _mutate(task_id, mutation)
 
@@ -631,10 +646,7 @@ def _owner_turns(transcript):
     for index, line in enumerate(lines):
         try:
             row = _owner_text.classify(json.loads(line), index + 1, raw=line)
-            text = _owner_text.owner_quote_text(row) or _owner_text.owner_answer_text(row)
-            if (row is not None and row.kind == "command" and not row.meta and not row.sidechain
-                    and not row.envelope and not row.tool_results):
-                text = row.command_args
+            text = _owner_text.owner_turn_text(row)
         except Exception:
             continue
         if text:
