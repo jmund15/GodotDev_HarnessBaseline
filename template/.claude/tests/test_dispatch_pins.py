@@ -151,6 +151,51 @@ def test_sidecar_fanout_author_spec_is_a_writer():
         assert pins().writes("Bash", {"command": command}), command
 
 
+def test_author_writing_only_gitignored_paths_is_not_a_writer():
+    """Close waits on a writer because it can change tracked files; a brief whose writeSet is all
+    gitignored cannot, and a brief with no writeSet is unknown, so it still waits."""
+    import json
+    repo = os.path.dirname(os.path.dirname(HOOKS))
+    with tempfile.TemporaryDirectory(prefix="writer_set_") as root:
+        def brief(name, write_set):
+            task = {"check": ["claims"]}
+            if write_set is not None:
+                task["writeSet"] = write_set
+            path = os.path.join(root, name).replace("\\", "/")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("Do the thing.\n\n```task\n%s\n```\n" % json.dumps(task))
+            return path
+
+        scratch = brief("scratch.md", [".claude/scratch/voice/out.md", ".claude/scratch/voice/"])
+        tracked = brief("tracked.md", ["src/app/Gate.tsx"])
+        mixed = brief("mixed.md", [".claude/scratch/out.md", "convex/columns.ts"])
+        undeclared = brief("undeclared.md", None)
+        odd = brief("odd.md", [".claude/scratch/out.md", 3])
+        not_a_list = brief("not_a_list.md", ".claude/scratch/out.md")
+
+        def fanout(prompt):
+            path = os.path.join(root, "jobs-%s.json" % os.path.basename(prompt)).replace("\\", "/")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"jobs": [{"label": "w", "shape": "author", "promptPath": prompt}]}, fh)
+            return {"command": 'python3 .claude/tools/sidecar_fanout.py "%s"' % path}
+
+        saved = os.environ.get("CLAUDE_PROJECT_DIR")
+        os.environ["CLAUDE_PROJECT_DIR"] = repo
+        try:
+            for prompt, expected in [(scratch, False), (tracked, True), (mixed, True), (undeclared, True),
+                                     (odd, True), (not_a_list, True)]:
+                assert pins().writes("Bash", fanout(prompt)) is expected, ("fanout", prompt)
+                sidecar = {"command": "bash .claude/scripts/claude_sidecar.sh -G author -l w -f %s" % prompt}
+                assert pins().writes("Bash", sidecar) is expected, ("sidecar", prompt)
+                workflow = wf(".claude/workflows/dispatch.js", {"jobs": [{"shape": "author", "promptPath": prompt}]})
+                assert pins().writes("Workflow", workflow["tool_input"]) is expected, ("workflow", prompt)
+        finally:
+            if saved is None:
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            else:
+                os.environ["CLAUDE_PROJECT_DIR"] = saved
+
+
 def test_writer_classification():
     cases = [
         (wf(".claude/workflows/review_fanout.js", {"fold": True}), True),

@@ -474,10 +474,10 @@ def record_panel(cwd, args, src, subjects):
     files = {f for s in subjects for f in s.files}
     if args.blobs:
         # A frozen blob map names the reviewed subject; without it a fold-less review records no file.
-        frozen = Path(args.blobs)
+        import review_ledger
         try:
-            files |= set(json.loads(frozen.read_text(encoding="utf-8")))
-        except (OSError, ValueError, TypeError):
+            files |= set(review_ledger.blob_map(args.blobs))
+        except review_ledger.ToolError:
             pass  # record reads the same map and reports it unreadable
 
     files = sorted(files)

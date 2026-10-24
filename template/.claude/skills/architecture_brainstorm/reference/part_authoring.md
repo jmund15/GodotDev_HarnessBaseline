@@ -12,7 +12,7 @@ For each Part:
 - Enumerate **Deps** (other Parts; cross-folder via `../<folder>/roadmap.md#<part>`).
 - Provide **Trigger** per [common.md §6.10](../../_brainstorm_shared/common.md) (required for `*-pending` / `*-rework` / `workshop-pending` / `user-owned` States; content shape varies by State — see §6.10 sub-table).
 - Set **Source** to the design-doc section that committed this Part.
-- Propose initial **Pos** — integer if dep-ordered; same Pos for parallel-safe Parts; `—` if un-sequenced.
+- Propose initial **Pos** from the Deps, per [`roadmap_schema.md`](../../_brainstorm_shared/roadmap_schema.md) §6.2 *Pos*.
 
 **Procedural order for the Part-authoring sub-procedures** (each `##` section below covers one in detail):
 

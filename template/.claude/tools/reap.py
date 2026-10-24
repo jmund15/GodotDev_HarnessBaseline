@@ -880,7 +880,8 @@ def owner_names_target(why, table, pid):
             re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(n.lower()), said) for n in target_names(table, pid)):
         return None
     return False, ("the owner's stop order names neither pid %d, its launch label, nor its script or campaign; "
-                   "quote the order that names this process" % pid)
+                   "ask the owner one plain-text question that names pid %d and its launch label, and keep "
+                   "working: their typed yes then binds" % (pid, pid))
 
 
 def owner_consents(sid, table, pid):

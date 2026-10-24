@@ -63,6 +63,7 @@
           "scope": { "type": ["array", "null"], "items": { "type": "string" } },
           "refuting": { "type": "boolean", "description": "true when the finding says the plan misstates a cited source" },
           "evidence": {
+            "minItems": 1,
             "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
             "type": "array",
             "items": {
@@ -158,7 +159,7 @@
             "description": "why it is wrong and what breaks, briefly; cite the rule or invariant rather than re-deriving it"
           }
         },
-        "required": ["agent", "action", "category", "description", "rationale"]
+        "required": ["agent", "action", "category", "description", "rationale", "evidence"]
       }
     }
   },

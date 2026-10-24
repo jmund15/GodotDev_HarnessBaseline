@@ -112,7 +112,7 @@ from watch_records import (ENDED, _covered, _launcher_gone, _process_line_gone, 
                            inventory_written, ledger_path, read_journal, writer_launcher_running)
 from _dispatch_pins import (  # noqa: E402
     STRICT, agent_profile_request, dispatch_jobs, profile_line, profile_request, resolve_request,
-    script_blobs, script_jobs, writes)
+    script_blobs, script_jobs, writes, author_writes)
 
 STATE_KEY = "dispatch_table_pending"
 GONE_KEY = "dispatch_table_gone"  # expand_deferred's report lines (dropped or revived fan-outs) for complete
@@ -1384,7 +1384,7 @@ def _expanded(entry, labeled):
     out_dir = sidecar_argv.fanout_out_dir(d["jobs_path"], None, spill, _om()._PROJECT_DIR) if spill else d["out_dir"]
     return [{"kind": "sidecar", "id": _fanout_entry_id(out_dir, job.get("label"), d["call"]),
              "record": None, "fanout_dir": out_dir, "task_id": None,
-             "writes": bool(entry.get("writes") or job.get("shape") == "author"),
+             "writes": bool(entry.get("writes") or author_writes(job)),
              "launched_at": entry.get("launched_at"), "issued_at": entry.get("issued_at"),
              "jobs": [{"label": job.get("label"), "model": job.get("alias") or DEFAULT,
                        "effort": job.get("effort") or DEFAULT,

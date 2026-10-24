@@ -201,6 +201,15 @@ class CloseEvidenceTests(unittest.TestCase):
         self.assertEqual('completed', check.receipt_status(
             receipt, 'own-session', {'harness_prune': receipt}))
 
+    def test_harness_prune_binds_only_where_the_project_ships_its_command(self):
+        self.assertFalse(check.phase_mandatory('harness_prune', True, str(self.root)))
+        command = self.root / '.claude' / 'commands' / 'harness_prune.md'
+        command.parent.mkdir(parents=True)
+        command.write_text('# /harness_prune\n')
+        self.assertTrue(check.phase_mandatory('harness_prune', True, str(self.root)))
+        self.assertTrue(check.phase_mandatory('worklog', True, str(self.root)))
+        self.assertFalse(check.phase_mandatory('reindex_search', False, str(self.root)))
+
     def test_nonterminal_receipt_never_finishes_phase(self):
         receipt = check.make_receipt('own-session', 'session_audit', 'blocked', [], [], 'Permission denied')
         self.assertEqual('blocked', check.receipt_status(receipt, 'own-session'))

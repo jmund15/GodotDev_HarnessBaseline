@@ -55,7 +55,7 @@ Sequence-ordered, with un-sequenced Parts below a divider rule. Parallel-safe Pa
 ```
 
 **Columns:**
-- **Pos** — sequence position. Integer for sequenced; `—` for un-sequenced. Rows sharing the same `Pos` are parallel-safe at that stage.
+- **Pos** — the build order. Rows sharing the same `Pos` are parallel-safe at that stage. `python3 .claude/tools/roadmap_pos.py <roadmap.md> --apply` computes it from the Deps (its docstring states the rule): `complete` Parts are placed first, every other Part sits after its highest Dep, and `—` (un-sequenced) holds only `idea-pending`, `workshop-pending` and `abandoned` Parts and the Parts that depend on them. The owner may move a Part later for priority, and the tool keeps it there.
 - **Part** — the stable identifier. Used in Deps cells. Renaming triggers a global rewrite via `/update_roadmap`.
 - **State** — one of the states defined in §6.3 (the count lives there; don't duplicate it here).
 - **Deps** — comma-separated Part names this Part blocks on. Cross-folder Deps shapes, the forbidden shapes and the `/update_roadmap rename` rewrite are owned by §6.8 below.

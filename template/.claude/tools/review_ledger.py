@@ -676,6 +676,17 @@ def _load_json(path: str, label: str) -> dict:
     return data
 
 
+def blob_map(path: str) -> dict:
+    """The path -> blob sha map a `--blobs` file names: a plain map, or a blob snapshot manifest's `files`."""
+    data = _load_json(path, "--blobs")
+    if data.get("kind") == "blobs":
+        data = data.get("files")
+    if not isinstance(data, dict) or not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40,64}", sha)
+                                             for sha in data.values()):
+        raise ToolError(f"--blobs {path} must map each path to the blob sha the review read")
+    return data
+
+
 def load_files_from(path: str) -> list[str]:
     try:
         text = Path(path).read_text(encoding="utf-8-sig")
@@ -1718,8 +1729,11 @@ def _load_roster(path: str, catalog: dict) -> list[dict]:
     if not isinstance(roster, list):
         raise ToolError(f"roster {path} is not a list of seats")
     for seat in roster:
+        if isinstance(seat, dict) and seat.get("key"):
+            seat.setdefault("mandates", _seat_mandates(seat["key"]))
+            seat["tier"] = _lens_tier(seat["key"]) or seat.get("tier")
         if not isinstance(seat, dict) or not seat.get("key") or not isinstance(seat.get("mandates"), list):
-            raise ToolError(f"roster {path}: each seat needs key and mandates")
+            raise ToolError(f"roster {path}: each seat needs key and mandates (a lens key supplies its mandates)")
         for mandate in seat["mandates"]:
             if mandate not in catalog:
                 raise ToolError(f"roster {path}: seat {seat['key']} names unknown mandate {mandate!r}")
@@ -2762,9 +2776,7 @@ def cmd_record(args, repo: Path) -> int:
             if not _is_ancestor(repo, sha, snapshot):
                 raise ToolError(f"--premise-commits {sha} is not a commit ancestor of --head {snapshot}")
     if args.blobs:
-        blobs = _load_json(args.blobs, "--blobs")
-        if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40,64}", sha) for sha in blobs.values()):
-            raise ToolError(f"--blobs {args.blobs} must map each path to the blob sha the review read")
+        blobs = blob_map(args.blobs)
         ctx.overrides.update({normalize_files(ctx.toplevel, [path])[0]: sha for path, sha in blobs.items()})
     files_in = list(args.files or [])
     if args.scope_json:

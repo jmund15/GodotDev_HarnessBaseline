@@ -473,12 +473,17 @@ def predicate_sync_subsystems(ctx):
                                     **ctx.git_basis}
 
 
+_CODE_SUFFIXES = frozenset({"cs", "gd", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py", "go",
+                            "rs", "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp"})
+
+
 def predicate_regression_gate(ctx):
     files, reason = ctx.changed_files()
     if files is None:
         return None, {"error": reason, **ctx.git_basis}
-    changed = sorted(f for f in files if f.endswith(".cs"))
-    return bool(changed), {"cs_files": len(changed), "sample": changed[:5], **ctx.git_basis}
+    changed = sorted(f for f in files if not f.startswith(".claude/")
+                     and Path(f).suffix.lower().lstrip(".") in _CODE_SUFFIXES)
+    return bool(changed), {"code_files": len(changed), "sample": changed[:5], **ctx.git_basis}
 
 
 _REINDEX_SUFFIXES = frozenset({"md", "markdown", "rst", "txt", "tscn", "scn", "tres", "res",
@@ -694,7 +699,7 @@ PREDICATES = {
     "sync_subsystems": (predicate_sync_subsystems,
                         "a changed path outside the registry's top-level folders, or "
                         f"{DENSITY_THRESHOLD} or more changed files under one subsystem"),
-    "regression_gate": (predicate_regression_gate, "the session changed a .cs file"),
+    "regression_gate": (predicate_regression_gate, "the session changed a source-code file outside .claude/"),
     "roadmap_atlas": (predicate_roadmap_atlas, _ROADMAP_TEXT),
     "update_roadmap": (predicate_update_roadmap, _ROADMAP_TEXT),
     "worklog": (predicate_worklog_sweep,

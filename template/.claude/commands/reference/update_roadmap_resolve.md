@@ -18,7 +18,7 @@ Each cluster's Per-Cluster Routing maps to a Part:
 | `→ /idea_brainstorm rerun` | `idea-rework` (existing Part) or `idea-pending` (new sub-topic) |
 | `→ workshop` | `workshop-pending` |
 
-Cluster Open Questions / Findings populate the Trigger and Source fields. Pos is `—` (un-sequenced) unless the cluster's Routing timing modifier names a position (e.g., `(now — dependency root)` → propose Pos 1).
+Cluster Open Questions / Findings populate the Trigger and Source fields. Pos follows [`roadmap_schema.md`](../../skills/_brainstorm_shared/roadmap_schema.md) §6.2 *Pos*; a cluster's Routing timing modifier that names a position (e.g., `(now — dependency root)`) sets it instead.
 
 ## From an arch brainstorm
 
@@ -56,4 +56,4 @@ The named transition applies directly.
 
 | Rationalization | Reality |
 |---|---|
-| "Auto-promote freshly-arch'd Parts to Pos values inferred from Deps" | Pos assignment is a user judgment call about priority/parallelism. Default to un-sequenced (`—`) on new Parts; user explicitly promotes via `promote` op or by editing during the batch-diff review. |
+| "Leave new Parts un-sequenced until the owner promotes them" | An un-sequenced roadmap hides the build order and lists finished work below open work. Set each new Part's Pos from its Deps per [`roadmap_schema.md`](../../skills/_brainstorm_shared/roadmap_schema.md) §6.2 *Pos*; the owner reorders for priority during the batch-diff review. |
