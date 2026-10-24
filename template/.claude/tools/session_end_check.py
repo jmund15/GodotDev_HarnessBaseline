@@ -53,6 +53,9 @@ PHASES = [
     ("7   Commit",                "commit_push",           True),
     ("8   Reindex search",        "reindex_search",        False),
 ]
+# A mandatory phase that runs a project command binds only where the project ships that command, as
+# Phase 5.4 binds only with an atlas generator: without it the phase records blocked and the close goes on.
+PHASE_COMMANDS = {"harness_prune": "harness_prune.md"}
 
 # Anchored to the project like `--repo`: a cwd-relative path from any other cwd reads as
 # "artifact missing", a false red the exit code cannot distinguish from a real gap.
@@ -450,6 +453,14 @@ def unpublished_peer_sessions(repo, transcript):
     return {line.strip() for line in r.stdout.splitlines() if line.strip()} - own
 
 
+def phase_mandatory(stem, mandatory, project_dir=None):
+    """Whether `stem` must end completed or skipped: its PHASES flag, unless it runs a command the project lacks."""
+    command = PHASE_COMMANDS.get(stem)
+    if not mandatory or command is None:
+        return mandatory
+    return os.path.isfile(os.path.join(project_dir or _PROJECT_DIR, '.claude', 'commands', command))
+
+
 def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit', repo=None):
     """Print observation and receipt status separately; every phase needs a disposition."""
     observations, receipts = phase_observations(path), receipts or {}
@@ -461,6 +472,7 @@ def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit',
     for label, stem, mandatory in PHASES:
         if stem not in required_phases(stage):
             continue
+        mandatory = phase_mandatory(stem, mandatory, repo)
         receipt = receipts.get(stem)
         status = receipt_status(receipt, sid, receipts)
         if stem in GATED:

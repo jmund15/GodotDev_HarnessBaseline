@@ -119,8 +119,8 @@ function checkFallback(label, runResult, expected = ['strong source', 'weak sour
 // result carries: the fingerprint covers the result, every agent() option and every log line in full and bounded modes.
 const crypto = require('crypto')
 const NO_FOLD_FINGERPRINTS = {
-  full: '687729f46e749172aea2350a51da892148d7d48c4588cb89d3f4e342d7e6fe66',
-  bounded: 'f7a81629c672a801dfdb9a35f4734c8285dd7804fba0157176098f5031e19401',
+  full: '813bc1ece333dd8e372149863d4996835f9ebf7184ec3c1587a87b1e6772ab55',
+  bounded: 'b6273249434a5d134680c1bc02eae54aa976226d5d097365059783afb42e97c6',
 }
 const fingerprint = (r) => crypto.createHash('sha256').update(JSON.stringify({
   result: r.result, opts: r.calls.map(c => c.opts), logs: r.logs,

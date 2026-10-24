@@ -76,11 +76,11 @@ The parent assembles prompts and shared CONTEXT.
 
 **Missing-lane recovery:** salvage the engine spill/transcript first. Redispatch a missing lane only when salvage names a transient cause, through orchestration's legal route with its original template/model/effort. Under armed `/overnight`, this branch needs no second owner prompt. Save planned/returned IDs and terminal results to `.claude/scratch/session_audit_<sid8>_recovery.json`; denial, terminal unavailability, or the second same failure is blocked coverage, never clean.
 
-### Agent Templates & Spawn Rules
+### Seat Map
 
-Fetch only the templates `execution_depth.md` §Candidate width and §Mandate admission select: `python3 .claude/tools/lens.py get --shared <admitted lens keys>`. Never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole.
+`execution_depth.md` §Candidate width and §Mandate admission select the lenses. `lens_briefs.py` (§Ledger plan) materializes their templates; never `Read` [`session_audit_agents.md`](agents/session_audit_agents.md) whole.
 
-**Seat map** (`orchestration` §2 *Sizing the width*): one seat per admitted lens, and each fired conditional gets its own seat. Merge the lenses one reader can judge in one pass when `orchestration` §2's size or room rule says so. A merged seat's prompt carries each of its lenses' templates.
+**Seat map** (`orchestration` §2 *Sizing the width*): one seat per admitted lens, and each fired conditional gets its own seat. Merge the lenses one reader can judge in one pass when `orchestration` §2's size or room rule says so; a merged seat's key joins its lens keys with `+`.
 
 ### Architecture-Sweep Trigger (conditional 4th agent)
 
@@ -96,41 +96,45 @@ Add `sa-holistic` when `execution_depth.md` §Mandate admission admits it; `/ses
 
 ### Shared Context Block
 
-Assemble a `CONTEXT` string containing:
+Write `.claude/scratch/session_audit_<sid8>_context.md` containing:
 - The seat's file list from §1b, by path, each marked NEW or MODIFIED
 - The [Architecture Philosophy Skill](/.claude/skills/architecture_philosophy/SKILL.md)'s key rules, and the project's testing skill where its stack layer ships one
 - auto-memory gotchas for touched domains (single-keyword searches)
 
-Apply `execution_depth.md` §Mandate admission's checklist row before reading shared checklists. For each admitted lens, load only sections whose checks apply to its changed surfaces:
-- `/.claude/commands/checklists/code_quality.md`: C, D and S → `{{CHECKLIST_CDS}}` (`sa-design-semantics`), R and P → `{{CHECKLIST_RP}}` (`sa-robustness-performance`), I → `{{CHECKLIST_I}}` (`sa-intuitiveness-testability`).
-- `/.claude/commands/checklists/test_quality.md`: applicable sections below frontmatter → `{{TEST_QUALITY_CHECKLIST}}` (`sa-intuitiveness-testability`).
+Apply `execution_depth.md` §Mandate admission's checklist row before reading shared checklists. For each admitted lens, write only the sections whose checks apply to its changed surfaces to a scratch file, one per placeholder:
+- `/.claude/commands/checklists/code_quality.md`: C, D and S → `CHECKLIST_CDS` (`sa-design-semantics`), R and P → `CHECKLIST_RP` (`sa-robustness-performance`), I → `CHECKLIST_I` (`sa-intuitiveness-testability`).
+- `/.claude/commands/checklists/test_quality.md`: applicable sections below frontmatter → `TEST_QUALITY_CHECKLIST` (`sa-intuitiveness-testability`).
 
-Fill an unused checklist placeholder with `none`; architecture-, harness- and holistic-only rosters need neither checklist. Stop and report the error only when a required section is unreadable.
+An unused checklist placeholder's file holds `none`; architecture-, harness- and holistic-only rosters need neither checklist. Stop and report the error only when a required section is unreadable.
 
-Fill `{{SHORT_PLAN}}` with the explicit or task-resolved plan path; include that plan in the architecture seat's must-read list. Without a plan in a standalone audit, fill it with `none`.
+`SHORT_PLAN`'s file holds the explicit or task-resolved plan path; include that plan in the architecture seat's must-read list. Without a plan in a standalone audit, it holds `none`. The triggers above name the files for `DESIGN_LIST`, `DOCTRINE_COMMITS`, `HARNESS_HUNKS` and `UNIT_LIST`.
 
-**Ledger plan.** Write the roster the seat map builds to `.claude/scratch/session_audit_<sid8>_roster.json`, one entry per seat: `{key, mandates, tier, effort}`, where `mandates` is each lens's `mandates:` line in the registry and the pins are resolved per `orchestration` §5. Then run `python3 .claude/tools/review_ledger.py plan --stage candidate --subject session:<sid> --roster <roster.json> --files <subject files> [--ignore-ledger]` and dispatch only the seats it returns; report each `dropped` mandate with its `coveredBy` row. For §1a's admitted harness seat, plan that seat separately with a one-seat roster, `--ignore-ledger` and `inputs.files`, then merge it into the returned roster once. Forward `inputs.mustRead` even for an empty file subject; earlier coverage narrows what it reads, not whether it runs.
+**Ledger plan.** Write the roster the seat map builds to `.claude/scratch/session_audit_<sid8>_roster.json`, one entry per seat: `{key, effort}`, with the effort resolved per `orchestration` §5; `review_ledger.py` fills each seat's mandates and tier from the lens registry. Then run `python3 .claude/tools/review_ledger.py plan --stage candidate --subject session:<sid> --roster <roster.json> --files <subject files> [--ignore-ledger] > .claude/scratch/session_audit_<sid8>_plan.json` and dispatch only the seats it returns; report each `dropped` mandate with its `coveredBy` row. For §1a's admitted harness seat, plan that seat separately with a one-seat roster, `--ignore-ledger` and `inputs.files`, then merge it into the returned roster once. Forward `inputs.mustRead` even for an empty file subject; earlier coverage narrows what it reads, not whether it runs.
 
-Each seat's must-read list is the diff of its §1b files (`git diff <base>..HEAD` plus the uncommitted `git diff`, written to scratch) and each new file whole; `sa-holistic`'s is its units' diffs. Write it to a list file and pass it as the seat's `mustRead` (`agents/review_agents.md` *Seat coverage contract*).
+Each seat's must-read list is the diff of its §1b files (`git diff <base>..HEAD` plus the uncommitted `git diff`, written to scratch) and each new file whole; `sa-holistic`'s is its units' diffs. Write it to a list file per seat (`agents/review_agents.md` *Seat coverage contract*).
 
-Snapshot the subject files as a blob subject ([protocol Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject)): root `.`, files `<subject files>`, out `.claude/scratch/session_audit_<sid8>_snapshot.json`. Dispatch through the engine (build each agent's prompt from its `session_audit_agents.md` template + the CONTEXT block above):
+Materialize the returned seats, never assemble a prompt by hand:
+
+```bash
+python3 .claude/tools/lens_briefs.py --plan .claude/scratch/session_audit_<sid8>_plan.json --out .claude/scratch/session_audit_<sid8>_briefs --prefix sa --context-path <absolute context.md> --model <pin> --effort <effort> --must-read-for <seat>=<list> --sub <PLACEHOLDER>=<file>
+```
+
+Repeat `--must-read-for` per seat and `--sub` per placeholder file above; pass seat pin overrides with `--model-for` and `--effort-for`. Each seat takes its lenses' `seat_tier`. The tool writes `jobs_sa.json` and the brief files it names.
+
+Snapshot the subject files as a blob subject ([protocol Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject)): root `.`, files `<subject files>`, out `.claude/scratch/session_audit_<sid8>_snapshot.json`. Dispatch through the engine, mapping each generated job to an agent `{key: job.seat, label: job.label, mandates: job.mandates, mustRead: job.mustRead, promptPath: job.promptPath, model: job.model, effort: job.effort, agentType: job.agentType}`:
 
 ```
 Workflow({
   scriptPath: ".claude/workflows/review_fanout.js",
-  args: { agents: [
-    { key: "sa-design-semantics", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-    { key: "sa-robustness-performance", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-    { key: "sa-intuitiveness-testability", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-    // + each conditional seat (`sa-architecture-sweep`, `sa-harness-quality`, `sa-holistic`) when `execution_depth.md` §Mandate admission admits it:
-    { key: "sa-architecture-sweep", prompt: "<assembled>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] } ],
+  args: { agents: [<one entry per job in jobs_sa.json>],
+    contextPrefixPath: "<absolute context.md>",
     spillDir: ".claude/scratch/session_audit_<sid8>_spill",
     fold: { tier: "<fold tier>", model: "<row>", effort: "<effort>", subjects: [{ root: ".", snapshot: ".claude/scratch/session_audit_<sid8>_snapshot.json", files: [<native-legal harness subject files>] }] },
-    ledger: { stage: "candidate", subject: "session:<sid>", roster: ".claude/scratch/session_audit_<sid8>_roster.json", task: "<id>", premiseCommits: "<inputs.premiseCommits>", head: "<inputs.head>", blobs: "<inputs.blobs>" } }
+    ledger: { stage: "candidate", subject: "session:<sid>", roster: ".claude/scratch/session_audit_<sid8>_roster.json", task: "<id>", premiseCommits: "<inputs.premiseCommits>", head: "<inputs.head>", blobs: "<inputs.blobs, else the snapshot path>" } }
 })
 ```
 
-Consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md). For a harness seat, its ledger arguments carry the frozen `premiseCommits`, `head` and `blobs` paths unchanged into `review_ledger.py record`; the path fields must pass the engine's `safePath` validation. Omit those three fields when no harness packet exists. Check the report's ledger rows against the frozen packet; missing forwarding stops premise recording and is reported, never inferred from current HEAD or replaced with an inline substitute audit row. The parent omits production-code subjects from native `args.fold`, then snapshots and dispatches those findings on the serialized sidecar or solo route. That executor runs the project's tests and regression gate; the native engine does not reroute or hand them off automatically (`review_fold.md` code clause).
+`ledger.blobs` names the reviewed files whenever `args.fold` holds no subject for them, as for production code: without it the ledger row covers nothing. Consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md). For a harness seat, its ledger arguments carry the frozen `premiseCommits`, `head` and `blobs` paths unchanged into `review_ledger.py record`; the path fields must pass the engine's `safePath` validation. Omit those three fields when no harness packet exists. Check the report's ledger rows against the frozen packet; missing forwarding stops premise recording and is reported, never inferred from current HEAD or replaced with an inline substitute audit row. The parent omits production-code subjects from native `args.fold`, then snapshots and dispatches those findings on the serialized sidecar or solo route. That executor runs the project's tests and regression gate; the native engine does not reroute or hand them off automatically (`review_fold.md` code clause).
 
 ---
 

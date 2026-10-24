@@ -69,23 +69,68 @@ def _is_review_fanout(tool_input):
         str(tool_input.get("scriptPath") or tool_input.get("name") or "")).replace("-", "_")
 
 
+def _project_dir():
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+
+def _tools_on_path():
+    tools = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+
+
+def _writes_tracked(prompt_path):
+    """Whether an author job can change tracked files: False only when its brief's `task` block declares a
+    writeSet git ignores whole (scratch output cannot change the commits close proves). A brief that is
+    absent, unreadable or declares no writeSet is unknown, so it counts as a writer."""
+    if not prompt_path or not isinstance(prompt_path, str):
+        return True
+    root = _project_dir()
+    path = prompt_path if os.path.isabs(prompt_path) else os.path.join(root, prompt_path)
+    _tools_on_path()
+    try:
+        import dispatch_result
+        with open(path, encoding="utf-8") as fh:
+            task = dispatch_result.task_block(fh.read()) or {}
+    except (OSError, ValueError, ImportError):
+        return True
+    write_set = [p for p in task.get("writeSet") or [] if p.strip()]
+    if not write_set:
+        return True
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", root, "check-ignore", "--", *write_set],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    ignored = {line.strip() for line in out.stdout.splitlines() if line.strip()}
+    return not all(p in ignored for p in write_set)
+
+
+def author_writes(job):
+    """Whether one declared job is an author that can change tracked files."""
+    job = job or {}
+    return job.get("shape") == "author" and _writes_tracked(job.get("promptPath") or job.get("promptFile"))
+
+
 def writes(tool_name, tool_input):
-    """Whether a dispatch declares an author or fold, for close's writer wait."""
+    """Whether a dispatch declares an author or fold that can change tracked files, for close's writer wait."""
     ti = tool_input or {}
     if tool_name == "Workflow":
         name = os.path.basename(str(ti.get("scriptPath") or ti.get("name") or "")).replace("-", "_")
         if _is_review_fanout(ti):
             return bool(_args(ti).get("fold"))
         if name in ("dispatch.js", "dispatch_chains.js", "dispatch", "dispatch_chains"):
-            return any(j.get("shape") == "author" for j in dispatch_jobs(
+            return any(author_writes(j) for j in dispatch_jobs(
                 {"tool_name": tool_name, "tool_input": ti}))
     if tool_name == "Bash":
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
+        _tools_on_path()
         import sidecar_argv
         import orchestration_metrics
         command = str(ti.get("command") or "")
         for inv in sidecar_argv.launcher_invocations(command):
-            if inv.kind == "sidecar" and sidecar_argv.sidecar_flags(inv.args).get("G") == "author":
+            flags = sidecar_argv.sidecar_flags(inv.args) if inv.kind == "sidecar" else {}
+            if flags.get("G") == "author" and _writes_tracked(flags.get("f")):
                 return True
             if inv.kind == "fanout" and any(a == "--fold" or a.startswith("--fold=") for a in inv.args):
                 return True
@@ -101,7 +146,7 @@ def writes(tool_name, tool_input):
             try:
                 with open(path, encoding="utf-8") as fh:
                     jobs = orchestration_metrics.fanout_spec_jobs(json.load(fh), path)
-                if any(j.get("shape") == "author" for j in jobs or []):
+                if any(author_writes(j) for j in jobs or []):
                     return True
             except (OSError, ValueError):
                 pass

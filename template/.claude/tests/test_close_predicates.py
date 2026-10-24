@@ -384,6 +384,10 @@ class PredicateTests(unittest.TestCase):
         self.assertIs(run("regression_gate", self.repo, tr)["value"], True)
         digest(self.repo, files_modified_counts={str(self.repo / "Wizard" / "a.tscn"): 2})
         self.assertIs(run("regression_gate", self.repo, tr)["value"], False)
+        digest(self.repo, files_modified_counts={str(self.repo / "src" / "App.tsx"): 1})
+        self.assertIs(run("regression_gate", self.repo, tr)["value"], True)
+        digest(self.repo, files_modified_counts={str(self.repo / ".claude" / "tools" / "t.py"): 1})
+        self.assertIs(run("regression_gate", self.repo, tr)["value"], False)
         (self.repo / "logs" / f"session_digest_{SID[:8]}.json").unlink()
         self.assertIsNone(run("regression_gate", self.repo, tr)["value"])
 
@@ -564,7 +568,7 @@ class SessionChangeTests(unittest.TestCase):
         append_shell_result(tr, "[main 0123456789abcdef0123456789abcdef01234567] gone\n")
         row = run("regression_gate", self.repo, tr)
         self.assertIs(row["value"], False)
-        self.assertEqual(row["basis"], {"cs_files": 0, "sample": [], "identity": "transcript", "commits": 0,
+        self.assertEqual(row["basis"], {"code_files": 0, "sample": [], "identity": "transcript", "commits": 0,
                                         "missing_commits": 1, "commit_invocations": 1, "unmatched_invocations": 0,
                                         "uncommitted_named": 0})
 

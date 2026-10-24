@@ -4832,6 +4832,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_review_ledger_blobs.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_review_ledger_roster.py",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_review_result.py",
       "layer": "pure",
       "sync": "auto"
@@ -4839,6 +4849,11 @@
     {
       "path": ".claude/tests/test_review_result_defer.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_roadmap_pos.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -5874,6 +5889,11 @@
     {
       "path": ".claude/tools/review_result.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/roadmap_pos.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
