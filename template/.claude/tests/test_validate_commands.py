@@ -56,6 +56,9 @@ def variable_checks(vc):
             vc.KNOWN_INJECTIONS = {}
             out = "\n".join(vc.check_template_variables())
             check("an undeclared variable fails", out.startswith("[FAIL]") and "no known injection source" in out, out)
+            write(commands / "agents" / "x_agents.md", "### a\n{{PROJECT_NAME}} at {{VAULT_ROOT}}\n")
+            out = "\n".join(vc.check_template_variables())
+            check("a baseline sync placeholder needs no orchestrator", out.startswith("[PASS]"), out)
         finally:
             vc.COMMANDS_DIR, vc.AGENTS_DIR, vc.KNOWN_INJECTIONS = saved
 
@@ -80,6 +83,20 @@ def count_checks(vc):
                   out.startswith("[PASS]"), out)
         finally:
             vc.CHECKLISTS_DIR, vc.EXPECTED_COUNTS, vc.EXPECTED_CODE_QUALITY_TOTAL, vc.EXPECTED_TEST_QUALITY_TOTAL = saved
+
+
+def shipped_tree_checks(vc):
+    saved = vc.COMMANDS_DIR, vc.AGENTS_DIR, vc.CHECKLISTS_DIR
+    vc.COMMANDS_DIR = CLAUDE / "commands"
+    vc.AGENTS_DIR = vc.COMMANDS_DIR / "agents"
+    vc.CHECKLISTS_DIR = vc.COMMANDS_DIR / "checklists"
+    try:
+        out = "\n".join(vc.check_template_variables())
+        check("the shipped templates' variables all have a named injector", out.startswith("[PASS]"), out)
+        out = "\n".join(vc.check_checklist_counts())
+        check("the shipped checklist counts match the checklist files", out.startswith("[PASS]"), out)
+    finally:
+        vc.COMMANDS_DIR, vc.AGENTS_DIR, vc.CHECKLISTS_DIR = saved
 
 
 def reference_checks(vc):
@@ -135,6 +152,7 @@ def main():
     vc = load_validator()
     variable_checks(vc)
     count_checks(vc)
+    shipped_tree_checks(vc)
     reference_checks(vc)
     registry_checks(vc)
     check("the fixture selector `I+test` is valid", "I+test" in vc.VALID_CHECKLIST_SECTIONS)

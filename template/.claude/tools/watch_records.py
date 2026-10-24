@@ -16,9 +16,8 @@ session's `dispatch_table_pending` sidecar entries every poll and re-resolves ea
 sidecar launched after arming is covered without a second watcher. `--wake` exits — waking the
 session — on the first unacknowledged decision event, including at the first poll: a record reaching DONE with a non-zero code, or
 DIED (not one this session stopped with `reap.py`, listed in `sidecar_stopped_launches`: it prints `STOPPED <label>` at the next wake, and a unit whose every job was stopped wakes nobody); a detached job's `.memory` wait (`WAITING-MEMORY` with its readings) prints as context, since the
-launcher resumes by itself; a record's `.stall` marker appearing while its upstream traffic is stale (`UPSTREAM_LIVE_S`); a record's `.usage` marker appearing (the launcher's
-first usage-limit retry: `USAGE-LIMIT <label> <transport> resets <UTC time|unknown>`, while the run
-keeps retrying); a running record whose stream (`<record>.stream`, else `<label>.stream`) has sat on a result written
+launcher resumes by itself; a record's `.stall` marker appearing while its upstream traffic is stale (`UPSTREAM_LIVE_S`); a record's `.usage` marker prints as context
+(`USAGE-LIMIT <label> <transport> resets <UTC time|unknown>`, the launcher's first usage-limit retry; the job's DONE is the wake); a running record whose stream (`<record>.stream`, else `<label>.stream`) has sat on a result written
 after its launch for `sidecar_resume_check.RESULT_LINGER_S` (`LINGERING <label>`, the reading `sidecar_fanout.py --status`
 gives the same run); a fan-out's own process gone while it still lists jobs
 that will never start; or every record of one dispatch unit (one fan-out, one benchmark campaign, or one
@@ -28,6 +27,7 @@ orchestrator's one-hour prompt cache and before its idle compaction (`_hook_stat
 stream shows, `progress unreadable` when the stream cannot be parsed) and `CHECKIN_RULE`, the sentence that says how to judge
 each clause. `--digest <record|stream|transcript>` prints the whole-run view the clause summarizes (`agent_progress.digest`).
 The live set also holds this session's running
+Bash/PowerShell background tasks (a main-session launch row with no `<task-notification>` yet, read by `wake_digest.running_shells`; a task that ran this watcher is skipped), each printed as `RUNNING shell <id>`, and its running
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
 in `DONE_STATES`, or a run dir under `<session>/subagents/workflows/` with no entry, no host record and a write
 within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
@@ -99,6 +99,8 @@ WORKFLOW_STALL_SECONDS = float(os.environ.get("WATCH_RECORDS_STALL_SEC", "600"))
 # window: the first window wakes the session with STALLED, the second presumes a crash that left no end record.
 DISCOVERED_RUN_SECONDS = 2 * WORKFLOW_STALL_SECONDS
 ENDED = "ended-before-result"
+ARM_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
+ARM_CALL = "as its own Bash call with run_in_background: true and timeout 7200000"
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # the launch ids reap.py stopped for this session
 SHELL_OFFSET_KEY = "sidecar_wake_shell_offset"  # the transcript byte offset the last wake scanned to for ended shells
 REPORTED_ONCE_KINDS = ("end", "shell")  # a non-triggering line of these kinds prints once, then is acknowledged
@@ -462,9 +464,10 @@ def writer_checkouts(entry):
     return out or [PROJECT_ROOT]
 
 
-def running_writers(session_id, repo=None):
+def running_writers(session_id, repo=None, own_launch=None):
     """Live author/fold dispatches for close; no session means no wait. With `repo`, only dispatches
-    with a job writing in that checkout: a writer in another checkout cannot change the commits it proves."""
+    with a job writing in that checkout: a writer in another checkout cannot change the commits it proves.
+    With `own_launch`, the dispatch whose run record names that launch id is the caller itself: it never waits on itself."""
     if not session_id:
         return []
     import dispatch_table
@@ -475,6 +478,8 @@ def running_writers(session_id, repo=None):
         if not isinstance(entry, dict) or not entry.get("writes"):
             continue
         kind = entry.get("kind")
+        if own_launch and entry.get("record") and record_launch(entry["record"]) == own_launch:
+            continue
         if kind == "workflow":
             live = workflow_running(entry)
         elif kind == "sidecar":
@@ -830,14 +835,16 @@ def process_session(pid):
     return None
 
 
-def session_rosters(session_id):
+def session_rosters(session_id, pid_alive=None, verdicts=None):
     """A poll function returning `{"roster:<name>": unit}` for each bench roster this session started.
 
     A roster belongs to the session whose id its worker process (`<logs>/<name>.pid`) carries; the
     environment is read once per name and pid. A roster found live stays listed after it ends, so its end
-    wakes the watcher once. The roster logs are re-read at most once per `ROSTER_RECHECK_S`.
+    wakes the watcher once. The roster logs are re-read at most once per `ROSTER_RECHECK_S`. A caller that
+    polls once per process (the Stop gate) passes `verdicts` to keep each "<name>:<pid>" ownership read
+    across polls, and `pid_alive` to share one liveness probe.
     """
-    owned, checked, last = {}, {}, [None, {}]
+    owned, checked, last = {}, ({} if verdicts is None else verdicts), [None, {}]
 
     def poll():
         now = time.monotonic()
@@ -849,15 +856,19 @@ def session_rosters(session_id):
                 sys.path.insert(0, scripts)
             import bench_lib
             logs = bench_lib.roots.logs_dir()
-            rows = bench_lib.roster_states(logs)
+            rows = bench_lib.roster_states(logs, pid_alive=pid_alive)
             units = {}
             for row in rows:
                 name = row["name"]
                 if name not in owned and row["state"] == "LIVE":
                     pid = bench_lib._roster_pid(os.path.join(logs, name + ".pid"))
-                    if pid is not None and (name, pid) not in checked:
-                        checked[(name, pid)] = process_session(pid) == session_id
-                    if pid is not None and checked[(name, pid)]:
+                    key = "%s:%s" % (name, pid)
+                    if pid is not None and key not in checked:
+                        owner = process_session(pid)
+                        # An unreadable owner is asked again next Stop; only a definite answer is kept.
+                        if owner is not None:
+                            checked[key] = owner == session_id
+                    if pid is not None and checked.get(key):
                         owned[name] = pid
                 if name in owned:
                     live = row["state"] in ROSTER_LIVE_STATES
@@ -883,7 +894,15 @@ def _unit_key(entry):
     if campaign:
         return "bench:" + campaign
     fanout_dir = entry.get("fanout_dir")
-    return _norm_record(fanout_dir) if fanout_dir else "id:" + str(entry.get("id"))
+    if not fanout_dir:
+        return "id:" + str(entry.get("id"))
+    return _fanout_key(fanout_dir, entry.get("call"))
+
+
+def _fanout_key(fanout_dir, call):
+    """A fan-out unit is one launch: its spill dir plus the tool call that issued it, since a later launch
+    may reuse a spill dir an earlier, finished fan-out of the session wrote to."""
+    return str(_norm_record(fanout_dir)) + ("|call:%s" % call if call else "")
 
 
 def _launch_time(entry):
@@ -907,7 +926,8 @@ def units(pending):
         unit = grouped.setdefault(_unit_key(entry),
                                   {"records": [], "inventories": [], "fanout_dir": entry.get("fanout_dir"),
                                    "unresolved": [], "launched": None, "finished": [], "finish": {},
-                                   "bench": bench_campaign(entry), "called": False, "stopped": set()})
+                                   "bench": bench_campaign(entry), "called": False, "stopped": set(),
+                                   "call": entry.get("call") if entry.get("fanout_dir") else None})
         if entry.get("call") or entry.get("issued_at") is not None:
             unit["called"] = True
         if entry.get("writes"):
@@ -1231,6 +1251,9 @@ def _wake(grouped, now=None):
                 lines.append(("end", ("end", _workflow_host(entry) or str(entry.get("run_dir"))),
                               workflow_end_text(entry), False))
             continue
+        if unit.get("running_shell"):
+            live += 1
+            continue
         if unit.get("shell"):
             lines.append(("shell", ("shell", unit["shell"]["task_id"]), _digest().shell_text(unit["shell"]), False))
             continue
@@ -1293,7 +1316,7 @@ def _wake(grouped, now=None):
             usage = usage_line(record, label)
             if usage is not None:
                 standing.add(("usage", record))
-                lines.append(("usage", ("usage", record), usage, True))
+                lines.append(("usage", ("usage", record), usage, False))
             lingering = result_lingering(record, now)
             if lingering is not None:
                 lines.append(("lingering", ("lingering", record),
@@ -1348,6 +1371,9 @@ def checkin_lines(grouped, now=None):
     now = time.time() if now is None else now
     out = []
     for unit in grouped.values():
+        if unit.get("running_shell"):
+            out.append("RUNNING shell %s" % unit["running_shell"])
+            continue
         if unit.get("workflow"):
             if workflow_running(unit["workflow"]):
                 out.append(workflow_line(unit["workflow"], now))
@@ -1404,7 +1430,9 @@ def checkin_lines(grouped, now=None):
 def _unit_key_of(unit):
     if unit.get("bench"):
         return "bench:" + unit["bench"]
-    return _norm_record(unit.get("fanout_dir")) or "records:" + ",".join(
+    if unit.get("fanout_dir"):
+        return _fanout_key(unit["fanout_dir"], unit.get("call"))
+    return "records:" + ",".join(
         sorted(str(_norm_record(record)) for _, record in unit["records"]))
 
 
@@ -1565,11 +1593,12 @@ class ShellEnds:
     The offset lives in session hook state (`SHELL_OFFSET_KEY`) and is saved when a wake prints, so a shell that
     ended between two watchers arrives with the next wake. A session with no saved offset starts at the
     transcript's end: shells that ended before the first arm reached the orchestrator through their own
-    notification. `wake_digest.shell_notices` reads only the bytes appended since."""
+    notification. `wake_digest` reads each appended byte of the transcript once, for these notices and for `running`."""
 
     def __init__(self, session_id, state_path):
         self.session_id, self.state_path = session_id, state_path
         self.path, self.notices = None, {}
+        self.scan = _digest().new_shell_scan()
         saved = (_hook_state.read_json_salvage(state_path) or {}).get(SHELL_OFFSET_KEY) if state_path else None
         self.offset = saved if isinstance(saved, int) and not isinstance(saved, bool) else None
 
@@ -1580,10 +1609,15 @@ class ShellEnds:
             return self.notices
         if self.offset is None:
             self.offset = os.path.getsize(self.path)
-        found, self.offset = _digest().shell_notices(self.path, self.offset)
+        found, self.offset = _digest().shell_notices(self.path, self.scan, self.offset)
         for notice in found:
             self.notices.setdefault(notice["task_id"], notice)
         return self.notices
+
+    def running(self):
+        if self.path is None:
+            self.path = _digest().transcript_path(self.session_id)
+        return _digest().running_shells(self.path, self.scan) if self.path else set()
 
     def persist(self):
         if self.state_path and self.offset is not None:
@@ -1648,6 +1682,8 @@ def _session_source(session_id, state_path=None):
         grouped.update(rosters())
         grouped.update({"shell:%s" % task_id: {"shell": notice, "records": [], "fanout_dir": None}
                         for task_id, notice in shells.poll().items()})
+        grouped.update({"running-shell:%s" % task_id: {"running_shell": task_id, "records": [], "fanout_dir": None}
+                        for task_id in shells.running()})
         return grouped
     source.shells = shells
     return source

@@ -206,6 +206,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 mandates: plc-evidence-grounding
 citers: plan
+tier: fanout
 
 ```
 You are plc-evidence-grounding. Every other lens audits what the plan DECIDES. You audit what the plan ASSUMES — the factual assertions its decisions rest on — and how well each is backed.
@@ -258,6 +259,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 ### plc-instruction-quality (Harness-file rubric + verification-readiness) — meta or inseparable mixed code/meta
 
 mandates: plc-instruction-quality
+tier: fanout
 
 preload: skills/instruction_quality/SKILL.md
 preload: skills/instruction_quality/reference/skills_and_commands.md

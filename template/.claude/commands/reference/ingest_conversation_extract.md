@@ -8,7 +8,7 @@ Read at the step named. Entrypoint: [`../ingest_conversation.md`](../ingest_conv
 
 ## Step 1 — Intake
 
-Create `<vault>/Claude/Meetings/<today>-<slug>/` (slug from the argument, else derived from the conversation's dominant topic). Copy the transcript in as `transcript.md`, byte-verbatim — no cleanup, no reflow, no speaker normalization. The transcript is the evidence layer; every later quote is checked against it.
+First list `<vault>/Claude/Meetings/` for a folder whose `transcript.md` is byte-identical to the input (`cmp -s <folder>/transcript.md <input>`). If that folder holds a `digest.md`, report its path and stop. If it holds none, resume from Step 2 in that folder. Otherwise create `<vault>/Claude/Meetings/<today>-<slug>/` (slug from the argument, else derived from the conversation's dominant topic). Copy the transcript in as `transcript.md`, byte-verbatim — no cleanup, no reflow, no speaker normalization. The transcript is the evidence layer; every later quote is checked against it.
 
 One file may concatenate many voice messages. Default to one file = one conversation unit, arc inside it read as a step-5 signal. Split into dated sibling folders only where the transcript itself marks session boundaries (datestamps, an explicit break) — the unit count is what every tier promotion is denominated in, so inflating it by guesswork manufactures patterns, and collapsing a month of separate exchanges into one hides them.
 

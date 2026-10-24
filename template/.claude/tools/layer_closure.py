@@ -165,6 +165,8 @@ class Tree:
         self.deps: set[str] = set()
         self.by_base: dict[str, list[str]] = {}
         for rel in layers:
+            if FIXTURE_TREE in rel:
+                continue
             self.by_base.setdefault(posixpath.basename(rel), []).append(rel)
 
     def on_disk(self, rel: str) -> bool:
@@ -184,7 +186,7 @@ class Tree:
                     rel = Path(dirpath, name).relative_to(self.root).as_posix()
                     if rel not in self.layers:
                         self._local.append(rel)
-        return [rel for rel in self._local if rel.endswith(suffix)]
+        return [rel for rel in self._local if rel.endswith(suffix) and FIXTURE_TREE not in rel]
 
     def memories(self) -> dict[str, list[str]]:
         """Memory slug -> its files, shipped or local, from the memory store and its archive."""
@@ -261,7 +263,7 @@ def _expand(tree: Tree, cands):
     if suffix and not any(c in tree.layers or tree.on_disk(c) for c in out):
         # A fixture tree holds copies of real files; a suffix citation never means the copy.
         out.extend(rel for rel in tree.layers if rel.endswith(suffix) and FIXTURE_TREE not in rel)
-        out.extend(rel for rel in tree.local_with_suffix(suffix) if FIXTURE_TREE not in rel)
+        out.extend(tree.local_with_suffix(suffix))
     return out
 
 

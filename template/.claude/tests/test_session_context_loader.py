@@ -31,7 +31,7 @@ def main():
     def check(label, cond, detail=""):
         print("%-4s %s" % ("ok" if cond else "FAIL", label))
         if not cond:
-            failures.append(label + (": " + detail[:200] if detail else ""))
+            failures.append(label + (": " + str(detail)[:200] if detail else ""))
 
     class FakeRegistry:
         @staticmethod
@@ -114,10 +114,14 @@ def main():
     # the continuation guidance emitted to stdout. No step module is installed for these runs.
     payload = {"source": "startup", "session_id": "main-proof"}
 
-    def run_main(main_root, patches, source="startup", step_modules=()):
+    def run_main(main_root, patches, source="startup", step_modules=(), sidecar=False):
         stdout = io.StringIO()
         scl._STEP_FAULTS.clear()
         with contextlib.redirect_stdout(stdout), patch.dict(os.environ, {}, clear=False):
+            if sidecar:
+                os.environ["CLAUDE_CODE_SIDECAR"] = "1"
+            else:
+                os.environ.pop("CLAUDE_CODE_SIDECAR", None)
             with contextlib.ExitStack() as stack:
                 for name, value in dict(patches, get_project_root=lambda: main_root).items():
                     stack.enter_context(patch.object(scl, name, value))
@@ -248,6 +252,17 @@ def main():
             check("plain %s session: the git context is still injected" % label,
                   "Git: main |" in plain_out and "Recent {{PROJECT_NAME}} commits:" in plain_out, plain_out[-700:])
 
+    # A sidecar child executes a brief; the owner's Worktree, Env, Git and commit lines are noise to it.
+    with tempfile.TemporaryDirectory(prefix="scl_sidecar_") as sidecar_dir:
+        for sidecar_source in ("startup", "compact"):
+            delegate_out = run_main(Path(sidecar_dir), patches, source=sidecar_source, sidecar=True)
+            check("sidecar %s: no Worktree, Env, Git or commit block" % sidecar_source,
+                  not any(marker in delegate_out for marker in
+                          ("Worktree:", "Env: ", "Git: main |", "Recent {{PROJECT_NAME}} commits:")),
+                  delegate_out[-700:])
+            check("sidecar %s: still prints the session-context envelope" % sidecar_source,
+                  "<session-context>" in delegate_out and "</session-context>" in delegate_out, delegate_out[-300:])
+
     # The local setup stamp reaches the model through the Env: line. The tool is copied into the
     # fixture root and the command's own frontmatter is the declaration under test, so this is the
     # hook's real path resolution reading the real declaration — not an import of the repo's tool.
@@ -282,6 +297,7 @@ def main():
         def run_ws_main(env_extra, extra_patches=None):
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout), patch.dict(os.environ, env_extra):
+                os.environ.pop("CLAUDE_CODE_SIDECAR", None)
                 with contextlib.ExitStack() as stack:
                     for name, value in dict(patches, get_project_root=lambda: ws_root, **(extra_patches or {})).items():
                         stack.enter_context(patch.object(scl, name, value))

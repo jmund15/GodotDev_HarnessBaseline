@@ -51,13 +51,30 @@ def persist_cloud_env(godot_bin: str):
             f.write("\n".join(lines) + "\n")
 
 
-# cloud-setup.sh installs under /opt as root, else under ~/.local.
+# cloud-setup.sh installs under /opt as root, else under ~/.local, and writes its paths to the
+# manifest in the same directory. The probes below are the fallback for a snapshot without one.
+CLOUD_INSTALL_NAME = ".cloud-install.json"
+CLOUD_INSTALL_DIRS = (Path("/opt"), Path.home() / ".local")
 CLOUD_DOTNET_ROOTS = (Path("/opt/dotnet"), Path.home() / ".local/dotnet", Path.home() / ".dotnet")
 
 
+def cloud_install() -> dict:
+    """The manifest cloud-setup.sh wrote, or {} on a workstation or an unreadable file."""
+    for directory in CLOUD_INSTALL_DIRS:
+        try:
+            manifest = json.loads((directory / CLOUD_INSTALL_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return manifest if isinstance(manifest, dict) else {}
+    return {}
+
+
 def adopt_cloud_dotnet() -> str:
-    """Point DOTNET_ROOT and the front of PATH at the first installed CLOUD_DOTNET_ROOTS entry."""
-    for d in CLOUD_DOTNET_ROOTS:
+    """Point DOTNET_ROOT and the front of PATH at the manifest's dotnet root, else the first installed
+    CLOUD_DOTNET_ROOTS entry."""
+    recorded = cloud_install().get("dotnet_root", "")
+    roots = [Path(recorded)] if recorded else []
+    for d in roots + list(CLOUD_DOTNET_ROOTS):
         if (d / "dotnet").exists():
             os.environ["DOTNET_ROOT"] = str(d)
             if str(d) not in os.environ.get("PATH", "").split(os.pathsep):
@@ -74,6 +91,9 @@ def get_godot_bin() -> str:
     env = os.environ.get("GODOT_BIN", "")
     if env and Path(env).exists():
         return env
+    recorded = cloud_install().get("godot_bin", "")
+    if recorded and Path(recorded).exists():
+        return recorded
     # Platform-specific fallback locations
     if platform.system() == "Linux":
         leaf = f"Godot_v{GODOT_VERSION}_mono_linux_x86_64/Godot_v{GODOT_VERSION}_mono_linux.x86_64"

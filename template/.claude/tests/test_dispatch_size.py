@@ -370,6 +370,35 @@ class WindowFitTests(Plant):
         self.assertTrue(out[0].startswith("dispatch size:"), out)
         self.assertTrue(any("cheaper claimants" in line and "haiku" in line for line in out[1:]), out)
 
+    def test_a_claimant_line_names_another_plan_whose_quota_will_expire_unused(self):
+        data = {"transports": {"anthropic": {"costModel": "plan-quota"}, "go": {"costModel": "plan-quota"}},
+                "models": [
+                    {"transport": "anthropic", "id": "pin-x", "alias": "pin-a", "roles": ["executor"],
+                     "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
+                    {"transport": "anthropic", "id": "cheap-x", "alias": "cheap-a", "roles": ["executor"],
+                     "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
+                    {"transport": "go", "id": "go-exec", "alias": "go-exec", "roles": ["executor"]}]}
+        ladder = self.text("ladder.md", "# Ladder\n\n## Role guidance\n\n| model | cost | ± |\n|---|---|---|\n"
+                                        "| pin-a | 7 | + the strong default |\n| cheap-a | 10 | + cheap |\n")
+        job = self.claimant_job("exec", "pin-x", "author", "e.md")
+        job.pop("shape")
+        job["tier"] = "executor"
+        now = 1_800_000_000.0
+        go = {"schemaVersion": 1, "transport": "go", "costModel": "plan-quota", "sourceKind": "live",
+              "observedAt": "2027-01-15T08:00:00Z", "status": "available",
+              "quota": {"windows": [{"name": "seven_day", "usedPercent": 20,
+                                     "resetsAt": now + 4 * 86400, "windowDurationMins": 10080}],
+                        "routingWindow": "seven_day", "bindingWindow": "seven_day"}}
+        readings = {"anthropic": None, "go": go}
+        lines = dispatch_size.fact_lines({"jobs": [job]}, self.root, data=data, ladder=ladder,
+                                         now=now, read=lambda name, _data=None: readings.get(name))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("cheaper there: cheap-a", lines[0])
+        self.assertIn("; go-exec on go: ~53% unused at reset in 4d", lines[0])
+        quiet = dispatch_size.fact_lines({"jobs": [job]}, self.root, data=data, ladder=ladder,
+                                         now=now, read=lambda name, _data=None: None)
+        self.assertEqual(quiet, [lines[0].split("; go-exec on go")[0]], quiet)
+
     def test_the_line_helper_is_one_string_or_none(self):
         self.file("a.md", 1)
         spec = {"jobs": [self.job("j", "a.md")]}

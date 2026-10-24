@@ -109,7 +109,7 @@ OFF_ROOMIER = {"host": plan_reading(80, 0.9), "off": plan_reading(10, 0.9)}
 CURRENCY_LINE = "currency (orchestration §5b): host Hot: 7d 20% left, 90% to go, resets "
 LEGAL = "orchestrator, architect, executor, fanout, scout"
 EFFORT_LINE = "raise effort before tier (orchestration §5 Effort)"
-# OFF_SPARE: host Hot: 7d 20% left, 90% to go; off Surplus: 7d 90% left, 30% to go with 60% of its week left over at even pace, 2.1d to reset.
+# OFF_SPARE: host Hot: 7d 20% left, 90% to go; off Surplus: 7d 90% left, 30% to go.
 OFF_SPARE = {"host": plan_reading(80, 0.9), "off": plan_reading(10, 0.3)}
 # A retired RULE 4 lift: the guard no longer reads it, so it changes no verdict.
 CAPABILITY = 'capability: "multi-file plan review is outside this row"'
@@ -633,6 +633,8 @@ STRA_REGISTRY = """# Structure audit
 
 ### stra-layout-hygiene (planted layout lens)
 
+tier: fanout
+
 ```
 planted
 ```
@@ -688,7 +690,7 @@ def implied_tier_cases():
 
     seat_tier = getattr(LENS, "seat_tier", lambda _k: None)
     with planted_agents_dir():
-        out.append(("a planted stra-layout-hygiene lens takes the tier LENS_TIERS names for it",
+        out.append(("a planted stra-layout-hygiene lens takes the tier its header `tier:` line declares",
                     seat_tier("stra-layout-hygiene") == "fanout", repr(seat_tier("stra-layout-hygiene"))))
         for key in ("plc-memory-alignment", "sa-design-semantics", "stra-layout-hygiene",
                     "stra-layout-hygiene+stra-domain-coherence"):
@@ -1101,7 +1103,7 @@ HOT_5H = 1.44
 COOL_5H = 1.0
 
 
-def plant_session(runs=(), top=(), notes=(), owner=(), queued=(), cross=(), sid="s5h00001"):
+def plant_session(runs=(), top=(), notes=(), owner=(), queued=(), cross=(), answers=(), sid="s5h00001"):
     """A planted transcript tree; returns the `transcript_path` a hook payload would carry.
 
     `runs` = [(run id, [(agent id, label, state, age seconds)])] where state is `live` (a started
@@ -1151,6 +1153,12 @@ def plant_session(runs=(), top=(), notes=(), owner=(), queued=(), cross=(), sid=
                                  "message": {"role": "user",
                                              "content": '<cross-session-message from="peer">%s'
                                                         '</cross-session-message>' % words}}) + "\n")
+        for i, (question, label) in enumerate(answers):
+            fh.write(json.dumps({"type": "user", "uuid": "ans%d" % i,
+                                 "message": {"role": "user", "content": [
+                                     {"type": "tool_result", "tool_use_id": "toolu_a%d" % i, "content": label}]},
+                                 "toolUseResult": {"questions": [{"question": question}],
+                                                   "answers": {question: label}}}) + "\n")
         for aid, age in notes:
             stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - age))
             fh.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "timestamp": stamp,
@@ -1265,7 +1273,7 @@ def five_hour_cases():
 
         # An `owner:` statement lifts only when this session's transcript carries the words.
         owned_live = plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
-                                   owner=[OWNER_WORDS])
+                                   owner=[OWNER_WORDS + " --host"])
         owner = {"currency": "host", "currencyReason": OWNER_QUOTE}
         shared = tempfile.mkdtemp(prefix="wpg_state_")
         case("the 5h deny cites the rule it enforces and names the owner override as the owner's to grant",
@@ -1302,6 +1310,31 @@ def five_hour_cases():
         out.append(("owner: ...and the session record holds it for the rest of the session",
                     held.get("transport") == "host" and "use anthropic only" in str(held.get("reason")),
                     repr(held)[:300]))
+        def lift_case(name, transcript, verdict, **kw):
+            case(name, run(with_transcript(jobs([("h-arch", "architect")], currency(OWNER_QUOTE)), transcript),
+                           HOT_5H, state_dir=tempfile.mkdtemp(prefix="wpg_state_")), verdict, **kw)
+        lift_case("owner: a quote that is a substring of an owner turn without the --host token does not lift",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                owner=[OWNER_WORDS + " please"]), "deny", musts=("5h 14% left, 40% to go",))
+        lift_case("owner: --host inside a pasted block does not lift",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                owner=['<pasted_content id="p1">use --host</pasted_content> ' + OWNER_WORDS]),
+                  "deny", musts=("5h 14% left, 40% to go",))
+        lift_case("owner: --host in a cross-session message does not lift",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                cross=["--host"]), "deny", musts=("5h 14% left, 40% to go",))
+        lift_case("owner: --hostile is not the --host token",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                owner=["--hostile"]), "deny", musts=("5h 14% left, 40% to go",))
+        lift_case("owner: an answered question naming the transport and approving the lift lifts",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                answers=[("Lift the 5h one-job rule on host for this session?", "Yes, lift it")]),
+                  "allow")
+        lift_case("owner: a declined answer, or one naming another transport, does not lift",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                answers=[("Lift the 5h one-job rule on host for this session?", "No, keep it"),
+                                         ("Lift the 5h one-job rule on off for this session?", "Yes, lift it")]),
+                  "deny", musts=("5h 14% left, 40% to go",))
         case("owner: a too-short owner reason does not lift",
              run(with_transcript(jobs([("h-arch", "architect")], currency('owner: "use host"')), one_live),
                  HOT_5H), "deny", ("5h 14% left, 40% to go",))

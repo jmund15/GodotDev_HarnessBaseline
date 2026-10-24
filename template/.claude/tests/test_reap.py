@@ -15,6 +15,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "tools"))
 import reap  # noqa: E402
+import _platform_skip  # noqa: E402
 
 SCRATCH = tempfile.mkdtemp(prefix="reap_scratch_")
 atexit.register(shutil.rmtree, SCRATCH, True)
@@ -164,7 +165,7 @@ def main():
         if sys.platform == "win32":
             ck(name, cond, detail)
         else:
-            print("  SKIP ", name, "(Windows drive paths)")
+            _platform_skip.skip(name, "Windows drive paths")
 
     # 1. the incident: our own duplicate daemon, twin alive -> whole tree goes, ledger written
     with tempfile.TemporaryDirectory() as td:
@@ -254,6 +255,11 @@ def main():
         child = row(106, 105, "bash.exe", "bash codex_proxy_sidecar.sh -R %s -l job" % own.replace("\\", "/"))
         rc, killed, out = run(["105", "--reason", "superseded", "--artifact", own, "--why", "x"], table([parent, child]))
         ck("superseded: an artifact named only in a descendant's command line refuses", rc == 2 and killed == [], out[-300:])
+        script = os.path.join(td, "gate_run.ps1"); open(script, "w").write("x")
+        gate = row(107, 100, "pwsh.exe", "pwsh -NoProfile -File gate_run.ps1 -Gate")
+        rc, killed, out = run(["107", "--reason", "superseded", "--artifact", script, "--why", "x"], table([gate]))
+        ck("superseded: a script the target runs is not its output, so a superseded gate is stopped",
+           rc == 0 and killed == [107], out[-300:])
 
     # 5. stalled: a log that went quiet long enough qualifies; a fresh one does not
     with tempfile.TemporaryDirectory() as td:

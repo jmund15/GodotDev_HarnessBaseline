@@ -96,6 +96,10 @@ def _run():
                   list(gc.segments("echo a | git checkout -- x")) == ["echo a", "git checkout -- x"]))
     cases.append(("an unbalanced quote falls back to splitting every separator",
                   list(gc.segments("echo 'a | git checkout -- x")) == ["echo 'a", "git checkout -- x"]))
+    cases.append(("a backslash-newline continues the commit line, so every pathspec after it is read",
+                  [f.rest for f in gc.commit_invocations("git commit -F m -- a \\\n  b", cwd)] == [["-F", "m", "--", "a", "b"]]))
+    cases.append(("a backslash-newline continuation leaves no lone backslash pathspec",
+                  "\\" not in [w for f in gc.commit_invocations("git commit -F m -- a \\\n  b", cwd) for w in f.rest]))
 
     import shlex
     launchers = ("bash -c", "sh -c", "bash -lc", "bash -o pipefail -c", "eval")
@@ -297,10 +301,7 @@ def _run():
 
     # --- commit_message: the message a commit carries, read through the same parser ------------
     def message(rest, cwd="/work"):
-        try:
-            return gc.commit_message(rest, cwd)
-        except AttributeError:
-            return "<missing commit_message>"
+        return gc.commit_message(rest, cwd)
 
     cases.append(("commit_message joins repeated -m as paragraphs",
                   message(["-m", "subject", "-m", "Triage: reach=local"]) == "subject\n\nTriage: reach=local"))
@@ -324,10 +325,7 @@ def _run():
     # --- in_project: the one home for "does this commit belong to this project" -------------------
     # `triage_commit_check` and `duplicate_commit_check` both gate on it; a second copy would drift.
     def in_project(cwd, root):
-        try:
-            return gc.in_project(cwd, root)
-        except AttributeError:
-            return "<missing in_project>"
+        return gc.in_project(cwd, root)
 
     own = make_repo()
     os.makedirs(os.path.join(own, "sub"))
@@ -451,6 +449,18 @@ def _run():
         fh.write("a\n")
     cases.append(("commit_source: -i whose only staged path is its pathspec path, reverted in the worktree, reads the worktree",
                   gc.commit_source(["-i", "--", "a.txt"], reverted) == "worktree"))
+
+    unborn = tempfile.mkdtemp(prefix="gcseam_unborn_")
+    _REPOS_TO_CLEAN.append(unborn)
+    git(unborn, "init", "-q")
+    os.makedirs(os.path.join(unborn, ".claude", "commands"))
+    with open(os.path.join(unborn, ".claude", "commands", "x.md"), "w") as fh:
+        fh.write("x\n")
+    git(unborn, "add", "-A")
+    cases.append(("a pathspec commit in a repo with no HEAD reads its staged path, not a failed diff",
+                  gc.staged_paths(["-m", "x", "--", ".claude/commands/x.md"], unborn) == ({".claude/commands/x.md"}, None)))
+    cases.append(("an index commit in a repo with no HEAD reads its staged path",
+                  gc.staged_paths(["-m", "x"], unborn) == ({".claude/commands/x.md"}, None)))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

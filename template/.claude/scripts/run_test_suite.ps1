@@ -76,7 +76,12 @@ param(
     # The pool's single held child admitted before the checkout is stamped recompiled: the gate's Sanity run, which
     # performs the one GdUnit4 editor pass. Valid only with -HeldCheckout.
     [switch] $RecompilePass,
-    [switch] $ForceRecompile
+    [switch] $ForceRecompile,
+    # Run the engine windowed whatever the filter selects. Without it the run is headless unless every class the filter
+    # selects is [RequiresRenderer]-tagged (IntegrationBatches.ps1 Resolve-RunMode).
+    [switch] $Windowed,
+    # dotnet test's console verbosity. normal prints a line per test, so a hang names its last test in the batch log.
+    [ValidateSet('quiet', 'minimal', 'normal', 'detailed', 'diagnostic')] [string] $Verbosity = 'quiet'
 )
 
 . (Join-Path $PSScriptRoot 'WideRunGuard.ps1')
@@ -88,6 +93,7 @@ $runStartedAt = Get-Date
 # The checkout lock, runtime slots, overlap signatures and trigger log live in ONE home.
 . (Join-Path $PSScriptRoot 'RuntimeSlots.ps1')
 . (Join-Path $PSScriptRoot 'TwinCheckout.ps1')
+. (Join-Path $PSScriptRoot 'IntegrationBatches.ps1')
 # The activity-registry reader and the owner-root walk, shared with the gate and the watcher.
 . (Join-Path $PSScriptRoot 'PeerActivity.ps1')
 
@@ -177,14 +183,22 @@ if (-not $IgnoreEditor -and -not $ReapReport -and -not $HeldCheckout) {
     $repo = $route.Path
     Set-Location $repo
 }
+$runMode = if ($ReapReport) { $null } else { Resolve-RunMode -Repo $repo -Filter $Filter -Windowed:$Windowed }
+if ($runMode) {
+    Write-Output "MODE=$($runMode.mode)"
+    if (@($runMode.skipped).Count -gt 0) {
+        Write-Output "RENDER_SKIPPED classes=$(@($runMode.skipped) -join ',')  (this filter mixes renderer-tagged and untagged classes, so it runs headless and these are not rendered; filter to only tagged classes or pass -Windowed)"
+    }
+}
 if ($RouteOnly) {
     Write-Output "ROUTE=$repo"
     exit 0
 }
 # .runsettings is gitignored, so a fresh linked worktree has none; dotnet test would then exit 1 with
 # the reason only in the err log. Initialize-Runsettings generates it from the template; the refusal stands when it cannot.
-if (-not $ReapReport -and (Initialize-Runsettings -Repo $repo) -like 'FAILED*') {
-    Write-Output "STATUS=NO_RUNSETTINGS  label=$Label  (no .runsettings in $repo; copy the main checkout's)"
+$runsettings = if ($ReapReport) { '' } else { Initialize-Runsettings -Repo $repo }
+if ($runsettings -like 'FAILED*') {
+    Write-Output "STATUS=NO_RUNSETTINGS  label=$Label  reason=$($runsettings -replace '^FAILED\s*', '')  (no .runsettings in $repo)"
     exit 126
 }
 
@@ -203,6 +217,9 @@ $godotLog = if ($runRoot) { Join-Path $runDir 'godot_test.log' } else { Join-Pat
 $lastGreen = Join-Path $logDir "$safe.green"
 if (-not $PSBoundParameters.ContainsKey('TimeoutMs')) {
     $TimeoutMs = Get-SuiteTimeoutMs -Repo $repo -Filter $Filter -LastGreen $lastGreen
+}
+if (-not $PSBoundParameters.ContainsKey('TimeoutMs') -and -not $HeldCheckout -and -not $ReapReport -and -not (Get-RecompileDecision -Repo $repo).Skip) {
+    $TimeoutMs += $script:SuiteColdRecompileExtraMs
 }
 if (-not $ReapReport) { Write-Output "CAP_MS=$TimeoutMs" }
 
@@ -577,19 +594,10 @@ try {
         Write-ReapLine -Site 'slot-handoff' -Kills $handoff -Spares @()
     }
 
-    $recompileDecision = $null
-    if (-not $HeldCheckout) {
-        $recompileDecision = Get-RecompileDecision -Repo $repo -Force:$ForceRecompile
-        $skipRecompile = $recompileDecision.Skip
-        Write-Output "RECOMPILE=$(if ($skipRecompile) { 'SKIP' } else { 'RUN' }) reason=$($recompileDecision.Reason)"
-    } else {
-        if ($ForceRecompile) { $skipRecompile = $false }
-        if (-not $skipRecompile) {
-            try { $recompileDecision = [pscustomobject] @{ Snapshot = Get-RecompileSnapshot -Repo $repo } } catch { }
-        }
-        $reason = if ($RecompilePass) { 'gate-sanity' } elseif ($ForceRecompile) { 'forced' } else { 'held-recompiled' }
-        Write-Output "RECOMPILE=$(if ($skipRecompile) { 'SKIP' } else { 'RUN' }) reason=$reason"
-    }
+    $run = Resolve-RunRecompile -Repo $repo -Held:$HeldCheckout.IsPresent -HeldRecompiled:$skipRecompile -Force:$ForceRecompile.IsPresent -RecompilePass:$RecompilePass.IsPresent
+    $recompileDecision = $run.Decision
+    $skipRecompile = $run.Skip
+    Write-Output $run.Line
 
     # --- Per-worktree isolation: pipe salt (consumed by the forked gdUnit4.api — appends
     #     to the pipe name so worktrees stop sharing one pipe) + ensure the --log-file
@@ -635,10 +643,10 @@ try {
         Remove-Item -LiteralPath $godotLog -Force -ErrorAction SilentlyContinue
         # The native launcher redirects inside an isolated pwsh, never in this caller's process.
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $testArgs = @('test', '--settings', (Join-Path $repo '.runsettings'), '--verbosity', 'quiet', '--filter', $Filter) +
+        $testArgs = @('test', '--settings', (Join-Path $repo '.runsettings'), '--verbosity', $Verbosity, '--filter', $Filter) +
             @(if ($noBuild) { '--no-build' }) +
             @('--results-directory', (Split-Path $passTrx), '--logger', "trx;LogFileName=$safe.trx") +
-            @('--', $iso.AppDataArg, "GdUnit4.Parameters=--log-file $($godotLog -replace '\\', '/')",
+            @('--', $iso.AppDataArg, "GdUnit4.Parameters=--log-file $($godotLog -replace '\\', '/')$(if ($runMode.engineArgs) { ' ' + $runMode.engineArgs })",
                 # .runsettings' own TestSessionTimeout would abort a run the cap allows; vstest must never stop first.
                 "RunConfiguration.TestSessionTimeout=$([int64] $TimeoutMs + 60000)")
         $p = Start-IsolatedNativeProcess -FilePath 'dotnet' -Arguments $testArgs -OutPath $log -ErrPath $errLog
@@ -702,9 +710,7 @@ try {
         }
 
         if ($skipRecompile) { Assert-RecompileSkipped -Trx $passTrx -Label $Label }
-        if ($recompileDecision -and -not $skipRecompile -and -not $skip) {
-            Set-RecompileStamp -Repo $repo -Snapshot $recompileDecision.Snapshot -Trx $passTrx
-        }
+        Save-RecompilePassStamp -Repo $repo -Decision $recompileDecision -SkipRecompile:$skipRecompile -SilentSkip:$skip -Trx $passTrx
 
         # Surface the GdUnit4 result line(s) + any persisting silent-skip / abort signature.
         $summary = Select-String -Path $log -Pattern 'Passed!|Failed!|Passed:\s*\d+|Total:\s*\d+|Aborted' -ErrorAction SilentlyContinue |

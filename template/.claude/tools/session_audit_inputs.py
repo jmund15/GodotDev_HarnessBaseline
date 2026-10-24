@@ -27,6 +27,7 @@ from pathlib import Path
 
 import review_ledger as ledger
 import task_record
+from cli_usage import usage
 
 
 def git(root, *args, optional=False):
@@ -188,7 +189,7 @@ def freeze(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", default=".")
     parser.add_argument("--base-ref", default="origin/main")
     parser.add_argument("--session-base", required=True)

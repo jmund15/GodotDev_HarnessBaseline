@@ -120,6 +120,38 @@ def main():
               "must-allow: a session may revert its own commit (same Claude-Session trailer) (rc=%d) %s"
               % (r.returncode, r.stderr[-200:]))
 
+        repo = make_repo(os.path.join(tmp, "m"))
+        write(repo, "f.txt", "peer\n")
+        git(repo, "commit", "-q", "-m", "peer change\n\n" + PEER, "--", "f.txt")
+        git(repo, "revert", "--no-commit", "HEAD")
+        r = git(repo, "commit", "-q", "-m", "revert peer change\n\nno trailer", check_rc=False)
+        check(r.returncode == 0 and head_file(repo, "f.txt") == "base\n",
+              "must-allow: a commit made while REVERT_HEAD names a commit is this session's own revert (rc=%d) %s"
+              % (r.returncode, r.stderr[-200:]))
+
+        repo = make_repo(os.path.join(tmp, "n"))
+        write(repo, "f.txt", "peer\n")
+        git(repo, "commit", "-q", "-m", "peer change\n\n" + PEER, "--", "f.txt")
+        git(repo, "revert", "--no-commit", "HEAD")
+        os.remove(os.path.join(repo, ".git", "REVERT_HEAD"))
+        r = git(repo, "commit", "-q", "-m", "revert peer change\n\nno trailer", check_rc=False)
+        check(r.returncode != 0 and "revert a peer's commit" in r.stderr and head_file(repo, "f.txt") == "peer\n",
+              "block arm: the same index with no REVERT_HEAD is still refused as a peer's revert (rc=%d) %s"
+              % (r.returncode, r.stderr[-200:]))
+
+        repo = make_repo(os.path.join(tmp, "o"))
+        write(repo, "g.txt", "peer g\n")
+        git(repo, "commit", "-q", "-m", "peer g change\n\n" + PEER, "--", "g.txt")
+        write(repo, "f.txt", "peer\n")
+        git(repo, "commit", "-q", "-m", "peer change\n\n" + PEER, "--", "f.txt")
+        git(repo, "revert", "--no-commit", "HEAD")
+        write(repo, "g.txt", "base\n")
+        git(repo, "add", "g.txt")
+        r = git(repo, "commit", "-q", "-m", "revert peer change\n\nno trailer", check_rc=False)
+        check(r.returncode != 0 and "g.txt" in r.stderr and head_file(repo, "g.txt") == "peer g\n",
+              "block arm: a revert in progress still refuses a stale blob of a path the reverted commit never touched"
+              " (rc=%d) %s" % (r.returncode, r.stderr[-200:]))
+
         repo = make_repo(os.path.join(tmp, "d"))
         stale_index(repo, os.path.join(tmp, "d"))
         write(repo, "g.txt", "pathspec\n")

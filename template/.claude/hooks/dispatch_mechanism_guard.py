@@ -196,7 +196,8 @@ def main() -> int:
     own = own_evidence_hit(payload)
     if own:
         reasons.append(OWN_EVIDENCE_REASON.format(label=own))
-    doctrine, fault = model_ladder_gate.doctrine_check(payload, tiers=lambda: _call_tiers(payload))
+    doctrine, fault = model_ladder_gate.doctrine_check(payload, tiers=lambda: _call_tiers(payload),
+                                                       embed_slice=True)
     if doctrine:
         reasons.append(doctrine)
     if reasons:

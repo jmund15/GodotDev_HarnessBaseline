@@ -174,6 +174,7 @@ triage_commit_check = _load('triage_commit_check')
 duplicate_commit_check = _load('duplicate_commit_check')
 baseline_classification_guard = _load('baseline_classification_guard')
 rule_number_guard = _load('rule_number_guard')
+heredoc_quoting_advisory = _load('heredoc_quoting_advisory')
 _APPROVING_GATES_IMPORT_ERROR = _IMPORT_ERRORS.get('approving_gates')
 _TRIAGE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('triage_commit_check')
 _DUPLICATE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('duplicate_commit_check')
@@ -205,12 +206,19 @@ HOOKS += (
     (hand_pricing_advisory, ()),
     (sidecar_dispatch_context, ()),
     (approving_gates, ()),
+    (heredoc_quoting_advisory, ()),
     # Last: it rewrites the command through updatedInput, so every deny above must win first.
     (bash_backslash_fidelity, ()),
 )
 HOOKS = tuple((module, argv_tail) for module, argv_tail in HOOKS if module is not None)
 
 _DECISION_RANK = {"deny": 3, "ask": 2, "allow": 1}
+_NOTHING_RAN = "Nothing in this command ran."
+
+
+def _denied(text):
+    """A deny reason with the no-partial-run line once: a denied call runs no part of its chain."""
+    return text if text.rstrip().endswith(_NOTHING_RAN) else text.rstrip() + "\n" + _NOTHING_RAN
 
 
 class _Capture(io.StringIO):
@@ -285,12 +293,13 @@ def _dispatch(raw_payload, hooks):
         code, out, err = run_hook(module, argv_tail, raw_payload)
         if code == 2:
             block = err.rstrip() if err.strip() else "%s blocked the call." % module.__name__
-            return 2, "", block
+            return 2, "", _denied(block)
         floor = getattr(module, 'FAIL_CLOSED', False) or (
             module.__name__ in _FLOOR_MEMBERS and payload.get('tool_name') in ('Bash', 'PowerShell'))
         if code != 0 and floor:
-            return 2, "", ("%s is a floor guard and failed (exit %s), so the call is blocked until it runs "
-                           "cleanly. Fix the guard; its error:\n%s" % (module.__name__, code, err.strip()[-1500:]))
+            return 2, "", _denied("%s is a floor guard and failed (exit %s), so the call is blocked until it runs "
+                                  "cleanly. Fix the guard; its error:\n%s"
+                                  % (module.__name__, code, err.strip()[-1500:]))
         if code != 0:
             fault = "[pre_bash_dispatch] %s exited %s: %s" % (module.__name__, code, err.strip()[-1500:])
             user_stderr.append(fault)
@@ -330,7 +339,7 @@ def _dispatch(raw_payload, hooks):
     if decision:
         hso["permissionDecision"] = decision
         if reason:
-            hso["permissionDecisionReason"] = reason
+            hso["permissionDecisionReason"] = _denied(reason) if decision == "deny" else reason
     if contexts:
         hso["additionalContext"] = "\n\n".join(contexts)
     hso.update(extra)

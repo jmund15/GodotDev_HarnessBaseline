@@ -80,8 +80,12 @@ class LoggingScopeTests(unittest.TestCase):
         body = "class Bad {\n#if TOOLS\n    void A() {}\n#else\n" + RUNTIME_CALL + "#endif\n}\n"
         self.assertIn("Use JmoLogger", (write("C:/repo/Spells/Bad.cs", body) or {}).get("block", ""))
 
-    def test_a_tools_directory_file_is_exempt(self):
-        self.assertIsNone(write("C:/repo/Jmodot/Tools/Probe.cs", "class P {\n" + RUNTIME_CALL + "}\n"))
+    def test_a_tools_directory_file_outside_a_tools_marker_is_blocked(self):
+        result = write("C:/repo/Jmodot/Tools/Probe.cs", "class P {\n" + RUNTIME_CALL + "}\n")
+        self.assertIn("Use JmoLogger", (result or {}).get("block", ""))
+
+    def test_a_tools_directory_file_inside_a_tools_marker_is_exempt(self):
+        self.assertIsNone(write("C:/repo/Jmodot/Tools/Probe.cs", "class P {\n" + EDITOR_HELPER + "}\n"))
 
     def test_an_edit_is_exempt_only_where_it_replaces_editor_only_text(self):
         source = ("class Mixed {\n#if TOOLS\n    internal void Probe() { int a = 1; }\n#endif\n"

@@ -40,8 +40,8 @@ A header line `citers: plan` declares that the lens judges a plan's changed surf
 for it and `""` otherwise, and `lens_briefs.py` runs `citers.py` over each meta subject plan's `surfaces` block and
 embeds the result as `INBOUND_REFS` in that lens's brief.
 
-Each lens carries the tier its seat reviews at: its registry's `REGISTRY_TIERS` value unless
-`LENS_TIERS` names it. A plan or design review is architect work, a review of code or concrete
+Each lens carries the tier its seat reviews at: a header line `tier: <tier>` (`Lens.tier`), else its registry's
+`REGISTRY_TIERS` value. A plan or design review is architect work, a review of code or concrete
 artifacts executor work, an anchored check fanout work. `seat_tier` is the one reader: the provider
 guard and review_fanout.js fill a seat that declares no tier from it.
 
@@ -79,14 +79,20 @@ DOCTRINE_ROOT = Path(__file__).resolve().parent.parent
 _PREFIXES = adaptation.get(DOCTRINE_ROOT, "lens_prefixes")
 EXTRA_PRELOADS = adaptation.get(DOCTRINE_ROOT, "lens_preloads")
 
-REGISTRIES = {
-    "review": ("review_agents.md", _PREFIXES.get("review", "")),
-    "session_audit": ("session_audit_agents.md", "sa-"),
-    "explore": ("explore_agents.md", "exp-"),
-    "plan_check": ("plan_check_agents.md", "plc-"),
-    "structure_audit": ("structure_audit_agents.md", "stra-"),
-    "redteam": ("redteam_agents.md", "rt-"),
-}
+def registries(prefixes: dict) -> dict:
+    """Each registry's (file, key prefix); a row in `prefixes` overrides the literal default."""
+    literals = {
+        "review": ("review_agents.md", ""),
+        "session_audit": ("session_audit_agents.md", "sa-"),
+        "explore": ("explore_agents.md", "exp-"),
+        "plan_check": ("plan_check_agents.md", "plc-"),
+        "structure_audit": ("structure_audit_agents.md", "stra-"),
+        "redteam": ("redteam_agents.md", "rt-"),
+    }
+    return {name: (filename, prefixes.get(name, prefix)) for name, (filename, prefix) in literals.items()}
+
+
+REGISTRIES = registries(_PREFIXES)
 
 TEMPLATES_RE = re.compile(r"^## (Agent|Lens) Templates\b")
 STRAY_RE = re.compile(r"^### ([a-z0-9][a-z0-9-]*)(?:\s|$)")
@@ -98,15 +104,6 @@ REGISTRY_TIERS = {
     "plan_check": "architect",
     "structure_audit": "executor",
     "redteam": "architect",
-}
-LENS_TIERS = {
-    "stra-layout-hygiene": "fanout",
-    "stra-reference-integrity": "fanout",
-    "plc-evidence-grounding": "fanout",
-    "plc-instruction-quality": "fanout",
-    "sa-harness-quality": "fanout",
-    "sa-architecture-sweep": "architect",
-    "sa-holistic": "architect",
 }
 
 PURPOSE_RE = re.compile(r"^\s*\(([^)]{3,160})\)")
@@ -122,6 +119,7 @@ GATE_MARKERS = (
 PURPOSE_CAP = 96
 PRELOAD_RE = re.compile(r"^preload:\s*(\S+)\s*$")
 MANDATES_RE = re.compile(r"^mandates:\s*(.+?)\s*$")
+TIER_RE = re.compile(r"^tier:\s*(\S+)\s*$")
 KFM_RE = re.compile(r"^kfm:\s*index\s*$")
 CITERS_RE = re.compile(r"^citers:\s*plan\s*$")
 ADMISSION_RE = re.compile(r"^admission:\s*(.+?)\s*$")
@@ -150,7 +148,8 @@ class Lens:
 
     @property
     def tier(self) -> str:
-        return LENS_TIERS.get(self.key) or REGISTRY_TIERS[self.registry]
+        found = (TIER_RE.match(line) for line in self.lines[:self._header_len()])
+        return next((m.group(1) for m in found if m), REGISTRY_TIERS[self.registry])
 
     def _header_len(self) -> int:
         """Lines before the first fence: the block where `preload:` declarations live."""
@@ -187,7 +186,7 @@ class Lens:
     def body(self) -> str:
         cut = self._header_len()
         kept = [l for l in self.lines[:cut] if not (PRELOAD_RE.match(l) or MANDATES_RE.match(l) or KFM_RE.match(l)
-                                                   or CITERS_RE.match(l)
+                                                   or CITERS_RE.match(l) or TIER_RE.match(l)
                                                    or ADMISSION_RE.match(l))] + self.lines[cut:]
         return f"### {self.key} {self.descriptor}\n" + "".join(kept).rstrip() + "\n"
 

@@ -18,6 +18,8 @@ import re
 import sys
 from pathlib import Path
 
+from cli_usage import usage
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -94,7 +96,7 @@ def cmd_get(entries: list[Entry], ids: list[str]) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("index")
     g = sub.add_parser("get")

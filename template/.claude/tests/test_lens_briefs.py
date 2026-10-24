@@ -6,8 +6,10 @@ A registry whose file a layer-stripped consumer never received is skipped, so an
 
     python3 .claude/tests/test_lens_briefs.py
 """
+import json
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -64,6 +66,42 @@ def companion_checks():
               merged_tq.index("**t**") < merged_tq.index("**tg**") and "x: y" not in merged_tq, merged_tq)
 
 
+def job_tier_checks():
+    """A job's `tier` is its lens tier; a written `--tier`/`--tier-for` only fills a seat with no lens tier."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        context = root / "context.md"
+        context.write_text("context\n", encoding="utf-8")
+        must = root / "must.txt"
+        must.write_text(str(context) + "\n", encoding="utf-8")
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"roster": [{"key": "seat-a"}, {"key": "seat-b"}]}), encoding="utf-8")
+        found = {key: types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"], kfm=False, citers=False)
+                 for key in ("seat-a", "seat-b")}
+        saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage)
+        lens.catalog = lambda: ({"review": "preamble"}, found)
+        lens.doctrine = lambda lenses: ""
+        lens.seat_tier = lambda key: "executor" if key == "seat-a" else None
+        lens_briefs.lens_tier_refusal = lambda **kwargs: []
+        lens_briefs.seat_overage = lambda **kwargs: None
+        try:
+            outcome = run_main(["--plan", str(plan), "--out", str(root / "out"), "--prefix", "p",
+                                "--context-path", str(context), "--model", sorted(lens_briefs.NATIVE_PINS)[0],
+                                "--effort", sorted(lens_briefs.NATIVE_EFFORTS)[0], "--tier", "fanout",
+                                "--tier-for", "seat-a=scout", "--must-read", str(must)])
+        finally:
+            (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
+             lens_briefs.seat_overage) = saved
+        jobs_file = root / "out" / "jobs_p.json"
+        tiers = {job["seat"]: job["tier"] for job in json.loads(jobs_file.read_text(encoding="utf-8"))} \
+            if jobs_file.exists() else {}
+    check("the job tier run returns without a refusal", outcome == "returned", str(outcome))
+    check("a seat's job tier is its lens tier, not the --tier-for written over it",
+          tiers.get("seat-a") == "executor", repr(tiers))
+    check("a seat with no lens tier takes the written --tier",
+          tiers.get("seat-b") == "fanout", repr(tiers))
+
+
 def main():
     text = "# Review agents\n\n## Agent Templates\n\n### code-reviewer -- `model: \"opus\"`\nbody\n"
     with tempfile.TemporaryDirectory() as tmp:
@@ -82,6 +120,7 @@ def main():
     check("an unknown key is refused by name while another registry's file is absent",
           "no such lens: no-such-key" in outcome, outcome)
     companion_checks()
+    job_tier_checks()
     import contextlib
     import io
     saved_tier = lens.seat_tier

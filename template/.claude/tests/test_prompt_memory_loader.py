@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -222,6 +223,18 @@ def main():
     out = prompt("What's the status?", session="pml00012")
     cases.append(('"What\'s the status?" alone stays silent (short-circuit)',
                   out in ("", "{}")))
+
+    # A large single-line paste must not stall the high-risk pattern scan: `check.*(log|output)`
+    # is quadratic in the paste length, and the loader runs in-process under the dispatcher's timeout.
+    plant_tier(tmp, "pml00014", "condensed")
+    started = time.time()
+    prompt(("check " * 17200)[:103000], session="pml00014")
+    elapsed = time.time() - started
+    cases.append(("a 103 K single-line paste finishes under budget (%.2fs)" % elapsed, elapsed < 2.0))
+
+    out = prompt("Please check the server output after the restart and report back", session="pml00014")
+    cases.append(("a check-then-output request is still high-risk",
+                  "HIGH-RISK TASK" in out))
 
     raw_results = [subprocess.run([sys.executable, hook], input=raw, capture_output=True,
                                   text=True, timeout=90, env=env)

@@ -36,7 +36,7 @@ Use `critical` for material correctness, safety or silent-failure exposure. Miss
 
 ### Step 1: Merge & Deduplicate
 
-Preserve every original finding with an engine-owned source ID before sorting/grouping. A location is an anchor, never identity. Distinct defects at one line survive; duplicate contributors retain provenance.
+Preserve every original finding with an engine-owned source ID before sorting/grouping. A location is an anchor, never identity. Distinct defects at one line survive; duplicate contributors retain provenance. A later round's findings dedup against the earlier rounds' ledger by `orchestration` reference [`later_rounds.md`](../../skills/orchestration/reference/later_rounds.md).
 
 `review_fanout.js` returns immutable source records plus a derived view. Its optional merger groups source IDs; original facts and edit proposals remain authoritative. Invalid grouping falls back to originals. Report received/valid/grouped counts and missing coverage separately. Grouping is not verification or proof that every member has been fixed.
 

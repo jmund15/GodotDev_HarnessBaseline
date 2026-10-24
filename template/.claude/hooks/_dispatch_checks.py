@@ -25,6 +25,8 @@ neither unavailable nor on an owner probation mark, and is cheaper than `model` 
 long-context multiplier applies past its threshold); when the row or the pin cannot be priced, it means a higher ladder
 `cost`. Each claimant states its prices, its ladder `±` cell, whether the reading fits its `usable_window`, and whether
 the reading is past its long-context point. These are facts for the reader: no check in this module denies on them.
+`spare_plan_fact(tier, transport, data)` adds one fact when a row claiming `tier` on another plan projects
+quota unused at its reset: `<alias> on <plan>: ~N% unused at reset in Dd`, read from the capacity cache only.
 
 `shape_tiers()` reads each shape row's tier from `guards/tool_profiles.json` for both routes.
 Capacity is read through `provider_bands.read_capacity`: the fresh cache, else one live read while
@@ -250,6 +252,38 @@ def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=
                     "price": price if priced else None, "pinPrice": pin_price if priced else None,
                     "priced": priced, "plan": plan, "draw": draw_against(row["id"], pinned["id"], data)})
     return sorted(out, key=lambda c: -c["cost"])
+
+
+def spare_plan_fact(tier, transport, data=None, now=None, read=None):
+    """One terse fact naming a row claiming `tier` on another plan whose quota projects unused at its
+    reset, or None: `<alias> on <plan>: ~N% unused at reset in Dd`.
+
+    Facts only, never a pick: it names quota a drop of the job's `plan` pin could spend. Plans are read
+    in registry order, and percents are never compared across plans. `read` defaults to the capacity
+    cache only, so a preflight starts no probe. Never raises."""
+    if not tier:
+        return None
+    try:
+        data = data if data is not None else model_registry.load()
+        now = time.time() if now is None else now
+        read = read or (lambda name, _data=None: provider_bands.read_capacity(name, data, live=False))
+        for plan in provider_bands.plan_quota_transports(data):
+            if plan == transport:
+                continue
+            rows = tier_rows(tier, plan, data)
+            if not rows:
+                continue
+            row = provider_bands._plan_room(plan, data, read, now)
+            projection = row.get("unusedAtReset") if row.get("room") is not None else None
+            pct = projection.get("pct") if isinstance(projection, dict) else None
+            if not isinstance(pct, (int, float)) or round(pct) < provider_bands.USED_RESOLUTION:
+                continue
+            days = projection.get("daysLeft")
+            return "%s on %s: ~%d%% unused at reset in %dd" % (
+                _name(rows[0]), plan, round(pct), round(days if isinstance(days, (int, float)) else 0))
+    except Exception:
+        return None
+    return None
 
 
 def claimant_text(c, reading_tokens):

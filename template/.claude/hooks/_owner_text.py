@@ -9,22 +9,23 @@ record must stay complete.
 Projection table (shape x consumer). `test_owner_text.py` parses this table and runs one fixture
 through all four consumers, so a projection change that is not written here fails the proof.
 
-| shape | kill_guard | harness_growth_guard | digest | provider_guard |
-|---|---|---|---|---|
-| prompt | text | turn | text | text |
-| queued_prompt (mid-turn) | text | no turn | text | text |
-| meta | drop | no turn | drop | drop |
-| meta ARGUMENTS | drop | no turn | label goal | drop |
-| sidechain | drop | no turn | drop | drop |
-| injection-prefixed | text | turn | drop | text |
-| envelope-only | drop | no turn | drop | drop |
-| agent-message | drop | no turn | drop | drop |
-| cross-session message | drop | no turn | drop | drop |
-| command with args | args | turn | name args | drop |
-| empty-args command | drop | no turn | name args | drop |
-| answer via toolUseResult | pairs | no turn | answer | drop |
-| answer via tool_result text | drop | no turn | answer | drop |
-| tool_result with text blocks | drop | no turn | text | drop |
+| shape | kill_guard | harness_growth_guard | digest | provider_guard | owner_turns |
+|---|---|---|---|---|---|
+| prompt | text | turn | text | text | text |
+| queued_prompt (mid-turn) | text | no turn | text | text | text |
+| meta | drop | no turn | drop | drop | drop |
+| meta ARGUMENTS | drop | no turn | label goal | drop | drop |
+| sidechain | drop | no turn | drop | drop | drop |
+| injection-prefixed | text | turn | drop | text | text |
+| envelope-only | drop | no turn | drop | drop | drop |
+| agent-message | drop | no turn | drop | drop | drop |
+| cross-session message | drop | no turn | drop | drop | drop |
+| command with args | args | turn | name args | drop | args |
+| empty-args command | drop | no turn | name args | drop | drop |
+| answer via toolUseResult | pairs | no turn | answer | drop | label |
+| answer via tool_result text | drop | no turn | answer | drop | drop |
+| tool_result with text blocks | drop | no turn | text | drop | drop |
+| compact summary | drop | no turn | drop | drop | drop |
 
 Cells:
 - kill_guard (`_consent_text`, `_answer_pairs`): `text` is `OwnerRow.text`; `args` is `command_args`, used
@@ -38,10 +39,13 @@ Cells:
   `owner:` quote is verified against -- the owner speaking. `drop` is every other row: harness
   plumbing (meta, command, envelope, injection *into* the transcript), a peer's cross-session or
   agent message, and tool results. A quote found only in a dropped row does not lift a deny, so a
-  peer quoting the owner's words cannot name the transport. `tools/verify_claims.py` owner items read
-  this projection plus answer rows through `owner_turns`, to bind a recorded owner quote to its turn's
-  uuid. Task conditions use `classify` with the separate `tools/task_record.py::_owner_turns`
-  projection, which also includes typed command arguments.
+  peer quoting the owner's words cannot name the transport.
+- owner_turns (`owner_turn_text`): the record `tools/verify_claims.py` owner items read, to bind a
+  recorded owner quote to its turn's uuid. `text` is the provider_guard projection; `label` is an
+  answer's picked labels, one per line (`owner_answer_text`); `args` is the arguments the owner typed
+  after a slash command (`owner_command_text`). The `ARGUMENTS:` meta companion of a typed command
+  repeats the same words and a model's `Skill` call leaves its own meta row, so both stay `drop`.
+  `tools/task_record.py::_owner_turns` reads the same projection for task conditions.
 - digest (`TranscriptSummaryBuilder._process_user_message` with `full_evidence=True`, plus
   `session_digest.recover_meta_command_prompts` and `recover_question_answers`, merged by
   `session_digest.owner_prompts`): `text` is the row's text blocks joined with a space; `name args` is
@@ -59,11 +63,14 @@ whitespace, now render as `name args` instead of raw tag text (so the bounded bu
 before.
 
 Shapes: `envelope-only` is a runtime envelope (`task-notification`, `local-command-stdout`,
-`cross-session-message`); `injection-prefixed` is owner text after a leading `system-reminder`,
+`cross-session-message`, or the `[Cross-session ...]` idle notice); `injection-prefixed` is owner text after a leading `system-reminder`,
 `user-prompt-submit-hook` or `local-command-caveat` block; `command` rows open with
 `<command-name>` or `<command-message>`; `queued_prompt` is a message the owner sent MID-TURN,
 recorded as an `attachment` of type `queued_command` rather than a user row (see
-`queued_owner_prompt`).
+`queued_owner_prompt`); `compact summary` is the recap the client writes after a compaction
+(`isCompactSummary`, "This session is being continued..."). It is never the owner, so it classifies as
+`meta` with its own kind and every consumer that drops `meta` rows drops it: a paraphrase inside a summary
+must not verify as the owner's words or read as consent.
 """
 import hashlib
 import json
@@ -76,7 +83,14 @@ LEADING_INJECTION_RE = re.compile(
     re.I | re.S,
 )
 ENVELOPE_RE = re.compile(
-    r"^<(agent-message|cross-session-message|task-notification|local-command-stdout)\b", re.I)
+    r"^(?:<(agent-message|cross-session-message|task-notification|local-command-stdout)\b"
+    r"|\[(cross-session)\s)", re.I)
+
+
+def _envelope_name(match):
+    return (match.group(1) or match.group(2)).lower()
+
+
 COMMAND_LEAD_RE = re.compile(r"\s*<command-(?:name|message)>")
 COMMAND_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.S)
@@ -86,7 +100,7 @@ COMMAND_LABEL_INLINE_RE = re.compile(r"`(/[\w-]+)`")
 
 @dataclass(frozen=True)
 class OwnerRow:
-    kind: str                 # prompt | command | answer | meta_arguments | tool_result
+    kind: str                 # prompt | queued_prompt | command | answer | meta_arguments | compact_summary | tool_result
     uuid: str                 # transcript uuid, else sha1 of the raw line (12 hex)
     index: int                # caller's line number
     text: str                 # text blocks joined, stripped, leading injections removed
@@ -193,6 +207,21 @@ def owner_answer_text(row):
     return "\n".join(label for _, label in row.pairs)
 
 
+def owner_command_text(row):
+    """The arguments the owner typed after a slash command (`/session_end <args>`), or None. The command row is the
+    owner's typed input. Its `ARGUMENTS:` meta companion repeats the same words and a model's `Skill` call leaves its
+    own meta row, so neither counts; a command typed without arguments carries no words."""
+    if row is None or row.meta or row.sidechain or row.envelope or row.tool_results or row.kind != "command":
+        return None
+    return row.command_args or None
+
+
+def owner_turn_text(row):
+    """What `owner_turns` takes from a row, or None: prompt text, an answer's picked labels, or a command's typed
+    arguments."""
+    return owner_quote_text(row) or owner_answer_text(row) or owner_command_text(row)
+
+
 def _rows(path):
     """Every classifiable row of a transcript file, in order; None when it cannot be read. A malformed row is
     not an owner statement, and never a crash."""
@@ -210,27 +239,28 @@ def _rows(path):
     return rows
 
 
-def _turns(path, answers):
+def _turns(path, project):
     rows = _rows(path)
     if rows is None:
         return None
     out = []
     for row in rows:
-        text = owner_quote_text(row) or (owner_answer_text(row) if answers else None)
+        text = project(row)
         if text:
             out.append((row.uuid, text))
     return out
 
 
 def owner_turns(path):
-    """`(OwnerRow.uuid, text)` for every turn the owner spoke, in order: each `owner_quote_text` row and each
-    AskUserQuestion answer (`owner_answer_text`). None when the file cannot be read.
+    """`(OwnerRow.uuid, text)` for every turn the owner spoke, in order (`owner_turn_text`): each `owner_quote_text`
+    row, each AskUserQuestion answer (`owner_answer_text`) and each command's typed arguments
+    (`owner_command_text`). None when the file cannot be read.
 
     An unreadable transcript must not read like one that carries nothing: both deny, but a reader of
     this proof has to be able to tell the two apart. `tools/verify_claims.py` reads the owner through
-    this; the provider guard reads `owner_quote_rows`, which drops answers.
+    this; the provider guard reads `owner_quote_rows`, which drops answers and command arguments.
     """
-    return _turns(path, True)
+    return _turns(path, owner_turn_text)
 
 
 def owner_answer_pairs(path):
@@ -361,9 +391,23 @@ def owner_consent(lines, targets, action_re, decline_re):
     return bool(AFFIRM_RE.search(value)) and _asks(question) and bool(action_re.search(question))
 
 
+PASTED_RE = re.compile(r"<pasted_content\b[^>]*>.*?</pasted_content\b[^>]*>", re.S)
+
+
+def strip_pasted(text):
+    """`text` with every pasted block blanked, so only the owner's own words remain."""
+    return PASTED_RE.sub(" ", text)
+
+
+def holds_token(text, name):
+    """True when `text` holds the literal word-bounded token `--<name>` outside a pasted block."""
+    token = re.compile(r"(?<![\w-])--" + re.escape(name) + r"(?![\w-])")
+    return bool(token.search(strip_pasted(text)))
+
+
 def owner_quote_rows(path):
     """`owner_quote_text` for every owner row of a transcript file, in order; None when it cannot be read."""
-    turns = _turns(path, False)
+    turns = _turns(path, owner_quote_text)
     return None if turns is None else [text for _, text in turns]
 
 
@@ -380,7 +424,7 @@ def classify(entry, index, raw=None):
         attachment = entry.get("attachment") or {}
         mode = attachment.get("commandMode") or (attachment.get("origin") or {}).get("kind")
         opens = ENVELOPE_RE.match(queued.strip())
-        envelope = (opens.group(1).lower() if opens
+        envelope = (_envelope_name(opens) if opens
                     else (str(mode).lower() if mode and str(mode).lower() != "prompt" else None))
         return OwnerRow(
             kind="queued_prompt", uuid=_identity(entry, raw), index=index, text=queued.strip(),
@@ -421,10 +465,14 @@ def classify(entry, index, raw=None):
         command_args = args.group(1).strip() if args else ""
     is_command = "<command-name>" in text and COMMAND_LEAD_RE.match(text) is not None
 
-    meta = bool(entry.get("isMeta"))
-    arguments = next((found for found in map(meta_arguments, blocks) if found), None) if meta else None
+    compact_summary = bool(entry.get("isCompactSummary"))
+    meta = bool(entry.get("isMeta")) or compact_summary
+    arguments = (next((found for found in map(meta_arguments, blocks) if found), None)
+                 if meta and not compact_summary else None)
     pairs = _pairs(entry, message, tool_results)
-    if arguments:
+    if compact_summary:
+        kind = "compact_summary"
+    elif arguments:
         kind = "meta_arguments"
         command_name, command_args = arguments
     elif is_command:
@@ -438,6 +486,6 @@ def classify(entry, index, raw=None):
     return OwnerRow(
         kind=kind, uuid=_identity(entry, raw), index=index, text=text, blocks=blocks,
         command_name=command_name, command_args=command_args, pairs=pairs, tool_results=tool_results,
-        injection_prefixed=injection_prefixed, envelope=envelope.group(1).lower() if envelope else None,
+        injection_prefixed=injection_prefixed, envelope=_envelope_name(envelope) if envelope else None,
         sidechain=bool(entry.get("isSidechain")), meta=meta,
     )

@@ -41,6 +41,8 @@ import os
 import re
 import sys
 
+from stream_events import iter_stream_events
+
 # Connection-level signatures observed from the codex proxy. Each names a transport fault, never a
 # rejection of the request itself — that is the property that makes a resume safe.
 TRANSIENT = re.compile(
@@ -82,19 +84,6 @@ def output_cap(text):
     """The output-token cap a terminal message says a reply ran past; None for any other text."""
     m = OUTPUT_CAP_RE.search(text) if isinstance(text, str) else None
     return m.group(1) if m else None
-
-
-def _events(lines):
-    for line in lines:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(d, dict):
-            yield d
 
 
 def _blocks(d):
@@ -146,7 +135,7 @@ def watch(lines, run=0, limit=10):
     `run` counts consecutive 429 api_retry lines with no work, result or other retry between them.
     """
     work, limited, resets, sid = False, False, None, None
-    for d in _events(lines):
+    for d in iter_stream_events(lines):
         sid = d.get("session_id") or sid
         kind = event_kind(d)
         if kind == "retry":
@@ -169,7 +158,7 @@ def terminal_result(lines):
     """1 for an error result, 0 for a success result, None for no result: the last result in `lines`
     that is not a usage limit (`watch` owns that one). The launcher ends a child still alive past it."""
     found = None
-    for d in _events(lines):
+    for d in iter_stream_events(lines):
         if d.get("type") == "result" and not is_usage_limit_result(d):
             found = 1 if d.get("is_error") else 0
     return found
@@ -215,7 +204,7 @@ def _tail_events(path):
     lines = raw.splitlines()
     if size > 262144 and lines:
         lines = lines[1:]
-    return list(_events(lines)), mtime
+    return list(iter_stream_events(lines)), mtime
 
 
 def _ending_result(events):
@@ -286,7 +275,7 @@ def recovery_work(stream):
 
     Init, boundaries, continuation summaries and result envelopes do not establish new work.
     """
-    return sum(1 for d in _events(stream) if d.get('type') == 'assistant'
+    return sum(1 for d in iter_stream_events(stream) if d.get('type') == 'assistant'
                for block in _blocks(d) if isinstance(block, dict) and block.get('type') == 'tool_use')
 
 
@@ -301,14 +290,7 @@ def classify(stream):
     terminal = None
     saw_result = False
 
-    for line in stream:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
+    for d in iter_stream_events(stream):
         t = d.get("type")
         if d.get("session_id") and not sid:
             sid = d["session_id"]

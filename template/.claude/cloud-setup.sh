@@ -21,7 +21,7 @@ GODOT_MCP_VERSION="3.8.0"
 # The script writes the value to ${PREFIX}/.cloud-setup.fingerprint below, which is how
 # SessionStart tells a snapshot built from an older paste (paste this file again) from one built
 # from the repo's copy. `.claude/tests/test_workstation_profile_godot.py` proves the check that reports a stale stored value.
-SETUP_FINGERPRINT="68986af1cc6218d9fccf1e97dbf6c2740648b30dd1943abb3d56504809607c93"
+SETUP_FINGERPRINT="25b6f47042457bbea703a62c21d2470ae4cc824a571a6e2787cc79deb77e11bb"
 
 if [ "$(id -u)" = "0" ]; then SUDO=""; PREFIX="/opt"
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo"; PREFIX="/opt"
@@ -128,6 +128,8 @@ fi
 # script. A missing marker reads as "different script" and re-runs this file (session_context_loader).
 ${SUDO} mkdir -p "${PREFIX}" 2>/dev/null || true
 printf '%s\n' "${SETUP_FINGERPRINT}" | ${SUDO} tee "${PREFIX}/.cloud-setup.fingerprint" >/dev/null 2>&1 || true
+printf '{"prefix":"%s","dotnet_root":"%s","godot_bin":"%s","godot_version":"%s"}\n' \
+    "${PREFIX}" "${DOTNET_ROOT}" "${GODOT_BIN}" "${GODOT_VERSION}" | ${SUDO} tee "${PREFIX}/.cloud-install.json" >/dev/null 2>&1 || true
 
 if [ ${#FAILED[@]} -eq 0 ]; then
     echo "[cloud-setup] OK dotnet=$("${DOTNET_ROOT}/dotnet" --version 2>/dev/null) godot=${GODOT_BIN}"

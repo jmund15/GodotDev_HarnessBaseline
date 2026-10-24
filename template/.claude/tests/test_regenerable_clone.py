@@ -271,7 +271,7 @@ def retired_worktree_cases():
 
     stray = os.path.join(home, "stray")
     os.makedirs(stray)
-    expect_wt("unregistered directory", stray, False, proj)
+    expect_wt("unregistered empty directory loses nothing", stray, True, proj)
     expect_wt("the worktrees directory itself", home, False, proj)
     expect_wt("a directory inside a worktree", os.path.join(with_sub, "Sub"), False, proj)
     elsewhere = os.path.join(FIX, "elsewhere_wt")
@@ -281,8 +281,8 @@ def retired_worktree_cases():
     expect_wt("glob token", ".claude/worktrees/cl*", False, proj)
     expect_wt("a clean worktree of another project", clean, False, os.path.join(FIX, "proj_seed"))
     expect_retire_check("retired worktree prints retired, exit 0", [clean], 0, [clean + ": retired"], proj)
-    expect_retire_check("blocked worktrees print their reasons, exit 1", [clean, dirty, stray], 1,
-                        [clean + ": retired", dirty + ": blocked: ", stray + ": blocked: "], proj)
+    expect_retire_check("blocked worktrees print their reasons, exit 1", [clean, dirty, locked], 1,
+                        [clean + ": retired", dirty + ": blocked: ", locked + ": blocked: "], proj)
 
     from unittest.mock import patch
     from pathlib import Path
@@ -361,6 +361,36 @@ def retired_worktree_cases():
     expect_wt_channel("modified tracked file, owner picked removal", "rm -rf .claude/worktrees/dirty",
                       "deny", proj, approve)
 
+    # On the owner's pick, a dirty path loses nothing when its content is a blob in the object store
+    # (saved with `git hash-object -w`) or its working file is gone (index blobs are always stored).
+    stored = add_wt("stored")
+    write(os.path.join(stored, "a.txt"), "a saved edit\n")
+    write(os.path.join(stored, "new.txt"), "a saved new file\n")
+    git("hash-object", "-w", "a.txt", "new.txt", cwd=stored)
+    expect_wt("edits whose content git stores, owner approved", stored, True, proj, allow_ignored=True)
+    expect_wt("edits whose content git stores, no approval", stored, False, proj)
+    half = add_wt("half")
+    write(os.path.join(half, "a.txt"), "a saved edit\n")
+    write(os.path.join(half, "new.txt"), "an unsaved new file\n")
+    git("hash-object", "-w", "a.txt", cwd=half)
+    expect_wt("one edit stored, one not, owner approved", half, False, proj, allow_ignored=True)
+    gone = add_wt("gone")
+    os.remove(os.path.join(gone, "a.txt"))
+    git("add", "-A", cwd=gone)
+    expect_wt("tracked file deleted and staged, owner approved", gone, True, proj, allow_ignored=True)
+    hollow = add_wt("hollow", submodule=True)
+    git("rm", "-q", "-r", "--cached", ".", cwd=os.path.join(hollow, "Sub"))
+    os.remove(os.path.join(hollow, "Sub", "s.txt"))
+    expect_wt("submodule checkout emptied with its deletions staged, owner approved", hollow, True, proj,
+              allow_ignored=True)
+    expect_wt("submodule checkout emptied with its deletions staged, no approval", hollow, False, proj)
+    sq = "Remove the worktrees stored and hollow? Their changes are saved."
+    s_approve = answer_transcript(os.path.join(FIX, "t_stored.jsonl"), (sq, "Remove both (Recommended)"))
+    expect_wt_channel("stored edits, owner picked removal", "rm -rf .claude/worktrees/stored", "allow", proj,
+                      s_approve)
+    expect_wt_channel("one edit unstored, removal named another worktree", "rm -rf .claude/worktrees/half", "deny",
+                      proj, s_approve)
+
     # An orphan: git pruned the worktree's admin directory, so git can no longer read its state.
     # Its commits live in the shared object store; only file content git does not hold is loss.
     def orphan(name, submodule=False, edit=None):
@@ -374,7 +404,23 @@ def retired_worktree_cases():
 
     o_clean = orphan("o_clean")
     expect_wt("orphan, content held by git, owner approved", o_clean, True, proj, allow_ignored=True)
-    expect_wt("orphan, content held by git, no approval", o_clean, False, proj)
+    expect_wt("orphan, content held by git, no approval", o_clean, True, proj)
+    o_godot = orphan("o_godot", edit=lambda p: (os.makedirs(os.path.join(p, ".godot", "imported")),
+                                                  write(os.path.join(p, ".godot", "imported", "c.ctex"), "c\n"),
+                                                  os.makedirs(os.path.join(p, "empty_ignored_dir"))))
+    expect_wt("orphan, ignored .godot cache, no approval", o_godot, True, proj)
+    o_json = orphan("o_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
+                                                write(os.path.join(p, ".claude", "scratch", "x.json"), "{}\n")))
+    expect_wt("orphan, ignored non-regenerable file, no approval", o_json, False, proj)
+    named = []
+    rc.is_retired_worktree(o_json, proj, proj, reasons=named)
+    total += 1
+    if not (len(named) == 1 and "x.json" in named[0] and "not a regenerable cache" in named[0]):
+        fails += 1
+        print(f"  FAIL orphan deny names the non-regenerable ignored file: {named}")
+    else:
+        print("  ok   orphan deny names the non-regenerable ignored file")
+    expect_wt("orphan, ignored non-regenerable file, owner approved", o_json, True, proj, allow_ignored=True)
     o_scratch = orphan("o_scratch", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
                                                      write(os.path.join(p, ".claude", "scratch", "x.out"), "x\n")))
     expect_wt("orphan, ignored scratch, owner approved", o_scratch, True, proj, allow_ignored=True)
@@ -382,6 +428,7 @@ def retired_worktree_cases():
     expect_wt("orphan, untracked Godot .import, owner approved", o_import, True, proj, allow_ignored=True)
     o_new = orphan("o_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
     expect_wt("orphan, authored file git never saw", o_new, False, proj, allow_ignored=True)
+    expect_wt("orphan, authored file git never saw, no approval", o_new, False, proj)
     o_dirty = orphan("o_dirty", edit=lambda p: write(os.path.join(p, "a.txt"), "edited, never committed\n"))
     expect_wt("orphan, tracked file edited", o_dirty, False, proj, allow_ignored=True)
     o_sub = orphan("o_sub", submodule=True)
@@ -458,13 +505,24 @@ def retired_worktree_cases():
 
     g_clean = gitless("g_clean")
     expect_wt("gitless leftover, content held by git, owner approved", g_clean, True, proj, allow_ignored=True)
-    expect_wt("gitless leftover, content held by git, no approval", g_clean, False, proj)
+    expect_wt("gitless leftover, content held by git, no approval", g_clean, True, proj)
     g_new = gitless("g_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
     expect_wt("gitless leftover, authored file git never saw", g_new, False, proj, allow_ignored=True)
     oq = "Remove the orphan worktree folders (o_clean, o_new)? Git lost their links."
     o_approve = answer_transcript(os.path.join(FIX, "t_orphan.jsonl"), (oq, "Remove all"))
     expect_wt_channel("orphan, owner picked removal", "rm -rf .claude/worktrees/o_clean", "allow", proj, o_approve)
-    expect_wt_channel("orphan, no answer", "rm -rf .claude/worktrees/o_clean", "deny", proj)
+    expect_wt_channel("lossless orphan, no answer", "rm -rf .claude/worktrees/o_clean", "allow", proj)
+    expect_wt_channel("orphan with an ignored .godot cache, no answer", "rm -rf .claude/worktrees/o_godot", "allow",
+                      proj)
+    expect_wt_channel("orphan with unsaved work, no answer", "rm -rf .claude/worktrees/o_new", "deny", proj)
+    expect_wt_channel("orphan with ignored non-regenerable file, no answer", "rm -rf .claude/worktrees/o_json",
+                      "deny", proj)
+    jq = "Remove the orphan worktree folder o_json? It holds ignored scratch json."
+    j_approve = answer_transcript(os.path.join(FIX, "t_orphan_json.jsonl"), (jq, "Remove it"))
+    expect_wt_channel("orphan with ignored non-regenerable file, owner picked removal",
+                      "rm -rf .claude/worktrees/o_json", "allow", proj, j_approve)
+    expect_wt_channel("registered unlocked worktree this session did not create, no answer",
+                      "rm -rf .claude/worktrees/clean", "deny", proj)
     expect_wt_channel("orphan holding unsaved work, owner picked removal", "rm -rf .claude/worktrees/o_new",
                       "deny", proj, o_approve)
 
@@ -588,6 +646,7 @@ try:
 
     plain = os.path.join(FIX, "plain_dir")
     os.makedirs(plain)
+    write(os.path.join(plain, "evidence.txt"), "x\n")
     expect("plain directory, no .git", plain, False)
 
     expect("scratch itself", ".claude/scratch", False)
@@ -623,6 +682,24 @@ try:
     expect_channel("rm -rf plain dir holding a dirty clone", "rm -rf " + rel(FIX), "deny")
     expect_channel("rm -rf clean clone chained", "rm -rf " + rel(clean) + " && rm -rf " + rel(dirty), "deny")
     expect_channel("rm -rf scratch", "rm -rf .claude/scratch", "deny")
+
+    # Owner ruling 2026-10-23: an empty leftover directory under scratch (no file, no .git at any depth) is
+    # removable with no owner answer; one file or one nested .git keeps the owner route; an empty directory
+    # outside scratch keeps its verdict.
+    empty_leftover = os.path.join(FIX, "empty_leftover", "redcheck")
+    os.makedirs(empty_leftover)
+    expect_channel("rm -r empty leftover under scratch", "rm -r " + rel(empty_leftover), "allow")
+    filled_leftover = os.path.join(FIX, "filled_leftover", "redcheck")
+    os.makedirs(filled_leftover)
+    write(os.path.join(filled_leftover, "notes.txt"), "keep\n")
+    expect_channel("rm -r leftover holding one file", "rm -r " + rel(filled_leftover), "deny")
+    git_leftover = os.path.join(FIX, "git_leftover", "redcheck")
+    os.makedirs(os.path.join(git_leftover, ".git"))
+    expect_channel("rm -r leftover holding an empty .git", "rm -r " + rel(git_leftover), "deny")
+    empty_outside = os.path.join(CLAUDE, "rc_empty_outside_%d" % os.getpid())
+    os.makedirs(empty_outside)
+    expect_channel("rm -r empty directory outside scratch", "rm -r " + rel(empty_outside), "deny")
+    force_rmtree(empty_outside)
 
     print("_regenerable_clone — retired worktree discriminator")
     if os.name == "nt" and len(FIX) > 150:

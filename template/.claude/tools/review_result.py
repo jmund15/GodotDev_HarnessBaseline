@@ -268,7 +268,8 @@ def target_path(target, toplevel=REPO) -> str:
 
 
 def _shell_reads(command, toplevel=REPO):
-    """Proven operands of cat/Get-Content, alone or in an all-success `&&` chain with cd/echo.
+    """Proven operands of cat/Get-Content, `sed -n A,Bp` and `head -n N` (their printed lines), alone or in an
+    all-success `&&` chain with cd/echo.
 
     Unknown commands, pipelines and redirects get no credit: their final exit status does not
     prove the named file's contents reached the caller.
@@ -338,6 +339,22 @@ def _simple_shell_reads(words):
                 return []
             paths.append(word)
         return [(paths[0], [WHOLE])] if len(paths) == 1 and not re.search(r"[*?\[\],]", paths[0]) else []
+    if operation == "sed":
+        found = re.fullmatch(r"(\d+)(?:,(\d+))?p", args[1]) if len(args) == 3 and args[0] == "-n" else None
+        if found and not args[2].startswith("-") and int(found[1]) >= 1 and int(found[2] or found[1]) >= int(found[1]):
+            return [(args[2], [(int(found[1]), int(found[2] or found[1]))])]
+        return []
+    if operation == "head":
+        count, path = 10, None
+        if len(args) == 3 and args[0] == "-n" and args[1].isdigit():
+            count, path = int(args[1]), args[2]
+        elif len(args) == 2 and re.fullmatch(r"-\d+", args[0]):
+            count, path = int(args[0][1:]), args[1]
+        elif len(args) == 1:
+            path = args[0]
+        if path is None or count < 1 or path.startswith("-"):
+            return []
+        return [(path, [(1, count)])]
     return []
 
 
@@ -345,7 +362,7 @@ def target_spans(target) -> list:
     """The line spans of its file that one `tool:target` coverage entry read, as `(first, last)` pairs.
 
     A Read names its spans as a `:<first>-<last>` suffix or a comma list of them, and one naming none read the
-    Read window from line 1. A supported simple shell read counts whole; unknown commands, writes,
+    Read window from line 1. A supported simple shell read counts the lines it prints; unknown commands, writes,
     redirects and searches read no line."""
     tool, _, name = str(target).partition(":")
     tool = tool.strip().lower()
@@ -560,6 +577,19 @@ def unread_text(must_read, reads, unread) -> str:
     by_path = {entry["path"]: entry for entry in must_read or []}
     return ", ".join(f"{path} (read {spans_text(entry_spans(by_path[path], reads))} of {by_path[path]['lines']})"
                      for path in unread)
+
+
+def engaged(job, stream_path):
+    """True when the review job's seat observably engaged its subject. The launcher embeds contextFiles in the
+    prompt, so a seat with a must-read list never Reads them: it engaged when it Read at least one must-read
+    entry, and the per-entry must-read judgement then fails it for any entry it left unread. A job without a
+    must-read list proves engagement by reading every contextFiles path."""
+    must = [entry.get("path") for entry in job.get("mustRead") or [] if isinstance(entry, dict)]
+    if not must:
+        return prove_engagement(stream_path, list(job.get("contextFiles") or []))
+    reads = called_reads(stream_path)
+    called = {path for path, _ in reads or []}
+    return bool(reads) and any(target_path(f"Read:{path}") in called for path in must)
 
 
 def prove_engagement(stream_path, required_paths):
@@ -985,8 +1015,7 @@ def prepare_review(jobs, results):
         if run.get("exit") != record.get("exitCode"):
             record["exitCode"] = None
         if record.get("engagement") not in ("proven", "unproven"):
-            record["engagement"] = ("proven" if prove_engagement(
-                run.get("stream"), job["contextFiles"]) else "unproven")
+            record["engagement"] = "proven" if engaged(job, run.get("stream")) else "unproven"
         seats.append({"label": label, "mandates": job["mandates"], "mustRead": job.get("mustRead"),
                       "reads": called_reads(run.get("stream")),
                       "payload": read_payload(run.get("stdout")), "record": record, "recordPath": record_path,

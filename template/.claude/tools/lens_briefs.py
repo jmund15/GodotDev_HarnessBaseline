@@ -745,7 +745,7 @@ def main() -> None:
         if grounding and k in grounding_seats:
             lens_part += "\n" + grounding
         preloaded = lens.doctrine([found[key] for key in seats[k]])
-        tier = tier_overrides.get(k) or a.tier or lens.seat_tier(k)
+        tier = lens.seat_tier(k) or tier_overrides.get(k) or a.tier
         if k not in overrides and a.effort is None:
             why = (f"{k}: {a.target} review needs --effort or --effort-for from the ladder; "
                    "the lens tier does not select a reasoning rung")

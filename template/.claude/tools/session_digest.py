@@ -199,7 +199,8 @@ def recover_meta_command_prompts(path: Path) -> list[dict]:
 
 
 def _meta_command_rows(line: str, index: int) -> list[dict]:
-    """`recover_meta_command_prompts` for one transcript line."""
+    """`recover_meta_command_prompts` for one transcript line. Only a `meta_arguments` row recovers: a compaction
+    summary is `meta` too, and one that quotes an `ARGUMENTS:` line is the client's recap, not a command."""
     if "ARGUMENTS:" not in line:  # `meta_arguments` needs that literal; JSON never escapes it
         return []
     try:
@@ -209,7 +210,7 @@ def _meta_command_rows(line: str, index: int) -> list[dict]:
     if not isinstance(entry, dict) or entry.get("type") != "user":
         return []
     row = classify(entry, index, raw=line)
-    if row is None or not row.meta or row.sidechain:
+    if row is None or row.kind != "meta_arguments" or row.sidechain:
         return []
     recovered = []
     for text in row.blocks:

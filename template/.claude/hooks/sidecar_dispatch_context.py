@@ -36,7 +36,8 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    retries retain the call's checks. A fan-out set occupies one receipt slot, so the count bound never cuts
    children off a checked call. Direct receipts remain one-use. Runtime capacity checks still run for each
    fan-out launch. An unplanned child runs the current doctrine check. A fan-out whose jobs file the same call
-   writes has no readable contract: each launcher checks at runtime. `--status`, `--dry-run` and `--help` fan-out calls
+   writes has no readable contract here: `sidecar_fanout.py --detach` runs `fanout_doctrine_refusal` in the
+   foreground over the file it can then read, and each launcher checks at runtime. `--status`, `--dry-run` and `--help` fan-out calls
    dispatch nothing and get no output.
 3. APPROVAL. A validated fan-out or canonical direct launch gets `permissionDecision: allow`.
    A whole, project-contained full review whose only added tool is Bash emits
@@ -59,6 +60,7 @@ import re
 import shlex
 import sys
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -619,6 +621,37 @@ def tracking_session():
     return os.environ.get("CLAUDE_CODE_SESSION_ID")
 
 
+def fanout_admitted(session_id, record):
+    """True when `record` belongs to a job of a fan-out inventory that this session's admitted fan-out call wrote and
+    whose driver process still lives: its queued jobs met the doctrine at that call, and a compaction since must not
+    deny them. The environment names the fan-out; the inventory on disk, which `sidecar_fanout.run_jobs` writes, proves
+    it (an exported `SIDECAR_FANOUT_ID` alone proves nothing)."""
+    fanout_id = os.environ.get("SIDECAR_FANOUT_ID")
+    if not (fanout_id and session_id and isinstance(record, str)):
+        return False
+    import glob
+    try:
+        import watch_records
+        gone = watch_records._process_line_gone
+    except (ImportError, AttributeError):
+        return False
+    record = os.path.normcase(os.path.abspath(record))
+    pattern = os.path.join(glob.escape(os.path.dirname(record)), "fanout-*.inventory.json")
+    for path in glob.glob(pattern):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                inventory = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if (isinstance(inventory, dict) and inventory.get("fanoutId") == fanout_id
+                and inventory.get("parentSessionId") == session_id
+                and gone(inventory.get("fanoutProcess")) is False
+                and any(isinstance(job, dict) and os.path.normcase(os.path.abspath(str(job.get("recordPath")))) == record
+                        for job in inventory.get("jobs") or [])):
+            return True
+    return False
+
+
 def launcher_launch(launcher, argv):
     """The shared launcher's argv entrypoint; checks and registers before model spend."""
     import dispatch_table as table
@@ -626,6 +659,7 @@ def launcher_launch(launcher, argv):
     command = shlex.join(["bash", launcher, *argv])
     payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": os.getcwd(),
                "session_id": tracking_session()}
+    payload["transcript_path"] = table._transcript(payload["session_id"])
     direct = sidecar_launch(command)
     if direct is None:
         return 0
@@ -642,9 +676,10 @@ def launcher_launch(launcher, argv):
     checked, preflight = take_checks(payload, entries[0], jobs[0], flags) if entries and jobs else (False, False)
     started = time.monotonic()
     refusal = None if checked else dispatch_checks(jobs)
-    if refusal is None and not checked and payload["session_id"]:
+    if (refusal is None and not checked and payload["session_id"]
+            and not fanout_admitted(payload["session_id"], flags.get("R"))):
         refusal, fault = model_ladder_gate.doctrine_check(
-            payload, tiers=lambda: launch_tiers(checked_direct, None, root))
+            payload, tiers=lambda: launch_tiers(checked_direct, None, root), embed_slice=False)
         if fault:
             print(fault, file=sys.stderr)
     if refusal is None and not preflight:
@@ -662,6 +697,24 @@ def launcher_launch(launcher, argv):
               "[sidecar] CLAUDE_CODE_SESSION_ID is unset: launch is not tracked in a session dispatch table.",
               file=sys.stderr)
     return 0
+
+
+def fanout_doctrine_refusal(fanout_args, root):
+    """The doctrine deny for a fan-out call a detached driver would otherwise refuse out of the session's sight,
+    else None. `sidecar_fanout.py --detach` calls it in the foreground, over the jobs file the call can now read
+    (the hook cannot read one the same call writes), for the session `tracking_session` names: the one each
+    launcher checks. The deny carries the slice of the missing tiers and records them, so the re-issued call
+    passes in the foreground and in every child launcher."""
+    sid = tracking_session()
+    if not sid:
+        return None
+    fanout = types.SimpleNamespace(args=list(fanout_args))
+    contracts = fanout_contract(fanout, root)
+    import dispatch_table
+    refusal, _fault = model_ladder_gate.doctrine_check(
+        {"session_id": sid, "transcript_path": dispatch_table._transcript(sid)},
+        tiers=lambda: launch_tiers(None, fanout, root, contracts), embed_slice=True)
+    return refusal
 
 
 def main():
@@ -684,7 +737,8 @@ def main():
     contracts = fanout_contract(fanout, launch_root)
     unwritten = fanout_jobs_unwritten(fanout, cmd, call_root)
     doctrine, doctrine_fault = (None, None) if unwritten else \
-        model_ladder_gate.doctrine_check(data, tiers=lambda: launch_tiers(direct, fanout, root, contracts))
+        model_ladder_gate.doctrine_check(data, tiers=lambda: launch_tiers(direct, fanout, root, contracts),
+                                         embed_slice=True)
 
     def deny(reason):
         # One deny names every unmet precondition (instruction_quality §3): the doctrine retry rides along.

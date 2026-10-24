@@ -64,10 +64,10 @@ try:
 except Exception:
     owner_row = owner_consent = owner_quote_text = None
 try:
-    from harness_tests import close_base, close_paths, commit_advisories, push_destination, unproven_note  # noqa: E402
+    from harness_tests import close_base, close_paths, commit_advisories, default_base_covers, push_destination, unproven_note  # noqa: E402
     _HARNESS_IMPORT_ERROR = None
 except Exception as _exc:
-    close_base = close_paths = commit_advisories = push_destination = unproven_note = None
+    close_base = close_paths = commit_advisories = default_base_covers = push_destination = unproven_note = None
     _HARNESS_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 # Which paths a merge commit authors, shared with `baseline_classification_guard.py`. Guarded like
 # the two above: a missing helper must deny commit-like invocations, never crash the other git guards.
@@ -87,9 +87,9 @@ from _git_commit import (  # noqa: E402
 REF_MAKERS = ("fetch", "update-ref", "branch", "tag")  # subcommands that can create the ref a later merge names
 
 try:
-    from _regenerable_clone import session_created_worktree
+    from _regenerable_clone import session_created_worktree, worktree_unstored
 except Exception:
-    session_created_worktree = None
+    session_created_worktree = worktree_unstored = None
 try:
     sys.path.insert(0, os.path.join(_CLAUDE_DIR, 'tools'))
     from sidecar_argv import command_substitutions, shell_segments, executable_index, literal_launcher_body
@@ -153,9 +153,19 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
                 return False
             continue
         diff = ["diff", "--quiet", "--ignore-cr-at-eol"] + ([base] if base else []) + ["--", path]
-        if run_git(diff, cwd, git_env) is None and not (base and _clean_in_head(path, cwd, git_env)):
+        if (run_git(diff, cwd, git_env) is None and not (base and _clean_in_head(path, cwd, git_env))
+                and not (sub == "restore" and _content_stored(path, cwd))):
             return False
     return True
+
+
+def _content_stored(path, cwd):
+    """True when git's object store holds the working-tree bytes of `path`, so discarding them loses nothing
+    git cannot reproduce (the orphan-worktree rule's standard: `_regenerable_clone.worktree_unstored`). Only a
+    restore qualifies: a checkout also overwrites the index, whose staged bytes this does not judge."""
+    if worktree_unstored is None or not os.path.isfile(os.path.join(cwd, path)):
+        return False
+    return worktree_unstored(cwd, [path]) == []
 
 
 def _clean_in_head(path, cwd, git_env=None):
@@ -183,13 +193,16 @@ def _stash_preserved(args, cwd, git_env=None):
     return any(ref and ref != "refs/stash" for ref in (holders or "").splitlines())
 
 
+_BRANCH_DELETE_FLAGS = ("-D", "--delete", "--force", "-f", "-q", "--quiet")
+
+
 def _branches_fully_applied(rest, cwd, git_env=None):
     """True when `branch -D` deletes only local branches that are `scratch/<name>` session fixtures
     (`orchestration` reference `worktrees.md`) or whose every commit `git cherry` finds already applied to HEAD or to
     origin/HEAD (a squash-merged or cherry-picked branch, which `-d` refuses).
     Any other flag, a missing branch or a failed git call fails closed."""
     names = [a for a in rest if not a.startswith("-")]
-    if not cwd or not names or any(a not in ("-D", "--delete", "--force", "-f") for a in rest if a.startswith("-")):
+    if not cwd or not names or any(a not in _BRANCH_DELETE_FLAGS for a in rest if a.startswith("-")):
         return False
     bases = ["HEAD"] + (["refs/remotes/origin/HEAD"]
                         if run_git(["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"], cwd, git_env) else [])
@@ -245,7 +258,7 @@ def _owner_approved_branch_delete(rest, transcript_path, cwd=None, git_env=None)
     (`_owner_text.owner_consent`, with a delete or remove verb), and each is a local branch of this repo."""
     names = [a for a in rest if not a.startswith('-')]
     if (not owner_consent or not transcript_path or not cwd or not names
-            or any(a not in ('-D', '--delete', '--force', '-f') for a in rest if a.startswith('-'))
+            or any(a not in _BRANCH_DELETE_FLAGS for a in rest if a.startswith('-'))
             or any(run_git(['rev-parse', '--verify', '-q', 'refs/heads/' + n], cwd, git_env) is None for n in names)):
         return False
     lines = _owner_tail(transcript_path)
@@ -644,7 +657,9 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     judged; a pathspec or `-a` commit takes the working tree. Staged deletions are skipped, because
     `git rm --cached` has the same shape on purpose. A git failure skips that signature. A blob only
     this session's own commits replaced (its `Claude-Session` trailer, `_own_trailer`) is not a peer's,
-    and neither is a merge staging the merged-in parent's own blob: that is the parent's history."""
+    and neither is a merge staging the merged-in parent's own blob: that is the parent's history.
+    While REVERT_HEAD names a commit, a path staged at that commit's parent version is the revert git was
+    asked for, not a stale index; every other path is judged as usual."""
     include_dirty, _amend, pathspec = parse_commit_args(rest)
     if include_dirty or (pathspec and not ({"-i", "--include"} & set(rest))):
         return None
@@ -652,7 +667,14 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     if root is None:
         return None
     root = root.strip()
-    added = run_git(["diff", "--cached", "--name-only", "--diff-filter=A", "-z"], root, git_env)
+    reverting = run_git(["rev-parse", "-q", "--verify", "REVERT_HEAD"], root, git_env)
+
+    def verdict(found):
+        if reverting:
+            found = [p for p in found if not _staged_at(p, "REVERT_HEAD^", root, git_env)]
+        return _revert_message(found)
+
+    added =run_git(["diff", "--cached", "--name-only", "--diff-filter=A", "-z"], root, git_env)
     readded = [p for p in (added or "").split("\0") if p and not os.path.lexists(os.path.join(root, p))
                and run_git(["log", "-1", "--format=%h", "--diff-filter=D", "HEAD", "--", p], root)]
     out = run_git(["diff", "--cached", "--name-only", "--diff-filter=M", "-z"], root, git_env)
@@ -661,11 +683,11 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     paths = [p for p in (out or "").split("\0") if p and staged.get(p, (0, 1))[0] != staged.get(p, (0, 1))[1]]
     paths = paths[:REVERT_SCAN_CAP]
     if not paths:
-        return _revert_message(readded)
+        return verdict(readded)
     head = run_git(["ls-tree", "-z", "HEAD", "--"] + paths, root)
     work = run_git(["hash-object", "--"] + paths, root)
     if head is None or work is None:
-        return _revert_message(readded)
+        return verdict(readded)
     head_blob = {}
     for entry in head.split("\0"):
         meta, _, path = entry.partition("\t")
@@ -682,7 +704,13 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
                 theirs[path] = meta.split()[-1]
     stale += [p for p in paths if p not in stale and staged.get(p, (None, None))[1] in replaced.get(p, ())
               and staged[p][1] != theirs.get(p)]
-    return _revert_message(stale + readded)
+    return verdict(stale + readded)
+
+
+def _staged_at(path, rev, root, git_env):
+    """True when the index holds `path` exactly as `rev` does."""
+    want = run_git(["rev-parse", "-q", "--verify", "%s:%s" % (rev, path)], root, git_env)
+    return want is not None and run_git(["rev-parse", "-q", "--verify", ":" + path], root, git_env) == want
 
 
 REVERT_HISTORY = 30  # recent HEAD commits whose replaced blobs count as stale
@@ -1038,7 +1066,8 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
                     "%s; push the proven commit: `git push %s %s:%s`, or check that ref out and run `python3 "
                     ".claude/scripts/harness_tests.py --close` in the background there."
                     % (proven[:12], rev[:12], remote, proven, target))
-        if rev != proven or close.get("base") != base or not set(paths) <= set(close.get("paths") or []):
+        if rev != proven or not (close.get("base") == base or default_base_covers(root, close.get("base"), rev, remote)) \
+                or not set(paths) <= set(close.get("paths") or []):
             return next_step % ("no green close result covers %s, its outgoing base and paths" % rev[:12])
     return None
 
@@ -1160,7 +1189,14 @@ def main() -> None:
             return expand_literal(token, call.assignments) or token
         key = os.path.normcase(os.path.abspath(target))
         if args and args[0] == "init":
-            named = [a for a in args[1:] if not a.startswith("-")]
+            named, takes_value = [], False
+            for a in args[1:]:
+                if takes_value:
+                    takes_value = False
+                elif a in ("-b", "--initial-branch", "--template", "--separate-git-dir", "--object-format", "--ref-format"):
+                    takes_value = True
+                elif not a.startswith("-"):
+                    named.append(a)
             made = resolve_cd(target, expand(named[0])) if named else target
             top = run_git(["rev-parse", "--show-toplevel"], made, git_env)
             made_key = os.path.normcase(os.path.abspath(made))
@@ -1180,7 +1216,8 @@ def main() -> None:
             message = SAME_COMMAND_WRITE % (index_write, index_write)
         if writes_index and writes_index(args):
             index_write = "git " + args[0]
-        if (not message and args and args[0] in ("commit", "merge", "cherry-pick", "revert")
+        if (not message and args and (args[0] in ("commit", "merge", "cherry-pick", "revert")
+                                      or publishes_index and publishes_index(args[0], args[1:]))
                 and key not in born):
             git_env, problem = resolve_index(git_env, target)
             if problem:

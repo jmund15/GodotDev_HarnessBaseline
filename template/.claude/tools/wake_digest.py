@@ -7,6 +7,7 @@ a Workflow run (its host record `<session>/workflows/<id>.json` and journal) and
 `<task-notification>` row in the session transcript, parsed by `hooks/_background_tasks.py`, and the
 output file it names). Every function reads and returns text; none writes.
 """
+import calendar
 import glob
 import json
 import os
@@ -33,6 +34,11 @@ MARKER_LINES = 8
 # The output file is read from its end: a shell's tail never needs its first megabytes.
 TAIL_BYTES = 65536
 UNRATED_SHOWN = 12
+# Twice the longest Bash timeout the harness sets (the session watcher's 7200000 ms): an older launch with no
+# end row lost its notification, so it is no live work.
+SHELL_LIVE_SECONDS = 4 * 3600
+SHELL_CHUNK_BYTES = 8 << 20
+SHELL_ROW_KEYS = (b"backgroundTaskId", b"watch_records", b"<task-notification>", b"Successfully stopped")
 FAILURE_MARKER = re.compile(r"Traceback|\bfail(?:ed|ure|s)?\b|\berror\b|exception|\bfatal\b|\bpanic\b", re.IGNORECASE)
 # A background shell that ran `watch_records.py` ends with one of its own terminal lines, then the client's
 # `[exited with code N]` trailer. It reports itself.
@@ -165,33 +171,106 @@ def transcript_path(session_id):
     return found[0] if found else None
 
 
-def shell_notices(path, offset):
-    """(ended shell notices appended after byte `offset`, the offset to resume from).
+def new_shell_scan():
+    return {"offset": 0, "launched": {}, "ended": set(), "watchers": set(), "notices": []}
 
-    Reads only whole lines, so a row still being written is read on the next call. An offset past the file's
-    end (a replaced transcript) restarts at its end. A watcher's own shell is not a notice."""
+
+def _epoch(stamp):
+    try:
+        return calendar.timegm(time.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _scan_row(raw, pos, scan):
+    if not any(key in raw for key in SHELL_ROW_KEYS):
+        return
+    try:
+        row = json.loads(raw)
+    except ValueError:
+        return
+    if not isinstance(row, dict):
+        return
+    if b"<task-notification>" in raw:
+        seen = set()
+        for notice in _background_tasks.ended_notices(row):
+            if notice["task_id"] not in seen:
+                seen.add(notice["task_id"])
+                scan["notices"].append((pos, notice))
+                scan["ended"].add(notice["task_id"])
+    if row.get("isSidechain"):
+        return
+    result = row.get("toolUseResult")
+    if isinstance(result, dict) and result.get("task_id") and str(result.get("message", "")).startswith("Successfully stopped"):
+        scan["ended"].add(result["task_id"])
+    content = (row.get("message") or {}).get("content")
+    for item in content if isinstance(content, list) else ():
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "tool_use" and "watch_records" in str((item.get("input") or {}).get("command", "")):
+            scan["watchers"].add(item.get("id"))
+        elif item.get("type") == "tool_result":
+            task = result.get("backgroundTaskId") if isinstance(result, dict) else None
+            if task:
+                scan["launched"][task] = (item.get("tool_use_id"), _epoch(row.get("timestamp")))
+
+
+def advance_shell_scan(path, scan):
+    """Parse the transcript bytes after `scan["offset"]` once, in bounded chunks of whole lines: ended notices (with
+    their byte position), TaskStop results, launched background tasks and watcher launches. Returns the file size,
+    None when it cannot be read."""
     try:
         size = os.path.getsize(path)
     except OSError:
+        return None
+    if scan["offset"] > size:
+        scan.update(new_shell_scan())
+    chunk = SHELL_CHUNK_BYTES
+    with open(path, "rb") as fh:
+        while scan["offset"] < size:
+            fh.seek(scan["offset"])
+            data = fh.read(chunk)
+            end = data.rfind(b"\n") + 1
+            if end == 0:
+                if len(data) < chunk:
+                    break
+                chunk *= 2
+                continue
+            pos = scan["offset"]
+            for raw in data[:end].splitlines(keepends=True):
+                _scan_row(raw, pos, scan)
+                pos += len(raw)
+            scan["offset"] += end
+    return size
+
+
+def shell_notices(path, scan, offset):
+    """(ended shell notices whose row starts at or after byte `offset`, the offset to resume from).
+
+    Reads only whole lines, so a row still being written is read on the next call. An offset past the file's
+    end (a replaced transcript) restarts at its end. A watcher's own shell is not a notice."""
+    size = advance_shell_scan(path, scan)
+    if size is None:
         return [], offset
     if offset is None or offset > size:
         return [], size
-    notices = []
-    with open(path, "rb") as fh:
-        fh.seek(offset)
-        data = fh.read()
-    end = data.rfind(b"\n") + 1
-    for raw in data[:end].splitlines():
-        if b"<task-notification>" not in raw:
-            continue
-        try:
-            row = json.loads(raw)
-        except ValueError:
-            continue
-        for notice in _background_tasks.ended_notices(row):
-            if not any(n["task_id"] == notice["task_id"] for n in notices):
-                notices.append(notice)
-    return [n for n in notices if not _is_watcher(n)], offset + end
+    found = []
+    for pos, notice in scan["notices"]:
+        if pos >= offset and not any(n["task_id"] == notice["task_id"] for n in found):
+            found.append(notice)
+    return [n for n in found if not _is_watcher(n)], scan["offset"]
+
+
+def running_shells(path, scan, now=None):
+    """The ids of this session's running Bash/PowerShell background tasks. A task is running once its launch row
+    (a main-session `toolUseResult.backgroundTaskId`) has no `<task-notification>` and no successful TaskStop
+    result naming it, and was launched within `SHELL_LIVE_SECONDS`. A watcher's own shell is not work."""
+    if advance_shell_scan(path, scan) is None:
+        return set()
+    now = time.time() if now is None else now
+    return {task for task, (use, when) in scan["launched"].items()
+            if task not in scan["ended"] and use not in scan["watchers"]
+            and (when is None or now - when <= SHELL_LIVE_SECONDS)}
 
 
 def _tail_text(path):

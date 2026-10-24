@@ -31,6 +31,9 @@ class GodotBinContract(unittest.TestCase):
         scripts.mkdir(parents=True)
         for name in ("godot_bin.sh", "engine_userdata.py"):
             shutil.copy(ROOT / ".claude" / "scripts" / name, scripts / name)
+        tools = self.temp / ".claude" / "tools"
+        tools.mkdir()
+        shutil.copy(ROOT / ".claude" / "tools" / "cli_usage.py", tools / "cli_usage.py")
         (self.temp / "stub.js").write_text(STUB, encoding="utf-8")
         self.engine = self.temp / "fake_engine.exe"
         try:

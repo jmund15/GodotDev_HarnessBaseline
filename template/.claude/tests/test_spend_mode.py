@@ -26,7 +26,8 @@ FAILURES = []
 
 SID = "7b8b1489-e6b9-4ddd-8bc0-8d242f22dc8b"
 OWNER_UUID = "e644b14b-34a6-45da-8d52-1efb3eb606fc"
-QUOTE = "Build job J1 of the lean-spend plan"
+TOKEN = "--lean"
+QUOTE = "Build job J1 of the lean-spend plan " + TOKEN
 FUTURE = "2031-01-01T00:00:00Z"
 BEFORE = "2030-06-01T00:00:00Z"
 AFTER = "2031-06-01T00:00:00Z"
@@ -104,16 +105,15 @@ def refused(r):
 def case_refuses_unheld_quote():
     with fixture() as f:
         f.plant([owner_prompt(OWNER_UUID, "start the work"), tool_result_row("t1", QUOTE)])
-        held_by_tool = f.cli("set", "lean", "--quote", QUOTE, "--until", FUTURE)
-        absent = f.cli("set", "lean", "--quote", "no such words", "--until", FUTURE)
-        ok = refused(held_by_tool) and refused(absent) and not os.path.exists(f.state_file())
-        return ok, (held_by_tool.returncode, held_by_tool.stderr[:200], absent.stderr[:200])
+        held_by_tool = f.cli("set", "lean", "--until", FUTURE)
+        ok = refused(held_by_tool) and not os.path.exists(f.state_file())
+        return ok, (held_by_tool.returncode, held_by_tool.stderr[:200])
 
 
 def case_refuses_under_sidecar():
     with fixture() as f:
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        r = f.cli("set", "lean", "--quote", QUOTE, "--until", FUTURE, extra_env={"CLAUDE_CODE_SIDECAR": "1"})
+        r = f.cli("set", "lean", "--until", FUTURE, extra_env={"CLAUDE_CODE_SIDECAR": "1"})
         return refused(r) and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
 
 
@@ -122,7 +122,7 @@ def case_refuses_task_scope_without_until():
         tr = load_module("task_record", TASK_TOOL)
         tr.open_record("sp-no-until", session_id=SID, title="No until")
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        r = f.cli("set", "lean", "--quote", QUOTE, "--task", "sp-no-until")
+        r = f.cli("set", "lean", "--task", "sp-no-until")
         stored = (tr.load("sp-no-until") or {}).get("conditions")
         return refused(r) and not stored and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
 
@@ -130,7 +130,7 @@ def case_refuses_task_scope_without_until():
 def case_refuses_unreadable_reset():
     with fixture() as f:
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        r = f.cli("set", "lean", "--quote", QUOTE, "--until-reset", "no-such-plan")
+        r = f.cli("set", "lean", "--until-reset", "no-such-plan")
         return refused(r) and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
 
 
@@ -138,7 +138,7 @@ def case_expired_reads_normal():
     with fixture() as f:
         sm = load_module("spend_mode", TOOL)
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        r = f.cli("set", "lean", "--quote", QUOTE, "--until", FUTURE)
+        r = f.cli("set", "lean", "--until", FUTURE)
         if r.returncode != 0:
             return False, (r.returncode, r.stderr[:200])
         live = sm.current(SID, now=BEFORE)
@@ -154,7 +154,7 @@ def case_falls_back_to_task():
         tr = load_module("task_record", TASK_TOOL)
         tr.open_record("sp-fallback", session_id=SID, title="Fallback")
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        r = f.cli("set", "lean", "--quote", QUOTE, "--task", "sp-fallback", "--until", FUTURE)
+        r = f.cli("set", "lean", "--task", "sp-fallback", "--until", FUTURE)
         if r.returncode != 0:
             return False, (r.returncode, r.stderr[:200])
         stored = (tr.load("sp-fallback") or {}).get("conditions") or [{}]
@@ -174,7 +174,7 @@ def case_clear_overrides_task():
         tr = load_module("task_record", TASK_TOOL)
         tr.open_record("sp-clear", session_id=SID, title="Clear")
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        if f.cli("set", "lean", "--quote", QUOTE, "--task", "sp-clear", "--until", FUTURE).returncode != 0:
+        if f.cli("set", "lean", "--task", "sp-clear", "--until", FUTURE).returncode != 0:
             return False, "set refused"
         r = f.cli("clear")
         got = sm.current(SID, now=BEFORE)
@@ -186,19 +186,19 @@ def case_session_scope_ends_with_session():
     with fixture() as f:
         sm = load_module("spend_mode", TOOL)
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        r = f.cli("set", "lean", "--quote", QUOTE)
+        r = f.cli("set", "lean")
         if r.returncode != 0:
             return False, (r.returncode, r.stderr[:200])
         got = sm.current(SID, now=AFTER)
         ok = (got["mode"] == "lean" and got["scope"] == "session" and got["until"] is None
-              and got["expired"] is False and got["quote"] == QUOTE)
+              and got["expired"] is False and got["quote"] == TOKEN)
         return ok, got
 
 
 def case_show_prints_the_posture():
     with fixture() as f:
         f.plant([owner_prompt(OWNER_UUID, QUOTE)])
-        if f.cli("set", "lean", "--quote", QUOTE).returncode != 0:
+        if f.cli("set", "lean").returncode != 0:
             return False, "set refused"
         r = f.cli("show")
         try:
@@ -208,8 +208,38 @@ def case_show_prints_the_posture():
         return r.returncode == 0 and got.get("mode") == "lean", (r.returncode, got)
 
 
+def case_refuses_substring_without_token():
+    with fixture() as f:
+        f.plant([owner_prompt(OWNER_UUID, "keep spend lean for this plan, the cheap rows please")])
+        r = f.cli("set", "lean", "--until", FUTURE)
+        return refused(r) and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
+
+
+def case_refuses_token_inside_pasted_block():
+    with fixture() as f:
+        f.plant([owner_prompt(OWNER_UUID, "see this: <pasted_content id=\"x1\">run it with --lean</pasted_content>")])
+        r = f.cli("set", "lean", "--until", FUTURE)
+        return refused(r) and not os.path.exists(f.state_file()), (r.returncode, r.stderr[:200])
+
+
+def case_refuses_longer_flag_and_wrong_mode():
+    with fixture() as f:
+        f.plant([owner_prompt(OWNER_UUID, "use --leanest and --normalize")])
+        a = f.cli("set", "lean")
+        b = f.cli("set", "normal")
+        return refused(a) and refused(b), (a.stderr[:120], b.stderr[:120])
+
+
+def case_token_passes_both_directions():
+    with fixture() as f:
+        f.plant([owner_prompt(OWNER_UUID, "go --lean now"), owner_prompt("u2", "back to --normal")])
+        a = f.cli("set", "lean")
+        b = f.cli("set", "normal")
+        return a.returncode == 0 and b.returncode == 0, (a.stderr[:120], b.stderr[:120])
+
+
 CASES = [
-    ("refuses a quote no owner turn holds (a tool-result hit and an absent quote)", case_refuses_unheld_quote),
+    ("refuses a token only a tool result holds", case_refuses_unheld_quote),
     ("refuses under CLAUDE_CODE_SIDECAR and writes no session record", case_refuses_under_sidecar),
     ("refuses task scope without --until and stores no condition", case_refuses_task_scope_without_until),
     ("refuses --until-reset on an unreadable plan", case_refuses_unreadable_reset),
@@ -217,6 +247,10 @@ CASES = [
     ("falls back to the task's spend condition when the session has no record", case_falls_back_to_task),
     ("clear makes the session read normal over a task's lean condition", case_clear_overrides_task),
     ("a session-scoped set ends with the session: scope session, no until", case_session_scope_ends_with_session),
+    ("refuses an owner turn that holds words but not the --lean token", case_refuses_substring_without_token),
+    ("refuses --lean inside a pasted block", case_refuses_token_inside_pasted_block),
+    ("refuses a longer flag and the other mode's token", case_refuses_longer_flag_and_wrong_mode),
+    ("--lean and --normal each pass in an owner turn", case_token_passes_both_directions),
     ("show prints the posture JSON with mode lean", case_show_prints_the_posture),
 ]
 

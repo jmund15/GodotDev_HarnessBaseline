@@ -71,6 +71,9 @@ def main():
         return got
 
     pb.pick = recorded_pick
+    saved_samples = getattr(pb, "_samples", None)
+    if saved_samples is not None:
+        pb._samples = lambda: []  # planted readings only: the live samples file never decides a case
 
     def case(name, ok, detail=""):
         cases.append((name, bool(ok), detail))
@@ -206,17 +209,121 @@ def main():
     case("a window whose reset has passed has no room (the reading predates the reset)",
          pb.room({"usedPercent": 10, "resetsAt": NOW - 60, "windowDurationMins": 300}, NOW) is None)
 
-    # Spare: the share of the window that even-pace spending leaves at the reset, left x (1 - 1/room).
-    has_spare = hasattr(pb, "spare")
-    case("provider_bands exposes spare", has_spare)
-    if has_spare:
-        case("room 3.0 with 60% left spares 40% of the window",
-             round(pb.spare({"room": 3.0, "left": 60.0}), 2) == 40.0,
-             repr(pb.spare({"room": 3.0, "left": 60.0})))
-        case("room at or below even pace spares nothing",
-             pb.spare({"room": 1.0, "left": 90.0}) is None and pb.spare({"room": 0.6, "left": 30.0}) is None)
-        case("an unreadable plan spares nothing",
-             pb.spare({"room": None, "why": "exhausted"}) is None)
+    # The projection: the share of the routing window's allowance the plan's recent rate leaves at its
+    # reset. An even-pace figure hides a plan that was busy early and idles now, so recent use decides.
+    projection = getattr(pb, "unused_at_reset", None)
+    case("provider_bands exposes unused_at_reset and retires spare",
+         callable(projection) and not hasattr(pb, "spare"))
+    if callable(projection):
+        week = {"name": "seven_day", "usedPercent": 20, "resetsAt": NOW + 2 * 86400,
+                "windowDurationMins": WEEK_MIN}
+        avg = projection("anthropic", week, NOW, samples=[])
+        case("with no samples or shorter window the projection continues the window's average pace",
+             avg and avg["basis"] == "average" and round(avg["pct"], 1) == 72.0
+             and round(avg["daysLeft"], 2) == 2.0 and "from" not in avg, repr(avg))
+        base = {"plan": "anthropic", "provider": "anthropic", "window": "seven_day",
+                "resets_at": week["resetsAt"]}
+        recent = [dict(base, ts=NOW - 7200, used=10.0), dict(base, ts=NOW - 3600, used=10.4)]
+        got_recent = projection("anthropic", week, NOW, samples=recent)
+        case("two samples an hour apart project the plan's own recent rate",
+             got_recent and got_recent["basis"] == "recent" and round(got_recent["pct"], 1) == 60.8,
+             repr(got_recent))
+        # Two writers read one plan (the statusline capture and the capacity probe) and round apart, so
+        # used dips a point between them inside one reset period (observed 2026-10-24: 69, 68, 69, 68).
+        jitter = [dict(base, ts=NOW - h * 3600, used=u)
+                  for h, u in ((6, 16.0), (3, 17.0), (1, 19.0), (0.9, 18.0), (0.5, 19.0), (0.4, 18.0))]
+        got_jitter = projection("anthropic", week, NOW, samples=jitter)
+        case("a one-point dip between two writers of one plan keeps the recent rate",
+             got_jitter and got_jitter["basis"] == "recent" and 0 < got_jitter["pct"] < 81,
+             repr(got_jitter))
+        falling = [dict(base, ts=NOW - 7200, used=12.0), dict(base, ts=NOW - 3600, used=11.0)]
+        case("a used share that only falls in one reset period projects no draw",
+             round(projection("anthropic", week, NOW, samples=falling)["pct"], 1) == 80.0,
+             repr(projection("anthropic", week, NOW, samples=falling)))
+        near = [dict(base, ts=NOW - 1800, used=10.0), dict(base, ts=NOW - 1700, used=10.4)]
+        case("two samples less than an hour apart cannot state a rate",
+             projection("anthropic", week, NOW, samples=near)["basis"] == "average",
+             repr(projection("anthropic", week, NOW, samples=near)))
+        stale = [dict(base, ts=NOW - 30 * 3600, used=10.0), dict(base, ts=NOW - 29 * 3600, used=60.0)]
+        case("samples older than a day are not recent",
+             projection("anthropic", week, NOW, samples=stale)["basis"] == "average",
+             repr(projection("anthropic", week, NOW, samples=stale)))
+        other = [dict(base, ts=NOW - 7200, used=10.0, resets_at=week["resetsAt"] + 86400),
+                 dict(base, ts=NOW - 3600, used=10.4, resets_at=week["resetsAt"] + 86400)]
+        case("samples from another reset period are not this window's",
+             projection("anthropic", week, NOW, samples=other)["basis"] == "average",
+             repr(projection("anthropic", week, NOW, samples=other)))
+        stranger = [dict(base, plan="anthropic-secondary", ts=NOW - 7200, used=10.0),
+                    dict(base, plan="anthropic-secondary", ts=NOW - 3600, used=10.4)]
+        case("another plan's own samples never project this plan",
+             projection("anthropic", week, NOW, samples=stranger)["basis"] == "average",
+             repr(projection("anthropic", week, NOW, samples=stranger)))
+        month = {"name": "thirty_day", "usedPercent": 50, "resetsAt": NOW + 20 * 86400,
+                 "windowDurationMins": 30 * 1440}
+        short = {"name": "seven_day", "usedPercent": 2, "resetsAt": NOW + 2 * 86400,
+                 "windowDurationMins": WEEK_MIN}
+        five = {"name": "five_hour", "usedPercent": 1, "resetsAt": NOW + 3600,
+                "windowDurationMins": 300}
+        bound = projection("go", month, NOW, samples=[], windows=[month, short])
+        case("a shorter window's used share bounds the longer window's recent rate",
+             bound and bound["basis"] == "bound" and round(bound["pct"], 1) == 42.0
+             and bound.get("from") == "7d", repr(bound))
+        # A shorter window caps the rate from above, so it replaces the window's own average only when
+        # lower: a 5h burst stretched over days read a Surplus week as fully spent (observed 2026-10-24).
+        surplus = {"name": "seven_day", "usedPercent": 31, "resetsAt": NOW + 3.4 * 86400,
+                   "windowDurationMins": WEEK_MIN}
+        burst = {"name": "five_hour", "usedPercent": 15, "resetsAt": NOW + 1.5 * 3600,
+                 "windowDurationMins": 300}
+        capped = projection("anthropic-secondary", surplus, NOW, samples=[], windows=[surplus, burst])
+        case("a short burst above the window's own average leaves the average in charge",
+             capped and capped["basis"] == "average" and round(capped["pct"]) == 40, repr(capped))
+        widest = projection("go", month, NOW, samples=[], windows=[month, five, short])
+        case("the closest shorter window bounds, not the shortest",
+             round(widest["pct"], 1) == 42.0 and widest.get("from") == "7d", repr(widest))
+        capacity_go = {"status": "available", "quota": {"routingWindow": "thirty_day",
+                                                        "windows": [month, short]}}
+        entry = pb.plan_entry("go", capacity_go, NOW)
+        case("the plan entry appends the unused share to its routing window's figures",
+             "go Hot: 30d 50% left, 67% to go, resets " in entry
+             and entry.endswith(", ~42% goes unused at reset (this week's use); 7d 98% left, 29% to go"),
+             entry)
+        tight = {"name": "seven_day", "usedPercent": 99, "resetsAt": NOW + 3600,
+                 "windowDurationMins": WEEK_MIN}
+        capacity_tight = {"status": "available", "quota": {"routingWindow": "seven_day",
+                                                           "windows": [tight]}}
+        def entry_with(samples):
+            saved = pb._samples
+            pb._samples = lambda: samples
+            try:
+                return pb.plan_entry("anthropic", {"status": "available", "quota": {
+                    "routingWindow": "seven_day", "windows": [week]}}, NOW)
+            finally:
+                pb._samples = saved
+
+        case("the entry names the plan's own recent use as the basis",
+             "(recent use)" in entry_with(recent) and "~" in entry_with(recent), entry_with(recent))
+        none = pb.plan_entry("x", capacity_tight, NOW)
+        case("a projection under one percent adds no clause",
+             "goes unused" not in none and "unused at reset" not in none, none)
+        slow = {"transport": "slow", "room": 3.0,
+                "unusedAtReset": {"pct": 40, "basis": "recent", "daysLeft": 5}}
+        earlier = {"transport": "earlier", "room": 2.0,
+                   "unusedAtReset": {"pct": 20, "basis": "recent", "daysLeft": 2}}
+        even = {"transport": "even", "room": 9.0,
+                "unusedAtReset": {"pct": 0.4, "basis": "average", "daysLeft": 1}}
+        case("a plan whose quota will expire outranks a roomier one, the earliest reset first",
+             max([slow, earlier, even], key=pb.pick_key)["transport"] == "earlier",
+             repr([pb.pick_key(r) for r in (slow, earlier, even)]))
+        plain = [{"transport": "a", "room": 1.2}, {"transport": "b", "room": 1.8}]
+        case("with no projection, rank_room decides as before",
+             max(plain, key=pb.pick_key)["transport"] == "b", repr(plain))
+        over = {"transport": "over", "headroom": 1.0, "room": 9.0,
+                "unusedAtReset": {"pct": 90, "basis": "recent", "daysLeft": 1}}
+        fits = {"transport": "fits", "headroom": 50.0, "room": 0.5,
+                "unusedAtReset": {"pct": 0.2, "basis": "average", "daysLeft": 6}}
+        case("a plan that no longer fits ranks below every fitting one, expiring quota or not",
+             max([over, fits], key=pb.pick_key)["transport"] == "fits",
+             repr([pb.pick_key(over), pb.pick_key(fits)]))
 
     # A short window binds the pick: a plan with weekly room but a nearly spent 5-hour window
     # cannot carry a job that starts now (observed: 83% of the 5-hour window used, 46% of its time left).
@@ -298,6 +405,7 @@ def main():
 
     plan_cases(case)
     credit_cases(case)
+    facts_cases(case)
     names = [pb.window_name(w) for w in ({"windowDurationMins": 43200}, {"windowDurationMins": 300},
                                          {"windowDurationMins": 90, "name": "ninety"}, {"name": "seven_day"},
                                          {"name": "five_hour"}, {"name": "odd"}, {})]
@@ -320,6 +428,8 @@ def main():
     case("every generated pick reason avoids the retired display dialects",
          all(not banned_in(reason) for reason in reasons), reasons)
     pb.pick = real_pick
+    if saved_samples is not None:
+        pb._samples = saved_samples
     return report(cases)
 
 
@@ -501,6 +611,17 @@ def credit_cases(case):
     case("an unanchored credit reading drops out as unreadable, never ranked as room",
          got.get("transport") == "anthropic" and "unreadable" in str(why.get(CONSOLE)), repr(got))
 
+    # The probe's own cause (the unpriced ledger row and the step that clears it) reaches the reader's why.
+    cause = ("a console-secondary ledger row after the anchor (c3-exec, 2026-10-15T02:36:09Z) carries no priced "
+             "costUSD, so the credit's use is unaccounted; Read the Console balance and re-anchor past it")
+    stuck = unknown_reading(CONSOLE)
+    stuck["error"]["message"] = cause
+    got = pb.pick("executor", "anthropic", data=credit_registry(),
+                  read=reader(with_credit(stuck)), now=NOW)
+    why = {r["transport"]: r.get("why") for r in got.get("ranked") or [] if r.get("room") is None}
+    case("an unanchored credit's why carries the probe's cause and its re-anchor step",
+         cause in str(why.get(CONSOLE)), repr(why))
+
     case("the shipped registry offers both Console credit plans to the pick",
          all(n in model_registry.plans_of("anthropic") for n in (CONSOLE, CONSOLE_SECOND))
          and all(n in pb.plan_quota_transports() for n in (CONSOLE, CONSOLE_SECOND)),
@@ -518,6 +639,32 @@ def credit_cases(case):
          and CONSOLE in text and CONSOLE_SECOND in text
          and [w.get("left") for w in credit_row.get("windows") or []] == [97.0],
          repr(order) + " / " + repr([p["plan"] for p in view["plans"]]))
+
+
+def facts_cases(case):
+    """The facts layer: `facts` returns each fit plan in registry order with no choice; `pick` ranks it, and
+    `room_facts` reads it without re-ranking, so a dispatch caller never un-ranks a pick."""
+    facts = getattr(pb, "facts", None)
+    if facts is None:
+        case("provider_bands exposes a facts(tier, ...) layer beside pick", False, "no facts function")
+        return
+    # Registry order is alphabetical (plan_quota_transports); secondary has the room, so the pick runs against it.
+    roomy = {"secondary": reading("secondary", 32, 0.6), "codex": reading("codex", 40, 0.59)}
+    data = registry(["secondary", "codex"])
+    got = facts("executor", "anthropic", data=data, read=reader(roomy), now=NOW)
+    picked = pb.pick("executor", "anthropic", data=data, read=reader(roomy), now=NOW)
+    names = [r["transport"] for r in got.get("plans") or []]
+    case("facts lists each fit plan in registry order, not in room order",
+         names == ["codex", "secondary"] and picked.get("transport") == "secondary", repr(got))
+    case("facts names no paying plan and no reason: the choice stays in pick",
+         "transport" not in got and "reason" not in got and "ranked" not in got, repr(sorted(got)))
+    facts_view = pb.room_facts(got, read=reader(roomy), now=NOW)
+    case("room_facts reads facts directly, in the same registry order",
+         [p["transport"] for p in facts_view["plans"]] == names and not facts_view["low"], repr(facts_view))
+    case("facts and room_facts carry each plan's projection, a fact and no new sort",
+         all(isinstance(r.get("unusedAtReset"), dict) for r in got["plans"])
+         and all(isinstance(p.get("unusedAtReset"), dict) for p in facts_view["plans"])
+         and "transport" not in facts_view, repr(facts_view["plans"]))
 
 
 def cli_case(case):
@@ -645,6 +792,10 @@ def lean_cases(case):
     plans = [(p["plan"], None if p["room"] is None else round(p["room"], 2)) for p in opus.get("plans") or []]
     case("each row lists every plan of its route with its room, a dropped plan with room None",
          plans == [("anthropic", 0.9), ("anthropic-secondary", None)], repr(plans))
+    case("each row's plans carry their projection beside their room",
+         all("unusedAtReset" in p for p in opus.get("plans") or [])
+         and isinstance(next(p for p in opus["plans"] if p["plan"] == "anthropic")["unusedAtReset"], dict),
+         repr(opus.get("plans")))
     case("a candidate set names no transport or room of its own, so it never picks",
          "transport" not in got and "room" not in got and not got.get("refused"), repr(sorted(got)))
     case("marginal-usd rows stay out of routes while a plan has room, and no pay option is offered",

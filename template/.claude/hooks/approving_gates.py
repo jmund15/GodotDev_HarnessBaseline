@@ -19,6 +19,11 @@ sys.path.insert(0, str(TOOLS))
 
 import _git_commit  # noqa: E402
 
+try:
+    import model_registry  # noqa: E402
+except Exception:
+    model_registry = None
+
 Contract = namedtuple("Contract", "name judge shape approver")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _ALLOWED_SIDECAR_FLAGS = frozenset("meDGfCSR PldaTZnorsNLxt".replace(" ", ""))
@@ -194,6 +199,14 @@ def _digest_script(root, value):
     return path == expected
 
 
+def _transcript_roots():
+    """This session's transcript root (`CLAUDE_CONFIG_DIR`), then the default home root as fallback."""
+    home = (Path.home() / ".claude" / "projects").resolve()
+    if model_registry is None:
+        return (home,)
+    return (Path(model_registry.session_projects_dir()).resolve(), home)
+
+
 def _digest_path_ok(root, option, value):
     candidate = Path(value)
     if ".." in candidate.parts:
@@ -201,7 +214,7 @@ def _digest_path_ok(root, option, value):
     if not candidate.is_absolute():
         candidate = root / candidate
     candidate = candidate.absolute()
-    allowed_roots = (root, (Path.home() / ".claude" / "projects").resolve())
+    allowed_roots = (root,) + _transcript_roots()
     allowed = next((base for base in allowed_roots if _inside(candidate, base)), None)
     if allowed is None or _path_has_symlink(allowed, candidate):
         return False

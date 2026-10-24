@@ -22,7 +22,7 @@ commit's triage and rigor through `triage.admits`. One-context mechanical commit
 `session_end.md` Phase 1 decides their review admission with the checked gate. An unavailable check prints
 once per distinct reason and points to `review_ledger.py uncovered`. Panel-only coverage is depth-unchecked and
 is not counted. Decision doctrine commits check present premises through `verify_claims`;
-an absent block asks about claims once per session; prose premise sections report each distinct
+an absent block asks about claims once per distinct commit message; prose premise sections report each distinct
 message's malformed format. State uses `_hook_state.fire_once`.
 """
 import json
@@ -104,17 +104,17 @@ def _once(session_id, key, text):
 def _premises(invocation, session_id, fields):
     if not triage.admits("premises", fields, triage.rigor()).admitted:
         return None
-    from _hook_state import fire_once
     message = commit_message(invocation.rest, invocation.cwd) or ""
     block = re.search(r"^```premises\s*\n(.*?)^```", message, re.MULTILINE | re.DOTALL)
     if not block:
         if re.search(r"^[ \t]*premises:", message, re.MULTILINE | re.IGNORECASE):
             note = ("[premises] prose `premises:` is not a fenced JSONL evidence block; write "
-                    "load-bearing claims in the format at reference/evidence_contract.md "
-                    "§Load-bearing premises.")
+                    "load-bearing claims as a ```premises fence holding one JSON object per line "
+                    "(reference/evidence_contract.md §Load-bearing premises).")
             return note if _once(session_id, "premises-format", message) else None
-        return ("[premises] does this decision rest on a cause, count or ruling? If so, add its "
-                "premises block (reference/evidence_contract.md).") if fire_once(session_id, "premises-ask") else None
+        ask = ("[premises] does this decision rest on a cause, count or ruling? If so, add its "
+               "premises block (reference/evidence_contract.md).")
+        return ask if _once(session_id, "premises-ask", message) else None
     try:
         import verify_claims
         rows = [dict(json.loads(line), id="premise-%d" % n)
@@ -201,6 +201,19 @@ def _triage_block(invocation, session_id, tags, paths):
         raise _ReadError("cannot read the content this commit publishes (%s)" % exc)
     message = commit_message(invocation.rest, invocation.cwd)
     fields, error = _recorded(message, session_id)
+    return triage_verdict(result, fields, error, message, invocation.sub,
+                          lambda: _standing_state(invocation))
+
+
+def _standing_state(invocation):
+    root = Path(triage._toplevel(invocation.cwd, invocation.git_env))
+    return triage.current(root), triage.rigor(root=root)
+
+
+def triage_verdict(result, fields, error, message, sub, standing_state):
+    """(advice, trailer) for one commit from its derived triage result and its recorded fields. Pure: the caller
+    reads the diff, the message and the task record. `standing_state()` returns (current triage, rigor) and runs
+    only when the derived reach is standing."""
     if error:
         return ("[triage] Triage: trailer unreadable (%s); grammar: triage.py --help." % error), None
     if fields is None:
@@ -209,20 +222,19 @@ def _triage_block(invocation, session_id, tags, paths):
             return None, None
         context = ("[triage] derived reach=%s oracle=%s; judged fields: execution_depth.md §Fields."
                    % (result.reach, triage._format_oracle(result.oracle))) if result.reach != "local" else None
-        return context, trailer if invocation.sub == "commit" else None
+        return context, trailer if sub == "commit" else None
     found = triage.raises(fields, result)
     if not found:
         return None, None
     standing = [r for r in found if r.field == "reach" and r.derived == "standing"]
     blocks = []
     if standing:
-        root = Path(triage._toplevel(invocation.cwd, invocation.git_env))
-        current = triage.current(root)
+        current, rigor = standing_state()
         # The pending message and invocation scope win over the session's planned fields.
         current.reach = max((fields.get("reach", "local"), result.reach), key=triage.REACH_RANK.__getitem__)
         current.kind = fields.get("kind", "decision")
         current.size = fields.get("size", "milestones")
-        admission = triage.admits("harness-quality-seat", current, triage.rigor(root=root))
+        admission = triage.admits("harness-quality-seat", current, rigor)
         blocks.append("[triage] computed reach=%s; harness-quality-seat: %s (%s)."
                       % (current.reach, "admitted" if admission.admitted else "not admitted", admission.reason))
         blocks.extend("- " + triage.describe(r) for r in standing)

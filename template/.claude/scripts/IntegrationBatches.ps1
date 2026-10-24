@@ -9,7 +9,9 @@
 .UNITS
   Units are the direct children of Tests/Integration: each subfolder, plus each root-level test class. A unit's filter
   clause is `FullyQualifiedName~Tests.Integration.<Segment>.`: the trailing dot pins the segment to the position right
-  after `Integration.`, so every test matches exactly one unit and batch sums partition the suite.
+  after `Integration.`, so every test matches exactly one unit and batch sums partition the suite. A segment over
+  -MaxBatchTests whose files declare sub-namespaces (`Tests.Integration.<Seg>.<Sub>`) splits into `<Seg>.<Sub>` units plus
+  a `<Seg>` remainder that excludes them; the manifest keys each sub as `<Seg>.<Sub>`.
 
 .NOTES
   Dot-sourced flat .ps1 (house pattern). Dot-sources batch_diagnosis.ps1 when present; $script:IbDiagLoaded says so.
@@ -21,6 +23,125 @@ if (Test-Path $ibDiagScript) { . $ibDiagScript; $script:IbDiagLoaded = $true }
 
 # A result that carries no readable evidence: not a regression signal, never GREEN or RED (RunPool.ps1 statuses).
 $script:IncompleteStatuses = @('NO_OUTPUT', 'NO_TRX', 'BAD_TRX', 'HELD_REFUSED', 'EDITOR_OPEN', 'SKIP_RECOMPILE_IGNORED')
+
+# ---------------------------------------------------------------- renderer-tagged classes
+# A test class that needs a real renderer carries [RequiresRenderer], an attribute the project's test framework defines. This
+# file is the one reader of that tag: the gate plans the `Render` unit from it and run_test_suite.ps1 chooses headless or
+# windowed from it. Every other test runs headless.
+$script:RenderUnit = 'Render'
+$script:CsNoise = [regex]::new('//[^\r\n]*|/\*[\s\S]*?\*/|@"(?:[^"]|"")*"|"(?:[^"\\\r\n]|\\.)*"', 'Compiled')
+$script:CsNamespace = [regex]::new('(?m)^\s*namespace\s+([\w.]+)\s*[;{]', 'Compiled')
+$script:CsClass = [regex]::new('(?m)^[ \t]*((?:\[(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)*)(?:(?:public|internal|private|protected|sealed|abstract|static|partial|unsafe|file)\s+)*class\s+(\w+)', 'Compiled')
+$script:RenderTag = [regex]::new('\bRequiresRenderer(?:Attribute)?\b', 'Compiled')
+$script:SuiteTag = [regex]::new('\bTestSuite(?:Attribute)?\b', 'Compiled')
+
+# Every test class under Tests/ as { fqn; tagged }: a class carrying [TestSuite] or [RequiresRenderer], its namespace from the
+# file's first `namespace` declaration (file-scoped or block). Comments and string literals are blanked first, so an
+# attribute named there counts for nothing.
+function Get-TestClassCatalog {
+    param([Parameter(Mandatory)] [string] $Repo)
+    $dir = Join-Path $Repo 'Tests'
+    $byFqn = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    foreach ($path in [System.IO.Directory]::EnumerateFiles($dir, '*.cs', [System.IO.SearchOption]::AllDirectories)) {
+        $text = [System.IO.File]::ReadAllText($path)
+        if (-not $text.Contains('TestSuite') -and -not $text.Contains('RequiresRenderer')) { continue }
+        $clean = $script:CsNoise.Replace($text, ' ')
+        $ns = $script:CsNamespace.Match($clean)
+        foreach ($m in $script:CsClass.Matches($clean)) {
+            $attrs = $m.Groups[1].Value
+            $tagged = $script:RenderTag.IsMatch($attrs)
+            if (-not $tagged -and -not $script:SuiteTag.IsMatch($attrs)) { continue }
+            $fqn = $(if ($ns.Success) { $ns.Groups[1].Value + '.' } else { '' }) + $m.Groups[2].Value
+            $byFqn[$fqn] = [bool] ($tagged -or ($byFqn.Contains($fqn) -and $byFqn[$fqn]))
+        }
+    }
+    @($byFqn.Keys | ForEach-Object { [pscustomobject]@{ fqn = $_; tagged = $byFqn[$_] } })
+}
+
+function Get-RendererTaggedClasses {
+    param([Parameter(Mandatory)] [string] $Repo)
+    @(Get-TestClassCatalog -Repo $Repo | Where-Object { $_.tagged } | ForEach-Object { $_.fqn } | Sort-Object)
+}
+
+# The `&FullyQualifiedName!~<fqn>.` clauses that keep tagged classes out of a headless unit (the trailing dot pins the class).
+function Format-RenderExclusions {
+    param([string[]] $Classes = @())
+    (@($Classes | ForEach-Object { "&FullyQualifiedName!~$_." })) -join ''
+}
+
+# ---- vstest filter evaluation, enough of the grammar to decide which classes a filter selects:
+# `FullyQualifiedName` with ~ !~ = !=, joined by & and | (& binds tighter), parenthesised, an empty operand true.
+function Read-FilterTerm {
+    param([hashtable] $S)
+    if ($S.i -ge $S.t.Count -or $S.t[$S.i] -in @(')', '&', '|')) { return $true }
+    $tok = $S.t[$S.i]
+    if ($tok -eq '(') {
+        $S.i++
+        $v = Read-FilterOr $S
+        if ($S.i -lt $S.t.Count -and $S.t[$S.i] -eq ')') { $S.i++ }
+        return $v
+    }
+    $S.i++
+    if ($tok -notmatch '^FullyQualifiedName\s*(!~|~|!=|=)\s*(.*)$') { $S.unsupported = $true; return $false }
+    $op = $Matches[1]; $val = $Matches[2]
+    switch ($op) {
+        '~'  { return $S.target.IndexOf($val, [StringComparison]::OrdinalIgnoreCase) -ge 0 }
+        '!~' { return $S.target.IndexOf($val, [StringComparison]::OrdinalIgnoreCase) -lt 0 }
+        '='  { return $S.target -ieq $val }
+        '!=' { return $S.target -ine $val }
+    }
+}
+
+function Read-FilterAnd {
+    param([hashtable] $S)
+    $v = Read-FilterTerm $S
+    while ($S.i -lt $S.t.Count -and $S.t[$S.i] -eq '&') { $S.i++; $r = Read-FilterTerm $S; $v = $v -and $r }
+    $v
+}
+
+function Read-FilterOr {
+    param([hashtable] $S)
+    $v = Read-FilterAnd $S
+    while ($S.i -lt $S.t.Count -and $S.t[$S.i] -eq '|') { $S.i++; $r = Read-FilterAnd $S; $v = $v -or $r }
+    $v
+}
+
+# The catalog entries the filter selects, matched on `<fqn>.` (a test's full name is `<fqn>.<method>`). $null when the filter
+# uses anything beyond the grammar above, so the caller cannot treat it as a selection. The array is wrapped (`, $x`) so a lone
+# class or none survives the pipeline; assign the result without @().
+function Get-FilterSelectedClasses {
+    param([string] $Filter, $Catalog)
+    $tokens = @([regex]::Matches($Filter, '[()&|]|[^()&|]+') | ForEach-Object { $_.Value.Trim() } | Where-Object { $_ -ne '' })
+    $selected = [System.Collections.Generic.List[object]]::new()
+    foreach ($c in @($Catalog)) {
+        $s = @{ t = $tokens; i = 0; target = ($c.fqn + '.'); unsupported = $false }
+        $hit = Read-FilterOr $s
+        if ($s.unsupported -or $s.i -lt $tokens.Count) { return $null }
+        if ($hit) { $selected.Add($c) }
+    }
+    , $selected.ToArray()
+}
+
+# headless unless -Windowed or every class the filter selects is renderer-tagged. A mixed filter runs headless and returns the
+# tagged classes it will not render in .skipped; an unreadable filter or one selecting no class fails closed to headless.
+# .engineArgs are the engine flags for the mode: headless implies the Dummy audio driver, and a windowed run names it, so no
+# test run plays through the machine's speakers.
+function Resolve-RunMode {
+    param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Filter, [switch] $Windowed)
+    $mode, $skipped = 'headless', [string[]]@()
+    if ($Windowed) { $mode = 'windowed' }
+    else {
+        $selected = Get-FilterSelectedClasses -Filter $Filter -Catalog (Get-TestClassCatalog -Repo $Repo)
+        if ($null -ne $selected) {
+            $tagged = @($selected | Where-Object { $_.tagged })
+            if ($selected.Count -gt 0 -and $tagged.Count -eq $selected.Count) { $mode = 'windowed' }
+            elseif ($tagged.Count -lt $selected.Count) { $skipped = [string[]]@($tagged | ForEach-Object { $_.fqn }) }
+        }
+    }
+    $engineArgs = if ($mode -eq 'headless') { '--headless' } else { '--audio-driver Dummy' }
+    [pscustomobject]@{ mode = $mode; skipped = $skipped; engineArgs = $engineArgs }
+}
 
 # `adaptation.json` `<key>` (Design Doc §8): absent file or key -> $Default, silently.
 # Malformed JSON, a non-object root, or a key present but not a string -> $Default plus one
@@ -52,18 +173,26 @@ function Get-AdaptationValue {
 }
 
 # ---------------------------------------------------------------- TRX -> per-unit seconds
+# A test in a split segment's sub-namespace (SubUnits: seg -> sub names) is keyed `seg.sub`; every other test keys by its segment.
+# -AsUnit keys every test of the TRX under that one name: the Render unit's tests span segments, so a segment key would
+# overwrite the headless batch that measures the same segment.
 function Get-TrxUnitDurations {
-    param([string] $Path)
+    param([string] $Path, [hashtable] $SubUnits = @{}, [string] $AsUnit = '')
     $sums = @{}
     [xml] $xml = Get-Content -Path $Path -Raw
     foreach ($r in $xml.TestRun.Results.UnitTestResult) {
-        if ($r.testName -notmatch '^{{PROJECT_NAME}}\.Tests\.Integration\.([^.]+)\.') { continue }
-        $seg = $Matches[1]
+        if ($AsUnit) { $key = $AsUnit }
+        else {
+            if ($r.testName -notmatch '^{{PROJECT_NAME}}\.Tests\.Integration\.([^.]+)\.(?:([^.]+)\.)?') { continue }
+            $seg = $Matches[1]
+            $sub = $Matches[2]
+            $key = if ($sub -and $SubUnits.ContainsKey($seg) -and $sub -in $SubUnits[$seg]) { "$seg.$sub" } else { $seg }
+        }
         $dur = 0.0
         if ($r.duration) { $dur = ([TimeSpan]::Parse($r.duration)).TotalSeconds }
-        if (-not $sums.ContainsKey($seg)) { $sums[$seg] = [pscustomobject]@{ seconds = 0.0; tests = 0 } }
-        $sums[$seg].seconds += $dur
-        $sums[$seg].tests   += 1
+        if (-not $sums.ContainsKey($key)) { $sums[$key] = [pscustomobject]@{ seconds = 0.0; tests = 0 } }
+        $sums[$key].seconds += $dur
+        $sums[$key].tests   += 1
     }
     return $sums
 }
@@ -73,7 +202,7 @@ function Write-Manifest {
     param([Parameter(Mandatory)] [string] $Path, [hashtable] $Units, [hashtable] $BatchWalls, [hashtable] $Counters)
     $obj = [ordered]@{
         schema_version = 3
-        description    = 'Per-unit measured Integration test durations (TRX-derived) + per-batch end-to-end work wall { wall, consecutive_failures }. The counter increments on HANG/SILENT_SKIP and resets on GREEN — the diagnosis trigger ledger for batch_diagnosis.ps1. Consumed by run_integration_batched.ps1 for duration-based batch binning, honest reservations, and hang diagnosis. Auto-rewritten on fully-green batched runs; commit alongside test changes. Units missing here bin at 3s and 1 test, each in a batch of its own with the cost ceiling as its hang cap until a run measures it. Stale values shift bin balance, reservations and hang caps.'
+        description    = 'Per-unit measured Integration test durations (TRX-derived) + per-batch end-to-end work wall { wall, consecutive_failures }. The counter increments on HANG/SILENT_SKIP and resets on GREEN — the diagnosis trigger ledger for batch_diagnosis.ps1. Consumed by run_integration_batched.ps1 for duration-based batch binning, honest reservations, and hang diagnosis. Auto-rewritten by batched runs that measure a GREEN batch; commit alongside test changes. Units missing here bin at 3s and 1 test, each in a batch of its own with the cost ceiling as its hang cap until a run measures it. Stale values shift bin balance, reservations and hang caps.'
         updated_at     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         units          = [ordered]@{}
         batch_wall     = [ordered]@{}
@@ -137,39 +266,122 @@ function Resolve-OnlySegments {
     @(foreach ($seg in $Segments) { foreach ($d in $Wanted) { if ($seg -ieq $d) { $seg; break } } })
 }
 
+# The sub-namespaces of each segment whose measured tests exceed -MaxBatchTests (a segment's measure is its keys:
+# `seg` plus any `seg.sub`). Only a segment with sub-namespace files splits. Read from the .cs files, never from folder
+# names: the filter matches namespaces, so a folder that names a different namespace would split nothing.
+function Get-IntegrationSubUnits {
+    param([string] $Repo, [string[]] $Segments, $Manifest, [int] $MaxBatchTests)
+    $out = @{}
+    foreach ($seg in $Segments) {
+        $keys = @($Manifest.seconds.Keys | Where-Object { $_ -eq $seg -or $_.StartsWith("$seg.") })
+        if ((Get-UnitMeasure -Manifest $Manifest -Keys $keys).tests -le $MaxBatchTests) { continue }
+        $subs = @(Get-SegmentSubNamespaces -Repo $Repo -Seg $seg)
+        if ($subs.Count -gt 0) { $out[$seg] = $subs }
+    }
+    $out
+}
+
+# Sub-namespaces under Tests/Integration/<Seg>: each file's `namespace {{PROJECT_NAME}}.Tests.Integration.<Seg>.<Sub>`.
+function Get-SegmentSubNamespaces {
+    param([string] $Repo, [string] $Seg)
+    $dir = Join-Path $Repo "Tests\Integration\$Seg"
+    if (-not (Test-Path $dir)) { return @() }
+    $subs = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    $pattern = '(?m)^namespace\s+{{PROJECT_NAME}}\.Tests\.Integration\.' + [regex]::Escape($Seg) + '\.([A-Za-z_]\w*)'
+    foreach ($f in @(Get-ChildItem -Path $dir -Recurse -File -Filter '*.cs')) {
+        $m = [regex]::Match((Get-Content -LiteralPath $f.FullName -Raw), $pattern)
+        if ($m.Success) { [void] $subs.Add($m.Groups[1].Value) }
+    }
+    @($subs)
+}
+
+# seg -> sub names, from the plan's `seg.sub` units, so the TRX parser keys each sub's tests as the plan does.
+function Get-PlanSubUnits {
+    param($Plan)
+    $subs = @{}
+    foreach ($p in $Plan) {
+        foreach ($s in @($p.segs)) {
+            if ($s -notmatch '^([^.]+)\.(.+)$') { continue }
+            if (-not $subs.ContainsKey($Matches[1])) { $subs[$Matches[1]] = @() }
+            $subs[$Matches[1]] += $Matches[2]
+        }
+    }
+    $subs
+}
+
+# Measured seconds and tests summed over the manifest keys that exist; measured is false when none does.
+function Get-UnitMeasure {
+    param($Manifest, [string[]] $Keys)
+    $found = @($Keys | Where-Object { $Manifest.seconds.ContainsKey($_) })
+    [pscustomobject]@{
+        measured = $found.Count -gt 0
+        sec      = [double] (($found | ForEach-Object { $Manifest.seconds[$_] } | Measure-Object -Sum).Sum)
+        tests    = [int] (($found | ForEach-Object { $Manifest.tests[$_] } | Measure-Object -Sum).Sum)
+    }
+}
+
+# A planning unit: its measure from the manifest, or the 3 s / 1 test default when unmeasured. Excl are the sub-namespace
+# filters a remainder unit leaves out; an Alone unit never shares a batch.
+function New-PlanUnit {
+    param($Manifest, [string] $Seg, [string[]] $Keys, [string[]] $Excl = @(), [bool] $Alone = $false)
+    $m = Get-UnitMeasure -Manifest $Manifest -Keys $Keys
+    [pscustomobject]@{
+        seg = $Seg; sec = $(if ($m.measured) { $m.sec } else { 3.0 }); tests = $(if ($m.measured) { $m.tests } else { 1 })
+        unmeasured = (-not $m.measured); alone = $Alone; excl = $Excl
+    }
+}
+
 # First-fit decreasing over measured seconds, honoring both -TargetBatchSec and -MaxBatchTests. Batch numbering follows
 # bin creation order (largest first). Units missing from the manifest default to 3 s and 1 test, and each gets a batch of
-# its own: it never shares one, so its batch's cost-ceiling cap covers no other segment's work.
+# its own: it never shares one, so its batch's cost-ceiling cap covers no other segment's work. A -SubUnits segment
+# (Get-IntegrationSubUnits) plans one unit per sub-namespace plus a remainder unit that excludes them; the remainder runs alone.
+# -RenderClasses (Get-RendererTaggedClasses) leave every batch's filter and form one more unit, `Render`, that selects them: run_test_suite.ps1
+# runs that filter windowed and every batch headless. The unit is measured and retried like a batch, but never binned.
 function New-IntegrationPlan {
-    param([string[]] $Segments, $Manifest, [int] $TargetBatchSec, [int] $MaxBatchTests, [string] $Quarantine = '')
-    $weighted = $Segments | ForEach-Object {
-        [pscustomobject]@{ seg = $_; sec = $(if ($Manifest.seconds.ContainsKey($_)) { $Manifest.seconds[$_] } else { 3.0 }); tests = $(if ($Manifest.tests.ContainsKey($_)) { $Manifest.tests[$_] } else { 1 }); unmeasured = (-not $Manifest.seconds.ContainsKey($_)) }
-    } | Sort-Object sec -Descending
+    param([string[]] $Segments, $Manifest, [int] $TargetBatchSec, [int] $MaxBatchTests, [string] $Quarantine = '', [hashtable] $SubUnits = @{}, [string[]] $RenderClasses = @())
+    $weighted = @(foreach ($seg in $Segments) {
+        if ($SubUnits.ContainsKey($seg)) {
+            foreach ($sub in $SubUnits[$seg]) { New-PlanUnit -Manifest $Manifest -Seg "$seg.$sub" -Keys @("$seg.$sub") }
+            New-PlanUnit -Manifest $Manifest -Seg $seg -Keys @($seg) -Excl @($SubUnits[$seg] | ForEach-Object { "$seg.$_" }) -Alone $true
+        } else {
+            New-PlanUnit -Manifest $Manifest -Seg $seg -Keys @($Manifest.seconds.Keys | Where-Object { $_ -eq $seg -or $_.StartsWith("$seg.") })
+        }
+    }) | Sort-Object sec -Descending
     $batches = [System.Collections.Generic.List[object]]::new()
     foreach ($u in $weighted) {
         $placed = $false
-        if (-not $u.unmeasured) {
+        if (-not $u.unmeasured -and -not $u.alone) {
             foreach ($b in $batches) {
-                if (-not $b.unmeasured -and $b.sec + $u.sec -le $TargetBatchSec -and $b.tests + $u.tests -le $MaxBatchTests) {
+                if (-not $b.unmeasured -and -not $b.alone -and $b.sec + $u.sec -le $TargetBatchSec -and $b.tests + $u.tests -le $MaxBatchTests) {
                     $b.segs.Add($u.seg); $b.sec += $u.sec; $b.tests += $u.tests; $placed = $true; break
                 }
             }
         }
         if (-not $placed) {
-            $nb = [pscustomobject]@{ segs = [System.Collections.Generic.List[string]]::new(); sec = $u.sec; tests = $u.tests; unmeasured = $u.unmeasured }
+            $nb = [pscustomobject]@{ segs = [System.Collections.Generic.List[string]]::new(); sec = $u.sec; tests = $u.tests; unmeasured = $u.unmeasured; alone = $u.alone; excl = $u.excl }
             $nb.segs.Add($u.seg)
             $batches.Add($nb)
         }
     }
+    $renderExcl = Format-RenderExclusions -Classes $RenderClasses
     $i = 0
-    @(foreach ($b in $batches) {
+    $rows = @(foreach ($b in $batches) {
         $i++
         [pscustomobject]@{
             label = "Integration_B$i"; segs = @($b.segs); expectedSec = [math]::Round($b.sec, 1); unmeasured = [bool] $b.unmeasured
-            filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ")&$Quarantine"
+            filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ')' + (($b.excl | ForEach-Object { "&FullyQualifiedName!~Tests.Integration.$_." }) -join '') + $renderExcl + "&$Quarantine"
             status = 'PENDING'; passed = 0; failed = 0; elapsed = 0; workWall = 0; ran = $false; trx = ''; out = ''
         }
     })
+    if (@($RenderClasses).Count -gt 0) {
+        $m = Get-UnitMeasure -Manifest $Manifest -Keys @($script:RenderUnit)
+        $rows += [pscustomobject]@{
+            label = $script:RenderUnit; segs = @($script:RenderUnit); expectedSec = $(if ($m.measured) { [math]::Round($m.sec, 1) } else { 3.0 }); unmeasured = (-not $m.measured)
+            filter = '(' + (($RenderClasses | ForEach-Object { "FullyQualifiedName~$_." }) -join '|') + ")&$Quarantine"
+            status = 'PENDING'; passed = 0; failed = 0; elapsed = 0; workWall = 0; ran = $false; trx = ''; out = ''
+        }
+    }
+    $rows
 }
 
 # The wrapper's hang cap for a batch: 60 s plus 3x its expected seconds, at least 120 s, bounded by -CostCeilingMs but never
@@ -197,11 +409,17 @@ function Get-IntegrationUnits {
     @($Plan | Where-Object { $_.status -ne 'GREEN' } | ForEach-Object { ConvertTo-PoolUnit -Row $_ -Label $_.label -CostCeilingMs $CostCeilingMs -BatchWall $BatchWall })
 }
 
-# One retry for transient wedges: the HANG and SILENT_SKIP rows only (RED is adjudicated and never retries). Each retry
-# unit is labelled <label>_retry, so its run dir, TRX and run tag never overwrite the original batch's evidence.
+# One retry for transient wedges: the HANG, SILENT_SKIP and NO_TRX (a crash that left no TRX) rows only (RED is adjudicated
+# and never retries). Each retry unit is labelled <label>_retry, so its run dir, TRX and run tag never overwrite the
+# original batch's evidence.
 function Select-RetryUnits {
     param($Plan, [int] $CostCeilingMs = 300000, [hashtable] $BatchWall = @{})
-    @($Plan | Where-Object { $_.status -in 'HANG', 'SILENT_SKIP' } | ForEach-Object { ConvertTo-PoolUnit -Row $_ -Label "$($_.label)_retry" -CostCeilingMs $CostCeilingMs -BatchWall $BatchWall })
+    @($Plan | Where-Object { $_.status -in 'HANG', 'SILENT_SKIP', 'NO_TRX' } | ForEach-Object { ConvertTo-PoolUnit -Row $_ -Label "$($_.label)_retry" -CostCeilingMs $CostCeilingMs -BatchWall $BatchWall })
+}
+
+function Format-RetryNoTrxLine {
+    param($Plan)
+    "RETRY_NO_TRX=$(@($Plan | Where-Object { $_.status -eq 'NO_TRX' }).Count)"
 }
 
 # ---------------------------------------------------------------- reservation
@@ -286,32 +504,43 @@ function Get-FreshDurations {
     param($Plan)
     $fresh = @{}
     $why = @()
+    $subs = Get-PlanSubUnits -Plan $Plan
     foreach ($p in @($Plan | Where-Object { $_.PSObject.Properties['ran'] -and $_.ran })) {
         if ($p.status -ne 'GREEN') { $why += "$($p.label):status=$($p.status)"; continue }
         if (-not $p.trx -or -not (Test-Path -LiteralPath $p.trx)) { $why += "$($p.label):trx-missing"; continue }
-        try { $d = Get-TrxUnitDurations -Path $p.trx; foreach ($k in $d.Keys) { $fresh[$k] = $d[$k] } }
+        try { $d = Get-TrxUnitDurations -Path $p.trx -SubUnits $subs -AsUnit $(if ($p.label -eq $script:RenderUnit) { $script:RenderUnit } else { '' }); foreach ($k in $d.Keys) { $fresh[$k] = $d[$k] } }
         catch { $why += "$($p.label):trx-unparsed" }
     }
     [pscustomobject]@{ durations = $fresh; complete = ($why.Count -eq 0); why = ($why -join ',') }
 }
 
-# The manifest's one write per run. With a complete -Fresh it MERGES the measured units over the existing manifest (a
-# -RetryOnly run measures only its reruns), drops units no longer on disk (-AllSegments is the full enumeration, never a
-# -Only subset), and records this run's work walls; otherwise it updates only the counters of existing batch_wall
-# entries. Returns the MANIFEST_UPDATED line for a merge, else a MANIFEST_KEPT line naming why the durations stayed.
+# The manifest's one write per run. With -Fresh measured units (every GREEN batch of this run, red or green run alike) it
+# MERGES them over the existing manifest (a -RetryOnly run measures only its reruns), drops units no longer on disk
+# (-AllSegments is the full enumeration, never a -Only subset), and records the work walls of this run's GREEN batches
+# (a red batch's wall is capped by its hang cap, so it would inflate the next reservation); otherwise it updates only the
+# counters of existing batch_wall entries. Returns the MANIFEST_UPDATED line for a merge, else a MANIFEST_KEPT line
+# naming why the durations stayed.
 function Save-BatchManifest {
     param([Parameter(Mandatory)] [string] $Path, $Plan, [hashtable] $Counters, $Fresh = $null, [string[]] $AllSegments = @())
-    if ($Fresh -and $Fresh.complete -and $Fresh.durations.Count -gt 0) {
+    if ($Fresh -and $Fresh.durations.Count -gt 0) {
         $m = Read-BatchManifest -Path $Path
         $merged = @{}
         foreach ($k in $m.seconds.Keys) { $merged[$k] = [pscustomobject]@{ seconds = $m.seconds[$k]; tests = $m.tests[$k] } }
         foreach ($k in $Fresh.durations.Keys) { $merged[$k] = $Fresh.durations[$k] }
-        foreach ($k in @($merged.Keys)) { if ($k -notin $AllSegments) { $merged.Remove($k) } }
+        # A segment measured whole replaces its earlier sub-namespace keys; a split segment keeps the subs it did not run.
+        $planSubs = Get-PlanSubUnits -Plan $Plan
+        foreach ($k in @($Fresh.durations.Keys | Where-Object { -not $_.Contains('.') })) {
+            if ($planSubs.ContainsKey($k)) { continue }
+            foreach ($stale in @($merged.Keys | Where-Object { $_.StartsWith("$k.") })) { $merged.Remove($stale) }
+        }
+        $liveSegs = @($AllSegments) + @(if (@($Plan | Where-Object { $_.label -eq $script:RenderUnit }).Count -gt 0) { $script:RenderUnit })
+        foreach ($k in @($merged.Keys)) { if (($k -split '\.')[0] -notin $liveSegs) { $merged.Remove($k) } }
         $walls = @{}
         foreach ($k in $m.batchWall.Keys) { $walls[$k] = $m.batchWall[$k] }
-        foreach ($p in $Plan) { if ($p.workWall -gt 0) { $walls[$p.label] = $p.workWall } }
+        foreach ($p in $Plan) { if ($p.status -eq 'GREEN' -and $p.workWall -gt 0) { $walls[$p.label] = $p.workWall } }
         Write-Manifest -Path $Path -Units $merged -BatchWalls $walls -Counters $Counters
-        return "MANIFEST_UPDATED measured=$($Fresh.durations.Count) total=$($merged.Count) walls=$($walls.Count) (commit Tests/integration_batch_durations.json if changed)"
+        $partial = if ($Fresh.complete) { '' } else { " partial=$($Fresh.why)" }
+        return "MANIFEST_UPDATED measured=$($Fresh.durations.Count) total=$($merged.Count) walls=$($walls.Count)$partial (commit Tests/integration_batch_durations.json if changed)"
     }
     $kept = if (-not $Fresh) { 'MANIFEST_KEPT reason=run-not-green' }
             elseif (-not $Fresh.complete) { "MANIFEST_KEPT reason=$($Fresh.why)" }

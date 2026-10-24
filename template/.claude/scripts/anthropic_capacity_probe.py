@@ -26,7 +26,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "hooks"))
 import model_registry  # noqa: E402
+from _claude_scope import is_cloud  # noqa: E402
 from provider_capacity import http_failure  # noqa: E402
 from quota_bands import (  # noqa: E402
     EXHAUSTED_BAND, compute_band, dormant_band, most_constrained_window, runout_ratio_for,
@@ -374,7 +376,7 @@ def main():
     size = plan_type(_oauth(cred_path))
     if size:
         result["planType"] = size
-    cloud = os.environ.get("CLAUDE_CODE_REMOTE", "").lower() == "true"
+    cloud = is_cloud()
     if cloud and result["status"] in ("auth-error", "network-error", "malformed"):
         # The cloud sandbox is authenticated but need not expose a usage-readable token, and a fresh
         # VM has no cached reading to fall back on. Anthropic enforces its quota server-side there,

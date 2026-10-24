@@ -232,6 +232,12 @@ def standalone():
 
 
 def main():
+    global REPO, TESTS_ROOT
+    if "--repo" in sys.argv:
+        i = sys.argv.index("--repo")
+        REPO = Path(sys.argv.pop(i + 1)).resolve()
+        sys.argv.pop(i)
+        TESTS_ROOT = REPO / "Tests"
     return standalone()
 
 

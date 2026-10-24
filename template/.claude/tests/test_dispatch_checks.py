@@ -228,6 +228,38 @@ def main():
         case("a cheaper row on an owner probation mark for the tier is not a claimant",
              dc.cheaper_claimants("dear-1", "fanout", "anthropic", 20000, marked, ladder) == [])
 
+    # spare_plan_fact: one fact naming a claimant of the tier on another plan whose quota expires unused.
+    spare_fact = getattr(dc, "spare_plan_fact", None)
+    case("hooks/_dispatch_checks.py exposes spare_plan_fact", callable(spare_fact))
+    if callable(spare_fact):
+        now = 1_800_000_000.0
+
+        def plan_reading(transport, used, left_days, days=7):
+            return {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota",
+                    "sourceKind": "live", "observedAt": "2027-01-15T08:00:00Z", "status": "available",
+                    "quota": {"windows": [{"name": "seven_day", "usedPercent": used,
+                                           "resetsAt": now + left_days * 86400,
+                                           "windowDurationMins": days * 1440}],
+                              "routingWindow": "seven_day", "bindingWindow": "seven_day"}}
+
+        rows = {"anthropic": None, "go": plan_reading("go", 20, 4)}
+        fact = spare_fact("executor", "anthropic", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))
+        case("a claimant of the tier on another plan with expiring quota is named with its plan and share",
+             fact == "g-exec on go: ~53% unused at reset in 4d", repr(fact))
+        rows = {"anthropic": None, "go": plan_reading("go", 99, 1)}
+        case("a plan whose quota will not expire unused names nothing",
+             spare_fact("executor", "anthropic", data=DATA, now=now,
+                        read=lambda name, _data=None: rows.get(name)) is None,
+             repr(spare_fact("executor", "anthropic", data=DATA, now=now,
+                             read=lambda name, _data=None: rows.get(name))))
+        rows = {"anthropic": plan_reading("anthropic", 20, 4), "go": plan_reading("go", 20, 4)}
+        case("the job's own plan is never the fact",
+             spare_fact("executor", "go", data=DATA, now=now,
+                        read=lambda name, _data=None: rows.get(name)) == "a-exec on anthropic: ~53% unused at reset in 4d",
+             repr(spare_fact("executor", "go", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))))
+    else:
+        case("spare_plan_fact cases ran", False, "no spare_plan_fact")
+
     return report(cases)
 
 

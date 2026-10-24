@@ -3,12 +3,14 @@
 Hook: PreToolUse on Bash|PowerShell|Monitor — rewrite or deny recursive grep, nudge other unbounded scans.
 
 REWRITE — Bash `grep -r` segments with known flags and non-ignored repo paths run as
-`git grep --untracked` through `updatedInput`. Literal cwd changes, quoted patterns, pipelines
-and trailing redirects stay intact; include/exclude filters become pathspecs. The note names the
-same files minus gitignored ones (`recursive_grep_rewrite`). A simple recursive grep whose paths all
-lie outside any git tree (session transcripts, the vault) runs as `rg -uu --max-count 200` with
-clipped lines, `-F` kept and `-E` left to rg's default regex; include/exclude, `-P`, `-z`, unknown
-flags, backreferences and basic-regex `+?|(){}` stay denied.
+`git grep --untracked` through `updatedInput`. Literal cwd changes (`cd`, Git Bash drive spellings
+included), quoted patterns, pipelines and trailing redirects stay intact; include/exclude filters
+become pathspecs. One-level glob operands expand as bash expands them; `**` and an empty match stay
+denied. The note names the same files minus gitignored ones (`recursive_grep_rewrite`). A simple
+recursive grep whose paths lie outside git (session transcripts, the vault) or under a gitignored
+tree runs as `rg -uu --max-count 200` with clipped lines, `-F` kept and `-E` left to rg's default
+regex; include/exclude become rg `-g` globs. `-P`, `-z`, unknown flags, backreferences and
+basic-regex `+?|(){}` stay denied.
 
 DENY — any other recursive grep that walks a tree, whatever its output bound:
 - A recursive grep that reaches a giant single-line or special file buffers without bound, and on
@@ -46,6 +48,7 @@ Advisories are full on the first fire per axis and one line afterwards, re-armed
 through `pre_bash_dispatch.py`. Any internal error exits 0 silent.
 """
 
+import glob
 import json
 import os
 import re
@@ -432,7 +435,7 @@ def recursive_grep_rewrite(command, cwd):
         if words and words[0] == "cd":
             if len(words) != 2 or separator not in ("&&", ";", "\n"):
                 return None
-            cwd = os.path.abspath(os.path.join(cwd, words[1]))
+            cwd = os.path.abspath(os.path.join(cwd, native_path(words[1])))
             if not os.path.isdir(cwd):
                 return None
         elif words and words[0] in ("pushd", "popd", "for", "while", "until", "if", "eval", "source", "."):
@@ -522,14 +525,31 @@ def _plain_grep_rewrite(command, cwd):
         patterns, operands = [None, operands[0]], operands[1:]
     if any(p and "-F" not in flags and "-E" not in flags and _GNU_BRE.search(p) for p in patterns):
         return None
-    operands = operands or ["."]
+    operands = _expand_globs(operands or ["."], cwd)
+    if operands is None:
+        return None
     repo = _git_grep_command(cwd, flags, patterns, operands, globs, exclusions)
     if repo:
         return repo, REWRITE_NOTE
-    if globs or exclusions:
-        return None
-    rg = _rg_command(cwd, flags, patterns, operands)
+    rg = _rg_command(cwd, flags, patterns, operands, globs, exclusions)
     return (rg, REWRITE_NOTE_RG) if rg else None
+
+
+def _expand_globs(operands, cwd):
+    """Expand one-level glob operands as bash does (sorted, dotfiles skipped). `**` and a glob that
+    matches nothing return None: the first walks a tree the text does not bound, the second names no file."""
+    out = []
+    for path in operands:
+        if not re.search(r"[*?\[]", path):
+            out.append(path)
+        elif "**" in path:
+            return None
+        else:
+            matches = sorted(glob.glob(os.path.join(cwd, path)))
+            if not matches:
+                return None
+            out += [m if os.path.isabs(path) else os.path.relpath(m, cwd).replace("\\", "/") for m in matches]
+    return out
 
 
 def _git_grep_command(cwd, flags, patterns, operands, globs, exclusions):
@@ -570,10 +590,10 @@ _RG_UNSAFE_BRE = re.compile(r"[+?|(){}]")
 _BACKREFERENCE = re.compile(r"\\[1-9]")
 
 
-def _rg_command(cwd, flags, patterns, operands):
-    """A bounded `rg` for a simple recursive grep whose every path lies outside git. rg's regex
-    reads as ERE, so a basic-regex pattern with ERE metacharacters, or any backreference, has no
-    faithful translation."""
+def _rg_command(cwd, flags, patterns, operands, globs, exclusions):
+    """A bounded `rg` for a simple recursive grep whose paths git grep cannot take: outside git, or
+    under a gitignored tree. include/exclude become rg `-g` globs. rg's regex reads as ERE, so a
+    basic-regex pattern with ERE metacharacters, or any backreference, has no faithful translation."""
     texts = [p for p in patterns if p]
     fixed, extended = "-F" in flags, "-E" in flags
     if any(_BACKREFERENCE.search(t) for t in texts) and not fixed:
@@ -586,9 +606,14 @@ def _rg_command(cwd, flags, patterns, operands):
         full = os.path.abspath(os.path.join(cwd, native_path(shown)))
         if not os.path.exists(full):
             return None
-        inside = _git(full if os.path.isdir(full) else os.path.dirname(full), "rev-parse", "--is-inside-work-tree")
-        if inside is None or inside.returncode == 0:
+        where = full if os.path.isdir(full) else os.path.dirname(full)
+        inside = _git(where, "rev-parse", "--is-inside-work-tree")
+        if inside is None:
             return None
+        if inside.returncode == 0:
+            ignored = _git(where, "check-ignore", "-q", full)
+            if ignored is None or ignored.returncode != 0:
+                return None
         paths.append(shown)
     counting = "-c" in flags or "-l" in flags
     words = ["rg", "-uu"]
@@ -599,16 +624,20 @@ def _rg_command(cwd, flags, patterns, operands):
     if not counting and "--max-count" not in flags:
         words += _RG_MAX_COUNT
     words += _RG_CLIP
+    for glob_value in globs:
+        words += ["-g", glob_value]
+    for name, value in exclusions:
+        words += ["-g", "!" + value + ("/" if name == "exclude-dir" else "")]
     for p in texts:
         words += ["-e", p]
     words += ["--"] + paths
     return " ".join(shlex.quote(w) for w in words)
 
 
-REWRITE_NOTE_RG = ("[scan] recursive grep outside git ran as a bounded `rg -uu` (hidden and ignored files "
-                   "included; --max-count and clipped lines; CLAUDE.core.md \u00a79).")
+REWRITE_NOTE_RG = ("[scan] recursive grep outside git or under a gitignored tree ran as a bounded `rg -uu` "
+                   "(hidden and ignored files included; --max-count and clipped lines; CLAUDE.core.md \u00a79).")
 REWRITE_NOTE_MIXED = ("[scan] recursive greps ran as `git grep --untracked` inside the checkout and as a bounded "
-                      "`rg -uu` outside git (CLAUDE.core.md \u00a79).")
+                      "`rg -uu` outside git or under gitignored trees (CLAUDE.core.md \u00a79).")
 REWRITE_NOTE = ("[scan] recursive grep ran as `git grep --untracked` (the same files minus gitignored ones; "
                 "CLAUDE.core.md §9).")
 
@@ -640,7 +669,7 @@ BOUNDED = re.compile(
 )
 
 # Walks a tree while blind to .gitignore. `rg` and `git grep` honour it.
-GITIGNORE_BLIND = re.compile(r"(?:^|[|;&]\s*|\s)find\s", re.IGNORECASE)
+GITIGNORE_BLIND = re.compile(r"(?:^|[|;&(`{\n]\s*)(?:(?:time|nice|nohup|exec|sudo|xargs|env)\s+)*find\s", re.IGNORECASE)
 
 # The caller already scoped the walk, or handed it to a gitignore-aware tool.
 SCOPED = re.compile(

@@ -14,9 +14,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(HERE, "..", "hooks", "cloud_test_enforcer.py")
 
 
-def run(command, cloud=True, tool="Bash"):
+def run(command, cloud=True, tool="Bash", flag=None):
     payload = {"tool_name": tool, "tool_input": {"command": command}}
     env = dict(os.environ, CLAUDE_CODE_REMOTE="true" if cloud else "false")
+    if flag is not None:
+        env["CLAUDE_CODE_REMOTE"] = flag
     return subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
                          text=True, timeout=30, env=env)
 
@@ -71,6 +73,12 @@ def main():
         ("local bare dotnet test is allowed", run("dotnet test", cloud=False),
          lambda r: r.returncode == 0 and r.stdout.strip() == "{}"),
         ("non-Bash bare test is allowed", run("dotnet test", tool="PowerShell"),
+         lambda r: r.returncode == 0 and r.stdout.strip() == "{}"),
+        ("cloud flag 1 counts as cloud (the shared truthy set)", run("dotnet test", flag="1"),
+         lambda r: rewritten(r).startswith("xvfb-run --auto-servernum dotnet test")),
+        ("cloud flag YES counts as cloud (case-insensitive)", run("dotnet test", flag="YES"),
+         lambda r: rewritten(r).startswith("xvfb-run --auto-servernum dotnet test")),
+        ("cloud flag 0 does not count as cloud", run("dotnet test", flag="0"),
          lambda r: r.returncode == 0 and r.stdout.strip() == "{}"),
     )
     for label, result, predicate in cases:

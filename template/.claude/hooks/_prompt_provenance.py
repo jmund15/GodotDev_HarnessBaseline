@@ -8,6 +8,7 @@ _RUNTIME_ENVELOPE_RE = re.compile(
     r"(?:\s+[^>]*)?>.*</(?P=tag)>$",
     re.DOTALL,
 )
+_RUNTIME_NOTICE_RE = re.compile(r"^\[Cross-session \w[^\]]*\]")
 
 
 def is_user_intent_prompt(prompt: str) -> bool:
@@ -15,4 +16,5 @@ def is_user_intent_prompt(prompt: str) -> bool:
     if not isinstance(prompt, str):
         return False
     stripped = prompt.strip()
-    return bool(stripped) and _RUNTIME_ENVELOPE_RE.fullmatch(stripped) is None
+    return (bool(stripped) and _RUNTIME_ENVELOPE_RE.fullmatch(stripped) is None
+            and _RUNTIME_NOTICE_RE.match(stripped) is None)

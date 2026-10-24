@@ -490,10 +490,10 @@ def plan_load(data):
 
 
 def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, load=None):
-    """The paying plan for a job that names none: the route's only live plan, else the one with the most
-    room (`provider_bands.rank_room`) among those whose tightest window still holds the jobs already on
-    them (`provider_bands.pick_key`; `load` is {plan: jobs}, default `plan_load`). No plan with room refuses
-    the job, naming each plan's state.
+    """The paying plan for a job that names none: the route's only live plan, else `provider_bands.pick_key`'s
+    first among those whose tightest window still holds the jobs already on them (`load` is {plan: jobs},
+    default `plan_load`): quota going unused at reset first, earliest reset first, else the most room. No
+    plan with room refuses the job, naming each plan's state.
     `read` is the capacity reader (default `provider_bands.read_capacity`); a caller with a deadline passes
     its own. A list `rest` receives the other plans with room, roomiest first: the launch fallbacks. `quiet`
     drops the stderr note, for a caller whose stdout and stderr are a channel (a hook)."""
@@ -513,12 +513,23 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
     if rest is not None:
         rest.extend(row["transport"] for row in fit[1:])
     if not quiet:
-        print(f"[fanout] {label}: plan {best['transport']} (room {best['room']:.2f}"
+        print(f"[fanout] {label}: plan {best['transport']} ({_pick_facts(best)}"
               + (f", {load[best['transport']]} jobs on it" if load.get(best["transport"]) else "") + "; "
-              + ", ".join(f"{row['transport']} {row['room']:.2f}" if row.get("room") is not None
+              + ", ".join(f"{row['transport']} {_pick_facts(row)}" if row.get("room") is not None
                           else f"{row['transport']} {row.get('why')}" for row in rows if row is not best)
               + ")", file=sys.stderr)
     return best["transport"]
+
+
+def _pick_facts(row):
+    """`room R`, led by `~N% unused at reset in Dd` when the plan's projection reaches whole percents."""
+    projection = row.get("unusedAtReset") or {}
+    pct, days = projection.get("pct"), projection.get("daysLeft")
+    room = f"room {row['room']:.2f}"
+    if isinstance(pct, (int, float)) and round(pct) >= provider_bands.USED_RESOLUTION \
+            and isinstance(days, (int, float)):
+        return f"~{round(pct)}% unused at reset in {days:.1f}d, {room}"
+    return room
 
 
 def admission_refusal(jobs, data, read=None, now=None):
@@ -738,8 +749,10 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     if shape != "arm":
         try:
             builtins = job_builtins(job)
+            # A review seat's context files are the subject it judges, not instructions it runs.
+            orders = [prompt] + ([] if shape == "review" else list(job.get("contextFiles") or []))
             refusal = tool_profiles.check_brief_files(
-                builtins, [prompt] + list(job.get("contextFiles") or []), grammar="job",
+                builtins, orders, grammar="job",
                 root=job.get("workdir") or None, widen=True,
                 removed=tool_profiles.tools_delta(job.get("tools"))[1])
         except ValueError as err:
@@ -1002,6 +1015,13 @@ def workdir_of(argv):
         return None
 
 
+def launcher_of(argv):
+    """The launcher a job runs, spelled as its launched line shows it (`anthropic_secondary` for
+    `anthropic_secondary_sidecar.sh`), or None for an argv that runs no launcher script."""
+    script = os.path.basename(argv[1]) if len(argv) > 1 else ""
+    return script[:-len("_sidecar.sh")] if script.endswith("_sidecar.sh") else None
+
+
 def progress_of(argv):
     """The `-P` operand: the live progress stream this job's launcher tees to, if any."""
     try:
@@ -1159,6 +1179,16 @@ def duplicate_launches(planned):
 REVIEW_CLAIM = "review.claim"
 
 
+def _inventory_job(label, argv, launch_id, record_path):
+    job = {"label": label, "launchId": launch_id, "recordPath": os.path.abspath(record_path)}
+    launcher = launcher_of(argv)
+    if launcher:
+        job["launcher"] = launcher
+    if workdir_of(argv):
+        job.update(workdir=os.path.abspath(workdir_of(argv)), startHead=_head_of(workdir_of(argv)))
+    return job
+
+
 def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_seats=False, resident=frozenset()):
     # A bounded pool: `max_parallel` workers draining a queue. The previous shape started one OS
     # thread per job and used the semaphore only to cap concurrent SUBPROCESSES, so a 200-job file
@@ -1187,9 +1217,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                  # Absolute: the inventory's readers (the Stop hook, the watcher) run from other cwds.
                  # `workdir` lets the close tell a job writing in a worktree from one writing in its checkout;
                  # `startHead` is the commit it was cut from, the base of the changes the job made.
-                 "jobs": [dict({"label": label, "launchId": launch_id, "recordPath": os.path.abspath(record_path)},
-                               **({"workdir": os.path.abspath(workdir_of(argv)), "startHead": _head_of(workdir_of(argv))}
-                                  if workdir_of(argv) else {}))
+                 "jobs": [_inventory_job(label, argv, launch_id, record_path)
                           for label, argv, _, launch_id, record_path in allocated]}
     try:
         with open(inventory_path, "x", encoding="utf-8") as fh:
@@ -1414,7 +1442,7 @@ def _output_cap(r):
         try:
             last = None
             with open(path, encoding="utf-8", errors="replace") as fh:
-                for event in stream_check._events(fh):
+                for event in stream_check.iter_stream_events(fh):
                     last = event
             cap = stream_check.output_cap((last or {}).get("result"))
         except OSError:
@@ -1940,6 +1968,19 @@ def build_parser():
     return ap
 
 
+def doctrine_refusal(argv):
+    """The dispatch-doctrine deny for this call, else None. A detached driver's launchers would print it to a
+    log the caller never reads, so `--detach` surfaces it in the foreground, where the caller's own Bash call
+    returns it. The launchers still run their own check."""
+    sys.path.insert(0, str(ROOT / "hooks"))
+    try:
+        import sidecar_dispatch_context
+        return sidecar_dispatch_context.fanout_doctrine_refusal(
+            [a for a in argv if a != "--detach"], os.getcwd())
+    except Exception:
+        return None  # the check could not run; each launcher still runs its own
+
+
 def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
     """Rerun this fan-out without --detach as a process detached from the caller, and return 0.
 
@@ -1948,7 +1989,8 @@ def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
     driver keeps the caller's cwd, so every relative path resolves as it did here; its stdout, the
     summary, goes to `<out-dir>/fanout-driver.log`. The session watcher wakes the caller."""
     sys.path.insert(0, str(ROOT / "hooks"))
-    from _bounded_run import detach_options, job_env
+    from _bounded_run import detach_options
+    from watch_records import ARM_CALL, ARM_COMMAND
     child, swapped = [sys.executable, str(Path(__file__).resolve())], False
     for token in argv:
         if token == "--detach":
@@ -1960,10 +2002,10 @@ def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
     with open(log, "ab") as fh:
         env = dict(os.environ, SIDECAR_REVIEW_CLAIM=claim) if claim else None
         proc = subprocess.Popen(child, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                                cwd=os.getcwd(), close_fds=True, env=job_env(env), **detach_options())
+                                cwd=os.getcwd(), close_fds=True, **detach_options(env))
     print(f"fan-out detached: driver pid {proc.pid}; its summary goes to {_posix(log)}, and each job still "
-          f"writes {_posix(out_dir)}/<label>.md. Arm the session watcher as its own Bash call with run_in_background: "
-          f"true and timeout 7200000: python3 .claude/tools/watch_records.py --session --wake. Started any other way "
+          f"writes {_posix(out_dir)}/<label>.md. Arm the session watcher {ARM_CALL}: "
+          f"{ARM_COMMAND}. Started any other way "
           f"(foreground, &, nohup, disown) it never wakes you and blocks a correct arm.")
     return 0
 
@@ -2225,6 +2267,10 @@ def main(argv=None):
     else:
         token = None
     if args.detach:
+        refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
+        if refusal:
+            print(refusal)
+            return 2
         extra = {"log_path": out_dir.with_name(out_dir.name + "-driver.log")} if args.refold else {}
         return detach_driver(argv if argv is not None else sys.argv[1:], args.jobs, out_dir, claim=token, **extra)
     if args.refold:

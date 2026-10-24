@@ -567,6 +567,23 @@ def main(only: int | None = None) -> int:
                       result18[0] is None and "HEAD:" + lock_rel in (result18[1] or ""), repr(result18)))
 
     @section
+    def _s25():
+        # --- 27: a pathspec wrapped by a backslash-newline reads its path, not a lone `\` -------
+        repo27 = _make_consumer_repo()
+        rel27 = ".claude/commands/wrapped_thing.md"
+        _write(repo27 / rel27, "# wrapped command\n")
+        _git(repo27, "add", "-A")
+        classified27 = subprocess.run(
+            [sys.executable, str(BASELINE_SYNC), "classify", rel27, "--status", "local"],
+            cwd=repo27, capture_output=True, text=True,
+        )
+        cases.append(("27 setup: classify succeeds", classified27.returncode == 0,
+                      classified27.stdout + classified27.stderr))
+        proc = _run_dispatch(str(repo27), 'git commit -m "add thing" -- \\\n  ' + rel27, env)
+        check("27: a backslash-newline wrapped pathspec commit reads the path -> allow",
+              _classify(proc), "ALLOW", proc)
+
+    @section
     def _s22():
         _shell_words_case(SHELL_WORD_CASES[0], env, cases)
 

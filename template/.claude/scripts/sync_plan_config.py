@@ -80,6 +80,7 @@ sys.path.insert(0, str(TOOLS.parent / "hooks"))
 from _bounded_run import run_bounded  # noqa: E402
 import adaptation  # noqa: E402
 import model_registry  # noqa: E402
+import plugin_registry  # noqa: E402
 import semantic_search_idle_install as idle_shim  # noqa: E402
 
 WHOLE_FILES = ("ai_worker_model_guide.md",)
@@ -310,9 +311,10 @@ def declared_version(login, plugin):
 
 def user_install(login, plugin):
     """`login`'s one user-scope registration of `plugin` ({version, installPath, ...}), or None when absent."""
-    data = _read_json(login / "plugins" / "installed_plugins.json") or {}
-    entries = [e for e in (data.get("plugins") or {}).get(plugin) or []
-               if isinstance(e, dict) and e.get("scope") == "user"]
+    try:
+        entries = plugin_registry.user_rows(login, plugin)
+    except ValueError as exc:
+        raise SyncError("%s is not JSON: %s" % (login / "plugins" / "installed_plugins.json", exc))
     if len(entries) > 1:
         raise SyncError("%s holds %d user-scope registrations of %s" % (login, len(entries), plugin))
     return entries[0] if entries else None

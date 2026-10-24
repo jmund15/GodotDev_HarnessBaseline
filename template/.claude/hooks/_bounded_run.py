@@ -10,8 +10,8 @@ the command started ends with it (a Windows Job Object with kill-on-close; a POS
   run_bounded(cmd, timeout, cwd=None, env=None)
       -> SimpleNamespace(returncode, stdout, stderr); returncode None when the deadline passed.
   ProcessTree(proc).end()   ends a Popen and every process it started.
-  detach_options()          Popen keywords for a worker that outlives the hook that starts it.
-  job_env(env=None)         that worker's environment, carrying the REAP_JOB_ID reap.py's `queued` reads.
+  detach_options(env=None)  Popen keywords for a worker that outlives the hook that starts it: its console shape
+                            and its environment (`job_env(env)`, carrying the REAP_JOB_ID reap.py's `queued` reads).
 """
 
 import os
@@ -24,12 +24,13 @@ __all__ = ["run_bounded", "ProcessTree", "detach_options"]
 CLEANUP_SECONDS = 10  # the most `end()` spends on each of its taskkill and final wait
 
 
-def detach_options():
+def detach_options(env=None):
     """Windows: a hidden console the worker's children share; DETACHED_PROCESS (console-less) makes each
-    child allocate its own through the default terminal (test_hook_detach_console). POSIX: its own session."""
+    child allocate its own through the default terminal (test_hook_detach_console). POSIX: its own session.
+    `env` is the worker's base environment (default: this process's); the result carries it with a job id."""
     if os.name == "nt":
-        return {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
+        return {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP, "env": job_env(env)}
+    return {"start_new_session": True, "env": job_env(env)}
 
 
 def job_env(env=None):

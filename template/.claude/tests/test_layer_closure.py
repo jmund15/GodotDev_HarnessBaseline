@@ -103,8 +103,14 @@ def main():
     check("a skill-scoped citation resolves to the shipped file, never a test fixture's copy",
           got == [width], got)
 
+    shipped_copy = ".claude/tests/fixtures/evidence/r1/tree/.claude/tools/helper.py"
+    got = dependencies({row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure", shipped_copy: "pure"}, row)
+    check("a python import never resolves to a shipped test fixture's same-named copy", got == [], got)
+    got = dependencies({row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure"}, row)
+    check("a python import never resolves to an unshipped test fixture's same-named copy", got == [], got)
+
     skill = ".claude/skills/testing/SKILL.md"
-    cmd = ".claude/commands/regression_gate.md"
+    cmd =".claude/commands/regression_gate.md"
     base = {skill: "# t\n", cmd: "# g\n"}
 
     doc = ".claude/commands/doc.md"

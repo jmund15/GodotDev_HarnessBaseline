@@ -252,14 +252,16 @@ def format_line(size: dict) -> str:
     return line
 
 
-def fact_lines(spec, root=None, data=None, ladder=None) -> list:
+def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> list:
     """The claimant verdict of each job of a dispatch, in job order; [] for a spec holding no job. Per job, one of:
     a `cheaper claimants:` line for a job pinned above a cheaper claimant of its tier (the job's pin and cost, then each
     cheaper row on its transport with cost, prices, `±` cell, the job's measured reading against that row's usable
-    window and long-context point); a `cheaper claimants: `label` (model) not compared: reason` line for a job it
+    window and long-context point), followed by `_dispatch_checks.spare_plan_fact`'s fact when another plan serving
+    the tier projects unused quota; a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
     A job's tier is its shape row's (`guards/tool_profiles.json`), else its own `tier`. Facts only: no check denies on
-    these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare."""
+    these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
+    `now`/`read` plant the clock and the capacity reader; both have production defaults."""
     try:
         jobs = _jobs_of(spec)
     except ValueError:
@@ -292,9 +294,11 @@ def fact_lines(spec, root=None, data=None, ladder=None) -> list:
             out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, reason))
             continue
         if claimants:
-            out.append("cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
+            line = "cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
                 label, model, claimants[0]["pinCost"], tier, transport,
-                "; ".join(_dispatch_checks.claimant_text(c, sized["readingTokens"]) for c in claimants)))
+                "; ".join(_dispatch_checks.claimant_text(c, sized["readingTokens"]) for c in claimants))
+            spare = _dispatch_checks.spare_plan_fact(tier, transport, data, now, read)
+            out.append(line + ("; " + spare if spare else ""))
         else:
             compared.append(label)
     if compared:

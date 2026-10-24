@@ -1664,14 +1664,19 @@ def _classify_identity_hit(root: Path, relpath: str, profile: dict, data: bytes 
     a `classify --status tracked` proof plants a hit and gets a real refusal. The scanned text is
     the reverse-substituted form `publish` materializes, so a lock substitution value alone is
     not a hit."""
+    hits = _identity_hits(root, relpath, profile, data, substitutions)
+    return hits[0] if hits else None
+
+
+def _identity_hits(root: Path, relpath: str, profile: dict, data: bytes | None = None,
+                   substitutions: dict | None = None) -> list:
+    """Every hit `_classify_identity_hit` scans for; empty when the row has no content."""
     if data is None:
         data = _content_bytes(root, relpath)
     if data is None:
-        return None
+        return []
     text = reverse_for(relpath, data.decode("utf-8", errors="replace"), substitutions or {})
-    diff_text = _whole_file_as_added_diff(relpath, text)
-    hits = baseline_identity.scan_changed(diff_text, profile)
-    return hits[0] if hits else None
+    return baseline_identity.scan_changed(_whole_file_as_added_diff(relpath, text), profile)
 
 
 def _try_source(root: Path, baseline_dir: str | None) -> tuple[BaselineSource | None, str | None]:
@@ -1760,7 +1765,11 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
                         f"({hit.token_kind}): {hit.excerpt}"
                     )
             existing = files.get(relpath)
-            if existing is not None and _entry_status(existing) != status and not force:
+            # A decline of a row whose file is already gone has no local content to protect: a
+            # bare pull takes every new-upstream row, so a decline usually follows it.
+            declines_gone = status == "local" and relpath not in committed and relpath in absent_upstream
+            if (existing is not None and _entry_status(existing) != status and not force
+                    and not declines_gone):
                 raise BaselineError(f"row has status {_entry_status(existing)}; use --force: {relpath}")
             if (layer_override and existing is not None and existing.get("layer") is not None
                     and existing["layer"] != layer_override and not relayer):
@@ -1913,12 +1922,15 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
 def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, profile: dict,
                     subs: dict, source: BaselineSource | None, source_error: str | None,
                     accept_hits: list[str] | None, lock: dict, pushing: dict[str, str],
-                    commit: str | None = None) -> None:
-    hit = _classify_identity_hit(root, relpath, profile, data, subs)
-    if hit is not None and hit.id not in (accept_hits or []):
-        raise BaselineError(
-            f"identity scan hit in {relpath}:{hit.line} ({hit.token_kind}): {hit.excerpt}; "
-            f"fix the source, or pass --accept-hit {hit.id} for a legitimate generic use")
+                    commit: str | None = None) -> list[str]:
+    """Refuses the row's first unaccepted identity hit; returns the accepted hit ids its content carries,
+    which the verdict records so `publish` honors them."""
+    hits = _identity_hits(root, relpath, profile, data, subs)
+    for hit in hits:
+        if hit.id not in (accept_hits or []):
+            raise BaselineError(
+                f"identity scan hit in {relpath}:{hit.line} ({hit.token_kind}): {hit.excerpt}; "
+                f"fix the source, or pass --accept-hit {hit.id} for a legitimate generic use")
     if entry.get("layer") not in FULL_LAYERS:
         if source is None:
             raise BaselineError(f"row has no layer and the baseline cannot be read to see "
@@ -1930,6 +1942,7 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
     _refuse_unshipped_dependencies(root, relpath, data, lock, source, pushing, commit)
     if _TOOL_RELPATH.search(relpath) and source is not None and _upstream_sha(source, relpath, subs) is None:
         _refuse_unproven_new_tool(root, lock.get("files", {}), relpath, {}, pushing, commit)
+    return sorted({hit.id for hit in hits})
 
 
 def _carry_walk(root: Path, base: str, head: str, relpath: str,
@@ -2012,13 +2025,15 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
             old = entry.get("judged") or {}
             if profile is None:
                 profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
-            _push_preflight(root, relpath, entry, final, profile, subs, source, source_error, accept_hits,
-                            lock, carrying)
+            accepted = _push_preflight(root, relpath, entry, final, profile, subs, source, source_error,
+                                       [*(accept_hits or []), *old.get("accepted_hits", [])], lock, carrying)
             added, removed = _diff_stat(first_before, final)
             start = content_sha(relpath, first_before)
             report.append(f"carried: {relpath} (+{added} -{removed}) {start[:8]}..{final_sha[:8]}")
             decision = _decision(root, relpath, "push", sha_value=final_sha)
             decision["carried_from"] = start
+            if accepted:
+                decision["accepted_hits"] = accepted
             entry["judged"] = decision
             carried.append(relpath)
         snapshots["after"] = copy.deepcopy(lock)
@@ -2081,18 +2096,21 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                 and (not confirm or old.get("confirmed_at") is not None)
                 and not unshipped
             )
-            if same:
+            if same and not (verdict == "push" and accept_hits):
                 continue
+            accepted = []
             if verdict == "push":
                 if profile is None:
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
                 data = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
-                _push_preflight(root, relpath, entry, data, profile, subs, source, source_error, accept_hits,
-                                lock, pushing, commit)
+                accepted = _push_preflight(root, relpath, entry, data, profile, subs, source, source_error,
+                                           accept_hits, lock, pushing, commit)
             entry["judged"] = _decision(
                 root, relpath, verdict, sha_value=current_sha,
                 borderline=borderline, confirmed_at=confirmed_at,
             )
+            if accepted:
+                entry["judged"]["accepted_hits"] = accepted
             if unshipped:
                 entry["status"] = "local"
                 entry.pop("hash", None)
@@ -2114,7 +2132,11 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
     return 0
 
 
-def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_json: bool) -> int:
+def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_json: bool,
+              baseline_dir: str | None = None) -> int:
+    """Each row's `identity` lists every hit `judge --verdict push` would refuse, scanned over the
+    reverse-substituted file; the diff shows substituted text, so it cannot tell a judge which
+    literals ship."""
     files = lock.get("files", {})
     current = _content_shas(root, [relpath for relpath, entry in files.items() if _entry_status(entry) == "tracked"])
     selected = []
@@ -2124,6 +2146,8 @@ def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_jso
         if len(selected) >= batch:
             break
     rows = []
+    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir) if selected else None
+    subs = lock.get("substitutions", {})
     for relpath, entry in selected:
         judged = entry.get("judged") or {}
         rows.append({
@@ -2133,6 +2157,8 @@ def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_jso
             "sha": current[relpath] if relpath in current else _content_sha(root, relpath),
             "prior_verdict": judged.get("verdict"),
             "diff": _diff_text(root, source, lock, relpath),
+            "identity": [{"id": hit.id, "line": hit.line, "kind": hit.token_kind, "excerpt": hit.excerpt}
+                         for hit in _identity_hits(root, relpath, profile, substitutions=subs)],
         })
     if as_json:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
@@ -2407,7 +2433,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 state = _v2_state(root, source, lock, path, entry)
                 if state == "forked-upstream-moved" or (state == "diverged" and not merge):
                     held.append((path, state))
-                if state in ("upstream-updated", "new-upstream") or (merge and state == "diverged") or (
+                if state in ("upstream-updated", "new-upstream", "in-sync-lock-stale") or (
+                        merge and state == "diverged") or (
                     state == "removed-upstream" and _entry_status(entry) == "tracked"
                 ):
                     targets.append(path)
@@ -2886,7 +2913,11 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
 
 
 def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
-              judged_since: str | None, as_json: bool) -> int:
+              judged_since: str | None, as_json: bool, unshipped: bool = False, root: Path | None = None) -> int:
+    """`unshipped` keeps rows whose current content is the judged content and not the baseline copy the
+    lock records (`hash`), so a verdict an earlier publish left out stays listed however long ago it was
+    judged; a verdict on older content is triage's, not publish's."""
+    current = _content_shas(root, list(lock.get("files", {}))) if unshipped else {}
     if status_filter is not None and status_filter not in V2_STATUSES:
         raise UsageError("unknown status")
     if verdict_filter is not None and verdict_filter not in VERDICTS:
@@ -2905,6 +2936,9 @@ def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
             continue
         judged = entry.get("judged") or {}
         if verdict_filter is not None and judged.get("verdict") != verdict_filter:
+            continue
+        if unshipped and (current.get(relpath) is None or judged.get("sha") != current[relpath]
+                          or current[relpath] == entry.get("hash")):
             continue
         if since is not None:
             at = judged.get("at")
@@ -3683,6 +3717,7 @@ def main(argv=None) -> int:
     ap.add_argument("--batch", type=int, default=20)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--judged-since")
+    ap.add_argument("--unshipped", action="store_true")
     ap.add_argument("--commit")
     ap.add_argument("--carry", metavar="BASE..HEAD")
     ap.add_argument("--repo")
@@ -3739,7 +3774,7 @@ def main(argv=None) -> int:
             require_v2_lock(lock)
         layers = resolve_layers_v2(lock, args.layers)
         if args.op == "paths":
-            return v2_paths(lock, args.status, args.verdict, args.judged_since, args.json)
+            return v2_paths(lock, args.status, args.verdict, args.judged_since, args.json, args.unshipped, root)
         if args.op == "gc":
             return v2_gc(root, args.apply)
         if args.op == "forget":
@@ -3787,7 +3822,7 @@ def main(argv=None) -> int:
             if args.op == "migrate":
                 return v2_migrate(root, source, resolve_layers_v2({}, args.layers), args.abbrev)
             if args.op == "triage":
-                return v2_triage(root, lock, source, args.batch, args.json)
+                return v2_triage(root, lock, source, args.batch, args.json, args.baseline_dir)
             if args.op == "fork":
                 return v2_fork(root, args.relpaths, source)
             if args.op == "track":

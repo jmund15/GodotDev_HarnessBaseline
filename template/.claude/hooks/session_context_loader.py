@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _optional_hooks
 from _bounded_run import run_bounded
+from _claude_scope import is_cloud
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -37,15 +38,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 # `git submodule status` line: optional drift prefix, sha, path.
 # Empty prefix group == in sync ('-' uninit, '+' checkout != pointer, 'U' conflict).
 _SUBMODULE_RE = re.compile(r"^([-+U]?)([0-9a-f]{40})\s+(\S+)")
-
-
-# ---------------------------------------------------------------------------
-# Environment detection
-# ---------------------------------------------------------------------------
-
-def is_cloud() -> bool:
-    """Return True if running in a Claude Code cloud environment."""
-    return os.environ.get("CLAUDE_CODE_REMOTE", "").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -718,19 +710,21 @@ def main():
     # --- Build output ---
     output_lines = ["<session-context>"]
 
+    # A sidecar child executes a brief; the owner's worktree, env and git lines are noise to it.
+    owner_view = not _sidecar_delegate()
+
     # Worktree/cloud report
-    if worktree:
+    if owner_view and worktree:
         output_lines.append(f"Worktree: YES (root: {root})")
-    else:
+    elif owner_view:
         output_lines.append("Worktree: no (main repo)")
 
     if cloud:
         output_lines.append("Environment: CLOUD (CLAUDE_CODE_REMOTE=true)")
 
-    output_lines.append("")
     env_parts = []
     any_fixed = False
-    for step, status in setup_results.items():
+    for step, status in (setup_results.items() if owner_view else ()):
         # A healthy sidecar's probe detail (endpoint, key, credential path) informs no routing choice;
         # its model and any fact after the detail (a pricing window) do.
         healthy_sidecar = re.match(r"(\S+): OK \([^)]*\)\s*(.*)$", status) if step.startswith("sidecar-") else None
@@ -742,7 +736,9 @@ def main():
             env_parts.append(f"{step}: {status}")
             if "FIXED" in status:
                 any_fixed = True
-    output_lines.append("Env: " + " | ".join(env_parts))
+    if owner_view:
+        output_lines.append("")
+        output_lines.append("Env: " + " | ".join(env_parts))
     if not cloud:
         ladder_line = ladder_banner(root)
         if ladder_line:
@@ -761,15 +757,16 @@ def main():
         output_lines.append("  Auto-fixed the items marked FIXED; see remaining statuses above.")
 
     # Git context
-    output_lines.append("")
-    output_lines.append(f"Git: {branch} | {uncommitted_str}")
-    output_lines.append("")
-    output_lines.append("Recent {{PROJECT_NAME}} commits:")
-    if main_commits:
-        for commit in main_commits:
-            output_lines.append(f"  {commit}")
-    else:
-        output_lines.append("  (none)")
+    if owner_view:
+        output_lines.append("")
+        output_lines.append(f"Git: {branch} | {uncommitted_str}")
+        output_lines.append("")
+        output_lines.append("Recent {{PROJECT_NAME}} commits:")
+        if main_commits:
+            for commit in main_commits:
+                output_lines.append(f"  {commit}")
+        else:
+            output_lines.append("  (none)")
 
     for lines in _step_results("context_lines", root, get_recent_commits):
         output_lines.extend(lines)

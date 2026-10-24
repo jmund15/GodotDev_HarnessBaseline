@@ -20,6 +20,10 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from cli_usage import usage
 
 from _compaction_rail import DEFAULT_RAIL, RAIL_3, RAIL_4, RAILS, rail_text, selected_rail  # noqa: F401  (re-exported)
 
@@ -27,7 +31,7 @@ MAX_BYTES = 160_000  # a brief past this is re-injected head-first with a pointe
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--prompt-file")
     args = parser.parse_args()
     path = (args.prompt_file or os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "")).strip()

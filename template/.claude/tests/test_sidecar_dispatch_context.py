@@ -108,8 +108,8 @@ def arm_skill(env, session):
 
 
 def names_ladder_route(reason):
-    """A ladder deny names the full Read when the launch's tiers are unknown, else the slice command."""
-    return "model_ladder_evidence.md" in reason or "model_registry.py ladder-slice" in reason
+    """A ladder deny names the full Read when the launch's tiers are unknown, else carries the slice (or names its command)."""
+    return "model_ladder_evidence.md" in reason or "model_registry.py ladder-slice" in reason or "## Role definitions" in reason
 
 
 def arm_slice(env, session, tiers):
@@ -441,7 +441,7 @@ def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
     monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
-    monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", lambda payload, tiers=None: (None, None), raising=False)
+    monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", lambda payload, tiers=None, embed_slice=False: (None, None), raising=False)
     payload = {"tool_name": "Bash", "session_id": "card0001",
                "tool_input": {"command": "bash .claude/scripts/ok_sidecar.sh -m fake -f brief.md"}}
     for _ in range(2):
@@ -469,7 +469,7 @@ def test_a_doctrine_fault_is_the_only_context_an_admitted_launch_carries(tmp_pat
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     fault = sidecar.model_ladder_gate.FAULT_NOTE
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check",
-                        lambda payload, tiers=None: (None, fault), raising=False)
+                        lambda payload, tiers=None, embed_slice=False: (None, fault), raising=False)
     payload = {"tool_name": "Bash", "session_id": "fault001",
                "tool_input": {"command": "bash .claude/scripts/ok_sidecar.sh -m fake -f brief.md"}}
     out = io.StringIO()
@@ -495,7 +495,7 @@ def test_a_fanout_whose_jobs_file_the_call_writes_defers_the_doctrine_to_its_lau
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check",
-                        lambda payload, tiers=None: ("DOCTRINE-UNMET", None), raising=False)
+                        lambda payload, tiers=None, embed_slice=False: ("DOCTRINE-UNMET", None), raising=False)
     (tmp_path / "written.json").write_text('{"jobs": []}', encoding="utf-8")
     launch = "python3 .claude/tools/sidecar_fanout.py %s --detach"
     write = "cat > unwritten.json <<'EOF'\n{\"jobs\": []}\nEOF\n"
@@ -507,12 +507,69 @@ def test_a_fanout_whose_jobs_file_the_call_writes_defers_the_doctrine_to_its_lau
     assert present and "DOCTRINE-UNMET" in present, present
 
 
+def test_a_fanout_drivers_child_launch_skips_the_doctrine_only_for_a_recorded_admission(tmp_path, monkeypatch, capsys):
+    sys.path.insert(0, HOOKS)
+    import dispatch_table
+    import watch_records
+    calls = []
+
+    def doctrine(payload, tiers=None, embed_slice=True):
+        calls.append(payload.get("session_id"))
+        return "DOCTRINE-UNMET", None
+
+    monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
+    monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
+    monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs: None)
+    monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("ok", None))
+    monkeypatch.setattr(sidecar, "tracking_session", lambda: "child001")
+    monkeypatch.setattr(sidecar, "take_checks", lambda *args: (False, True))
+    record = tmp_path / "wl-a.record.json"
+    argv = ["-m", "fake", "-f", "brief.md", "-G", "author", "-R", str(record)]
+    launcher = os.path.join(REPO, "scripts", "anthropic_sidecar.sh")
+    inventory = tmp_path / "fanout-fan-1.inventory.json"
+
+    def admit(session="child001", process=None, fanout="fan-1", job=str(record)):
+        inventory.write_text(json.dumps({
+            "fanoutId": fanout, "parentSessionId": session,
+            "fanoutProcess": process or watch_records.process_line(),
+            "jobs": [{"label": "wl-a", "recordPath": os.path.abspath(job)}]}), encoding="utf-8")
+
+    def launch():
+        calls.clear()
+        return sidecar.launcher_launch(launcher, argv), list(calls)
+
+    monkeypatch.setenv("SIDECAR_FANOUT_ID", "fan-1")
+    assert launch() == (2, ["child001"])
+
+    admit()
+    assert launch() == (0, [])
+    admit(session="other001")
+    assert launch() == (2, ["child001"])
+    admit(fanout="fan-2")
+    assert launch() == (2, ["child001"])
+    admit(job=str(tmp_path / "wl-b.record.json"))
+    assert launch() == (2, ["child001"])
+    admit(process="2020-01-01T00:00:00Z winpid=99999999 pid=99999999")
+    assert launch() == (2, ["child001"])
+
+    admit()
+    with monkeypatch.context() as broken:
+        broken.delattr(watch_records, "_process_line_gone")
+        assert launch() == (2, ["child001"])
+
+    admit()
+    monkeypatch.delenv("SIDECAR_FANOUT_ID")
+    assert launch() == (2, ["child001"])
+
+
 def test_the_launcher_checks_the_doctrine_for_a_launch_no_hook_checked(monkeypatch, capsys):
     sys.path.insert(0, HOOKS)
     import dispatch_table
     calls = []
 
-    def doctrine(payload, tiers=None):
+    def doctrine(payload, tiers=None, embed_slice=True):
+        assert embed_slice is False  # the launcher's deny reaches a log, not the session
         calls.append(payload.get("session_id"))
         return "DOCTRINE-UNMET", None
 
@@ -545,6 +602,7 @@ import shlex
 @pytest.fixture(autouse=True)
 def isolated_session_state(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "session-state"))
+    monkeypatch.delenv("SIDECAR_FANOUT_ID", raising=False)
 
 
 @pytest.fixture
@@ -907,9 +965,9 @@ def main():
     arm_slice(env, "sdc00965", ["architect"])
     wrong_slice = run(tiered_launch, env, session="sdc00965", ladder=False)
     wrong_reason = wrong_slice.get("permissionDecisionReason", "")
-    cases.append(("a slice of another tier denies the launch naming the slice command for the shape's tier",
+    cases.append(("a slice of another tier denies the launch with the slice for the shape's tier",
                   wrong_slice.get("permissionDecision") == "deny"
-                  and "model_registry.py ladder-slice fanout" in wrong_reason))
+                  and "## Role definitions" in wrong_reason))
     arm_slice(env, "sdc00966", ["fanout"])
     untiered = run(launch, env, session="sdc00966", ladder=False)
     cases.append(("a launch with no shape tier needs the full ladder whatever slice is in context",

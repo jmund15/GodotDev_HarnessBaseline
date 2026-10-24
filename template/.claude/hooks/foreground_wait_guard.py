@@ -57,6 +57,9 @@ a caller should use depends on whether a backgrounded job wakes it:
    `run_in_background` whose segment runs `watch_records.py` with `--session` is denied (`foreground_watch_arm`):
    in the foreground, or detached with `&`/`nohup`/`disown`, its wake reaches no task notification, and while it lives
    every correct arm exits COVERED. Rule home: reference/sidecar_dispatch.md step 6.
+9. Trailing background `&` (advises, never denies). A Bash call without `run_in_background` whose command ends a line
+   in a single `&` (not `&&`, `2>&1`, `>&`) draws one advisory naming `run_in_background` (`DETACHED_ADVICE`).
+   Rule home: CLAUDE.core.md §Shell Discipline. Class: process guard, advisory first.
 
 Matches the ACTION, never the noun: a command that only names `sleep` passes, and a Monitor (except item 7) or a
 backgrounded call is never counted. Class: process guard. State: the shared per-session file
@@ -109,6 +112,7 @@ _STATUS_VERBS = frozenset((
     "out-string", "write-host", "write-output", "set-location",
 ))
 _HARMLESS_REDIRECT = re.compile(r"\d?>\s*(?:/dev/null|\$null|nul)\b|\d?>&\d", re.IGNORECASE)
+_DETACHED_LINE = re.compile(r"(?<![&>|<])&[ \t]*(?=\r?\n|\Z)")
 
 _WAIT_RECIPE = (
     "wait in foreground calls: `until <done-test>; do sleep 30; done` with a Bash timeout of at most "
@@ -118,8 +122,8 @@ _WAIT_RECIPE = (
 MONITOR_REASON = (
     "BLOCKED Monitor timeout_ms %d: the tool caps every Monitor at %d ms (%d minutes) and ends it there with no "
     "wake, so a longer request is a watch that dies silently. To wait on a detached job's end, use its own waiter "
-    "with Bash run_in_background and timeout 7200000: the `WAIT-CMD` its launch printed, "
-    "or `python3 .claude/tools/watch_records.py --session --wake`; each checks in at %d minutes, "
+    "with Bash run_in_background and a 7200000 ms timeout: the `WAIT-CMD` its launch printed, "
+    "or `%s`; each checks in at %d minutes, "
     "inside the one-hour prompt cache. Keep a Monitor for intermediate events "
     "(CLAUDE.core.md §Shell Discipline), with timeout_ms at most %d."
 )
@@ -143,8 +147,7 @@ NO_WAKE_ADVICE = (
 WATCH_REASON = (
     "BLOCKED session-watcher arm outside run_in_background: a watcher started in a foreground call, or detached with "
     "&, nohup or disown, delivers its wake to no task notification, and while it lives every correct arm exits COVERED. "
-    "Run `python3 .claude/tools/watch_records.py --session --wake` alone with Bash run_in_background: true and "
-    "timeout 7200000 (reference/sidecar_dispatch.md step 6)."
+    "Run `%s` %s (reference/sidecar_dispatch.md step 6)."
 )
 BATCH_ADVICE = (
     "[wait] This foreground proof batch is expected to take %s, past this call's %d s timeout. Run it with "
@@ -154,6 +157,10 @@ BATCH_ADVICE = (
 RAISED_NOTE = (
     "[wait] Backgrounded this foreground call: its %d ms timeout says it may run long, and no recorded time says it "
     "fits. Keep working and act on its one wake (CLAUDE.core.md §Shell Discipline)."
+)
+DETACHED_ADVICE = (
+    "[wait] A trailing `&` detaches this job outside the run_in_background wake (CLAUDE.core.md §Shell Discipline). "
+    "Set run_in_background: true on this call instead and act on its one wake."
 )
 _PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
 _PROOF_RUNNERS = frozenset(("bash", "sh", "node", "pwsh", "powershell"))
@@ -359,6 +366,17 @@ def _selected_proofs(parsed):
 
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _watch_records():
+    """The module that owns the watcher arm text, loaded only when a deny needs it."""
+    tools = os.path.join(_PROJECT_ROOT, ".claude", "tools")
+    sys.path.insert(0, tools)
+    try:
+        import watch_records
+    finally:
+        sys.path.remove(tools)
+    return watch_records
 
 
 def _runner():
@@ -693,7 +711,7 @@ def main():
         except (TypeError, ValueError):
             return 0
         if asked > MONITOR_CAP_MS:
-            return _deny(MONITOR_REASON % (asked, MONITOR_CAP_MS, MONITOR_CAP_MS // 60000,
+            return _deny(MONITOR_REASON % (asked, MONITOR_CAP_MS, MONITOR_CAP_MS // 60000, _watch_records().ARM_COMMAND,
                                            ORCHESTRATOR_WAIT_MS // 60000, MONITOR_CAP_MS))
         return 0
     if payload.get("tool_name") not in ("Bash", "PowerShell"):
@@ -714,7 +732,7 @@ def main():
                 _check_in(payload, command, tool_input, None)
         return 0
     if not (unwoken or _caller(payload)) and foreground_watch_arm(command):
-        return _deny(WATCH_REASON)
+        return _deny(WATCH_REASON % (_watch_records().ARM_COMMAND, _watch_records().ARM_CALL))
     advice = None if unwoken else _batch_advice(command, tool_input.get("timeout"))
     if _LOOP_SLEEP.search(shell_code(command)):
         try:
@@ -754,8 +772,10 @@ def main():
     count = _count_poll(payload, command)
     if count >= POLL_LIMIT:
         return _deny((POLL_REASON_AGENT if unwoken else POLL_REASON_MAIN) % (count, _ordinal(count)))
-    if advice:
-        _advise(advice)
+    detached = payload.get("tool_name") == "Bash" and _DETACHED_LINE.search(shell_code(command))
+    notes = [note for note in (advice, DETACHED_ADVICE if detached else None) if note]
+    if notes:
+        _advise(" ".join(notes))
     return 0
 
 

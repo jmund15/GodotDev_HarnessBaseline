@@ -31,6 +31,11 @@ SID = "bpc00001"
 SEVEN_DAY = 7 * 24 * 3600
 
 
+def capacity_cache():
+    """A cache path that holds no reading, so the plans read cold on any machine."""
+    return os.path.join(tempfile.mkdtemp(prefix="bpccache_"), "capacity.json")
+
+
 def write_capture(tmpdir, session, used_pct):
     """The rate_limits snapshot statusline.py writes every turn."""
     now = time.time()
@@ -82,7 +87,7 @@ def sampler_cases(cases, home):
     tmp = tempfile.mkdtemp(prefix="bpstmp_")
     samples = os.path.join(tempfile.mkdtemp(prefix="bpssamples_"), "samples.jsonl")
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
-               HOME=home, USERPROFILE=home,
+               HOME=home, USERPROFILE=home, PROVIDER_CAPACITY_CACHE=capacity_cache(),
                PYTHONIOENCODING="utf-8", HARNESS_USAGE_SAMPLES=samples)
     for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_TRANSPORT", "ANTHROPIC_BASE_URL"):
         env.pop(key, None)
@@ -190,7 +195,7 @@ def main():
     state = tempfile.mkdtemp(prefix="bpcstate_")
     tmp = tempfile.mkdtemp(prefix="bpctmp_")
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
-               HOME=home, USERPROFILE=home,
+               HOME=home, USERPROFILE=home, PROVIDER_CAPACITY_CACHE=capacity_cache(),
                PYTHONIOENCODING="utf-8",
                HARNESS_USAGE_SAMPLES=os.path.join(tempfile.mkdtemp(prefix="bpcsamples_"), "s.jsonl"))
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
@@ -214,6 +219,8 @@ def main():
     cases.append(("the first prompt emits the posture",
                   "[budget-posture]" in out and "Surplus" in out))
     cases.append(("the emitted NEVER clause cites its home", "orchestration §5" in out))
+    cases.append(("a cache-free machine reads every plan cold, whatever the real cache holds",
+                  "codex band unknown (cache cold)" in out))
 
     # The plan rooms reach the session before its first dispatch: no dispatch, no transcript, still speaks.
     write_capture(tmp, "bpc00020", 40.0)

@@ -81,8 +81,10 @@ the guard log records it under `fiveHour`/`fiveHourLive`.
 OWNER OVERRIDE: an `owner:` statement (`args.currency: "<session transport>"` with
 `args.currencyReason: "owner: <words>"`, or an Agent prompt line `CURRENCY: <transport> — owner:
 <words>`) is held on the session record (`ownerOverride`) for the rest of the session and lifts
-RULE 5. Only a quote this session's transcript carries is held (`hooks/_owner_text.py`), so a held
-statement is a verified one and the same words never lift from this call's own text. A RULE 5 deny
+RULE 5. It lifts only when an owner turn of this session holds the literal token `--<transport>` outside
+a pasted block, or the owner answered an AskUserQuestion naming the transport with a lift
+(`owner_lift_found`, over `hooks/_owner_text.py`); the stated words are display only. A held statement is
+a verified one and this call's own text never lifts. A RULE 5 deny
 opens with the instruction it enforces (orchestration §5b, read before the call) and closes by
 naming the override as the owner's to grant, never the agent's.
 
@@ -671,29 +673,40 @@ def override_class(reason):
     return m.group(1) if m and len(m.group(2).strip()) >= MIN_REASON_CHARS else None
 
 
-def owner_quote_found(payload, quote):
-    """Is `quote` in an owner row of this session's transcript (`_owner_text.owner_quote_rows`)?
+_LIFT_YES = re.compile(r"\b(?:yes|lift|allow|approve[ds]?|go ahead)\b", re.I)
+_LIFT_NO = re.compile(r"\b(?:no|don'?t|decline|keep|deny|wait)\b", re.I)
 
-    The one place an `owner:` statement is verified. An unreadable transcript verifies nothing: an
-    unverifiable quote is not a fact, so it neither lifts nor is held.
+
+def owner_lift_found(payload, transport):
+    """Did the owner of this session name `transport` for the RULE 5 lift?
+
+    The one place an `owner:` statement is verified. Two facts pass: an owner row
+    (`_owner_text.owner_quote_rows`) holding the literal token `--<transport>` outside a pasted block, or an
+    answered AskUserQuestion whose question names the transport and whose picked label approves. The words
+    the call states are display only. An unreadable transcript verifies nothing: an unverifiable lift
+    neither lifts nor is held.
     """
     path = str(payload.get("transcript_path") or "")
-    if not path or not quote:
+    if not path or not transport:
         return False
-    texts = _owner_text.owner_quote_rows(path)
-    return bool(texts) and any(quote in text for text in texts)
+    texts = _owner_text.owner_quote_rows(path) or []
+    if any(_owner_text.holds_token(text, transport) for text in texts):
+        return True
+    pairs = _owner_text.owner_answer_pairs(path) or []
+    return any(_owner_text.names_all(question, [transport]) and _LIFT_YES.search(label)
+               and not _LIFT_NO.search(label) for _, picked in pairs for question, label in picked)
 
 
 def _owner_statement(state, transport, reason, cls, payload):
     """(words, verified_here): the owner's words lifting RULE 5 for this session.
 
-    This call's `owner:` quote when it is found in this session's transcript, else the words already
-    held on the session record (itself only ever a verified quote). `(None, False)` when neither
-    exists, so the caller can persist exactly what this call verified and nothing else.
+    This call's `owner:` words when the owner's token or answer names the transport (`owner_lift_found`),
+    else the words already held on the session record (itself only ever a verified lift). `(None, False)`
+    when neither exists, so the caller can persist exactly what this call verified and nothing else.
     """
     if cls == OWNER_CLASS:
         quote = _class_body(reason)
-        if quote and owner_quote_found(payload, quote):
+        if quote and owner_lift_found(payload, transport):
             return quote, True
     held = (state or {}).get("ownerOverride")
     if isinstance(held, dict) and held.get("transport") == transport:
@@ -717,7 +730,9 @@ def _class_body(reason):
 def _owner_line(seat):
     return (f"Only the owner can lift this for the session; once they have, state `args.currency: \"{seat}\"` "
             f"with `args.currencyReason: \"owner: <their words>\"` (Agent tool: a prompt line "
-            f"`CURRENCY: {seat} — owner: <their words>`).")
+            f"`CURRENCY: {seat} — owner: <their words>`). It passes only when an owner turn of this session "
+            f"holds the literal token `--{seat}` outside a pasted block, or the owner answered an "
+            f"AskUserQuestion that names `{seat}` with a lift.")
 
 
 # ---------------------------------------------------------------- five-hour width
@@ -1529,7 +1544,8 @@ def parse_ladder_role_lines(raw_lines, data=None):
 ROLE_LADDER_HEADER = ("[role ladder (orchestration §5)] model: the tiers its registry row claims, ladder cost (higher = "
                       "cheaper), in ladder order. A pin must claim its job's tier, except a tier marked supplementary, which fills a "
                       "review seat beside a qualified seat only (ladder §Role definitions); which claimant to use is your choice "
-                      "by the ladder's selection line, weighing `±` fit, quality, cost and each plan's quota left against its window left. "
+                      "by the ladder's selection line: `±` fit and quality, then the plan (quota going unused at reset first), "
+                      "then the cheapest fit row on it. "
                       "Efforts and `±` are in .claude/reference/model_ladder_evidence.md. ")
 _PARENS = re.compile(r"\s*\([^)]*\)")
 
@@ -1582,7 +1598,7 @@ def _emit_advice(parts, updated=None):
     _TRACE["outcome"] = "inject" if updated is not None else ("advise" if parts else "silent")
 
 
-def _pick_route(payload, transport, data, plan=None):
+def _cross_plan_route(payload, transport, data, plan=None):
     """The §5b route for a job whose native plan refused on capacity: the other plans with room that
     pay for a row of the call's tiers, with their launchers. `plan` is the session's paying
     plan; it defaults to `transport`, the route."""
@@ -1592,13 +1608,12 @@ def _pick_route(payload, transport, data, plan=None):
         for _label, model, tier, implied in call_pins(payload):
             claimed = [tier] if (tier and implied) else served_tiers(model, data) or ([tier] if tier else [])
             tiers += [t for t in claimed if t not in tiers]
-        picked = _dispatch_checks.provider_bands.pick(tiers or list(model_registry.TIER_ORDER), plan,
-                                                      data=data, read=_dispatch_checks.read_capacity)
+        got = _dispatch_checks.provider_bands.facts(tiers or list(model_registry.TIER_ORDER), plan,
+                                                    data=data, read=_dispatch_checks.read_capacity)
     except Exception:
-        picked = {}
+        got = {}
     transports = (data or {}).get("transports") or {}
-    rows = _dispatch_checks.provider_bands.registry_order(
-        [r for r in picked.get("ranked") or [] if r.get("room") is not None and r["transport"] != plan], data)
+    rows = [r for r in got.get("plans") or [] if r.get("room") is not None and r["transport"] != plan]
     if not rows:
         return ("Native dispatch waits for this transport's reset; no cross-transport row has quota and a "
                 "readable capacity. Run the job inline, or wait for the reset.")
@@ -1786,7 +1801,7 @@ def check(payload):
                        if provider_capacity_guard else
                        "Provider capacity guard is unavailable; native dispatch is blocked")
     if capacity_reason:
-        _deny(f"{capacity_reason} (orchestration §5b) " + _pick_route(payload, transport, data, plan))
+        _deny(f"{capacity_reason} (orchestration §5b) " + _cross_plan_route(payload, transport, data, plan))
         return
 
     # RULE 3 — tier, every band and every transport.

@@ -39,6 +39,33 @@ check("a Monitor asking past the tool ceiling is denied",
 rc, out, err = run(monitor(60000))
 check("a Monitor under the ceiling passes silently", rc == 0 and out.strip() == "", out + err)
 
+
+def bash(command, background=False):
+    tool_input = {"command": command, "run_in_background": True} if background else {"command": command}
+    return {"session_id": "proof-fwg-2", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": tool_input}
+
+
+def advisory(command, background=False):
+    rc, out, err = run(bash(command, background))
+    context = json.loads(out).get("hookSpecificOutput", {}).get("additionalContext", "") if out.strip() else ""
+    return rc, context, out + err
+
+
+for label, command in (("a subshell backgrounded with a trailing ampersand", "( pytest -q ) &"),
+                       ("a line ending in a background ampersand", "pytest -q &\necho done")):
+    rc, context, detail = advisory(command)
+    check(label + " draws the run_in_background advisory",
+          rc == 0 and "run_in_background" in context, detail)
+
+for label, command, background in (
+        ("a logical and is not a background job", "pytest -q && echo ok", False),
+        ("a redirect into a descriptor is not a background job", "pytest -q 2>&1", False),
+        ("an ampersand inside quotes is not a background job", 'echo "tail &"', False),
+        ("an ampersand in a heredoc body is data", "cat <<'EOF'\nline &\nEOF", False),
+        ("an ampersand on a call already detached with run_in_background is not repeated", "( pytest -q ) &", True)):
+    rc, context, detail = advisory(command, background)
+    check(label + " passes silently", rc == 0 and "run_in_background" not in context, detail)
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

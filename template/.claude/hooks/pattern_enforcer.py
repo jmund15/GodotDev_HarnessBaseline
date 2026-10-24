@@ -56,11 +56,6 @@ def editor_only_spans(content: str) -> list[tuple[int, int]]:
     return spans
 
 
-def is_editor_tooling_file(file_path: str) -> bool:
-    """Jmodot tool code lives in Tools/ directories, where GD.Print is acceptable."""
-    return 'Tools' in file_path and file_path.endswith('.cs')
-
-
 def is_test_fixture(file_path: str) -> bool:
     """Check if the file is an agent test fixture (intentionally contains violations)."""
     normalized = file_path.replace('\\', '/')
@@ -78,15 +73,13 @@ def check_code_patterns(content: str, file_path: str = "") -> tuple[bool, str]:
     if is_test_fixture(file_path):
         return False, ""
 
-    editor_file = is_editor_tooling_file(file_path)
     editor_spans = editor_only_spans(content)
 
     # Check standard blocked patterns
     for pattern, message in CODE_BLOCKED_PATTERNS:
         for match in re.finditer(pattern, content):
-            # Allow GD.Print in editor tooling code: a Tools/ file, or a `#if TOOLS` body
-            if 'GD.Print' in message and (
-                    editor_file or any(lo <= match.start() < hi for lo, hi in editor_spans)):
+            # Allow GD.Print only inside a `#if TOOLS` body
+            if 'GD.Print' in message and any(lo <= match.start() < hi for lo, hi in editor_spans):
                 continue
             return True, message
 

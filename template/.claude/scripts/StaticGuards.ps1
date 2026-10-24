@@ -7,21 +7,14 @@ function Get-PythonCommand {
     return $null
 }
 
-# Older static guards derive REPO from __file__. Keep their code and policy in main, but point
-# their input roots at the target; cwd-aware guards already see the target as the working directory.
+# Every guard takes the target repo as `--repo <path>`; with no --repo it keeps its own default (its file's repo or the cwd).
 $script:GuardRunner = @'
 import runpy, sys
 from pathlib import Path
 script, target = sys.argv[1:]
 sys.path.insert(0, str(Path(script).parent))
-sys.argv = [script]
-module = runpy.run_path(script)
-entry = module['main']
-globals_ = entry.__globals__
-if 'REPO' in globals_:
-    globals_['REPO'] = Path(target)
-if 'TESTS_ROOT' in globals_:
-    globals_['TESTS_ROOT'] = Path(target) / globals_.get('_TESTS_ROOT_REL', 'Tests')
+sys.argv = [script, '--repo', target]
+entry = runpy.run_path(script)['main']
 sys.exit(entry())
 '@
 

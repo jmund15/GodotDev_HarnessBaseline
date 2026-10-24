@@ -189,6 +189,13 @@ def test_build_profile_excludes_compound_type_name_present_in_template_tree() ->
     assert _TREE_PRESENT_TYPE_NAME not in profile["topology"], profile["topology"]
 
 
+def test_scan_changed_hits_added_line_with_no_file_header() -> None:
+    profile = _fixture_profile()
+    diff = f"@@ -0,0 +1,1 @@\n+the {_ABBREV} token\n"
+    hits = identity.scan_changed(diff, profile)
+    assert any(h.token_kind == "abbreviation" for h in hits), [h.to_dict() for h in hits]
+
+
 def test_scan_changed_ignores_removed_lines() -> None:
     profile = _fixture_profile()
     diff = (
@@ -587,6 +594,7 @@ def main() -> int:
         test_build_profile_includes_compound_type_name_absent_from_template_tree,
         test_build_profile_excludes_compound_type_name_present_in_template_tree,
         test_scan_changed_ignores_removed_lines,
+        test_scan_changed_hits_added_line_with_no_file_header,
         test_scan_tree_hits_planted_tokens_across_kinds,
         test_scan_tree_exits_on_missing_digests_file,
         test_scan_tree_exits_on_unparseable_digests_file,

@@ -69,7 +69,7 @@ Usage:
                                                 price the whole session: orchestrator O, every dispatch attempt D<n>,
                                                 proofs P, totals T, waste X; never archive
 """
-import argparse, glob, itertools, json, os, re, sys, zlib
+import argparse, glob, itertools, json, os, re, sys, time, zlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -183,6 +183,8 @@ ARCHIVE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_metrics.jsonl')
 ARCHIVE_MAX_BYTES = 5 * 1024 * 1024
 ARCHIVE_MAX_ROTATIONS = 6
 ARCHIVE_LOCK_TIMEOUT_SECONDS = 10.0
+REPLACE_ATTEMPTS = 5
+REPLACE_RETRY_DELAY_SECONDS = 0.2
 # Falsification outcomes, recorded at consumption (see module docstring).
 OUTCOMES = ('clean', 'defects', 'rework', 'discarded')
 FALSIFYING = model_tier_readout.FALSIFYING
@@ -287,7 +289,7 @@ def _atomic_write_json(path, value, indent=2):
             fh.write('\n')
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     finally:
         try:
             os.unlink(tmp)
@@ -327,6 +329,16 @@ def _archive_lock():
         yield
 
 
+def _replace_with_retry(source, target):
+    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+        try:
+            return os.replace(source, target)
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS:
+                raise
+            time.sleep(REPLACE_RETRY_DELAY_SECONDS)
+
+
 def _rotate_archive():
     if ARCHIVE_MAX_ROTATIONS <= 0:
         try:
@@ -342,9 +354,9 @@ def _rotate_archive():
     for index in range(ARCHIVE_MAX_ROTATIONS - 1, 0, -1):
         source = ARCHIVE + '.%d' % index
         if os.path.exists(source):
-            os.replace(source, ARCHIVE + '.%d' % (index + 1))
+            _replace_with_retry(source, ARCHIVE + '.%d' % (index + 1))
     if os.path.exists(ARCHIVE):
-        os.replace(ARCHIVE, ARCHIVE + '.1')
+        _replace_with_retry(ARCHIVE, ARCHIVE + '.1')
 
 
 def _atomic_replace_bytes(path, content):
@@ -356,7 +368,7 @@ def _atomic_replace_bytes(path, content):
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     finally:
         try:
             os.unlink(tmp)
@@ -3398,6 +3410,22 @@ def attempt_rows(session, run_id, diagnostics=None):
     return rows
 
 
+def agent_tool_rows(session):
+    """One row per Agent-tool subagent: a session-level `subagents/agent-<id>.jsonl`, which no Workflow
+    record lists. It runs on the session's own model and effort, so its effort is `inherited-session`."""
+    session_id = os.path.basename(os.path.abspath(session))
+    rows = []
+    for aid, u in sorted(agent_usage(os.path.join(session, 'subagents')).items()):
+        u = dict(u)
+        first_ts = u.pop('first_ts', None)
+        model = u.get('served_model') or ''
+        rows.append(dict(run='agent-tool', workflow='agent-tool', label='agent-' + aid, model=model,
+                         effort='inherited-session', state='done', phase='', agent_id=aid,
+                         session_id=session_id, source='agent-tool', timestamp=first_ts,
+                         run_date=run_date_of(first_ts), list_usd=list_usd(model, u), **u))
+    return rows
+
+
 def _sidecar_list(row, data=None):
     """List price from reachable requests, an already tiered record, or marked untiered totals."""
     parts = [_optional_number(row.get(k)) for k in ('inp', 'cr', 'out', 'cw')]
@@ -3431,7 +3459,7 @@ def _row_list(row):
 def _dispatch_row(row, kind, number, rerun, journal):
     return dict(
         id='D%d' % number, kind=kind, run=row.get('run'), label=row.get('label'),
-        engine='sidecar' if row.get('source') == 'sidecar' else 'workflow', workflow=row.get('workflow'),
+        engine=row.get('source') if row.get('source') in ('sidecar', 'agent-tool') else 'workflow', workflow=row.get('workflow'),
         model=row.get('model'), effort=row.get('effort'), attempt=row.get('attempt', 'current'),
         rerun=rerun, journal=journal,
         tokens=dict(fresh=row.get('inp'), cache_read=row.get('cr'), cache_write=row.get('cw'),
@@ -3584,6 +3612,9 @@ def build_rollup(session, diagnostics=None, overlaps=None):
     for row in collect_session_sidecar(session, diagnostics):
         groups.append((_stamp_seconds(row.get('timestamp')), row.get('run') or '', 'sidecar',
                        dict(state='n/a', classes={}), [dict(row, attempt='current')]))
+    for row in agent_tool_rows(session):
+        groups.append((_stamp_seconds(row.get('timestamp')), row['agent_id'], 'agent_tool',
+                       dict(state='n/a', classes={}), [dict(row, attempt='current')]))
     groups.sort(key=lambda g: (g[0], g[1]))
     outcomes = _rollup_outcomes([r for g in groups if g[2] != 'instrument' for r in g[4]
                                  if r['attempt'] == 'current'])
@@ -3611,7 +3642,7 @@ def build_rollup(session, diagnostics=None, overlaps=None):
                 d_row['waste_min'] = (d_row['secs'] or 0.0) / 60.0
                 waste_spans.setdefault(row.get('run'), []).append(
                     spans.get((row.get('run'), row.get('agent_id')), (None, d_row['secs'] or 0.0)))
-    list_groups = dict(orchestrator=o_row['list'], workflow=0.0, sidecar=0.0, instrument=0.0)
+    list_groups = dict(orchestrator=o_row['list'], workflow=0.0, sidecar=0.0, agent_tool=0.0, instrument=0.0)
     tokens = dict(fresh=o_row['fresh'], cache_read=o_row['cache_read'], cache_write_5m=o_row['cache_write_5m'],
                   cache_write_1h=o_row['cache_write_1h'], cache_write_unsplit=0, output=o_row['output'])
     for d_row in dispatch:
