@@ -106,6 +106,11 @@ def red_failure_rows(root):
         detail = Path(root, GATE_LAST).read_text(encoding='utf-8-sig')
     except OSError:
         return None
+    return parse_red_rows(detail)
+
+
+def parse_red_rows(detail):
+    """(failing-test rows, failed= counts) of gate_last.md text."""
     rows = [line[2:] for section in FAILING_SECTION_RE.findall(detail) for line in section.splitlines()]
     return rows, [int(n) for n in re.findall(r'\bfailed=(\d+)', detail)]
 
@@ -195,7 +200,8 @@ def open_red_at(repo):
     if time.time() - mtime > STALE_FAIL_SEC:
         return None
     if re.search(r"^VERDICT=WARN\b", text, re.M):
-        if not (re.search(r"^### [^\n]+ failing tests", text, re.M) or re.search(r"\bfailed=[1-9]", text)):
+        rows, counts = parse_red_rows(text)
+        if not (rows or any(counts)):
             return None
     elif not re.search(r"^VERDICT=FAIL\b", text, re.M):
         return None

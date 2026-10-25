@@ -71,9 +71,10 @@ A launch whose spend-ledger finish row (lib/sidecar_common.sh `sc_write_finish_r
 `ended-before-result` has ended: it prints `ENDED <label> exit=<n> <reason>` once and wakes the
 session like a non-zero DONE; a `finished-without-record` row ends it as `DONE <label> exit=<n>`.
 The Stop hook removes a pending entry whose `.exit` exists and tells the user only, so a watcher armed afterwards
-finds no entry: a failed finish row of this session (`ended-before-result`, or a non-zero exit) that no pending
-entry carries, younger than `dispatch_table.STALE_SECONDS`, prints the same line from the ledger alone
-(`unreported_ends`). The end has one identity (`ended_identity`) whichever reader finds it, so an end that woke
+finds no entry. The watcher then reads the ledger: a failed finish row of this session (`ended-before-result` or a
+non-zero exit) that no pending entry carries and that is younger than `dispatch_table.STALE_SECONDS` prints the same
+line (`unreported_ends`). A pending entry of that label that began a later attempt suppresses the line, because the
+end was a refusal its relaunch answers. The end has one identity (`ended_identity`) whichever reader finds it, so an end that woke
 the session through its entry is not reported again, and an acknowledged one stays a quiet line until its row ages out.
 A record that DIED, or a job of a fan-out whose process is gone that DIED, whose launch id (the
 `launch=` in `<record>.pid`, else the record's or its inventory's `launchId`) a live process other
@@ -386,12 +387,18 @@ def record_launched(record):
     return max(times) if times else None
 
 
+def attempt_start(entry):
+    """When the entry's current attempt began: the latest of its launch, its record's inventory and its record's latest
+    launch line, as epoch seconds; None when none of them parses."""
+    return max((t for t in (_launch_time(entry), inventory_written(entry), record_launched(entry.get("record")))
+                if t is not None), default=None)
+
+
 def finish_row(entry, rows):
     """The last finish row for this entry's label written at or after its launch, its record's
     inventory and its record's latest launch line, else None."""
     label, found = (entry.get("jobs") or [{}])[0].get("label"), None
-    since = max((t for t in (_launch_time(entry), inventory_written(entry), record_launched(entry.get("record")))
-                 if t is not None), default=None)
+    since = attempt_start(entry)
     for row in rows:
         if row.get("label") == label and (since is None or epoch(row.get("timestamp")) >= since):
             found = row
@@ -443,6 +450,9 @@ def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
     for row in rows:
         label = row.get("label")
         if id(row) in carried or not label or not failed_finish(row) or now - epoch(row.get("timestamp")) > stale_seconds:
+            continue
+        if any(_entry_label(entry) == label and (attempt_start(entry) or 0.0) > epoch(row.get("timestamp"))
+               for entry in pending):
             continue
         out.append({"kind": "sidecar", "id": "finish:%s:%s" % (label, row.get("timestamp")), "record": None,
                     "fanout_dir": None, "task_id": None, "jobs": [{"label": label}], "finish": row,
@@ -876,7 +886,7 @@ def process_session(pid):
             shell = reap.git_bash()
             if not shell:
                 return None
-            block = subprocess.run([shell, "-c", "cat /proc/%d/environ" % pid], capture_output=True,
+            block = subprocess.run([shell, "-c", "/usr/bin/cat /proc/%d/environ" % pid], capture_output=True,
                                    timeout=15).stdout
         else:
             with open("/proc/%d/environ" % pid, "rb") as fh:

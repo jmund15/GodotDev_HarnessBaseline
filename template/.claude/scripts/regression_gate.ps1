@@ -147,7 +147,7 @@ $runId     = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $PID
 $env:HARNESS_GATE_RUN = $runId
 # Machine-global on purpose: worktrees are separate directories, so a
 # per-checkout path cannot see peer sessions.
-$activityDir = Join-Path $env:TEMP 'harness-activity'
+$activityDir = Join-Path (Get-HarnessTempRoot) 'harness-activity'
 # The checkout-derived paths. A routed gate re-points them at its twin (Set-GateCheckout) once it holds the twin's lock.
 function Set-GateCheckout {
     param([Parameter(Mandatory)] [string] $Path)
@@ -453,7 +453,7 @@ function Invoke-RunDirReap {
     # A held child's Godot whose test host already exited escapes the child's own-tree reap; its --log-file still
     # names this gate's run dir.
     $found = @(Get-RunDirGodot -RunDir $script:RunDir -Map $Map)
-    foreach ($o in $found) { & taskkill /F /T /PID ([int] $o.ProcessId) *> $null }
+    foreach ($o in $found) { Stop-ProcessTree -ProcessId ([int] $o.ProcessId) }
     Emit "REAP site=$Site killed=$($found.Count) scope=run-dir"
     foreach ($o in $found) { Emit ("  kill  {0} {1} run-dir" -f $o.ProcessId, ([string] $o.Name -replace '\.exe$', '')) }
 }
@@ -675,7 +675,7 @@ function Start-ActivityRecord {
         New-Item -ItemType Directory -Force -Path $activityDir | Out-Null
         $script:ActivityPath      = Join-Path $activityDir "gate-$PID.json"
         $script:ActivityStart     = (Get-Date -AsUTC -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        $script:ActivityProcStart = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $script:ActivityProcStart = (Get-ProcessStartStamp -ProcessId $PID).ToString('yyyy-MM-ddTHH:mm:ssZ')
         $script:ActivityOn        = $true
         Update-ActivityRecord -Label 'start'
     } catch { $script:ActivityOn = $false }
@@ -833,7 +833,8 @@ function Invoke-StageWatch {
                 $gone = $null -eq $proc
                 if (-not $gone -and $rec -match 'start=(\S+)') {
                     $began = [datetime]::Parse($Matches[1], [cultureinfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
-                    $gone = [math]::Abs(($proc.StartTime.ToUniversalTime() - $began).TotalSeconds) -gt 2
+                    $live = Get-ProcessStartStamp -ProcessId $proc.Id
+                    $gone = (-not $live) -or [math]::Abs(($live - $began).TotalSeconds) -gt 2
                 }
             }
         }
@@ -1031,7 +1032,7 @@ $orphans = @(Get-ReapableGodot -Checkout $repo -Map $map)
 # reports its own REAP line from run_test_suite.ps1.
 foreach ($o in $orphans) {
     $opid = Get-ProcPid $o
-    if ($opid -gt 0) { & taskkill /F /T /PID $opid *> $null }
+    if ($opid -gt 0) { Stop-ProcessTree -ProcessId $opid }
 }
 Emit "REAP site=preflight killed=$($orphans.Count) scope=orphans-only"
 foreach ($o in $orphans) {
@@ -1161,7 +1162,7 @@ if ($true) {
     # still alive on this checkout with a live parent belongs to a peer session.
     foreach ($o in @(Get-ReapableGodot -Checkout $repo -Map (Get-ProcSnapshot))) {
         $opid = Get-ProcPid $o
-        if ($opid -gt 0) { & taskkill /F /T /PID $opid *> $null }
+        if ($opid -gt 0) { Stop-ProcessTree -ProcessId $opid }
     }
     $importLog = Join-Path $repo 'logs\tool_import_gate.log'
     New-Item -ItemType Directory -Force -Path (Split-Path $importLog) | Out-Null
@@ -1345,7 +1346,7 @@ $peers0 = @(Get-SuitePeers)
 $renderClasses = @(Get-RendererTaggedClasses -Repo $repo)
 if ($renderClasses.Count -gt 0) { Emit "RENDER classes=$($renderClasses.Count) unit=Render (windowed; excluded from every headless unit)" }
 $renderExcl = Format-RenderExclusions -Classes $renderClasses
-$sanityUnit = @{ label = 'Sanity'; filter = "FullyQualifiedName~Tests.Sanity$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = 0 }
+$sanityUnit = @{ label = 'Sanity'; filter = "FullyQualifiedName~Tests.Sanity$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = 0; windowed = $false }
 Invoke-GatePool -Units @($sanityUnit) -Phase 'sanity' -RecompilePass
 $r = ConvertTo-SuiteResult $script:PoolResults[0]
 $t = Test-SuiteTiers -R $r -Label 'Sanity'
@@ -1355,7 +1356,7 @@ if ($t.tier -in @('PARTIAL', 'INVALID') -and $r.status -ne 'HANG') {
     Emit "SUITE Sanity rerun=1 reason=$($t.tier)"
     $t0 = Get-Date
     $peers0 = @(Get-SuitePeers)
-    Invoke-GatePool -Units @(@{ label = 'Sanity_retry'; filter = $sanityUnit.filter; timeoutMs = $suiteTimeoutMs; expectSec = 0 }) `
+    Invoke-GatePool -Units @(@{ label = 'Sanity_retry'; filter = $sanityUnit.filter; timeoutMs = $suiteTimeoutMs; expectSec = 0; windowed = $false }) `
         -Phase 'sanity-retry' -RecompilePass:(-not $script:Recompiled)
     $r = ConvertTo-SuiteResult $script:PoolResults[0]
     $t = Test-SuiteTiers -R $r -Label 'Sanity'
@@ -1402,7 +1403,7 @@ if ($script:Recompiled -and -not $sanityRed) {
     $plan = New-IntegrationPlan -Segments $allUnitSegs -Manifest $man -TargetBatchSec $intTargetSec -MaxBatchTests 380 -Quarantine $quarantine -SubUnits $intSubUnits -RenderClasses $renderClasses
     if ($RetryOnly) { foreach ($line in @(Restore-PriorGreens -Plan $plan -StatePath $intStatePath -TreeDigest $script:RunTree.digest)) { Emit $line } }
     # Logic has no measured duration home; its cap orders it first, as the longest unit.
-    $logicUnit = @{ label = 'Logic'; filter = "FullyQualifiedName~Tests.Logic$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = $suiteTimeoutMs / 1000 }
+    $logicUnit = @{ label = 'Logic'; filter = "FullyQualifiedName~Tests.Logic$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = $suiteTimeoutMs / 1000; windowed = $false }
     $poolT0 = Get-Date
     $poolPeers0 = @(Get-SuitePeers)
     $intSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1422,7 +1423,7 @@ if ($script:Recompiled -and -not $sanityRed) {
     $logicRetry = ($t.tier -in @('PARTIAL', 'INVALID') -and $r.status -ne 'HANG')
     if ($logicRetry) {
         Emit "SUITE Logic rerun=1 reason=$($t.tier)"
-        $retryUnits = @(@{ label = 'Logic_retry'; filter = $logicUnit.filter; timeoutMs = $suiteTimeoutMs; expectSec = $logicUnit.expectSec }) + $retryUnits
+        $retryUnits = @(@{ label = 'Logic_retry'; filter = $logicUnit.filter; timeoutMs = $suiteTimeoutMs; expectSec = $logicUnit.expectSec; windowed = $false }) + $retryUnits
     }
     if ($retryUnits.Count -gt 0) {
         Invoke-GatePool -Units $retryUnits -Phase 'retry'

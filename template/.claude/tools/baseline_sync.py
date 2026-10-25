@@ -1249,6 +1249,17 @@ def _git_contents(root: Path, relpaths: list[str]) -> dict[str, bytes]:
     bootstrap under Windows process creation."""
     found: dict[str, bytes] = {}
     pending = list(dict.fromkeys(relpaths))
+    # An intent-to-add entry (`git add -N`) holds the empty blob, not the file; its content is the working copy.
+    # No pathspec: a few hundred paths overrun the Windows command-line limit.
+    ita = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "-z", "--diff-filter=A"],
+                         capture_output=True, check=False).stdout.decode("utf-8", "replace").split("\0")
+    wanted = set(pending)
+    for relpath in [p for p in ita if p in wanted]:
+        try:
+            found[relpath] = _lf((root / relpath).read_bytes())
+        except OSError:
+            continue
+    pending = [relpath for relpath in pending if relpath not in found]
     for prefix in (":", "HEAD:"):
         if not pending:
             break
@@ -3820,9 +3831,11 @@ def main(argv=None) -> int:
                 engine = _pending_engine_rows(root, source, lock, layers) if not args.relpaths else []
                 if not engine:
                     return v2_pull(root, source, args.relpaths, layers, args.force, args.merge)
-                v2_pull(root, source, engine, layers, False)
+                engine_code = v2_pull(root, source, engine, layers, False)
                 source.close()
                 source = None
+                if engine_code != 0:
+                    return engine_code
                 print("engine updated; the rest of the pull runs on it")
                 return subprocess.run([sys.executable, str(root / ENGINE_RELPATH), *raw_argv], cwd=root,
                                       env=dict(os.environ, **{ENGINE_UPDATED_ENV: "1"})).returncode

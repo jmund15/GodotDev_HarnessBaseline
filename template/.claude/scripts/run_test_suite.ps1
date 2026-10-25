@@ -80,6 +80,8 @@ param(
     # Run the engine windowed whatever the filter selects. Without it the run is headless unless every class the filter
     # selects is [RequiresRenderer]-tagged (IntegrationBatches.ps1 Resolve-RunMode).
     [switch] $Windowed,
+    # The mode the caller decided (the pool forwards its planner's choice). Unset, the mode is derived from -Filter.
+    [ValidateSet('headless', 'windowed')] [string] $RunMode,
     # dotnet test's console verbosity. normal prints a line per test, so a hang names its last test in the batch log.
     [ValidateSet('quiet', 'minimal', 'normal', 'detailed', 'diagnostic')] [string] $Verbosity = 'quiet'
 )
@@ -183,11 +185,11 @@ if (-not $IgnoreEditor -and -not $ReapReport -and -not $HeldCheckout) {
     $repo = $route.Path
     Set-Location $repo
 }
-$runMode = if ($ReapReport) { $null } else { Resolve-RunMode -Repo $repo -Filter $Filter -Windowed:$Windowed }
-if ($runMode) {
-    Write-Output "MODE=$($runMode.mode)"
-    if (@($runMode.skipped).Count -gt 0) {
-        Write-Output "RENDER_SKIPPED classes=$(@($runMode.skipped) -join ',')  (this filter mixes renderer-tagged and untagged classes, so it runs headless and these are not rendered; filter to only tagged classes or pass -Windowed)"
+$modeChoice = if ($ReapReport) { $null } else { Resolve-RunMode -Repo $repo -Filter $Filter -Windowed:$Windowed -Declared "$RunMode" }
+if ($modeChoice) {
+    Write-Output "MODE=$($modeChoice.mode)"
+    if (@($modeChoice.skipped).Count -gt 0) {
+        Write-Output "RENDER_SKIPPED classes=$(@($modeChoice.skipped) -join ',')  (this filter mixes renderer-tagged and untagged classes, so it runs headless and these are not rendered; filter to only tagged classes or pass -Windowed)"
     }
 }
 if ($RouteOnly) {
@@ -252,13 +254,13 @@ try {
     # A dry run must not announce itself as a live suite — a peer's gate reads this registry and
     # would wait behind a process that is doing nothing.
     if ($ReapReport) { throw 'skip' }
-    $actDir = Join-Path $env:TEMP 'harness-activity'
+    $actDir = Join-Path (Get-HarnessTempRoot) 'harness-activity'
     New-Item -ItemType Directory -Force -Path $actDir | Out-Null
     $script:ActivityFile = Join-Path $actDir "suite-$PID.json"
     $owner = Get-RunOwnerRoot
     $script:ActivityRec  = [ordered] @{
         pid         = $PID
-        procStart   = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+        procStart   = (Get-ProcessStartStamp -ProcessId $PID).ToString('o')
         kind        = 'suite'
         checkout    = $repo
         sessionId   = $(if ($env:CLAUDE_SESSION_ID) { $env:CLAUDE_SESSION_ID } else { $null })
@@ -431,7 +433,7 @@ function Clear-TestRunners {
         $spares.Add([pscustomobject] @{ pid = $id; name = $nm; reason = $reason; detail = $null })
     }
     Write-ReapLine -Site $Site -Kills $kills -Spares $spares
-    if (-not $DryRun) { foreach ($k in $kills) { & taskkill.exe '/F' '/T' '/PID' $k.pid 2>$null | Out-Null } }
+    if (-not $DryRun) { foreach ($k in $kills) { Stop-ProcessTree -ProcessId $k.pid } }
 }
 
 # A held child's reaper: the test-runner candidates (testhost, vstest, Godot, dotnet-test wrappers) in $RootPid's own
@@ -458,7 +460,7 @@ function Clear-OwnTree {
     param([string] $Site, [switch] $DryRun)
     $r = Get-OwnTreeReap -Map (Get-ProcSnapshot) -RootPid $PID
     Write-ReapLine -Site $Site -Kills $r.Kills -Spares $r.Spares
-    if (-not $DryRun) { foreach ($k in $r.Kills) { & taskkill.exe '/F' '/T' '/PID' $k.pid 2>$null | Out-Null } }
+    if (-not $DryRun) { foreach ($k in $r.Kills) { Stop-ProcessTree -ProcessId $k.pid } }
 }
 
 # A held child's Godot can outlive its test host (a connect timeout leaves it serving the pipe), and once that host
@@ -469,7 +471,7 @@ function Clear-RunDirGodot {
     $kills = @(Get-RunDirGodot -RunDir $RunDir -Map $Map | ForEach-Object {
         [pscustomobject] @{ pid = [int] $_.ProcessId; name = [string] $_.Name -replace '\.exe$', ''; reason = 'run-dir' } })
     Write-ReapLine -Site $Site -Kills $kills -Spares @()
-    if (-not $DryRun) { foreach ($k in $kills) { & taskkill.exe '/F' '/T' '/PID' $k.pid 2>$null | Out-Null } }
+    if (-not $DryRun) { foreach ($k in $kills) { Stop-ProcessTree -ProcessId $k.pid } }
 }
 
 # The consumed gdUnit4.api ignores GDUNIT4_SKIP_RECOMPILE silently unless it carries the fork patch, whose positive
@@ -646,10 +648,10 @@ try {
         $testArgs = @('test', '--settings', (Join-Path $repo '.runsettings'), '--verbosity', $Verbosity, '--filter', $Filter) +
             @(if ($noBuild) { '--no-build' }) +
             @('--results-directory', (Split-Path $passTrx), '--logger', "trx;LogFileName=$safe.trx") +
-            @('--', $iso.AppDataArg, "GdUnit4.Parameters=--log-file $($godotLog -replace '\\', '/')$(if ($runMode.engineArgs) { ' ' + $runMode.engineArgs })",
+            @('--', $iso.AppDataArg, "GdUnit4.Parameters=--log-file $($godotLog -replace '\\', '/')$(if ($modeChoice.engineArgs) { ' ' + $modeChoice.engineArgs })",
                 # .runsettings' own TestSessionTimeout would abort a run the cap allows; vstest must never stop first.
                 "RunConfiguration.TestSessionTimeout=$([int64] $TimeoutMs + 60000)")
-        $p = Start-IsolatedNativeProcess -FilePath 'dotnet' -Arguments $testArgs -OutPath $log -ErrPath $errLog
+        $p = Start-IsolatedNativeProcess -FilePath 'dotnet' -Arguments $testArgs -OutPath $log -ErrPath $errLog -Display:(-not $NoGodotRuntime)
         $null = $p.Handle
         Set-RuntimeSlotRunner -Lease $lease -Process $p
         $attemptState = Wait-SuiteAttempt -Process $p -TimeoutMs $TimeoutMs -GodotLog $godotLog -NoGodotRuntime:$NoGodotRuntime
@@ -658,7 +660,7 @@ try {
 
         if ($attemptState -ne 'exited') {
             # Both deadlines use the same retry and final HANG path; neither can become green.
-            & taskkill.exe '/F' '/T' '/PID' $p.Id 2>$null | Out-Null
+            Stop-ProcessTree -ProcessId $p.Id
             Start-Sleep -Milliseconds 750
             if ($HeldCheckout) { Clear-OwnTree -Site "own-tree:${Label}:hang" }
             else { Clear-TestRunners -Repo $repo -Site "suite:$Label:hang" }
@@ -688,8 +690,8 @@ try {
         foreach ($sig in $skipSignatures.Keys) {
             if (Select-String -Path $log, $errLog -Pattern $skipSignatures[$sig] -ErrorAction SilentlyContinue) { $skipKind = $sig; break }
         }
-        # Native test-host crash (0xC000001D) under IDE test-runner contention — environmental, retry-worthy.
-        if (-not $skipKind -and $code -eq -1073741795) { $skipKind = 'testhost-native-crash' }
+        # Native test-host crash (illegal instruction) under IDE test-runner contention — environmental, retry-worthy.
+        if (-not $skipKind -and (Test-NativeCrashExit -ExitCode $code)) { $skipKind = 'testhost-native-crash' }
         $skip = [bool]$skipKind
 
         # A signature in a run that overlapped a peer runtime run is a rollback CANDIDATE, logged

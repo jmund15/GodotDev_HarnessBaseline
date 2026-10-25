@@ -49,6 +49,11 @@ def mode_cases(tmp):
           rc == 0 and modes == ["MODE=headless"] and len(skipped) == 1 and glow in skipped[0] and plain not in skipped[0], raw)
     rc, modes, skipped, raw = route_mode(tmp, "FullyQualifiedName~Tests.Integration.Visual.LogicOnlyTests", "-Windowed")
     check("-Windowed runs windowed whatever the filter selects", rc == 0 and modes == ["MODE=windowed"] and not skipped, raw)
+    rc, modes, skipped, raw = route_mode(tmp, "FullyQualifiedName~Tests.Integration.Visual.GlowRenderTests", "-RunMode", "headless")
+    check("a caller's -RunMode headless is taken as decided, never re-derived from a renderer-tagged filter",
+          rc == 0 and modes == ["MODE=headless"] and not skipped, raw)
+    rc, modes, skipped, raw = route_mode(tmp, "FullyQualifiedName~Tests.Integration.Visual.LogicOnlyTests", "-RunMode", "windowed")
+    check("a caller's -RunMode windowed runs windowed for an untagged filter", rc == 0 and modes == ["MODE=windowed"] and not skipped, raw)
 
 
 if __name__ == "__main__":

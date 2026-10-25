@@ -1050,7 +1050,14 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
         ranges = _push_ranges(rest, root, git_env, targets)
         outgoing = [(base, rev, close_paths(root, base, rev, remote))
                     for (base, rev), (remote, _target) in zip(ranges, targets)]
-    except (RuntimeError, OSError, ValueError):
+    except RuntimeError as exc:
+        source = str(exc).removeprefix("cannot resolve push source ")
+        if source != str(exc):
+            return ("BLOCKED harness push (rules/harness_tooling.md) — cannot resolve push source `%s`; the guard "
+                    "does not expand shell variables, so push the commit by its literal hash or ref (a green close "
+                    "prints the exact command)." % source)
+        return next_step % "cannot resolve the outgoing harness range"
+    except (OSError, ValueError):
         return next_step % "cannot resolve the outgoing harness range"
     land = _land_prefix()
     harness = [(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
