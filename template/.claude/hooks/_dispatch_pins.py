@@ -80,9 +80,10 @@ def _tools_on_path():
 
 
 def _writes_tracked(prompt_path):
-    """Whether an author job can change tracked files: False only when its brief's `task` block declares a
-    writeSet git ignores whole (scratch output cannot change the commits close proves). A brief that is
-    absent, unreadable or declares no writeSet is unknown, so it counts as a writer."""
+    """Whether an author job can change tracked files: False only when every path in its brief's `task`
+    block writeSet is git-ignored or outside the checkout (scratch output or a vault doc cannot change the
+    commits close proves). A brief that is absent, unreadable or declares no writeSet is unknown, so it
+    counts as a writer."""
     if not prompt_path or not isinstance(prompt_path, str):
         return True
     root = _project_dir()
@@ -97,6 +98,11 @@ def _writes_tracked(prompt_path):
     write_set = [p for p in task.get("writeSet") or [] if p.strip()]
     if not write_set:
         return True
+    top = os.path.normcase(os.path.realpath(root))
+    write_set = [p for p in write_set
+                 if (os.path.normcase(os.path.realpath(os.path.join(root, p))) + os.sep).startswith(top + os.sep)]
+    if not write_set:
+        return False
     import subprocess
     try:
         out = subprocess.run(["git", "-C", root, "check-ignore", "--", *write_set],

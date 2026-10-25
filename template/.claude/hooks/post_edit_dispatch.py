@@ -15,7 +15,8 @@ Order (cheapest text scans first, then the file-reading guards):
   5. self_eval_archive_guard.process — self-evaluation archive validity
   6. retire_trigger_advisory.process — malformed retire_when metadata on a new memory or rules file
   7. task_brief_facts.process        — a `task` brief's row facts: route, cost, plan room, window fit
-  8. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
+  8. plan_job_map_guard.process      — records a plan file this session wrote, for the pre-edit job-map advisory
+  9. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
 
 Sub-hook contract: `process(payload)` returns `{"context": <text>}` or None;
 `{"stderr": <text>}` records diagnostics. Each sub-hook self-gates on tool_name and
@@ -49,6 +50,7 @@ CHAIN = (
     ("self_eval_archive_guard", "advisory"),
     ("retire_trigger_advisory", "advisory"),
     ("task_brief_facts", "advisory"),
+    ("plan_job_map_guard", "advisory"),
     ("runaway_scan_reaper", "reaper"),
 )
 CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent

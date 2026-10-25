@@ -293,6 +293,15 @@
             "type": "command"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt_dispatch.py\"",
+            "timeout": 40,
+            "type": "command"
+          }
+        ]
       }
     ]
   },
