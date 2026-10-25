@@ -227,9 +227,9 @@ def _anthropic_window_cli(argv):
 
 
 def _full_window_cli(argv):
-    """True when the CLI sets the resident compaction window explicitly on the model's full window, never leaving it unset."""
+    """True when the CLI sets the resident compaction window explicitly and reports it as the context window, never leaving it unset."""
     out = _anthropic_window_cli(argv)
-    return out.get("autoCompactWindow") == mr.RESIDENT_COMPACT_WINDOW and out.get("contextWindow") == 1000000
+    return out.get("autoCompactWindow") == mr.RESIDENT_COMPACT_WINDOW and out.get("contextWindow") == out.get("autoCompactWindow")
 
 
 _TIERED = {"limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
@@ -668,7 +668,7 @@ CASES = [
                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
                                             "compactAtTokens": 200000}}, shape="review") == {
          "model": "claude-haiku-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
-         "contextWindow": 1000000, "contextWindowSource": "review-shape"}),
+         "contextWindow": 500000, "contextWindowSource": "review-shape"}),
     ("an author-shaped job keeps the compaction window",
      lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
@@ -690,7 +690,7 @@ CASES = [
                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
                                             "compactAtTokens": 200000}}, shape="arm", resident=True) == {
          "model": "claude-haiku-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
-         "contextWindow": 1000000, "contextWindowSource": "resident-subject"}),
+         "contextWindow": 500000, "contextWindowSource": "resident-subject"}),
     ("SIDECAR_RESIDENT_SUBJECT=1 reaches the resolver through the launcher's environment; unset keeps the point",
      lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1"},
                        lambda: _full_window_cli(["synthetic", "--shape", "arm"]))

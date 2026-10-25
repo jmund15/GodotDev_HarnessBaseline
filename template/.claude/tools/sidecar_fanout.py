@@ -128,10 +128,18 @@ writing `<out-dir>/post_check.json`: quote verdicts over every finding, the fold
 `--ledger-*` name and the next round's seats. A folded run also writes `fold_digest.json` with one
 disposition per source F-id; the check's failures, never the author's exit or digest, decide the fold.
 
+REFUSALS IN YOUR OWN CALL. These refusals a job's launcher would make from the job row alone happen here,
+before anything spawns or detaches, in `--dry-run` too: an unknown alias or shape, an unavailable row, an effort
+outside the transport's vocabulary or in the row's registry `effort.avoid`, a plan that does not pay for the
+route, and a pin outside the tier its `shape` implies (`guards/tool_profiles.json`; the refusal text is the
+launcher's, printed to stdout, naming every unfit job). A `--detach` run returns at once, so a refusal found
+only by its child reaches nobody. Not decided here, because only the shell launcher owns them: a `disclosure`
+outside bare|pointer|full and `longContext` on a row with no long-context step (`sidecar_common.sh`).
+
 EXIT: 0 every job exited 0; under --review, coverage is complete and the post-check passed.
       1 a job failed, review coverage is partial (each failed seat prints an `uncovered:` line naming
         its unread entries; it is never re-dispatched), or the post-check failed.
-      2 jobs, arguments or source IDs are unusable.
+      2 jobs, arguments or source IDs are unusable, or a launcher would refuse a job (above).
       13 a live launcher or seat child already runs this job (its prompt file under its label or record) or
          resumes its session; nothing was dispatched, and stderr names each PID with the reap command that stops it.
 """
@@ -1981,6 +1989,30 @@ def doctrine_refusal(argv):
         return None  # the check could not run; each launcher still runs its own
 
 
+def launcher_fit_refusal(argv):
+    """The tier-fit refusal every job's launcher would print, else None. A job's shape implies a tier its pin must
+    serve (`hooks/_dispatch_checks.py` `tier_fit`); the PreToolUse hook cannot read a jobs file the same call writes,
+    and a detached launcher would print the refusal into a `.err` the caller never reads. Run before anything
+    spawns or detaches. `hooks/sidecar_dispatch_context.py` owns the check and its text."""
+    sys.path.insert(0, str(ROOT / "hooks"))
+    try:
+        import sidecar_dispatch_context
+        return sidecar_dispatch_context.fanout_fit_refusal([a for a in argv if a != "--detach"], os.getcwd())
+    except Exception:
+        return None  # the check could not run; each launcher still runs its own
+
+
+def fit_facts(jobs):
+    """Each pinned job's `dispatch_size.fit_lines` fact: its whole reading against the point it compacts at.
+    Advisory, printed beside the tier-fit check so a dispatcher who skipped the preflight still sees it; a spec it
+    cannot size prints nothing."""
+    try:
+        import dispatch_size
+        return dispatch_size.fit_lines(dispatch_size.dispatch_size(jobs, os.getcwd()))
+    except Exception:
+        return []
+
+
 def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
     """Rerun this fan-out without --detach as a process detached from the caller, and return 0.
 
@@ -2186,6 +2218,13 @@ def main(argv=None):
     except (JobError, model_registry.RegistryError) as err:
         print(str(err), file=sys.stderr)
         return 2
+
+    fit = launcher_fit_refusal(argv if argv is not None else sys.argv[1:])
+    if fit:
+        print(fit)
+        return 2
+    for fact in fit_facts(jobs):
+        print(fact)
 
     seen = set()
     for label, _, _ in planned:

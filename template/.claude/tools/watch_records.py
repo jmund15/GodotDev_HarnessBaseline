@@ -64,10 +64,17 @@ them as context), and every clean `DONE <label> exit=0` line it prints, which a 
 nothing else remains it prints `NONE`. When nothing at arm can still progress — nothing running, queued or
 unresolved within its grace — the ended lines and `NONE` print and the watcher exits 0; a job whose fan-out process
 is gone is not "queued", because it will never start. An entry still unresolved
-`UNRESOLVED_GRACE_SECONDS` after its launch prints `UNRESOLVED <label>` and wakes the session.
+`UNRESOLVED_GRACE_SECONDS` after its launch prints `UNRESOLVED <label>` and wakes the session. A fan-out entry
+that allocated no record while a later call for the same label and out dir did is that call's leftover (the
+launch refused the first call and the caller re-issued it), and prints nothing (`superseded`).
 A launch whose spend-ledger finish row (lib/sidecar_common.sh `sc_write_finish_row`) says
 `ended-before-result` has ended: it prints `ENDED <label> exit=<n> <reason>` once and wakes the
 session like a non-zero DONE; a `finished-without-record` row ends it as `DONE <label> exit=<n>`.
+The Stop hook removes a pending entry whose `.exit` exists and tells the user only, so a watcher armed afterwards
+finds no entry: a failed finish row of this session (`ended-before-result`, or a non-zero exit) that no pending
+entry carries, younger than `dispatch_table.STALE_SECONDS`, prints the same line from the ledger alone
+(`unreported_ends`). The end has one identity (`ended_identity`) whichever reader finds it, so an end that woke
+the session through its entry is not reported again, and an acknowledged one stays a quiet line until its row ages out.
 A record that DIED, or a job of a fan-out whose process is gone that DIED, whose launch id (the
 `launch=` in `<record>.pid`, else the record's or its inventory's `launchId`) a live process other
 than a dispatch server still carries prints `ORPHAN <label> launch=<id> pids=<...>` and wakes the
@@ -398,8 +405,54 @@ def finish_text(label, row):
     return "DONE %s exit=%s" % (label, row.get("exitCode"))
 
 
-def pending_sidecars(session_id):
-    """This session's unfinished sidecar entries, each with its `record` resolved.
+def _entry_label(entry):
+    return (entry.get("jobs") or [{}])[0].get("label")
+
+
+def superseded(entry, pending):
+    """True for a fan-out entry that allocated no record while a later call for the same label and out dir did: a
+    call the launch refused (the doctrine or tier check) and the caller re-issued. The later call's entry watches
+    the job; this one would wake the session with `UNRESOLVED` for work that runs."""
+    issued = _launch_time(entry)
+    if entry.get("record") or not entry.get("fanout_dir") or issued is None:
+        return False
+    return any(other is not entry and other.get("record") and other.get("fanout_dir")
+               and _entry_label(other) == _entry_label(entry) and _same_dir(other["fanout_dir"], entry["fanout_dir"])
+               and (_launch_time(other) or 0.0) > issued for other in pending)
+
+
+def failed_finish(row):
+    return row.get("outcome") == ENDED or str(row.get("exitCode")) != "0"
+
+
+def ended_identity(label, row):
+    """The one event identity of a finish row, whichever reader finds it: the pending entry that still lists the job,
+    or the ledger alone once the Stop hook consumed the entry. One identity is what keeps the second reader quiet."""
+    return ("finish", label, row.get("timestamp"))
+
+
+def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
+    """One pending-shaped entry per failed finish row of this session that no pending entry carries, younger than
+    `stale_seconds`. The Stop hook consumes a pending entry whose `.exit` exists and tells the user only, so a
+    watcher armed afterwards finds nothing; the launcher's finish row is the end's remaining trace. `reported`
+    marks a row whose identity is acknowledged: it stays in the poll as a quiet line so the acknowledgment is
+    not pruned, and never wakes twice."""
+    now = time.time() if now is None else now
+    carried = {id(entry["finish"]) for entry in pending if entry.get("finish")}
+    out = []
+    for row in rows:
+        label = row.get("label")
+        if id(row) in carried or not label or not failed_finish(row) or now - epoch(row.get("timestamp")) > stale_seconds:
+            continue
+        out.append({"kind": "sidecar", "id": "finish:%s:%s" % (label, row.get("timestamp")), "record": None,
+                    "fanout_dir": None, "task_id": None, "jobs": [{"label": label}], "finish": row,
+                    "reported": _wake_event_key(ended_identity(label, row)) in acknowledged})
+    return out
+
+
+def pending_sidecars(session_id, acknowledged=frozenset()):
+    """This session's unfinished sidecar entries, each with its `record` resolved, minus a refused call's leftover
+    (`superseded`), plus one entry per failed end the Stop hook consumed (`unreported_ends`).
 
     `dispatch_table` is imported HERE and not at module top: it imports this module at module top, so
     a module-level import is a cycle, and the Stop hook that imports it would crash open.
@@ -414,7 +467,8 @@ def pending_sidecars(session_id):
         dispatch_table.resolve_sidecar_record(entry, session_id, pending)
         entry["finish"] = finish_row(entry, rows)
         entry["stopped"] = bool(stopped and entry.get("record")) and record_launch(entry["record"]) in stopped
-    return pending
+    kept = [entry for entry in pending if not superseded(entry, pending)]
+    return kept + unreported_ends(kept, rows, acknowledged, dispatch_table.STALE_SECONDS)
 
 
 def fanout_launcher_running(entry):
@@ -930,6 +984,8 @@ def units(pending):
                                    "call": entry.get("call") if entry.get("fanout_dir") else None})
         if entry.get("call") or entry.get("issued_at") is not None:
             unit["called"] = True
+        if entry.get("reported"):
+            unit["reported"] = True
         if entry.get("writes"):
             unit["writes"] = True
         launched = _launch_time(entry)
@@ -1282,8 +1338,10 @@ def _wake(grouped, now=None):
                 ended += 1
                 finish = (unit.get("finish") or {}).get(_norm_record(record))
                 text = ("DONE %s exit=%s" % (label, code) if state == "DONE" else "DIED %s" % label)
+                identity = ("end", record)
                 if state == "DONE" and finish and finish.get("outcome") == ENDED:
                     text = finish_text(label, finish)
+                    identity = ended_identity(label, finish)
                 # A job the session stopped with reap.py is context; a DIED carrier still alive stays a wake below.
                 stopped = _norm_record(record) in (unit.get("stopped") or ())
                 failed = state != "DONE" or code != "0"
@@ -1291,7 +1349,7 @@ def _wake(grouped, now=None):
                     text = "STOPPED %s (stopped by this session)" % label
                 elif state == "DONE" and not (finish and finish.get("outcome") == ENDED):
                     text = "\n".join([text] + _digest().sidecar_lines(label, record, unit.get("fanout_dir")))
-                lines.append(("end", ("end", record), text, failed and not stopped))
+                lines.append(("end", identity, text, failed and not stopped))
                 orphan = orphan_processes(label, record) if state == "DIED" else None
                 if orphan:
                     lines.append(("orphan-process", ("orphan-process", _norm_record(record)), orphan, "always"))
@@ -1332,8 +1390,8 @@ def _wake(grouped, now=None):
         key = _unit_key_of(unit) if unit["records"] or unit.get("fanout_dir") else "unit:%s" % ukey
         for label, row in unit.get("finished") or []:
             ended += 1
-            lines.append(("end", ("finish", key, label, row.get("timestamp")), finish_text(label, row),
-                          row.get("outcome") == ENDED or str(row.get("exitCode")) != "0"))
+            lines.append(("end", ended_identity(label, row), finish_text(label, row),
+                          failed_finish(row) and not unit.get("reported")))
         settled = len(unit["records"]) + len(unit.get("finished") or [])
         if settled and ended == settled and not unit.get("unresolved"):
             if unit.get("folding"):
@@ -1344,7 +1402,8 @@ def _wake(grouped, now=None):
                 continue
             record_keys = {_norm_record(r) for _, r in unit["records"]}
             all_stopped = bool(record_keys) and record_keys <= (unit.get("stopped") or set())
-            lines.append(("complete", ("complete", key), "", not _background_child(unit) and not all_stopped))
+            lines.append(("complete", ("complete", key), "",
+                          not _background_child(unit) and not all_stopped and not unit.get("reported")))
             continue
         for text in gone_fanout_orphans(unit):
             lines.append(("orphan-process", ("orphan-process", text), text, "always"))
@@ -1676,7 +1735,7 @@ def _session_source(session_id, state_path=None):
         return discovered_workflows(session_dir[0], known)
 
     def source():
-        grouped = units(pending_sidecars(session_id))
+        grouped = units(pending_sidecars(session_id, _acknowledged(state_path) if state_path else frozenset()))
         grouped.update(pending_workflows(session_id))
         grouped.update(discovered(grouped))
         grouped.update(rosters())

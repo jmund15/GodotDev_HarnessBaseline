@@ -4682,6 +4682,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_post_check_seat_attribution.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_post_check_subject_root.py",
       "layer": "pure",
       "sync": "auto"
@@ -5137,6 +5142,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_fanout_launcher_refusal.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_fanout_parity.py",
       "layer": "pure",
       "sync": "auto"
@@ -5463,6 +5473,11 @@
     },
     {
       "path": ".claude/tests/test_void_check_engagement.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_watch_records_fanout_end.py",
       "layer": "pure",
       "sync": "auto"
     },

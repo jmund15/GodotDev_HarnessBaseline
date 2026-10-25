@@ -41,7 +41,7 @@ REWRITE = [
 
 DENY = [
     ("Bash", "grep -rnz foo ."),
-    ("Bash", "grep -R foo src"),
+    ("Bash", "grep -R foo no_such_dir"),
     ("Bash", "cd x && grep -rn foo ."),
     ("Bash", "find . -type f | xargs grep -l foo"),
     ("Bash", "find . -name '*.md' -exec grep -l foo {} +"),
@@ -50,7 +50,7 @@ DENY = [
     ("Bash", "grep -d recurse foo ."),
     ("Bash", "grep --directories=recurse foo ."),
     ("Bash", "git status || fgrep -rl foo ."),
-    ("Bash", "ls; grep -nr foo src | wc -l"),
+    ("Bash", "ls; grep -nr foo no_such_dir | wc -l"),
     ("Bash", "printf '%s\\n' a b | xargs -n1 grep -r foo"),
     ("Bash", "find . -exec grep -l foo {} \\;"),
     ("Bash", "bash -c 'grep -rn foo .'"),
@@ -59,7 +59,7 @@ DENY = [
     ("PowerShell", "grep -rn foo ."),
     # -r with no path operand walks the cwd; a directory operand among files walks it; xargs or
     # find appends operands the command text cannot show.
-    ("Bash", "grep -rn foo a.py src"),
+    ("Bash", "grep -rn foo a.py no_such_dir"),
     ("Bash", "grep -rn foo .claude/**/*.py"),
     ("Bash", "printf '%s\\n' a.py | xargs grep -rn foo b.py"),
     ("Bash", "find . -name x | xargs grep -rl foo a.py"),

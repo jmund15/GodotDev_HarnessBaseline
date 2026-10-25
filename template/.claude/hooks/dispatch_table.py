@@ -60,6 +60,8 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
 
 CHANNEL: `systemMessage` — "Warning message shown to the user" (hooks.md, JSON output) — and for
 `--complete` only, `decision: block` with `reason`, which reaches the model. No additionalContext.
+A sidecar that ended without a result (`ended before a result`, `ended without an exit file`, `never started`)
+also rides the block `reason` once, as it leaves the table, so a session with no watcher armed learns of it.
 Must stay a SYNCHRONOUS hook: an async hook's systemMessage is delivered to Claude instead.
 
 EVIDENCE for the finish check, strongest first:
@@ -1192,8 +1194,9 @@ def _background_ids(payload, kind):
     return ids
 
 
-def _contradictions(entry, session, payload, foreground=False):
-    """None while the dispatch is still running; once finished, its ⚠ lines ([] when it ran as asked)."""
+def _contradictions(entry, session, payload, foreground=False, failed=None):
+    """None while the dispatch is still running; once finished, its ⚠ lines ([] when it ran as asked). A sidecar
+    that ended without a result adds its line to `failed` too, when one is passed."""
     kind = entry.get("kind")
     job = (entry.get("jobs") or [{}])[0]
     if kind == "workflow":
@@ -1213,12 +1216,14 @@ def _contradictions(entry, session, payload, foreground=False):
         data = _sidecar_record(entry, payload)
         if data is None:
             return None
-        if data is DIED:
-            return ["⚠ sidecar %s ended without an exit file: its launcher was killed, so no record will "
-                    "be written" % (job.get("label") or UNLABELED)]
-        if data.get("outcome") == ENDED:
-            return ["⚠ sidecar %s ended before a result (exit %s): %s" % (
-                job.get("label") or UNLABELED, data.get("exitCode"), data.get("reason") or "no reason recorded")]
+        if data is DIED or data.get("outcome") == ENDED:
+            ended = ["⚠ sidecar %s ended without an exit file: its launcher was killed, so no record will "
+                     "be written" % (job.get("label") or UNLABELED)] if data is DIED else [
+                "⚠ sidecar %s ended before a result (exit %s): %s" % (
+                    job.get("label") or UNLABELED, data.get("exitCode"), data.get("reason") or "no reason recorded")]
+            if failed is not None:
+                failed.extend(ended)
+            return ended
         if data.get("attestedModel") or data.get("attestedEffort"):
             served, effort, recorded = data.get("attestedModel") or data.get("servedModel"), data.get("attestedEffort"), False
         else:
@@ -1807,6 +1812,10 @@ def _unwatched_rosters_reason(payload):
     return (NO_WATCHER_ROSTER_REASON % ", ".join(live) if live else None), None
 
 
+FAILED_END_REASON = ("A dispatched job ended without a result, and the dispatch table dropped it. The user's Stop "
+                     "message shows these lines; you do not see it:\n%s")
+
+
 def complete(payload):
     path = _hook_state.state_path(payload.get("session_id"))
     live = _background_ids(payload, None) if "background_tasks" in payload else None
@@ -1819,7 +1828,7 @@ def complete(payload):
     payload = dict(payload, _pending_sidecars=pending, _audit_deadline=_stop_deadline())
     session = _session_dir(payload)
     now = time.time()
-    done, reported, audited, reasons = set(), {}, set(), []
+    done, reported, audited, reasons, failed = set(), {}, set(), [], []
     for entry in pending:
         if entry.get("deferred"):
             continue
@@ -1839,6 +1848,7 @@ def complete(payload):
             if never_started:
                 label = (entry.get("jobs") or [{}])[0].get("label") or UNLABELED
                 lines.append("%s: never started (%s)" % (label, never_started))
+                failed.append(lines[-1])
                 done.add(key)
                 continue
             if key[0] == "workflow":
@@ -1846,7 +1856,7 @@ def complete(payload):
                 if table:
                     lines.append(table)
                     reported[key] = list(entry.get("reported") or []) + ids
-            found = _contradictions(entry, session, payload)
+            found = _contradictions(entry, session, payload, failed=failed)
             if found is not None:
                 block_reason = _verification_audit(entry, session, payload)
                 if block_reason:
@@ -1880,7 +1890,7 @@ def complete(payload):
             return kept
         _update_pending(payload, change)
     running = [e for e in pending if (e.get("kind"), e.get("id")) not in done | audited]
-    reason = "\n\n".join(reasons) or None
+    reason = "\n\n".join(reasons + ([FAILED_END_REASON % "\n".join(failed)] if failed else [])) or None
     if running:
         lines.append(_running_block(running, now, payload.get("session_id")))
         if not payload.get("stop_hook_active"):

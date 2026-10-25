@@ -18,12 +18,13 @@ The retirement observation: a lone seat from the row matches a qualified seat's 
 plan-review pin A/B; its entry then moves to `roles`. A row holding the tier in both `roles` and `supplementary`
 is admitted alone here, because the ledger's clause 9 (`review_ledger.py`) floors its coverage.
 
-`cheaper_claimants(model, tier, transport, reading_tokens, data)` is the fact list behind the preflight's claimant line
+`cheaper_claimants(model, tier, transport, reading_tokens, data, job=job)` is the fact list behind the preflight's claimant line
 (`dispatch_size.fact_lines`) and the brief hook's table: each row on `transport` that claims `tier` in registry `roles`,
 neither unavailable nor on an owner probation mark, and is cheaper than `model` for this reading. Cheaper means a lower
 `price_reading` (`model_registry.list_price` for the reading, priced with the reading as the request's input so a row's
 long-context multiplier applies past its threshold); when the row or the pin cannot be priced, it means a higher ladder
-`cost`. Each claimant states its prices, its ladder `±` cell, whether the reading fits its `usable_window`, and whether
+`cost`. Each claimant states its prices, its ladder `±` cell, whether the reading fits the point it would compact at for `job`
+(`model_registry.compaction_point`), and whether
 the reading is past its long-context point. These are facts for the reader: no check in this module denies on them.
 `spare_plan_fact(tier, transport, data)` adds one fact when a row claiming `tier` on another plan projects
 quota unused at its reset: `<alias> on <plan>: ~N% unused at reset in Dd`, read from the capacity cache only.
@@ -201,7 +202,7 @@ def draw_ratios(row_ids, data):
     return {rid: (None if rate is None or not base else rate / base) for rid, rate in rates.items()}
 
 
-def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=None):
+def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=None, job=None):
     """[{alias, id, cost, pinCost, sign, usable, fits, thresholdAt, pastLongContext, tierMultiplier, price, pinPrice,
     priced, plan, draw}] (`plan`: the transport spends a plan quota; `draw`: output-rate ratio to the pin, or None), ordered by ladder cost, cheapest first: each row on `transport` claiming `tier` in registry `roles`,
     available, not on an owner probation mark for `tier`, and cheaper than `model` for `reading_tokens`. Cheaper is
@@ -240,7 +241,7 @@ def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=
         priced = price is not None and pin_price is not None
         if not (price < pin_price if priced else cost > mine):
             continue
-        usable = model_registry.usable_window(row)
+        usable = model_registry.compaction_point(row, job)[0]
         point = model_registry.long_context_tier(row, data)
         at = point["thresholdInputTokens"] if point else None
         out.append({"alias": _name(row), "id": row["id"], "cost": cost, "pinCost": mine,
@@ -301,9 +302,9 @@ def claimant_text(c, reading_tokens):
         parts.append("states no window")
     elif measured:
         parts.append(f"reading {reading_tokens:,} tokens {'fits' if c['fits'] else 'is over'} its "
-                     f"{c['usable']:,}-token usable window")
+                     f"{c['usable']:,}-token compaction point")
     else:
-        parts.append(f"usable window {c['usable']:,} tokens")
+        parts.append(f"compaction point {c['usable']:,} tokens")
     if c["thresholdAt"] is None:
         parts.append("no long-context point")
     elif measured and c["pastLongContext"]:
