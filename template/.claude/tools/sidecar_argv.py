@@ -163,8 +163,9 @@ def _closing_paren(command, index):
 
 
 def command_substitutions(command, placeholder=''):
-    """(command with its `$(...)` and backtick substitutions replaced by `placeholder`, [each substitution's
-    body]). Single-quoted text is literal, so a substitution inside it stays in the command."""
+    """(command with its `$(...)`, backtick and unquoted `<(...)` / `>(...)` process substitutions replaced by
+    `placeholder`, [each substitution's body]). Single-quoted text is literal, so a substitution inside it stays in
+    the command; a process substitution inside double quotes is literal too."""
     out, bodies, quote, index = [], [], None, 0
     while index < len(command):
         char = command[index]
@@ -174,7 +175,7 @@ def command_substitutions(command, placeholder=''):
             out.append(command[index:index + 2])
             index += 2
             continue
-        elif command.startswith('$(', index):
+        elif command.startswith('$(', index) or (quote is None and command.startswith(('<(', '>('), index)):
             end = _closing_paren(command, index + 2)
             bodies.append(command[index + 2:end])
             out.append(placeholder)
@@ -257,7 +258,7 @@ def launcher_invocations(command):
     kind is 'sidecar' or 'fanout', script the lowercase basename, path the invoked token as
     written, args the launcher's own arguments. Segments inside subshells, brace groups and
     if/while/until/for bodies count; reserved words, `NAME=value` and wrapper prefixes are stepped
-    over; `$(...)`/backtick bodies (each leaves a `${SUBST}` word in its place, so the surrounding argument keeps its slot), `eval` arguments and `bash -c` / `sh -c` strings (after any
+    over; `$(...)`/backtick/`<(...)` bodies (each leaves a `${SUBST}` word in its place, so the surrounding argument keeps its slot), `eval` arguments and `bash -c` / `sh -c` strings (after any
     `-o <option>`) are read as the commands they run. `bash -n` runs nothing."""
     command, substituted = command_substitutions(strip_heredocs(command, quoted_only=True), '${SUBST}')
     calls = []

@@ -722,10 +722,29 @@ def fanout_doctrine_refusal(fanout_args, root):
 def fanout_fit_refusal(fanout_args, root):
     """`dispatch_checks` over the fan-out call's jobs, fold authors included, else None: the tier-fit deny this hook
     cannot make for a jobs file the same call writes. `sidecar_fanout.py` calls it in its own call, before it spawns or
-    detaches anything, so a pin the launcher would refuse reaches the caller and not a detached child's `.err`. A call
-    it cannot read decides nothing; each launcher still runs its own check."""
+    detaches anything, so a pin the launcher would refuse reaches the caller and not a detached child's `.err`. A job
+    this hook already checked for the call (a fresh fan-out receipt with its label, pin, shape and directory) is not
+    checked again. A call it cannot read decides nothing; each launcher still runs its own check."""
     fanout = types.SimpleNamespace(args=list(fanout_args))
-    return dispatch_checks(launch_jobs(None, fanout, root, fanout_contract(fanout, root)))
+    contracts = fanout_contract(fanout, root)
+    held = _receipted_fanout_jobs()
+    unchecked = {(tuple(c["job"][:3]), c["directory"]) for c in contracts} - held
+    return dispatch_checks([job for job in launch_jobs(None, fanout, root, contracts)
+                            if any(key[0] == tuple(job[:3]) for key in unchecked)])
+
+
+def _receipted_fanout_jobs():
+    """{((label, alias, shape), directory)} of each fresh fan-out receipt this session's hook wrote."""
+    import dispatch_table as table
+    import _hook_state
+    sid = tracking_session()
+    if not sid:
+        return set()
+    state = _hook_state.read_json_salvage(_hook_state.state_path(sid)) or {}
+    now = time.time()
+    return {(tuple(child["fanout"]["job"][:3]), child["fanout"]["directory"])
+            for group in state.get(CHECKS_KEY) or [] for child in group.get("children", [group])
+            if child.get("fanout") and now - child.get("at", 0) < table.STALE_SECONDS}
 
 
 def main():

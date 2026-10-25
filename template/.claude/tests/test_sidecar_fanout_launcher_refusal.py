@@ -233,6 +233,38 @@ def refused_set_prints_no_fit():
 case("a refused job set prints the refusal and no fit line", refused_set_prints_no_fit)
 
 
+def receipted_job_is_not_checked_twice():
+    """The hook's fan-out receipt (written by the real `remember_checks`) means it already ran the tier check for
+    that job, so the fan-out's own check skips it; a job with no receipt is still checked."""
+    import types
+    work = tempfile.mkdtemp(dir=TMP)
+    jobs_path = os.path.join(work, "jobs.json")
+    with open(jobs_path, "w", encoding="utf-8") as fh:
+        json.dump([job("fit-r", FIT[0])], fh)
+    args = [jobs_path, "--out-dir", os.path.join(work, "out")]
+    env = {"HARNESS_HOOK_STATE_DIR": tempfile.mkdtemp(dir=TMP), "CLAUDE_CODE_SESSION_ID": "rcpt0001-session"}
+    saved = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    calls, real = [], ctx._dispatch_checks.tier_fit
+    ctx._dispatch_checks.tier_fit = lambda *a, **k: calls.append(a[0]) or real(*a, **k)
+    try:
+        unreceipted = (ctx.fanout_fit_refusal(args, work), len(calls))
+        ctx.remember_checks({"session_id": env["CLAUDE_CODE_SESSION_ID"], "tool_use_id": "call-1", "cwd": work},
+                            None, types.SimpleNamespace(args=args), work, "skipped")
+        receipted = (ctx.fanout_fit_refusal(args, work), len(calls) - unreceipted[1])
+    finally:
+        ctx._dispatch_checks.tier_fit = real
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return unreceipted == (None, 1) and receipted == (None, 0)
+
+
+case("a job the hook's receipt shows checked is not tier-checked again by the fan-out", receipted_job_is_not_checked_twice)
+
+
 failed = []
 for name, fn in CASES:
     try:
