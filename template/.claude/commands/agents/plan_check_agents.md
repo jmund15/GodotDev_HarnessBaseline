@@ -142,6 +142,7 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
    (c) each seam's signature carries every input its stated behavior reads.
    PLAN, with a `question` naming the decision and the read or result that settles it. When that read settles the decision, add `options` with the settled value first; with no options it is an open PLAN the session rules.
 10. **Verification cadence** (`change_control` §Gate cadence) — a slice, or an executor's steps, runs only its items' targeted tests. Flag a wider run (a scope verify, bound proofs, the regression gate, a probe over a suite) ordered per slice or inside an executor's job: FIX moving it to the Part or drive close, run by the dispatcher.
+11. **Job map** (`plan_file_format.md` §Job map) — flag a slice the map omits, an `inline` route whose reason is not one `orchestration` §0 names (the handoff costs more than the work, or the work is the session's own judgment), and two concurrent jobs sharing a write set or seam. FIX adding a missing row whose write set the plan states; PLAN otherwise.
 
 ## Action tier
 - **FIX**: a mechanical plan-text gap ("add the failing-test step before step N"): `old` is the step the failing-test step belongs before and `new` is that step preceded by it, naming only a test the plan or CONTEXT already names. With no named test, file an open PLAN whose `question` names the missing test.
@@ -272,7 +273,7 @@ You are plc-instruction-quality, auditing a proposed HARNESS change — agent-ru
 
 **RULES: Do NOT use TodoWrite. Return findings ONLY. The `instruction_quality` SKILL and its four reference files (§7–§18) are quoted WHOLE at the end of this brief — it is your rubric. Cite its section numbers; do NOT re-derive its principles from memory or substitute generic writing advice.**
 
-## Your Scope — six mandated questions, each answered explicitly
+## Your Scope — seven mandated questions, each answered explicitly
 
 1. **Does every unit the plan adds to an ALWAYS-LOADED surface earn its place?** Context is a spent budget, not a size cap (§5): for each unit the plan adds to CLAUDE.md / MEMORY.md / a skill description, state the pre-trigger decision it changes and why an existing or narrower surface cannot carry it. Growth without an admission reason or audit evidence is a finding; justified growth needs no matching deletion. The unit's sentences take §6's no-op test at close, where the shipped text exists (`orchestration` `reference/review_width.md` §Coverage).
 2. **Does anything the plan adds decide a judgment call?** Apply §3's facts-versus-judgment sort to every rule, table, default, roster, cap and tool output the plan adds or changes, owner-requested ones included: a fixed mapping or computed answer standing in for a choice its litmus calls judgment is `critical: true`, with the facts-only form as the fix.
@@ -286,9 +287,11 @@ You are plc-instruction-quality, auditing a proposed HARNESS change — agent-ru
 
 6. **Does each fix fit its cause, neither narrower nor heavier?** Apply §3b's fit test to every rule and mechanism the plan adds. A fix scoped to one incident, a never/only/always drawn from a single instance, or a cap standing in for a judgment is a finding. So is an added rule, tool, guard, stage or plan where correcting or deleting the cause removes the failure; name the failure it prevents and that failure's cause, and the remedy is the correction or deletion.
 
+7. **Job map** (`plan_file_format.md` §Job map) — flag a slice the map omits, an `inline` route whose reason is not one `orchestration` §0 names (the handoff costs more than the work, or the work is the session's own judgment), and two concurrent jobs sharing a write set or seam. FIX adding a missing row whose write set the plan states; PLAN otherwise.
+
 ## Process
 1. Enumerate the plan's edits per artifact, marking which touch an always-loaded surface.
-2. Answer the six questions per artifact, citing `instruction_quality` §N in `rationale`.
+2. Answer the seven questions per artifact, citing `instruction_quality` §N in `rationale`.
 4. Action tier: **PLAN** for a wrong home or wrong trigger surface (the artifact should be a command not a skill; the rule belongs in doctrine not a hook). **ASK** only for a fork whose answer needs an owner-held input, named in `question`. Otherwise **PLAN** with the recommended option first. **FIX** for an unearned always-loaded line or a missing verification step — with exact text.
 
 ## Reporting Filter

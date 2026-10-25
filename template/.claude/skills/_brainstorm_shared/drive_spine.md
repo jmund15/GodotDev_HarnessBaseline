@@ -95,7 +95,8 @@ that patch as its resume point. A red test left in the tree fails every other se
   large for any vertical slice to land green, runs expand–contract: add the new path, migrate callers in batches,
   delete the old path, each step green with targeted verification. The plan records the shape
   (`plan_file_format.md` §Slice shape).
-- Map slices to jobs from their write sets and dependencies before the first dispatch, and state the map. Shape
+- Before the first slice is written, route every slice in the plan's job map (`plan_file_format.md` §Job map): a
+  job, from its write set and dependencies, or `inline` with its `orchestration` §0 reason. Shape
   follows `orchestration` §0 and §11, and model and effort follow §5. Apply its Pre-Dispatch Checklist, record each
   dispatched job with `task_record.py job`, and dispatch through `/delegate` at
   the resolved model and effort. `orchestration` §2 owns the map's rules; disjoint slices may also run as dispatch

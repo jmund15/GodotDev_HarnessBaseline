@@ -21,6 +21,19 @@ Dependencies read per file type:
 - shell, javascript, powershell: script paths outside comments (`#` lines and trailing `# ...`, and
   PowerShell `<# #>` blocks).
 
+A "`<skill>` reference `<file>.md`" citation, or a bare "reference `<file>.md`" inside a skill, names
+`.claude/skills/<skill>/reference/<file>.md` and is path-shaped.
+
+Registration: a shipped hook `.claude/hooks/<name>.py` must satisfy one of these, else it is `unregistered`:
+- a shipped `settings.base|coding|godot.json` of its layer or lower registers it;
+- a shipped `.claude/scripts/` file of its layer or lower arms it by invoking `hooks/<name>.py` through python
+  (a launcher's hook rows count; a bare path does not);
+- a reached hook names it through a CHAIN literal, an import, an `_optional_hooks.load` argument or a bare
+  string naming the sibling, the forms dispatchers load members by.
+
+Two kinds are exempt: a `_` library, and a CLI tool, which is a source with no `stdin` because it handles no
+hook payload.
+
 A script name resolves to the shipped files with that basename, else the unshipped ones; a package
 marker (`__init__.py`) names no file.
 
@@ -92,7 +105,7 @@ SKIP_WALK = {".cache", "cache", "logs", "scratch", "worktrees", "sessions", "__p
 @dataclass(frozen=True)
 class Finding:
     source: str
-    kind: str  # needs-<layer> | local-only | missing
+    kind: str  # needs-<layer> | local-only | missing | unregistered
     target: str
 
     def render(self) -> str:
@@ -281,6 +294,20 @@ def _doc_commands(text: str) -> str:
     return "\n".join(fenced + spans)
 
 
+SKILL_REFERENCE = re.compile(r"`([a-z_][a-z0-9_]*)`\s+reference\s+`([\w-]+\.md)`")
+BARE_REFERENCE = re.compile(r"(?<!`)(?<![\w-])reference\s+`([\w-]+\.md)`")
+
+
+def _reference_citations(source: str, text: str):
+    """Skill reference files cited as "`<skill>` reference `f.md`", or "reference `f.md`" inside a skill."""
+    for skill, name in SKILL_REFERENCE.findall(text):
+        yield f".claude/skills/{skill}/reference/{name}"
+    owner = re.match(r"\.claude/skills/([^/]+)/", source)
+    if owner:
+        for name in BARE_REFERENCE.findall(SKILL_REFERENCE.sub("", text)):
+            yield f".claude/skills/{owner.group(1)}/reference/{name}"
+
+
 def _scan_doc(tree: Tree, source: str, text: str):
     source_dir = posixpath.dirname(source)
     seen = set()
@@ -290,6 +317,12 @@ def _scan_doc(tree: Tree, source: str, text: str):
             tokens.extend(w.strip("\"'") for w in span.split()
                           if "/" in w and w.strip("\"'").endswith(DOC_SUFFIXES))
     links = re.findall(r"\]\(([^)\s#]+)(?:#[^)]*)?\)", re.sub(r"`[^`\n]*`", "", text))
+    for rel in _reference_citations(source, text):
+        if rel not in seen:
+            seen.add(rel)
+            found = _judge(tree, source, (rel,), rel, path_shaped=True)
+            if found:
+                yield found
     for token in tokens:
         if token in seen or any(m in token for m in "<>*~$=(){}[]|") or "..." in token \
                 or token.startswith("/tmp") or token.endswith("/"):
@@ -501,6 +534,79 @@ def _scan_text(tree: Tree, source: str, text: str):
     return iter(())
 
 
+SETTINGS_NAME = {"pure": "base", "coding": "coding", "godot": "godot"}
+HOOK_PATH = re.compile(r"\.claude/hooks/([A-Za-z0-9][\w-]*)\.py")
+HOOK_CALL = re.compile(r"\bpython3?\b[^\n]*?hooks/([A-Za-z0-9][\w-]*)\.py")
+
+
+def _chain_members(text: str) -> set[str]:
+    """First elements of the entries of a module-level CHAIN tuple/list literal."""
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return set()
+    names = set()
+    for node in module.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "CHAIN" for t in node.targets) \
+                and isinstance(node.value, (ast.Tuple, ast.List)):
+            for entry in node.value.elts:
+                first = entry.elts[0] if isinstance(entry, (ast.Tuple, ast.List)) and entry.elts else entry
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    names.add(first.value)
+    return names
+
+
+def registration_findings(tree: Tree, check: set[str] | None = None) -> list[Finding]:
+    """Shipped hooks nothing runs: see the module docstring, Registration."""
+    hooks = {}
+    for rel in tree.layers:
+        match = re.fullmatch(r"\.claude/hooks/([A-Za-z0-9][\w-]*)\.py", rel)
+        if match and FIXTURE_TREE not in rel:
+            hooks[match.group(1)] = rel
+    settings = {}
+    for layer in LAYERS:
+        rel = f".claude/settings.{SETTINGS_NAME[layer]}.json"
+        if rel in tree.layers and tree.is_file(rel):
+            settings[layer] = (rel, set(HOOK_PATH.findall((tree.root / rel).read_text(encoding="utf-8"))))
+    armed = []
+    for rel in tree.layers:
+        if rel.startswith(".claude/scripts/") and tree.is_file(rel):
+            try:
+                armed.append((tree.layers[rel], set(HOOK_CALL.findall((tree.root / rel).read_text(encoding="utf-8")))))
+            except (OSError, UnicodeDecodeError):
+                continue
+    texts = {}
+    for name, rel in hooks.items():
+        try:
+            texts[name] = (tree.root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            texts[name] = ""
+    reached = {name for name in hooks
+               if any(ORDER[layer] <= ORDER[tree.layers[hooks[name]]] and name in names
+                      for layer, (_, names) in settings.items())
+               or any(ORDER[layer] <= ORDER[tree.layers[hooks[name]]] and name in names for layer, names in armed)}
+    pending = list(reached)
+    while pending:
+        text = texts.get(pending.pop(), "")
+        try:
+            imports, strings, optional, _ = _python_deps(text)
+        except SyntaxError:
+            imports, strings, optional = set(), [], set()
+        for name in (_chain_members(text) | imports | optional | set(strings)) & set(hooks):
+            if name not in reached:
+                reached.add(name)
+                pending.append(name)
+    findings = []
+    for name, rel in sorted(hooks.items()):
+        if name in reached or name.startswith("_") or "stdin" not in texts[name] \
+                or (check is not None and rel not in check):
+            continue
+        layer = tree.layers[rel]
+        searched = [path for lay, (path, _) in settings.items() if ORDER[lay] <= ORDER[layer]]
+        findings.append(Finding(rel, "unregistered", f"layer {layer}; searched {', '.join(searched) or 'no shipped settings file'}"))
+    return findings
+
+
 def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> list[Finding]:
     """Findings for every file in `check` (default: every shipped file) that exists under `root`."""
     tree = Tree(Path(root), layers)
@@ -514,7 +620,8 @@ def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> l
         except (OSError, UnicodeDecodeError):
             continue
         findings.extend(_scan_text(tree, source, text))
-    return findings
+    findings.extend(registration_findings(tree, check))
+    return list(dict.fromkeys(findings))
 
 
 def row_dependencies(root: Path, relpath: str, layers: dict[str, str] | None = None,
