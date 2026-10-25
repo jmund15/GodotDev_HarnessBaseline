@@ -25,7 +25,8 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            started yet show their exact pins. A started agent whose label the script computes
            waits up to DISPATCH_TABLE_UNRESOLVED_WAIT (12 s) for its first answer, else shows the
            script's declared efforts (`low|medium`). Such rows, and agents a script starts later,
-           print at the next Stop as `▶ <name> · update`. An effort nothing declares shows `?`.
+           print at the next Stop as `▶ <name> · update` while the run is going. A run that has ended by
+           that Stop prints no update: it reports contradictions only. An effort nothing declares shows `?`.
            Sidecars show the registry version of the pinned alias. TYPE is the agent type, which
            sets how much harness the child loads. A dispatch that DECLARED a tool profile gets one
            `tools <label>:` line under the table (`_profile_lines`): the shape, the final built-ins
@@ -105,6 +106,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(os.path.dirname(HERE), "tools")
 sys.path.insert(0, HERE)
 import _hook_state  # noqa: E402
+import _msys  # noqa: E402
 from _win_path import native_path  # noqa: E402
 sys.path.insert(0, TOOLS)
 import sidecar_argv  # noqa: E402
@@ -876,6 +878,14 @@ def _sidecar_shown(model):
 
 # ---------------------------------------------------------------- launch
 
+def _launch_plan(launch):
+    """The plan a direct sidecar launch pays, from the registry's launcher map; None when the script is
+    shared or unregistered. A fan-out job's plan comes from its inventory row, not from here."""
+    if launch.get("kind") != "sidecar" or not launch.get("launcher"):
+        return None
+    return _mr().plan_for_launcher(".claude/scripts/%s_sidecar.sh" % launch["launcher"])
+
+
 def _jobs(payload):
     """[{label, model, effort, record?}] — `effort` is the value the job runs at: its pin, the engine
     default, the inherited session level, or UNKNOWN."""
@@ -885,6 +895,7 @@ def _jobs(payload):
                                          payload.get("cwd"))
         return [{"label": s.get("label") or UNLABELED, "model": s.get("model") or DEFAULT,
                  "effort": s.get("effort") or DEFAULT, "launcher": s.get("launcher"),
+                 "plan": _launch_plan(s),
                  "record": s.get("record") if s.get("kind") != "fanout" else None,
                  "fanout_dir": os.path.dirname(s["record"]) if s.get("kind") == "fanout" and s.get("record") else None,
                  "kind": s.get("kind"), "jobs_path": s.get("jobs_path"), "out_dir": s.get("out_dir"),
@@ -1233,7 +1244,7 @@ def _contradictions(entry, session, payload, foreground=False, failed=None):
             # Only a native anthropic child talks to the model itself. A proxied child (codex,
             # deepseek, opencode) records its own client setting, not what the upstream served.
             # The record's transport is the paying plan; any plan of the anthropic route is native.
-            plan = data.get("transport") or job.get("launcher")
+            plan = data.get("transport") or job.get("plan")
             native = _route_of(plan) == "anthropic"
             child = _transcript(data.get("sessionId"), plan) if native else None
             if child:
@@ -1752,7 +1763,7 @@ def _ps_pids():
     Cached once per process: each Stop runs this hook as a fresh process, so the one snapshot is that Stop's.
     A long-lived importer must call `_ps_pids.cache_clear()` before each check."""
     try:
-        out = subprocess.run(["ps", "-e"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run([_msys.tool("ps"), "-e"], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     return {int(line.split()[0]) for line in out.splitlines()[1:] if line.split() and line.split()[0].isdigit()}
@@ -1829,6 +1840,7 @@ def complete(payload):
     session = _session_dir(payload)
     now = time.time()
     done, reported, audited, reasons, failed = set(), {}, set(), [], []
+    delivered, ledger_rows = [], None
     for entry in pending:
         if entry.get("deferred"):
             continue
@@ -1851,12 +1863,19 @@ def complete(payload):
                 failed.append(lines[-1])
                 done.add(key)
                 continue
-            if key[0] == "workflow":
+            failed_before = len(failed)
+            found = _contradictions(entry, session, payload, failed=failed)
+            if len(failed) > failed_before and key[0] == "sidecar":
+                if ledger_rows is None:
+                    ledger_rows = watch_records.finish_rows(payload.get("session_id"))
+                row = watch_records.finish_row(entry, ledger_rows)
+                if row and watch_records.failed_finish(row):
+                    delivered.append(watch_records.ended_identity(watch_records._entry_label(entry), row))
+            if key[0] == "workflow" and found is None:  # a run that ended has nothing left to announce as started
                 table, ids = _newly_started(entry)
                 if table:
                     lines.append(table)
                     reported[key] = list(entry.get("reported") or []) + ids
-            found = _contradictions(entry, session, payload, failed=failed)
             if found is not None:
                 block_reason = _verification_audit(entry, session, payload)
                 if block_reason:
@@ -1874,6 +1893,7 @@ def complete(payload):
         elif now - float(entry.get("launched_at") or now) > STALE_SECONDS:
             lines.append("⚠ %s: no completion after 24 h" % name)
             done.add(key)
+    watch_records._acknowledge(path, delivered)
     if done or reported or any(e.get("fanout_dir") and e.get("record") for e in pending):
         def change(entries):
             kept = [e for e in entries if (e.get("kind"), e.get("id")) not in done]

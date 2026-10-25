@@ -72,6 +72,21 @@ def main():
     check("compact with no stored verify: SKIPPED, still no build",
           out == "SKIPPED (compact: no stored verify)" and len(calls) == 1, out)
 
+    # A step that outruns its timeout is UNKNOWN, never FAILED: a cold cloud build or import is slow, not broken.
+    def hung(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("step", scg.STEP_TIMEOUT_S)
+
+    with patch.object(scg.subprocess, "run", hung):
+        out = scg.verify_build(root)
+    check("build timeout reads UNKNOWN and names the next step",
+          out.startswith("UNKNOWN: build did not finish in %d s" % scg.STEP_TIMEOUT_S) and "background" in out, out)
+    empty_root = Path(tempfile.mkdtemp(prefix="scg_import_"))
+    with patch.object(scg.subprocess, "run", hung), patch.object(scg, "get_godot_bin", lambda: "godot"), \
+            patch("runpy.run_path", lambda *_a, **_k: {"isolation": lambda _r: {"USERDIR": "x"}}):
+        out = scg.setup_import_cache(empty_root)
+    check("import timeout reads UNKNOWN and names the next step",
+          out.startswith("UNKNOWN: import did not finish in %d s" % scg.STEP_TIMEOUT_S) and "background" in out, out)
+
     # The hooks reach the loader's output through main(). Every expensive branch is planted.
     def must_not_run(*_args, **_kwargs):
         raise AssertionError("a Godot-only step ran in a non-Godot project")
@@ -290,6 +305,32 @@ def main():
             lines = [line for line in fh.read().splitlines() if line]
         check("every persisted env line exports",
               bool(lines) and all(line.startswith("export ") for line in lines), repr(lines))
+
+    # The gate runs under pwsh, which cloud-setup.sh installs as a dotnet tool in tools_dir; the Bash tool needs it on PATH.
+    with tempfile.TemporaryDirectory(prefix="scg_pwsh_") as tmp:
+        prefix = Path(tmp)
+        tools_dir = prefix / "dotnet-tools"
+        tools_dir.mkdir()
+        (tools_dir / "pwsh").write_text("", encoding="utf-8")
+        env_file = prefix / "env"
+        manifest = prefix / ".cloud-install.json"
+
+        def persisted_lines():
+            env_file.write_text("", encoding="utf-8")
+            with patch.dict(os.environ, {"CLAUDE_ENV_FILE": str(env_file), "DOTNET_ROOT": "/opt/dotnet"}), \
+                    patch.object(scg, "CLOUD_INSTALL_DIRS", (prefix,)):
+                scg.persist_cloud_env("/opt/godot/g")
+            return env_file.read_text(encoding="utf-8").splitlines()
+
+        manifest.write_text(json.dumps({"tools_dir": str(tools_dir)}), encoding="utf-8")
+        check("the manifest's tools dir joins PATH when it holds pwsh",
+              "export PATH=%s:$PATH" % tools_dir in persisted_lines(), repr(persisted_lines()))
+        (tools_dir / "pwsh").unlink()
+        check("a tools dir without pwsh adds no PATH line",
+              not any(str(tools_dir) in line for line in persisted_lines()), repr(persisted_lines()))
+        manifest.write_text("{}", encoding="utf-8")
+        check("a manifest with no tools dir adds no PATH line",
+              not any("dotnet-tools" in line for line in persisted_lines()), repr(persisted_lines()))
 
     with tempfile.TemporaryDirectory(prefix="scg_rs_") as tmp:
         root = Path(tmp)

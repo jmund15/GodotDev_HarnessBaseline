@@ -139,9 +139,14 @@ def plan_cases(tmp):
     body = (f"$man = Read-BatchManifest -Path '{os.path.join(tmp, 'none.json')}'\n"
             f"$plan = @(New-IntegrationPlan -Segments @('Visual','Playtest') -Manifest $man -TargetBatchSec 60 -MaxBatchTests 380 -RenderClasses @({tagged}))\n"
             "foreach ($p in $plan) { \"ROW $($p.label) $($p.filter)\" }\n"
+            "foreach ($p in $plan) { \"WIN $($p.label) $([bool] $p.windowed)\" }\n"
             f"foreach ($p in $plan) {{ $m = Resolve-RunMode -Repo '{repo}' -Filter $p.filter; \"MODE $($p.label) $($m.mode)\" }}\n")
     rc, out, err = drive(body, tmp)
     rows = [l.split(" ", 2) for l in out.splitlines() if l.startswith("ROW ")]
+    windowed = {l.split(" ")[1]: l.split(" ")[2] for l in out.splitlines() if l.startswith("WIN ")}
+    check("the planner marks the Render unit windowed and every batch headless",
+          windowed.get("Render") == "True" and all(v == "False" for k, v in windowed.items() if k != "Render") and len(windowed) >= 2,
+          f"rc={rc} {out!r}")
     modes = {l.split(" ")[1]: l.split(" ")[2] for l in out.splitlines() if l.startswith("MODE ")}
     render = [r for r in rows if r[1] == "Render"]
     others = [r for r in rows if r[1] != "Render"]

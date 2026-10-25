@@ -35,7 +35,7 @@ function Test-OwnFamily {
 # Live gate/suite records whose writer is not own family. A record whose PID is gone, or whose process start differs
 # from its procStart (PID reuse), is garbage: it is deleted here, so a crashed run cannot wedge a phantom peer forever.
 function Get-LivePeerActivity {
-    param([int[]] $OwnRoots = @(), [string] $ActivityDir = (Join-Path $env:TEMP 'harness-activity'), [hashtable] $Map)
+    param([int[]] $OwnRoots = @(), [string] $ActivityDir = (Join-Path (Get-HarnessTempRoot) 'harness-activity'), [hashtable] $Map)
     if (-not (Test-Path -LiteralPath $ActivityDir)) { return }
     $files = @(Get-ChildItem -LiteralPath $ActivityDir -Filter '*.json' -ErrorAction SilentlyContinue)
     if ($files.Count -eq 0) { return }
@@ -57,7 +57,8 @@ function Get-LivePeerActivity {
         if ($ps) {
             try {
                 $psDt = if ($ps -is [datetime]) { $ps } else { [datetime] $ps }
-                if ([math]::Abs(($psDt.ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds) -gt 5) {
+                $live = Get-ProcessStartStamp -ProcessId $rpid
+                if ($live -and [math]::Abs(($psDt.ToUniversalTime() - $live).TotalSeconds) -gt 5) {
                     Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue; continue
                 }
             } catch { continue }

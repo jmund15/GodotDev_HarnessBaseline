@@ -36,6 +36,20 @@ def main(tmp):
             "-ExitCode 0 -ElapsedSec 1; \"status=$($r.status) passed=$($r.passed)\"")
     rc, out, _ = drive(done, tmp)
     check("a done run with a readable trx is GREEN", rc == 0 and "status=GREEN passed=3" in out, f"rc={rc} {out!r}")
+    # A GdUnit hook can report as its own result row, which vstest's summary counts as a passed test. The rows are
+    # cut from a real gate TRX.
+    hook_trx = os.path.join(tmp, "hook.trx")
+    with open(hook_trx, "w", encoding="utf-8", newline="\n") as f:
+        f.write(
+            '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results>'
+            '<UnitTestResult testName="Game.Tests.Integration.UI.PanelTests.Host_HasHiddenPanel" outcome="Passed"></UnitTestResult>'
+            '<UnitTestResult testName="[After].Host_HasHiddenPanel" outcome="Passed"></UnitTestResult>'
+            '<UnitTestResult testName="Game.Tests.Integration.UI.PanelTests.Broadcaster_PublishesOnReady" outcome="Passed"></UnitTestResult>'
+            '</Results></TestRun>')
+    hooked = ("$r = ConvertFrom-WrapperOutput -Unit @{ label = 'u' } -Lines @('STATUS=DONE', (\"TRX=\" + (Join-Path $env:PROOF_TMP 'hook.trx')), 'Failed: 0, Passed: 3') "
+              "-ExitCode 0 -ElapsedSec 1; \"status=$($r.status) passed=$($r.passed)\"")
+    rc, out, _ = drive(hooked, tmp)
+    check("a hook's result row is not counted as a passed test", rc == 0 and "status=GREEN passed=2" in out, f"rc={rc} {out!r}")
     hang = "(ConvertFrom-WrapperOutput -Unit @{ label = 'u' } -Lines @('x') -ExitCode 124 -ElapsedSec 1).status"
     rc, out, _ = drive(hang, tmp)
     check("exit 124 is a HANG", rc == 0 and "HANG" in out, f"rc={rc} {out!r}")

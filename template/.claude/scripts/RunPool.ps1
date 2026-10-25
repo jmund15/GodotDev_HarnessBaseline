@@ -94,7 +94,7 @@ function Get-SuiteChildArgv {
     param([Parameter(Mandatory)] $Unit, [Parameter(Mandatory)] [string] $ResultsRoot, [switch] $Held, [switch] $RecompilePass,
           [string] $Verbosity = 'quiet')
     $childArgs = @('-Label', $Unit.label, '-Filter', $Unit.filter, '-TimeoutMs', [string] $Unit.timeoutMs, '-ResultsRoot', $ResultsRoot,
-              '-IgnoreEditor', '-Verbosity', $Verbosity) + @(if ($Held) { '-HeldCheckout' }) + @(if ($RecompilePass) { '-RecompilePass' })
+              '-IgnoreEditor', '-Verbosity', $Verbosity, '-RunMode', $(if ($Unit.windowed) { 'windowed' } else { 'headless' })) + @(if ($Held) { '-HeldCheckout' }) + @(if ($RecompilePass) { '-RecompilePass' })
     Get-RunnerArgv -Script $script:SuiteWrapperPath -Repo $script:PoolRepo -ScriptArgs $childArgs
 }
 
@@ -142,6 +142,9 @@ function ConvertFrom-WrapperOutput {
         elseif (-not (Test-TrxReadable -Path $trx)) { 'BAD_TRX' }
         elseif ($ExitCode -ne 0 -or $failed -gt 0) { 'RED' }
         else { 'GREEN' }
+    # GdUnit can report a [Before]/[After] hook as its own result row; vstest's summary counts it as a passed test,
+    # and it appears in some runs only, so it moves the count against the baseline with no test added or removed.
+    if ($counted -and $status -in @('GREEN', 'RED')) { $passed = [math]::Max(0, $passed - (Get-TrxHookPassCount -Path $trx)) }
     [pscustomobject] @{
         tag            = Get-RunTag -Label $Unit.label
         label          = $Unit.label
@@ -159,6 +162,12 @@ function ConvertFrom-WrapperOutput {
     }
 }
 
+function Get-TrxHookPassCount {
+    param([string] $Path)
+    try { [xml] $x = Get-Content -LiteralPath $Path -Raw } catch { return 0 }
+    @($x.SelectNodes("//*[local-name()='UnitTestResult'][@outcome='Passed'][starts-with(@testName, '[')]")).Count
+}
+
 function Test-TrxReadable {
     param([string] $Path)
     try { [xml] $x = Get-Content -LiteralPath $Path -Raw; return ($null -ne $x.DocumentElement) } catch { return $false }
@@ -166,7 +175,7 @@ function Test-TrxReadable {
 
 function Stop-PoolChild {
     param([System.Diagnostics.Process] $Process)
-    try { if (-not $Process.HasExited) { & taskkill.exe '/F' '/T' '/PID' $Process.Id 2>$null | Out-Null } } catch { }
+    try { if (-not $Process.HasExited) { Stop-ProcessTree -ProcessId $Process.Id } } catch { }
     try { [void] $Process.WaitForExit(5000) } catch { }
 }
 

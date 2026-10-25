@@ -57,7 +57,7 @@ $script:RuntimeSlotMax = 8
 $script:RuntimeSlotDefault = 6
 $script:RuntimeSlotNamePrefix = 'Global\gdunit4-{{PROJECT_NAME}}-runlock'
 $script:CheckoutLockPrefix = 'Global\gdunit4-runlock-'
-$script:RuntimeSlotRecordRoot = ''     # '' = $env:TEMP\harness-activity\runtime-slots
+$script:RuntimeSlotRecordRoot = ''     # '' = <Get-HarnessTempRoot>\harness-activity\runtime-slots
 $script:RuntimeSlotOverrideFile = ''   # '' = <git-common-dir>\runtime-slots
 $script:OverlapSignatureKinds = @('testhost-native-crash', 'executor-connect', 'run-aborted', 'cache-file-error')
 $script:RecompileSnapshotReads = 0
@@ -86,15 +86,25 @@ function Get-TestIsolation {
     # slashes, because VSTest doubles a backslash and Godot's DirAccess rejects the result
     # (gotcha_vstest_inline_env_backslash_breaks_godot_diraccess).
     # -Tag (Get-RunTag) makes it a per-run isolation: suffix and user dir leaf become <worktreeId>-<tag>.
-    param([Parameter(Mandatory)] [string] $Repo, [string] $Tag = '')
+    # -Platform picks the variable Godot resolves its user dir from: APPDATA on Windows, XDG_DATA_HOME on Linux
+    # (Key); UserDir is the project's user dir under that root.
+    # The key and the user dir tail repeat engine_userdata.py's; test_RuntimeSlots.py pins them equal. This function owns the data root of test runs.
+    param([Parameter(Mandatory)] [string] $Repo, [string] $Tag = '', [string] $Platform = (Get-HostPlatform))
     Set-StrictMode -Version Latest
     $id = Get-WorktreeId $Repo
     $leaf = if ($Tag) { "$id-$Tag" } else { $id }
     if ($leaf.Length -gt $PipeSuffixMax) {
         throw "pipe suffix '$leaf' is $($leaf.Length) chars, over the cap $PipeSuffixMax (worktreeId '$id' + '-' + tag '$Tag')"
     }
-    $dir = Join-Path $env:LOCALAPPDATA "{{PROJECT_NAME}}\test-appdata\$leaf"
-    [pscustomobject]@{ PipeSuffix = $leaf; AppData = $dir; AppDataArg = "RunConfiguration.EnvironmentVariables.APPDATA=$($dir -replace '\\', '/')" }
+    $key = switch ($Platform) { 'windows' { 'APPDATA' } 'linux' { 'XDG_DATA_HOME' } default { throw "unsupported platform '$Platform'" } }
+    $engineDir = if ($Platform -eq 'windows') { 'Godot' } else { 'godot' }
+    $dir = Join-Path (Get-HarnessDataRoot -Platform $Platform) "{{PROJECT_NAME}}\test-appdata\$leaf"
+    $fwd = $dir -replace '\\', '/'
+    [pscustomobject]@{
+        PipeSuffix = $leaf; AppData = $dir; Key = $key
+        AppDataArg = "RunConfiguration.EnvironmentVariables.$key=$fwd"
+        UserDir = "$fwd/$engineDir/app_userdata/{{PROJECT_NAME}}"
+    }
 }
 
 function Get-RuntimeSlotRecordDir {
@@ -102,7 +112,7 @@ function Get-RuntimeSlotRecordDir {
     Set-StrictMode -Version Latest
     if ($RecordDir) { return $RecordDir }
     if ($script:RuntimeSlotRecordRoot) { return $script:RuntimeSlotRecordRoot }
-    Join-Path $env:TEMP 'harness-activity\runtime-slots'
+    Join-Path (Get-HarnessTempRoot) 'harness-activity\runtime-slots'
 }
 
 # <git-common-dir>\runtime-slots, or $null when the common dir cannot be resolved.
@@ -153,7 +163,8 @@ function Get-RuntimeSlotCount {
 function Get-ProcStartUtc {
     param([System.Diagnostics.Process] $Process)
     Set-StrictMode -Version Latest
-    try { $Process.StartTime.ToUniversalTime().ToString('o') } catch { $null }
+    $stamp = Get-ProcessStartStamp -ProcessId $Process.Id
+    if ($stamp) { $stamp.ToString('o') } else { $null }
 }
 
 function ConvertTo-SlotUtc {
@@ -177,7 +188,9 @@ function Test-SlotProcessLive {
         if (-not $p) { return $false }
         $want = ConvertTo-SlotUtc $StartUtc
         if ($null -eq $want) { return $false }
-        return ([math]::Abs(($p.StartTime.ToUniversalTime() - $want).TotalSeconds) -le 2)
+        $live = Get-ProcessStartStamp -ProcessId $id
+        if ($null -eq $live) { return $false }
+        return ([math]::Abs(($live - $want).TotalSeconds) -le 2)
     } catch { return $false }
 }
 
@@ -610,7 +623,7 @@ function Invoke-RuntimeSlotSweep {
             if (Test-SlotProcessLive $rec.holderPid $rec.procStart) { continue }
             if ($null -eq $rec.runnerPid) { continue }
             if (-not (Test-SlotProcessLive $rec.runnerPid $rec.runnerStart)) { continue }
-            & taskkill.exe '/F' '/T' '/PID' ([int]$rec.runnerPid) 2>$null | Out-Null
+            Stop-ProcessTree -ProcessId ([int]$rec.runnerPid)
             $killed.Add([int]$rec.runnerPid)
         } catch { }
     }
@@ -620,9 +633,24 @@ function Invoke-RuntimeSlotSweep {
 # ------------------------------------------------------------------ waits
 # One wait for every lock: WaitAny over the given handles. Returns the signaled index (-1 on
 # timeout) and whether the wait completed through an abandoned mutex, which still grants it.
+# Linux refuses a WaitAny over named mutexes ("wait operations on multiple wait handles including a named
+# synchronization primitive are not supported"), so it polls each handle with WaitOne(0) in index order,
+# which is the order WaitAny grants a tie in.
 function Wait-RunLock {
     param([System.Threading.Mutex[]] $Handles, [int] $TimeoutMs)
     Set-StrictMode -Version Latest
+    if ((Get-HostPlatform) -eq 'linux') {
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            for ($i = 0; $i -lt $Handles.Count; $i++) {
+                try { if ($Handles[$i].WaitOne(0)) { return [pscustomobject]@{ Index = $i; Abandoned = $false } } }
+                catch [System.Threading.AbandonedMutexException] { return [pscustomobject]@{ Index = $i; Abandoned = $true } }
+            }
+            $left = [math]::Max(0, $TimeoutMs) - $clock.ElapsedMilliseconds
+            if ($left -le 0) { return [pscustomobject]@{ Index = -1; Abandoned = $false } }
+            Start-Sleep -Milliseconds ([math]::Min(50, $left))
+        }
+    }
     try {
         $i = [System.Threading.WaitHandle]::WaitAny([System.Threading.WaitHandle[]]$Handles, [math]::Max(0, $TimeoutMs))
         if ($i -eq [System.Threading.WaitHandle]::WaitTimeout) { return [pscustomobject]@{ Index = -1; Abandoned = $false } }
@@ -981,11 +1009,11 @@ function Register-OverlapSignature {
 
 # ------------------------------------------------------------------ signatures and triggers
 function Get-OverlapSignatureKind {
-    param([string] $SkipKind = '', [int] $ExitCode = 0, [string] $GodotLog = '')
+    param([string] $SkipKind = '', [int] $ExitCode = 0, [string] $GodotLog = '', [string] $Platform = (Get-HostPlatform))
     Set-StrictMode -Version Latest
     if ($SkipKind -eq 'refcounted-free-fatal') { return $null }
     if ($SkipKind -and $SkipKind -in $script:OverlapSignatureKinds) { return $SkipKind }
-    if ($ExitCode -eq -1073741795) { return 'testhost-native-crash' }
+    if (Test-NativeCrashExit -ExitCode $ExitCode -Platform $Platform) { return 'testhost-native-crash' }
     try {
         if ($GodotLog -and (Test-Path -LiteralPath $GodotLog) -and
             (Select-String -LiteralPath $GodotLog -Pattern 'Unable to open|Cannot create' -Quiet -ErrorAction SilentlyContinue)) {

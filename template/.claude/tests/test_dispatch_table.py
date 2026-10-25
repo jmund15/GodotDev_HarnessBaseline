@@ -399,6 +399,40 @@ def test_bespoke_script_lists_every_started_agent_then_the_late_ones():
     assert "▶" not in msg and _block(msg), "reported agents must not repeat: " + msg
 
 
+def test_a_run_that_ended_before_the_stop_prints_no_start_update():
+    """Regression: review-fanout started merge, fold and verify after its launch table and
+    the run ended before the next Stop. That Stop printed `▶ review-fanout · update` for agents no longer
+    running, which the owner read as a live status. A finished run reports contradictions only."""
+    e = Env()
+    early = [("seat:a", "ea1", "opus", "claude-opus-5-5", "high")]
+    late = [("review:merge", "eb1", "opus", None, None), ("review:fold", "eb2", "opus", None, None)]
+    e.plant_run("wf_proof-1", "running", early + late)
+    script = "export const meta={name:'review-fanout'}\nfor (const p of parts) await agent(p.prompt, {label: p.label, model: 'opus', effort: p.eff})"
+    e.run(workflow_payload({"script": script}), "--launch")
+    msg = e.run(stop_payload(), "--complete")
+    assert "▶" not in msg and _block(msg), "nothing new until the late agents respond: " + msg
+    e.plant_run("wf_proof-1", "completed", [("review:merge", "eb1", "opus", "claude-opus-5-5", "low"),
+                                            ("review:fold", "eb2", "opus", "claude-opus-5-5", "low")])
+    msg = e.run(stop_payload(), "--complete")
+    assert "▶" not in msg and "update" not in msg, "a finished run announced its late agents as if starting: " + msg
+    assert "still running" not in msg, msg
+    assert e.pending() == [], e.pending()
+
+
+def test_a_run_still_going_keeps_its_start_update():
+    """The counterpart: the same late agents on a run that has not ended are announced, as before."""
+    e = Env()
+    late = [("review:merge", "eb1", "opus", None, None)]
+    e.plant_run("wf_proof-1", "running", [("seat:a", "ea1", "opus", "claude-opus-5-5", "high")] + late)
+    script = "export const meta={name:'review-fanout'}\nfor (const p of parts) await agent(p.prompt, {label: p.label, model: 'opus', effort: p.eff})"
+    e.run(workflow_payload({"script": script}), "--launch")
+    msg = e.run(stop_payload(), "--complete")
+    assert "▶" not in msg and _block(msg), "nothing new until the late agent responds: " + msg
+    e.plant_run("wf_proof-1", "running", [("review:merge", "eb1", "opus", "claude-opus-5-5", "low")])
+    msg = e.run(stop_payload(), "--complete")
+    assert msg.split("\n\n")[0] == "▶ Workflow · update\n  opus-5-5 · low · general-purpose: review:merge", msg
+
+
 def test_long_model_ids_are_shortened():
     e = Env()
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
@@ -1988,6 +2022,26 @@ def test_fanout_job_line_keeps_sidecar_fanout_before_any_inventory():
     assert line.startswith("  sidecar_fanout sidecar · ") and line.endswith(" · wl-early · <1m"), line
 
 
+def test_a_sidecar_record_without_transport_reads_its_paying_plan_from_the_inventory():
+    # The inventory's `plan` names who paid; a launcher's file stem is not a plan (here it differs).
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dispatch_table_under_test", HOOK)
+    dt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dt)
+    seen = []
+    saved = (dt._sidecar_record, dt._route_of, dt._transcript)
+    dt._sidecar_record = lambda entry, payload: {"sessionId": "child-1"}
+    dt._route_of = lambda plan: "anthropic" if plan == "anthropic-secondary" else plan
+    dt._transcript = lambda session_id, plan=None: seen.append((session_id, plan)) or None
+    try:
+        entry = {"kind": "sidecar", "id": "x", "jobs": [{"label": "x", "launcher": "anthropic_secondary",
+                                                          "plan": "anthropic-secondary"}]}
+        dt._contradictions(entry, None, {"session_id": SID})
+    finally:
+        dt._sidecar_record, dt._route_of, dt._transcript = saved
+    assert seen == [("child-1", "anthropic-secondary")], seen
+
+
 def test_a_sidecar_that_ended_before_a_result_reaches_the_model_through_the_block_reason():
     e = Env()
     e.watch()
@@ -1999,6 +2053,16 @@ def test_a_sidecar_that_ended_before_a_result_reaches_the_model_through_the_bloc
     assert e.body.get("decision") == "block" and line in e.body["reason"], e.body
     e.run(stop_payload(), "--complete")
     assert e.body.get("decision") != "block" and "ended before a result" not in json.dumps(e.body), e.body
+
+
+def test_a_failed_end_the_stop_hook_delivered_is_acknowledged_so_a_later_watcher_stays_quiet():
+    e = Env()
+    e.watch()
+    e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -l new -f p.md"), "--launch")
+    _finish_row(e, "new", "ended-before-result", 12, "REFUSED memory headroom for new: commit 1.0 GiB free")
+    e.run(stop_payload(), "--complete")
+    seen = json.load(open(e.state_path(), encoding="utf-8")).get("sidecar_wake_seen") or []
+    assert len(seen) == 1 and "new" in seen[0], seen
 
 
 def test_a_sidecar_whose_launcher_died_without_an_exit_file_reaches_the_model_through_the_block_reason():

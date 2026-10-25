@@ -14,7 +14,9 @@ Xvfb daemon without XAUTHORITY management causes auth failures.
 
 This hook rewrites executing bare `dotnet test` segments on cloud to put
 `xvfb-run --auto-servernum` directly before `dotnet test`, adding `--settings .runsettings`
-when that invocation has none. Quoted mentions and non-shell heredoc bodies stay unchanged.
+when that invocation has none. A command wrapper before it (`time`, `{`, `exec`, `nohup`, `env`,
+with any assignments after them) does not hide the test. Quoted mentions, non-shell heredoc
+bodies and `dotnet test` named as another command's argument stay unchanged.
 """
 
 import json
@@ -22,6 +24,8 @@ import os
 import sys
 
 from _claude_scope import is_cloud
+
+_SHELL_PREFIXES = frozenset({'time', '{', 'exec', 'nohup', 'env'})
 
 
 def main():
@@ -54,6 +58,9 @@ def main():
             continue
         source_words, _ = parsed
         head = executable_word(source_words, segment)
+        while head < len(source_words) and source_words[head].value in _SHELL_PREFIXES:
+            head += 1
+            head += executable_word(source_words[head:], segment)
         words = [word.value for word in source_words[head:]]
         if words[:2] != ['dotnet', 'test']:
             continue

@@ -46,6 +46,9 @@ def persist_cloud_env(godot_bin: str):
     if dotnet_root:
         lines.append(f"export DOTNET_ROOT={dotnet_root}")
         lines.append(f"export PATH={dotnet_root}:$PATH")
+    tools_dir = cloud_install().get("tools_dir", "")
+    if tools_dir and (Path(tools_dir) / "pwsh").exists():
+        lines.append(f"export PATH={tools_dir}:$PATH")
     if lines:
         with open(env_file, "a") as f:
             f.write("\n".join(lines) + "\n")
@@ -173,6 +176,15 @@ def godot_docs_cache_issue(root: Path) -> str | None:
         return None
 
 
+# Each of the import and build steps gets this long; the loader's hook registration allows 600 s in all.
+STEP_TIMEOUT_S = 120
+
+
+def _outran(step: str) -> str:
+    """A step past its timeout has no verdict: a cold cloud import or build is slow, not broken."""
+    return f"UNKNOWN: {step} did not finish in {STEP_TIMEOUT_S} s; run it in the background and read its result"
+
+
 def setup_import_cache(root: Path) -> str:
     """Report cache presence; regenerate only when absent, without hiding failed imports."""
     imported_dir = root / ".godot" / "imported"
@@ -187,7 +199,7 @@ def setup_import_cache(root: Path) -> str:
         values = resolve(root)
         result = subprocess.run(
             [godot_bin, "--headless", "--path", str(root), "--import", "--quit"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=STEP_TIMEOUT_S, cwd=str(root),
             env=dict(os.environ, **values), stdin=subprocess.DEVNULL
         )
         if result.returncode != 0:
@@ -196,7 +208,7 @@ def setup_import_cache(root: Path) -> str:
             return f"FIXED (regenerated; USERDIR={values['USERDIR']})"
         return f"FAILED: import returned success but produced no imported resources (USERDIR={values['USERDIR']})"
     except subprocess.TimeoutExpired:
-        return "FAILED: timeout (>120s)"
+        return _outran("import")
     except Exception as error:
         return f"UNKNOWN: import cache check failed ({error})"
 
@@ -303,7 +315,7 @@ def verify_build(root: Path) -> str:
     try:
         result = subprocess.run(
             ["dotnet", "build", "--nologo", "-v", "q"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, cwd=str(root)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=STEP_TIMEOUT_S, cwd=str(root)
         )
         # Parse error/warning counts from last lines
         output = result.stdout + result.stderr
@@ -326,7 +338,7 @@ def verify_build(root: Path) -> str:
             return f"OK ({warnings} warnings)" if warnings else "OK"
         return f"FAILED ({errors} errors, {warnings} warnings)"
     except subprocess.TimeoutExpired:
-        return "FAILED: timeout (>120s)"
+        return _outran("build")
     except Exception as e:
         return f"FAILED: {e}"
 
