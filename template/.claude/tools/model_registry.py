@@ -3061,7 +3061,8 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     per-model `modelSettings` window, which cycles such a job, and the env value overrides it. A
     `review` shape is one (source `review-shape`); `resident` marks any other (source `resident-subject`):
     the launcher's SIDECAR_RESIDENT_SUBJECT=1, set from the job's data (a benchmark task's archetype, a
-    fan-out job's `resident`). An explicit compact_override (-K) still applies.
+    fan-out job's `resident`). An explicit compact_override (-K) still applies. `contextWindow` is the enforced
+    window (equal to `autoCompactWindow`), which the run record and its turn-1 percentage report.
     """
     limits = entry.get("limits") or {}
     model = entry["id"]
@@ -3075,9 +3076,9 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
         known = full > 0 and (full <= 200000 or native_1m)
         if native_1m and not model.lower().endswith("[1m]"):
             model += "[1m]"
-        return {"model": model, "autoCompactWindow": min(full, RESIDENT_COMPACT_WINDOW) if known else None,
-                "maxContextTokens": None,
-                "contextWindow": full if known else None,
+        enforced = min(full, RESIDENT_COMPACT_WINDOW) if known else None
+        return {"model": model, "autoCompactWindow": enforced, "maxContextTokens": None,
+                "contextWindow": enforced,
                 "contextWindowSource": ("review-shape" if shape == "review" else "resident-subject")
                 if known else "unknown"}
     operating_point = compact_override if compact_override is not None else limits.get("compactAtTokens")
@@ -3161,6 +3162,24 @@ def usable_window(entry, use_max=False):
     if window is None:
         return None
     return window - (output_cap(limits, use_max, tier) or 0)
+
+
+CLIENT_OUTPUT_RESERVE = 20000
+CLIENT_RESERVE = 13000
+
+
+def compaction_point(entry, job=None):
+    """`(tokens, source)` of the input a child on `entry` holds before its client compacts. On the Anthropic route,
+    `job` (its `shape`, `resident` and `transport`) selects `anthropic_window`'s `autoCompactWindow`, less the client
+    reserves its docstring gives (source `auto-compact`). Without `job`, on any other transport, or for a row with no
+    auto-compact window, it is `usable_window` (source `usable-window`); `(None, ...)` when the row states no window."""
+    if job is not None and str(job.get("transport") or entry.get("transport") or "").startswith("anthropic"):
+        auto = anthropic_window(entry, shape=job.get("shape"), resident=bool(job.get("resident")))
+        if auto.get("autoCompactWindow"):
+            cap = output_cap(entry.get("limits") or {}, False, _tier_of(entry))
+            reserve = min(cap if cap is not None else 32000, CLIENT_OUTPUT_RESERVE) + CLIENT_RESERVE
+            return auto["autoCompactWindow"] - reserve, "auto-compact"
+    return usable_window(entry), "usable-window"
 
 
 def _cmd_max_output(argv):

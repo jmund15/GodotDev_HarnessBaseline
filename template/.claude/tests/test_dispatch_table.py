@@ -1988,6 +1988,45 @@ def test_fanout_job_line_keeps_sidecar_fanout_before_any_inventory():
     assert line.startswith("  sidecar_fanout sidecar · ") and line.endswith(" · wl-early · <1m"), line
 
 
+def test_a_sidecar_that_ended_before_a_result_reaches_the_model_through_the_block_reason():
+    e = Env()
+    e.watch()
+    e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -l new -f p.md"), "--launch")
+    _finish_row(e, "new", "ended-before-result", 12, "REFUSED memory headroom for new: commit 1.0 GiB free")
+    msg = e.run(stop_payload(), "--complete")
+    line = "⚠ sidecar new ended before a result (exit 12): REFUSED memory headroom for new: commit 1.0 GiB free"
+    assert line in msg, msg
+    assert e.body.get("decision") == "block" and line in e.body["reason"], e.body
+    e.run(stop_payload(), "--complete")
+    assert e.body.get("decision") != "block" and "ended before a result" not in json.dumps(e.body), e.body
+
+
+def test_a_sidecar_whose_launcher_died_without_an_exit_file_reaches_the_model_through_the_block_reason():
+    e = Env()
+    _late_registered_fanout(e, ["gone2"], exit_code=None)
+    e.watch()
+    msg = e.run(stop_payload(), "--complete", projects_root=e.root)
+    assert "⚠ sidecar gone2 ended without an exit file" in msg, msg
+    assert e.body.get("decision") == "block" and "⚠ sidecar gone2 ended without an exit file" in e.body["reason"], e.body
+
+
+def test_a_fanout_job_that_never_started_reaches_the_model_through_the_block_reason():
+    e = Env()
+    _fanout_pending(e, "queued-dead2", _exited_pid())
+    msg = e.run(stop_payload(), "--complete")
+    expected = "queued-dead2: never started (fan-out proof-fanout ended before launching it)"
+    assert expected in msg, msg
+    assert e.body.get("decision") == "block" and expected in e.body["reason"], e.body
+
+
+def test_a_clean_sidecar_finish_and_a_running_one_add_no_failed_end_to_the_block_reason():
+    e = Env()
+    e.watch()
+    e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -l fine -f p.md"), "--launch")
+    e.run(stop_payload(), "--complete")
+    assert "ended" not in e.body.get("reason", ""), e.body
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

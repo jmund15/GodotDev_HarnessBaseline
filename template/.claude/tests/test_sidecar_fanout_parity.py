@@ -10,7 +10,8 @@
    rendered from `.claude/guards/single_flight.json`, the source dispatch.js's guard is pinned to.
 
 The end-to-end cases run `main()` against a planted registry whose launcher is a fake bash script,
-so no provider is called.
+so no provider is called. The planted row claims the tiers its jobs' shapes imply (`roles`), because `main()`
+runs the launchers' tier fit before anything starts and refuses a pin outside the shape's tier.
 
 Run: python3 .claude/tests/test_sidecar_fanout_parity.py
 """
@@ -58,7 +59,7 @@ with open(FAKE, "w", encoding="utf-8", newline="\n") as fh:
 
 DATA = {
     "transports": {"fake": {"costModel": "plan-quota", "launcher": posix(FAKE)}},
-    "models": [{"transport": "fake", "id": "fake-model-1", "alias": "fakem", "roles": []}],
+    "models": [{"transport": "fake", "id": "fake-model-1", "alias": "fakem", "roles": ["executor", "fanout"]}],
 }
 sf.model_registry.load = lambda *a, **k: DATA
 

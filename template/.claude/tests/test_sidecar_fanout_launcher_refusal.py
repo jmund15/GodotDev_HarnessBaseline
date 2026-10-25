@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""RED-first proof: `tools/sidecar_fanout.py` refuses, in the caller's own call, every job its launcher
+would refuse from the job row alone, before it spawns or detaches anything.
+
+The captured failure (session 9b60b8a7, 2026-10-25T00:55Z): one Bash call wrote a jobs file (`alias: opus`,
+`shape: survey`) and ran `sidecar_fanout.py <jobs> --detach`. The PreToolUse hook could not read a file the
+same call wrote, `--detach` ran only the session-state doctrine check, and the detached child's launcher
+refused the pin ("Sidecar launch outside the tier its shape implies") into a `.err` file nobody read. The
+caller saw `fan-out detached: driver pid ...` and waited 25 minutes.
+
+Fakes only: `detach_driver`, `run_jobs`, the duplicate-launch scan, the capacity read and the doctrine
+check are replaced, so no process is spawned and nothing is billed. The unfit and fit pins are read from the
+live registry and shape tiers (a pair that is unfit today stays unfit-by-construction tomorrow), never named.
+
+Run: python3 .claude/tests/test_sidecar_fanout_launcher_refusal.py
+"""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import sys
+import tempfile
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLAUDE = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
+sys.path.insert(0, os.path.join(CLAUDE, "tools"))
+import _dispatch_checks as dc  # noqa: E402
+import model_registry  # noqa: E402
+import sidecar_dispatch_context as ctx  # noqa: E402
+
+spec = importlib.util.spec_from_file_location("sf_launcher_refusal", os.path.join(CLAUDE, "tools", "sidecar_fanout.py"))
+sf = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sf)
+
+TMP = tempfile.mkdtemp(prefix="sfanout_refusal_")
+DATA = model_registry.load()
+TIERS = dc.shape_tiers()
+CALLS = {"detach": 0, "run": 0}
+REFUSAL_HEAD = "Sidecar launch outside the tier its shape implies"
+
+
+def _fake_detach(argv, jobs, out_dir, claim=None, log_path=None):
+    CALLS["detach"] += 1
+    return 0
+
+
+class Launched(Exception):
+    """`run_jobs` was reached: the fake stops the call there, so nothing is summarized or billed."""
+
+
+def _fake_run(*args, **kwargs):
+    CALLS["run"] += 1
+    raise Launched()
+
+
+sf.detach_driver = _fake_detach
+sf.run_jobs = _fake_run
+sf.duplicate_launches = lambda planned: ""
+sf.admission_refusal = lambda jobs, data, read=None, now=None: None
+sf.doctrine_refusal = lambda argv: None
+
+
+def anthropic_aliases(shape, fits):
+    """Available anthropic aliases whose pin does (fits) or does not fit `shape`'s tier, per the real check."""
+    tier = TIERS[shape]
+    return sorted(row["alias"] for row in DATA["models"]
+                  if row.get("transport") == "anthropic" and row.get("alias")
+                  and model_registry.model_available(row["id"], DATA)
+                  and (dc.tier_fit(row["alias"], tier, "anthropic", DATA) is None) is fits)
+
+
+UNFIT = anthropic_aliases("survey", False)
+FIT = anthropic_aliases("survey", True)
+assert len(UNFIT) >= 2 and FIT, ("the registry no longer has two unfit and one fit anthropic pin for the survey "
+                                 "shape; pick another shape", UNFIT, FIT)
+
+PROMPT = os.path.join(TMP, "brief.md")
+with open(PROMPT, "w", encoding="utf-8") as fh:
+    fh.write("Read README and say what it is.\n")
+
+
+def job(label, alias, shape="survey", **extra):
+    return dict({"label": label, "alias": alias, "effort": "high", "shape": shape, "promptFile": PROMPT,
+                 "plan": "anthropic"}, **extra)
+
+
+def run(jobs, *flags):
+    """(exit code, stdout, stderr, detach calls, run calls, out dir) for one `main` call over `jobs`."""
+    work = tempfile.mkdtemp(dir=TMP)
+    jobs_path = os.path.join(work, "jobs.json")
+    with open(jobs_path, "w", encoding="utf-8") as fh:
+        json.dump(jobs, fh)
+    out_dir = os.path.join(work, "out")
+    CALLS.update(detach=0, run=0)
+    out, err = io.StringIO(), io.StringIO()
+    previous = os.getcwd()
+    os.chdir(work)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = sf.main([jobs_path, "--out-dir", out_dir, *flags])
+            except Launched:
+                code = "launched"
+    finally:
+        os.chdir(previous)
+    return code, out.getvalue(), err.getvalue(), CALLS["detach"], CALLS["run"], out_dir
+
+
+CASES = []
+
+
+def case(name, fn):
+    CASES.append((name, fn))
+
+
+mixed = [job("unfit-a", UNFIT[0]), job("fit-b", FIT[0]), job("unfit-c", UNFIT[1])]
+
+for mode in ("--detach", "--dry-run", None):
+    flags = (mode,) if mode else ()
+    shown = mode or "foreground"
+
+    def refused(flags=flags):
+        code, out, err, detached, ran, out_dir = run(mixed, *flags)
+        return (code == 2 and detached == 0 and ran == 0 and not os.path.exists(os.path.join(out_dir, "fanout-driver.log"))
+                and "Nothing dispatched" not in out)
+
+    def names_each(flags=flags):
+        _code, out, err, *_ = run(mixed, *flags)
+        text = out + err
+        return (REFUSAL_HEAD in text and "unfit-a" in text and "unfit-c" in text and "fit-b" not in text.replace("unfit-", ""))
+
+    case("%s: a job set holding unfit pins exits 2 and starts nothing" % shown, refused)
+    case("%s: the refusal names every unfit job with the launcher's text, and not the fit one" % shown, names_each)
+
+    def admits(flags=flags):
+        code, _out, err, detached, ran, _ = run([job("fit-only", FIT[0])], *flags)
+        reached = {"--detach": (0, 1, 0), "--dry-run": (0, 0, 0)}.get(flags[0] if flags else None, ("launched", 0, 1))
+        return (code, detached, ran) == reached and REFUSAL_HEAD not in err
+
+    case("%s: a job set whose pins all fit is admitted (must-allow)" % shown, admits)
+
+
+def refused_text_is_the_launchers():
+    """The tool prints the text `launcher_launch` prints: one source, `sidecar_dispatch_context.dispatch_checks`."""
+    expected = ctx.dispatch_checks([("unfit-a", UNFIT[0], "survey", "anthropic")])
+    _code, out, err, *_ = run([job("unfit-a", UNFIT[0])], "--detach")
+    return bool(expected) and expected in (out + err)
+
+
+case("the refusal text is the launcher's own, from the one check", refused_text_is_the_launchers)
+
+
+def tier_less_shape_is_never_refused():
+    tierless = sorted(set(("any", "arm")) - set(TIERS))
+    if not tierless:
+        return True
+    code, _out, err, *_ = run([job("loose", UNFIT[0], shape=tierless[0])], "--dry-run")
+    return code == 0 and REFUSAL_HEAD not in err
+
+
+case("a shape that declares no tier is never refused for its pin", tier_less_shape_is_never_refused)
+
+# Refusals planning already ran in the caller's own call (effort.avoid, unknown alias, unknown shape): pinned so a
+# later reorder cannot move them behind `--detach`. These held before the fix; the tier fit is what moved.
+avoiding = sorted((row["alias"], rung) for row in DATA["models"] if row.get("alias") and row.get("transport") == "anthropic"
+                  and model_registry.model_available(row["id"], DATA) for rung in model_registry.avoided_rungs(row)
+                  if dc.tier_fit(row["alias"], TIERS["survey"], "anthropic", DATA) is None)
+
+
+def avoided_effort_refused():
+    if not avoiding:
+        return True
+    alias, rung = avoiding[0]
+    code, out, err, detached, ran, _ = run([job("avoided", alias, effort=rung)], "--detach")
+    return code == 2 and detached == 0 and "effort.avoid" in out + err
+
+
+def unknown_alias_refused():
+    code, out, err, detached, ran, _ = run([job("ghost", "no-such-alias-9")], "--detach")
+    return code == 2 and detached == 0 and "ghost" in out + err
+
+
+def unknown_shape_refused():
+    code, out, err, detached, ran, _ = run([job("odd-shape", FIT[0], shape="no-such-shape")], "--detach")
+    return code == 2 and detached == 0
+
+
+case("(already held) an effort the registry's effort.avoid lists is refused before detach", avoided_effort_refused)
+case("(already held) an unknown alias is refused before detach", unknown_alias_refused)
+case("(already held) an unknown shape is refused before detach", unknown_shape_refused)
+
+
+def fold_author_pin_is_checked():
+    author_unfit = anthropic_aliases("author", False)
+    if not author_unfit:
+        return True
+    work = tempfile.mkdtemp(dir=TMP)
+    jobs_path = os.path.join(work, "jobs.json")
+    with open(jobs_path, "w", encoding="utf-8") as fh:
+        json.dump([job("seat-1", FIT[0], shape="review")], fh)
+    refusal = ctx.fanout_fit_refusal([jobs_path, "--review", "--fold-alias", author_unfit[0], "--fold-effort", "high",
+                                      "--fold-subject", "%s::%s::a.md" % (work, os.path.join(work, "m.json"))], work)
+    return bool(refusal) and "review-fold-1" in refusal and REFUSAL_HEAD in refusal
+
+
+case("a --fold author is checked beside the seats, as the PreToolUse hook checks it", fold_author_pin_is_checked)
+
+for mode in ("--detach", "--dry-run", None):
+    flags = (mode,) if mode else ()
+
+    def prints_the_fit(flags=flags):
+        code, out, _err, *_ = run([job("fit-only", FIT[0])], *flags)
+        return "fit: `fit-only` (%s) reading" % FIT[0] in out and "of its compaction point" in out
+
+    def fit_lines_are_not_a_refusal(flags=flags):
+        code, out, _err, *_ = run([job("fit-only", FIT[0])], *flags)
+        return code != 2 and "fit: `fit-only`" in out
+
+    case("%s: each job's window fit is printed before it detaches or spawns, beside the tier-fit check" %
+         (mode or "foreground"), prints_the_fit)
+    case("%s: the fit line is advisory, never a refusal" % (mode or "foreground"), fit_lines_are_not_a_refusal)
+
+
+def refused_set_prints_no_fit():
+    _code, out, err, *_ = run(mixed, "--detach")
+    return "fit: " not in out + err
+
+
+case("a refused job set prints the refusal and no fit line", refused_set_prints_no_fit)
+
+
+failed = []
+for name, fn in CASES:
+    try:
+        ok = bool(fn())
+    except Exception as exc:  # a crash is a failure, never a pass
+        ok = False
+        name += "  [%s: %s]" % (type(exc).__name__, exc)
+    print(("PASS " if ok else "FAIL ") + name)
+    if not ok:
+        failed.append(name)
+print("%d/%d passed" % (len(CASES) - len(failed), len(CASES)))
+sys.exit(1 if failed else 0)

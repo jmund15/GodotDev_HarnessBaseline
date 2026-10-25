@@ -55,9 +55,8 @@ tool numbers (0 for a path that does not exist), and in the brief as its done co
 ranges cover every line of each entry. `must-read <list file>` prints those entries as JSON for a caller
 that builds a `review_fanout.js` agents array by hand. Before any brief is written,
 each seat's brief, context file and must-read files are summed at the orchestration Pre-Dispatch
-Checklist's 2.5 characters per token and compared with its pin's usable window (`dispatch_size.window_fit`): the registry's effective
-window less its output cap, the point where the client compacts (`model_registry.py context-window` and
-`max-output`). A seat over that bound, or a pin with no declared window, refuses the whole panel with each
+Checklist's 2.5 characters per token and compared with the point its pin compacts at (`model_registry.compaction_point`,
+`dispatch_size.window_fit`), with every file those name counted too. A seat over that bound, or a pin with no declared window, refuses the whole panel with each
 seat's overage; the caller splits the list across seats and never truncates it.
 
 `--target sidecar` writes the same briefs and `<out>/jobs_<prefix>.json` in `sidecar_fanout.py`'s job
@@ -408,7 +407,7 @@ def must_read_section(entries: list[dict]) -> str:
 
 def seat_overage(*, key: str, token: str, body: str, context_path: str, entries: list[dict],
                  data: dict) -> str | None:
-    """None when the seat's brief, context and must-read files fit its pin's usable window, else the refusal
+    """None when the seat's brief, context and must-read files fit its pin's compaction point, else the refusal
     line naming the overage. `dispatch_size` owns the reading and the fit. A must-read path that does not
     exist adds nothing: its seat reports it `missing`."""
     job = {"prompt": body, "model": token, "mustRead": entries}

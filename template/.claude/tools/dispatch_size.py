@@ -22,14 +22,19 @@ file in the total, unless the job already lists that path. Two or more jobs nami
 `read by` group. The scan is one level deep: a named file's own names are not followed, and a text file
 over MAX_SCAN_BYTES is not scanned.
 
-A job's reading also gets its window fit: tokens from UTF-8 decoded characters (replacement on invalid
-bytes) at CHARS_PER_TOKEN (the rate the orchestration Pre-Dispatch
-Checklist counts required reading at) against `model_registry.usable_window` of its `model` or `alias`
-(`window_fit`). A job over its window is named in the line. A pin the registry does not resolve is not marked.
+A job's reading also gets its fit: tokens from UTF-8 decoded characters (replacement on invalid
+bytes) at CHARS_PER_TOKEN (the rate the orchestration Pre-Dispatch Checklist counts required reading at), over
+the brief, every listed file and every file the brief names, against the input point the job compacts at
+(`model_registry.compaction_point` for the job's `shape`, `resident` and transport, `window_fit`): 467000 for a
+resident opus job. The line
+prints the heaviest job's share and the point it used, and the count of backticked path-shaped names that are no
+file (a vault path spelled through an alias such as `V/...`), counted 0. A job over its point is named in the
+line. A pin the registry does not resolve is not marked. `fit_lines(size)` is the same fact per job, printed by
+`sidecar_fanout.py` before it launches.
 
 `fact_lines(spec)` adds, after that line, a verdict per job: one line for a job pinned above a cheaper claimant of its
-tier (executor included), with the claimants' cost, `±` cell and the job's reading against each one's window and
-long-context price point; a `not compared` line for a job it cannot compare, with the reason; and one closing
+tier (executor included), with the claimants' cost, `±` cell and the job's reading against the point each one would
+compact at for that job and its long-context price point; a `not compared` line for a job it cannot compare, with the reason; and one closing
 `pin is the cheapest claimant` line for the compared jobs with nothing cheaper. `format_line` names each job whose window
 fit cannot be judged under `not sized`. These are facts read before a pin is chosen; no check denies on them.
 
@@ -64,6 +69,7 @@ UNREADABLE_SHOWN = 3
 MAX_SCAN_BYTES = 8 * KB * KB
 BACKTICKED = re.compile(r"`([^`\n]+)`")
 LINE_SUFFIX = re.compile(r"(?::\d+(?:[-–]\d+)?)+$")
+PATH_SHAPED = re.compile(r"^[^\s<>{}*$|\\]*/[^\s<>{}*$|\\]*\.[A-Za-z0-9]{1,5}$")
 
 
 def _jobs_of(spec) -> list:
@@ -99,8 +105,9 @@ def _size(path: str, root: Path):
         return None
 
 
-def _named_in(text: str, root: Path) -> dict:
-    """{normalized key: absolute path} of every existing file a backticked span of `text` names."""
+def _named_in(text: str, root: Path, missing=None) -> dict:
+    """{normalized key: absolute path} of every existing file a backticked span of `text` names. A path-shaped span
+    (a `/` and a file extension, no URL) that is no file is added to the `missing` set when one is passed."""
     found = {}
     for span in BACKTICKED.findall(text):
         candidate = LINE_SUFFIX.sub("", span.strip())
@@ -108,36 +115,40 @@ def _named_in(text: str, root: Path) -> dict:
             path = os.path.abspath(root / candidate)
             if candidate and os.path.isfile(path):
                 found[os.path.normcase(path)] = path
+            elif missing is not None and "://" not in candidate and PATH_SHAPED.match(candidate):
+                missing.add(candidate)
         except (OSError, ValueError):
             continue
     return found
 
 
-def _scan(path: str, root: Path, cache: dict) -> dict:
+def _scan(path: str, root: Path, cache: dict) -> tuple:
+    """(named files, unresolved path-shaped names) of the text file at `path`, read once per `cache`."""
     key = os.path.normcase(os.path.abspath(root / path))
     if key not in cache:
         try:
             target = os.path.abspath(root / path)
             if os.stat(target).st_size > MAX_SCAN_BYTES:
-                cache[key] = {}
+                cache[key] = ({}, set())
             else:
+                missing = set()
                 with open(target, encoding="utf-8", errors="replace") as fh:
-                    cache[key] = _named_in(fh.read(), root)
+                    cache[key] = (_named_in(fh.read(), root, missing), missing)
         except (OSError, ValueError):
-            cache[key] = {}
+            cache[key] = ({}, set())
     return cache[key]
 
 
-def window_fit(model, total_characters: int, data=None) -> dict:
+def window_fit(model, total_characters: int, data=None, job=None) -> dict:
     """`fit_tokens` of the reading `total_characters` at CHARS_PER_TOKEN."""
-    return fit_tokens(model, math.ceil(total_characters / CHARS_PER_TOKEN), data)
+    return fit_tokens(model, math.ceil(total_characters / CHARS_PER_TOKEN), data, job)
 
 
-def fit_tokens(model, tokens: int, data=None) -> dict:
-    """`{tokens, usable, over, error}` for a reading of `tokens` on `model`: `usable` the pin's
-    `model_registry.usable_window`, `over` the tokens past it (0 when it fits or cannot be judged), `error` why the
-    pin could not be sized, else None. No `model` is not an error."""
-    fit = {"tokens": tokens, "usable": None, "over": 0, "error": None}
+def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
+    """`{tokens, usable, source, over, error}` for a reading of `tokens` on `model`: `usable` the
+    `model_registry.compaction_point` of the pin for `job`, `source` which, `over` the tokens past it (0 when it fits
+    or cannot be judged), `error` why the pin could not be sized, else None. No `model` is not an error."""
+    fit = {"tokens": tokens, "usable": None, "source": None, "over": 0, "error": None}
     if not model:
         return fit
     try:
@@ -145,7 +156,11 @@ def fit_tokens(model, tokens: int, data=None) -> dict:
     except Exception:
         fit["error"] = "does not resolve in the registry"
         return fit
-    fit["usable"] = model_registry.usable_window(entry)
+    try:
+        fit["usable"], fit["source"] = model_registry.compaction_point(entry, job)
+    except Exception as err:
+        fit["error"] = "has no resolvable compaction window (%s)" % err
+        return fit
     if fit["usable"] is None:
         fit["error"] = "declares no context window in the registry, so its seat cannot be sized"
     else:
@@ -154,23 +169,28 @@ def fit_tokens(model, tokens: int, data=None) -> dict:
 
 
 def dispatch_size(jobs, root=None, data=None) -> dict:
-    """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, over, fitError}], duplicated: [{path, kb, readBy}], duplicatedKb,
-    totalKb, unreadable, named: [{path, kb, namedBy}], namedKb}` for one dispatch. `root` resolves relative
+    """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, pointSource, over, fitError, unresolved}],
+    duplicated: [{path, kb, readBy}], duplicatedKb, totalKb, unreadable, named: [{path, kb, namedBy}], namedKb,
+    unresolved: [name]}` for one dispatch; a job's `tokens` are its whole reading (brief, listed files and named files). `root` resolves relative
     paths (default: the working directory); `data` is the registry for the window fit (default: the live one)."""
     root = Path(root) if root else Path.cwd()
     shared = [spec.get(key) for spec in [jobs] if isinstance(spec, dict) for key in SHARED_KEYS
               if isinstance(spec.get(key), str)]
     rows = _jobs_of(jobs)
     sizes, characters, names, readers, unreadable, per_job = {}, {}, {}, {}, [], []
-    scanned, named_by, named_paths = {}, {}, {}
+    scanned, named_by, named_paths, unresolved = {}, {}, {}, set()
     for index, job in enumerate(rows):
         paths = {os.path.normcase(a): a for a in (os.path.abspath(root / p) for p in _paths_of(job) + shared)}
         total = len(job["prompt"].encode("utf-8")) if isinstance(job.get("prompt"), str) else 0
         total_characters = len(job["prompt"]) if isinstance(job.get("prompt"), str) else 0
         sources = _paths_of(job, keys=("contextFiles",)) + shared
-        named = _named_in(job["prompt"], root) if isinstance(job.get("prompt"), str) else {}
+        missing = set()
+        named = _named_in(job["prompt"], root, missing) if isinstance(job.get("prompt"), str) else {}
         for source in sources:
-            named.update(_scan(source, root, scanned))
+            found, absent = _scan(source, root, scanned)
+            named.update(found)
+            missing |= absent
+        unresolved |= missing
         named = {key: path for key, path in named.items() if key not in paths}
         for key, path in named.items():
             named_by.setdefault(key, []).append(index)
@@ -189,12 +209,13 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
             total_characters += characters[key] or 0
             readers.setdefault(key, []).append(index)
         model = job.get("model") or job.get("alias")
-        fit = window_fit(model, total_characters, data)
+        fit = window_fit(model, total_characters + named_characters, data, job)
         per_job.append({"label": job.get("label") or job.get("key") or "job%d" % (index + 1),
                         "model": model, "effort": job.get("effort"), "kb": round(total / KB),
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
-                        "over": fit["over"], "fitError": fit["error"],
+                        "pointSource": fit["source"], "over": fit["over"], "fitError": fit["error"],
+                        "unresolved": len(missing),
                         "readingTokens": math.ceil((total_characters + named_characters) / CHARS_PER_TOKEN)})
     duplicated = [{"path": names[key], "kb": round((sizes[key] or 0) / KB), "readBy": len(who)}
                   for key, who in readers.items() if len(who) > 1 and sizes[key]]
@@ -202,7 +223,8 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
              for key, who in named_by.items()]
     return {"jobs": len(rows), "perJob": per_job, "duplicated": duplicated,
             "duplicatedKb": sum(d["kb"] for d in duplicated), "totalKb": sum(j["kb"] for j in per_job),
-            "unreadable": unreadable, "named": named, "namedKb": sum(n["kb"] for n in named)}
+            "unreadable": unreadable, "named": named, "namedKb": sum(n["kb"] for n in named),
+            "unresolved": sorted(unresolved)}
 
 
 def format_line(size: dict) -> str:
@@ -232,8 +254,8 @@ def format_line(size: dict) -> str:
     if sized:
         heaviest = max(sized, key=lambda job: job["tokens"] / job["usable"])
         percent = round(100 * heaviest["tokens"] / heaviest["usable"])
-        if percent:
-            line += "; heaviest reading %d%% of its window%s" % (percent, " (%s)" % heaviest["label"] if jobs > 1 else "")
+        line += "; heaviest reading %s of its compaction point, %d tokens%s" % (
+            "%d%%" % percent if percent else "<1%", heaviest["usable"], " (%s)" % heaviest["label"] if jobs > 1 else "")
     unsized = {}
     for job in size["perJob"]:
         if job.get("fitError"):
@@ -245,11 +267,37 @@ def format_line(size: dict) -> str:
         line += "; over its usable window: " + ", ".join(
             "%s (%d tokens > %d)" % (job["label"], job["tokens"], job["usable"]) for job in over[:UNREADABLE_SHOWN]) + (
             " +%d more" % (len(over) - UNREADABLE_SHOWN) if len(over) > UNREADABLE_SHOWN else "")
+    if size.get("unresolved"):
+        line += "; %d named path%s not resolved, counted 0: %s" % (
+            len(size["unresolved"]), "" if len(size["unresolved"]) == 1 else "s",
+            ", ".join(size["unresolved"][:UNREADABLE_SHOWN]) + (
+                " +%d more" % (len(size["unresolved"]) - UNREADABLE_SHOWN) if len(size["unresolved"]) > UNREADABLE_SHOWN else ""))
     if size["unreadable"]:
         names = [os.path.basename(p) for p in size["unreadable"]]
         more = len(names) - UNREADABLE_SHOWN
         line += "; unreadable, counted 0: " + ", ".join(names[:UNREADABLE_SHOWN]) + (" +%d more" % more if more > 0 else "")
     return line
+
+
+def fit_lines(size: dict) -> list:
+    """One fit fact per pinned job of a `dispatch_size` result: its whole reading (brief, listed files and named
+    files) as a share of the compaction point it was measured against, the point's source, and the count of path-shaped
+    names it could not resolve. Facts only; `sidecar_fanout.py` prints these before it launches."""
+    out = []
+    for job in size["perJob"]:
+        if not job["model"]:
+            continue
+        who = "`%s` (%s)" % (job["label"], job["model"])
+        if job["fitError"]:
+            out.append("fit: %s not sized: %s" % (who, job["fitError"]))
+            continue
+        percent = round(100 * job["tokens"] / job["usable"]) if job["usable"] else 0
+        text = "fit: %s reading %d tokens, %s of its compaction point, %d tokens (%s)" % (
+            who, job["tokens"], "%d%%" % percent if percent else "<1%", job["usable"], job["pointSource"])
+        if job["unresolved"]:
+            text += "; %d named path%s not resolved, counted 0" % (job["unresolved"], "" if job["unresolved"] == 1 else "s")
+        out.append(text)
+    return out
 
 
 def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> list:
@@ -288,7 +336,8 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
             continue
         try:
             transport = job.get("transport") or model_registry.resolve(model, data)["transport"]
-            claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["readingTokens"], data, ladder)
+            claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["readingTokens"], data, ladder,
+                                                           job=job)
         except Exception as err:
             reason = ("does not resolve in the registry" if isinstance(err, model_registry.UnknownModel) else str(err))
             out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, reason))

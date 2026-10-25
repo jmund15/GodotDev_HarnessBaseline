@@ -181,6 +181,15 @@ def main():
              past[0]["pastLongContext"] is True and past[0]["fits"] is True, repr(past))
         over = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 900000, data, ladder)
         case("a reading over the usable window does not fit", over[0]["fits"] is False, repr(over))
+        claude = pricier_data(id="claude-cheap-1")
+        try:
+            held = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 300000, claude, ladder,
+                                        job={"resident": True, "shape": "author"})
+        except TypeError as err:
+            held = repr(err)
+        case("a resident job's claimant is measured against the point it compacts at, 467,000 tokens",
+             isinstance(held, list) and held and held[0]["usable"] == 467000 and held[0]["fits"] is True
+             and "467,000-token compaction point" in dc.claimant_text(held[0], 300000), repr(held))
         case("an unmeasured reading leaves fit unjudged",
              dc.cheaper_claimants("dear-1", "fanout", "anthropic", None, data, ladder)[0]["fits"] is None)
         case("the cheapest claimant has no cheaper claimant",

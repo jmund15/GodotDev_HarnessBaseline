@@ -131,6 +131,15 @@ def _seat_order(seats_file):
     return [label.removeprefix("review:") for label in seats]
 
 
+def _seat_agent(item):
+    """The archived finding's `agent` when it names its seat or one of the seat's `+`-joined lens keys, else the seat
+    key: the seat writes `agent` itself, and `roster_mandates` maps only a seat key or a lens key to mandates."""
+    agent, seat = item["finding"].get("agent"), item.get("lens")
+    if not isinstance(seat, str) or not seat or agent == seat or agent in seat.split("+"):
+        return agent
+    return seat
+
+
 def _archive_rows(directory, kind="review", *, merge=True, seat_order=None):
     import session_digest
     try:
@@ -138,7 +147,7 @@ def _archive_rows(directory, kind="review", *, merge=True, seat_order=None):
                                                                seat_order=seat_order)
     except ValueError as exc:
         raise Unusable(str(exc)) from None
-    rows = [dict(item["finding"], id=item["id"]) for item in archive["items"]]
+    rows = [dict(item["finding"], id=item["id"], agent=_seat_agent(item)) for item in archive["items"]]
     if merge and kind == 'review' and archive.get('merges'):
         import review_result
         by_id = {row['id']: row for row in rows}

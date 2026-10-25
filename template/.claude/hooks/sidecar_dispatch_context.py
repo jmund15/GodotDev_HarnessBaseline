@@ -18,6 +18,8 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    tier (`guards/tool_profiles.json`) must pin a row serving it on the alias's own registry transport, else
    the launch is denied before preflight. An alias the registry does not know is left to the launcher's
    availability gate. A fan-out job's `plan` must be a live plan of its row's route for the approval in step 3.
+   A fan-out whose jobs file the same call writes is checked by `sidecar_fanout.py` itself, through
+   `fanout_fit_refusal`, once it can read the file and before it spawns or detaches.
 1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-U] [-W]`
    synchronously. A fan-out call has no launcher to check, so the hook denies it from cached capacity
    through `sidecar_fanout.admission_refusal` (`fanout_capacity_refusal`): a job whose named plan has no room,
@@ -715,6 +717,15 @@ def fanout_doctrine_refusal(fanout_args, root):
         {"session_id": sid, "transcript_path": dispatch_table._transcript(sid)},
         tiers=lambda: launch_tiers(None, fanout, root, contracts), embed_slice=True)
     return refusal
+
+
+def fanout_fit_refusal(fanout_args, root):
+    """`dispatch_checks` over the fan-out call's jobs, fold authors included, else None: the tier-fit deny this hook
+    cannot make for a jobs file the same call writes. `sidecar_fanout.py` calls it in its own call, before it spawns or
+    detaches anything, so a pin the launcher would refuse reaches the caller and not a detached child's `.err`. A call
+    it cannot read decides nothing; each launcher still runs its own check."""
+    fanout = types.SimpleNamespace(args=list(fanout_args))
+    return dispatch_checks(launch_jobs(None, fanout, root, fanout_contract(fanout, root)))
 
 
 def main():

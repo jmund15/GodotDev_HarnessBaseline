@@ -84,7 +84,7 @@ class SizeTests(Plant):
         jobs = [self.job("j%d" % i, "p%d.md" % i, must=[shared]) for i in range(4)]
         self.assertEqual(dispatch_size.format_line(dispatch_size.dispatch_size(jobs)),
                          "dispatch size: 4 jobs (opus·high ×4); reading 151/151/151/151 KB; "
-                         "150 KB read by all 4 (600 KB total); heaviest reading 7% of its window (j0)")
+                         "150 KB read by all 4 (600 KB total); heaviest reading 6% of its compaction point, 967000 tokens (j0)")
 
     def test_native_args_shapes_read_chains_agents_and_the_shared_context(self):
         ctx, shared = self.file("ctx.md", 20), self.file("s.md", 3)
@@ -110,7 +110,7 @@ class SizeTests(Plant):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines()[0],
                          "dispatch size: 2 jobs (opus·high ×2); reading 151/151 KB; 150 KB read by all 2 (300 KB total); "
-                         "heaviest reading 7% of its window (j0)")
+                         "heaviest reading 6% of its compaction point, 967000 tokens (j0)")
         self.assertEqual(result.stdout.splitlines()[1:], [
             "cheaper claimants: `j0` (opus) not compared: neither its shape row nor its own tier names one",
             "cheaper claimants: `j1` (opus) not compared: neither its shape row nor its own tier names one"])
@@ -134,21 +134,21 @@ class NamedFileTests(Plant):
         self.assertEqual(size["namedKb"], 157)
         self.assertEqual(size["perJob"][0]["namedKb"], 157)
         self.assertEqual([j["kb"] for j in size["perJob"]][:3], [0, 0, 0])
-        self.assertTrue(dispatch_size.format_line(size).endswith("; names 157 KB more (read by all 4: 628 KB)"),
+        self.assertIn("; names 157 KB more (read by all 4: 628 KB); heaviest", dispatch_size.format_line(size),
                         dispatch_size.format_line(size))
 
     def test_a_file_named_by_one_job_prints_no_sharing_clause(self):
         solo = self.file("solo.md", 20)
         jobs = [self.named_job("a", "Read `%s`." % solo), self.named_job("b", "nothing")]
         line = dispatch_size.format_line(dispatch_size.dispatch_size(jobs))
-        self.assertTrue(line.endswith("; names 20 KB more"), line)
+        self.assertIn("; names 20 KB more; heaviest", line)
 
     def test_each_sharing_multiplier_prints_its_own_group(self):
         a, b = self.file("a.md", 10), self.file("b.md", 4)
         jobs = [self.named_job("x", "`%s` and `%s`" % (a, b)), self.named_job("y", "`%s`" % a),
                 self.named_job("z", "`%s`" % a)]
         line = dispatch_size.format_line(dispatch_size.dispatch_size(jobs))
-        self.assertTrue(line.endswith("; names 14 KB more (read by all 3: 30 KB)"), line)
+        self.assertIn("; names 14 KB more (read by all 3: 30 KB); heaviest", line)
 
     def test_relative_paths_and_a_line_suffix_resolve_against_the_root(self):
         self.file("rel.md", 6)
@@ -277,18 +277,18 @@ class WindowFitTests(Plant):
         heavy = self.reading_of("heavy.md", 0.5)
         one = dispatch_size.format_line(dispatch_size.dispatch_size(
             [self.job("only", "p1.md", must=[heavy], model="haiku")]))
-        self.assertIn("; heaviest reading 50% of its window", one)
+        self.assertIn("; heaviest reading 50%% of its compaction point, %d tokens" % self.haiku_usable(), one)
         self.assertNotIn("(only)", one)
         two = dispatch_size.format_line(dispatch_size.dispatch_size([
             self.job("lean", "p2.md", must=[light], model="haiku"),
             self.job("wide", "p3.md", must=[heavy], model="haiku")]))
-        self.assertIn("; heaviest reading 50% of its window (wide)", two)
+        self.assertIn("; heaviest reading 50%% of its compaction point, %d tokens (wide)" % self.haiku_usable(), two)
 
     def test_a_line_with_no_sizable_pin_names_no_share(self):
         small = self.file("small.md", 10)
         odd = dispatch_size.format_line(dispatch_size.dispatch_size(
             [self.job("odd", "p.md", must=[small], model="no-such-row")]))
-        self.assertNotIn("of its window", odd)
+        self.assertNotIn("of its compaction point", odd)
 
     def claimant_job(self, label, model, shape, prompt="p.md", kb=20):
         return {"label": label, "promptPath": self.file(prompt, kb), "model": model, "effort": "medium",
@@ -406,6 +406,95 @@ class WindowFitTests(Plant):
             dispatch_size.dispatch_size(spec, self.root)))
         self.assertIsNone(dispatch_size.line({"jobs": []}, self.root))
         self.assertIsNone(dispatch_size.line("not a spec", self.root))
+
+
+class CompactionPointTests(Plant):
+    """A job's fit counts the files its brief names, against the input point it compacts at, for its own flags."""
+
+    @staticmethod
+    def anthropic_point(alias, **flags):
+        import model_registry
+        data = model_registry.load()
+        entry = model_registry.resolve(alias, data)
+        auto = model_registry.anthropic_window(entry, **flags)["autoCompactWindow"]
+        return auto - 20000 - 13000
+
+    def named_job(self, label, kb, **extra):
+        big = self.file("named-%s.md" % label, kb)
+        job = {"label": label, "prompt": "Read `%s` and report." % big, "model": "opus", "effort": "high"}
+        job.update(extra)
+        return job, big
+
+    def test_the_fit_counts_a_file_the_brief_names(self):
+        job, _big = self.named_job("named", 400)
+        per = dispatch_size.dispatch_size([job])["perJob"][0]
+        self.assertGreater(per["tokens"], 400 * KB / dispatch_size.CHARS_PER_TOKEN)
+        self.assertEqual(per["tokens"], per["readingTokens"])
+
+    def test_a_resident_anthropic_job_is_measured_against_the_resident_compaction_point(self):
+        job, _big = self.named_job("res", 1300, resident=True, shape="author")
+        per = dispatch_size.dispatch_size([job])["perJob"][0]
+        self.assertEqual(per["usable"], self.anthropic_point("opus", resident=True))
+        self.assertEqual(per["usable"], 467000)
+        self.assertEqual(per["over"], per["tokens"] - per["usable"])
+        self.assertGreater(per["over"], 0)
+
+    def test_a_review_shaped_job_uses_the_resident_point_and_a_plain_job_the_full_window_point(self):
+        review, _ = self.named_job("rev", 1, shape="review")
+        plain, _ = self.named_job("plain", 1, shape="author")
+        per = dispatch_size.dispatch_size([review, plain])["perJob"]
+        self.assertEqual(per[0]["usable"], self.anthropic_point("opus", shape="review"))
+        self.assertEqual(per[1]["usable"], self.anthropic_point("opus"))
+        self.assertGreater(per[1]["usable"], per[0]["usable"])
+
+    def test_another_transport_keeps_its_current_point(self):
+        import model_registry
+        sol = model_registry.usable_window(model_registry.resolve("sol", model_registry.load()))
+        job, _big = self.named_job("sol", 1, resident=True)
+        job["model"] = "sol"
+        self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], sol)
+
+    def test_the_line_prints_the_share_and_the_point_it_used(self):
+        job, _big = self.named_job("res", 700, resident=True)
+        line = dispatch_size.format_line(dispatch_size.dispatch_size([job]))
+        self.assertRegex(line, r"heaviest reading \d+% of its compaction point, 467000 tokens")
+        self.assertNotIn("of its window", line)
+
+    def test_a_named_path_that_resolves_to_no_file_is_counted_and_never_read(self):
+        prompt = ("Read `V/Notes/Design.md`, `V/Notes/Other.md:12-20` and `%s`. Not paths: `x/*.py`, `<dir>/a.md`, "
+                  "`https://host/a/b.md`, `plain`, `a b/c.md`." % self.file("real.md", 1))
+        size = dispatch_size.dispatch_size([{"label": "j", "prompt": prompt, "model": "opus"}])
+        self.assertEqual(size["perJob"][0]["unresolved"], 2)
+        self.assertEqual(size["unresolved"], ["V/Notes/Design.md", "V/Notes/Other.md"])
+        self.assertEqual(size["namedKb"], 1)
+        self.assertIn("2 named paths not resolved, counted 0: V/Notes/Design.md, V/Notes/Other.md",
+                      dispatch_size.format_line(size))
+
+    def test_no_unresolved_clause_when_every_named_path_resolves(self):
+        job, _big = self.named_job("ok", 1)
+        self.assertNotIn("not resolved", dispatch_size.format_line(dispatch_size.dispatch_size([job])))
+
+    def test_fit_lines_state_the_share_the_point_and_the_unresolved_count_per_pinned_job(self):
+        job, _big = self.named_job("res", 700, resident=True)
+        job["prompt"] += " Also `V/a/b.md`."
+        unpinned = {"label": "none", "prompt": "no pin"}
+        lines = dispatch_size.fit_lines(dispatch_size.dispatch_size([job, unpinned]))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r"^fit: `res` \(opus\) reading \d+ tokens, \d+% of its compaction point, 467000 tokens "
+                                   r"\(auto-compact\); 1 named path not resolved, counted 0$")
+
+    def test_the_lens_seat_overage_inherits_the_fix_through_the_shared_fit(self):
+        import lens_briefs
+        import model_registry
+        data = model_registry.load()
+        point = model_registry.usable_window(model_registry.resolve("haiku", data))
+        big = self.file("named-big.md", math.ceil(point * dispatch_size.CHARS_PER_TOKEN / KB) + 40)
+        context = self.file("ctx.md", 1)
+        body = "Read `%s` first." % big
+        refusal = lens_briefs.seat_overage(key="k", token="haiku", body=body, context_path=context,
+                                           entries=[], data=data)
+        self.assertIsNotNone(refusal)
+        self.assertIn("exceed its usable window", refusal)
 
 
 if __name__ == "__main__":
