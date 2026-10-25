@@ -20,6 +20,7 @@
 $ibDiagScript = Join-Path $PSScriptRoot 'batch_diagnosis.ps1'
 $script:IbDiagLoaded = $false
 if (Test-Path $ibDiagScript) { . $ibDiagScript; $script:IbDiagLoaded = $true }
+. (Join-Path $PSScriptRoot 'CSharpSource.ps1')
 
 # A result that carries no readable evidence: not a regression signal, never GREEN or RED (RunPool.ps1 statuses).
 $script:IncompleteStatuses = @('NO_OUTPUT', 'NO_TRX', 'BAD_TRX', 'HELD_REFUSED', 'EDITOR_OPEN', 'SKIP_RECOMPILE_IGNORED')
@@ -29,7 +30,6 @@ $script:IncompleteStatuses = @('NO_OUTPUT', 'NO_TRX', 'BAD_TRX', 'HELD_REFUSED',
 # file is the one reader of that tag: the gate plans the `Render` unit from it and run_test_suite.ps1 chooses headless or
 # windowed from it. Every other test runs headless.
 $script:RenderUnit = 'Render'
-$script:CsNoise = [regex]::new('//[^\r\n]*|/\*[\s\S]*?\*/|@"(?:[^"]|"")*"|"(?:[^"\\\r\n]|\\.)*"', 'Compiled')
 $script:CsNamespace = [regex]::new('(?m)^\s*namespace\s+([\w.]+)\s*[;{]', 'Compiled')
 $script:CsClass = [regex]::new('(?m)^[ \t]*((?:\[(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)*)(?:(?:public|internal|private|protected|sealed|abstract|static|partial|unsafe|file)\s+)*class\s+(\w+)', 'Compiled')
 $script:RenderTag = [regex]::new('\bRequiresRenderer(?:Attribute)?\b', 'Compiled')
@@ -46,7 +46,7 @@ function Get-TestClassCatalog {
     foreach ($path in [System.IO.Directory]::EnumerateFiles($dir, '*.cs', [System.IO.SearchOption]::AllDirectories)) {
         $text = [System.IO.File]::ReadAllText($path)
         if (-not $text.Contains('TestSuite') -and -not $text.Contains('RequiresRenderer')) { continue }
-        $clean = $script:CsNoise.Replace($text, ' ')
+        $clean = Remove-CSharpLiterals -Text $text
         $ns = $script:CsNamespace.Match($clean)
         foreach ($m in $script:CsClass.Matches($clean)) {
             $attrs = $m.Groups[1].Value
@@ -125,13 +125,15 @@ function Get-FilterSelectedClasses {
 
 # headless unless -Windowed or every class the filter selects is renderer-tagged. A mixed filter runs headless and returns the
 # tagged classes it will not render in .skipped; an unreadable filter or one selecting no class fails closed to headless.
-# .engineArgs are the engine flags for the mode: headless implies the Dummy audio driver, and a windowed run names it, so no
-# test run plays through the machine's speakers.
+# -Declared is a mode the caller already decided (the pool's planner); it skips the derivation. .engineArgs are the engine flags
+# for the mode: headless implies the Dummy audio driver, and a windowed run names it, so no test run plays through the
+# machine's speakers.
 function Resolve-RunMode {
-    param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Filter, [switch] $Windowed)
+    param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Filter, [switch] $Windowed,
+          [ValidateSet('', 'headless', 'windowed')] [string] $Declared = '')
     $mode, $skipped = 'headless', [string[]]@()
-    if ($Windowed) { $mode = 'windowed' }
-    else {
+    if ($Windowed -or $Declared -eq 'windowed') { $mode = 'windowed' }
+    elseif (-not $Declared) {
         $selected = Get-FilterSelectedClasses -Filter $Filter -Catalog (Get-TestClassCatalog -Repo $Repo)
         if ($null -ne $selected) {
             $tagged = @($selected | Where-Object { $_.tagged })
@@ -272,24 +274,24 @@ function Resolve-OnlySegments {
 function Get-IntegrationSubUnits {
     param([string] $Repo, [string[]] $Segments, $Manifest, [int] $MaxBatchTests)
     $out = @{}
+    $catalog = $null
     foreach ($seg in $Segments) {
         $keys = @($Manifest.seconds.Keys | Where-Object { $_ -eq $seg -or $_.StartsWith("$seg.") })
         if ((Get-UnitMeasure -Manifest $Manifest -Keys $keys).tests -le $MaxBatchTests) { continue }
-        $subs = @(Get-SegmentSubNamespaces -Repo $Repo -Seg $seg)
+        if ($null -eq $catalog) { $catalog = @(Get-TestClassCatalog -Repo $Repo) }
+        $subs = @(Get-SegmentSubNamespaces -Catalog $catalog -Seg $seg)
         if ($subs.Count -gt 0) { $out[$seg] = $subs }
     }
     $out
 }
 
-# Sub-namespaces under Tests/Integration/<Seg>: each file's `namespace {{PROJECT_NAME}}.Tests.Integration.<Seg>.<Sub>`.
+# Sub-namespaces under Integration.<Seg>: each catalogued test class's `Integration.<Seg>.<Sub>.<Class>` names <Sub>.
 function Get-SegmentSubNamespaces {
-    param([string] $Repo, [string] $Seg)
-    $dir = Join-Path $Repo "Tests\Integration\$Seg"
-    if (-not (Test-Path $dir)) { return @() }
+    param($Catalog, [string] $Seg)
     $subs = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
-    $pattern = '(?m)^namespace\s+{{PROJECT_NAME}}\.Tests\.Integration\.' + [regex]::Escape($Seg) + '\.([A-Za-z_]\w*)'
-    foreach ($f in @(Get-ChildItem -Path $dir -Recurse -File -Filter '*.cs')) {
-        $m = [regex]::Match((Get-Content -LiteralPath $f.FullName -Raw), $pattern)
+    $pattern = '^(?:[A-Za-z_]\w*\.)+Tests\.Integration\.' + [regex]::Escape($Seg) + '\.([A-Za-z_]\w*)\.[\w.]+$'
+    foreach ($c in $Catalog) {
+        $m = [regex]::Match($c.fqn, $pattern)
         if ($m.Success) { [void] $subs.Add($m.Groups[1].Value) }
     }
     @($subs)
@@ -368,7 +370,7 @@ function New-IntegrationPlan {
     $rows = @(foreach ($b in $batches) {
         $i++
         [pscustomobject]@{
-            label = "Integration_B$i"; segs = @($b.segs); expectedSec = [math]::Round($b.sec, 1); unmeasured = [bool] $b.unmeasured
+            label = "Integration_B$i"; segs = @($b.segs); expectedSec = [math]::Round($b.sec, 1); unmeasured = [bool] $b.unmeasured; windowed = $false
             filter = '(' + (($b.segs | ForEach-Object { "FullyQualifiedName~Tests.Integration.$_." }) -join '|') + ')' + (($b.excl | ForEach-Object { "&FullyQualifiedName!~Tests.Integration.$_." }) -join '') + $renderExcl + "&$Quarantine"
             status = 'PENDING'; passed = 0; failed = 0; elapsed = 0; workWall = 0; ran = $false; trx = ''; out = ''
         }
@@ -376,7 +378,7 @@ function New-IntegrationPlan {
     if (@($RenderClasses).Count -gt 0) {
         $m = Get-UnitMeasure -Manifest $Manifest -Keys @($script:RenderUnit)
         $rows += [pscustomobject]@{
-            label = $script:RenderUnit; segs = @($script:RenderUnit); expectedSec = $(if ($m.measured) { [math]::Round($m.sec, 1) } else { 3.0 }); unmeasured = (-not $m.measured)
+            label = $script:RenderUnit; segs = @($script:RenderUnit); expectedSec = $(if ($m.measured) { [math]::Round($m.sec, 1) } else { 3.0 }); unmeasured = (-not $m.measured); windowed = $true
             filter = '(' + (($RenderClasses | ForEach-Object { "FullyQualifiedName~$_." }) -join '|') + ")&$Quarantine"
             status = 'PENDING'; passed = 0; failed = 0; elapsed = 0; workWall = 0; ran = $false; trx = ''; out = ''
         }
@@ -399,7 +401,7 @@ function Get-BatchTimeoutMs {
 function ConvertTo-PoolUnit {
     param($Row, [string] $Label, [int] $CostCeilingMs, [hashtable] $BatchWall = @{})
     $basisSec = (Get-BatchReservationMs -Label $Row.label -ExpectedSec $Row.expectedSec -BatchWall $BatchWall) / 1000.0
-    @{ label = $Label; of = $Row.label; filter = $Row.filter; expectSec = [double] $Row.expectedSec
+    @{ label = $Label; of = $Row.label; filter = $Row.filter; expectSec = [double] $Row.expectedSec; windowed = [bool] $Row.windowed
        timeoutMs = (Get-BatchTimeoutMs -ExpectedSec $basisSec -CostCeilingMs $CostCeilingMs -Unmeasured ([bool] $Row.unmeasured)) }
 }
 

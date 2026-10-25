@@ -453,12 +453,14 @@ Write-Output ('REDMAN=' + `$mj.units.B.seconds + ':' + `$mj.units.A.seconds + ':
     # excludes every sub. Namespaces are read from the .cs files, so the split follows the filter the tests match.
     $splitRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("ribsplit_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
     try {
-        foreach ($f in @(@('AI\Casting\A.cs', '{{PROJECT_NAME}}.Tests.Integration.AI.Casting'), @('AI\HSM\Wizard\W.cs', '{{PROJECT_NAME}}.Tests.Integration.AI.HSM.Wizard'),
-                         @('AI\Root.cs', '{{PROJECT_NAME}}.Tests.Integration.AI'), @('AI\Steering\S.cs', '{{PROJECT_NAME}}.Tests.Integration.AI.Steering'))) {
+        foreach ($f in @(@('AI\Casting\A.cs', 'Game.Tests.Integration.AI.Casting'), @('AI\HSM\Wizard\W.cs', 'Game.Tests.Integration.AI.HSM.Wizard'),
+                         @('AI\Root.cs', 'Game.Tests.Integration.AI'), @('AI\Steering\S.cs', 'Game.Tests.Integration.AI.Steering'))) {
             $p = Join-Path $splitRepo ('Tests\Integration\' + $f[0])
             New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null
-            Set-Content -Path $p -Encoding utf8 -Value ("namespace " + $f[1] + "`n{ }")
+            Set-Content -Path $p -Encoding utf8 -Value ("namespace " + $f[1] + "`n{`n[TestSuite]`npublic class C { }`n}")
         }
+        # A namespace named only inside a block comment is no sub-namespace: the catalog blanks comments first.
+        Set-Content -Path (Join-Path $splitRepo 'Tests\Integration\AI\Casting\Note.cs') -Encoding utf8 -Value ("/*`nnamespace Game.Tests.Integration.AI.Ghost`n*/`nnamespace Game.Tests.Integration.AI.Casting`n{`n[TestSuite]`npublic class N { }`n}")
         $trxSteer = Join-Path $splitRepo 'steer.trx'
         $trxRoot = Join-Path $splitRepo 'root.trx'
         Set-Content -Path $trxSteer -Encoding utf8 -Value '<?xml version="1.0"?><TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><Results><UnitTestResult testName="{{PROJECT_NAME}}.Tests.Integration.AI.Steering.SteerTests.T1" duration="00:00:04.0000000" outcome="Passed" /></Results></TestRun>'

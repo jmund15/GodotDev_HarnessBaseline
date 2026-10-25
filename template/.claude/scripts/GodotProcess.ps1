@@ -30,6 +30,38 @@
   (Win32_Process). `. (Join-Path $PSScriptRoot 'GodotProcess.ps1')`
 #>
 
+# The host seams: every script asks these for the platform and its scratch and data roots, and none reads
+# $env:TEMP or $env:LOCALAPPDATA itself. -Platform lets a proof drive either branch from planted environment.
+function Get-HostPlatform {
+    if ($IsWindows) { return 'windows' }
+    if ($IsLinux) { return 'linux' }
+    throw 'unsupported host platform: the harness runs on Windows and Linux'
+}
+
+function Get-HarnessTempRoot {
+    param([string] $Platform = (Get-HostPlatform))
+    switch ($Platform) {
+        'windows' { return $env:TEMP }
+        'linux' {
+            $root = "$env:TMPDIR".TrimEnd('/')
+            return $(if ($root) { $root } else { '/tmp' })
+        }
+        default { throw "unsupported platform '$Platform': the harness runs on windows and linux" }
+    }
+}
+
+function Get-HarnessDataRoot {
+    param([string] $Platform = (Get-HostPlatform))
+    switch ($Platform) {
+        'windows' { return $env:LOCALAPPDATA }
+        'linux' {
+            if ($env:XDG_DATA_HOME) { return $env:XDG_DATA_HOME }
+            return "$("$env:HOME".TrimEnd('/'))/.local/share"
+        }
+        default { throw "unsupported platform '$Platform': the harness runs on windows and linux" }
+    }
+}
+
 function Set-AgentEngineUserData {
     param([Parameter(Mandatory)] [string] $Repo)
     $json = & python3 (Join-Path $PSScriptRoot 'engine_userdata.py') --repo $Repo
@@ -61,7 +93,7 @@ function Invoke-GateDetach {
     param([Parameter(Mandatory)] [string] $ScriptPath, [Parameter(Mandatory)] [string[]] $ChildArgs,
           [Parameter(Mandatory)] [string] $OutPath, [Parameter(Mandatory)] [string] $ErrPath, [string] $Mode = '')
     $child = Start-DetachedPwshScript -ScriptPath $ScriptPath -Arguments $ChildArgs -OutPath $OutPath -ErrPath $ErrPath
-    try { "pid=$($child.Id) start=$($child.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))" | Set-Content -LiteralPath ([System.IO.Path]::ChangeExtension($OutPath, '.pid')) -Encoding ascii } catch { }
+    try { "pid=$($child.Id) start=$((Get-ProcessStartStamp -ProcessId $child.Id).ToString('yyyy-MM-ddTHH:mm:ssZ'))" | Set-Content -LiteralPath ([System.IO.Path]::ChangeExtension($OutPath, '.pid')) -Encoding ascii } catch { }
     Write-Output "DETACHED pid=$($child.Id) mode=$Mode"
     Write-Output "OUT=$OutPath"
     Write-Output "ERR=$ErrPath"
@@ -83,22 +115,74 @@ function Start-DetachedPwshScript {
     $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
     $tokens = foreach ($a in $Arguments) { if ($a -match '^-[A-Za-z][A-Za-z0-9]*$') { $a } else { & $q $a } }
     $command = "& $(& $q $ScriptPath) $($tokens -join ' ') 1> $(& $q $OutPath) 2> $(& $q $ErrPath); exit `$LASTEXITCODE"
-    Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru `
-        -ArgumentList @('-NoProfile', '-Command', $command)
+    Start-HiddenPwsh -PwshArgs @('-NoProfile', '-Command', $command)
+}
+
+# Godot's runtime tests need a display. A Linux host with xvfb-run starts the launch under a virtual one on a
+# free server number; Windows and a host without xvfb-run launch unchanged.
+# -XvfbRun names the binary (empty: none); unset, it is looked up on PATH.
+function Get-HeadlessDisplayArgv {
+    param([Parameter(Mandatory)] [string] $FilePath, [string[]] $Arguments = @(),
+          [string] $Platform = (Get-HostPlatform), [string] $XvfbRun)
+    $xvfb = if ($PSBoundParameters.ContainsKey('XvfbRun')) { $XvfbRun }
+            elseif ($Platform -eq 'linux') { [string] (Get-Command xvfb-run -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+            else { '' }
+    if ($Platform -ne 'linux' -or -not $xvfb) { return [pscustomobject]@{ FilePath = $FilePath; Arguments = $Arguments } }
+    [pscustomobject]@{ FilePath = $xvfb; Arguments = @('--auto-servernum', $FilePath) + $Arguments }
+}
+
+# The bash that runs a repo's .sh launchers. A bare `bash` from PowerShell or a program-spawned shell can resolve
+# to WSL's System32\bash.exe on Windows, which cannot read a Windows path (this launch exited 127,
+# "godot_bin.sh: No such file"), so Windows asks for Git for Windows' own bash.exe.
+function Get-GitBash {
+    param([string] $Platform = (Get-HostPlatform))
+    if ($Platform -eq 'linux') {
+        $b = Get-Command bash -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($b) { return $b.Source }
+        throw 'Get-GitBash: no bash on PATH'
+    }
+    $exec = & git --exec-path 2>$null
+    if ($exec) {
+        $bash = Join-Path ([IO.Path]::GetFullPath((Join-Path $exec '../../..'))) 'bin\bash.exe'
+        if (Test-Path -LiteralPath $bash) { return $bash }
+    }
+    $c = Get-Command bash -All -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notmatch '\\(system32|WindowsApps)\\' } | Select-Object -First 1
+    if ($c) { return $c.Source }
+    throw 'Get-GitBash: no Git for Windows bash.exe found (git --exec-path, PATH); WSL bash cannot run a Windows path'
+}
+
+# A pwsh child that outlives its launcher without a window and without the launcher's stdio. Windows hides the
+# window (-WindowStyle is a hard error elsewhere). Linux starts it through `setsid -w` with its stdio on /dev/null,
+# so it holds none of the caller's pipes and survives the launcher's session; the returned process is that
+# setsid, which waits and passes the child's exit code on.
+function Start-HiddenPwsh {
+    param([Parameter(Mandatory)] [string[]] $PwshArgs, [string] $Platform = (Get-HostPlatform))
+    if ($Platform -eq 'windows') { return (Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru -ArgumentList $PwshArgs) }
+    # ProcessStartInfo.ArgumentList hands each argument over whole; Start-Process -ArgumentList re-splits them on spaces.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new('sh')
+    foreach ($a in (@('-c', 'exec setsid -w "$@" </dev/null >/dev/null 2>&1', 'sh', 'pwsh') + $PwshArgs)) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    [System.Diagnostics.Process]::Start($psi)
 }
 
 # Native redirection inside an isolated pwsh keeps Start-Process's inherited handles away from the
 # wrapper caller. Do not invoke the native command with `& ... > file`: PowerShell then waits on
 # its native stdout reader after the native root exits, until a lingering grandchild closes it.
 function Start-IsolatedNativeProcess {
-    param([string] $FilePath, [string[]] $Arguments, [string] $OutPath, [string] $ErrPath)
+    # -Display: the launch runs Godot's runtime, so it takes the virtual display a Linux host needs.
+    param([string] $FilePath, [string[]] $Arguments, [string] $OutPath, [string] $ErrPath, [switch] $Display)
+    if ($Display) {
+        $wrapped = Get-HeadlessDisplayArgv -FilePath $FilePath -Arguments $Arguments
+        $FilePath, $Arguments = $wrapped.FilePath, $wrapped.Arguments
+    }
     $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
     $tokens = @($Arguments | ForEach-Object { & $q ('"' + ($_ -replace '"', '\"') + '"') }) -join ','
     $command = "`$p = Start-Process -FilePath $(& $q $FilePath) -ArgumentList @($tokens) -NoNewWindow -PassThru " +
         "-RedirectStandardOutput $(& $q $OutPath) -RedirectStandardError $(& $q $ErrPath); " +
         '$null = $p.Handle; while (-not $p.WaitForExit(500)) { }; exit $p.ExitCode'
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-EncodedCommand', $encoded)
+    Start-HiddenPwsh -PwshArgs @('-NoProfile', '-EncodedCommand', $encoded)
 }
 
 function Resolve-TestRepo {
@@ -202,7 +286,7 @@ function Get-SuiteTimeoutMs {
         if ($part -notmatch '^FullyQualifiedName~Tests\.Integration(?:\.([\w]+)(?:\.[\w.]*)?)?$') { $unknown++; continue }
         $segment = $Matches[1]
         if (-not $man) { $man = Read-SuiteManifest -Path (Join-Path $Repo 'Tests/integration_batch_durations.json') }
-        $names = @($man.units.PSObject.Properties.Name | Where-Object { -not $segment -or $_ -eq $segment })
+        $names = @($man.units.PSObject.Properties.Name | Where-Object { -not $segment -or $_ -eq $segment -or $_.StartsWith($segment + '.') })
         if (-not $names.Count) { $unknown++ }
         foreach ($name in $names) { $chosen[$name] = [double] $man.units.$name.seconds }
     }
@@ -321,15 +405,142 @@ function Get-SuiteRunBounds {
     [pscustomobject] @{ LockWaitMs = $lockWait; MaxAttempts = $attempts; LifetimeMs = $lockWait + $attempts * $TimeoutMs }
 }
 
+# The process table as pid -> an object with the six members every classifier below reads: ProcessId,
+# ParentProcessId, Name, CommandLine, ExecutablePath and CreationDate (local time).
 function Get-ProcSnapshot {
+    if ((Get-HostPlatform) -eq 'linux') { return Get-LinuxProcSnapshot }
     $map = @{}
     foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) { $map[[int] $p.ProcessId] = $p }
     return $map
 }
 
+# The exit a test host that died of an illegal instruction reports: 0xC000001D on Windows, 128 + SIGILL on Linux.
+function Test-NativeCrashExit {
+    param([int] $ExitCode, [string] $Platform = (Get-HostPlatform))
+    if ($Platform -eq 'windows') { return $ExitCode -eq -1073741795 }
+    $ExitCode -eq 132
+}
+
+function Get-ClockTicksPerSecond {
+    $tck = 0
+    if ([int]::TryParse((& getconf CLK_TCK 2>$null), [ref] $tck) -and $tck -gt 0) { return $tck }
+    100
+}
+
+# The identity stamp of a running process, as a UTC time, or $null when it is gone. A recorded stamp is compared
+# with a live one minutes later, from another process, so it must not move with the wall clock. Windows has
+# StartTime for that. Linux's StartTime is the wall clock minus uptime, cached per process, so two processes read one
+# process's start up to seconds apart; the stamp there is the kernel's start
+# tick since boot, as a time since the Unix epoch.
+function Get-ProcessStartStamp {
+    param([Parameter(Mandatory)] [int] $ProcessId, [string] $Platform = (Get-HostPlatform), [string] $ProcRoot = '/proc', [int] $ClkTck = 0)
+    try {
+        if ($Platform -eq 'windows') { return (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToUniversalTime() }
+        $stat = [System.IO.File]::ReadAllText((Join-Path $ProcRoot "$ProcessId/stat"))
+        $rest = $stat.Substring($stat.LastIndexOf(')') + 1).Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+        if ($ClkTck -le 0) { $ClkTck = Get-ClockTicksPerSecond }
+        return [datetime]::SpecifyKind([datetime]::UnixEpoch.AddTicks([long] $rest[19] * [TimeSpan]::TicksPerSecond / $ClkTck), [DateTimeKind]::Utc)
+    }
+    catch { return $null }
+}
+
+# /proc, shaped like the Win32_Process rows. Name is the stat comm, which the kernel cuts to 15 characters, so
+# a Godot reads `Godot_v4.7.1-st`; the comm sits between the first '(' and the LAST ')' because it may hold
+# either. A process that exits between the listing and its reads is skipped. -ProcRoot and -ClkTck let a proof
+# plant a captured tree.
+function Get-LinuxProcSnapshot {
+    param([string] $ProcRoot = '/proc', [int] $ClkTck = 0)
+    if ($ClkTck -le 0) { $ClkTck = Get-ClockTicksPerSecond }
+    $btime = 0
+    foreach ($line in [System.IO.File]::ReadLines((Join-Path $ProcRoot 'stat'))) {
+        if ($line.StartsWith('btime ')) { $btime = [long] $line.Substring(6).Trim(); break }
+    }
+    $boot = [DateTimeOffset]::FromUnixTimeSeconds($btime)
+    $map = @{}
+    foreach ($dir in [System.IO.Directory]::EnumerateDirectories($ProcRoot)) {
+        $id = 0
+        if (-not [int]::TryParse([System.IO.Path]::GetFileName($dir), [ref] $id)) { continue }
+        try {
+            $stat = [System.IO.File]::ReadAllText((Join-Path $dir 'stat'))
+            $open = $stat.IndexOf('('); $close = $stat.LastIndexOf(')')
+            $rest = $stat.Substring($close + 1).Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+            $cmd = ''
+            try { $cmd = [System.IO.File]::ReadAllBytes((Join-Path $dir 'cmdline')) } catch { $cmd = [byte[]]@() }
+            $exe = $null
+            try { $exe = [System.IO.File]::ResolveLinkTarget((Join-Path $dir 'exe'), $false).FullName } catch { }
+            $map[$id] = [pscustomobject]@{
+                ProcessId       = $id
+                ParentProcessId = [int] $rest[1]
+                Name            = $stat.Substring($open + 1, $close - $open - 1)
+                CommandLine     = ([System.Text.Encoding]::UTF8.GetString($cmd) -replace "`0", ' ').Trim()
+                ExecutablePath  = $exe
+                CreationDate    = $boot.AddTicks([long] $rest[19] * [TimeSpan]::TicksPerSecond / $ClkTck).LocalDateTime
+            }
+        }
+        catch { continue }
+    }
+    return $map
+}
+
+# Processes in $Map whose parent is in $Known and that are not themselves known. $Since drops a pid-reuse
+# impostor: a child cannot be older than the root it descends from.
+function Get-TreePids {
+    param([hashtable] $Map, [System.Collections.Generic.HashSet[int]] $Known, $Since = $null)
+    @($Map.Values | Where-Object {
+        $Known.Contains([int] $_.ParentProcessId) -and -not $Known.Contains([int] $_.ProcessId) -and
+        (-not $Since -or -not $_.CreationDate -or $_.CreationDate -ge $Since)
+    } | ForEach-Object { [int] $_.ProcessId })
+}
+
+# Kill a process and everything under it, and emit nothing (callers sit inside value-returning functions).
+# A parent that is killed first orphans its children and one that is killed last keeps spawning, so neither
+# a single tree snapshot nor taskkill /T is enough. Windows runs taskkill, then sweeps the pids born under any
+# pid of the tree since. Linux has no tree kill: it freezes the tree (SIGSTOP the root, then each descendant
+# found by repeated /proc passes until a pass finds none new) and SIGKILLs it frozen.
+function Stop-ProcessTree {
+    param([Parameter(Mandatory)] [int] $ProcessId, [string] $Platform = (Get-HostPlatform))
+    $tree = [System.Collections.Generic.HashSet[int]]::new()
+    [void] $tree.Add($ProcessId)
+    if ($Platform -eq 'windows') {
+        $map = Get-ProcSnapshot
+        $since = if ($map[$ProcessId]) { $map[$ProcessId].CreationDate } else { $null }
+        do { $new = @(Get-TreePids -Map $map -Known $tree -Since $since); foreach ($p in $new) { [void] $tree.Add($p) } } while ($new.Count -gt 0)
+        & taskkill.exe '/F' '/T' '/PID' $ProcessId 2>$null | Out-Null
+        if (-not $since) { return }
+        for ($pass = 0; $pass -lt 5; $pass++) {
+            $stragglers = @(Get-TreePids -Map (Get-ProcSnapshot) -Known $tree -Since $since)
+            if ($stragglers.Count -eq 0) { break }
+            foreach ($p in $stragglers) { [void] $tree.Add($p); & taskkill.exe '/F' '/T' '/PID' $p 2>$null | Out-Null }
+        }
+        return
+    }
+    $kill = (Get-Command kill -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $order = [System.Collections.Generic.List[int]]::new()
+    & $kill -STOP $ProcessId 2>$null | Out-Null
+    $order.Add($ProcessId)
+    do {
+        $found = @(Get-TreePids -Map (Get-LinuxProcSnapshot) -Known $tree)
+        foreach ($p in $found) {
+            & $kill -STOP $p 2>$null | Out-Null
+            [void] $tree.Add($p)
+            $order.Add($p)
+        }
+    } while ($found.Count -gt 0)
+    for ($i = $order.Count - 1; $i -ge 0; $i--) {
+        & $kill -KILL $order[$i] 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { & $kill -CONT $order[$i] 2>$null | Out-Null }
+    }
+}
+
 function Test-UnderRoot {
     param([string] $Text, [string] $Root)
     if ([string]::IsNullOrEmpty($Text)) { return $false }
+    # A POSIX root compares with its case and its slashes; the Windows rules below stay as they were.
+    if ($Root.StartsWith('/')) {
+        if ($Text.IndexOf($Root, [System.StringComparison]::Ordinal) -lt 0) { return $false }
+        $posixNested = [regex]::Escape($Root.TrimEnd('/')) + '/\.claude/(?:worktrees|\.cache/[\w.-]*worktrees)/'
+        return -not [regex]::IsMatch($Text, $posixNested)
+    }
     if ($Text.IndexOf($Root, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
     # Nested-worktree guard: checkouts live UNDER the main repo root (<main>\.claude\worktrees\<x>
     # or <main>\.claude\.cache\<name>-worktrees\<x>, e.g. baseline-worktrees), so a
@@ -399,8 +610,10 @@ function Test-IsTestHostProc {
     $name = [string] $Proc.Name
     if ($name -match '^(testhost|vstest\.console)(\.exe)?$') { return $true }
     $cl = [string] $Proc.CommandLine
-    # `dotnet ... test ...` -- the wrapper's own launch form.
-    return ($name -match '^dotnet(\.exe)?$' -and $cl -match '\stest(\s|$)')
+    if ($name -notmatch '^dotnet(\.exe)?$') { return $false }
+    # `dotnet ... test ...` -- the wrapper's own launch form; on Linux the test host and vstest console are
+    # `dotnet exec .../testhost.dll` and `dotnet exec .../vstest.console.dll`, so their image name is dotnet.
+    return ($cl -match '\stest(\s|$)' -or $cl -match '[\\/](testhost|vstest\.console)\.dll(\s|$)')
 }
 
 # The two SPARE signatures that also identify an editor when seen on a PARENT (rule 4's target).
@@ -536,12 +749,7 @@ function Resolve-GodotCheckout {
 
 function Get-GodotCandidate {
     param([hashtable] $Map)
-    $out = @()
-    foreach ($p in @(Get-Process -Name 'Godot*' -ErrorAction SilentlyContinue)) {
-        $ci = $Map[$p.Id]
-        if ($ci) { $out += $ci }
-    }
-    return $out
+    return @($Map.Values | Where-Object { [string] $_.Name -like 'Godot*' })
 }
 
 function Test-ChainReachesPid {
@@ -579,7 +787,8 @@ function Get-ReapableGodot {
         [Parameter(Mandatory)] [string] $Checkout,
         [hashtable] $Map,
         [int] $OwnRootPid = 0,
-        [string[]] $CandidateRoots
+        [string[]] $CandidateRoots,
+        [string] $Platform = (Get-HostPlatform)
     )
     if (-not $Map) { $Map = Get-ProcSnapshot }
     if (-not $CandidateRoots) { $CandidateRoots = @($Checkout) }
@@ -602,10 +811,21 @@ function Get-ReapableGodot {
             # role alone never flags a runner whose owning test host is GONE -- yet that is
             # exactly the wedged-pipe holder the orphan sweep exists for. Reapable at every
             # scope: a live peer's runner has a live parent and never matches.
-            if ((Get-ProcVerdict $ci $Map $script:GodotNoSuchRoot 1) -eq 'ORPHAN') { $out += $ci }
+            if (Test-RunnerOrphaned -Proc $ci -Map $Map -Platform $Platform) { $out += $ci }
         }
     }
     return $out
+}
+
+# A test runner whose owning test host is gone. Windows drops the dead link from the table, so the engine's
+# ORPHAN verdict finds it. Linux reparents the runner to init, a subreaper or a session relay, which stays in
+# the table: there the dead link shows as a direct parent that is no test host, because a runner's real parent
+# is always its test host.
+function Test-RunnerOrphaned {
+    param([Parameter(Mandatory)] [object] $Proc, [Parameter(Mandatory)] [hashtable] $Map, [string] $Platform = (Get-HostPlatform))
+    if ((Get-ProcVerdict $Proc $Map $script:GodotNoSuchRoot 1) -eq 'ORPHAN') { return $true }
+    if ($Platform -ne 'linux') { return $false }
+    return -not (Test-IsTestHostProc -Proc $Map[[int] $Proc.ParentProcessId])
 }
 
 <#

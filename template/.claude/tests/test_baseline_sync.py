@@ -605,6 +605,36 @@ def test_v2_classify_success_refusal_and_repeat() -> None:
         assert bad.returncode == 2
 
 
+def test_intent_to_add_path_reads_its_working_bytes() -> None:
+    # `git add -N` puts the empty blob in the index; classify then judged a new file as empty content.
+    engine = _load_engine()
+    rel = ".claude/hooks/_new_helper.py"
+    with _fixture() as path:
+        root = Path(path) / "repo"
+        (root / ".claude" / "hooks").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        (root / rel).write_bytes(b"VALUE = 1\n")
+        subprocess.run(["git", "-C", str(root), "add", "-N", rel], check=True)
+        assert engine._git_contents(root, [rel]) == {rel: b"VALUE = 1\n"}, engine._git_contents(root, [rel])
+
+
+def test_many_paths_read_without_one_oversized_command_line() -> None:
+    # The intent-to-add probe once named every path on the git command line; Windows refuses a line past
+    # 32,767 characters (WinError 206), which aborted `check` on the real lock's tracked-file count.
+    engine = _load_engine()
+    with _fixture() as path:
+        root = Path(path) / "repo"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        rels = [f".claude/tools/{'long_name_' * 6}{i:04d}.py" for i in range(700)]
+        (root / ".claude" / "tools").mkdir(parents=True)
+        for rel in rels:
+            (root / rel).write_bytes(b"VALUE = 1\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        got = engine._git_contents(root, rels)
+        assert len(got) == len(rels) and set(got.values()) == {b"VALUE = 1\n"}, len(got)
+
+
 def test_relpaths_after_an_option_parse_on_every_python() -> None:
     # Python before 3.12.7 lets the empty `relpaths` match at `op` when an option follows it, so a
     # trailing relpath is `unrecognized arguments`; Ubuntu 24.04 ships 3.12.3.
@@ -3145,6 +3175,36 @@ def test_pull_updates_the_running_engine_first_and_reruns_with_it() -> None:
         assert (root / other).read_bytes() == b"new other\n", out
 
 
+def test_pull_stops_when_the_engine_pull_reports_a_conflict() -> None:
+    # v2_pull's return code is the engine pull's verdict: a nonzero one must end the bare pull before the
+    # re-exec. The stub is the seam's contract (v2_pull with merge=False returns 0 on today's inputs).
+    engine = _load_engine()
+    ENGINE_RELPATH_TAIL = "baseline_sync.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {"other.md": {"upstream": b"new other\n"}})
+        reexec = []
+        real_run = engine.subprocess.run
+        real_pending, real_pull = engine._pending_engine_rows, engine.v2_pull
+        engine._pending_engine_rows = lambda *a, **k: [engine.ENGINE_RELPATH]
+        engine.v2_pull = lambda *a, **k: 1
+        def recording_run(cmd, *a, **k):
+            if ENGINE_RELPATH_TAIL in " ".join(map(str, cmd)):
+                reexec.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0)
+            return real_run(cmd, *a, **k)
+
+        engine.subprocess.run = recording_run
+        try:
+            with contextlib.chdir(root), contextlib.redirect_stdout(io.StringIO()) as out:
+                code = engine.main(["pull", "--baseline-dir", str(baseline)])
+        finally:
+            engine.subprocess.run = real_run
+            engine._pending_engine_rows, engine.v2_pull = real_pending, real_pull
+        assert code == 1, "a conflicted engine pull exited %s" % code
+        assert not reexec, "the rest of the pull ran on the old engine"
+        assert "engine updated" not in out.getvalue(), out.getvalue()
+
+
 def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
     # A file holding NUL bytes is binary: no line-ending rewrite, no UTF-8 round trip, no substitution.
     name_token = "{{" + "PROJECT_NAME" + "}}"
@@ -3172,6 +3232,7 @@ def main() -> int:
         test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes,
         test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched,
         test_pull_updates_the_running_engine_first_and_reruns_with_it,
+        test_pull_stops_when_the_engine_pull_reports_a_conflict,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
         test_carry_refuses_a_new_tool_whose_proof_is_local,
@@ -3300,6 +3361,8 @@ def main() -> int:
         test_clone_retries_a_reset_then_succeeds,
         test_fetch_does_not_retry_a_permanent_tls_certificate_failure,
         test_fetch_still_retries_a_transient_tls_failure,
+        test_intent_to_add_path_reads_its_working_bytes,
+        test_many_paths_read_without_one_oversized_command_line,
         test_relpaths_after_an_option_parse_on_every_python,
         test_check_strict_counts_a_proof_above_its_tools_layer_as_no_proof,
         test_check_strict_names_a_shipped_row_whose_layer_differs_from_the_manifest,

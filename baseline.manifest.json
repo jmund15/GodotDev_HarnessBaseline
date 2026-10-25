@@ -1322,6 +1322,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/commands/reference/sync_baseline_maintainer.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/commands/reference/update_roadmap_close.md",
       "layer": "coding",
       "sync": "auto"
@@ -1707,6 +1712,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_msys.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_optional_hooks.py",
       "layer": "pure",
       "sync": "auto"
@@ -1728,6 +1738,11 @@
     },
     {
       "path": ".claude/hooks/_session_transport.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/_shell_writes.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3414,6 +3429,11 @@
     {
       "path": ".claude/tests/_transport_fixture.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/agent_fixtures/linux_proc/dotnet_test_capture.json",
+      "layer": "godot",
       "sync": "auto"
     },
     {

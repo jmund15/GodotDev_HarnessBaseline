@@ -55,7 +55,7 @@ PHASES = [
 ]
 # A mandatory phase that runs a project command binds only where the project ships that command, as
 # Phase 5.4 binds only with an atlas generator: without it the phase records blocked and the close goes on.
-PHASE_COMMANDS = {"harness_prune": "harness_prune.md"}
+PROJECT_COMMAND_PHASES = frozenset({"harness_prune"})
 
 # Anchored to the project like `--repo`: a cwd-relative path from any other cwd reads as
 # "artifact missing", a false red the exit code cannot distinguish from a real gap.
@@ -455,10 +455,9 @@ def unpublished_peer_sessions(repo, transcript):
 
 def phase_mandatory(stem, mandatory, project_dir=None):
     """Whether `stem` must end completed or skipped: its PHASES flag, unless it runs a command the project lacks."""
-    command = PHASE_COMMANDS.get(stem)
-    if not mandatory or command is None:
+    if not mandatory or stem not in PROJECT_COMMAND_PHASES:
         return mandatory
-    return os.path.isfile(os.path.join(project_dir or _PROJECT_DIR, '.claude', 'commands', command))
+    return os.path.isfile(os.path.join(project_dir or _PROJECT_DIR, '.claude', 'commands', stem + '.md'))
 
 
 def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit', repo=None):

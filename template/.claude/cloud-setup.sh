@@ -15,19 +15,21 @@ GODOT_VERSION="4.7.1"
 GODOT_RELEASE="stable"
 DOTNET_CHANNEL="9.0"
 GODOT_MCP_VERSION="3.8.0"
+POWERSHELL_VERSION="7.5.12"
 
 # The digest of this file with this line's value blanked. Refresh it in the same change as any edit
 # above or below: `python3 .claude/tools/workstation_profile_godot.py fingerprint --write .claude/cloud-setup.sh`.
 # The script writes the value to ${PREFIX}/.cloud-setup.fingerprint below, which is how
 # SessionStart tells a snapshot built from an older paste (paste this file again) from one built
 # from the repo's copy. `.claude/tests/test_workstation_profile_godot.py` proves the check that reports a stale stored value.
-SETUP_FINGERPRINT="25b6f47042457bbea703a62c21d2470ae4cc824a571a6e2787cc79deb77e11bb"
+SETUP_FINGERPRINT="7a70af81f5b53c18e82fc0c519c9c75b8277f5246c9bf3a4ea7b53b77498d5df"
 
 if [ "$(id -u)" = "0" ]; then SUDO=""; PREFIX="/opt"
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo"; PREFIX="/opt"
 else SUDO=""; PREFIX="${HOME}/.local"
 fi
 DOTNET_ROOT="${PREFIX}/dotnet"
+TOOLS_DIR="${PREFIX}/dotnet-tools"
 GODOT_NAME="Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_mono_linux_x86_64"
 GODOT_DIR="${PREFIX}/godot"
 GODOT_BIN="${GODOT_DIR}/${GODOT_NAME}/Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_mono_linux.x86_64"
@@ -70,6 +72,20 @@ else
 fi
 if [ -x "${DOTNET_ROOT}/dotnet" ] && [ "${PREFIX}" = "/opt" ]; then
     ${SUDO} ln -sf "${DOTNET_ROOT}/dotnet" /usr/local/bin/dotnet 2>/dev/null || true
+fi
+
+# The regression gate and the test runners are PowerShell scripts. The tool's apphost finds the SDK through DOTNET_ROOT.
+if DOTNET_ROOT="${DOTNET_ROOT}" "${TOOLS_DIR}/pwsh" --version 2>/dev/null | grep -q "${POWERSHELL_VERSION}"; then
+    echo "[cloud-setup] PowerShell ${POWERSHELL_VERSION}: present"
+elif [ -x "${DOTNET_ROOT}/dotnet" ]; then
+    echo "[cloud-setup] installing PowerShell ${POWERSHELL_VERSION}"
+    ${SUDO} env "DOTNET_ROOT=${DOTNET_ROOT}" DOTNET_CLI_TELEMETRY_OPTOUT=1 "${DOTNET_ROOT}/dotnet" tool install PowerShell \
+        --tool-path "${TOOLS_DIR}" --version "${POWERSHELL_VERSION}" >/dev/null 2>&1 \
+        || ${SUDO} env "DOTNET_ROOT=${DOTNET_ROOT}" DOTNET_CLI_TELEMETRY_OPTOUT=1 "${DOTNET_ROOT}/dotnet" tool update PowerShell \
+            --tool-path "${TOOLS_DIR}" --version "${POWERSHELL_VERSION}" >/dev/null 2>&1 \
+        || FAILED+=("PowerShell tool install")
+else
+    FAILED+=("PowerShell tool install (no .NET SDK)")
 fi
 
 if [ -x "${GODOT_BIN}" ]; then
@@ -119,8 +135,8 @@ fi
 # Login shells read these; SessionStart persists the same values through CLAUDE_ENV_FILE for hooks
 # and the Bash tool.
 if [ "${PREFIX}" = "/opt" ]; then
-    printf 'export DOTNET_ROOT=%s\nexport PATH="%s:$PATH"\nexport GODOT_BIN=%s\nexport DOTNET_CLI_TELEMETRY_OPTOUT=1\n' \
-        "${DOTNET_ROOT}" "${DOTNET_ROOT}" "${GODOT_BIN}" | ${SUDO} tee /etc/profile.d/godot-toolchain.sh >/dev/null
+    printf 'export DOTNET_ROOT=%s\nexport PATH="%s:%s:$PATH"\nexport GODOT_BIN=%s\nexport DOTNET_CLI_TELEMETRY_OPTOUT=1\n' \
+        "${DOTNET_ROOT}" "${DOTNET_ROOT}" "${TOOLS_DIR}" "${GODOT_BIN}" | ${SUDO} tee /etc/profile.d/godot-toolchain.sh >/dev/null
 fi
 
 # The marker records WHICH script ran, not whether every step succeeded, so it is written even when
@@ -128,8 +144,8 @@ fi
 # script. A missing marker reads as "different script" and re-runs this file (session_context_loader).
 ${SUDO} mkdir -p "${PREFIX}" 2>/dev/null || true
 printf '%s\n' "${SETUP_FINGERPRINT}" | ${SUDO} tee "${PREFIX}/.cloud-setup.fingerprint" >/dev/null 2>&1 || true
-printf '{"prefix":"%s","dotnet_root":"%s","godot_bin":"%s","godot_version":"%s"}\n' \
-    "${PREFIX}" "${DOTNET_ROOT}" "${GODOT_BIN}" "${GODOT_VERSION}" | ${SUDO} tee "${PREFIX}/.cloud-install.json" >/dev/null 2>&1 || true
+printf '{"prefix":"%s","dotnet_root":"%s","tools_dir":"%s","godot_bin":"%s","godot_version":"%s"}\n' \
+    "${PREFIX}" "${DOTNET_ROOT}" "${TOOLS_DIR}" "${GODOT_BIN}" "${GODOT_VERSION}" | ${SUDO} tee "${PREFIX}/.cloud-install.json" >/dev/null 2>&1 || true
 
 if [ ${#FAILED[@]} -eq 0 ]; then
     echo "[cloud-setup] OK dotnet=$("${DOTNET_ROOT}/dotnet" --version 2>/dev/null) godot=${GODOT_BIN}"
