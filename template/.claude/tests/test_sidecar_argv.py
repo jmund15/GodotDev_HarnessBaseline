@@ -126,6 +126,7 @@ def main():
         ("unquoted $() substitution", "echo $(bash a/x_sidecar.sh -m f)"),
         ("double-quoted $() substitution", "echo \"$(bash a/x_sidecar.sh -m f)\""),
         ("backtick substitution", "x=`bash a/x_sidecar.sh -m f`"),
+        ("process substitution", "cat <(bash a/x_sidecar.sh -m f)"),
         ("bash -o pipefail -c", "bash -o pipefail -c 'bash a/x_sidecar.sh -m f'"),
     ):
         cases.append(("%s: the launch is an invocation" % label,
@@ -151,6 +152,10 @@ def main():
         ("a wrapped grep naming the launcher", "timeout 5 grep -n m a/x_sidecar.sh"),
         ("a bash -c echo of a launch line", "bash -c 'echo bash a/x_sidecar.sh -m f'"),
         ("a bare env listing piped to grep", "env | grep x_sidecar.sh"),
+        ("a launcher path after a process substitution",
+         "diff <(git show HEAD:t/sidecar_fanout.py) t/sidecar_fanout.py"),
+        ("a launcher path after an output process substitution", "tee >(cat) a/x_sidecar.sh"),
+        ("a double-quoted <( mention", "echo \"<(x) t/sidecar_fanout.py\""),
     ):
         cases.append(("%s is not an invocation" % label,
                       _plain(_call("launcher_invocations", command)) == []))

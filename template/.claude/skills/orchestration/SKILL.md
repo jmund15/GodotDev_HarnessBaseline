@@ -53,7 +53,7 @@ Before running runtime-test lanes concurrently, read the runtime-slot rule in [`
 
 ### Sizing the width
 
-Before seating a fixed review panel, read [`reference/review_width.md`](reference/review_width.md): it sets coverage, width and depth, and owns the size, room and ledger-plan rules.
+Before seating a fixed review panel, read [`reference/review_width.md`](reference/review_width.md): it owns coverage, width, depth and the size, room and ledger-plan rules.
 
 **Later rounds.** Before seating a review of a subject an earlier round reviewed, read [`reference/later_rounds.md`](reference/later_rounds.md).
 
@@ -63,7 +63,7 @@ A brief states its own task first, then context, purpose, the allowed write set,
 
 **Scope a brief by the defect class, never by the candidates you already found.** Give the class, the discovery obligation and the searches to run (a function's callers, a value's overrides); pass known candidates as "already seen, not the boundary", and require a coverage report. A review or audit brief never caps how many findings to return. An audit of harness changes runs the registered harness lens over them (`/session_audit <range> --lens sa-harness-quality`, or a plan's meta mandates), which holds them to the whole doctrine; a bespoke brief may add a class to that lens, never stand in for it.
 
-- A long investigation or author job writes each finished unit (a finding set, a section, a Part, a file) to its output as it settles, never held for one write at the end: a compaction keeps only a short summary, and what is on disk survives it whole. A brief never forbids those writes. A Workflow result returns a bounded preview, and a dossier or tally built from it is an undercount; retrieve the complete set per [`reference/result_retrieval.md`](reference/result_retrieval.md).
+- A long investigation or author job writes each unit as it settles, never in one final write; no brief forbids that. A Workflow result is a bounded preview (a tally from it undercounts); get the full set per [`reference/result_retrieval.md`](reference/result_retrieval.md).
 - The return contract: the deliverable at the path the brief names plus a digest, and without a named path the final message is the deliverable. Native writable jobs can use the engine's `spillDir` (repo-relative, under `.claude/scratch/`); jobs without Write return inline. A result the parent parses by script returns as fenced JSON Lines blocks, checked per that reference.
 - A job over enumerable items returns one checklist line per item, done with evidence or not done with its blocker; an unchecked item is not done. Read the checklist first, then spot-check its evidence; it never replaces a diff review or verification gate. `couldNotSatisfy` names real blockers, and a delegate reports a rail/brief conflict instead of resolving it silently.
 - A delegate that writes returns a `choices` block, `changedPaths` instead of a commit in the shared checkout, an `offers` block, and a `reach` block when it changes gated code: read [`reference/writer_returns.md`](reference/writer_returns.md) before briefing or consuming one.
