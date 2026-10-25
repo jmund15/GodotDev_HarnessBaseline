@@ -1972,6 +1972,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/plan_job_map_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/plan_memory_reminder.py",
       "layer": "pure",
       "sync": "auto"
@@ -2008,7 +2013,7 @@
     },
     {
       "path": ".claude/hooks/prompt_dispatch.py",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -3103,6 +3108,11 @@
     },
     {
       "path": ".claude/skills/orchestration/reference/slice_pins.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/orchestration/reference/spend_lean.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4422,12 +4432,27 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_layer_closure_citations.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_layer_closure_registration.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_lens.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_lens_briefs.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_lens_briefs_job_map.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4627,6 +4652,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_plan_job_map_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_plan_memory_reminder_adaptation.py",
       "layer": "pure",
       "sync": "auto"
@@ -4692,8 +4722,13 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_prompt_dispatch_composition.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_prompt_dispatch_contract.py",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {

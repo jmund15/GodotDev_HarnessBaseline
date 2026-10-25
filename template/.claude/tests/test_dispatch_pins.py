@@ -153,7 +153,8 @@ def test_sidecar_fanout_author_spec_is_a_writer():
 
 def test_author_writing_only_gitignored_paths_is_not_a_writer():
     """Close waits on a writer because it can change tracked files; a brief whose writeSet is all
-    gitignored cannot, and a brief with no writeSet is unknown, so it still waits."""
+    gitignored or outside the checkout (a vault doc) cannot, and a brief with no writeSet is unknown,
+    so it still waits."""
     import json
     repo = os.path.dirname(os.path.dirname(HOOKS))
     with tempfile.TemporaryDirectory(prefix="writer_set_") as root:
@@ -172,6 +173,9 @@ def test_author_writing_only_gitignored_paths_is_not_a_writer():
         undeclared = brief("undeclared.md", None)
         odd = brief("odd.md", [".claude/scratch/out.md", 3])
         not_a_list = brief("not_a_list.md", ".claude/scratch/out.md")
+        vault = os.path.join(root, "vault", "decisions.md").replace("\\", "/")
+        outside = brief("outside.md", [vault, "../sibling/notes.md", ".claude/scratch/out.md"])
+        outside_tracked = brief("outside_tracked.md", [vault, "convex/columns.ts"])
 
         def fanout(prompt):
             path = os.path.join(root, "jobs-%s.json" % os.path.basename(prompt)).replace("\\", "/")
@@ -183,7 +187,8 @@ def test_author_writing_only_gitignored_paths_is_not_a_writer():
         os.environ["CLAUDE_PROJECT_DIR"] = repo
         try:
             for prompt, expected in [(scratch, False), (tracked, True), (mixed, True), (undeclared, True),
-                                     (odd, True), (not_a_list, True)]:
+                                     (odd, True), (not_a_list, True), (outside, False),
+                                     (outside_tracked, True)]:
                 assert pins().writes("Bash", fanout(prompt)) is expected, ("fanout", prompt)
                 sidecar = {"command": "bash .claude/scripts/claude_sidecar.sh -G author -l w -f %s" % prompt}
                 assert pins().writes("Bash", sidecar) is expected, ("sidecar", prompt)

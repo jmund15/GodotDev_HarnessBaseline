@@ -49,6 +49,12 @@ first prompt of a session, pass 2 is the steady-state floor an unchanged
 later prompt pays (a fire-once hook like `budget_posture.py` emits only on pass
 1). `prompt_emission_first_bytes` is reported, never budgeted;
 `prompt_emission_bytes` budgets `prompt_emission_steady_bytes`.
+A registered `prompt_dispatch.py` is expanded, by reading its module-level
+`CHAIN` literal with `ast` (never importing it), into one row per member run
+under that member's `CHAIN` budget and its own isolation rule; a member whose
+hook file is absent from the tree is skipped with no row, as the dispatcher
+skips it; an unreadable `CHAIN` is one `UNREADABLE` row for the dispatcher,
+which `unmeasured_prompt_hooks` reports.
 SessionStart emission is an excluded check, not measured and not budgeted:
 a SessionStart hook can start a build, so a synthetic run is not
 side-effect free. Re-entry trigger: a SessionStart hook gains a build-free
@@ -96,6 +102,7 @@ CLI: `python3 .claude/tools/load_census.py [--json <path>] [--profile-hooks] [--
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import json
 import os
@@ -675,6 +682,68 @@ def _run_hook_once(script: str, payload: dict, env: dict, cwd: str | None = None
         return {"status": "TIMEOUT", "ms": int(timeout * 1000), "stdout_bytes": 0, "stderr_bytes": 0}
 
 
+def _hook_script(command: str) -> str:
+    return command.split('"')[1] if '"' in command else command.split()[-1]
+
+
+DISPATCHER_NAME = "prompt_dispatch.py"
+
+
+def _read_dispatch_chain(dispatcher: Path) -> tuple[list[tuple[str, float]], str | None]:
+    """(members, None), or ([], reason) when the dispatcher's module-level `CHAIN` literal
+    cannot be read. Parsed with `ast`, never imported or run."""
+    try:
+        tree = ast.parse(dispatcher.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError) as exc:
+        return [], f"{dispatcher.name} not readable ({type(exc).__name__}: {exc})"
+    value = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "CHAIN" for t in targets):
+            value = node.value
+    if value is None:
+        return [], "no module-level CHAIN assignment"
+    try:
+        chain = ast.literal_eval(value)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return [], "CHAIN is not a literal"
+    if not isinstance(chain, (tuple, list)) or not chain:
+        return [], "CHAIN is not a non-empty sequence"
+    members = []
+    for m in chain:
+        ok = (isinstance(m, (tuple, list)) and len(m) == 2 and isinstance(m[0], str) and m[0]
+              and os.path.basename(m[0]) == m[0] and isinstance(m[1], (int, float))
+              and not isinstance(m[1], bool) and m[1] > 0)
+        if not ok:
+            return [], f"CHAIN member {m!r} is not (module basename, budget seconds)"
+        members.append((m[0], float(m[1])))
+    return members, None
+
+
+def _hook_entries(h: dict, root: Path, expand_dispatcher: bool) -> list[dict]:
+    """One profiling entry per hook a registered command runs: `script`, `name`, `timeout`
+    (seconds) and `unreadable` (a reason, else None). A `prompt_dispatch.py` command expands
+    into its `CHAIN` members under their `CHAIN` budgets, so each is profiled as if registered
+    directly, and a member with no file in the tree is skipped; an unreadable `CHAIN` yields one entry for the dispatcher carrying the reason."""
+    script = _hook_script(h.get("command", "")).replace("$CLAUDE_PROJECT_DIR", str(root.parent))
+    name = os.path.basename(script)
+    if not (expand_dispatcher and name == DISPATCHER_NAME):
+        return [{"script": script, "name": name, "timeout": float(h.get("timeout") or 60),
+                 "unreadable": None}]
+    members, reason = _read_dispatch_chain(Path(script))
+    if reason:
+        return [{"script": script, "name": name, "timeout": 0.0, "unreadable": reason}]
+    hooks_dir = Path(script).parent
+    return [{"script": str(hooks_dir / f"{module}.py"), "name": f"{module}.py",
+             "timeout": budget, "unreadable": None}
+            for module, budget in members if (hooks_dir / f"{module}.py").is_file()]
+
+
 def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]:
     """Every registered UserPromptSubmit hook, run TWICE against one shared
     HARNESS_HOOK_STATE_DIR/session id: pass 1 is the first prompt of a session,
@@ -685,6 +754,8 @@ def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]
     `ISOLATED_SHARED_STATE_HOOKS` hooks run for real against a throwaway
     project/home/temp tree built by `_isolated_hook_env`, reused across both
     passes so any shared-state behavior between prompts still shows up.
+    A registered `prompt_dispatch.py` is expanded into its `CHAIN` members, each
+    run under its own budget and isolation rule (see `_hook_entries`).
     Only the first synthetic case per hook is used (UserPromptSubmit has one
     case in `build_payloads`)."""
     state_dir = tempfile.mkdtemp(prefix="load_census_hookstate_")
@@ -698,48 +769,54 @@ def profile_user_prompt_hooks_two_pass(root: Path, settings: dict) -> list[dict]
         rows = []
         for group in settings.get("hooks", {}).get("UserPromptSubmit", []):
             for h in group.get("hooks", []):
-                cmd = h.get("command", "")
-                script = cmd.split('"')[1] if '"' in cmd else cmd.split()[-1]
-                script = script.replace("$CLAUDE_PROJECT_DIR", str(root.parent))
-                name = os.path.basename(script)
-                row = {"hook": name, "isolated": False, "run_note": None,
-                       "excluded_from_budget": False, "exclude_reason": None,
-                       "status_first": "-", "status_steady": "-",
-                       "ms_first": 0, "ms_steady": 0,
-                       "stdout_bytes_first": 0, "stdout_bytes_steady": 0}
-                if name in skipped:
-                    row["run_note"] = "skipped(shared-state, no env seam confirmed)"
+                for entry in _hook_entries(h, root, expand_dispatcher=True):
+                    script, name = entry["script"], entry["name"]
+                    row = {"hook": name, "isolated": False, "run_note": None,
+                           "excluded_from_budget": False, "exclude_reason": None,
+                           "status_first": "-", "status_steady": "-",
+                           "ms_first": 0, "ms_steady": 0,
+                           "stdout_bytes_first": 0, "stdout_bytes_steady": 0}
+                    if entry["unreadable"]:
+                        # Not "-": a "-" row is skipped by unmeasured_prompt_hooks, and an
+                        # unreadable CHAIN must not pass the emission budget as silence.
+                        row["run_note"] = f"unreadable(CHAIN: {entry['unreadable']})"
+                        row["status_first"] = row["status_steady"] = "UNREADABLE"
+                        rows.append(row)
+                        continue
+                    if name in skipped:
+                        row["run_note"] = "skipped(shared-state, no env seam confirmed)"
+                        rows.append(row)
+                        continue
+                    if name in NON_ISOLATABLE_SHARED_STATE_HOOKS:
+                        row["run_note"] = f"skipped(cannot-isolate: {NON_ISOLATABLE_SHARED_STATE_HOOKS[name]})"
+                        rows.append(row)
+                        continue
+                    if name in isolated:
+                        hook_iso_root = iso_root / name
+                        hook_iso_root.mkdir(parents=True, exist_ok=True)
+                        env = _isolated_hook_env(base_env, hook_iso_root)
+                        # A hook that resolves its root from the payload `cwd` or os.getcwd()
+                        # must see the throwaway project, not this checkout.
+                        hook_cwd = env["CLAUDE_PROJECT_DIR"]
+                        hook_payload = dict(payload, cwd=hook_cwd)
+                        row["isolated"] = True
+                        row["run_note"] = "isolated(shared-state, throwaway project/home/temp)"
+                    else:
+                        env = base_env
+                        hook_cwd, hook_payload = None, payload
+                    if name in LIVE_MACHINE_HOOKS:
+                        row["excluded_from_budget"] = True
+                        row["exclude_reason"] = LIVE_MACHINE_HOOKS[name]
+                    # The live harness kills a hook at its registered timeout (seconds); a
+                    # dispatcher member is killed at its CHAIN budget.
+                    hook_timeout = entry["timeout"]
+                    first = _run_hook_once(script, hook_payload, env, cwd=hook_cwd, timeout=hook_timeout)
+                    steady = _run_hook_once(script, hook_payload, env, cwd=hook_cwd, timeout=hook_timeout)
+                    row["status_first"], row["ms_first"], row["stdout_bytes_first"] = (
+                        first["status"], first["ms"], first["stdout_bytes"])
+                    row["status_steady"], row["ms_steady"], row["stdout_bytes_steady"] = (
+                        steady["status"], steady["ms"], steady["stdout_bytes"])
                     rows.append(row)
-                    continue
-                if name in NON_ISOLATABLE_SHARED_STATE_HOOKS:
-                    row["run_note"] = f"skipped(cannot-isolate: {NON_ISOLATABLE_SHARED_STATE_HOOKS[name]})"
-                    rows.append(row)
-                    continue
-                if name in isolated:
-                    hook_iso_root = iso_root / name
-                    hook_iso_root.mkdir(parents=True, exist_ok=True)
-                    env = _isolated_hook_env(base_env, hook_iso_root)
-                    # A hook that resolves its root from the payload `cwd` or os.getcwd()
-                    # must see the throwaway project, not this checkout.
-                    hook_cwd = env["CLAUDE_PROJECT_DIR"]
-                    hook_payload = dict(payload, cwd=hook_cwd)
-                    row["isolated"] = True
-                    row["run_note"] = "isolated(shared-state, throwaway project/home/temp)"
-                else:
-                    env = base_env
-                    hook_cwd, hook_payload = None, payload
-                if name in LIVE_MACHINE_HOOKS:
-                    row["excluded_from_budget"] = True
-                    row["exclude_reason"] = LIVE_MACHINE_HOOKS[name]
-                # The live harness kills a hook at its registered timeout (seconds).
-                hook_timeout = float(h.get("timeout") or 60)
-                first = _run_hook_once(script, hook_payload, env, cwd=hook_cwd, timeout=hook_timeout)
-                steady = _run_hook_once(script, hook_payload, env, cwd=hook_cwd, timeout=hook_timeout)
-                row["status_first"], row["ms_first"], row["stdout_bytes_first"] = (
-                    first["status"], first["ms"], first["stdout_bytes"])
-                row["status_steady"], row["ms_steady"], row["stdout_bytes_steady"] = (
-                    steady["status"], steady["ms"], steady["stdout_bytes"])
-                rows.append(row)
         return rows
     finally:
         shutil.rmtree(state_dir, ignore_errors=True)
@@ -794,32 +871,35 @@ def profile_hooks(root: Path, settings: dict, events: list[str] | None = None) -
             for group in settings.get("hooks", {}).get(event, []):
                 matcher = group.get("matcher", "*")
                 for h in group.get("hooks", []):
-                    cmd = h.get("command", "")
-                    script = cmd.split('"')[1] if '"' in cmd else cmd.split()[-1]
-                    script = script.replace("$CLAUDE_PROJECT_DIR", str(root.parent))
-                    name = os.path.basename(script)
-                    if name in skipped or name in isolated or name in NON_ISOLATABLE_SHARED_STATE_HOOKS:
-                        rows.append({"event": event, "case": "-", "hook": name,
-                                     "status": "skipped(shared-state)", "ms": 0,
-                                     "stdout_bytes": 0, "stderr_bytes": 0})
-                        continue
-                    for label, payload in cases:
-                        tool = payload.get("tool_name", "")
-                        if event != "UserPromptSubmit" and not hook_matches(matcher, tool):
+                    for entry in _hook_entries(h, root, expand_dispatcher=event == "UserPromptSubmit"):
+                        script, name = entry["script"], entry["name"]
+                        if entry["unreadable"]:
+                            rows.append({"event": event, "case": "-", "hook": name,
+                                         "status": f"unreadable(CHAIN: {entry['unreadable']})",
+                                         "ms": 0, "stdout_bytes": 0, "stderr_bytes": 0})
                             continue
-                        t0 = time.time()
-                        hook_timeout = float(h.get("timeout") or 60)
-                        try:
-                            r = subprocess.run([sys.executable, script], input=json.dumps(payload),
-                                                capture_output=True, text=True, timeout=hook_timeout, env=env,
-                                                encoding="utf-8", errors="replace")
-                            ms = int((time.time() - t0) * 1000)
-                            rows.append({"event": event, "case": label, "hook": name, "status": r.returncode,
-                                         "ms": ms, "stdout_bytes": len((r.stdout or "").encode()),
-                                         "stderr_bytes": len((r.stderr or "").encode())})
-                        except subprocess.TimeoutExpired:
-                            rows.append({"event": event, "case": label, "hook": name, "status": "TIMEOUT",
-                                         "ms": int(hook_timeout * 1000), "stdout_bytes": 0, "stderr_bytes": 0})
+                        if name in skipped or name in isolated or name in NON_ISOLATABLE_SHARED_STATE_HOOKS:
+                            rows.append({"event": event, "case": "-", "hook": name,
+                                         "status": "skipped(shared-state)", "ms": 0,
+                                         "stdout_bytes": 0, "stderr_bytes": 0})
+                            continue
+                        for label, payload in cases:
+                            tool = payload.get("tool_name", "")
+                            if event != "UserPromptSubmit" and not hook_matches(matcher, tool):
+                                continue
+                            t0 = time.time()
+                            hook_timeout = entry["timeout"]
+                            try:
+                                r = subprocess.run([sys.executable, script], input=json.dumps(payload),
+                                                    capture_output=True, text=True, timeout=hook_timeout, env=env,
+                                                    encoding="utf-8", errors="replace")
+                                ms = int((time.time() - t0) * 1000)
+                                rows.append({"event": event, "case": label, "hook": name, "status": r.returncode,
+                                             "ms": ms, "stdout_bytes": len((r.stdout or "").encode()),
+                                             "stderr_bytes": len((r.stderr or "").encode())})
+                            except subprocess.TimeoutExpired:
+                                rows.append({"event": event, "case": label, "hook": name, "status": "TIMEOUT",
+                                             "ms": int(hook_timeout * 1000), "stdout_bytes": 0, "stderr_bytes": 0})
         return rows
     finally:
         shutil.rmtree(state_dir, ignore_errors=True)

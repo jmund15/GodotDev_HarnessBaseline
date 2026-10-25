@@ -573,8 +573,8 @@ class TwoPassPromptEmissionTests(unittest.TestCase):
         before_cache = snapshot(real_cache_file)
 
         settings = _settings_probe.settings(lc.DEFAULT_ROOT)
-        # The shared input registers no isolated shared-state hook; a consumer that opts into one
-        # registers it in its project file, which this plant stands in for.
+        # The shared input registers the prompt dispatcher, whose isolated `shell_census` member is
+        # the real write seam; this plant adds a direct registration of the same hook.
         settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
             {"hooks": [{"type": "command", "timeout": 25,
                         "command": 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/shell_census.py"'}]})
@@ -715,6 +715,130 @@ class LiveMachineExclusionTests(unittest.TestCase):
             self.assertEqual(first_total, 0)
             self.assertEqual(steady_total, 0)
             self.assertEqual(len(excluded), 1)
+
+
+class PromptDispatcherExpansionTests(unittest.TestCase):
+    """A registered `prompt_dispatch.py` is expanded into one row per `CHAIN` member, each profiled
+    as if registered directly under the member's `CHAIN` budget; the dispatcher gets no row."""
+
+    DISPATCHER = "prompt_dispatch.py"
+    POISON = 'raise RuntimeError("the census must read CHAIN, never run the dispatcher")\n'
+
+    def _root(self, td, chain_source: str) -> Path:
+        root = Path(td) / ".claude"
+        make_minimal_root(root)
+        write(root / "hooks" / self.DISPATCHER, chain_source + "\n" + self.POISON)
+        return root
+
+    def _register(self, root: Path, timeout: int = 35) -> dict:
+        return {"hooks": {"UserPromptSubmit": [{"hooks": [
+            {"command": f'{sys.executable} "{root / "hooks" / self.DISPATCHER}"', "timeout": timeout}]}]}}
+
+    def test_registered_dispatcher_expands_to_one_row_per_member(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, 'CHAIN: tuple = (("stub_a", 5), ("stub_b", 5))')
+            write(root / "hooks" / "stub_a.py", "import sys\nsys.stdin.read()\nsys.stdout.write('aaa')\n")
+            write(root / "hooks" / "stub_b.py", "import sys\nsys.stdin.read()\nsys.stdout.write('bb')\n")
+            rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root))
+            self.assertEqual([r["hook"] for r in rows], ["stub_a.py", "stub_b.py"])
+            self.assertEqual([r["stdout_bytes_first"] for r in rows], [3, 2])
+            self.assertEqual([r["status_first"] for r in rows], [0, 0])
+            first_total, steady_total, excluded = lc.compute_prompt_emission(rows)
+            self.assertEqual((first_total, steady_total, excluded), (5, 5, []))
+
+    def test_member_runs_under_its_chain_budget_not_the_registered_timeout(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "CHAIN = ((\"slow_member\", 1),)")
+            write(root / "hooks" / "slow_member.py", "import sys, time\nsys.stdin.read()\ntime.sleep(3)\nprint('late')\n")
+            rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root, timeout=35))
+            self.assertEqual([r["hook"] for r in rows], ["slow_member.py"])
+            self.assertEqual(rows[0]["status_first"], "TIMEOUT")
+
+    def test_crashing_member_is_still_reported_unmeasured(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, 'CHAIN = (("stub_ok", 5), ("stub_crash", 5))')
+            write(root / "hooks" / "stub_ok.py", "import sys\nsys.stdin.read()\nprint('fine')\n")
+            write(root / "hooks" / "stub_crash.py", "import sys\nsys.stdin.read()\nraise SystemExit(3)\n")
+            rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root))
+            self.assertEqual(lc.unmeasured_prompt_hooks(rows), ["stub_crash.py (exit 3/3)"])
+
+    def test_live_machine_and_isolation_apply_by_member_basename(self):
+        import shutil as _shutil
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, 'CHAIN = (("shell_census", 25),)')
+            _shutil.copy(lc.DEFAULT_ROOT / "hooks" / "shell_census.py", root / "hooks" / "shell_census.py")
+            rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root))
+            self.assertEqual([r["hook"] for r in rows], ["shell_census.py"])
+            self.assertTrue(rows[0]["isolated"])
+            self.assertTrue(rows[0]["excluded_from_budget"])
+            self.assertTrue(rows[0]["exclude_reason"])
+            first_total, steady_total, excluded = lc.compute_prompt_emission(rows)
+            self.assertEqual((first_total, steady_total, len(excluded)), (0, 0, 1))
+
+    def test_absent_member_is_skipped_with_no_row(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, 'CHAIN = (("stub_a", 5), ("not_adopted", 5))')
+            write(root / "hooks" / "stub_a.py", "import sys\nsys.stdin.read()\nsys.stdout.write('aaa')\n")
+            rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root))
+            self.assertEqual([r["hook"] for r in rows], ["stub_a.py"])
+            self.assertEqual(lc.unmeasured_prompt_hooks(rows), [])
+            rows = lc.profile_hooks(root, self._register(root), events=["UserPromptSubmit"])
+            self.assertEqual([r["hook"] for r in rows], ["stub_a.py"])
+
+    def test_unreadable_chain_yields_one_visible_dispatcher_row(self):
+        cases = {
+            "non-literal": "def _members():\n    return ()\nCHAIN = _members()",
+            "no chain": "OTHER = (('a', 1),)",
+            "wrong shape": "CHAIN = ('stub_a', 5)",
+            "empty": "CHAIN = ()",
+        }
+        for label, source in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                root = self._root(td, source)
+                rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root))
+                self.assertEqual([r["hook"] for r in rows], [self.DISPATCHER])
+                self.assertIn("unreadable", rows[0]["run_note"])
+                self.assertIn("CHAIN", rows[0]["run_note"])
+                self.assertEqual(len(lc.unmeasured_prompt_hooks(rows)), 1)
+
+    def test_missing_dispatcher_file_yields_one_visible_row(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            make_minimal_root(root)
+            rows = lc.profile_user_prompt_hooks_two_pass(root, self._register(root))
+            self.assertEqual([r["hook"] for r in rows], [self.DISPATCHER])
+            self.assertIn("unreadable", rows[0]["run_note"])
+            self.assertEqual(len(lc.unmeasured_prompt_hooks(rows)), 1)
+
+    def test_direct_registration_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / ".claude"
+            make_minimal_root(root)
+            write(root / "hooks" / "direct_hook.py", "import sys\nsys.stdin.read()\nsys.stdout.write('dd')\n")
+            write(root / "hooks" / "prompt_dispatch_helper.py", "import sys\nsys.stdin.read()\nsys.stdout.write('h')\n")
+            settings = {"hooks": {"UserPromptSubmit": [{"hooks": [
+                {"command": f'{sys.executable} "{root / "hooks" / "direct_hook.py"}"', "timeout": 7},
+                {"command": f'{sys.executable} "{root / "hooks" / "prompt_dispatch_helper.py"}"'}]}]}}
+            rows = lc.profile_user_prompt_hooks_two_pass(root, settings)
+            self.assertEqual([r["hook"] for r in rows], ["direct_hook.py", "prompt_dispatch_helper.py"])
+            self.assertEqual([r["stdout_bytes_first"] for r in rows], [2, 1])
+            self.assertFalse(any(r["excluded_from_budget"] or r["isolated"] for r in rows))
+
+    def test_general_profiler_expands_the_dispatcher_too(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, 'CHAIN = (("stub_a", 5), ("stub_b", 5))')
+            write(root / "hooks" / "stub_a.py", "import sys\nsys.stdin.read()\nsys.stdout.write('aaa')\n")
+            write(root / "hooks" / "stub_b.py", "import sys\nsys.stdin.read()\nsys.stdout.write('bb')\n")
+            rows = lc.profile_hooks(root, self._register(root), events=["UserPromptSubmit"])
+            self.assertEqual([r["hook"] for r in rows], ["stub_a.py", "stub_b.py"])
+            self.assertEqual([r["stdout_bytes"] for r in rows], [3, 2])
+
+    def test_general_profiler_names_an_unreadable_chain(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root(td, "CHAIN = compute()")
+            rows = lc.profile_hooks(root, self._register(root), events=["UserPromptSubmit"])
+            self.assertEqual([r["hook"] for r in rows], [self.DISPATCHER])
+            self.assertIn("unreadable", str(rows[0]["status"]))
 
 
 class TransitiveLoadHeuristicTests(unittest.TestCase):

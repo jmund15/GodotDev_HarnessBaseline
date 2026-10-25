@@ -18,6 +18,7 @@ Order (the first block wins; advisories emit after all checks):
                                            then a once-per-compaction advisory
   6. readonly_lens_write_guard.process   — off-lens subagent write → stderr note, no block
   7. running_script_edit_guard.process   — live script instance → advisory
+  8. plan_job_map_guard.process          — production write while this session's plan lacks `## Job map` → advisory
 
 Sub-hook contract: `process(payload)` returns one of
   {"block": <message>}   hard block — stderr + exit 2, the tool call is aborted
@@ -64,6 +65,7 @@ CHAIN += (
     ("harness_edit_skill_reminder", "advisory"),
     ("readonly_lens_write_guard", "advisory"),
     ("running_script_edit_guard", "advisory"),
+    ("plan_job_map_guard", "advisory"),
 )
 CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
 

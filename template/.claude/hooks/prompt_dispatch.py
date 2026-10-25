@@ -37,7 +37,7 @@ Timing: one record per dispatch appended to <project>/logs/prompt_dispatch_timin
 named on stderr. `--report [N]` prints per-member median, p95 and non-ok counts over the last N
 records; any other argument prints usage and exits 2.
 
-Wired in: settings.project.json hooks.UserPromptSubmit (composed into settings.json).
+Wired in: settings.base.json hooks.UserPromptSubmit (composed into settings.json).
 """
 
 import importlib
@@ -54,6 +54,8 @@ import traceback
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
+
+import _optional_hooks  # noqa: E402 - after the sys.path insert above
 
 # (module basename, budget seconds). A plain literal: other tools read it with ast.literal_eval.
 CHAIN = (
@@ -212,7 +214,8 @@ def dispatch(payload_text, chain=None, timing_path=None):
     """
     started = time.monotonic()
     local = threading.local()
-    members = [_Member(name, budget, payload_text) for name, budget in (CHAIN if chain is None else chain)]
+    members = [_Member(name, budget, payload_text)
+               for name, budget in _optional_hooks.adopted(CHAIN if chain is None else chain)]
     saved = (sys.stdin, sys.stdout, sys.stderr, sys.argv)
     abandoned = False
     try:

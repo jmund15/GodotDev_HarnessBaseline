@@ -117,6 +117,7 @@ import _dispatch_pins  # noqa: E402  (the native pin name of a row)
 import dispatch_size  # noqa: E402  (a seat's reading and its fit to its pin's window)
 import lens  # noqa: E402  (sibling module: registry parsing)
 import model_registry  # noqa: E402  (the tier vocabulary, and the sidecar alias resolution)
+import plan_job_map_guard  # noqa: E402  (the `## Job map` heading rule, one home)
 import review_result  # noqa: E402  (the Read window a must-read brief states)
 import tool_profiles  # noqa: E402  (the review profile's built-ins, and the brief coverage gate)
 
@@ -168,6 +169,9 @@ def subject_plans(specs: list[str]) -> list[tuple[str, str]]:
             sys.exit(f"--subject-plan {spec}: write meta:<plan.md> or code:<plan.md>")
         if not Path(path).is_file():
             sys.exit(f"--subject-plan {spec}: {path} is not a file")
+        if not plan_job_map_guard.has_job_map(Path(path).read_text(encoding="utf-8", errors="replace")):
+            sys.exit(f"--subject-plan {spec}: {path} has no `## Job map` section; add one routing each slice "
+                     "(plan_file_format.md §Job map)")
         found.append((shape, path))
     return found
 
@@ -564,7 +568,8 @@ def main() -> None:
     ap.add_argument("--must-read-for", action="append", default=[], metavar="KEY=LIST",
                     help="one seat's must-read list file, replacing --must-read for that seat")
     ap.add_argument("--subject-plan", action="append", default=[], metavar="SHAPE:PLAN",
-                    help="meta:<plan.md> or code:<plan.md>; repeatable. A seat declaring `citers: plan` gets a "
+                    help="meta:<plan.md> or code:<plan.md>; repeatable; a plan with no `## Job map` section is "
+                         "refused. A seat declaring `citers: plan` gets a "
                          "bounded summary and sweep-file pointer for each meta subject and needs at least one subject")
     ap.add_argument("--vault", default=None, metavar="ROOT",
                     help="the Obsidian vault root a citers sweep reads (default: vault_read.DEFAULT_VAULT)")
