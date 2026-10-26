@@ -67,5 +67,57 @@ class SettingsProof(unittest.TestCase):
                               ["hooks"]["PreToolUse"]], ["Read", "Workflow", "*", "Read"])
 
 
+class RecordTierProof(unittest.TestCase):
+    def test_record_profile_carries_the_resolved_job_tier(self):
+        """The `-R` record's `toolProfile` is `SC_TOOL_PROFILE`; `orchestration_metrics` archives its `tier`."""
+        bash = git_bash()
+        self.assertIsNotNone(bash)
+
+        def profile_tier(shape, tier):
+            script = ('source "$1"; SC_WORKDIR=""; SC_PROMPT_FILE=""; SC_SHAPE="$2"; SC_TIER="$3"; sc_resolve_tools; '
+                      'printf "%s" "$SC_TOOL_PROFILE"')
+            proc = subprocess.run([bash, "-c", script, "_", (CLAUDE / "scripts/lib/sidecar_common.sh").as_posix(), shape, tier],
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return json.loads(proc.stdout).get("tier")
+
+        self.assertEqual(profile_tier("review", ""), "executor")
+        self.assertEqual(profile_tier("review", "architect"), "architect")
+        self.assertEqual(profile_tier("survey", "architect"), "architect")
+
+
+class CheckFactsTierProof(unittest.TestCase):
+    def test_check_facts_resolve_the_tier_through_job_tier(self):
+        """`--check` folds a written `-Q validation` onto `fanout` and names an unknown tier, as the launch does."""
+        bash = git_bash()
+        self.assertIsNotNone(bash)
+
+        def facts(tier):
+            script = 'source "$1"; SC_ROOT="$2"; sc_check_dispatch_facts -G survey -Q "$3" -m "$4"'
+            proc = subprocess.run([bash, "-c", script, "_", (CLAUDE / "scripts/lib/sidecar_common.sh").as_posix(),
+                                   CLAUDE.as_posix(), tier, "sonnet"], capture_output=True, text=True)
+            return proc.stdout
+
+        self.assertIn("tier=fanout", facts("validation"))
+        self.assertIn("tier: unknown role 'bogus'", facts("bogus"))
+
+    def test_enum_validation_refuses_an_unknown_tier_and_folds_validation(self):
+        """A `--check` never passes a `-Q` the launch refuses; `validation` is a legal spelling."""
+        bash = git_bash()
+        self.assertIsNotNone(bash)
+
+        def validate(tier):
+            script = 'source "$1"; SC_ROOT="$2"; SC_TIER="$3"; (sc_validate_enums); echo "rc=$?"'
+            proc = subprocess.run([bash, "-c", script, "_", (CLAUDE / "scripts/lib/sidecar_common.sh").as_posix(),
+                                   CLAUDE.as_posix(), tier], capture_output=True, text=True)
+            return proc.stdout + proc.stderr
+
+        self.assertIn("rc=0", validate("validation"))
+        self.assertIn("rc=0", validate("architect"))
+        bogus = validate("bogus")
+        self.assertIn("rc=2", bogus)
+        self.assertIn("invalid tier 'bogus'", bogus)
+
+
 if __name__ == "__main__":
     unittest.main()

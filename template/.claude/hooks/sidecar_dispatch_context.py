@@ -14,30 +14,31 @@ The PREFLIGHT and DOCTRINE gates use that reader, never the APPROVAL
 recognizer: a gate keyed on the narrow recognizer fails open for every shape it does not recognize.
 
 0. TIER FIT (deny path), the check the Workflow route runs (`hooks/_dispatch_checks.py`), per direct launch
-   and per `sidecar_fanout.py` job (`alias` or `model`, `shape`). A job whose `-G`/`shape` row declares a
-   tier (`guards/tool_profiles.json`) must pin a row serving it on the alias's own registry transport, else
+   and per `sidecar_fanout.py` job (`alias` or `model`, `shape`, `tier`). A job's tier, its written `tier` (`-Q`) else its `-G`/`shape` row's
+   tier (`guards/tool_profiles.json`), must be one the row it pins serves on the alias's own registry transport, else
    the launch is denied before preflight. An alias the registry does not know is left to the launcher's
    availability gate. A fan-out job's `plan` must be a live plan of its row's route for the approval in step 3.
    A fan-out whose jobs file the same call writes is checked by `sidecar_fanout.py` itself, through
    `fanout_fit_refusal`, once it can read the file and before it spawns or detaches.
 1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-U] [-W]`
    synchronously. A fan-out call has no launcher to check, so the hook denies it from cached capacity
-   through `sidecar_fanout.admission_refusal` (`fanout_capacity_refusal`): a job whose named plan has no room,
-   or whose route has no plan with room, is refused in the call, backgrounded or not. A stale, missing or
+   through `sidecar_fanout.admission_refusal` (`fanout_capacity_refusal`): a job whose named plan, or whose
+   route's every plan, has no room or cannot hold the job's expected drain, is refused in the call, backgrounded or not. A stale, missing or
    unreadable reading decides nothing. The same launcher gates each fan-out child at runtime. Availability,
    budget-band, provider-capacity, balance, and pricing refusals remain owned by the launchers.
    A direct launch whose `-R` or `-l` value comes from a shell variable is denied: tracking
    reads those values from the command text (`reference/sidecar_dispatch.md` Procedure step 5).
 2. DOCTRINE (deny). A launch while the orchestration skill or the model ladder is not in this
    context (a compaction clears both) is denied with each document's load route
-   (`model_ladder_gate.doctrine_check`): the full Read, or `model_registry.py ladder-slice <tier>` for
-   the tiers the launch's `-G`/`shape` rows imply; a deny for another reason carries the same routes. Fan-out
+   (`model_ladder_gate.doctrine_check`): the full Read, or the ladder slice for
+   the tiers the launch's jobs imply (written `tier`, else `-G`/`shape` row). The hook's deny embeds the slice and records it; the
+   launcher's deny reaches a log, so it names `model_registry.py ladder-slice <tier>`; a deny for another reason carries the same routes. Fan-out
    calls include their `--fold-*` authors (also under `--refold`) in doctrine and tier-fit checks. Hook-written
    receipts bind each child's label, alias, effort, shape, output directory and legal paying plans. They survive
    compaction; each increasing record attempt consumes its own use, so queued seats, plan fallbacks and memory
    retries retain the call's checks. A fan-out set occupies one receipt slot, so the count bound never cuts
    children off a checked call. Direct receipts remain one-use. Runtime capacity checks still run for each
-   fan-out launch. An unplanned child runs the current doctrine check. A fan-out whose jobs file the same call
+   fan-out launch. An unplanned child runs the current doctrine check, except a child whose record `fanout_admitted` finds in the inventory of a live fan-out driver that this session's admitted call wrote (`SIDECAR_FANOUT_ID`, `parentSessionId`, driver process alive). A fan-out whose jobs file the same call
    writes has no readable contract here: `sidecar_fanout.py --detach` runs `fanout_doctrine_refusal` in the
    foreground over the file it can then read, and each launcher checks at runtime. `--status`, `--dry-run` and `--help` fan-out calls
    dispatch nothing and get no output.
@@ -64,6 +65,7 @@ import sys
 import time
 import types
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _bounded_run import run_bounded
@@ -101,7 +103,7 @@ CAPACITY_REFUSAL_EXIT = 10  # pre-spawn floor, spent allowance or live usage-lim
 PEAK_EXIT = 11           # lib/sidecar_common.sh: peak pricing window on a peakPolicy=refuse row; only -W lifts it
 SAFE_JOB_FIELDS = frozenset({
     "label", "alias", "promptFile", "effort", "disclosure", "shape",
-    "contextFiles", "schemaFile", "workdir", "transport", "plan",
+    "contextFiles", "schemaFile", "workdir", "transport", "plan", "tier",
 })
 REQUIRED_JOB_FIELDS = frozenset({"label", "alias", "promptFile", "shape"})
 SAFE_SHAPES = frozenset({"any", "survey", "review", "author"})
@@ -326,7 +328,7 @@ def _safe_fanout_job(job, root, registry):
     schema = job.get("schemaFile")
     if schema is not None and not _regular_project_file(root, schema):
         return False
-    for field in ("alias", "effort", "disclosure", "transport", "plan"):
+    for field in ("alias", "effort", "disclosure", "transport", "plan", "tier"):
         if field in job and not isinstance(job[field], str):
             return False
     if ("effort" in job and job["effort"] not in SAFE_EFFORTS
@@ -396,6 +398,14 @@ def fanout_capacity_refusal(fanout, root, deadline):
         return None
 
 
+class LaunchJob(NamedTuple):
+    label: str
+    alias: str
+    shape: Optional[str]
+    plan: Optional[str]
+    tier: Optional[str] = None
+
+
 def fanout_contract(fanout, root):
     """Children observed in the call, including deferred authors and every legal paying-plan route.
     Room and memory admission may change before a queued child starts; neither changes its pin.
@@ -431,7 +441,8 @@ def fanout_contract(fanout, root):
             legal = model_registry.plans_of(route, data)
             if not plans or any(plan not in legal for plan in plans):
                 raise ValueError("fan-out paying plan does not serve its alias")
-            contracts.append({"job": (str(job.get("label") or alias), alias, job.get("shape"), job.get("plan")),
+            contracts.append({"job": LaunchJob(str(job.get("label") or alias), alias, job.get("shape"),
+                                               job.get("plan"), job.get("tier")),
                               "effort": job.get("effort"), "plans": plans,
                               "directory": os.path.normcase(os.path.abspath(directory))})
         return contracts
@@ -440,9 +451,10 @@ def fanout_contract(fanout, root):
 
 
 def launch_jobs(direct, fanout, root, contracts=None):
-    """[(label, alias, shape or None, plan or None)] for the direct launch or each readable fan-out
-    job, else []. The plan is who pays: the launcher's own plan (`model_registry.plan_for_launcher`)
-    for a direct launch, a fan-out job's `plan` key; None leaves the default to `currency`."""
+    """[(label, alias, shape or None, plan or None, written tier or None)] for the direct launch or each readable
+    fan-out job, else []. The plan is who pays: the launcher's own plan (`model_registry.plan_for_launcher`)
+    for a direct launch, a fan-out job's `plan` key; None leaves the default to `currency`. The tier is the
+    launch's `-Q` or the job's `tier`; `_dispatch_checks.job_tier` resolves it against the shape."""
     if direct is not None:
         flags = sidecar_argv.sidecar_flags(direct.args)
         alias = flags.get("m")
@@ -454,7 +466,8 @@ def launch_jobs(direct, fanout, root, contracts=None):
             plan = model_registry.plan_for_launcher(direct.path) if model_registry is not None else None
         except Exception:
             plan = None
-        return [(label, alias, shape, plan)]
+        tier = flags.get("Q") if isinstance(flags.get("Q"), str) else None
+        return [LaunchJob(label, alias, shape, plan, tier)]
     return [contract["job"] for contract in (fanout_contract(fanout, root) if contracts is None else contracts)]
 
 
@@ -477,43 +490,49 @@ def fanout_jobs_unwritten(fanout, cmd, root):
 
 
 def launch_tiers(direct, fanout, root, contracts=None):
-    """The sorted tiers the launch's jobs imply through their `-G`/`shape` rows, else None when a job names no
-    tiered shape or the launch has no readable job: the doctrine gate then asks for the full ladder."""
+    """The sorted tiers the launch's jobs imply (`_dispatch_checks.job_tier`: the written tier, else the
+    `-G`/`shape` row's), else None when a job implies none or the launch has no readable job: the doctrine gate
+    then asks for the full ladder."""
     try:
-        by_shape = _dispatch_checks.shape_tiers()
-        tiers = {model_registry.canonical_tier(by_shape[shape])
-                 for _label, _alias, shape, _plan in launch_jobs(direct, fanout, root, contracts)}
+        tiers = {model_registry.canonical_tier(_dispatch_checks.job_tier(job.shape, job.tier)[0])
+                 for job in launch_jobs(direct, fanout, root, contracts)}
     except Exception:
         return None
     return sorted(tiers) or None
 
 
 def dispatch_checks(jobs):
-    """The refusal for a job whose shape implies a tier its alias's row does not serve, else None."""
+    """The refusal for a job whose tier its alias's row does not serve, else None. The tier is the job's written
+    `tier`, else its shape row's (`_dispatch_checks.job_tier`)."""
     if _dispatch_checks is None or model_registry is None or not jobs:
         return None
     try:
         data = model_registry.load()
     except Exception:
         return None
-    tiers = _dispatch_checks.shape_tiers()
     unfit = []
-    for label, alias, shape, _plan in jobs:
+    for label, alias, shape, _plan, written in jobs:
         try:
             row = model_registry.resolve(alias, data)
         except Exception:
             continue
         try:
-            why = _dispatch_checks.tier_fit(alias, tiers.get(shape), row["transport"], data)
+            tier, source = _dispatch_checks.job_tier(shape, written)
+        except ValueError as err:
+            unfit.append(f"`{label}`: {err}")
+            continue
+        try:
+            why = _dispatch_checks.tier_fit(alias, tier, row["transport"], data)
         except Exception:
             why = None
         if why:
-            unfit.append(f"`{label}`: {why}")
+            unfit.append(f"`{label}` (tier `{tier}` from {source}): {why}")
     if unfit:
-        return ("Sidecar launch outside the tier its shape implies (orchestration §5) — " + "; ".join(unfit[:8])
-                + ". A `-G`/`shape` row's tier (guards/tool_profiles.json) binds the job whatever it pins. "
-                "Launch a row of that tier (`python3 .claude/tools/model_registry.py for-role <tier>`) or a "
-                "shape whose tier the alias serves; raise effort before tier.")
+        return ("Sidecar launch outside the tier its job implies (orchestration §5) — " + "; ".join(unfit[:8])
+                + ". The job's written `tier` binds its pin; a job that writes none takes its `-G`/`shape` row's "
+                "tier (guards/tool_profiles.json). Launch a row of that tier "
+                "(`python3 .claude/tools/model_registry.py for-role <tier>`) or write the `tier` the work is; "
+                "raise effort before tier.")
     return None
 
 
@@ -552,7 +571,7 @@ def remember_checks(payload, direct, fanout, root, preflight, contracts=None):
     if fanout:
         receipts = []
         for contract in (fanout_contract(fanout, root) if contracts is None else contracts):
-            label, alias, _shape, _plan = contract["job"]
+            label, alias = contract["job"][:2]
             observed, _ = table.sidecar_entries(payload, jobs=[{
                 "label": label, "model": alias, "effort": contract["effort"], "kind": "fanout",
                 "launcher": "sidecar_fanout", "fanout_dir": contract["directory"], "record": None}])
@@ -586,9 +605,10 @@ def take_checks(payload, entry, job, flags):
             if contract:
                 if time.time() - receipt.get("at", 0) >= table.STALE_SECONDS:
                     continue
-                label, alias, shape, _plan = contract["job"]
-                if (list(job[:3]) != [label, alias, shape] or job[3] not in contract["plans"]
-                        or flags.get("e") != contract["effort"]):
+                expected, launched = LaunchJob(*contract["job"]), LaunchJob(*job)
+                label = expected.label
+                if (launched[:3] + launched[4:] != expected[:3] + expected[4:]
+                        or launched.plan not in contract["plans"] or flags.get("e") != contract["effort"]):
                     continue
                 record = entry.get("record")
                 if not record or os.path.normcase(os.path.abspath(os.path.dirname(record))) != contract["directory"]:
@@ -723,18 +743,16 @@ def fanout_fit_refusal(fanout_args, root):
     """`dispatch_checks` over the fan-out call's jobs, fold authors included, else None: the tier-fit deny this hook
     cannot make for a jobs file the same call writes. `sidecar_fanout.py` calls it in its own call, before it spawns or
     detaches anything, so a pin the launcher would refuse reaches the caller and not a detached child's `.err`. A job
-    this hook already checked for the call (a fresh fan-out receipt with its label, pin, shape and directory) is not
+    this hook already checked for the call (a fresh fan-out receipt with its label, pin, shape, plan, tier and directory) is not
     checked again. A call it cannot read decides nothing; each launcher still runs its own check."""
     fanout = types.SimpleNamespace(args=list(fanout_args))
     contracts = fanout_contract(fanout, root)
     held = _receipted_fanout_jobs()
-    unchecked = {(tuple(c["job"][:3]), c["directory"]) for c in contracts} - held
-    return dispatch_checks([job for job in launch_jobs(None, fanout, root, contracts)
-                            if any(key[0] == tuple(job[:3]) for key in unchecked)])
+    return dispatch_checks([c["job"] for c in contracts if (tuple(c["job"]), c["directory"]) not in held])
 
 
 def _receipted_fanout_jobs():
-    """{((label, alias, shape), directory)} of each fresh fan-out receipt this session's hook wrote."""
+    """{(job, directory)} of each fresh fan-out receipt this session's hook wrote."""
     import dispatch_table as table
     import _hook_state
     sid = tracking_session()
@@ -742,7 +760,7 @@ def _receipted_fanout_jobs():
         return set()
     state = _hook_state.read_json_salvage(_hook_state.state_path(sid)) or {}
     now = time.time()
-    return {(tuple(child["fanout"]["job"][:3]), child["fanout"]["directory"])
+    return {(tuple(child["fanout"]["job"]), child["fanout"]["directory"])
             for group in state.get(CHECKS_KEY) or [] for child in group.get("children", [group])
             if child.get("fanout") and now - child.get("at", 0) < table.STALE_SECONDS}
 

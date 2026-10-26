@@ -3035,12 +3035,20 @@ def _tier_of(entry):
     return long_context_tier(entry) if "longContextTier" in entry or entry.get("transport") else None
 
 
-# The logins' top-level autoCompactWindow, the window every job without a per-model setting compacts at.
-# A cycle at this window shows in watch_records.
-RESIDENT_COMPACT_WINDOW = 500000
+def login_compact_window():
+    """The Claude Code user settings' top-level `autoCompactWindow`: `$CLAUDE_CONFIG_DIR/settings.json`, else
+    `~/.claude/settings.json`. None when the file is absent or unreadable or the value is not a usable window
+    (an int in 100000..1000000), so no cap applies."""
+    root = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    try:
+        with open(os.path.join(root, "settings.json"), encoding="utf-8") as fh:
+            value = json.load(fh).get("autoCompactWindow")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if type(value) is int and 100000 <= value <= 1000000 else None
 
 
-def anthropic_window(entry, use_max=False, max_output=None, compact_override=None, shape=None, resident=False):
+def anthropic_window(entry, use_max=False, max_output=None, compact_override=None, full_window=False):
     r"""Claude Code 2.1.291 window contract, extracted from claude.exe on 2026-10-08.
 
     Binary: `var OEt=20000`; `z4`: `Math.min(e.maxOutputTokens,OEt)` then `return g-r`;
@@ -3056,12 +3064,8 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     A Claude row between 200K and 1M cannot prove the client's belief: report unknown rather
     than its catalog window. Non-Claude names retain the existing MAX_CONTEXT_TOKENS contract.
 
-    A job that keeps one subject resident compacts at RESIDENT_COMPACT_WINDOW (capped at the model's full
-    contextTokens), passed as an explicit autoCompactWindow: left unset, the client falls back to the login's
-    per-model `modelSettings` window, which cycles such a job, and the env value overrides it. A
-    `review` shape is one (source `review-shape`); `resident` marks any other (source `resident-subject`):
-    the launcher's SIDECAR_RESIDENT_SUBJECT=1, set from the job's data (a benchmark task's archetype, a
-    fan-out job's `resident`). An explicit compact_override (-K) still applies. `contextWindow` is the enforced
+    Every Claude row compacts at the smaller of that window and the login's `autoCompactWindow`
+    (login_compact_window); an explicit compact_override (-K) and `full_window` are not capped. `contextWindow` is the enforced
     window (equal to `autoCompactWindow`), which the run record and its turn-1 percentage report.
     """
     limits = entry.get("limits") or {}
@@ -3070,23 +3074,16 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     if not model.lower().startswith("claude-"):
         return {"model": model, "autoCompactWindow": None, "maxContextTokens": window,
                 "contextWindow": window, "contextWindowSource": "launcher-declared" if window else "unknown"}
-    if (shape == "review" or resident) and compact_override is None:
-        full = int(limits.get("contextTokens") or 0)
-        native_1m = full >= 1000000
-        known = full > 0 and (full <= 200000 or native_1m)
-        if native_1m and not model.lower().endswith("[1m]"):
-            model += "[1m]"
-        enforced = min(full, RESIDENT_COMPACT_WINDOW) if known else None
-        return {"model": model, "autoCompactWindow": enforced, "maxContextTokens": None,
-                "contextWindow": enforced,
-                "contextWindowSource": ("review-shape" if shape == "review" else "resident-subject")
-                if known else "unknown"}
     operating_point = compact_override if compact_override is not None else limits.get("compactAtTokens")
     if operating_point:
         cap = max_output if max_output is not None else output_cap(limits, use_max, _tier_of(entry))
         window = int(operating_point) + min(cap if cap is not None else 32000, 20000) + 13000
         if window > int(limits.get("contextTokens") or 0):
             raise RegistryError(f"{model}: compact point {operating_point} plus the client reserve exceeds contextTokens")
+    if compact_override is None and not full_window and window is not None:
+        login = login_compact_window()
+        if login:
+            window = min(window, login)
     if window is not None and not 100000 <= window <= 1000000:
         raise RegistryError(f"{model}: Claude Code auto-compact window must be 100000..1000000, got {window}"
                             + (f" (compact point {operating_point} plus the client reserve)" if operating_point else ""))
@@ -3101,9 +3098,7 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
 
 def _cmd_anthropic_window(argv):
     flags = argv[1:]
-    shape = None
-    if len(flags) >= 2 and flags[-2] == "--shape":
-        shape = flags[-1]
+    if len(flags) >= 2 and flags[-2] == "--shape":  # accepted for anthropic_sidecar.sh, which passes it; no effect
         flags = flags[:-2]
     if not argv or flags not in ([], ["--max"]):
         print("usage: model_registry.py anthropic-window <model> [--max] [--shape <shape>]", file=sys.stderr)
@@ -3114,8 +3109,8 @@ def _cmd_anthropic_window(argv):
         raise RegistryError("SIDECAR_COMPACT_AT_TOKENS must be a positive integer")
     print(json.dumps(anthropic_window(resolve(argv[0]), flags == ["--max"],
                                       int(cap) if cap.isdigit() else None,
-                                      int(override) if override else None, shape,
-                                      os.environ.get("SIDECAR_RESIDENT_SUBJECT") == "1")))
+                                      int(override) if override else None,
+                                      os.environ.get("SIDECAR_FULL_WINDOW") == "1")))
     return 0
 
 
@@ -3170,11 +3165,11 @@ CLIENT_RESERVE = 13000
 
 def compaction_point(entry, job=None):
     """`(tokens, source)` of the input a child on `entry` holds before its client compacts. On the Anthropic route,
-    `job` (its `shape`, `resident` and `transport`) selects `anthropic_window`'s `autoCompactWindow`, less the client
+    `job` (its `transport`) selects `anthropic_window`'s `autoCompactWindow`, less the client
     reserves its docstring gives (source `auto-compact`). Without `job`, on any other transport, or for a row with no
     auto-compact window, it is `usable_window` (source `usable-window`); `(None, ...)` when the row states no window."""
     if job is not None and str(job.get("transport") or entry.get("transport") or "").startswith("anthropic"):
-        auto = anthropic_window(entry, shape=job.get("shape"), resident=bool(job.get("resident")))
+        auto = anthropic_window(entry, full_window=job.get("window") == "full")
         if auto.get("autoCompactWindow"):
             cap = output_cap(entry.get("limits") or {}, False, _tier_of(entry))
             reserve = min(cap if cap is not None else 32000, CLIENT_OUTPUT_RESERVE) + CLIENT_RESERVE

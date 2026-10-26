@@ -47,7 +47,7 @@ The owner's note is verbatim in two homes: its universal part opens `CLAUDE.core
 
 Always-loaded admission:
 - **A1:** measure bytes and the before/after delta, not line count alone.
-- **A2:** admit only decisions made before a trigger/search could deliver them. Same-moment detail gets a pointer.
+- **A2:** admit only decisions most sessions face before a trigger/search could deliver them; a rare decision takes a triggered surface or lands nothing. Same-moment detail gets a pointer.
 - **A3:** enforcement sets depth: hard-denied rules need little prose; advisory rules carry the rule plus the cost of getting it wrong; unenforced, non-obvious rules need their reason/example.
 - **A4:** do not duplicate unconditional startup injections; verify their model/load conditions before removing an owner.
 - **A5:** inspect per-section load and before/after bytes. Each added standing line states the pre-trigger decision it must affect and why an existing or narrower surface cannot carry it. The addition need not displace text of equal size. Loaded-set byte caps live only in `load_census.py` `BUDGETS`; a project's tripwire baselines and `known_oversized_no_selector` live only in its `tools/load_census.project.json`. This section states no cap or baseline, only the per-body triggers for a review. Growth past a recorded baseline blocks nothing; `load_census.py` `over_baseline` names the budgets the close's hot-set review judges.

@@ -29,6 +29,24 @@ spec = importlib.util.spec_from_file_location("mr", MOD)
 mr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mr)
 
+import json as _json
+import tempfile
+
+_EMPTY_LOGIN = tempfile.mkdtemp(prefix="login-none-")
+os.environ["CLAUDE_CONFIG_DIR"] = _EMPTY_LOGIN
+
+
+def _with_login(value, fn):
+    """Run `fn` with a planted login settings file under a temp CLAUDE_CONFIG_DIR; `None` plants no file."""
+    root = tempfile.mkdtemp(prefix="login-")
+    try:
+        if value is not None:
+            with open(os.path.join(root, "settings.json"), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(value if isinstance(value, str) else _json.dumps({"autoCompactWindow": value}))
+        return _with_env({"CLAUDE_CONFIG_DIR": root}, fn)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
 # ---------------------------------------------------------------- fixtures
 LADDER = """## Pick by work shape
 
@@ -211,12 +229,16 @@ def _with_env(values, fn):
                 os.environ[k] = v
 
 
-def _anthropic_window_cli(argv):
+_FULL_ROW = {"id": "claude-opus-test", "longContextTier": None,
+             "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}}
+
+
+def _anthropic_window_cli(argv, limits=None):
     """Run the anthropic-window CLI branch against a synthetic Claude row and return its JSON."""
     original = mr.resolve
     mr.resolve = lambda _name: {"id": "claude-synthetic", "longContextTier": None,
-                                "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
-                                           "compactAtTokens": 200000}}
+                                "limits": limits or {"contextTokens": 1000000, "maxOutputTokens": 128000,
+                                                     "compactAtTokens": 200000}}
     output = io.StringIO()
     try:
         with contextlib.redirect_stdout(output):
@@ -224,12 +246,6 @@ def _anthropic_window_cli(argv):
     finally:
         mr.resolve = original
     return __import__("json").loads(output.getvalue()) if code == 0 else {"exit": code}
-
-
-def _full_window_cli(argv):
-    """True when the CLI sets the resident compaction window explicitly and reports it as the context window, never leaving it unset."""
-    out = _anthropic_window_cli(argv)
-    return out.get("autoCompactWindow") == mr.RESIDENT_COMPACT_WINDOW and out.get("contextWindow") == out.get("autoCompactWindow")
 
 
 _TIERED = {"limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
@@ -663,42 +679,76 @@ CASES = [
                                  "limits": {"contextTokens": 1000000, "compactAtTokens": 200000}},
                                 compact_override=117000)["autoCompactWindow"] == 150000),
 
-    ("a review-shaped job compacts at the resident window, set explicitly so a login's per-model autoCompactWindow cannot apply, named review-shape",
-     lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
-                                 "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
-                                            "compactAtTokens": 200000}}, shape="review") == {
-         "model": "claude-haiku-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
-         "contextWindow": 500000, "contextWindowSource": "review-shape"}),
-    ("an author-shaped job keeps the compaction window",
-     lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
-                                 "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
-                                            "compactAtTokens": 200000}}, shape="author")["autoCompactWindow"] == 233000),
-    ("a review-shaped job with an explicit compact point keeps that override",
-     lambda: mr.anthropic_window({"id": "claude-test", "longContextTier": None,
-                                 "limits": {"contextTokens": 1000000, "compactAtTokens": 200000}},
-                                compact_override=117000, shape="review")["autoCompactWindow"] == 150000),
-    ("anthropic-window --shape review reaches the resolver through argv",
-     lambda: _full_window_cli(["synthetic", "--shape", "review"])
-     and _anthropic_window_cli(["synthetic"])["autoCompactWindow"] == 233000
-     and _anthropic_window_cli(["synthetic", "--max", "--shape", "author"])["autoCompactWindow"] == 233000),
-    ("a resident window never exceeds a smaller model's full window",
-     lambda: mr.anthropic_window({"id": "claude-test", "longContextTier": None,
-                                 "limits": {"contextTokens": 200000, "maxOutputTokens": 64000}},
-                                resident=True)["autoCompactWindow"] == 200000),
-    ("a job marked resident-subject compacts at the resident window whatever its tool-profile shape",
-     lambda: mr.anthropic_window({"id": "claude-haiku-test", "longContextTier": None,
-                                 "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000,
-                                            "compactAtTokens": 200000}}, shape="arm", resident=True) == {
-         "model": "claude-haiku-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
-         "contextWindow": 500000, "contextWindowSource": "resident-subject"}),
-    ("SIDECAR_RESIDENT_SUBJECT=1 reaches the resolver through the launcher's environment; unset keeps the point",
-     lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1"},
-                       lambda: _full_window_cli(["synthetic", "--shape", "arm"]))
-     and _with_env({"SIDECAR_RESIDENT_SUBJECT": ""},
-                   lambda: _anthropic_window_cli(["synthetic", "--shape", "arm"]))["autoCompactWindow"] == 233000),
-    ("an explicit compact point still overrides the resident-subject mark",
-     lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1", "SIDECAR_COMPACT_AT_TOKENS": "117000"},
-                       lambda: _anthropic_window_cli(["synthetic", "--shape", "arm"]))["autoCompactWindow"] == 150000),
+    ("a 1M row with no operating point is capped at a planted login autoCompactWindow of 500000, 1M suffix kept, window and source stated",
+     lambda: _with_login(500000, lambda: mr.anthropic_window(
+         {"id": "claude-opus-test", "longContextTier": None,
+          "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}})) == {
+         "model": "claude-opus-test[1m]", "autoCompactWindow": 500000, "maxContextTokens": None,
+         "contextWindow": 500000, "contextWindowSource": "anthropic-auto-compact"}),
+    ("a Haiku-like row with a 250000 operating point stays at 250000 under a 500000 login",
+     lambda: _with_login(500000, lambda: mr.anthropic_window(
+         {"id": "claude-haiku-test", "longContextTier": None,
+          "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000, "compactAtTokens": 217000}}))[
+         "autoCompactWindow"] == 250000),
+    ("with no settings file no cap applies and a 1M row keeps its 1M window",
+     lambda: _with_login(None, lambda: mr.anthropic_window(
+         {"id": "claude-opus-test", "longContextTier": None,
+          "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}}))["autoCompactWindow"] == 1000000),
+    ("an unreadable settings file or one without the key applies no cap",
+     lambda: all(_with_login(text, lambda: mr.anthropic_window(
+         {"id": "claude-opus-test", "longContextTier": None,
+          "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}}))["autoCompactWindow"] == 1000000
+         for text in ("{not json", "[]", '{"other": 1}', '{"autoCompactWindow": "big"}', '{"autoCompactWindow": 50000}'))),
+    ("a login value at or below the model's window is kept; a 200K row is not raised by a larger login",
+     lambda: _with_login(150000, lambda: mr.anthropic_window(
+         {"id": "claude-test", "longContextTier": None,
+          "limits": {"contextTokens": 200000, "maxOutputTokens": 64000}}))["autoCompactWindow"] == 150000
+     and _with_login(500000, lambda: mr.anthropic_window(
+         {"id": "claude-test", "longContextTier": None,
+          "limits": {"contextTokens": 200000, "maxOutputTokens": 64000}}))["autoCompactWindow"] == 200000),
+    ("a compact-point override beats the login cap",
+     lambda: _with_login(500000, lambda: mr.anthropic_window(
+         {"id": "claude-test", "longContextTier": None,
+          "limits": {"contextTokens": 1000000, "compactAtTokens": 200000}},
+         compact_override=117000))["autoCompactWindow"] == 150000),
+    ("the login file is read from CLAUDE_CONFIG_DIR through the CLI, and SIDECAR_COMPACT_AT_TOKENS still overrides it",
+     lambda: _with_login(300000, lambda: _anthropic_window_cli(["synthetic"]))["autoCompactWindow"] == 233000
+     and _with_login(300000, lambda: _with_env({"SIDECAR_COMPACT_AT_TOKENS": "117000"},
+                                                 lambda: _anthropic_window_cli(["synthetic"])))["autoCompactWindow"] == 150000),
+    ("full_window skips the login cap: a 1M row keeps its own window under a 500000 login; the default stays capped",
+     lambda: _with_login(500000, lambda: (
+         mr.anthropic_window(_FULL_ROW, full_window=True)["autoCompactWindow"] == 1000000
+         and mr.anthropic_window(_FULL_ROW)["autoCompactWindow"] == 500000
+         and mr.anthropic_window(_FULL_ROW, full_window=False)["autoCompactWindow"] == 500000))),
+    ("the CLI with SIDECAR_FULL_WINDOW=1 skips the login cap; without it the cap holds",
+     lambda: _with_login(500000, lambda: (
+         _with_env({"SIDECAR_FULL_WINDOW": "1"}, lambda: _anthropic_window_cli(["synthetic"], _FULL_ROW["limits"]))["autoCompactWindow"] == 1000000
+         and _anthropic_window_cli(["synthetic"], _FULL_ROW["limits"])["autoCompactWindow"] == 500000))),
+    ("-K still wins with full_window, and a non-Claude row ignores it",
+     lambda: _with_login(500000, lambda: (
+         mr.anthropic_window(_FULL_ROW, compact_override=117000, full_window=True)["autoCompactWindow"] == 150000
+         and mr.anthropic_window({"id": "gpt-x", "limits": {"contextTokens": 272000}}, full_window=True)
+         == mr.anthropic_window({"id": "gpt-x", "limits": {"contextTokens": 272000}})))),
+    ("anthropic-window --shape review is accepted and changes nothing",
+     lambda: _with_login(500000, lambda: _anthropic_window_cli(["synthetic", "--shape", "review"]))
+     == _with_login(500000, lambda: _anthropic_window_cli(["synthetic"]))
+     and _with_login(500000, lambda: _anthropic_window_cli(["synthetic", "--max", "--shape", "review"]))
+     == _with_login(500000, lambda: _anthropic_window_cli(["synthetic", "--max"]))),
+    ("SIDECAR_RESIDENT_SUBJECT=1 no longer changes the CLI answer",
+     lambda: _with_env({"SIDECAR_RESIDENT_SUBJECT": "1"}, lambda: _anthropic_window_cli(["synthetic", "--shape", "arm"]))
+     == _anthropic_window_cli(["synthetic", "--shape", "arm"])
+     and _anthropic_window_cli(["synthetic"])["autoCompactWindow"] == 233000),
+    ("anthropic_window takes no shape or resident parameter",
+     lambda: not {"shape", "resident"} & set(mr.anthropic_window.__code__.co_varnames[:mr.anthropic_window.__code__.co_argcount])
+     and not hasattr(mr, "RESIDENT_COMPACT_WINDOW")),
+    ("compaction_point ignores a job's shape and resident marks, and still selects the Anthropic route from transport",
+     lambda: _with_login(500000, lambda: (
+         mr.compaction_point({"id": "claude-opus-test", "longContextTier": None,
+                              "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
+                             {"transport": "anthropic", "shape": "review", "resident": True}) == (467000, "auto-compact")
+         and mr.compaction_point({"id": "claude-opus-test", "longContextTier": None,
+                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
+                                 {"transport": "go"})[1] == "usable-window"))),
 
     # ---- context-window modes ----------------------------------------------
     ("the default context query uses contextTokens and the provider percentage",

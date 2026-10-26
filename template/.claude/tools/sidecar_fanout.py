@@ -23,12 +23,13 @@ with `-r <session>`, plus the jobs its chain lane never ran) and prints the one 
 the reset. Other failed runs are REPORTED -- with their resume id when the launcher persisted one -- and
 the caller decides.
 
-THE PICK COUNTS LOAD. Room is a pace ratio, not capacity: a short window with a small share left ranks
-high whenever its pace is fine. A job that names no plan therefore goes to the roomiest plan only while
-that plan's tightest window still holds the jobs already on it (this process's earlier picks and named
-plans, plus every live launcher of the plan in the process table, any session's) at `JOB_DRAIN_PCT` each
-(`provider_bands.pick_key`). A plan that no longer fits ranks below every plan that does; only plan-quota
-plans are candidates, so no pay-per-token route is added.
+THE PICK COUNTS LOAD, AND REFUSES WHAT NO PLAN HOLDS. Room is a pace ratio, not capacity: a short window with
+a small share left ranks high whenever its pace is fine. A job therefore goes to a plan only while that plan's
+tightest window holds the expected drain (`provider_bands.job_drain`) of this job and of every job already on the
+plan. Those jobs are this process's earlier picks and named plans, plus every live launcher of the plan in the
+process table, any session's. Among the plans that hold it, `provider_bands.pick_key` ranks. When none holds it the fan-out
+refuses before spawn, naming each plan's headroom, the job's estimate and the window's reset. A route with one
+plan gets the same test, and an unreadable reading there keeps the launcher's own gate. Only plan-quota plans are candidates, so no pay-per-token route is added.
 
 USAGE
     python3 .claude/tools/sidecar_fanout.py <jobs.json> [--max-parallel N] [--dry-run] [--detach]
@@ -56,7 +57,7 @@ blocked) ends its lane, whose later jobs are not run, and the other lanes go on.
 its `spillDir` is the default --out-dir, and an --out-dir naming another directory refuses. A job
 may use dispatch.js's names `promptPath`, `model` and `contextPath` for `promptFile`, `alias` and
 `contextFiles`; a job carrying both names of one field with different values refuses. dispatch.js
-fields this route has no use for (`agentType`, `readOnly`, `tier`) are ignored. Per job:
+fields this route has no use for (`agentType`, `readOnly`) are ignored. Per job:
     label       required  attribution key; becomes `-l` and names the output files
     mandates              required by --review; catalog or lens keys the seat reports in checked.mandates
                           (findings|clean|not-reached per key; per-key checked.basis text is the fallback)
@@ -71,6 +72,10 @@ fields this route has no use for (`agentType`, `readOnly`, `tier`) are ignored. 
                           when the row's registry `effort.avoid` lists it, unless this run is --compare (SC_COMPARISON)
     disclosure            bare|pointer|full -> `-D`
     shape                 any|survey|review|author|arm -> `-G`
+    tier                  the work's tier -> `-Q`: the pin must serve it. Omitted, the `shape` row's tier
+                          (`guards/tool_profiles.json`) applies; an unknown tier refuses with the known list
+    window                "full" -> the job compacts at its model's own window, not the login's cap
+                          (`SIDECAR_FULL_WINDOW`); any other value refuses
     tools                 {add:[], remove:[]} -> a signed `-t` (`+Bash,-mcp:ai-worker`); items are
                           built-in names or `mcp:<server>`
     toolsCsv              an absolute legacy `-t` list; cannot be combined with `tools`
@@ -83,8 +88,8 @@ fields this route has no use for (`agentType`, `readOnly`, `tier`) are ignored. 
                           only for a job that resumes (-r) a run already past the default window
     transport            must agree with the alias's own registry row (its route)
     plan                  the paying plan: the route or a live plan whose `planOf` is the route, run
-                          through its own `launcher`; omitted, the live plan with the most room pays
-                          (stated on stderr), and no plan with room refuses the job
+                          through its own `launcher`; omitted, the plan `provider_bands.pick_key` ranks first among
+                          those that hold the job pays (stated on stderr), and none holding it refuses the job
     pick, spec            both -> `-Y <pick>,<spec>`, the pin basis (`orchestration` reference `slice_pins.md`)
     extraArgs             list, appended verbatim, for a flag this wrapper does not model
 
@@ -131,7 +136,7 @@ disposition per source F-id; the check's failures, never the author's exit or di
 REFUSALS IN YOUR OWN CALL. These refusals a job's launcher would make from the job row alone happen here,
 before anything spawns or detaches, in `--dry-run` too: an unknown alias or shape, an unavailable row, an effort
 outside the transport's vocabulary or in the row's registry `effort.avoid`, a plan that does not pay for the
-route, and a pin outside the tier its `shape` implies (`guards/tool_profiles.json`; the refusal text is the
+route, and a pin outside the job's tier (`tier`, else its `shape` row's in `guards/tool_profiles.json`; the refusal text is the
 launcher's, printed to stdout, naming every unfit job). A `--detach` run returns at once, so a refusal found
 only by its child reaches nobody. Not decided here, because only the shell launcher owns them: a `disclosure`
 outside bare|pointer|full and `longContext` on a row with no long-context step (`sidecar_common.sh`).
@@ -155,6 +160,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import NamedTuple
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -438,22 +444,34 @@ def legal_rungs(transport, data):
 
 
 def plan_room(transport, data, read, now):
-    return provider_bands._plan_room(transport, data, read, now)
+    return provider_bands.plan_room(transport, data, read, now)
 
 
 # label -> the plans `plan_job` left a job to fall back on; `main` clears it before planning and hands it to run_jobs.
 FALLBACKS = {}
-# plan -> jobs this process has placed on it so far (named or picked); `main` clears it with FALLBACKS.
+# plan -> the signatures (model id, effort, shape) of the jobs this process has placed on it so far (named or
+# picked); `main` clears it with FALLBACKS.
 PLACED = {}
+FULL_WINDOW = set()  # labels of jobs that opt out of the login's compaction cap (`window: "full"`)
 _LIVE = {}  # {"load": plan -> live launchers}: read once per process, so a 13-job pass costs one table read
 
 
+def job_signature(job, data):
+    """(model id, effort, shape) of a job: what `provider_bands.job_drain` prices. The model is None when the
+    alias does not resolve, which prices the job at the default."""
+    try:
+        model = model_registry.resolve(job["alias"], data)["id"]
+    except Exception:
+        model = None
+    return model, job.get("effort"), job.get("shape")
+
+
 def live_plan_load(table, data):
-    """{plan: jobs live on it} from a process table: one per distinct job (its `-R` record, else its `-l` label
-    and `-f` prompt) among the bash launchers. The plan is the one whose registered launcher the job was
-    INVOKED through; a job's re-exec snapshots are named for the shared base script (`anthropic_sidecar.sh.N.sh`
-    for every Anthropic plan), so they decide only a job whose invoked launcher is gone. A script two plans
-    share names no plan and counts for none."""
+    """{plan: [signature, ...]} from a process table: one signature per distinct job (its `-R` record, else its
+    `-l` label and `-f` prompt) among the bash launchers, read from the launcher's `-m`, `-e` and `-G`. The plan is
+    the one whose registered launcher the job was INVOKED through; a job's re-exec snapshots are named for the
+    shared base script (`anthropic_sidecar.sh.N.sh` for every Anthropic plan), so they decide only a job whose
+    invoked launcher is gone. A script two plans share names no plan and counts for none."""
     import reap
     data = data if data is not None else model_registry.load()
     scripts = {}
@@ -474,16 +492,20 @@ def live_plan_load(table, data):
             continue
         flags = sidecar_argv.sidecar_flags(reap.launcher_args(row.get("cmd")))
         key = flags.get("R") or (flags.get("l"), flags.get("f"))
-        (snapshots if "sidecar-snapshots" in script.replace("\\", "/") else invoked)[key] = next(iter(plans))
+        alias = flags.get("m")
+        sig = job_signature({"alias": alias if isinstance(alias, str) else None,
+                             "effort": flags.get("e") if isinstance(flags.get("e"), str) else None,
+                             "shape": flags.get("G") if isinstance(flags.get("G"), str) else None}, data)
+        (snapshots if "sidecar-snapshots" in script.replace("\\", "/") else invoked)[key] = (next(iter(plans)), sig)
     load = {}
-    for plan in {**snapshots, **invoked}.values():
-        load[plan] = load.get(plan, 0) + 1
+    for plan, sig in {**snapshots, **invoked}.values():
+        load.setdefault(plan, []).append(sig)
     return load
 
 
 def plan_load(data):
-    """{plan: jobs on it}: the live launchers (any session's: the quota is shared) plus this process's own
-    placements. An unreadable process table counts no live launcher, which leaves the pace ranking."""
+    """{plan: [signature, ...]}: the live launchers (any session's: the quota is shared) plus this process's own
+    placements. An unreadable process table counts no live launcher, which leaves the pick counting only this run."""
     if "load" not in _LIVE:
         import reap
         table = reap.process_table()
@@ -491,68 +513,138 @@ def plan_load(data):
             print("[fanout] WARN: process table unreadable; the pick counts only this run's own jobs",
                   file=sys.stderr)
         _LIVE["load"] = live_plan_load(table, data)
-    load = dict(_LIVE["load"])
-    for plan, n in PLACED.items():
-        load[plan] = load.get(plan, 0) + n
+    load = {plan: list(sigs) for plan, sigs in _LIVE["load"].items()}
+    for plan, sigs in PLACED.items():
+        load.setdefault(plan, []).extend(sigs)
     return load
 
 
-def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, load=None):
-    """The paying plan for a job that names none: the route's only live plan, else `provider_bands.pick_key`'s
-    first among those whose tightest window still holds the jobs already on them (`load` is {plan: jobs},
-    default `plan_load`): quota going unused at reset first, earliest reset first, else the most room. No
-    plan with room refuses the job, naming each plan's state.
+def _holds(row, load, signature):
+    """(holds, drain, committed) of one readable plan row for a job: `drain` is the job's `provider_bands.job_drain`
+    on the plan's tightest window, `committed` the summed drain of the jobs `load` already puts on the plan."""
+    plan, window = row["transport"], row.get("headroomWindow")
+    drain = provider_bands.job_drain(plan, window, *signature)
+    committed = sum(provider_bands.job_drain(plan, window, *sig)["pct"] for sig in load.get(plan, ()))
+    return provider_bands.fits(row, committed, drain["pct"]), drain, committed
+
+
+def _drain_text(drain):
+    return f"drain {drain['pct']:.1f} {drain['basis']}"
+
+
+def _unfit_text(row, drain, committed, jobs_on, now):
+    """One plan's reason for not holding a job: its headroom against what is committed and this job's estimate."""
+    reset = row.get("headroomResetsAt")
+    return (f"{row['transport']}: headroom {row['headroom']:.0f} points, {jobs_on} job{'' if jobs_on == 1 else 's'} "
+            f"on it commit {committed:.1f}, this job {_drain_text(drain)}"
+            + (f", resets {provider_bands.reset_text(reset, now)}" if reset is not None else ""))
+
+
+class Placement(NamedTuple):
+    rows: list
+    held: dict
+    unfit: dict
+    fit: list
+    blind: bool
+    load: dict
+
+
+def place_job(candidates, data, read, now, load, signature):
+    """Where a job with `signature` may go among the plans `candidates`: every plan's room row, `held` (plan ->
+    (holds, drain, committed)) and `unfit` (plan -> its `_unfit_text`) for the readable ones, `fit` the holding rows
+    best first (`provider_bands.pick_key`), `blind` when some plan's reading decides nothing, and the `load` used
+    ({plan: [signature]}, `plan_load` when None, read only once a plan is readable). The one ranking `pick_plan`
+    and `admission_refusal` share; charging the winner to a load is the caller's."""
+    rows = [plan_room(name, data, read, now) for name in candidates]
+    blind = any(row.get("room") is None and _decides_nothing(row) for row in rows)
+    held, unfit = {}, {}
+    for row in rows:
+        if row.get("room") is None:
+            continue
+        if load is None:
+            load = plan_load(data)
+        name = row["transport"]
+        held[name] = _holds(row, load, signature)
+        if not held[name][0]:
+            unfit[name] = _unfit_text(row, held[name][1], held[name][2], len(load.get(name, ())), now)
+    fit = sorted((row for row in rows if held.get(row["transport"], (False,))[0]),
+                 key=provider_bands.pick_key, reverse=True)
+    return Placement(rows, held, unfit, fit, blind, load)
+
+
+def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, load=None, job=None):
+    """The paying plan for a job that names none, or a JobError when no plan holds it (the module header's THE PICK
+    COUNTS LOAD owns the rule). `load` is {plan: [signature]}, default `plan_load`; `job` is priced by
+    `provider_bands.job_drain`.
     `read` is the capacity reader (default `provider_bands.read_capacity`); a caller with a deadline passes
-    its own. A list `rest` receives the other plans with room, roomiest first: the launch fallbacks. `quiet`
+    its own. A list `rest` receives the other plans that hold the job, best first: the launch fallbacks. `quiet`
     drops the stderr note, for a caller whose stdout and stderr are a channel (a hook)."""
-    if len(plans) <= 1:
-        return plans[0] if plans else transport
+    if not plans:
+        return transport
     now = time.time()
     read = read or provider_bands.read_capacity
-    rows = [plan_room(name, data, read, now) for name in plans]
-    fit = [row for row in rows if row.get("room") is not None]
-    if not fit:
+    placed = place_job(plans, data, read, now, load, job_signature(job or {}, data))
+    rows, held, fit, load = placed.rows, placed.held, placed.fit, placed.load
+    if len(plans) == 1 and not held and placed.blind:
+        return plans[0]
+    if not held:
         raise JobError(f"job {label}: no plan of {transport} has room -- "
                        + "; ".join(f"{row['transport']}: {row.get('why')}" for row in rows)
                        + ". Name a `plan` only once one has room, or pick a row on another route.")
-    load = plan_load(data) if load is None else load
-    fit.sort(key=lambda row: provider_bands.pick_key(row, load.get(row["transport"], 0)), reverse=True)
+    if not fit:
+        raise JobError(f"job {label}: no plan of {transport} holds this job -- "
+                       + "; ".join(placed.unfit[row["transport"]] for row in rows if row["transport"] in held)
+                       + ". Wait for the reset, or move the job to a plan with room.")
     best = fit[0]
     if rest is not None:
         rest.extend(row["transport"] for row in fit[1:])
     if not quiet:
-        print(f"[fanout] {label}: plan {best['transport']} ({_pick_facts(best)}"
-              + (f", {load[best['transport']]} jobs on it" if load.get(best["transport"]) else "") + "; "
-              + ", ".join(f"{row['transport']} {_pick_facts(row)}" if row.get("room") is not None
-                          else f"{row['transport']} {row.get('why')}" for row in rows if row is not best)
-              + ")", file=sys.stderr)
+        def clause(row):
+            if row.get("room") is None:
+                return f"{row['transport']} {row.get('why')}"
+            ok, drain, committed = held[row["transport"]]
+            if not ok:
+                return f"{row['transport']} does not hold it: headroom {row['headroom']:.0f}, {_drain_text(drain)}"
+            return f"{row['transport']} {_pick_facts(row)}, headroom {row['headroom']:.0f}, {_drain_text(drain)}"
+        on = len(load.get(best["transport"], ()))
+        others = ", ".join(clause(row) for row in rows if row is not best)
+        print(f"[fanout] {label}: plan {best['transport']} ({_pick_facts(best)}, headroom {best['headroom']:.0f}, "
+              f"{_drain_text(held[best['transport']][1])}" + (f", {on} jobs on it" if on else "")
+              + (f"; {others}" if others else "") + ")", file=sys.stderr)
     return best["transport"]
+
+
+def _decides_nothing(row):
+    """True for a plan row whose reading could not be taken, so its launcher's own gate decides."""
+    why = row.get("why") or ""
+    return not why or why.startswith("unreadable")
 
 
 def _pick_facts(row):
     """`room R`, led by `~N% unused at reset in Dd` when the plan's projection reaches whole percents."""
-    projection = row.get("unusedAtReset") or {}
-    pct, days = projection.get("pct"), projection.get("daysLeft")
+    pct = provider_bands.spare_pct(row)
+    days = (row.get("unusedAtReset") or {}).get("daysLeft")
     room = f"room {row['room']:.2f}"
-    if isinstance(pct, (int, float)) and round(pct) >= provider_bands.USED_RESOLUTION \
-            and isinstance(days, (int, float)):
-        return f"~{round(pct)}% unused at reset in {days:.1f}d, {room}"
+    if pct is not None and isinstance(days, (int, float)):
+        return f"~{pct}% unused at reset in {days:.1f}d, {room}"
     return room
 
 
-def admission_refusal(jobs, data, read=None, now=None):
+def admission_refusal(jobs, data, read=None, now=None, load=None):
     """The one capacity refusal for `jobs` (normalized), or None when every job may be admitted now.
 
-    A job naming a plan is refused when that plan has no room (a pinned plan never falls back). A job
-    naming none is refused only when no plan of its route has room; a route with one plan reads no capacity
-    (`pick_plan`'s rule), so its unpinned job keeps its launcher's gate. A plan with no reading, a stale or
-    unreadable one, decides nothing: the launcher's own gate still runs. One message names every refused
-    job, grouped by reason, so one retry fixes them all.
+    A job is admitted while some plan it may use holds its expected drain on top of the jobs already there: the
+    named plan (a pinned plan never falls back), else any plan of its route, a route with one plan included.
+    `load` is {plan: [signature]} (default `plan_load`); each admitted job adds its signature to the plan
+    `pick_plan` would give it, so the jobs of one file count against each other. A plan with no reading, a stale or
+    unreadable one, decides nothing: the launcher's own gate still runs. One message names every refused job,
+    grouped by reason, so one retry fixes them all.
     `read` is the capacity reader (default `provider_bands.read_capacity`); a caller with a deadline passes
     a cache-only one. `plan_job` and the PreToolUse hook both call this."""
     read = read or provider_bands.read_capacity
     now = time.time() if now is None else now
     seen = {}
+    counted = None if load is None else {plan: list(sigs) for plan, sigs in load.items()}
 
     def reader(transport, table):
         seen[transport] = read(transport, table)
@@ -567,21 +659,33 @@ def admission_refusal(jobs, data, read=None, now=None):
             continue
         named = job.get("plan")
         candidates = [named] if named else plans
-        if not candidates or any(name not in plans for name in candidates) or (not named and len(plans) == 1):
+        if not candidates or any(name not in plans for name in candidates):
             continue
+        signature = job_signature(job, data)
+        placed = place_job(candidates, data, reader, now, counted, signature)
+        if placed.blind:
+            continue
+        counted = placed.load
+        if placed.fit:
+            counted.setdefault(placed.fit[0]["transport"], []).append(signature)
+            continue
+        room_left = bool(placed.held)
         states = []
-        for name in candidates:
-            row = plan_room(name, data, reader, now)
-            why = "" if row.get("room") is not None else row.get("why") or ""
-            if not why or why.startswith("unreadable"):
-                break
+        for row in placed.rows:
+            name = row["transport"]
+            if name in placed.unfit:
+                states.append(placed.unfit[name])
+                continue
             got = seen.get(name)
             entry = provider_bands.plan_entry(name, got, now) if isinstance(got, dict) else ""
-            states.append(entry if entry and "band unknown" not in entry else f"{name}: {why}")
-        else:
+            states.append(entry if entry and "band unknown" not in entry else f"{name}: {row['why']}")
+        if not room_left:
             reason = (f"plan {named} has no room -- {states[0]}" if named
                       else f"no plan of {transport} has room -- " + "; ".join(states))
-            groups.setdefault(reason, []).append(str(job.get("label")))
+        else:
+            reason = (f"plan {named} cannot hold the job -- {states[0]}" if named
+                      else f"no plan of {transport} holds the job -- " + "; ".join(states))
+        groups.setdefault(reason, []).append(str(job.get("label")))
     if not groups:
         return None
     lines = [f"  {'job' if len(labels) == 1 else 'jobs'} {', '.join(labels)}: {reason}"
@@ -593,8 +697,8 @@ def admission_refusal(jobs, data, read=None, now=None):
 def plan_job(job, data, out_dir, authorize, stage=None):
     """One job -> (label, argv, stdout path). Validates everything BEFORE any process starts.
 
-    `FALLBACKS[label]` becomes `[(plan, launcher), ...]` for a job that names no plan: the other plans with
-    room, roomiest first, which `run_jobs` tries when the picked plan's launcher refuses.
+    `FALLBACKS[label]` becomes `[(plan, launcher), ...]` for a job that names no plan: the other plans that
+    hold the job, best first, which `run_jobs` tries when the picked plan's launcher refuses.
 
     Every refusal the planning pass can see happens in this pass, capacity included (`admission_refusal`), so
     a bad job in a 10-job file costs nothing rather than nine paid runs and one error. A queued job can still
@@ -641,6 +745,10 @@ def plan_job(job, data, out_dir, authorize, stage=None):
                        f"places it on {entry['transport']!r}, and a row's transport names the "
                        f"launcher that speaks its API. Drop the override, or pick an alias on "
                        f"{transport}.")
+    if job.get("window") is not None:
+        if job["window"] != "full":
+            raise JobError(f"job {label}: `window` must be \"full\" or absent, got {job['window']!r}")
+        FULL_WINDOW.add(label)
     # A bare string here iterates per CHARACTER, so a malformed job passes planning and dispatches a
     # billed launcher with argv full of single letters.
     for key in ("contextFiles", "extraArgs"):
@@ -676,20 +784,20 @@ def plan_job(job, data, out_dir, authorize, stage=None):
 
     # `plan` names who pays: the route itself or a live plan whose `planOf` is the route. Its
     # launcher runs the job; the model vocabulary stays the route's. A job naming none pays with
-    # the live plan holding the most room, never the route's default login by omission.
+    # the plan `pick_plan` ranks first among those that hold the job, never the route's default login by omission.
     plans = model_registry.plans_of(transport, data)
-    refusal = admission_refusal([job], data)
+    refusal = admission_refusal([job], data) if job.get("plan") else None
     if refusal:
         raise JobError(refusal)
     rest = []
-    plan = job.get("plan") or pick_plan(label, transport, plans, data, rest=rest)
+    plan = job.get("plan") or pick_plan(label, transport, plans, data, rest=rest, job=job)
     if plan not in plans:
         raise JobError(f"job {label}: plan {plan!r} does not pay for {transport}'s rows -- live plans "
                        f"of {transport}: {', '.join(plans)}. Drop `plan`, or name one of those.")
     launcher = (model_registry.transport_meta(plan, data) or {}).get("launcher")
     if not launcher:
         raise JobError(f"job {label}: plan {plan} registers no launcher -- cannot hop")
-    PLACED[plan] = PLACED.get(plan, 0) + 1
+    PLACED.setdefault(plan, []).append(job_signature(job, data))
     FALLBACKS.pop(label, None)
     spare = [(name, (model_registry.transport_meta(name, data) or {}).get("launcher")) for name in rest]
     if any(path for _name, path in spare):
@@ -706,7 +814,7 @@ def plan_job(job, data, out_dir, authorize, stage=None):
             "-l", label,                                   # attribution: the metrics reader keys on
             "-X",                                          # every fan-out child runs detached
             "-R", _posix(attempt_record_path(out_dir, label))]  # unlabelled rows are skipped by it
-    for flag, key in (("-e", "effort"), ("-D", "disclosure"), ("-G", "shape"),
+    for flag, key in (("-e", "effort"), ("-D", "disclosure"), ("-G", "shape"), ("-Q", "tier"),
                       ("-S", "schemaFile"), ("-d", "workdir")):
         if job.get(key):
             argv += [flag, _posix(job[key])]
@@ -757,8 +865,7 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     if shape != "arm":
         try:
             builtins = job_builtins(job)
-            # A review seat's context files are the subject it judges, not instructions it runs.
-            orders = [prompt] + ([] if shape == "review" else list(job.get("contextFiles") or []))
+            orders = tool_profiles.brief_files(shape, prompt, job.get("contextFiles"))
             refusal = tool_profiles.check_brief_files(
                 builtins, orders, grammar="job",
                 root=job.get("workdir") or None, widen=True,
@@ -1197,7 +1304,7 @@ def _inventory_job(label, argv, launch_id, record_path):
     return job
 
 
-def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_seats=False, resident=frozenset()):
+def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_seats=False):
     # A bounded pool: `max_parallel` workers draining a queue. The previous shape started one OS
     # thread per job and used the semaphore only to cap concurrent SUBPROCESSES, so a 200-job file
     # spawned 200 threads to run 4 at a time -- and N is caller-controlled from the jobs JSON.
@@ -1252,9 +1359,8 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
         # each other's duplicate launch (sidecar_common.sh sc_check_duplicate_launch).
         child_env = dict(os.environ, SIDECAR_LAUNCH_ID=launch_id, SIDECAR_FANOUT_ID=fanout_id,
                          SIDECAR_CHECK_OWNER=launch_id)
-        # A job whose work keeps one subject resident compacts at the resident window (model_registry.anthropic_window).
-        if label in resident:
-            child_env["SIDECAR_RESIDENT_SUBJECT"] = "1"
+        if label in FULL_WINDOW:
+            child_env["SIDECAR_FULL_WINDOW"] = "1"
         identity = {"launchId": launch_id, "parentSessionId": parent_session,
                     "inventoryPath": str(inventory_path)}
         since = time.time()
@@ -1694,7 +1800,7 @@ def _seat_payer(seat, data):
         return seat["plan"]
     try:
         transport = model_registry.resolve(seat["alias"], data)["transport"]
-        return pick_plan(seat.get("label", "?"), transport, model_registry.plans_of(transport, data), data)
+        return pick_plan(seat.get("label", "?"), transport, model_registry.plans_of(transport, data), data, job=seat)
     except Exception:
         return None
 
@@ -1990,13 +2096,17 @@ def doctrine_refusal(argv):
 
 
 def launcher_fit_refusal(argv):
-    """The tier-fit refusal every job's launcher would print, else None. A job's shape implies a tier its pin must
-    serve (`hooks/_dispatch_checks.py` `tier_fit`); the PreToolUse hook cannot read a jobs file the same call writes,
+    """The tier-fit refusal every job's launcher would print, else None. A job's tier (its own, else its shape's) is one its
+    pin must serve (`hooks/_dispatch_checks.py` `tier_fit`); the PreToolUse hook cannot read a jobs file the same call writes,
     and a detached launcher would print the refusal into a `.err` the caller never reads. Run before anything
     spawns or detaches. `hooks/sidecar_dispatch_context.py` owns the check and its text."""
     sys.path.insert(0, str(ROOT / "hooks"))
     try:
         import sidecar_dispatch_context
+    except Exception as err:
+        return ("Sidecar launch not checked: the tier check could not load (sidecar_dispatch_context: "
+                f"{type(err).__name__}: {err}). Fix the import before launching.")
+    try:
         return sidecar_dispatch_context.fanout_fit_refusal([a for a in argv if a != "--detach"], os.getcwd())
     except Exception:
         return None  # the check could not run; each launcher still runs its own
@@ -2207,6 +2317,7 @@ def main(argv=None):
     try:
         FALLBACKS.clear()
         PLACED.clear()
+        FULL_WINDOW.clear()
         _LIVE.clear()
         refusal = None if args.refold else admission_refusal(jobs, data)
         if refusal:
@@ -2316,8 +2427,7 @@ def main(argv=None):
         out_dir.mkdir(parents=True, exist_ok=False)
     # Keep the three-argument call for a run with no extra stages or scheduling.
     extras = {k: v for k, v in (('fallbacks', dict(FALLBACKS)), ('lanes', lanes),
-                                ('after_seats', bool(args.review)),
-                                ('resident', frozenset(j.get("label") for j in jobs if j.get("resident") is True)))
+                                ('after_seats', bool(args.review)))
               if v}
     results = {} if args.refold else run_jobs(planned, args.max_parallel, out_dir, **extras)
     text, code = summarize(planned, results, args.compare)

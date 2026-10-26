@@ -41,24 +41,25 @@ tiers, and their launchers: native dispatch waits for the reset, the job does no
 §5b). A session whose plan is unknown is denied, naming the observed CLAUDE_CONFIG_DIR and both ways
 to identify it.
 
-RULE 3 -- TIER, every band and every transport. Only a tier the CALL's own data carries is checked:
+RULE 3 -- TIER, every band and every transport. A job's tier is the one its own data names, and the pin must
+pass `_dispatch_checks.tier_fit` on the session's own transport, the check the sidecar hook applies on the
+alias's transport (there `_dispatch_checks.job_tier`: written tier, else the shape row's):
+  * A written tier -- a pin's `tier`, the nearest enclosing object's, the call-wide `args.tier`, the Agent
+    tool's `TIER: <tier>` line, `args.tier` for script pins -- is checked. A dispatch.js job's own `tier`
+    wins over its shape row's. Legal values are `model_registry.TIER_ORDER` plus `validation`, which folds
+    onto `fanout`; an unknown value denies with the legal list. A missing tier never denies.
   * The implied tier is the tier the call's facts name: a review_fanout seat keyed by registry
-    lenses takes `lens.seat_tier` (tools/lens.py), and a dispatch.js job takes its shape row's
-    `tier` (guards/tool_profiles.json). The same maps ride to the engines as `args.__lensTiers` and
+    lenses takes `lens.seat_tier` (tools/lens.py), and a dispatch.js job that writes no `tier` takes its shape
+    row's (guards/tool_profiles.json). The same maps ride to the engines as `args.__lensTiers` and
     `args.__shapeTiers`; a review_fanout call also gets `args.__lensMandates`, each seat's catalog keys
-    (`lens.seat_mandates`), which the engine writes on its ledger rows. An implied tier cannot be replaced by a `tier` written on the entry, on an
-    enclosing object or call-wide, and the pin must pass `_dispatch_checks.tier_fit` on the
-    session's own transport, the check the sidecar hook applies on the alias's transport. A Workflow
-    alias naming exactly one id among that implied tier's rows is rewritten before checking; zero
-    matches or ambiguity deny. The fix joins transport injection in the one updatedInput. Otherwise
+    (`lens.seat_mandates`), which the engine writes on its ledger rows. A lens seat's implied tier cannot be
+    replaced by a `tier` written on the entry, on an enclosing object or call-wide. A Workflow
+    alias naming exactly one id among an implied tier's rows is rewritten before checking; zero
+    matches or ambiguity deny. Only an implied tier is repaired: a written tier whose pin is an alias
+    outside its rows denies naming that tier's rows. The fix joins transport injection in the one updatedInput. Otherwise
     deny naming that tier's rows: raise effort before tier, and declare a higher tier only where
-    effort cannot reach the work.
-  * Everything else is the dispatcher's own claim -- a pin's `tier`, the nearest enclosing object's,
-    the call-wide `args.tier`, the Agent tool's `TIER: <tier>` line, `args.tier` for script pins --
-    and a claim is never a pass condition. A missing tier never denies, and a written tier the pin's
-    registry row does not serve is not checked: `model_registry.py for-role <tier>` lists the rows that
-    claim a tier before the call. Legal values are `model_registry.TIER_ORDER` plus `validation`, which folds onto `fanout`; an
-    unknown value denies with the legal list.
+    effort cannot reach the work. `model_registry.py for-role <tier>` lists the rows that claim a tier
+    before the call.
   An unreadable registry leaves tier fit unevaluated and says so; a missing ladder does not.
 
 RULE 4 -- CURRENCY, PROBATION and CHEAPER CLAIMANTS are not hook output. Each plan's quota left against its
@@ -399,8 +400,9 @@ def with_implied_tiers(tool_input, args):
     """(args, implied entry ids) with each entry's tier set to the tier its engine implies.
 
     The implied tier is a fact the call carries -- a registry lens, a shape row -- so it is the tier
-    the engines run and the tier the guard checks. It therefore WINS over a `tier` written on the
-    entry or call-wide: an agent-written tier must not replace it (`instruction_quality` §3). The
+    the engines run and the tier the guard checks. A lens seat's WINS over a `tier` written on the
+    entry or call-wide (`instruction_quality` §3). A shape row's is the default of a job that writes no
+    `tier`: the job's own wins, as on the sidecar route (`_dispatch_checks.job_tier`). The
     returned ids let `arg_pins` report which pins carry an implied tier.
     """
     site, field, tiers = implied_tiers(tool_input, args)
@@ -409,7 +411,7 @@ def with_implied_tiers(tool_input, args):
         filled = []
         for entry in args.get(site) or []:
             tier = tiers.get(entry.get(field)) if isinstance(entry, dict) else None
-            if tier:
+            if tier and not (field == "shape" and entry.get("tier")):
                 entry = dict(entry, tier=tier)
                 implied.add(id(entry))
             filled.append(entry)
@@ -572,8 +574,7 @@ def decide_tiers(payload, transport, data):
     """RULE 3. Returns (verdict, body, pins): "deny" (body = reason) or None (body = advisory
     notes); pins = [(label, model, canonical tier or None, tier_is_implied)].
 
-    Only a tier the CALL's data implies is enforced against the pin. A missing tier never denies,
-    and a written tier the pin does not serve is the dispatcher's own claim: it is not checked.
+    The tier the call names for a pin, written or implied, is enforced against it. A missing tier never denies.
 
     A review_fanout seat keyed by a registry lens is judged with its panel through `_dispatch_checks.seat_fit`:
     a pin holding the lens tier only in registry `supplementary` is admitted when a qualified seat in the same
@@ -606,7 +607,7 @@ def decide_tiers(payload, transport, data):
     panel = review_panel(payload)
     unfit, rule, seats = [], [], []
     for label, model, tier, implied in resolved:
-        if not (tier and implied):       # a missing or written tier never denies: nothing the call implies
+        if not tier:
             continue
         if label in panel:
             seats.append({"label": label, "model": model, "tier": tier, "mandates": panel[label],
@@ -640,9 +641,9 @@ def decide_tiers(payload, transport, data):
         if unfit:
             parts.append(
                 "Pin outside the tier this call implies — " + "; ".join(unfit[:8]) + ". A seat keyed by a "
-                "registry lens takes that lens's tier (`lens.py index`) and a dispatch.js job takes its "
-                "shape row's (`guards/tool_profiles.json`), whatever `tier` the call writes. Pin one of "
-                "the implied tier's rows (`model_registry.py for-role <tier>`); " + EFFORT_NOT_TIER)
+                "registry lens takes that lens's tier (`lens.py index`); a dispatch.js job takes its own "
+                "`tier`, else its shape row's (`guards/tool_profiles.json`). Pin one of "
+                "the tier's rows (`model_registry.py for-role <tier>`); " + EFFORT_NOT_TIER)
         if rule:
             parts.append("Supplementary seat without a qualified seat beside it — " + "; ".join(rule[:8]))
         return "deny", " ".join(parts), resolved
@@ -682,7 +683,8 @@ def owner_lift_found(payload, transport):
 
     The one place an `owner:` statement is verified. Two facts pass: an owner row
     (`_owner_text.owner_quote_rows`) holding the literal token `--<transport>` outside a pasted block, or an
-    answered AskUserQuestion whose question names the transport and whose picked label approves. The words
+    answered AskUserQuestion whose question names the transport and the 5h rule and whose picked label approves
+    (`_owner_text.owner_consent`, where a later owner input replaces an earlier one). The words
     the call states are display only. An unreadable transcript verifies nothing: an unverifiable lift
     neither lifts nor is held.
     """
@@ -692,9 +694,12 @@ def owner_lift_found(payload, transport):
     texts = _owner_text.owner_quote_rows(path) or []
     if any(_owner_text.holds_token(text, transport) for text in texts):
         return True
-    pairs = _owner_text.owner_answer_pairs(path) or []
-    return any(_owner_text.names_all(question, [transport]) and _LIFT_YES.search(label)
-               and not _LIFT_NO.search(label) for _, picked in pairs for question, label in picked)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return False
+    return _owner_text.owner_consent(lines, [transport, "5h"], _LIFT_YES, _LIFT_NO)
 
 
 def _owner_statement(state, transport, reason, cls, payload):
@@ -1544,8 +1549,7 @@ def parse_ladder_role_lines(raw_lines, data=None):
 ROLE_LADDER_HEADER = ("[role ladder (orchestration §5)] model: the tiers its registry row claims, ladder cost (higher = "
                       "cheaper), in ladder order. A pin must claim its job's tier, except a tier marked supplementary, which fills a "
                       "review seat beside a qualified seat only (ladder §Role definitions); which claimant to use is your choice "
-                      "by the ladder's selection line: `±` fit and quality, then the plan (quota going unused at reset first), "
-                      "then the cheapest fit row on it. "
+                      "by the ladder's selection line. "
                       "Efforts and `±` are in .claude/reference/model_ladder_evidence.md. ")
 _PARENS = re.compile(r"\s*\([^)]*\)")
 
@@ -1605,8 +1609,8 @@ def _cross_plan_route(payload, transport, data, plan=None):
     plan = plan or transport
     tiers = []
     try:
-        for _label, model, tier, implied in call_pins(payload):
-            claimed = [tier] if (tier and implied) else served_tiers(model, data) or ([tier] if tier else [])
+        for _label, model, tier, _implied in call_pins(payload):
+            claimed = [tier] if tier else served_tiers(model, data)
             tiers += [t for t in claimed if t not in tiers]
         got = _dispatch_checks.provider_bands.facts(tiers or list(model_registry.TIER_ORDER), plan,
                                                     data=data, read=_dispatch_checks.read_capacity)
@@ -1824,8 +1828,7 @@ def check(payload):
     reason = stated_reason(payload, transport) or ""
     cls = override_class(reason)
     owner, verified_here = _owner_statement(state, transport, reason, cls, payload)
-    # Only a quote this session's transcript carried is held: the record is the owner's words, never
-    # the dispatcher's claim to have them.
+    # Only a lift the owner's token or answer verified is held, never the dispatcher's claim to have one.
     if verified_here and state_path:
         held = {"transport": transport, "reason": reason[:400]}
         _hook_state.update_json_locked(state_path, lambda latest: latest.__setitem__("ownerOverride", held))

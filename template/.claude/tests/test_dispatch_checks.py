@@ -182,14 +182,42 @@ def main():
         over = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 900000, data, ladder)
         case("a reading over the usable window does not fit", over[0]["fits"] is False, repr(over))
         claude = pricier_data(id="claude-cheap-1")
+        login = os.path.join(td, "login")
+        os.mkdir(login)
+        with open(os.path.join(login, "settings.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"autoCompactWindow": 500000}, fh)
+        saved_login = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = login
         try:
-            held = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 300000, claude, ladder,
-                                        job={"resident": True, "shape": "author"})
+            held = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 200000, claude, ladder,
+                                        job={"shape": "review", "resident": True})
+            wide = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 300000,
+                                        pricier_data(id="claude-cheap-1", longContextTier=None,
+                                                     limits={"contextTokens": 1000000, "maxOutputTokens": 128000}),
+                                        ladder, job={"shape": "author"})
         except TypeError as err:
-            held = repr(err)
-        case("a resident job's claimant is measured against the point it compacts at, 467,000 tokens",
-             isinstance(held, list) and held and held[0]["usable"] == 467000 and held[0]["fits"] is True
-             and "467,000-token compaction point" in dc.claimant_text(held[0], 300000), repr(held))
+            held = wide = repr(err)
+        finally:
+            if saved_login is None:
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            else:
+                os.environ["CLAUDE_CONFIG_DIR"] = saved_login
+        case("a Haiku-like claimant keeps its own 217,000-token point whatever the job's shape or resident mark",
+             isinstance(held, list) and held and held[0]["usable"] == 217000 and held[0]["fits"] is True
+             and "217,000-token compaction point" in dc.claimant_text(held[0], 200000), repr(held))
+        case("a claimant with no operating point is measured against the login's 500,000 window less the reserve, 467,000 tokens",
+             isinstance(wide, list) and wide and wide[0]["usable"] == 467000 and wide[0]["fits"] is True
+             and "467,000-token compaction point" in dc.claimant_text(wide[0], 300000), repr(wide))
+        ceiling = dc.claimant_text(wide[0], 300000, 500000)
+        case("a claimant is judged on the lower number: an upper number past its point says ceiling over and still fits",
+             "reading 300,000 tokens fits its 467,000-token compaction point, ceiling over (500,000 if every named "
+             "file is read whole)" in ceiling and "is over" not in ceiling, ceiling)
+        case("an upper number inside the point, or none, adds no ceiling clause",
+             "ceiling over" not in dc.claimant_text(wide[0], 300000, 400000)
+             and "ceiling over" not in dc.claimant_text(wide[0], 300000))
+        case("a lower number past the point is over, never ceiling over",
+             "is over" in dc.claimant_text(over[0], 900000, 950000)
+             and "ceiling over" not in dc.claimant_text(over[0], 900000, 950000))
         case("an unmeasured reading leaves fit unjudged",
              dc.cheaper_claimants("dear-1", "fanout", "anthropic", None, data, ladder)[0]["fits"] is None)
         case("the cheapest claimant has no cheaper claimant",
@@ -266,6 +294,12 @@ def main():
              spare_fact("executor", "go", data=DATA, now=now,
                         read=lambda name, _data=None: rows.get(name)) == "a-exec on anthropic: ~53% unused at reset in 4d",
              repr(spare_fact("executor", "go", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))))
+        rows = {"anthropic": None, "go": plan_reading("go", 20, 4), "codex": plan_reading("codex", 40, 2)}
+        two = spare_fact("executor", "anthropic", data=DATA, now=now, read=lambda name, _data=None: rows.get(name))
+        case("every plan with expiring quota is named, not only the first in registry order",
+             set((two or "").split("; ")) == {"g-exec on go: ~53% unused at reset in 4d",
+                                              "c-exec on codex: ~44% unused at reset in 2d"},
+             repr(two))
     else:
         case("spare_plan_fact cases ran", False, "no spare_plan_fact")
 

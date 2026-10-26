@@ -128,11 +128,11 @@ const EFF = (e) => e
 const VALID_MODELS = transport.ids
 // Undefined when the transport declares no effort vocabulary: effort is then not a required pin.
 const VALID_EFFORTS = transport.efforts
-// A job takes its shape's tier: args.__shapeTiers, injected by hooks/workflow_provider_guard.py
-// from guards/tool_profiles.json. The shape is a fact the call carries, so it wins over a `tier`
-// the job or the call writes -- the PINS row must record the tier the guard checked against the pin.
+// A job's own `tier` wins; one that writes none takes its shape's tier: args.__shapeTiers, injected by
+// hooks/workflow_provider_guard.py from guards/tool_profiles.json. The PINS row must record the tier the guard
+// checked against the pin.
 const SHAPE_TIERS = (A.__shapeTiers && typeof A.__shapeTiers === 'object') ? A.__shapeTiers : {}
-const tierOfJob = (j) => SHAPE_TIERS[j.shape] || j.tier || A.tier || '-'
+const tierOfJob = (j) => j.tier || SHAPE_TIERS[j.shape] || A.tier || '-'
 
 // OPTIONAL third pin. `Explore` and `Plan` are read-only built-ins that receive NO project
 // CLAUDE.md and no memory index at any model pin (measured 2026-08-18, twice: asked to name the

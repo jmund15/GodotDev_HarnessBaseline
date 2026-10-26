@@ -12,9 +12,12 @@ because that is what `--mcp-config` and a launcher's strict config must name. An
 server is an error, not a warning: a strict config that quietly drops a server runs the job on an
 inventory nobody chose.
 
+`--tier` is the job's written tier: it replaces the shape row's `tier` in the profile, which a sidecar
+record archives as the run's role tier. An unknown tier refuses with the known list.
+
 CLI:
   tool_profiles.py resolve --shape S [--tools CSV] [--add a,b] [--remove c,d]
-                           [--base-builtins CSV] [--config-dir D] [--workdir W]
+                           [--base-builtins CSV] [--config-dir D] [--workdir W] [--tier T]
                            [--field profile|builtins|mcpSpec|mcpConfig|spec] [--brief FILE]...
   tool_profiles.py mcp-config <CSV or name list> [config-dir]   # --mcp-config's own builder
   tool_profiles.py table
@@ -354,8 +357,11 @@ def strict_mcp_config(keys, candidates):
 # ------------------------------------------------------------------- resolution
 
 def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
-            candidates=None, table=None, registered=None, walk_mcp=True):
+            candidates=None, table=None, registered=None, walk_mcp=True, tier=None):
     """The resolved profile of one job.
+
+    `tier` is the job's written tier: it replaces the shape row's `tier` in the profile, canonicalized
+    (`validation` folds onto `fanout`); an unknown one raises `model_registry.RegistryError`.
 
     `tools_csv` is the `-t` value as written; `add`/`remove` carry a caller's structured delta
     (`tools.add`/`tools.remove` in a jobs file) and are merged with whatever `-t` named. Every
@@ -469,7 +475,10 @@ def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
     }
     if row.get("agentType"):
         profile["agentType"] = row["agentType"]
-    if row.get("tier"):
+    if tier:
+        import model_registry
+        profile["tier"] = model_registry.canonical_tier(tier)
+    elif row.get("tier"):
         profile["tier"] = row["tier"]
     return profile, tool_spec(profile, keys), keys
 
@@ -1146,6 +1155,12 @@ def widenable_needs(builtins, report, removed=()):
     return _canonical([m["tool"] for m in lacking], load_table()["canonicalOrder"])
 
 
+def brief_files(shape, prompt, context_files):
+    """The instruction-bearing files of a job: its prompt, then its context files unless the shape is
+    `review`, whose context files are the subject it judges, not instructions it runs."""
+    return ([prompt] if prompt else []) + ([] if shape == "review" else list(context_files or []))
+
+
 def check_brief_files(builtins, paths, grammar="launcher", root=None, table=None, widen=False, removed=()):
     """brief_refusal over the files at `paths` and the files they point to, or None when covered.
 
@@ -1346,7 +1361,7 @@ def _cover_brief(args, base, candidates, resolved):
     else:
         add = add + needed
     widened = resolve(args.shape, tools_csv=tools_csv, add=add, remove=split_csv(args.remove),
-                      base_builtins=base, candidates=candidates)
+                      base_builtins=base, candidates=candidates, tier=args.tier or None)
     where = []
     for m in lacking:
         place = "%s:%d" % (m["source"], m["line"])
@@ -1369,8 +1384,12 @@ def main(argv=None):
     res.add_argument("--config-dir", default="")
     res.add_argument("--workdir", default="")
     res.add_argument("--field", default="profile", choices=FIELDS)
+    res.add_argument("--tier", default="",
+                     help="the job's written tier; it replaces the shape row's tier in the profile")
     res.add_argument("--brief", action="append", default=[],
                      help="a caller-authored brief or context file the profile must cover (repeatable)")
+    res.add_argument("--context", action="append", default=[],
+                     help="a -C context file; a brief to cover unless the shape is review (repeatable)")
     res.add_argument("--widen", action="store_true",
                      help="a launcher's call: add the built-ins the brief runs instead of refusing; a lint "
                           "over authored briefs omits it and keeps the refusal")
@@ -1408,8 +1427,9 @@ def main(argv=None):
         candidates = load_registrations(args.config_dir, args.workdir)
         resolved = resolve(args.shape, tools_csv=args.tools, add=split_csv(args.add),
                            remove=split_csv(args.remove), base_builtins=base,
-                           candidates=candidates)
+                           candidates=candidates, tier=args.tier or None)
         # An arm's task row is the measured variable of a benchmark cell, never widened to fit.
+        args.brief += brief_files(args.shape, None, args.context)
         if args.brief and args.shape != "arm" and args.widen:
             resolved = _cover_brief(args, base, candidates, resolved)
         elif args.brief and args.shape != "arm":

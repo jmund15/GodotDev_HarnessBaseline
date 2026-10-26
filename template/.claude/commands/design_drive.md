@@ -5,7 +5,7 @@ description: Drive multi-Part design work to shipped code or design-only
 
 # /design_drive — contract-driven autonomous architecture
 
-**Input:** a design topic: free text, an `arch-pending` / `arch-rework` Part name (resolved on the nearest-ancestor `roadmap.md`), an `ideation-complete` idea-bank doc or cluster, or a user-authored design doc.
+**Input:** a design topic: free text, an `arch-pending` / `arch-rework` Part name (resolved on the nearest-ancestor `roadmap.md`), an MVP checkpoint (`MVP-N` in that roadmap's `## MVP Checkpoints`: its unchecked Required Parts, in Pos order, are the topic), an `ideation-complete` idea-bank doc or cluster, or a user-authored design doc.
 **Enters at:** ground, then design.
 **Owner stop:** design-lock (`design_contract.md` clause 8); the spine's halts apply.
 
@@ -63,10 +63,10 @@ Run steps 1–3.
 
 1. Invoke `/update_roadmap`, present its diff informationally and apply it (clause 5 — single executor; the child-subfolder case uses the two invocations in the `architecture_brainstorm` skill's Doc-and-review Step 8 procedure). If the `architecture_brainstorm` skill's Part-authoring MVP recommendation (the three firing conditions) holds, surface it at design-lock — same message as the brainstorm skill, including the REQUIRED Playtest plan (roadmap_triggers_mvp.md §6.11) — rather than silently skipping it. The user decides at the gate whether to run `/mvp_plan` now or defer.
 2. With `--design-only`: report the recommended starting Part and stop.
-3. Otherwise: for each `plan-pending` Part in dependency order, run `/part_drive <part>`.
+3. Otherwise: carry every topic Part to shipped code on the spine's Parts path. A `plan-pending` Part runs `/part_drive <part>`. An `arch-pending` or `arch-rework` Part whose open piece needs no owner fork (a pin, a spike, an upstream Part) is this drive's design work under the approved lock: its pin or spike runs as a job once its inputs settle, `/update_roadmap` re-routes it, and it then runs `/part_drive`, with no second design-lock. An open piece that is an owner fork is H3.
    - **Halts:** the spine's Parts path and halts apply. A halt in any Part stops the chain; report Parts completed vs. remaining.
    - **Drafts:** chain mode pins `orchestration` reference `drive_dispatch.md` *Plan drafts*.
-   - **Plan ahead:** a Part plans and runs ahead by dependency per the spine's Parts path. The chain never passes `--plan-only`: design-lock approved every Part, so a converged plan goes straight to execution.
+   - **No `--plan-only`:** design-lock approved every Part, so a converged plan goes straight to execution.
    - **Playtest surfacing:** after each `/part_drive`'s `/update_roadmap` run, if any MVP's Status flipped to `🧪 Ready for playtest`, surface it with its Playtest plan (roadmap_triggers_mvp.md §6.11). The drive ends at a playtestable state, and the user should playtest before `/mvp_plan verify`. If a flipped MVP has no Playtest plan, name the gap explicitly (the `/update_roadmap` Step 5 warning fires it) rather than reporting the chain clean.
 
 ## Anti-patterns

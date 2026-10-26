@@ -32,7 +32,7 @@ Step 2. A stage runs as `execution_depth.md` §Admission table admits it.
   tool call stops only that step: finish everything it does not depend on, then re-present the rejected step with its
   cost. Deferrals found while planning ride the plan or the task record, and the worklog write is a close action.
 - **Parts path.** `execution_depth.md` §Paths are outputs and the Decomposition row own Parts admission and
-  milestone re-triage, including the milestone report, which is not a pause. A chain of Parts runs in dependency order. A Part or a slice is planned as soon as every
+  milestone re-triage, including the milestone report, which is not a pause. Dependencies set what waits on what, never one unit at a time: at each wake, every Part, plan or slice whose inputs are settled and that waits on no owner answer gets its job now (a pin, a spike, a plan draft or a build), up to the transport's concurrency limit (`orchestration` §2). A unit left waiting names its input in the task record's next step; an input the drive can produce itself is a job to launch, never a wait. A Part or a slice is planned as soon as every
   seam its plan reads is settled, so the next plan drafts while the current slice executes, and it is re-validated
   before it executes against each Part or slice that landed after it was planned. Gate
   and commit timing follow `change_control` §Gate cadence.

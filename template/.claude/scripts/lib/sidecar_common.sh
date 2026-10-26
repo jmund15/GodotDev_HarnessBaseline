@@ -340,6 +340,7 @@ esac
 SC_LEDGER="__default__"
 SC_LABEL=""
 SC_SHAPE=""
+SC_TIER=""   # -Q: the job's written tier; empty takes the -G shape row's tier
 SC_PIN_BASIS=""
 SC_ADD_DIRS=()
 SC_DISCLOSURE=""
@@ -362,7 +363,7 @@ SC_LEDGER_DEFAULT="${SIDECAR_LEDGER_PATH:-$HOME/.claude/sidecar_ledger.jsonl}"
 # mode: an invalid or argument-missing option lands in OPTARG instead of bash printing its own
 # message, which is what lets '?' distinguish a malformed "-X" cluster (OPTARG=X) from every
 # other bad flag below.
-SC_OPTSTRING=":m:e:t:n:o:d:f:T:R:x:P:S:sNr:p:L:l:a:G:B:AUWMD:C:Z:K:Y:"
+SC_OPTSTRING=":m:e:t:n:o:d:f:T:R:x:P:S:sNr:p:L:l:a:G:B:AUWMD:C:Z:K:Y:Q:"
 
 # The window the child declares (CLAUDE_CODE_MAX_CONTEXT_TOKENS): the registry's default window, or its
 # max under -M, minus the output reserve (the provider enforces input + max_output <= its window).
@@ -475,6 +476,7 @@ sc_parse_flags() {
       l) SC_LABEL="$OPTARG" ;;
       a) SC_ADD_DIRS+=(--add-dir "$OPTARG") ;;
       G) SC_SHAPE="$OPTARG" ;;
+      Q) SC_TIER="$OPTARG" ;;
       Y) SC_PIN_BASIS="$OPTARG" ;;
       D) SC_DISCLOSURE="$OPTARG" ;;
       C) SC_CONTEXT_FILES+=("$OPTARG") ;;
@@ -574,6 +576,11 @@ sc_validate_enums() {
       *) sc_die 2 "invalid disclosure tier '$SC_DISCLOSURE' (bare|pointer|full)" ;;
     esac
   fi
+  if [ -n "${SC_TIER:-}" ]; then
+    python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import model_registry; model_registry.canonical_tier(sys.argv[2])' \
+      "$SC_ROOT/tools" "$SC_TIER" 2>/dev/null \
+      || sc_die 2 "invalid tier '$SC_TIER' (a tier name from model_registry.py TIER_ORDER, or validation)"
+  fi
   # -Y <pick>,<spec>: why this pin was chosen and whether the slice's test intent is clearly
   # defined (`orchestration` §5). An omitted -Y is valid -- the record then carries no pinBasis,
   # which the readouts count as unrecorded -- but a value outside the two enums is refused here,
@@ -652,14 +659,11 @@ sc_resolve_tools() {
     printf '%s' "$SC_PROMPT" > "$_bf"
     brief_arg+=(--brief="$_bf")
   fi
-  # A review seat's -C files are the subject it judges, not instructions it runs.
-  if [ "${SC_SHAPE:-}" != "review" ]; then
-    for _bf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
-      brief_arg+=(--brief="$_bf")
-    done
-  fi
+  for _bf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
+    brief_arg+=(--context="$_bf")
+  done
   out="$(python3 "$SC_ROOT/tools/tool_profiles.py" resolve --widen \
-      --shape="${SC_SHAPE:-any}" --tools="${SC_TOOLS:-}" \
+      --shape="${SC_SHAPE:-any}" --tier="${SC_TIER:-}" --tools="${SC_TOOLS:-}" \
       ${base_arg[@]+"${base_arg[@]}"} ${brief_arg[@]+"${brief_arg[@]}"} \
       --config-dir="${SC_MCP_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}" \
       --workdir="${SC_WORKDIR:-}" 2>"$err")" || {
@@ -811,8 +815,11 @@ sc_mark_exhausted() {
   marker="$(sc_exhausted_marker ${1:+"$1"})"
   mkdir -p "$(dirname "$marker")" 2>/dev/null || { echo "[sidecar] could not create $(dirname "$marker"); no exhausted marker written" >&2; return 0; }
   MARKER_V="$(sc_to_native "$marker")" TRANSPORT_V="$SC_TRANSPORT" RESET_V="${SC_USAGE_LIMIT_RESET:-}" \
-    LABEL_V="${SC_LABEL:-}" SID_V="${SC_USAGE_LIMIT_SID:-}" MEMBER_V="${1:-}" python3 - <<'PY' || echo "[sidecar] could not write the exhausted marker $marker" >&2
-import json, os, tempfile, time
+    LABEL_V="${SC_LABEL:-}" SID_V="${SC_USAGE_LIMIT_SID:-}" MEMBER_V="${1:-}" HOOKS_V="$(sc_to_native "$SC_ROOT/hooks")" \
+    python3 - <<'PY' || echo "[sidecar] could not write the exhausted marker $marker" >&2
+import json, os, sys, tempfile, time
+sys.path.insert(0, os.environ["HOOKS_V"])
+from _hook_state import replace_path
 path, now = os.environ["MARKER_V"], time.time()
 prior = {}
 try:
@@ -837,7 +844,7 @@ try:
         json.dump(data, fh)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(temp_path, path)
+    replace_path(temp_path, path)
 except Exception:
     try:
         os.unlink(temp_path)
@@ -1387,8 +1394,10 @@ sc_mark_usage() {
   local marker
   marker="$(sc_to_native "${SC_RECORD}.usage")" || return 0
   MARKER_V="$marker" TRANSPORT_V="${SC_TRANSPORT:-unknown}" RETRIES_V="${_sc_run:-0}" \
-    RESET_V="${SC_USAGE_LIMIT_RESET:-}" python3 -c '
-import json, os, time
+    RESET_V="${SC_USAGE_LIMIT_RESET:-}" HOOKS_V="$(sc_to_native "$SC_ROOT/hooks")" python3 -c '
+import json, os, sys, time
+sys.path.insert(0, os.environ["HOOKS_V"])
+from _hook_state import replace_path
 reset = os.environ["RESET_V"]
 line = json.dumps({"firstSeen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                    "transport": os.environ["TRANSPORT_V"], "retries": int(os.environ["RETRIES_V"] or 0),
@@ -1396,7 +1405,7 @@ line = json.dumps({"firstSeen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(
 tmp = os.environ["MARKER_V"] + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     fh.write(line + "\n")
-os.replace(tmp, os.environ["MARKER_V"])
+replace_path(tmp, os.environ["MARKER_V"])
 ' || { echo "[sidecar] could not write the usage marker ${SC_RECORD}.usage" >&2; return 0; }
   echo "[sidecar] usage-limit retry on ${SC_TRANSPORT:-unknown}: wrote ${SC_RECORD}.usage; the run keeps retrying" >&2
 }
@@ -1786,6 +1795,7 @@ sc_check_model_override() {
       -m) SC_MODEL="$a" ;;
       -p) SC_PERM_MODE="$a" ;;
       -G) SC_SHAPE="$a" ;;
+      -Q) SC_TIER="$a" ;;
       -D) SC_DISCLOSURE="$a" ;;
       -Y) SC_PIN_BASIS="$a" ;;
     esac
@@ -1817,17 +1827,17 @@ if brief:
         print(f'brief: {len(content)} bytes; estimated tokens={tokens}')
         size = dispatch_size.dispatch_size({'jobs': [{'promptPath': brief, 'model': model}]}, root=Path.cwd())
         print(dispatch_size.format_line(size))
-        reading = size['perJob'][0]['readingTokens']
-        fit = dispatch_size.fit_tokens(model, reading)
-        if fit['usable']:
-            print(f"brief + named files: ~{reading} tokens of {fit['usable']} usable ({round(100 * reading / fit['usable'])}%)" + (f"; OVER by {max(0, reading - fit['usable'])} tokens" if reading > fit['usable'] else ''))
     except OSError as exc:
         print(f'brief: unreadable ({exc})')
     except (KeyError, IndexError, ValueError) as exc:
         print(f'brief: unsized ({type(exc).__name__}: {exc})')
 else:
     print('brief: not supplied')
-tier = _dispatch_checks.shape_tiers().get(profile)
+try:
+    tier = _dispatch_checks.job_tier(profile, flags.get('Q'))[0]
+except ValueError as exc:
+    tier = None
+    print(f'tier: {exc}')
 print(f'profile={profile}; tier={tier}' if tier else f'profile={profile}; no tier mapping exists')
 try:
     data = model_registry.load()
@@ -1960,8 +1970,10 @@ raw = open(os.environ["RAW_V"], encoding="utf-8", errors="replace").read()
 parser = os.environ.get("PARSER_V") or "claude"
 sys.path.insert(0, os.path.join(os.path.dirname(os.environ["REGCLI_V"])))
 sys.path.insert(0, os.environ["LIBDIR_V"])
+sys.path.insert(0, os.path.join(os.environ["LIBDIR_V"], "..", "..", "hooks"))
 import model_registry as _reg
 import plugin_registry as _plugin_registry
+from _hook_state import replace_path
 
 if parser == "codex":
     # `codex exec --json` emits a different stream from Claude Code's: JSONL of
@@ -2304,7 +2316,7 @@ try:
         json.dump(record, fh, indent=2)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(temp_path, record_path)
+    replace_path(temp_path, record_path)
 except Exception:
     try:
         os.unlink(temp_path)

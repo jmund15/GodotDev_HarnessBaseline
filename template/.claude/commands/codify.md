@@ -32,7 +32,7 @@ Follow the implementing branch for the failed action (`instruction_quality` §17
 | Exists, reads clearly, was loaded, was ignored. First check that the live information at the decision (an injected advisory) pointed to the right action; when it did not, the row above owns it | a first slip with no earlier fix or recorded slip for the choice: record it with Step 6's `autolearn_outcomes.py record` call and land nothing; Steps 1–5 and 7 do not apply, and the report says so. A repeat: the mechanism `instruction_quality` §3's guard sort picks: the acting tool, the decision-point text (or a stronger word per §6's no-op test and §18), or a hook; after a text fix failed, the acting tool or a hook. The acting tool is the one that makes the choice Step 0 named, never a later tool that meets its result | restating it louder; a guard over a judgment; a guard whose pass condition the agent writes |
 | Exists, a guard already enforces it, and its deny names a next step that serves its purpose (`instruction_quality` §3) | no change: the deny is the fix working, and that step is its whole cost | a deny that rewrites the command for the agent; more prose at the decision |
 | Exists on contradicting surfaces | hand to `/rule_consistency` | a third copy |
-| Genuinely absent | Step 1 | — |
+| Genuinely absent | a first slip of a judgment a capable model makes unprompted (arithmetic, plain logic, a frame the session itself used elsewhere): record it as the loaded-and-ignored row records a first slip, and land nothing. Otherwise Step 1 | a rule because the owner asked for a codify pass |
 
 
 **Division of labour with `/rule_consistency`:** Step 0 *detects* a cross-surface duplicate at save time; `/rule_consistency` *compares and reconciles* across all surfaces as a sweep. Never adjudicate the contradiction here.
@@ -73,11 +73,11 @@ Each row's rule is owned elsewhere; this table composes them into an ordered pro
 | a tool call matches a condition | `hooks/` **+ documented home** | `instruction_quality` §3 | one interpreter spawn per matched call | pass → deliberate violation → revert; the home loads before the blocked action |
 | a gate runs over an artifact (diff, plan, PR body, repo state) | lens or lint inside that gate's command (Step 3) | `instruction_quality` §12 | zero until the gate runs | a planted violation yields the finding; a clean input yields none; a lens runs at the pin its gate runs at |
 | a named task-shape begins | skill | `instruction_quality` §5, §7 | description bytes, every session | a fresh agent given only the description picks it |
-| every session, and no trigger exists | CLAUDE.md **or** a MEMORY.md hot topic file | `instruction_quality` §5 | every byte, every session | Step 5 |
+| a decision most sessions face, and no trigger exists | CLAUDE.md **or** a MEMORY.md hot topic file | `instruction_quality` §5 | every byte, every session | Step 5 |
 
 A `paths:` rule loads on every read of a matching file, and a harness `.md` is read to be executed, so an editing rule never lands there. `rules/` + `paths:` leads **on a prefix-anchored glob** — the only surface both guaranteed-to-load and genuinely free until matched. On a broad glob (`**/*.cs`, `**/*.tscn`, `**/*.md`) the cost is deferred, not avoided, and the row re-ranks below cold memory; width is about session shape, not file count (`Tests/**/*.cs` stays narrow because a gameplay session never opens `Tests/`). Hooks sit mid-table despite the strongest enforcement: they cost a spawn per matched call and can never stand alone.
 
-**Done: the chosen row is named, and every row above it has a stated reason it was rejected.**
+**Done: the chosen row is named, and every row above it has a stated reason it was rejected. A rule no row fits lands nothing: record the pass, and a repeat looks for the trigger it missed.**
 
 ## Step 5 — Always-loaded admission and audit
 

@@ -29,7 +29,7 @@ _WRAPPERS = {
 }
 
 # lib/sidecar_common.sh SC_OPTSTRING letters that take a value (the `:`-suffixed ones).
-SIDECAR_VALUE_FLAGS = set("metnodfTRxPSrpLlaGBDCZKY")
+SIDECAR_VALUE_FLAGS = set("metnodfTRxPSrpLlaGBDCZKYQ")
 
 
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")

@@ -379,7 +379,7 @@ class Subject:
         self.files = [rel_path(item, self.root) for item in files]
         self.new_paths = [rel_path(item, self.root) for item in new_paths]
         self.snapshot = snapshot
-        self.manifest_path = manifest_path
+        self.manifest_path = str(_abs(manifest_path)) if manifest_path else None
         self._pre = {}
         self._post = {}
         if not isinstance(snapshot, dict) or snapshot.get("kind") not in ("blobs", "rev"):
@@ -520,7 +520,7 @@ class Subject:
 
 def load_subject(root, manifest_path, files, new_paths=()):
     manifest = _read_json(_abs(manifest_path), "snapshot manifest")
-    return Subject(root, files, manifest, new_paths, str(manifest_path))
+    return Subject(root, files, manifest, new_paths, manifest_path)
 
 
 def subject_from_manifest(manifest_path, root=None):

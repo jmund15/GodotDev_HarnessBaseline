@@ -26,7 +26,8 @@
     {"file": ".claude/plans/:1", "expect": "unrouted"},
     {"file": "b.md:2", "plans": [".claude/plans/b.md", ".claude/other/b.md"], "expect": "ambiguous"},
     {"file": ".claude/commands/r.md:3", "plans": ["template/.claude/commands/r.md", ".claude/commands/r.md"], "expect": 1},
-    {"file": "commands/r.md:3", "plans": ["template/.claude/commands/r.md", ".claude/commands/r.md"], "expect": "ambiguous"}
+    {"file": "commands/r.md:3", "plans": ["template/.claude/commands/r.md", ".claude/commands/r.md"], "expect": "ambiguous"},
+    {"file": ".claude/worktrees/x/Scripts/A.cs:5", "subjectRoot": ".claude/worktrees/x", "plans": ["Scripts/A.cs"], "expect": 0}
   ],
   "paths": {
     "test": ["Tests/Logic/A.cs", ".claude/tests/test_x.py", "Tests/x.json"],
