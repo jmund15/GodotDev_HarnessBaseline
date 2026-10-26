@@ -565,6 +565,25 @@ def main():
     plant(green)
     rc, hso = run_gate("git push origin %s:main && git push origin main" % proved)
     cases.append(("a chained proved push falls through", rc == 0 and not hso))
+    for label, command in (
+        ("a `cd <root>;` prefix and an output filter are approved",
+         "cd %s; git push origin %s:main 2>&1 | tail -4" % (root.as_posix(), proved)),
+        ("a `cd <root> &&` prefix is approved", "cd %s && git push origin %s:main" % (root.as_posix(), proved)),
+        ("a trailing `| head -n 5` is approved", "git push origin %s:main | head -n 5" % proved),
+    ):
+        rc, hso = run_gate(command)
+        cases.append((label, rc == 0 and hso.get("permissionDecision") == "allow"))
+    elsewhere = root / "output"
+    elsewhere.mkdir(exist_ok=True)
+    for label, command in (
+        ("a `cd` to another directory falls through", "cd %s; git push origin %s:main" % (elsewhere.as_posix(), proved)),
+        ("a chain after the output filter falls through", "git push origin %s:main | tail -4; git push origin main" % proved),
+        ("a pipe to anything but head or tail falls through", "git push origin %s:main | sh" % proved),
+    ):
+        rc, hso = run_gate(command)
+        cases.append((label, rc == 0 and not hso))
+    rc, hso = run_gate("cd %s; git push origin %s:main" % (root.as_posix(), proved), cwd=elsewhere)
+    cases.append(("a `cd <root>` prefix from another cwd falls through", rc == 0 and not hso))
 
     parser_source = (HERE.parent / "tools" / "session_digest.py").read_text(encoding="utf-8")
     import re

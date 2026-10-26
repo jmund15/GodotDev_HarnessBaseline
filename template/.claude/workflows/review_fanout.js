@@ -1254,10 +1254,14 @@ if (FOLD_PIN) {
       return FOLD_PIN.jobs.flatMap(job => job.subject.files
         .filter(p => FOLD_PIN.repoRoot && routeKey(FOLD_PIN.repoRoot + '/' + job.subject.root + '/' + p) === absolute).map(() => job))
     }
-    const file = routeKey(cited)
-    const exact = FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => routeKey(p) === file).map(() => job))
+    // fold_check.py own_prefix: a worktree subject's file is cited through its `.claude/worktrees/<name>/` root.
+    const fileFor = (job) => {
+      const own = (String(job.subject.root || '').replace(/\\/g, '/').match(/\.claude\/worktrees\/[^/]+$/) || [])[0]
+      return routeKey(own && cited.startsWith(own + '/') ? cited.slice(own.length + 1) : cited)
+    }
+    const exact = FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => routeKey(p) === fileFor(job)).map(() => job))
     return exact.length ? exact
-      : FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => ('/' + routeKey(p)).endsWith('/' + file)).map(() => job))
+      : FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => ('/' + routeKey(p)).endsWith('/' + fileFor(job))).map(() => job))
   }
   const routes = final.map(f => ({ f, jobs: routedTo(f) }))
   // A relative citation no subject holds is a file the review read and the fold may not edit (a commit message, a task

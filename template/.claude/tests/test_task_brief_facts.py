@@ -272,6 +272,32 @@ def _main(tmp):
     case("the window fit reads the brief plus the file it names, not the brief alone",
          bool(named_out) and all(any("(%s of " % "{:,}".format(reading_named) in line
                                      for line in alias_lines(named_out, alias)) for alias in expected))
+    cited_brief_text = BRIEF + "Search `%s:10-20` for the rows.\n" % named_file.replace("\\", "/")
+    cited_brief = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "cited_brief.md"), cited_brief_text)
+    lower_cited = math.ceil(len(cited_brief_text) / 2.5)
+    upper_cited = math.ceil((len(cited_brief_text) + len(named_text)) / 2.5)
+    cited_out = ""
+    if module is not None and callable(getattr(module, "process", None)):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+            cited_out = (module.process(written(cited_brief, cited_brief_text, session="cited-sess"))
+                         or {}).get("context") or ""
+    case("a line-cited file is a span: the cell prints the lower number, then the upper if read whole",
+         bool(cited_out) and all(any("(%s of " % "{:,}".format(lower_cited) in line
+                                     and "; %s if read whole)" % "{:,}".format(upper_cited) in line
+                                     for line in alias_lines(cited_out, alias)) for alias in expected))
+    if module is not None and callable(getattr(module, "_fit", None)):
+        import model_registry as real_registry
+        login = os.path.join(tmp, "login")
+        plant(os.path.join(login, "settings.json"), json.dumps({"autoCompactWindow": 500000}))
+        real = real_registry.load()
+        opus = real_registry.resolve("opus", real)["id"]
+        with planted_env(CLAUDE_CONFIG_DIR=login):
+            try:
+                cell = module._fit(module._owners()[1], opus, 1000, 2000, real, "anthropic")
+            except TypeError as err:
+                cell = repr(err)
+        case("the cell's point is the row's compaction point, not its usable window",
+             cell == "fits (1,000 of 467,000; 2,000 if read whole)")
     unquoted = re.sub(r'"[^"]*"', "", text).lower()
     case("the context holds no pick words (pick, recommend, use ) outside quoted row text",
          bool(text) and not any(word in unquoted for word in ("pick", "recommend", "use ")))

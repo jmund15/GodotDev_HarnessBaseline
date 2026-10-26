@@ -65,9 +65,22 @@ def case_current_snapshot_passes_and_edited_catalog_is_refused(root):
     assert "stale" in stale.stderr, stale.stderr
 
 
+def case_empty_seed_catalog_snapshot_is_current(root):
+    catalog = root / ".claude" / "reference" / "known_failure_modes_entries.md"
+    catalog.write_text("# Known Failure Modes — Entry Bodies\n\n## Runtime failures\n", encoding="utf-8")
+    snap = root / ".claude" / "scratch" / "run" / "kfm"
+    made = run(root, "materialize", "--out", str(snap))
+    assert made.returncode == 0, made.stderr
+    current = run(root, "check", "--dir", str(snap))
+    assert current.returncode == 0 and "CURRENT" in current.stdout, current.stdout + current.stderr
+    again = run(root, "materialize", "--out", str(snap))
+    assert again.returncode == 0, again.stderr
+
+
 def main():
     cases = [case_index_lists_planted_entry, case_get_without_ids_exits_nonzero,
-             case_current_snapshot_passes_and_edited_catalog_is_refused]
+             case_current_snapshot_passes_and_edited_catalog_is_refused,
+             case_empty_seed_catalog_snapshot_is_current]
     failures = []
     for case in cases:
         root = planted_root()

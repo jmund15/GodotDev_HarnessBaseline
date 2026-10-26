@@ -45,7 +45,7 @@ On a real domain change or a result contradicting expected behavior, search `.cl
 ### 2. Memory (One Store, Two Tiers)
 Canonical bodies live in `.claude/auto-memory/`; this overrides the runtime's default `~/.claude/projects/<project>/memory/` store, which holds only one-line pointers. `MEMORY.md` is the loaded index; cold material remains searchable, normally under `archive/`. Search by concept with `mcp__plugin_semantic-search_semantic-search__search` and a repo-relative POSIX `restrictToDir`; use literal search for exact values.
 
-Default new learning to cold. Hot admission requires a decision made before any trigger/search could deliver it, not spare space or an interesting incident. Add a hot pointer in the same turn as its file; stay below the runtime's 200-line/25KB cap. Move a file-class rule to its triggered owner while retaining its evidence. `/codify` owns placement details. Save surprising constraints/preferences, not API inventories, code descriptions or facts recoverable from git.
+Default new learning to cold. Hot admission requires a decision most sessions face before any trigger/search could deliver it, not spare space or an interesting incident. Add a hot pointer in the same turn as its file; stay below the runtime's 200-line/25KB cap. Move a file-class rule to its triggered owner while retaining its evidence. `/codify` owns placement details. Save surprising constraints/preferences, not API inventories, code descriptions or facts recoverable from git.
 
 ### 4. WebFetch (The Documentation)
 Verify version-sensitive facts against `reference/project_stack.md` and first-party sources. `reference/source_trust.md` §Fetch order owns the order.

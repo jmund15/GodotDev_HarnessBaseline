@@ -12,7 +12,7 @@ CONTEXT: an admitted launch carries no `additionalContext` at all unless the doc
 read its state (a fault report): no recipe pointer, no launch card, no currency, probation,
 cheaper-claimant, long-context or size line.
 TIER FIT (hooks/_dispatch_checks.py, the check the Workflow route runs): a launch or fan-out job whose
-shape implies a tier its alias's row does not serve on the alias's transport is DENIED.
+tier (its written `-Q`/`tier`, else its shape's) its alias's row does not serve on the alias's transport is DENIED.
 
 Fake launchers stand in for the real ones so the proof spends nothing and needs no network.
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
@@ -274,6 +274,27 @@ def currency_cases(tmp, ok, env):
                   and "wide2" in denied.get("permissionDecisionReason", "")))
     advised = fanout([{"label": "scan", "alias": go_exec, "promptFile": prompt, "shape": "survey"}],
                      "sdcfan03")
+    dc = sidecar._dispatch_checks
+    survey_tier = dc.shape_tiers()["survey"]
+    arch_fit = next((a for a, m in sorted(rows.items()) if m["transport"] == "anthropic"
+                     and dc.tier_fit(a, "architect", "anthropic", data) is None
+                     and dc.tier_fit(a, survey_tier, "anthropic", data) is not None), None)
+    if arch_fit:
+        written_fit = fanout([{"label": "arch-read", "alias": arch_fit, "promptFile": prompt, "shape": "survey",
+                               "tier": "architect"}], "sdcfan21")
+        cases.append(("a survey fan-out job pinned to an architect row passes when it writes tier architect",
+                      written_fit.get("permissionDecision") != "deny"))
+        written_unfit = fanout([{"label": "fan-read", "alias": arch_fit, "promptFile": prompt, "shape": "survey",
+                                 "tier": "fanout"}], "sdcfan22")
+        cases.append(("...and is denied when it writes tier fanout, the deny naming the tier and its source",
+                      written_unfit.get("permissionDecision") == "deny"
+                      and "the job's `tier`" in written_unfit.get("permissionDecisionReason", "")))
+        direct_fit = launch(arch_fit, "survey", "sdcdir21").get("permissionDecision") != "deny"
+        direct_arch = run("bash %s -G survey -Q architect -m %s -f brief.md" % (ok, arch_fit), cenv, session="sdcdir22")
+        cases.append(("a direct launch's -Q binds its pin: an architect row passes -Q architect and is denied without it",
+                      not direct_fit and direct_arch.get("permissionDecision") != "deny"))
+    else:
+        cases.append(("the live registry has an anthropic row serving architect but not the survey shape's tier", False))
     cases.append(("a fitting Go fan-out job is admitted with no currency advisory and no size line",
                   advised.get("permissionDecision") != "deny" and late_advice(advised) == []))
 
@@ -341,8 +362,11 @@ def plan_cases(tmp):
         try:
             direct = sidecar.sidecar_launch("bash %s -G review -m %s -f brief.md -l wrap1" % (wrapper, host_exec))
             jobs = sidecar.launch_jobs(direct, None, root)
-            cases.append(("a direct wrapper launch carries its plan as the job's 4th element",
-                          [j[3:] for j in jobs] == [("anthropic-secondary",)]))
+            cases.append(("a direct wrapper launch carries its plan as the job's 4th element and no written tier",
+                          [j[3:] for j in jobs] == [("anthropic-secondary", None)]))
+            written = sidecar.launch_jobs(sidecar.sidecar_launch(
+                "bash %s -G review -Q architect -m %s -f brief.md -l wrap2" % (wrapper, host_exec)), None, root)
+            cases.append(("a direct launch's -Q is the job's 5th element", [j[4] for j in written] == ["architect"]))
             cases.append(("a wrapper launch whose shape implies no tier it fails is not refused, and builds no advisory",
                           sidecar.dispatch_checks(jobs) is None))
             with patch.dict(os.environ, {"PROVIDER_CAPACITY_CACHE": rooms_cache(
@@ -353,8 +377,8 @@ def plan_cases(tmp):
             fan = sidecar.fanout_launch("python3 .claude/tools/sidecar_fanout.py %s"
                                         % jobs_path.replace("\\", "/"))
             fjobs = sidecar.launch_jobs(None, fan, root)
-            cases.append(("a fan-out job carries its `plan` as the 4th element",
-                          [j[3:] for j in fjobs] == [("anthropic-secondary",)]))
+            cases.append(("a fan-out job carries its `plan` as the 4th element and no written tier",
+                          [j[3:] for j in fjobs] == [("anthropic-secondary", None)]))
             folder, name = os.path.split(jobs_path.replace("\\", "/"))
             for shape in ("S=%s && python3 .claude/tools/sidecar_fanout.py $S/%s",
                           "S=%s; cat > /dev/null <<'EOF'\n$S stays\nEOF\npython3 .claude/tools/sidecar_fanout.py ${S}/%s --detach"):
@@ -815,6 +839,32 @@ def test_fanout_attempt_receipt_cannot_be_consumed_twice(checked_fanout, capsys)
 def test_fold_pin_is_tier_checked_at_hook_time(checked_fanout):
     check, _compact, _launch, _path, _out = checked_fanout
     assert "review-fold-1" in (check(suffix=" --fold-alias haiku") or "")
+
+
+def test_a_receipted_fanout_job_whose_written_tier_changed_is_checked_again(tmp_path, monkeypatch):
+    import model_registry
+    data = model_registry.load()
+    aliases = sorted(row["alias"] for row in data["models"] if row.get("transport") == "anthropic" and row.get("alias")
+                     and model_registry.model_available(row["id"], data))
+    pair = next(((alias, tier) for alias in aliases for tier in ("architect", "executor", "fanout")
+                 if not sidecar.dispatch_checks([("probe", alias, "survey", "anthropic", None)])
+                 and sidecar.dispatch_checks([("probe", alias, "survey", "anthropic", tier)])), None)
+    assert pair, "the registry no longer has a pin that fits the survey tier and misses a written one"
+    alias, tier = pair
+    sid = "tierchg1"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+    prompt = tmp_path / "brief.md"
+    prompt.write_text("Read README.\n", encoding="utf-8")
+    jobs_path = tmp_path / "jobs.json"
+    job = {"label": "chg", "alias": alias, "effort": "high", "shape": "survey", "plan": "anthropic",
+           "promptFile": str(prompt)}
+    jobs_path.write_text(json.dumps([job]), encoding="utf-8")
+    args = [str(jobs_path), "--out-dir", str(tmp_path / "out")]
+    sidecar.remember_checks({"session_id": sid, "tool_use_id": "call-1", "cwd": str(tmp_path)},
+                            None, types.SimpleNamespace(args=args), str(tmp_path), "skipped")
+    assert sidecar.fanout_fit_refusal(args, str(tmp_path)) is None
+    jobs_path.write_text(json.dumps([dict(job, tier=tier)]), encoding="utf-8")
+    assert "chg" in (sidecar.fanout_fit_refusal(args, str(tmp_path)) or "")
 
 
 def main():

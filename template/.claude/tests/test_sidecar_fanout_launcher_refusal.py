@@ -40,7 +40,7 @@ TMP = tempfile.mkdtemp(prefix="sfanout_refusal_")
 DATA = model_registry.load()
 TIERS = dc.shape_tiers()
 CALLS = {"detach": 0, "run": 0}
-REFUSAL_HEAD = "Sidecar launch outside the tier its shape implies"
+REFUSAL_HEAD = "Sidecar launch outside the tier its job implies"
 
 
 def _fake_detach(argv, jobs, out_dir, claim=None, log_path=None):
@@ -146,7 +146,7 @@ for mode in ("--detach", "--dry-run", None):
 
 def refused_text_is_the_launchers():
     """The tool prints the text `launcher_launch` prints: one source, `sidecar_dispatch_context.dispatch_checks`."""
-    expected = ctx.dispatch_checks([("unfit-a", UNFIT[0], "survey", "anthropic")])
+    expected = ctx.dispatch_checks([ctx.LaunchJob("unfit-a", UNFIT[0], "survey", "anthropic")])
     _code, out, err, *_ = run([job("unfit-a", UNFIT[0])], "--detach")
     return bool(expected) and expected in (out + err)
 
@@ -263,6 +263,83 @@ def receipted_job_is_not_checked_twice():
 
 
 case("a job the hook's receipt shows checked is not tier-checked again by the fan-out", receipted_job_is_not_checked_twice)
+
+
+def _aliases(fits_tier, misses_tier):
+    return sorted(row["alias"] for row in DATA["models"]
+                  if row.get("transport") == "anthropic" and row.get("alias")
+                  and model_registry.model_available(row["id"], DATA)
+                  and dc.tier_fit(row["alias"], fits_tier, "anthropic", DATA) is None
+                  and dc.tier_fit(row["alias"], misses_tier, "anthropic", DATA) is not None)
+
+
+ARCH_NOT_SURVEY = _aliases("architect", TIERS["survey"])
+REVIEW_NOT_ARCH = _aliases(TIERS["review"], "architect")
+assert ARCH_NOT_SURVEY and REVIEW_NOT_ARCH, ("the registry no longer separates architect from the survey and review "
+                                             "tiers on anthropic", ARCH_NOT_SURVEY, REVIEW_NOT_ARCH)
+
+
+def written_tier_binds():
+    code, out, err, *_ = run([job("arch-read", ARCH_NOT_SURVEY[0], tier="architect")], "--dry-run")
+    return code == 0 and REFUSAL_HEAD not in out + err
+
+
+def written_tier_refuses_the_pin_it_does_not_fit():
+    code, out, err, *_ = run([job("fan-read", ARCH_NOT_SURVEY[0], tier=TIERS["survey"])], "--dry-run")
+    text = out + err
+    return code == 2 and REFUSAL_HEAD in text and "fan-read" in text and "the job's `tier`" in text
+
+
+def review_shape_no_longer_admits_a_cheaper_pin_for_architect_work():
+    code, out, err, *_ = run([job("arch-review", REVIEW_NOT_ARCH[0], shape="review", tier="architect")], "--dry-run")
+    return code == 2 and REFUSAL_HEAD in out + err and "`architect`" in out + err
+
+
+def no_tier_keeps_the_shape_default():
+    unfit, _o, err, *_ = run([job("shape-unfit", ARCH_NOT_SURVEY[0])], "--dry-run")[:3]
+    fit, *_ = run([job("shape-fit", FIT[0])], "--dry-run")
+    return unfit == 2 and "from shape `survey`" in _o + err and fit == 0
+
+
+def unknown_tier_is_refused_with_the_known_list():
+    code, out, err, *_ = run([job("odd-tier", FIT[0], tier="bogus")], "--dry-run")
+    text = out + err
+    return code == 2 and "bogus" in text and all(t in text for t in model_registry.TIER_ORDER)
+
+
+def launch_argv_carries_the_tier():
+    argv = sf.plan_job(sf.normalize_job(job("argv-tier", FIT[0], tier="architect"), DATA), DATA,
+                       sf.Path(tempfile.mkdtemp(dir=TMP)), False)[1]
+    return "-Q" in argv and argv[argv.index("-Q") + 1] == "architect"
+
+
+def launch_argv_without_a_tier_has_no_flag():
+    argv = sf.plan_job(sf.normalize_job(job("argv-plain", FIT[0]), DATA), DATA,
+                       sf.Path(tempfile.mkdtemp(dir=TMP)), False)[1]
+    return "-Q" not in argv
+
+
+case("a read-only survey job pinned to an architect-only row launches when it writes tier architect", written_tier_binds)
+case("the same job writing tier fanout is refused, naming the job and the tier's source", written_tier_refuses_the_pin_it_does_not_fit)
+case("a review job pinned to an executor-only row is refused when it writes tier architect",
+     review_shape_no_longer_admits_a_cheaper_pin_for_architect_work)
+case("a job that writes no tier keeps its shape's tier (refused when unfit, admitted when fit)", no_tier_keeps_the_shape_default)
+case("an unknown written tier is refused with the known tier list", unknown_tier_is_refused_with_the_known_list)
+case("a job's written tier reaches its launcher as -Q", launch_argv_carries_the_tier)
+case("a job with no tier passes no -Q", launch_argv_without_a_tier_has_no_flag)
+
+
+def failed_import_fails_closed():
+    saved = sys.modules.get("sidecar_dispatch_context", False)
+    sys.modules["sidecar_dispatch_context"] = None
+    try:
+        text = sf.launcher_fit_refusal([])
+    finally:
+        sys.modules["sidecar_dispatch_context"] = ctx if saved is False else saved
+    return bool(text) and "could not load" in text and "halted" in text
+
+
+case("a tier check whose module cannot import refuses, naming the cause, instead of skipping", failed_import_fails_closed)
 
 
 failed = []

@@ -331,13 +331,21 @@ def channel_cases():
         out.append((name, allowed and not missing and not present,
                     "got %s, missing %s, unwanted %s: %s" % (got, missing, present, raw[:600])))
 
-    # -- slice 2: a written tier is the caller's claim: a mismatch with the pin is not checked and adds no note ---
-    case("On pace: jobs h-arch declared fanout -> allowed with no note: the tier is the caller's own claim",
-         run_channel(jobs([("h-arch", "fanout")])), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
-    case("Hot with a roomier plan: the same call is allowed and carries no currency note",
-         run_channel(jobs([("h-arch", "fanout")]), band="Hot", rooms=OFF_ROOMIER), "allow", absent=NOTE_FREE)
-    case("unknown band: the same call, still allowed with no note",
-         run_channel(jobs([("h-arch", "fanout")]), band=None), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
+    # -- slice 2: a written tier binds and is checked with tier_fit, the sidecar route's rule ---
+    case("On pace: jobs h-arch declared fanout -> denied: a written tier the pin does not serve",
+         run_channel(jobs([("h-arch", "fanout")])), "deny", ("h-arch", "`fanout`", EFFORT_LINE))
+    case("a written tier the pin serves passes",
+         run_channel(jobs([("h-arch", "architect")])), "allow")
+    case("a shape-implied job whose own tier the pin serves passes, the written tier winning over the shape's",
+         run_channel(job_call([job("w-arch", "h-arch", shape="survey", tier="architect")])), "allow")
+    case("a shape-implied job whose own tier the pin does not serve is denied",
+         run_channel(job_call([job("w-fan", "h-arch", shape="survey", tier="fanout")])), "deny", ("w-fan", "`fanout`"))
+    case("Hot with a roomier plan: a fitting call is allowed and carries no currency note",
+         run_channel(jobs([("h-arch", "architect")]), band="Hot", rooms=OFF_ROOMIER), "allow", absent=NOTE_FREE)
+    case("unknown band: a fitting call, still allowed with no note",
+         run_channel(jobs([("h-arch", "architect")]), band=None), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
+    case("unknown band: the unfit call is still denied",
+         run_channel(jobs([("h-arch", "fanout")]), band=None), "deny", ("`fanout`", EFFORT_LINE))
     case("On pace: jobs h-fan declared fanout -> allow",
          run_channel(jobs([("h-fan", "fanout")])), "allow")
     case("args.tier is the call-wide default; an entry's own tier wins",
@@ -346,8 +354,8 @@ def channel_cases():
          run_channel(jobs([("h-fan", "validation")])), "allow")
     case("an Agent pin with no TIER line passes RULE 3",
          run_channel(agent_tool("h-fan")), "allow")
-    case("an unimplied Agent TIER the pin does not serve -> allowed with no note",
-         run_channel(agent_tool("h-arch", ["TIER: fanout"])), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
+    case("an Agent TIER the pin does not serve -> denied",
+         run_channel(agent_tool("h-arch", ["TIER: fanout"])), "deny", ("`fanout`", EFFORT_LINE))
 
     # -- tier declared and legal ------------------------------------------------------------------
     case("On pace: a pinned entry with no tier -> allow; a missing tier never denies",
@@ -371,8 +379,8 @@ def channel_cases():
     ]
     for site, build in sites:
         case("site %s: fitting pin -> allow" % site, run_channel(build("h-fan")), "allow")
-        case("site %s: off-tier pin -> allowed with no note" % site,
-             run_channel(build("h-arch")), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
+        case("site %s: off-tier pin -> denied naming the tier" % site,
+             run_channel(build("h-arch")), "deny", ("`fanout`", EFFORT_LINE))
     case("site agents: an omitted model takes the transport's fanout pin, then fits",
          run_channel(agents([(None, "fanout")])), "allow")
 
@@ -385,17 +393,17 @@ def channel_cases():
         ("fixtures", lambda m, t: anywhere({"fixtures": [{"id": "f", "model": m, "tier": t}]})),
     ]:
         case("generic site %s: fitting pin -> allow" % site, run_channel(build("h-fan", "fanout")), "allow")
-        case("generic site %s: off-tier pin -> allowed with no note" % site,
-             run_channel(build("h-arch", "fanout")), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
+        case("generic site %s: off-tier pin -> denied naming the tier" % site,
+             run_channel(build("h-arch", "fanout")), "deny", ("`fanout`", EFFORT_LINE))
     case("generic site: an untiered pin at an unnamed site -> allow; a missing tier never denies",
          run_channel(anywhere({"fixtures": [{"id": "f", "model": "h-fan"}]})), "allow",
          absent=("No tier declared",))
     case("generic site: a name no host row carries -> vocabulary deny cites §5 and names the retry",
          run_channel(anywhere({"generators": [{"model": "retired-name", "tier": "architect"}]})), "deny",
          ("retired-name", "h-fan", "orchestration §5", "Pin one of those"))
-    case("generic site: the nearest enclosing object's tier is a claim, not checked against a nested pin",
-         run_channel(anywhere({"panel": {"tier": "fanout", "seats": [{"model": "h-arch"}]}})), "allow",
-         absent=NOTE_FREE)
+    case("generic site: the nearest enclosing object's tier is checked against a nested pin",
+         run_channel(anywhere({"panel": {"tier": "fanout", "seats": [{"model": "h-arch"}]}})), "deny",
+         ("`fanout`", EFFORT_LINE))
     case("generic site: a pin's own tier wins over its enclosing object's",
          run_channel(anywhere({"tier": "fanout", "panel": {"tier": "fanout",
                                                            "seats": [{"model": "h-arch", "tier": "architect"}]}})),
@@ -541,6 +549,17 @@ def channel_cases():
     case("capacity refusal with no other plan that has room says so",
          run_channel(jobs([("h-fan", "fanout")]), rooms=dict(EVEN, off=None), patches=[host_exhausted]),
          "deny", ("orchestration §5b", "no cross-transport row"))
+    multi = json.loads(json.dumps(SYN))
+    multi["models"].append({"transport": "host", "id": "host-multi-1", "alias": "h-multi",
+                            "roles": ["fanout", "executor"]})
+    routed = []
+    real_facts = wpg._dispatch_checks.provider_bands.facts
+    run_channel(jobs([("h-multi", "fanout")]), data=multi, patches=[
+        host_exhausted,
+        (wpg._dispatch_checks.provider_bands, "facts",
+         lambda tiers, *a, **k: (routed.append(list(tiers)), real_facts(tiers, *a, **k))[1])])
+    out.append(("capacity route is keyed to the written tier, not every tier the pin serves",
+                routed == [["fanout"]], repr(routed)))
 
     # -- a sibling hook's precondition deny can be the one the client shows, so every deny here
     # leads with the dispatch preconditions when the transcript proves them unmet.
@@ -580,8 +599,8 @@ def channel_cases():
          absent=("Skill(orchestration)",))
     case("provider seat: the tier checks bind there too (fitting id)",
          run_channel(jobs([("off-fan-1", "fanout")]), transport="off"), "allow")
-    case("provider seat: an off-tier id -> allowed with no note",
-         run_channel(jobs([("off-arch-1", "fanout")]), transport="off"), "allow", absent=NOTE_FREE + (EFFORT_LINE,))
+    case("provider seat: an off-tier id -> denied naming the tier",
+         run_channel(jobs([("off-arch-1", "fanout")]), transport="off"), "deny", ("`fanout`", EFFORT_LINE))
     case("provider seat: a roomier plan elsewhere adds no currency note, nor transport and pin lists",
          run_channel(jobs([("off-arch-1", "architect")]), transport="off",
                      rooms={"host": plan_reading(10, 0.9), "off": plan_reading(80, 0.9)}), "allow", absent=NOTE_FREE)
@@ -728,14 +747,15 @@ def implied_tier_cases():
              run_channel(shaped(shape, OTHER_PIN[tier])), "deny", (tier, EFFORT_LINE))
     case("a shape that declares no tier fills nothing -> allow: a missing tier never denies",
          run_channel(shaped(None, "h-fan")), "allow", absent=("No tier declared",))
-    case("a written job tier cannot replace its shape's tier",
-         run_channel(shaped("review", "h-fan", tier="fanout")), "deny",
-         (shape_tier("review") or "executor", EFFORT_LINE))
+    case("a written job tier replaces its shape's tier: the pin must serve the written one",
+         run_channel(shaped("review", "h-fan", tier="fanout")), "allow")
+    case("...and a pin the written tier does not serve is denied even when the shape's tier would take it",
+         run_channel(shaped("review", "h-exec", tier="fanout")), "deny", ("`fanout`", EFFORT_LINE))
     case("a shape tier fills only dispatch.js: a chain job with a shape implies nothing",
          run_channel(shaped("review", "h-exec", script="dispatch_chains.js")), "allow",
          absent=("No tier declared",))
     case("a shape-implied tier is checked even when args.tier names the pin's tier",
-         run_channel(job_call([job("j0", "h-fan", shape="review")], {"tier": "fanout"})), "deny",
+         run_channel(job_call([job("j0", "h-fan", shape="review", tier=None)], {"tier": "fanout"})), "deny",
          (shape_tier("review") or "executor", EFFORT_LINE))
 
     # Data: every declared shape tier is legal, and the tiered shapes are the ones dispatch.js runs.
@@ -791,8 +811,8 @@ def implied_tier_cases():
         out.append(("dispatch.js logs the shape tier for a job that declared none",
                     any("tier:%s" % shape_tier("review") in l for l in pins), repr(pins or run)[:300]))
 
-        # The implied tier is the tier the guard checked, so the PINS row records it even when the
-        # entry writes another one (slice 2: a written tier never replaces the call's own fact).
+        # The tier the guard checked is the tier the PINS row records: a lens seat's implied tier even when the
+        # entry writes another one, and a dispatch.js job's own written tier over its shape's.
         upd = wpg.transport_injection(seats([("sa-design-semantics", "h-exec", "fanout")]), "host", SYN) or {}
         run = run_engine("review_fanout", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"]), checker={"model": "h-fan", "effort": "low"}))
@@ -805,8 +825,8 @@ def implied_tier_cases():
         run = run_engine("dispatch", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"])))
         pins = [l for l in run.get("logs") or [] if l.startswith("PINS ")]
-        out.append(("dispatch.js logs the shape tier for a job that writes another tier",
-                    any("tier:%s" % shape_tier("review") in l for l in pins), repr(pins or run)[:300]))
+        out.append(("dispatch.js logs the written tier for a job that writes another tier",
+                    any("tier:fanout" in l for l in pins), repr(pins or run)[:300]))
     finally:
         st.HOST_TRANSPORT, wpg.model_registry.role_tiers = saved
     return out
@@ -846,7 +866,7 @@ def supplementary_seat_cases():
     case("supplementary: the lone supplementary seat is denied, naming the rule and the next step",
          seats([("plc-pattern-fit", "h-supp")]),
          *denied_where_shipped(("supplementary review seat", "plc-pattern-fit", "for-role architect", "host-arch-1"),
-                               ("Pin one of the implied tier's rows", "raise effort before tier")))
+                               ("Pin one of the tier's rows", "raise effort before tier")))
     case("supplementary: a qualified seat on other mandates does not back it",
          seats([("plc-pattern-fit", "h-supp"), ("plc-architecture-quality", "h-arch")]),
          *denied_where_shipped(("carries plc-pattern-fit.",)))
@@ -1110,7 +1130,7 @@ def plant_session(runs=(), top=(), notes=(), owner=(), queued=(), cross=(), answ
     line only), `result` or `failed`; `top` = [(agent id, description, ended, age seconds)] for
     `<session>/subagents/agent-<id>.jsonl`, whose last record is an end_turn when `ended`;
     `notes` = [(agent id, age seconds)] for a completion notification in the parent transcript.
-    `owner`/`queued` plant owner rows the `owner:` quote may be verified in; `cross` plants the
+    `owner`/`queued` plant owner rows the `owner:` lift may be verified in; `answers` = [(question, picked label)] plant answered AskUserQuestions; `cross` plants the
     same words as a cross-session message, which is a peer talking, not the owner."""
     root = tempfile.mkdtemp(prefix="wpg_5h_")
     session = os.path.join(root, sid)
@@ -1271,7 +1291,7 @@ def five_hour_cases():
                  patches=[(wpg, "live_native_jobs", _raiser("planted live-job scan failure"))]),
              "deny", ("planted live-job scan failure", "Re-issue"))
 
-        # An `owner:` statement lifts only when this session's transcript carries the words.
+        # An `owner:` statement lifts only when an owner turn holds the `--host` token or the owner answered a question naming the transport with a lift.
         owned_live = plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
                                    owner=[OWNER_WORDS + " --host"])
         owner = {"currency": "host", "currencyReason": OWNER_QUOTE}
@@ -1334,6 +1354,10 @@ def five_hour_cases():
                   plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
                                 answers=[("Lift the 5h one-job rule on host for this session?", "No, keep it"),
                                          ("Lift the 5h one-job rule on off for this session?", "Yes, lift it")]),
+                  "deny", musts=("5h 14% left, 40% to go",))
+        lift_case("owner: an answer to a question naming the transport but not the 5h rule does not lift",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                answers=[("Run the review on host?", "Yes")]),
                   "deny", musts=("5h 14% left, 40% to go",))
         case("owner: a too-short owner reason does not lift",
              run(with_transcript(jobs([("h-arch", "architect")], currency('owner: "use host"')), one_live),

@@ -23,14 +23,22 @@ file in the total, unless the job already lists that path. Two or more jobs nami
 over MAX_SCAN_BYTES is not scanned.
 
 A job's reading also gets its fit: tokens from UTF-8 decoded characters (replacement on invalid
-bytes) at CHARS_PER_TOKEN (the rate the orchestration Pre-Dispatch Checklist counts required reading at), over
-the brief, every listed file and every file the brief names, against the input point the job compacts at
-(`model_registry.compaction_point` for the job's `shape`, `resident` and transport, `window_fit`): 467000 for a
-resident opus job. The line
-prints the heaviest job's share and the point it used, and the count of backticked path-shaped names that are no
-file (a vault path spelled through an alias such as `V/...`), counted 0. A job over its point is named in the
-line. A pin the registry does not resolve is not marked. `fit_lines(size)` is the same fact per job, printed by
-`sidecar_fanout.py` before it launches.
+bytes) at CHARS_PER_TOKEN (the measured rate: a median of 2.50 characters per token over 43 large tool results,
+range 2.10-3.04), against the input point the job compacts at (`model_registry.compaction_point` for the job's
+transport, `window_fit`): 467000 for an opus job under a 500000 login. A job's reading has three buckets, each
+decided from facts in the job and its brief:
+  listed        the brief, `contextFiles`, `mustRead` and the shared context; counted whole.
+  named inputs  a named file that is neither inside the `writeSet` of the brief's `task` block nor cited with a
+                `:N` or `:N-M` suffix; counted whole. A file cited both bare outside the `writeSet` and with a
+                suffix is an input.
+  named spans   a named file inside the `writeSet`, or cited with a line suffix; the job reads ranges of it.
+A named file whose own tokens exceed the job's point cannot be read whole: it counts 0 and is a `searchSources`
+entry. `lowerTokens` is listed + inputs (`readingTokens` and `tokens` equal it); `upperTokens` adds the spans.
+The line prints the heaviest job's lower share and the point it used, and the count of backticked path-shaped names
+that are no file (a vault path spelled through an alias such as `V/...`), counted 0. A job is over its point when
+`lowerTokens` is; when only `upperTokens` is, the fit line says `ceiling over`. A pin the registry does not resolve
+is not marked. `fit_lines(size)` is the fact per job, with both numbers and the three largest counted files,
+printed by `sidecar_fanout.py` before it launches.
 
 `fact_lines(spec)` adds, after that line, a verdict per job: one line for a job pinned above a cheaper claimant of its
 tier (executor included), with the claimants' cost, `±` cell and the job's reading against the point each one would
@@ -61,11 +69,16 @@ try:
     import _dispatch_checks
 except Exception:  # no claimant facts: the fact lines are simply not printed
     _dispatch_checks = None
+try:
+    import dispatch_result
+except Exception:  # no task-block reader: every named file counts whole
+    dispatch_result = None
 
 KB = 1024
 CHARS_PER_TOKEN = 2.5
 SHARED_KEYS = ("contextPath", "contextPrefixPath")
 UNREADABLE_SHOWN = 3
+LARGEST_SHOWN = 3
 MAX_SCAN_BYTES = 8 * KB * KB
 BACKTICKED = re.compile(r"`([^`\n]+)`")
 LINE_SUFFIX = re.compile(r"(?::\d+(?:[-–]\d+)?)+$")
@@ -105,16 +118,21 @@ def _size(path: str, root: Path):
         return None
 
 
-def _named_in(text: str, root: Path, missing=None) -> dict:
+def _named_in(text: str, root: Path, missing=None, cites=None) -> dict:
     """{normalized key: absolute path} of every existing file a backticked span of `text` names. A path-shaped span
-    (a `/` and a file extension, no URL) that is no file is added to the `missing` set when one is passed."""
+    (a `/` and a file extension, no URL) that is no file is added to the `missing` set when one is passed. `cites`,
+    when passed, gets `key: [cited bare, cited with a line suffix]`."""
     found = {}
     for span in BACKTICKED.findall(text):
-        candidate = LINE_SUFFIX.sub("", span.strip())
+        raw = span.strip()
+        candidate = LINE_SUFFIX.sub("", raw)
         try:
             path = os.path.abspath(root / candidate)
             if candidate and os.path.isfile(path):
-                found[os.path.normcase(path)] = path
+                key = os.path.normcase(path)
+                found[key] = path
+                if cites is not None:
+                    cites.setdefault(key, [False, False])[candidate != raw] = True
             elif missing is not None and "://" not in candidate and PATH_SHAPED.match(candidate):
                 missing.add(candidate)
         except (OSError, ValueError):
@@ -123,20 +141,54 @@ def _named_in(text: str, root: Path, missing=None) -> dict:
 
 
 def _scan(path: str, root: Path, cache: dict) -> tuple:
-    """(named files, unresolved path-shaped names) of the text file at `path`, read once per `cache`."""
+    """(named files, unresolved path-shaped names, citations) of the text file at `path`, read once per `cache`."""
     key = os.path.normcase(os.path.abspath(root / path))
     if key not in cache:
         try:
             target = os.path.abspath(root / path)
             if os.stat(target).st_size > MAX_SCAN_BYTES:
-                cache[key] = ({}, set())
+                cache[key] = ({}, set(), {})
             else:
-                missing = set()
+                missing, cites = set(), {}
                 with open(target, encoding="utf-8", errors="replace") as fh:
-                    cache[key] = (_named_in(fh.read(), root, missing), missing)
+                    cache[key] = (_named_in(fh.read(), root, missing, cites), missing, cites)
         except (OSError, ValueError):
-            cache[key] = ({}, set())
+            cache[key] = ({}, set(), {})
     return cache[key]
+
+
+def _write_set(job: dict, root: Path) -> list:
+    """The `writeSet` of the `task` block in the job's brief (inline prompt, `promptPath` or `promptFile`); [] when the
+    brief holds none, the block is malformed, or `dispatch_result` did not import."""
+    if dispatch_result is None:
+        return []
+    texts = [job["prompt"]] if isinstance(job.get("prompt"), str) else []
+    for key in ("promptPath", "promptFile"):
+        if isinstance(job.get(key), str):
+            try:
+                texts.append((root / job[key]).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+    for text in texts:
+        try:
+            block = dispatch_result.task_block(text)
+        except ValueError:
+            continue
+        if block:
+            return block.get("writeSet", [])
+    return []
+
+
+def _in_write_set(path: str, root: Path, write_set: list) -> bool:
+    try:
+        relative = os.path.relpath(path, root).replace("\\", "/")
+    except ValueError:
+        return False
+    return not relative.startswith("..") and dispatch_result._inside(relative, write_set)
+
+
+def _tokens_of(characters) -> int:
+    return math.ceil((characters or 0) / CHARS_PER_TOKEN)
 
 
 def window_fit(model, total_characters: int, data=None, job=None) -> dict:
@@ -169,10 +221,11 @@ def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
 
 
 def dispatch_size(jobs, root=None, data=None) -> dict:
-    """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, pointSource, over, fitError, unresolved}],
+    """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, pointSource, over, fitError, unresolved,
+    lowerTokens, upperTokens, ceilingOver, searchSources, largest: [{path, tokens}]}],
     duplicated: [{path, kb, readBy}], duplicatedKb, totalKb, unreadable, named: [{path, kb, namedBy}], namedKb,
-    unresolved: [name]}` for one dispatch; a job's `tokens` are its whole reading (brief, listed files and named files). `root` resolves relative
-    paths (default: the working directory); `data` is the registry for the window fit (default: the live one)."""
+    unresolved: [name]}` for one dispatch; a job's `tokens` and `readingTokens` are its `lowerTokens` and `upperTokens`
+    adds its named spans (see the module docstring). `root` resolves relative paths (default: the working directory); `data` is the registry for the window fit (default: the live one)."""
     root = Path(root) if root else Path.cwd()
     shared = [spec.get(key) for spec in [jobs] if isinstance(spec, dict) for key in SHARED_KEYS
               if isinstance(spec.get(key), str)]
@@ -184,12 +237,15 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
         total = len(job["prompt"].encode("utf-8")) if isinstance(job.get("prompt"), str) else 0
         total_characters = len(job["prompt"]) if isinstance(job.get("prompt"), str) else 0
         sources = _paths_of(job, keys=("contextFiles",)) + shared
-        missing = set()
-        named = _named_in(job["prompt"], root, missing) if isinstance(job.get("prompt"), str) else {}
+        missing, cites = set(), {}
+        named = _named_in(job["prompt"], root, missing, cites) if isinstance(job.get("prompt"), str) else {}
         for source in sources:
-            found, absent = _scan(source, root, scanned)
+            found, absent, found_cites = _scan(source, root, scanned)
             named.update(found)
             missing |= absent
+            for key, (bare, suffixed) in found_cites.items():
+                mark = cites.setdefault(key, [False, False])
+                mark[0], mark[1] = mark[0] or bare, mark[1] or suffixed
         unresolved |= missing
         named = {key: path for key, path in named.items() if key not in paths}
         for key, path in named.items():
@@ -209,14 +265,32 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
             total_characters += characters[key] or 0
             readers.setdefault(key, []).append(index)
         model = job.get("model") or job.get("alias")
-        fit = window_fit(model, total_characters + named_characters, data, job)
+        point = fit_tokens(model, 0, data, job)["usable"]
+        write_set = _write_set(job, root)
+        inputs, spans, searched = [], [], []
+        for key, path in named.items():
+            if point and _tokens_of(characters[key]) > point:
+                searched.append(path)
+            elif _in_write_set(path, root, write_set) or not cites.get(key, (True, False))[0]:
+                spans.append(key)
+            else:
+                inputs.append(key)
+        lower_characters = total_characters + sum(characters[key] or 0 for key in inputs)
+        upper_characters = lower_characters + sum(characters[key] or 0 for key in spans)
+        counted = sorted(({"path": names[key], "tokens": _tokens_of(characters[key])}
+                          for key in [*paths, *inputs, *spans] if characters[key]),
+                         key=lambda item: -item["tokens"])
+        fit = window_fit(model, lower_characters, data, job)
+        upper = _tokens_of(upper_characters)
         per_job.append({"label": job.get("label") or job.get("key") or "job%d" % (index + 1),
                         "model": model, "effort": job.get("effort"), "kb": round(total / KB),
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
                         "pointSource": fit["source"], "over": fit["over"], "fitError": fit["error"],
-                        "unresolved": len(missing),
-                        "readingTokens": math.ceil((total_characters + named_characters) / CHARS_PER_TOKEN)})
+                        "unresolved": len(missing), "lowerTokens": fit["tokens"], "upperTokens": upper,
+                        "ceilingOver": bool(fit["usable"]) and not fit["over"] and upper > fit["usable"],
+                        "searchSources": searched, "largest": counted[:LARGEST_SHOWN],
+                        "readingTokens": fit["tokens"]})
     duplicated = [{"path": names[key], "kb": round((sizes[key] or 0) / KB), "readBy": len(who)}
                   for key, who in readers.items() if len(who) > 1 and sizes[key]]
     named = [{"path": named_paths[key], "kb": round((sizes[key] or 0) / KB), "namedBy": len(who)}
@@ -279,10 +353,20 @@ def format_line(size: dict) -> str:
     return line
 
 
+def _display_name(path: str) -> str:
+    try:
+        relative = os.path.relpath(path).replace("\\", "/")
+    except ValueError:
+        return os.path.basename(path)
+    return path if relative.startswith("..") else relative
+
+
 def fit_lines(size: dict) -> list:
-    """One fit fact per pinned job of a `dispatch_size` result: its whole reading (brief, listed files and named
-    files) as a share of the compaction point it was measured against, the point's source, and the count of path-shaped
-    names it could not resolve. Facts only; `sidecar_fanout.py` prints these before it launches."""
+    """One fit fact per pinned job of a `dispatch_size` result: its lower reading (brief, listed files and named
+    inputs) and its upper (every named file read whole) as a share of the compaction point it was measured against,
+    the point's source, the three largest counted files, the search sources, and the count of path-shaped names it
+    could not resolve. A job is over its point when the lower number is over, `ceiling over` when only the upper is.
+    Facts only; `sidecar_fanout.py` prints these before it launches."""
     out = []
     for job in size["perJob"]:
         if not job["model"]:
@@ -291,9 +375,21 @@ def fit_lines(size: dict) -> list:
         if job["fitError"]:
             out.append("fit: %s not sized: %s" % (who, job["fitError"]))
             continue
-        percent = round(100 * job["tokens"] / job["usable"]) if job["usable"] else 0
-        text = "fit: %s reading %d tokens, %s of its compaction point, %d tokens (%s)" % (
-            who, job["tokens"], "%d%%" % percent if percent else "<1%", job["usable"], job["pointSource"])
+        percent = round(100 * job["lowerTokens"] / job["usable"]) if job["usable"] else 0
+        text = "fit: %s reading %d tokens (%d if every named file is read whole), %s of its compaction point, %d tokens (%s)" % (
+            who, job["lowerTokens"], job["upperTokens"], "%d%%" % percent if percent else "<1%", job["usable"],
+            job["pointSource"])
+        if job["over"]:
+            text += "; over its point by %d tokens" % job["over"]
+        elif job["ceilingOver"]:
+            text += "; ceiling over"
+        if job["largest"]:
+            text += "; largest: " + ", ".join("%s %dk" % (_display_name(item["path"]), max(1, round(item["tokens"] / 1000)))
+                                             for item in job["largest"])
+        if job["searchSources"]:
+            text += "; %d search source%s, counted 0: %s" % (
+                len(job["searchSources"]), "" if len(job["searchSources"]) == 1 else "s",
+                ", ".join(_display_name(p) for p in job["searchSources"][:UNREADABLE_SHOWN]))
         if job["unresolved"]:
             text += "; %d named path%s not resolved, counted 0" % (job["unresolved"], "" if job["unresolved"] == 1 else "s")
         out.append(text)
@@ -307,7 +403,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     window and long-context point), followed by `_dispatch_checks.spare_plan_fact`'s fact when another plan serving
     the tier projects unused quota; a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
-    A job's tier is its shape row's (`guards/tool_profiles.json`), else its own `tier`. Facts only: no check denies on
+    A job's tier is `_dispatch_checks.job_tier`'s: its own `tier`, else its shape row's. Facts only: no check denies on
     these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
     `now`/`read` plant the clock and the capacity reader; both have production defaults."""
     try:
@@ -320,13 +416,16 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     try:
         size = dispatch_size(spec, root, data)
         data = data if data is not None else model_registry.load()
-        by_shape = _dispatch_checks.shape_tiers()
     except Exception as err:
         return ["cheaper claimants: not compared for this dispatch: %s" % err]
     out, compared = [], []
     for job, sized in zip(jobs, size["perJob"]):
         label, model = sized["label"], sized["model"]
-        tier = by_shape.get(job.get("shape")) or job.get("tier")
+        try:
+            tier = _dispatch_checks.job_tier(job.get("shape"), job.get("tier"))[0]
+        except ValueError as err:
+            out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, err))
+            continue
         if not model:
             out.append("cheaper claimants: `%s` not compared: no model pin" % label)
             continue
@@ -336,7 +435,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
             continue
         try:
             transport = job.get("transport") or model_registry.resolve(model, data)["transport"]
-            claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["readingTokens"], data, ladder,
+            claimants = _dispatch_checks.cheaper_claimants(model, tier, transport, sized["lowerTokens"], data, ladder,
                                                            job=job)
         except Exception as err:
             reason = ("does not resolve in the registry" if isinstance(err, model_registry.UnknownModel) else str(err))
@@ -345,7 +444,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
         if claimants:
             line = "cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
                 label, model, claimants[0]["pinCost"], tier, transport,
-                "; ".join(_dispatch_checks.claimant_text(c, sized["readingTokens"]) for c in claimants))
+                "; ".join(_dispatch_checks.claimant_text(c, sized["lowerTokens"], sized["upperTokens"]) for c in claimants))
             spare = _dispatch_checks.spare_plan_fact(tier, transport, data, now, read)
             out.append(line + ("; " + spare if spare else ""))
         else:
