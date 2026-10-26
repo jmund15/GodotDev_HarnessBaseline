@@ -54,6 +54,7 @@ with open(FAKE, "w", encoding="utf-8", newline="\n") as fh:
         "  printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\"}' "
         "\"{\\\"type\\\":\\\"result\\\",\\\"subtype\\\":\\\"success\\\",\\\"result\\\":\\\"deliverable of $label\\\\nsecond line\\\"}\" > \"${record}.out\"\n"
         "fi\n"
+        "echo \"${SIDECAR_FULL_WINDOW:-}\" > \"${record}.fw\"\n"
         "echo 0 > \"${record}.exit\"\n"
     )
 
@@ -193,6 +194,25 @@ case("--max-parallel 1 adds no guard",
 _solo_code, _solo_out = run_main({"jobs": WRAP["jobs"][:1]}, "solo", "--max-parallel", "4")
 case("a single job adds no guard",
      lambda: _solo_code == 0 and not guard_files(_solo_out, "w1"))
+
+
+_fw_code, _fw_out = run_main({"jobs": [
+    {"label": "fw1", "alias": "fakem", "effort": "high", "promptFile": PROMPT, "window": "full"},
+    {"label": "fw2", "alias": "fakem", "effort": "high", "promptFile": PROMPT2}]}, "fullwin", "--max-parallel", "1")
+
+
+def _fw(label):
+    try:
+        return open(os.path.join(_fw_out, label + ".record.json.fw"), encoding="utf-8").read().strip()
+    except OSError:
+        return None
+
+
+case("a job with window full launches with SIDECAR_FULL_WINDOW=1; the default job's env does not carry it",
+     lambda: _fw_code == 0 and _fw("fw1") == "1" and _fw("fw2") == "")
+case("a window value other than full is refused before launch",
+     lambda: refuses({"label": "fw3", "alias": "fakem", "effort": "high", "promptFile": PROMPT, "window": "huge"},
+                     "`window`"))
 
 
 def main():

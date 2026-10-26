@@ -3,7 +3,7 @@
 
 A plan's ROOM is the share of its routing window's allowance left over the share of that window's
 time left: `(100 - usedPercent) / (100 x fraction of the window left)`. 1.0 is even pace, the rate
-the plan can spend at until its reset. The pick ranks a plan by its routing window's room: that
+the plan can spend at until its reset. `pick` ranks a plan by its routing window's room (the fan-out's `pick_key` ranks first by the quota projected unused at the reset): that
 window's unused share is what expires at its reset. Every other window is a capacity gate, not a rank.
 A job that starts now spends from every window, so a non-routing window GATES the plan when its
 remaining share cannot carry even-pace work to its own reset: its shortfall, the share of its time
@@ -56,6 +56,10 @@ try:
     import usage_samples  # noqa: E402
 except Exception:  # no sample reader: every projection falls back to a bound or the average
     usage_samples = None
+try:
+    import transcript_usage  # noqa: E402
+except Exception:  # no ledger reader: every job's drain is the default
+    transcript_usage = None
 
 DEFAULT_TTL_S = 600  # compatibility parameter; provider_capacity owns freshness
 USED_RESOLUTION = 1.0  # percentage points: providers report usedPercent in whole percents
@@ -64,10 +68,20 @@ RECENT_MIN_SPAN_S = 3600.0  # two samples closer than this cannot state a rate
 RESET_TOLERANCE_S = 900.0  # samples of one period agree on its reset to within this
 SAMPLES_TTL_S = 30.0  # one prompt reads many plans, so the samples file is read once per turn
 _SAMPLES_CACHE = {"at": None, "rows": []}
-# What one sidecar job is assumed to take from its plan's tightest window, in percentage points. Room is a
-# pace ratio and says nothing about a burst: on 2026-10-14 a 5h window at 24% left read room 0.97, 13 jobs
-# went to it, and 6+ hit the limit within 15 minutes (about 4 points a job). Thin basis: one burst.
+# What one sidecar job is assumed to take from its plan's tightest window, in percentage points, when no history
+# measures it. Room is a pace ratio and says nothing about a burst: on 2026-10-14 a 5h window at 24% left read room
+# 0.97, 13 jobs went to it, and 6+ hit the limit within 15 minutes (about 4 points a job). Thin basis: one burst.
 JOB_DRAIN_PCT = float(os.environ.get("SIDECAR_JOB_DRAIN_PCT") or 4)
+# A job's expected drain is its plan's recorded points per list-price dollar (`plan_rate`) times what finished jobs of
+# its model, effort and shape cost at DRAIN_QUANTILE (`job_usd`). The 0.75 quantile held a job cluster's observed total in 53% to
+# 83% of the clusters of the four plans backtested and reads high (figures: commit b78984a). Thin: one day of dense history.
+DRAIN_QUANTILE = 0.75
+# Fewer than five jobs make the 0.75 quantile their maximum, which is an anecdote; the group widens instead.
+GROUP_MIN_JOBS = 5
+# A rate from fewer reset periods is one burst's rate. Thin: the plans with the fewest each have four.
+RATE_MIN_PERIODS = 3
+_LEDGER_CACHE = {"at": None, "rows": []}
+_drain_cache = {}
 
 def probe(transport, data=None):
     """Read normalized capacity (`provider_capacity.reading`: cache first) and return its routing-band view.
@@ -285,6 +299,18 @@ def _basis_text(projection):
     return "this week's use" if projection.get("from") == "7d" else "this %s window's use" % projection.get("from")
 
 
+def spare_pct(row_or_projection):
+    """The whole-percent share of a plan's allowance projected unused at its reset, or None below
+    `USED_RESOLUTION`. Takes a `unused_at_reset` projection or a row carrying one as `unusedAtReset`."""
+    projection = row_or_projection
+    if isinstance(projection, dict) and "unusedAtReset" in projection:
+        projection = projection["unusedAtReset"]
+    pct = projection.get("pct") if isinstance(projection, dict) else None
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)) or round(pct) < USED_RESOLUTION:
+        return None
+    return int(round(pct))
+
+
 def _unused_clause(plan, capacity, window, now):
     """`, ~N% goes unused at reset (<basis>)` for the routing window, else ""."""
     quota = (capacity or {}).get("quota") or {}
@@ -292,10 +318,8 @@ def _unused_clause(plan, capacity, window, now):
     if not name or window.get("name") != name:
         return ""
     projection = unused_at_reset(plan, window, now, windows=quota.get("windows") or [])
-    if projection is None:
-        return ""
-    pct = int(round(projection.get("pct") or 0))
-    if pct < USED_RESOLUTION:
+    pct = spare_pct(projection)
+    if pct is None:
         return ""
     return ", ~%d%% goes unused at reset (%s)" % (pct, _basis_text(projection))
 
@@ -309,8 +333,8 @@ def read_capacity(transport, data=None, live=True):
     return got
 
 
-def _plan_room(transport, data, read, now):
-    """{transport, room, window, left, daysLeft, planType} for a plan with allowance left, else
+def plan_room(transport, data, read, now):
+    """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
     {transport, room: None, why}."""
     try:
         got = read(transport, data)
@@ -344,10 +368,13 @@ def _plan_room(transport, data, read, now):
         return {"transport": transport, "room": None,
                 "why": "unreadable: routing window %s has no used share, length or future reset" % name}
     reset = provider_capacity._epoch(window.get("resetsAt"))
+    tightest_window = min((w for w in windows
+                           if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)),
+                          key=lambda w: 100.0 - w["usedPercent"])
     row = {"transport": transport, "room": value, "window": name,
            "left": 100.0 - window["usedPercent"],
-           "headroom": min(100.0 - w["usedPercent"] for w in windows
-                           if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)),
+           "headroom": 100.0 - tightest_window["usedPercent"], "headroomWindow": tightest_window.get("name"),
+           "headroomResetsAt": provider_capacity._epoch(tightest_window.get("resetsAt")),
            "daysLeft": (reset - now) / 86400.0 if reset is not None else None,
            "planType": got.get("planType")}
     projection = unused_at_reset(transport, window, now, windows=windows)
@@ -374,33 +401,140 @@ def rank_room(row):
     return row["bindingRoom"] if row.get("bindingRoom") is not None else row["room"]
 
 
-def pick_key(row, placed=0):
-    """Sort key (best last) for a fan-out pick of the plan `row` describes, with `placed` jobs already on it.
-
-    A plan fits while its tightest window, `headroom`, still holds the `placed` jobs and this one at
-    `JOB_DRAIN_PCT` each. Among fitting plans, one whose quota projects `USED_RESOLUTION` or more unused
-    at its reset ranks above one that does not -- that quota is lost at the reset either way -- and those
-    rank by the earliest reset; the rest keep `rank_room`. Percentages are never compared across plans,
-    whose allowances differ. A plan that no longer fits ranks below every one that does, the least
-    overdrawn first: it is picked only when no plan fits. A row with no `headroom` reading fits, so it
-    keeps the ranking it had."""
+def fits(row, committed_pct, drain_pct):
+    """True while the plan's tightest window, `headroom`, holds the `committed_pct` points of the jobs already on
+    the plan and this job's `drain_pct`. A row with no `headroom` reading fits: its launcher's own gate decides."""
     headroom = row.get("headroom")
-    overdrawn = headroom - (placed + 1) * JOB_DRAIN_PCT if isinstance(headroom, (int, float)) else None
-    if overdrawn is not None and overdrawn < 0:
-        return (0, overdrawn)
-    projection = row.get("unusedAtReset")
-    pct = projection.get("pct") if isinstance(projection, dict) else None
-    if isinstance(pct, (int, float)) and round(pct) >= USED_RESOLUTION:
-        days = projection.get("daysLeft")
+    return not isinstance(headroom, (int, float)) or headroom - committed_pct - drain_pct >= 0
+
+
+def pick_key(row):
+    """Sort key (best last) among the plans that hold the job (`fits`). A plan whose quota projects
+    `USED_RESOLUTION` or more unused at its reset ranks above one that does not -- that quota is lost at the reset
+    either way -- and those rank by the earliest reset; the rest keep `rank_room`. Percentages are never compared
+    across plans, whose allowances differ."""
+    if spare_pct(row) is not None:
+        days = row["unusedAtReset"].get("daysLeft")
         return (1, 1, -days if isinstance(days, (int, float)) else float("-inf"))
     return (1, 0, rank_room(row))
 
 
+def ledger_job(row):
+    """A finished job from a spend-ledger row: {plan, start, end, usd, model, effort, shape, truncated}, else None
+    for a row that is not plan-quota or carries no priced list cost. `usd` is list price, which carries each token
+    type's relative cost and is never spend; `truncated` marks a job a usage limit cut short."""
+    if not isinstance(row, dict) or row.get("costModel") != "plan-quota" or not isinstance(row.get("transport"), str):
+        return None
+    usd = row.get("costUSD")
+    if isinstance(usd, bool) or not isinstance(usd, (int, float)) or usd <= 0 or transcript_usage is None:
+        return None
+    end = transcript_usage.parse_ts(row.get("timestamp"))
+    if end is None:
+        return None
+    duration = row.get("durationMs")
+    span = duration / 1000.0 if isinstance(duration, (int, float)) and not isinstance(duration, bool) else 0.0
+    model = next((row[k] for k in ("requestedModel", "servedModel") if isinstance(row.get(k), str)), None)
+    return {"plan": row["transport"], "start": end - span, "end": end, "usd": float(usd), "model": model,
+            "effort": row.get("effort"), "shape": (row.get("toolProfile") or {}).get("shape"),
+            "truncated": row.get("stopReason") == "provider-usage-limit"}
+
+
+def _ledger_jobs():
+    """Every finished plan-quota job in the sidecar spend ledger, read at most once per SAMPLES_TTL_S; [] when the
+    ledger cannot be read."""
+    now = time.time()
+    if _LEDGER_CACHE["at"] is not None and now - _LEDGER_CACHE["at"] < SAMPLES_TTL_S:
+        return _LEDGER_CACHE["rows"]
+    rows = []
+    if transcript_usage is not None:
+        try:
+            records = transcript_usage.iter_records(transcript_usage.sidecar_ledger_path())
+            rows = [job for job in map(ledger_job, records) if job]
+        except Exception:
+            rows = []
+    _LEDGER_CACHE.update(at=now, rows=rows)
+    return rows
+
+
+def plan_rate(plan, window, jobs, samples):
+    """(points per list-price dollar, reset periods used) of `plan`'s `window`: over each reset period of its
+    samples that spans `RECENT_MIN_SPAN_S` and rose, the rise in `used` against the list cost of the plan's jobs that
+    began and ended between the period's first and last sample. The rate is None below `RATE_MIN_PERIODS` periods.
+    It reads high: a use of the plan with no ledger row (an interactive session) lands in the rise."""
+    plan_of = usage_samples.plan_of if usage_samples is not None else (lambda s: s.get("plan") or s.get("provider"))
+    points = sorted((s["ts"], s["used"], s["resets_at"]) for s in samples or []
+                    if isinstance(s, dict) and s.get("window") == window and plan_of(s) == plan
+                    and all(isinstance(s.get(k), (int, float)) and not isinstance(s.get(k), bool)
+                            for k in ("ts", "used", "resets_at")))
+    periods = []
+    for ts, used, reset in points:
+        if periods and abs(periods[-1]["reset"] - reset) <= RESET_TOLERANCE_S:
+            periods[-1]["points"].append((ts, used))
+        else:
+            periods.append({"reset": reset, "points": [(ts, used)]})
+    mine = [j for j in jobs or [] if j["plan"] == plan]
+    rise = cost = 0.0
+    counted = 0
+    for period in periods:
+        (first, low), (last, high) = period["points"][0], period["points"][-1]
+        usd = sum(j["usd"] for j in mine if j["start"] >= first and j["end"] <= last)
+        if last - first >= RECENT_MIN_SPAN_S and high > low and usd > 0:
+            rise, cost, counted = rise + (high - low), cost + usd, counted + 1
+    return (rise / cost if counted >= RATE_MIN_PERIODS else None), counted
+
+
+def job_usd(model, effort, shape, jobs):
+    """The `DRAIN_QUANTILE` list-price cost of finished jobs of `model`, `effort` and `shape`: the narrowest group
+    of at least `GROUP_MIN_JOBS` jobs, widening to the model and effort, then the model. None when no group is that
+    large. A job a usage limit cut short is left out: its cost is the part it ran."""
+    done = [j for j in jobs or [] if not j.get("truncated") and j.get("model") == model]
+    for group in ([j for j in done if j.get("effort") == effort and j.get("shape") == shape],
+                  [j for j in done if j.get("effort") == effort], done):
+        if len(group) >= GROUP_MIN_JOBS:
+            ordered = sorted(j["usd"] for j in group)
+            return ordered[min(len(ordered) - 1, int(DRAIN_QUANTILE * len(ordered)))]
+    return None
+
+
+def reset_drain_cache():
+    _drain_cache.clear()
+
+
+def job_drain(plan, window, model, effort, shape, jobs=None, samples=None):
+    """{pct, basis, usd, rate, why} for one job on `plan`: the percentage points it is expected to take from the
+    plan's `window`. basis `measured` is `plan_rate` x `job_usd`. basis `default` is `JOB_DRAIN_PCT`, and `why`
+    names the missing measure. `jobs` and `samples` default to the ledger and the samples file, each read once per
+    SAMPLES_TTL_S; a plan's rate is computed once per reading of them."""
+    explicit = jobs is not None or samples is not None
+    jobs = _ledger_jobs() if jobs is None else jobs
+    samples = _samples() if samples is None else samples
+    if explicit:
+        rate, counted = plan_rate(plan, window, jobs, samples)
+    else:
+        stamp = (_LEDGER_CACHE["at"], _SAMPLES_CACHE["at"])
+        if _drain_cache.get("key") != stamp:
+            _drain_cache.clear()
+            _drain_cache["key"] = stamp
+        if (plan, window) not in _drain_cache:
+            _drain_cache[(plan, window)] = plan_rate(plan, window, jobs, samples)
+        rate, counted = _drain_cache[(plan, window)]
+    default = {"pct": JOB_DRAIN_PCT, "basis": "default", "usd": None, "rate": rate}
+    if not window:
+        return dict(default, why="no window to measure")
+    if rate is None:
+        return dict(default, why="%d reset period%s of %s samples with finished %s jobs, %d needed"
+                    % (counted, "" if counted == 1 else "s", window, plan, RATE_MIN_PERIODS))
+    usd = job_usd(model, effort, shape, jobs)
+    if usd is None:
+        return dict(default, why="fewer than %d finished jobs of %s" % (GROUP_MIN_JOBS, model))
+    return {"pct": rate * usd, "basis": "measured", "usd": usd, "rate": rate, "why": None}
+
+
 def plan_rows(data=None, read=None, now=None):
-    """One `_plan_room` row per plan-quota transport, in registry order: the owner-facing view."""
+    """One `plan_room` row per plan-quota transport, in registry order: the owner-facing view."""
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
-    return [_plan_room(name, data, read or read_capacity, now) for name in plan_quota_transports(data)]
+    return [plan_room(name, data, read or read_capacity, now) for name in plan_quota_transports(data)]
 
 
 def display_windows(capacity, now=None):
@@ -503,7 +637,7 @@ def facts(tier, session_plan=None, data=None, read=None, now=None):
     implies no tier is fit wherever its row's claimed tiers are served).
 
     Candidates are the live plans able to pay for an available row whose `roles` claim it, availability judged from
-    `session_plan`'s route. `plans` holds each readable plan's `_plan_room` row and each dropped one with `why`
+    `session_plan`'s route. `plans` holds each readable plan's `plan_room` row and each dropped one with `why`
     (`room` None). `payOptions` lists the fit marginal-usd rows as {alias, id, transport}, and only when no plan
     has room. `read(transport, data)` returns a normalized reading; the default is `read_capacity`.
     """
@@ -532,7 +666,7 @@ def facts(tier, session_plan=None, data=None, read=None, now=None):
         capacities[name] = read(name, data)
         return capacities[name]
 
-    rows = registry_order([_plan_room(name, data, captured_read, now) for name in plans], data)
+    rows = registry_order([plan_room(name, data, captured_read, now) for name in plans], data)
     options = [] if any(r["room"] is not None for r in rows) else [
         {"alias": r.get("alias"), "id": r.get("id"), "transport": r.get("transport")} for r in pay]
     return {"tiers": tiers, "plans": rows, "payOptions": options, "capacities": capacities}
@@ -643,7 +777,7 @@ def lean_candidates(tier, session_plan, data=None, read=None, now=None, ladder=N
             if (transports.get(name) or {}).get("costModel") != "plan-quota":
                 continue
             if name not in plan_rooms:
-                plan_rooms[name] = _plan_room(name, data, read, now)
+                plan_rooms[name] = plan_room(name, data, read, now)
             found.append({"plan": name, "room": rank_room(plan_rooms[name]),
                           "unusedAtReset": plan_rooms[name].get("unusedAtReset")})
         return found

@@ -54,8 +54,8 @@ list rides in the job as `mustRead`, one `{"path", "lines"}` entry per file with
 tool numbers (0 for a path that does not exist), and in the brief as its done condition: the seat's Read
 ranges cover every line of each entry. `must-read <list file>` prints those entries as JSON for a caller
 that builds a `review_fanout.js` agents array by hand. Before any brief is written,
-each seat's brief, context file and must-read files are summed at the orchestration Pre-Dispatch
-Checklist's 2.5 characters per token and compared with the point its pin compacts at (`model_registry.compaction_point`,
+each seat's brief, context file and must-read files are summed at `dispatch_size.CHARS_PER_TOKEN`, the measured
+characters per token, and compared with the point its pin compacts at (`model_registry.compaction_point`,
 `dispatch_size.window_fit`), with every file those name counted too. A seat over that bound, or a pin with no declared window, refuses the whole panel with each
 seat's overage; the caller splits the list across seats and never truncates it.
 

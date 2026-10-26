@@ -11,8 +11,10 @@ pay-per-token row states its spend: its priced reading ratio to the cheapest row
 Every row also states the ladder's intel and speed, whether the reading fits its usable window, and the first `+` and
 first `−` clause of its `±` cell, quoted verbatim. A later brief of the same tier in the same session, with no
 compaction between, gets one short line instead: its reading, the fit of each row whose fit changed, and `table as
-earlier this session`. The record is `_hook_state.brief_table_seen`, cleared by a compaction. The reading is the brief plus the files it names, as
-`dispatch_size` measures a job and `_dispatch_checks.price_reading` prices a claimant.
+earlier this session`. The record is `_hook_state.brief_table_seen`, cleared by a compaction. The reading is two numbers, as
+`dispatch_size` measures a job: the lower (the brief, its listed files and the files it names to read whole, which
+`_dispatch_checks.price_reading` prices) and the upper (every named file read whole). A row's fit is judged on the lower
+number against the row's compaction point.
 
 Owners: `dispatch_result.task_block` (the block), `provider_bands.lean_candidates` (rows, routes, rooms, probation),
 `dispatch_size` (the reading and the fit), `_dispatch_checks` (the price and the draw ratio) and the ladder (intel,
@@ -56,19 +58,26 @@ def _room(value):
     return "room unknown" if value is None else "room %.2f" % value
 
 
-def _fit(dispatch_size, row_id, tokens, data):
-    fit = dispatch_size.fit_tokens(row_id, tokens, data)
+def _fit(dispatch_size, row_id, lower, upper, data, transport=None):
+    """The fit cell of one row: the lower reading against the row's compaction point on `transport`, with the upper
+    reading (every named file read whole) beside it."""
+    fit = dispatch_size.fit_tokens(row_id, lower, data, {"transport": transport} if transport else None)
     if fit["error"]:
         return "window unjudged (%s)" % fit["error"]
+    both = "%s of %s; %s if read whole" % (_n(lower), _n(fit["usable"]), _n(upper))
     if fit["over"]:
-        return "over by %s tokens (%s of %s tokens)" % (_n(fit["over"]), _n(tokens), _n(fit["usable"]))
-    return "fits (%s of %s tokens)" % (_n(tokens), _n(fit["usable"]))
+        return "over by %s tokens (%s)" % (_n(fit["over"]), both)
+    if upper > fit["usable"]:
+        return "ceiling over (%s)" % both
+    return "fits (%s)" % both
 
 
 def _reading(dispatch_size, path):
-    """(tokens, unreadable): the brief as `dispatch_size` measures a job, the brief plus the files it names."""
+    """(lower, upper, unreadable): the brief as `dispatch_size` measures a job. Lower is the brief, its listed files
+    and the files it names to read whole; upper adds the named files it edits or cites by line."""
     size = dispatch_size.dispatch_size({"jobs": [{"label": "brief", "promptFile": path}]}, ROOT)
-    return size["perJob"][0]["readingTokens"], size["unreadable"]
+    per = size["perJob"][0]
+    return per["lowerTokens"], per["upperTokens"], size["unreadable"]
 
 
 def _ladder(model_registry, data):
@@ -140,11 +149,11 @@ def _verdict(fit):
     return fit.split(" ", 1)[0]
 
 
-def _short(tier, tokens, unreadable, fits, names, earlier):
+def _short(tier, tokens, upper, unreadable, fits, names, earlier):
     """One line for a repeat brief of `tier`: its reading, each row whose fit verdict moved since the stored table,
     and that the table stands as earlier. A new reading size alone is not news: the line already states it."""
     changed = ["%s %s" % (names[row], fit) for row, fit in fits.items() if earlier.get(row) != _verdict(fit)]
-    parts = ["%s tier %s; reading %s tokens" % (TAG, tier, _n(tokens))]
+    parts = ["%s tier %s; reading %s tokens (%s if every named file is read whole)" % (TAG, tier, _n(tokens), _n(upper))]
     if unreadable:
         parts.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
     parts.append("fit changed: " + "; ".join(changed) if changed else "fits as earlier")
@@ -164,7 +173,7 @@ def _facts(block, path, data, session, session_id=None):
     got = provider_bands.lean_candidates(tier, session, data=data, read=cache_only)
     if got.get("refused"):
         return "%s tier %s: %s" % (TAG, tier, got["refused"])
-    tokens, unreadable = _reading(dispatch_size, path)
+    tokens, upper, unreadable = _reading(dispatch_size, path)
     ladder = _ladder(model_registry, data)
     pay = {}
     for option in got["payOptions"]:
@@ -172,17 +181,17 @@ def _facts(block, path, data, session, session_id=None):
     groups = list(got["routes"].items()) + list(pay.items())
     fits = {}
     names = {}
-    for _route, entries in groups:
+    for route, entries in groups:
         for entry in entries:
-            fits[entry["id"]] = _fit(dispatch_size, entry["id"], tokens, data)
+            fits[entry["id"]] = _fit(dispatch_size, entry["id"], tokens, upper, data, route)
             names[entry["id"]] = entry.get("alias") or entry["id"]
     if session_id is not None:
         import _hook_state
         earlier = _hook_state.brief_table_seen(session_id, tier, {row: _verdict(fit) for row, fit in fits.items()})
         if earlier is not None:
-            return _short(tier, tokens, unreadable, fits, names, earlier)
-    lines = ["%s tier %s, session plan %s; reading %s tokens (the brief plus the files it names); "
-             "USD only on pay-per-token rows; facts only, registry order" % (TAG, tier, session, _n(tokens))]
+            return _short(tier, tokens, upper, unreadable, fits, names, earlier)
+    lines = ["%s tier %s, session plan %s; reading %s tokens (%s if every named file is read whole); "
+             "USD only on pay-per-token rows; facts only, registry order" % (TAG, tier, session, _n(tokens), _n(upper))]
     if unreadable:
         lines.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
     lines += [NOTE, HEADER]

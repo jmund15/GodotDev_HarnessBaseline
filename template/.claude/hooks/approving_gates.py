@@ -64,6 +64,34 @@ def trusted_root(payload):
     return root
 
 
+_CD_PREFIX = re.compile(r"""^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|"'$`]+))\s*(?:;|&&)\s*""")
+_OUTPUT_FILTER = re.compile(r"\s*(?:2>&1)?\s*(?:\|\s*(?:tail|head)\s+(?:-n\s*)?-?\d+)?\s*$")
+
+
+def without_output_wrappers(command, root):
+    """`command` less a leading `cd <root>` and a trailing `2>&1` or `| tail -N` / `| head -N`, so the call they wrap
+    is judged as written. `root` is the shell's cwd (`trusted_root`), so that `cd` moves nowhere, and the filter
+    changes only what is printed. A `cd` anywhere else leaves the command whole."""
+    match = _CD_PREFIX.match(command)
+    if match:
+        target = next(group for group in match.groups() if group)
+        if os.path.normcase(str(Path(target).resolve())) != os.path.normcase(str(root)):
+            return command
+        command = command[match.end():]
+    return _OUTPUT_FILTER.sub("", command, count=1)
+
+
+def push_argv(command, root):
+    """`simple_argv(command)`, except that a `git push` wrapped in `without_output_wrappers`'s wrappers is judged as
+    its bare push: only the proved-push contract reads through them."""
+    argv, why = simple_argv(command)
+    if argv is None and isinstance(command, str):
+        bare, _ = simple_argv(without_output_wrappers(command, root))
+        if bare is not None and bare[:2] == ["git", "push"]:
+            return bare, ""
+    return argv, why
+
+
 def allow(reason):
     return {"hookEventName": "PreToolUse", "permissionDecision": "allow",
             "permissionDecisionReason": "Auto-approved: " + reason}
@@ -784,7 +812,7 @@ def explain(payload):
     contract = next((item for item in contracts if item is not None), None)
     if contract is None:
         return None
-    argv, shape_why = simple_argv(command)
+    argv, shape_why = push_argv(command, root) if root is not None else simple_argv(command)
     if contract.name == "readonly-probe" and root is not None:
         why = readonly_probe_shape(command, root)[1]
     elif argv is None:
@@ -812,7 +840,7 @@ def main():
     if readonly_probe_shape(command, root)[0]:
         sys.stdout.write(json.dumps({"hookSpecificOutput": allow("readonly-probe: read-only git search")}))
         return
-    argv, _why = simple_argv(command)
+    argv, _why = push_argv(command, root)
     if argv is None:
         return
     contract = owning_contract(argv, root)

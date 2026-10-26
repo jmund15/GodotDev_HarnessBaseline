@@ -6,8 +6,8 @@ Callers: `workflow_provider_guard.py` (native Workflow/Agent, RULE 3) and
 on `bypassPermissions`, so this session's hooks never run inside it: the check runs here, before
 launch, or not at all.
 
-`tier_fit(model, tier, transport, data)` is the deny: a job whose tier its own call implies (a
-registry lens, a shape row) must pin a row serving that tier on the job's OWN transport (native:
+`tier_fit(model, tier, transport, data)` is the deny: a job whose tier its own call names (a written
+`tier`, a registry lens, a shape row) must pin a row serving that tier on the job's OWN transport (native:
 the session's; sidecar: the alias's registry transport). None when it fits or no tier is implied.
 
 `seat_fit(seats, data)` is the deny for a review panel: it keeps `tier_fit`'s line for a pin holding the
@@ -29,7 +29,8 @@ the reading is past its long-context point. These are facts for the reader: no c
 `spare_plan_fact(tier, transport, data)` adds one fact when a row claiming `tier` on another plan projects
 quota unused at its reset: `<alias> on <plan>: ~N% unused at reset in Dd`, read from the capacity cache only.
 
-`shape_tiers()` reads each shape row's tier from `guards/tool_profiles.json` for both routes.
+`shape_tiers()` reads each shape row's tier from `guards/tool_profiles.json` for both routes. `job_tier(shape,
+written)` is the sidecar route's one resolution: the job's written `tier`, else its shape row's.
 Capacity is read through `provider_bands.read_capacity`: the fresh cache, else one live read while
 the caller's deadline (`set_deadline`) leaves room for `provider_capacity.LIVE_BUDGET_SECONDS`.
 """
@@ -70,6 +71,19 @@ def shape_tiers():
     except Exception:
         return {}
     return {name: row["tier"] for name, row in rows.items() if isinstance(row.get("tier"), str)}
+
+
+def job_tier(shape, written=None):
+    """(tier, source) a sidecar job's pin must serve: its written `tier`, else its `shape` row's, else (None, None).
+
+    A written tier is canonical (`validation` folds onto `fanout`); an unknown one raises ValueError naming the known tiers."""
+    if written:
+        try:
+            return model_registry.canonical_tier(str(written)), "the job's `tier`"
+        except model_registry.RegistryError as err:
+            raise ValueError(str(err)) from None
+    tier = shape_tiers().get(shape)
+    return (tier, f"shape `{shape}`") if tier else (None, None)
 
 
 def tier_fit(model, tier, transport, data, pin_name=None):
@@ -256,39 +270,41 @@ def cheaper_claimants(model, tier, transport, reading_tokens, data=None, ladder=
 
 
 def spare_plan_fact(tier, transport, data=None, now=None, read=None):
-    """One terse fact naming a row claiming `tier` on another plan whose quota projects unused at its
-    reset, or None: `<alias> on <plan>: ~N% unused at reset in Dd`.
+    """One terse fact per row claiming `tier` on another plan whose quota projects unused at its reset,
+    joined with `; `, or None: `<alias> on <plan>: ~N% unused at reset in Dd`.
 
-    Facts only, never a pick: it names quota a drop of the job's `plan` pin could spend. Plans are read
-    in registry order, and percents are never compared across plans. `read` defaults to the capacity
-    cache only, so a preflight starts no probe. Never raises."""
+    Facts only, never a pick: it names quota that moving the job to that plan's row could spend. Every
+    qualifying plan is named, and percents are never compared across plans. `read` defaults to the
+    capacity cache only, so a preflight starts no probe. Never raises."""
     if not tier:
         return None
     try:
         data = data if data is not None else model_registry.load()
         now = time.time() if now is None else now
         read = read or (lambda name, _data=None: provider_bands.read_capacity(name, data, live=False))
+        facts = []
         for plan in provider_bands.plan_quota_transports(data):
             if plan == transport:
                 continue
             rows = tier_rows(tier, plan, data)
             if not rows:
                 continue
-            row = provider_bands._plan_room(plan, data, read, now)
-            projection = row.get("unusedAtReset") if row.get("room") is not None else None
-            pct = projection.get("pct") if isinstance(projection, dict) else None
-            if not isinstance(pct, (int, float)) or round(pct) < provider_bands.USED_RESOLUTION:
+            row = provider_bands.plan_room(plan, data, read, now)
+            pct = provider_bands.spare_pct(row) if row.get("room") is not None else None
+            if pct is None:
                 continue
-            days = projection.get("daysLeft")
-            return "%s on %s: ~%d%% unused at reset in %dd" % (
-                _name(rows[0]), plan, round(pct), round(days if isinstance(days, (int, float)) else 0))
+            days = row["unusedAtReset"].get("daysLeft")
+            facts.append("%s on %s: ~%d%% unused at reset in %dd" % (
+                _name(rows[0]), plan, pct, round(days if isinstance(days, (int, float)) else 0)))
+        return "; ".join(facts) or None
     except Exception:
         return None
     return None
 
 
-def claimant_text(c, reading_tokens):
-    """One claimant's facts, as the refusal and the preflight line state them."""
+def claimant_text(c, reading_tokens, upper_tokens=None):
+    """One claimant's facts, as the refusal and the preflight line state them. `reading_tokens` is the job's lower
+    number, which the row's fit is judged on; `upper_tokens`, when it alone is past the row's point, adds `ceiling over`."""
     measured = isinstance(reading_tokens, int)
     if c["plan"]:
         money = f"draw ≈{c['draw']:.2f}x the pin" if c["draw"] is not None else "draw unpriced"
@@ -301,8 +317,10 @@ def claimant_text(c, reading_tokens):
     if c["usable"] is None:
         parts.append("states no window")
     elif measured:
+        ceiling = c["fits"] and isinstance(upper_tokens, int) and upper_tokens > c["usable"]
         parts.append(f"reading {reading_tokens:,} tokens {'fits' if c['fits'] else 'is over'} its "
-                     f"{c['usable']:,}-token compaction point")
+                     f"{c['usable']:,}-token compaction point" + (f", ceiling over ({upper_tokens:,} if every named "
+                                                                   f"file is read whole)" if ceiling else ""))
     else:
         parts.append(f"compaction point {c['usable']:,} tokens")
     if c["thresholdAt"] is None:

@@ -84,6 +84,10 @@ check("author builtins",
       tp.resolve("author", candidates=CANDIDATES)[0]["builtins"])
 for shape, tier in (("review", "executor"), ("author", "executor"), ("survey", "fanout")):
     check("%s carries its row's role tier" % shape, tier, tp.resolve(shape, candidates=CANDIDATES)[0].get("tier"))
+check("resolve(tier=) overrides the row's tier and canonicalizes a folded alias", ("architect", "fanout", "executor"),
+      (tp.resolve("review", candidates=CANDIDATES, tier="architect")[0].get("tier"),
+       tp.resolve("review", candidates=CANDIDATES, tier="validation")[0].get("tier"),
+       tp.resolve("review", candidates=CANDIDATES, tier=None)[0].get("tier")))
 check("a shape with no tier has no tier key", False,
       any("tier" in tp.resolve(s, base_builtins=["Read"], candidates=CANDIDATES)[0] for s in ("any", "bench-score", "arm")))
 check("arm declares no built-ins of its own", None, TABLE["shapes"]["arm"]["builtins"])
@@ -566,6 +570,32 @@ with tempfile.TemporaryDirectory() as _wd, tempfile.TemporaryDirectory() as _hom
         _fh.write("Run `Workflow({script: 'x'})` over the three lenses.\n")
     check("...but a fan-out need no delta grants still refuses under widen", True,
           bool(tp.check_brief_files(_review, [_wf], grammar="job", root=_wd, widen=True)))
+
+    _plain = json.loads(_resolve()[1]).get("tier")
+    _arch = _resolve("--tier=architect")
+    check("the record's tier is the resolved job tier: --tier overrides the shape row's", ("executor", 0, "architect"),
+          (_plain, _arch[0], json.loads(_arch[1]).get("tier") if _arch[0] == 0 else None))
+    check("...a folded alias resolves to its tier", "fanout", json.loads(_resolve("--tier=validation")[1]).get("tier")
+          if _resolve("--tier=validation")[0] == 0 else None)
+    _bad = _resolve("--tier=bogus")
+    check("...an unknown tier refuses with the known list", (2, True),
+          (_bad[0], "bogus" in _bad[2] and "architect" in _bad[2] and "scout" in _bad[2]))
+
+    def _ctx(shape):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = tp.main(["resolve", "--widen", "--shape=" + shape, "--context=" + _bf, "--workdir=" + _wd,
+                          "--config-dir=" + _home, "--field=builtins"])
+        return rc, out.getvalue()
+    check("brief_files keeps the prompt and the context files of a non-review shape", ["p.md", "a", "b"],
+          tp.brief_files("survey", "p.md", ["a", "b"]))
+    check("brief_files drops a review seat's context files and tolerates none", (["p.md"], ["p.md"], []),
+          (tp.brief_files("review", "p.md", ["a", "b"]), tp.brief_files("survey", "p.md", None),
+           tp.brief_files("review", None, ["a"])))
+    check("a --context file widens a survey profile like a --brief", (0, True),
+          (_ctx("survey")[0], "Bash" in _ctx("survey")[1]))
+    check("...and a review seat's --context file is not scanned", (0, False),
+          (_ctx("review")[0], "Bash" in _ctx("review")[1]))
 
 if RAN < 110:
     print("FAIL expected >= 110 cases, ran %d" % RAN)

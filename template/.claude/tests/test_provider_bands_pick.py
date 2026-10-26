@@ -11,6 +11,7 @@ formula unchanged, and its dollars travel in `quota.credits`.
     python3 .claude/tests/test_provider_bands_pick.py
 """
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -229,7 +230,7 @@ def main():
              got_recent and got_recent["basis"] == "recent" and round(got_recent["pct"], 1) == 60.8,
              repr(got_recent))
         # Two writers read one plan (the statusline capture and the capacity probe) and round apart, so
-        # used dips a point between them inside one reset period (observed 2026-10-24: 69, 68, 69, 68).
+        # used dips a point between them inside one reset period.
         jitter = [dict(base, ts=NOW - h * 3600, used=u)
                   for h, u in ((6, 16.0), (3, 17.0), (1, 19.0), (0.9, 18.0), (0.5, 19.0), (0.4, 18.0))]
         got_jitter = projection("anthropic", week, NOW, samples=jitter)
@@ -269,7 +270,7 @@ def main():
              bound and bound["basis"] == "bound" and round(bound["pct"], 1) == 42.0
              and bound.get("from") == "7d", repr(bound))
         # A shorter window caps the rate from above, so it replaces the window's own average only when
-        # lower: a 5h burst stretched over days read a Surplus week as fully spent (observed 2026-10-24).
+        # lower: a 5h burst stretched over days read a Surplus week as fully spent.
         surplus = {"name": "seven_day", "usedPercent": 31, "resetsAt": NOW + 3.4 * 86400,
                    "windowDurationMins": WEEK_MIN}
         burst = {"name": "five_hour", "usedPercent": 15, "resetsAt": NOW + 1.5 * 3600,
@@ -317,13 +318,10 @@ def main():
         plain = [{"transport": "a", "room": 1.2}, {"transport": "b", "room": 1.8}]
         case("with no projection, rank_room decides as before",
              max(plain, key=pb.pick_key)["transport"] == "b", repr(plain))
-        over = {"transport": "over", "headroom": 1.0, "room": 9.0,
-                "unusedAtReset": {"pct": 90, "basis": "recent", "daysLeft": 1}}
-        fits = {"transport": "fits", "headroom": 50.0, "room": 0.5,
-                "unusedAtReset": {"pct": 0.2, "basis": "average", "daysLeft": 6}}
-        case("a plan that no longer fits ranks below every fitting one, expiring quota or not",
-             max([over, fits], key=pb.pick_key)["transport"] == "fits",
-             repr([pb.pick_key(over), pb.pick_key(fits)]))
+        case("pick_key ranks fitting plans only: it takes no placed count and has no overdrawn tier",
+             "placed" not in inspect.signature(pb.pick_key).parameters
+             and pb.pick_key({"transport": "x", "headroom": 1.0, "room": 9.0}) == (1, 0, 9.0),
+             repr(inspect.signature(pb.pick_key)))
 
     # A short window binds the pick: a plan with weekly room but a nearly spent 5-hour window
     # cannot carry a job that starts now (observed: 83% of the 5-hour window used, 46% of its time left).
@@ -404,6 +402,7 @@ def main():
          and round(sec.get("bindingRoom") or 0, 2) == 0.85, repr(got))
 
     plan_cases(case)
+    drain_cases(case)
     credit_cases(case)
     facts_cases(case)
     names = [pb.window_name(w) for w in ({"windowDurationMins": 43200}, {"windowDurationMins": 300},
@@ -531,6 +530,116 @@ def plan_cases(case):
     except Exception as exc:
         ok, detail = False, "raised %s: %s" % (type(exc).__name__, exc)
     case("`set-status anthropic-secondary unavailable` on the shipped registry removes it from the pick", ok, detail)
+
+
+LEDGER_ROW = {"label": "plan-board-home", "transport": "anthropic-secondary", "costModel": "plan-quota",
+              "servedModel": "claude-sonnet-5-5", "requestedModel": "claude-sonnet-5-5", "effort": "high",
+              "costUSD": 2.241479, "numTurns": 76, "durationMs": 611549, "stopReason": "provider-usage-limit",
+              "timestamp": "2026-10-25T17:34:33Z", "toolProfile": {"shape": "author", "tier": "executor"}}
+
+
+def history(plan="p", periods=3, per_period=6, usd=(4.0,), rate=2.0, model="m-1", effort="high",
+            shape="author", window="five_hour"):
+    """(jobs, samples) of `periods` reset periods: each holds `per_period` finished jobs of `usd` costs, wholly inside
+    two samples two hours apart that differ by `rate` points per list dollar of those jobs."""
+    jobs, samples = [], []
+    for k in range(periods):
+        t0 = NOW - (periods - k) * 20000.0
+        costs = [usd[i % len(usd)] for i in range(per_period)]
+        reset = t0 + 18000
+        for i, c in enumerate(costs):
+            jobs.append({"plan": plan, "start": t0 + 600 + i * 600, "end": t0 + 1000 + i * 600, "usd": c,
+                         "model": model, "effort": effort, "shape": shape, "truncated": False})
+        for ts, used in ((t0, 0.0), (t0 + 7200, rate * sum(costs))):
+            samples.append({"ts": ts, "plan": plan, "provider": plan, "window": window, "used": used,
+                            "resets_at": reset})
+    return jobs, samples
+
+
+def drain_cases(case):
+    """The expected drain of one job on one plan: the plan's recorded points per list-price dollar times the
+    0.75 quantile of what finished jobs of its model, effort and shape cost; `JOB_DRAIN_PCT` where no history says."""
+    jobs, samples = history()
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=jobs, samples=samples)
+    case("a job's drain is the plan's recorded rate times the 0.75 quantile of its group's cost",
+         got.get("basis") == "measured" and round(got["pct"], 2) == 8.0 and round(got["usd"], 2) == 4.0
+         and round(got["rate"], 2) == 2.0, repr(got))
+    none = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=[], samples=[])
+    case("no history falls back to JOB_DRAIN_PCT and says so", none["pct"] == pb.JOB_DRAIN_PCT
+         and none["basis"] == "default" and none.get("why"), repr(none))
+    mixed_jobs, mixed_samples = history(per_period=8, usd=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
+    mixed = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=mixed_jobs, samples=mixed_samples)
+    case("the cost quoted is the 0.75 quantile of the group, not its mean (4.5) or its maximum (8)",
+         mixed["basis"] == "measured" and mixed["usd"] == 7.0 and round(mixed["rate"], 2) == 2.0, repr(mixed))
+    short_jobs, short_samples = history(periods=pb.RATE_MIN_PERIODS - 1)
+    short = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=short_jobs, samples=short_samples)
+    case("fewer reset periods than RATE_MIN_PERIODS state no rate", short["basis"] == "default"
+         and "period" in short["why"], repr(short))
+    other = pb.job_drain("p", "five_hour", "m-1", "high", "survey", jobs=jobs, samples=samples)
+    case("a shape with no recorded group takes the model's wider group, never the default",
+         other["basis"] == "measured" and round(other["usd"], 2) == 4.0, repr(other))
+    thin_jobs = [dict(j, effort="low") for j in jobs[:pb.GROUP_MIN_JOBS - 1]] + jobs
+    thin = pb.job_drain("p", "five_hour", "m-1", "low", "author", jobs=thin_jobs, samples=samples)
+    case("a group under GROUP_MIN_JOBS widens to the next group instead of quoting an anecdote",
+         thin["basis"] == "measured" and round(thin["usd"], 2) == 4.0, repr(thin))
+    unknown = pb.job_drain("p", "five_hour", "m-2", "high", "author", jobs=jobs, samples=samples)
+    case("a model with no finished jobs falls back to the default", unknown["basis"] == "default", repr(unknown))
+    elsewhere = pb.job_drain("p", "seven_day", "m-1", "high", "author", jobs=jobs, samples=samples)
+    case("a window with no samples of its own states no rate", elsewhere["basis"] == "default", repr(elsewhere))
+    clipped = [dict(j, truncated=True) for j in jobs[:6]] + jobs[6:]
+    case("jobs a usage limit cut short are excluded from a group's cost but not from the rate",
+         pb.job_usd("m-1", "high", "author", [dict(j, usd=0.1, truncated=True) for j in jobs] + jobs) == 4.0
+         and pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=clipped, samples=samples)["basis"] == "measured")
+    case("a job whose period it never sat inside adds no cost to that period's rate",
+         round(pb.plan_rate("p", "five_hour", jobs + [dict(jobs[0], start=NOW - 99999, end=NOW - 99000, usd=500)],
+                            samples)[0], 2) == 2.0)
+
+    def cached_drain_follows_reread():
+        saved = dict(pb._LEDGER_CACHE), dict(pb._SAMPLES_CACHE), pb._samples
+        pb._samples = lambda: pb._SAMPLES_CACHE["rows"]
+        try:
+            held_jobs, held_samples = history(rate=2.0)
+            now = time.time()
+            pb._LEDGER_CACHE.update(at=now, rows=held_jobs)
+            pb._SAMPLES_CACHE.update(at=now, rows=held_samples)
+            first = pb.job_drain("p", "five_hour", "m-1", "high", "author")["rate"]
+            held_samples[:] = history(rate=3.0)[1]
+            pb._SAMPLES_CACHE["at"] = now + 1
+            second = pb.job_drain("p", "five_hour", "m-1", "high", "author")["rate"]
+            return round(first, 2) == 2.0 and round(second, 2) == 3.0, repr((first, second))
+        finally:
+            pb._LEDGER_CACHE.update(saved[0])
+            pb._SAMPLES_CACHE.update(saved[1])
+            pb._samples = saved[2]
+    ok, detail = cached_drain_follows_reread()
+    case("a drain cached before the samples were re-read is recomputed after, whatever the lists' identity", ok, detail)
+
+    row = pb.ledger_job(LEDGER_ROW)
+    case("a ledger row becomes a finished job with its plan, span, list-price cost, group and truncation",
+         row and row["plan"] == "anthropic-secondary" and row["truncated"] and row["shape"] == "author"
+         and row["model"] == "claude-sonnet-5-5" and row["effort"] == "high" and row["usd"] == 2.241479
+         and round(row["end"] - row["start"], 1) == 611.5, repr(row))
+    case("a ledger row with no priced cost or not plan-quota is no job",
+         pb.ledger_job(dict(LEDGER_ROW, costUSD=None)) is None
+         and pb.ledger_job(dict(LEDGER_ROW, costModel="marginal-usd")) is None)
+
+    case("fits: a plan holds a job while its headroom covers the jobs on it and this one",
+         pb.fits({"headroom": 20.0}, 8.0, 12.0) and not pb.fits({"headroom": 20.0}, 8.1, 12.0)
+         and not pb.fits({"headroom": 8.0}, 0.0, 12.6) and pb.fits({"headroom": 8.0}, 4.0, 4.0))
+    case("fits: a row with no headroom reading fits, so the launcher's own gate decides",
+         pb.fits({"transport": "x"}, 50.0, 50.0))
+
+    five = 5 * 60
+    soon, late = NOW + 3600, NOW + 7200
+    two = reading("two", 50, 0.5)
+    two["quota"]["windows"].append({"name": "five_hour", "usedPercent": 92, "resetsAt": soon,
+                                    "windowDurationMins": five})
+    two["quota"]["windows"].append({"name": "other", "usedPercent": 60, "resetsAt": late,
+                                    "windowDurationMins": five})
+    row = pb.plan_room("two", registry(["two"]), reader({"two": two}), NOW)
+    case("a plan row names the window its headroom comes from and when that window resets",
+         row.get("headroom") == 8.0 and row.get("headroomWindow") == "five_hour"
+         and row.get("headroomResetsAt") == soon, repr(row))
 
 
 CONSOLE = "anthropic-console"
@@ -665,6 +774,16 @@ def facts_cases(case):
          all(isinstance(r.get("unusedAtReset"), dict) for r in got["plans"])
          and all(isinstance(p.get("unusedAtReset"), dict) for p in facts_view["plans"])
          and "transport" not in facts_view, repr(facts_view["plans"]))
+    spare = getattr(pb, "spare_pct", None)
+    at = {"unusedAtReset": {"pct": pb.USED_RESOLUTION, "daysLeft": 2}}
+    below = {"unusedAtReset": {"pct": pb.USED_RESOLUTION - 0.6, "daysLeft": 2}}
+    case("spare_pct reads a row or a projection: whole percents at the threshold, None below it",
+         callable(spare) and spare(at) == round(pb.USED_RESOLUTION) and spare(at["unusedAtReset"]) == spare(at)
+         and spare(below) is None and spare({"unusedAtReset": {"pct": 7.6}}) == 8,
+         repr((spare and spare(at), spare and spare(below))))
+    case("spare_pct is None for a row with no projection, a malformed one or a bool",
+         callable(spare) and spare({}) is None and spare(None) is None and spare({"unusedAtReset": None}) is None
+         and spare({"pct": "9"}) is None and spare({"pct": True}) is None, "")
 
 
 def cli_case(case):

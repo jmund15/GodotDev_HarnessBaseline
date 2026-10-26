@@ -105,7 +105,7 @@ def snapshot_is_current(directory: Path, catalog_path: Path) -> bool:
     try:
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
         entries = manifest["entries"]
-        if not entries or manifest["catalogSha256"] != hashlib.sha256(catalog_path.read_bytes()).hexdigest():
+        if manifest["catalogSha256"] != hashlib.sha256(catalog_path.read_bytes()).hexdigest():
             return False
         index = (directory / "index.md").read_text(encoding="utf-8")
         if manifest["catalogSha256"] not in index:

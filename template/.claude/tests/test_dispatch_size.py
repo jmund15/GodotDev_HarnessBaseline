@@ -29,6 +29,12 @@ class Plant(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = self.temp.name
+        self.login = os.path.join(self.root, "login")
+        os.mkdir(self.login)
+        saved = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = self.login
+        self.addCleanup(lambda: os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None
+                        else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved))
 
     def file(self, name, kb):
         path = os.path.join(self.root, name)
@@ -312,6 +318,12 @@ class WindowFitTests(Plant):
         self.assertEqual(closing, "pin is the cheapest claimant: cheap")
         self.assertNotIn("pin haiku", survey.lower())
 
+    def test_a_written_tier_outranks_the_shape_row(self):
+        job = dict(self.claimant_job("ex", "claude-sonnet-5-5", "survey", "x.md"), tier="executor")
+        line = dispatch_size.fact_lines({"jobs": [job]}, self.root)[0]
+        self.assertIn("`executor`", line)
+        self.assertNotIn("`fanout`", line)
+
     def test_a_reading_past_the_cheaper_rows_price_point_is_stated_past_it(self):
         spec = {"jobs": [self.claimant_job("wide", "claude-sonnet-5-5", "survey", "w.md", kb=300)]}
         line = dispatch_size.fact_lines(spec, self.root)[0]
@@ -411,6 +423,11 @@ class WindowFitTests(Plant):
 class CompactionPointTests(Plant):
     """A job's fit counts the files its brief names, against the input point it compacts at, for its own flags."""
 
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.login, "settings.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"autoCompactWindow": 500000}, fh)
+
     @staticmethod
     def anthropic_point(alias, **flags):
         import model_registry
@@ -431,21 +448,37 @@ class CompactionPointTests(Plant):
         self.assertGreater(per["tokens"], 400 * KB / dispatch_size.CHARS_PER_TOKEN)
         self.assertEqual(per["tokens"], per["readingTokens"])
 
-    def test_a_resident_anthropic_job_is_measured_against_the_resident_compaction_point(self):
-        job, _big = self.named_job("res", 1300, resident=True, shape="author")
+    def test_a_full_window_job_is_sized_against_the_models_own_window(self):
+        import model_registry
+        entry = model_registry.resolve("opus", model_registry.load())
+        plain = model_registry.compaction_point(entry, {"transport": "anthropic"})
+        full = model_registry.compaction_point(entry, {"transport": "anthropic", "window": "full"})
+        self.assertEqual(plain, (467000, "auto-compact"))
+        self.assertGreater(full[0], plain[0])
+        job, _big = self.named_job("full", 1300, window="full")
+        self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], full[0])
+
+    def test_an_anthropic_job_is_measured_against_the_login_capped_point_whatever_its_marks(self):
+        job, _big = self.named_job("res", 700, resident=True, shape="author")
+        job["prompt"] += " And `%s`." % self.file("named-res2.md", 700)
         per = dispatch_size.dispatch_size([job])["perJob"][0]
-        self.assertEqual(per["usable"], self.anthropic_point("opus", resident=True))
+        self.assertEqual(per["usable"], self.anthropic_point("opus"))
         self.assertEqual(per["usable"], 467000)
         self.assertEqual(per["over"], per["tokens"] - per["usable"])
         self.assertGreater(per["over"], 0)
 
-    def test_a_review_shaped_job_uses_the_resident_point_and_a_plain_job_the_full_window_point(self):
+    def test_a_review_shaped_job_and_a_plain_job_share_one_point(self):
         review, _ = self.named_job("rev", 1, shape="review")
         plain, _ = self.named_job("plain", 1, shape="author")
         per = dispatch_size.dispatch_size([review, plain])["perJob"]
-        self.assertEqual(per[0]["usable"], self.anthropic_point("opus", shape="review"))
-        self.assertEqual(per[1]["usable"], self.anthropic_point("opus"))
-        self.assertGreater(per[1]["usable"], per[0]["usable"])
+        self.assertEqual(per[0]["usable"], self.anthropic_point("opus"))
+        self.assertEqual(per[1]["usable"], per[0]["usable"])
+
+    def test_haiku_keeps_its_own_operating_point_under_the_login_cap(self):
+        job, _ = self.named_job("hai", 1, shape="review")
+        job["model"] = "haiku"
+        self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], self.anthropic_point("haiku"))
+        self.assertLess(self.anthropic_point("haiku"), 467000)
 
     def test_another_transport_keeps_its_current_point(self):
         import model_registry
@@ -480,8 +513,9 @@ class CompactionPointTests(Plant):
         unpinned = {"label": "none", "prompt": "no pin"}
         lines = dispatch_size.fit_lines(dispatch_size.dispatch_size([job, unpinned]))
         self.assertEqual(len(lines), 1, lines)
-        self.assertRegex(lines[0], r"^fit: `res` \(opus\) reading \d+ tokens, \d+% of its compaction point, 467000 tokens "
-                                   r"\(auto-compact\); 1 named path not resolved, counted 0$")
+        self.assertRegex(lines[0], r"^fit: `res` \(opus\) reading \d+ tokens \(\d+ if every named file is read whole\), \d+% of its "
+                                   r"compaction point, 467000 tokens \(auto-compact\); largest: .*named-res\.md \d+k; "
+                                   r"1 named path not resolved, counted 0$")
 
     def test_the_lens_seat_overage_inherits_the_fix_through_the_shared_fit(self):
         import lens_briefs
@@ -490,11 +524,79 @@ class CompactionPointTests(Plant):
         point = model_registry.usable_window(model_registry.resolve("haiku", data))
         big = self.file("named-big.md", math.ceil(point * dispatch_size.CHARS_PER_TOKEN / KB) + 40)
         context = self.file("ctx.md", 1)
-        body = "Read `%s` first." % big
-        refusal = lens_briefs.seat_overage(key="k", token="haiku", body=body, context_path=context,
-                                           entries=[], data=data)
+        refusal = lens_briefs.seat_overage(key="k", token="haiku", body="Read the list.", context_path=context,
+                                           entries=[{"path": big, "lines": 10}], data=data)
         self.assertIsNotNone(refusal)
         self.assertIn("exceed its usable window", refusal)
+
+
+class BucketTests(Plant):
+    """A named file is read whole only when nothing in the brief says otherwise: a writeSet file or a `path:N-M`
+    citation is a span, counted in the upper number only."""
+
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.login, "settings.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"autoCompactWindow": 500000}, fh)
+
+    def sized(self, body, write_set=(), **extra):
+        brief = body + "\n```task\n" + json.dumps({"tier": "executor", "check": ["true"],
+                                                     "writeSet": list(write_set)}) + "\n```\n"
+        job = {"label": "j", "prompt": brief, "model": "opus", "effort": "high"}
+        job.update(extra)
+        return dispatch_size.dispatch_size([job], root=self.root)
+
+    def test_a_brief_whose_writeset_covers_its_named_files_counts_them_in_the_upper_number_only(self):
+        self.file("a.py", 100)
+        self.file("b.py", 100)
+        per = self.sized("Edit `a.py` and `b.py`.", ["a.py", "b.py"])["perJob"][0]
+        self.assertLess(per["lowerTokens"], 1000)
+        self.assertEqual(per["readingTokens"], per["lowerTokens"])
+        self.assertGreaterEqual(per["upperTokens"] - per["lowerTokens"], 2 * 100 * KB // 2.5 - 2)
+
+    def test_a_bare_named_file_outside_the_writeset_counts_in_the_lower_number(self):
+        self.file("ref.md", 100)
+        self.file("a.py", 100)
+        per = self.sized("Read `ref.md`; edit `a.py`.", ["a.py"])["perJob"][0]
+        self.assertGreaterEqual(per["lowerTokens"], 100 * KB / 2.5)
+        self.assertLess(per["lowerTokens"], 1.5 * 100 * KB / 2.5)
+        self.assertGreater(per["upperTokens"], per["lowerTokens"] + 100 * KB / 2.5 - 2)
+
+    def test_a_line_cited_file_counts_in_the_upper_number_only_unless_also_cited_bare(self):
+        self.file("c.md", 100)
+        per = self.sized("See `c.md:10-20`.")["perJob"][0]
+        self.assertLess(per["lowerTokens"], 1000)
+        self.assertGreater(per["upperTokens"], 100 * KB / 2.5)
+        both = self.sized("See `c.md:10-20` and `c.md`.")["perJob"][0]
+        self.assertGreater(both["lowerTokens"], 100 * KB / 2.5)
+
+    def test_a_named_file_over_the_point_counts_zero_and_is_a_search_source(self):
+        big = self.file("huge.jsonl", 1300)
+        per = self.sized("Search `huge.jsonl` for the rows.")["perJob"][0]
+        self.assertLess(per["upperTokens"], 1000)
+        self.assertEqual([os.path.basename(p) for p in per["searchSources"]], ["huge.jsonl"])
+        self.assertEqual(per["searchSources"], [big])
+
+    def test_the_fit_line_names_the_largest_files_and_says_ceiling_over_when_only_the_upper_number_is_over(self):
+        for name in ("m1.py", "m2.py", "m3.py"):
+            self.file(name, 400)
+        size = self.sized("Edit `m1.py`, `m2.py`, `m3.py`.", ["m1.py", "m2.py", "m3.py"])
+        per = size["perJob"][0]
+        self.assertEqual(len(per["largest"]), 3)
+        text = dispatch_size.fit_lines(size)[0]
+        self.assertRegex(text, r"reading \d+ tokens \(\d+ if every named file is read whole\), <?\d+%? of its compaction")
+        self.assertIn("largest: ", text)
+        self.assertIn("m1.py 164k", text)
+        self.assertIn("ceiling over", text)
+        self.assertNotIn("over its point", text)
+
+    def test_a_job_whose_lower_number_is_over_is_named_over_not_ceiling_over(self):
+        self.file("r1.md", 600)
+        self.file("r2.md", 600)
+        size = self.sized("Read `r1.md` and `r2.md`.")
+        text = dispatch_size.fit_lines(size)[0]
+        self.assertIn("over its point", text)
+        self.assertNotIn("ceiling over", text)
 
 
 if __name__ == "__main__":
