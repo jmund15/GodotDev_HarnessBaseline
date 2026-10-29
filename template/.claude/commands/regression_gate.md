@@ -155,19 +155,19 @@ Example deltas: `[+12]`, `[unchanged]`, `[-3 — drop acknowledged]`.
 [x] Sanity suite: N passing, 0 failing  (Δ: +X / -Y)
 [x] No silent skips detected (no `GodotRuntimeExecutor failed` / `Connection timeout`)
 [x] No JmoLogger.Error fired during test runs
-[<state>] /session_audit admitted coverage, no MERGE-BLOCKER findings
+[<state>] /session_audit admitted coverage, no critical parity findings
 [<state>] Refactor parity check (only required if files were deleted this session)
 
-Verdict: APPROVE | APPROVE WITH NOTES | REQUEST CHANGES
+Verdict: APPROVE | APPROVE WITH NOTES | REVISE
 ```
 
 **Checkbox states:** `[x]` verified true this session · `[ ]` applicable but NOT yet verified (the agent runs the check; if blocked, name the constraint and retain the unverified state) · `[—]` not applicable this session. A suite item satisfied **via REUSE** marks `[x]`.
 
 **Row sources.** The suite rows come from the gate artifact (`gate_last.md`) and its `STATUS` lines. The review and parity rows come from the review ledger (`review_ledger.py rows --task <task id>`, or `--subject session:<id>` without a task):
-- **`/session_audit`:** derive candidate width from `execution_depth.md` §Candidate width using the checked gate result. `[—]` when width is `none`; otherwise `[x]` when every admitted mandate is covered over the changed files' hashes with no MERGE-BLOCKER, and `[ ]` when admitted coverage is missing or a MERGE-BLOCKER stands. Check coverage with `review_ledger.py uncovered --files <changed paths> --mandates candidate --roster <admitted roster.json>`; `owed` lists commit summaries, not pairs. Never admit a review just to fill this row.
+- **`/session_audit`:** derive candidate width from `execution_depth.md` §Candidate width using the checked gate result. `[—]` when width is `none`; otherwise `[x]` when every admitted mandate is covered over the changed files' hashes with no critical parity finding, and `[ ]` when admitted coverage is missing or a critical parity finding stands. Check coverage with `review_ledger.py uncovered --files <changed paths> --mandates candidate --roster <admitted roster.json>`; `owed` lists commit summaries, not pairs. Never admit a review just to fill this row.
 - **Refactor parity:** `[—]` unless `git diff --diff-filter=D` shows deletions this session; `[x]` when the ledger holds a covering `parity` row with no drops; `[ ]` when files were deleted and no such row exists.
 
-**Verdict mapping:** `APPROVE` — all items `[x]` or `[—]`. `APPROVE WITH NOTES` — all suite items `[x]`, advisory items `[ ]` acknowledged by the user. `REQUEST CHANGES` — any suite item failing, or a blocking test-related item `[ ]`.
+**Verdict mapping:** `APPROVE` — all items `[x]` or `[—]`. `APPROVE WITH NOTES` — all suite items `[x]`, advisory items `[ ]` acknowledged by the user. `REVISE` — any suite item failing, or a blocking test-related item `[ ]`.
 
 ## Rules
 
