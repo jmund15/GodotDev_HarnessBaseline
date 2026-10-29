@@ -638,7 +638,8 @@ def launch_census(table):
 
 def ownership(table, pid, session_pid, sid):
     """(proof, foreign): a proof string when the target is this session's; `foreign` set when it is
-    positively ANOTHER session's; (None, None) when no session claims it."""
+    positively ANOTHER session's; (None, None) when no session claims it. An empty environment block means the
+    read failed, which the caller treats as unprovable."""
     if session_pid and session_pid in ancestors(table, pid):
         return "descends from this session's claude.exe pid %d" % session_pid, None
     # The target's OWN environment is the decisive evidence: a process launched from this session
@@ -1215,6 +1216,8 @@ def _main(argv=None, env=None):
                 entry["proof"] = proof
         # No session claims it (an app the owner launched): the facts above already cleared it. Whether the
         # owner ordered the stop is the classifier's to judge on the call, not this tool's.
+        if not proof and not foreign and not _environ(pid):
+            foreign = "its environment is unreadable, so a session's claim on it cannot be ruled out"
         if not proof and not foreign:
             proof = "unclaimed: its environment names no session and no session host sits above it"
             entry["proof"] = proof

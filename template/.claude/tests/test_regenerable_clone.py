@@ -590,6 +590,8 @@ def retired_worktree_cases():
                                          os.path.join(scratch, "copytree"))))
     expect_wt_channel("scratch folder holding a registered worktree", "rm -rf .claude/scratch/heldtree", "deny", proj)
     expect_wt_channel("scratch repository with an unpushed commit", "rm -rf .claude/scratch/unsaved_repo", "deny", proj)
+    expect_wt_deny_names("scratch repository deny names push, not a by-file delete",
+                         "rm -rf .claude/scratch/unsaved_repo", "push its commits to a remote", proj)
     expect_wt_channel("whole scratch dir", "rm -rf .claude/scratch", "deny", proj)
     peer_dir = os.path.join(scratch, "peers", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d")
     os.makedirs(peer_dir)

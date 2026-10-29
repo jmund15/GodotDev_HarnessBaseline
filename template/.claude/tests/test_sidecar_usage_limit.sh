@@ -228,6 +228,14 @@ rm -f "$MARKER"
 (sc_mark_auth_failure "$_auth" 0; sc_mark_auth_failure '{"type":"result","result":"done"}' 1) 2>/dev/null
 [ ! -f "$MARKER" ] && ok "G3 a clean exit, or a failure that names no auth error, writes no marker" \
   || bad "G3 a clean exit, or a failure that names no auth error, writes no marker" "$(cat "$MARKER")"
+rm -f "$MARKER"
+_quoted='{"type":"user","message":{"content":[{"type":"tool_result","content":"grep: Failed to authenticate"}]}}'
+(sc_mark_auth_failure "$(printf '%s\n%s' "$_quoted" '{"type":"result","is_error":false,"result":"done"}')" 1; sc_mark_auth_failure "$_quoted" 124) 2>/dev/null
+[ ! -f "$MARKER" ] && ok "G5 a stream that merely quotes the phrase, with no auth result, writes no marker" \
+  || bad "G5 a stream that merely quotes the phrase, with no auth result, writes no marker" "$(cat "$MARKER")"
+(sc_mark_auth_failure "$(printf '%s\n%s' "$_quoted" "$_auth")" 1) 2>/dev/null
+[ "$(marker_field reason)" = auth ] && ok "G6 a stream whose final result row is the auth failure writes the marker" \
+  || bad "G6 a stream whose final result row is the auth failure writes the marker" "reason=$(marker_field reason)"
 rm -f "$MARKER"; reset_run g4
 (sc_write_record "$_auth" 1) >/dev/null 2>&1
 [ "$(marker_field reason)" = auth ] && ok "G4 every launcher's record write marks an auth failure (sc_write_record)" \

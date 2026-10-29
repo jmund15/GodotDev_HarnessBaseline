@@ -107,7 +107,7 @@ def run(argv, tbl, env=None, ledger=None, environ=None, transcript="default", se
     reap.taskkill = lambda pid, tree=True: (killed.append(pid) or True) if ok(pid) else False
     # Nothing here may touch the OS: the environ read is planted, defaulting to "no environment
     # readable" so every case exercises the fallback proofs unless it says otherwise.
-    reap.environ_of = environ or (lambda pid: b"")
+    reap.environ_of = environ or (lambda pid: b"PATH=planted\0")
     reap.launch_environ = peb or reap.environ_of
     reap.msys_environ = msys or (lambda pid: b"")
     reap.ps_text = lambda: ps
@@ -312,6 +312,9 @@ def main():
     rec = last_ledger_row()
     ck("the ledger records an unclaimed proof, so the kill of a process no session owns is auditable",
        "unclaimed" in (rec.get("proof") or "") and rec.get("pid") == 53844, json.dumps(rec)[:300])
+    rc, killed, out = run(["53844"], table([editor]), environ=lambda pid: b"")
+    ck("a target whose environment cannot be read is refused, never killed as unclaimed",
+       rc == 2 and killed == [] and "unreadable" in out, out[-300:])
     rc, killed, out = run(["53844", "--why", "x"], table([editor]))
     rec = last_ledger_row()
     ck("--why \"x\" is accepted and lands in the ledger row verbatim", rc == 0 and rec.get("why") == "x", json.dumps(rec)[:300])

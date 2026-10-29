@@ -1479,7 +1479,7 @@ def continuation_text(attempt, stopped, plan, brief, workdir, start_head, report
     return ("=== CONTINUATION ===\n"
             f"A provider usage limit stopped the earlier run of this job on plan {stopped} partway through its work. "
             f"You are a fresh session on plan {plan} (attempt {attempt}), with none of that run's memory. "
-            "Nothing it did is lost.\n"
+            "\n"
             f"- Read the brief {brief} in full first, then its `.amend.md` beside it if present.\n"
             f"- {where} holds the earlier run's commits (`{log}`) and its uncommitted edits (`git status --short`). "
             "Keep both: read each uncommitted diff, finish or correct it, and commit it under the brief's rules. "
@@ -1839,7 +1839,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     # A bounded pool: `max_parallel` workers draining a queue. The previous shape started one OS
     # thread per job and used the semaphore only to cap concurrent SUBPROCESSES, so a 200-job file
     # spawned 200 threads to run 4 at a time -- and N is caller-controlled from the jobs JSON.
-    # `waves` (a `Waves`, or None when every plan holds its forecast) picks which queued unit starts next and when a
+    # `waves` (a `Waves`, or None when no plan reads a window) picks which queued unit starts next and when a
     # job waits, moves or stops; every call into it runs under `lock`, and a job end wakes the workers waiting on it.
     results = {}
     if not planned:

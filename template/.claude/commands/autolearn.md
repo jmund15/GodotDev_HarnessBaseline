@@ -20,7 +20,7 @@ Signal detection runs over the digest, never over what survived compaction. In `
 python3 .claude/tools/session_digest.py --prompt-tail autolearn --handoff
 ```
 
-Use the handoff only as the bounded orientation packet. Then dispatch one fresh qualified analyst, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
+Use the handoff only as the bounded orientation packet. Then dispatch one `shape: review` job through `/delegate`, pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
 
 ```bash
 python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>
@@ -101,6 +101,6 @@ Proposals reach the owner as one packet (`CLAUDE.core.md` §Preferences), retire
 
 ## Applying changes
 
-Run each approved row's named executor (§Step 0): `/codify` §Steps 6–7 for a guidance or memory edit, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing, which lands the change and proves it fires; a fix job for a code or hook edit; `/worklog` for a deferral. Commit as `chore(autolearn): <brief description>` and report what changed.
+Run each approved row's named executor (§Step 0). A `/codify` row runs its §Steps 6–7, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing, which lands the change and proves it fires. Commit as `chore(autolearn): <brief description>` and report what changed.
 
 Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --row <R#> --target <target> --signal <signal> --recommended <apply|choose> --outcome applied|declined --reason <text>`, with the owner's stated reason or `none given`. The tool rejects a malformed row and caps the file.

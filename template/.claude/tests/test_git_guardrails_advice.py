@@ -190,6 +190,7 @@ def main():
     check("git stash clear stays blocked with a preserved entry", not crashed and rc == 2, msg)
 
     cite = "CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first"
+    loss_cite = "CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost"
     destructive_ops = (
         ("git reset --hard", "git reset --keep"),
         ("git checkout -- f.txt", "save it first: `git update-ref refs/preserve/"),
@@ -204,8 +205,13 @@ def main():
     )
     for command, next_step in destructive_ops:
         rc, msg, crashed = run_hook(command, repo)
+        label = loss_cite if command.startswith(("git checkout", "git restore")) else cite
         check("%s denial cites the hard-to-reverse rule and next step" % command,
-              not crashed and rc == 2 and cite in msg and next_step in msg, msg)
+              not crashed and rc == 2 and label in msg and next_step in msg, msg)
+    for command in ("git checkout -- f.txt", "git restore f.txt", "git branch -D uniq"):
+        rc, msg, crashed = run_hook(command, repo)
+        check("%s denial names the observed loss, not an owner go-ahead it cannot check" % command,
+              "owner's explicit go-ahead first" not in msg and "would be lost" in msg or "lose" in msg, msg)
     for command in ("git checkout -- f.txt", "git restore f.txt", "git branch -D obsolete"):
         rc, msg, crashed = run_hook(command, repo)
         check("%s denial claims no reply of the owner lets it through" % command,
@@ -270,7 +276,8 @@ def main():
         rc, msg, crashed = run_hook(command, cache)
         check("%s passes: a tracked bytecode cache regenerates" % command, not crashed and rc == 0, msg)
     for command in ("git checkout -- pkg/__pycache__ f.txt", "git checkout -- pkg/m.cpython-314.pyc",
-                    "git checkout -- pkg"):
+                    "git checkout -- pkg", "git checkout -- pkg/__pycache__/../../f.txt",
+                    "git restore ':!pkg/__pycache__'", "git checkout -- ':(exclude)pkg/__pycache__'"):
         rc, msg, crashed = run_hook(command, cache)
         check("%s is blocked (something beside the bytecode cache would be lost)" % command,
               not crashed and rc == 2, msg)
@@ -333,6 +340,13 @@ def main():
         rc, msg, crashed = run_hook(command, saved)
         check("%s deny says to name each file, not that the same command passes" % command,
               not crashed and rc == 2 and "name each file" in msg and "then the same command passes" not in msg, msg)
+
+    for command in ("git restore .", "git restore sub", "git restore -W f.txt", "git restore --worktree f.txt",
+                    "git restore -s HEAD f.txt"):
+        rc, msg, crashed = run_hook(command, saved)
+        check("%s deny names a step that passes, not an unchanged retry" % command,
+              not crashed and rc == 2 and "then the same command passes" not in msg
+              and ("name each file" in msg or "without `--worktree`" in msg or "--source=<ref>" in msg), msg)
 
     # `branch -D` loses no commit when a ref outside the deleted set holds every one: a remote-tracking
     # ref, a tag, or refs/preserve. Otherwise the deny names each unmet branch and the preserve step.

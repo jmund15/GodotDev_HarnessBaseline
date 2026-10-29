@@ -37,7 +37,7 @@ class StopInvocationTests(unittest.TestCase):
                     return_value=('Bash', {'command': command}, None)):
                 self.assertIsNone(kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
         with patch.object(kill_guard, '_launch_of', return_value=None):
-            self.assertIn('did not launch', kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
+            self.assertIn('no launch of task', kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
 
 
 class TerminalStatusTests(unittest.TestCase):

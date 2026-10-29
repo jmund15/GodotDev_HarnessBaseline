@@ -303,7 +303,7 @@ def c_taskstop_async_agent_launch():
     foreground = _launch_rows("afore001", "sleep 60", name="Agent")
     foreground[2]["toolUseResult"] = {"agentId": "afore001", "isAsync": False}
     return (taskstop(rows=rows, task_id="aasync01") is None
-            and "did not launch" in (taskstop(rows=foreground, task_id="afore001") or ""))
+            and "no launch of task" in (taskstop(rows=foreground, task_id="afore001") or ""))
 
 
 @case("an own foreground shell that timed out into the background passes")
@@ -329,7 +329,7 @@ def c_taskstop_stop_words_grant_nothing():
         taskstop(rows=[_answer_row(question, "Yes, stop it (Recommended)")], task_id="bhunx053s"),
         taskstop(rows=[_text_row("ok"), _bash_row("will stop bhunx053s shortly")], task_id="bhunx053s"),
     )
-    return all("did not launch" in (reason or "") for reason in cases)
+    return all("no launch of task" in (reason or "") for reason in cases)
 
 
 def _padding(megabytes):
@@ -353,25 +353,25 @@ def c_taskstop_ended_beyond_a_tail_window():
 @case("a subagent's (sidechain) background shell is not this session's: denied")
 def c_taskstop_sidechain_shell_denied():
     rows = _launch_rows("bgside3", "sleep 600", sidechain=True)
-    return "did not launch" in (taskstop(rows=rows, task_id="bgside3") or "")
+    return "no launch of task" in (taskstop(rows=rows, task_id="bgside3") or "")
 
 
 @case("a task launched under ANOTHER id grants nothing for this id")
 def c_taskstop_other_id_denied():
     rows = _launch_rows("bgpoll9", "sleep 600")
-    return "did not launch" in (taskstop(rows=rows, task_id="bgpoll8") or "")
+    return "no launch of task" in (taskstop(rows=rows, task_id="bgpoll8") or "")
 
 
 @case("TaskStop with no task id in the call is denied")
 def c_taskstop_no_task_id():
     reason = taskstop_payload({"tool_name": "TaskStop", "tool_input": {}}) or ""
-    return "did not launch" in reason
+    return "no launch of task" in reason
 
 
 @case("a transcript that cannot be read leaves the launch unproven: denied")
 def c_taskstop_unreadable():
     missing = os.path.join(tempfile.gettempdir(), "no-such-taskstop-transcript.jsonl")
-    return "did not launch" in (taskstop(transcript_path=missing) or "")
+    return "no launch of task" in (taskstop(transcript_path=missing) or "")
 
 
 @case("the deny names the task and one next step, and offers no owner-wording route")
@@ -431,13 +431,13 @@ def c_taskstop_ended_billed_allowed():
 @case("NEGATIVE: another task's completion notice grants nothing for this one")
 def c_taskstop_other_task_ended_denied():
     rows = [_ended_row("aother99")]
-    return "did not launch" in (taskstop(rows=rows, task_id="aended02") or "")
+    return "no launch of task" in (taskstop(rows=rows, task_id="aended02") or "")
 
 
 @case("NEGATIVE: a task id quoted in tool output without a task-notification is not an ended task")
 def c_taskstop_quoted_id_not_ended():
     rows = [_bash_row("grep says <task-id>aended03</task-id> <status>completed</status>")]
-    return "did not launch" in (taskstop(rows=rows, task_id="aended03") or "")
+    return "no launch of task" in (taskstop(rows=rows, task_id="aended03") or "")
 
 
 def _with_resolvers(cim, winpid):

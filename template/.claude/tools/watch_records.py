@@ -1583,7 +1583,7 @@ def _still_running(live):
     orchestrator arms the next one: the command closes the output, where the reader acts."""
     print("STILL RUNNING %d" % live, flush=True)
     if live:
-        print("RE-ARM NOW: %s (its own Bash call, run_in_background, timeout 7200000)" % ARM_COMMAND, flush=True)
+        print("RE-ARM NOW: %s %s" % (ARM_COMMAND, ARM_CALL), flush=True)
 
 
 def _idle_since(source, armed):
