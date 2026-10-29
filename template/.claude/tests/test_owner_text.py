@@ -2,7 +2,7 @@
 """Proof: hooks/_owner_text.classify parses every owner-row shape once, and each consumer's
 projection matches the shape x consumer table in the module docstring.
 
-Consumers: kill_guard (consent text and answer pairs), harness_growth_guard (turn start), the
+Consumers: harness_growth_guard (turn start), the
 session digest's owner-prompt record (session_digest.owner_prompts, built on
 _transcript_summary.TranscriptSummaryBuilder), the provider guard's `owner:` quote
 (`owner_quote_text`/`owner_quote_rows`) and the `owner_turns` record `tools/verify_claims.py` reads. The
@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -109,7 +110,7 @@ TURN_BEFORE_ANSWERS = "u08"   # the latest turn when the transcript ends at the 
 
 
 def table(doc):
-    """{shape: [kill_guard, harness_growth_guard, digest, provider_guard, owner_turns]} from the docstring; a
+    """{shape: [harness_growth_guard, digest, provider_guard, owner_turns]} from the docstring; a
     column the table lacks reads "(missing)", which no projection matches."""
     rows = {}
     for line in (doc or "").splitlines():
@@ -117,9 +118,9 @@ def table(doc):
         if not s.startswith("|") or set(s) <= set("|-: "):
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
-        if cells[0] == "shape" or len(cells) < 5:
+        if cells[0] == "shape" or len(cells) < 4:
             continue
-        rows[cells[0]] = (cells[1:6] + ["(missing)"] * 5)[:5]
+        rows[cells[0]] = (cells[1:5] + ["(missing)"] * 4)[:4]
     return rows
 
 
@@ -131,7 +132,6 @@ def main():
         print("FAIL _owner_text imports (%s: %s)" % (type(exc).__name__, exc))
         print("\n0/1 cases pass")
         return 1
-    kg = load("kg", HOOKS / "kill_guard.py")
     gg = load("gg", HOOKS / "harness_growth_guard.py")
     sd = load("sd", TOOLS / "session_digest.py")
 
@@ -235,14 +235,8 @@ def main():
     for (label, entry), row in zip(FIXTURE, rows):
         if not label or label not in expected:
             continue
-        k_cell, g_cell, s_cell, q_cell, t_cell = expected[label]
+        g_cell, s_cell, q_cell, t_cell = expected[label]
         name = "%s [%s]" % (label, entry["uuid"])
-        text, pairs = kg._message_text(entry), kg._askuserquestion_answers(entry)
-        k_ok = {"drop": text is None and pairs is None,
-                "text": text == row.text and pairs is None,
-                "args": text == row.command_args and pairs is None,
-                "pairs": text is None and pairs is not None and list(pairs) == list(row.pairs or [])}.get(k_cell)
-        cases.append(("kill_guard %s: %s" % (k_cell, name), bool(k_ok)))
         g_ok = starts_turn is not None and {"turn": True, "no turn": False}.get(g_cell) == starts_turn(row)
         cases.append(("harness_growth_guard %s: %s" % (g_cell, name), bool(g_ok)))
         got = digest.get(row.index)
@@ -297,55 +291,10 @@ def main():
                   not any("Yes, stop it" in text for text in quotes or [])))
     cases.append(("an unreadable transcript is not an empty one for owner_turns", missing_turns is None))
 
-    import re
-    act, decl = re.compile(r"\b(delete|remove)\b", re.I), re.compile(r"\b(no|not|don't|stop|keep)\b", re.I)
-
-    def asst(text):
-        return {"type": "assistant", "uuid": "a", "message": {"role": "assistant",
-                                                              "content": [{"type": "text", "text": text}]}}
-
-    def consent(*rows):
-        return ot.owner_consent([json.dumps(row) for row in rows], ["feature/x"], act, decl)
-
-    Q = "Delete branch feature/x?"
-    for asked, said, want in [
-        (Q, "ok, what would that delete?", False),
-        (Q, "sure, but explain first", False),
-        ("I will not delete feature/x until you say so. Continue with the other task?", "ok", False),
-        (None, "why did you delete feature/x?", False),
-        (None, "did you remove feature/x yet?", False),
-        ("Delete branch feature/x? It has 3 unmerged commits.", "yes", True),
-        (Q, "go ahead.", True),
-        (Q, "yes please", True),
-        (Q, "sure, do it", True),
-        (Q, "yes after you fix X", False),
-        (None, "delete feature/x", True),
-    ]:
-        rows = ([asst(asked)] if asked else []) + [user(said, "c1")]
-        cases.append(("consent %s: %r after %r" % ("allows" if want else "denies", said, asked),
-                      consent(*rows) == want))
-    pick = user([{"type": "tool_result", "tool_use_id": "toolu_c", "content": "x"}], "c2",
-                toolUseResult={"questions": [{"question": "Which for feature/x?"}],
-                               "answers": {"Which for feature/x?": "Delete it"}})
-    cases.append(("consent allows an answer row naming the target with a matching label", consent(pick)))
-
-    packet = ("feature/x is merged.\n\n**Q1: what to do with it?**\n"
-              "- **O1 (my pick): delete it now.** Nothing else uses it.\n"
-              "- **O2: keep it for later.**")
-    cases.append(("consent allows an option code picking an action option of a packet naming the target",
-                  consent(asst(packet), user("O1", "c3"))))
-    cases.append(("consent denies an option code picking the keep option",
-                  not consent(asst(packet), user("O2", "c4"))))
-    cases.append(("consent denies an option code to a packet naming no target",
-                  not consent(asst(packet.replace("feature/x", "the branch")), user("O1", "c5"))))
-    cases.append(("consent resolves an option code from the packet before a codeless restatement",
-                  consent(asst(packet), asst("Still open; Q1 is pending."), user("O1", "c6"))))
-    two = ("feature/x and feature/y are merged.\n\n**Q1: which to delete?**\n"
-           "- **O1: delete feature/x.**\n- **O2: delete feature/y.**")
-    cases.append(("consent denies an option code picking the option of another target the packet names",
-                  not consent(asst(two), user("O2", "c7"))))
-    cases.append(("consent allows an option code picking the option that names the target",
-                  consent(asst(two), user("O1", "c8"))))
+    # Intent belongs to the auto-mode classifier: no guard reads an owner's reply as consent, so the parser
+    # offers no consent predicate, affirmative list or option-code reader.
+    retired = ("owner_consent", "names_all", "AFFIRM_RE", "OPTION_CODE_RE")
+    cases.append(("the consent parser and its word lists are retired", not any(hasattr(ot, name) for name in retired)))
 
     # Rows cut from the captured live transcript (fixtures/owner_text/live_rows.jsonl).
     summary, summary_alt = LIVE["compact_summary"], LIVE["compact_summary_session_id_variant"]
@@ -371,15 +320,6 @@ def main():
                   not any(SUMMARY_WORDS in text for _, text in live_turns)))
     cases.append(("owner_quote_rows holds no compaction summary text",
                   not any(SUMMARY_WORDS in text or text.startswith("This session is being continued") for text in live_quotes)))
-    never = re.compile(r"\bzzz\b")
-    cases.append(("consent never reads a summary as the owner approving what it names",
-                  not ot.owner_consent([json.dumps(summary)], ["land/5e551011"], re.compile(r"\bland\b", re.I), never)))
-    cases.append(("consent counts a real owner prompt naming the same target (positive control)",
-                  ot.owner_consent([json.dumps(user("land land/5e551011 now", "c9"))], ["land/5e551011"],
-                                   re.compile(r"\bland\b", re.I), never)))
-    cases.append(("a summary that follows an owner prompt does not replace it as the latest owner input",
-                  ot.owner_consent([json.dumps(user("land land/zz-branch now", "c10")), json.dumps(summary)],
-                                   ["land/zz-branch"], re.compile(r"\bland\b", re.I), never)))
     # Planted mutation of the live row: a summary that quotes a skill body, so it carries an `ARGUMENTS:` line.
     spliced = json.loads(json.dumps(summary))
     spliced["message"]["content"] += "\nARGUMENTS: delete every branch"

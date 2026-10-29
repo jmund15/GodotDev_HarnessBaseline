@@ -83,7 +83,7 @@ FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this
 
 
 # The load steps the deny names and the post-compaction rule (`doctrine_rule`) states: one string per step.
-SKILL_STEP = 'invoke Skill(skill="orchestration") (CLAUDE.core.md §9)'
+SKILL_STEP = 'invoke Skill(skill="orchestration") (orchestration §0)'
 SLICE_STEP = 'print the ladder slice for {which}: `' + SLICE_COMMAND + ' {tiers}` (orchestration §5)'
 SLICE_BELOW_STEP = 'read the ladder slice for {which} below (orchestration §5)'
 READ_STEP = 'Read `{path}` in full, no offset or limit (orchestration §5)'
@@ -123,7 +123,7 @@ def _embedded_slice(session_id, missing):
 
 def doctrine_check(payload, tiers=None, embed_slice=False):
     """(deny reason, fault note) for a pinned dispatch. The reason names each doctrine not in this context, by its
-    one load route: the orchestration skill (CLAUDE.core.md §9) and the ladder (orchestration §5). The step after
+    one load route: the orchestration skill (orchestration §0) and the ladder (orchestration §5). The step after
     the load is to check the call against them and re-issue it, because they exist to change the call. Both are
     observed state, never the route or pin they inform. A compaction clears the ladder, and the skill unless the
     client re-attached it whole (`_hook_state.skill_in_context` reads that attachment from the payload's transcript). A full SKILL.md Read still marks the skill loaded (skill_load_marker.py) for a session without the Skill

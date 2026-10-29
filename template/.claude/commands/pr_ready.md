@@ -36,16 +36,16 @@ For the **parity** lens, also capture the OLD version of each changed method/fil
 git -C "$ROOT" show main:<path>            # per changed source file
 ```
 
-Run these cheap BLOCKER checks Claude-side and add their results to the snapshot:
+Run these cheap critical checks Claude-side and add their results to the snapshot:
 - grep changed source files for leftover `[DIAG-` instrumentation and the stack's raw debug-print call;
 - read the subsystem registry, then grep every `framework_paths` source root for the project namespace;
 - check `git status --porcelain -- .claude/scratch`;
 - compare changed paths with every subsystem whose default `domain` is `gameplay`.
 
-**Playtest-route BLOCKER (Gameplay/Mixed diffs).** If a changed behavior is Gameplay and subjective,
+**Playtest-route critical (Gameplay/Mixed diffs).** If a changed behavior is Gameplay and subjective,
 require either a changed scene under one of the registry's `playtest_scenario_paths` or a branch log at
 `.claude/scratch/playtest_artifact/<slug>.log` carrying `[Lifecycle] DIRECT RUN`. A playtest-artifact
-report that names every subject as already routed also clears the blocker. Do not maintain a separate
+report that names every subject as already routed also clears the critical finding. Do not maintain a separate
 subject-folder list here.
 
 Also read into the snapshot: `.claude/worklog-titles.md` (worklog state) and the relevant topic-folder `roadmap.md` Parts table (roadmap state) for the reconcile lens.
@@ -54,7 +54,7 @@ The two **reachability** lenses are the one exception to push-don't-pull and sea
 
 ## Step 0b: Runtime boot probe (stacks that ship one)
 
-Where the project's stack ships a boot-log probe — the engine diagnoses its own wiring at boot and writes the diagnosis to its log — run it now, serially, after the project's regression gate (`change_control` §Gate cadence names it) is green and never while a test run is live. The stack's log-analysis command owns the probe procedure. It returns one verdict per distinct warning group: **CORRELATED** (the group names a token from this diff) → BLOCKER; **UNCORRELATED** → INFO; **NOT RUN** (pin mismatch, launch failure, empty log) → WARN; plus an advisory warning-budget delta. A stack with no probe skips this step.
+Where the project's stack ships a boot-log probe — the engine diagnoses its own wiring at boot and writes the diagnosis to its log — run it now, serially, after the project's regression gate (`change_control` §Gate cadence names it) is green and never while a test run is live. The stack's log-analysis command owns the probe procedure. It returns one verdict per distinct warning group: **CORRELATED** (the group names a token from this diff) → critical; **UNCORRELATED** → `minRigor` thorough; **NOT RUN** (pin mismatch, launch failure, empty log) → a coverage gap, open at every rigor; plus an advisory warning-budget delta. A stack with no probe skips this step.
 
 ## Step 1: Dispatch the battery
 
@@ -77,7 +77,7 @@ Mandate (`parity`): the brief carries the [Mandate section of the parity checkli
 
 ### Step 1b: the other five lenses — `review_fanout`
 
-Keep each `prompt` lean: push the shared diff stat + changed-file list + the 3 pre-computed BLOCKER grep results via `contextPrefix` (NOT repeated per agent). Each seat's must-read list is the diff of the changed files its candidates come from (written to scratch); `worklog-roadmap`'s is the worklog-titles and roadmap files it reconciles. Pass it as the seat's `mustRead` (`review_fanout.js` §USAGE CONTRACT).
+Keep each `prompt` lean: push the shared diff stat + changed-file list + the 3 pre-computed critical grep results via `contextPrefix` (NOT repeated per agent). Each seat's must-read list is the diff of the changed files its candidates come from (written to scratch); `worklog-roadmap`'s is the worklog-titles and roadmap files it reconciles. Pass it as the seat's `mustRead` (`review_fanout.js` §USAGE CONTRACT).
 
 | key | lens | mandate (findings: action FIX/ASK/PLAN, category bug/rule/improvement, `critical?`, file:line, description, rationale) |
 |---|---|---|
@@ -108,7 +108,7 @@ One verdict per candidate:
 - **INDETERMINATE** — the selecting value is computed at runtime, produced by a generator, or otherwise not expressible as a literal probe. `action: ASK`, `category: bug`, non-critical; name the unknown and who settles it. Leave it INDETERMINATE rather than upgrading it to UNREACHED for a decisive-looking report.
 - **REACHED** — no finding of its own; it goes in the coverage roll-up below with its reacher `file:line` and value.
 
-**Every UNREACHED finding states its probe verbatim in `rationale`** — the exact `git grep` whose empty result IS the claim (e.g. `git grep -n "flavor = 1" -- '*.<data-ext>' ':!Tests/'`). Claude re-runs that command in Step 2; an unstated or unrunnable probe caps the finding at WARN. This is what keeps the lens falsifiable, and it is the mitigation for `gotcha_workflow_fanout_search_false_absence` — a fanned agent's empty `Grep` is a candidate, never a verdict.
+**Every UNREACHED finding states its probe verbatim in `rationale`** — the exact `git grep` whose empty result IS the claim (e.g. `git grep -n "flavor = 1" -- '*.<data-ext>' ':!Tests/'`). Claude re-runs that command in Step 2; an unstated or unrunnable probe is a coverage gap, open at every rigor. This is what keeps the lens falsifiable, and it is the mitigation for `gotcha_workflow_fanout_search_false_absence` — a fanned agent's empty `Grep` is a candidate, never a verdict.
 
 **Each reachability lens returns exactly one coverage roll-up finding** (`action: PLAN`, `category: improvement`, non-critical, `file: null`): candidates enumerated, and the REACHED ones listed with reacher `file:line`. A lens that enumerated zero candidates reports that in the roll-up, so "no findings" stays distinguishable from "nothing examined".
 
@@ -116,7 +116,7 @@ One verdict per candidate:
 Workflow({
   scriptPath: ".claude/workflows/review_fanout.js",
   args: {
-    contextPrefix: "<diff --stat + changed-file list + the 3 pre-computed BLOCKER grep results>",
+    contextPrefix: "<diff --stat + changed-file list + the 3 pre-computed critical grep results>",
     agents: [
       { key: "data-reach",      prompt: "<rubric + changed authored-field declarations with defaults + threshold comparisons, verbatim with file:line>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
       { key: "wire-reach",      prompt: "<rubric + OLD+NEW signature lines (from the Step 0 parity capture) + new type declarations, verbatim with file:line>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
@@ -130,17 +130,21 @@ Workflow({
 
 Every lens runs `git diff`/`git grep` itself, so each declares `tools: { add: ["Bash"] }` on the `review` shape. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
 
-## Step 2: Present BLOCKER / WARN / INFO
+## Step 2: Present findings by weight
 
-`review_fanout` returns deduped+sorted findings; merge in the standalone `parity` Agent()'s findings, the three Claude-side grep BLOCKER candidates, and any Step 0b boot-probe verdicts. Treat every critical finding as a candidate Claude verifies, not final truth.
+`review_fanout` returns deduped+sorted findings; merge in the standalone `parity` Agent()'s findings, the three Claude-side grep critical candidates, and any Step 0b boot-probe verdicts. Treat every critical finding as a candidate Claude verifies, not final truth.
 
-**Re-run every UNREACHED probe before presenting it.** Take the `git grep` the finding quoted, run it Claude-side, and let the result set the tier: still empty → BLOCKER; returns a production hit → INFO, naming the reacher the lens missed; no probe stated, or it does not run → WARN, saying which. Never promote an UNREACHED on the lens's word alone — the whole finding rests on an absence, and an absence one intermittent `Grep` produced is not evidence.
+**Re-run every UNREACHED probe before presenting it.** Take the `git grep` the finding quoted, run it Claude-side, and let the result set the tier: still empty → critical; returns a production hit → clear `critical` and set `minRigor` thorough, naming the reacher the lens missed; no probe stated, or it does not run → a coverage gap, open at every rigor, saying which. Never promote an UNREACHED on the lens's word alone — the whole finding rests on an absence, and an absence one intermittent `Grep` produced is not evidence.
 
 Present as:
-- **BLOCKERS** (critical / parity-dropped-branch / framework-leak / leftover `[DIAG-]` / probe-confirmed UNREACHED / CORRELATED boot warning) — must resolve before PR.
-- **WARN** (unmigrated call site, state drift, missing doc-coverage, NARROW / INDETERMINATE / unverified reachability, boot-log probe NOT RUN).
-- **INFO** (minor; reachability coverage roll-ups; UNCORRELATED boot groups and the warning-budget delta).
+- **Critical** (`critical: true`, `minRigor` light; holds at every rigor, H4): parity-dropped branch, framework leak, leftover `[DIAG-]`, probe-confirmed UNREACHED, CORRELATED boot warning — must resolve before PR.
+- **`minRigor` normal**: unmigrated call site, state drift, missing doc coverage, NARROW reachability. An INDETERMINATE reachability finding is an ASK and counts at every rigor.
+- **`minRigor` thorough**: reachability roll-ups, UNCORRELATED boot groups, the warning-budget delta.
 
-**Never average across lenses, and issue no roll-up verdict.** Each lens reports its own outcome, set by its worst surviving finding — a clean `doc-coverage` does not soften a `parity` BLOCKER, and "5 of 6 lenses clean" is not a result. State each lens's worst finding separately.
+The tiers above are examples of each weight: the lens grades each finding it reports by the bar in `orchestration` reference `rigor.md`, and the orchestrator changes a tag only when it re-runs a probe.
+
+**Coverage gaps** (open at every rigor): boot-log probe NOT RUN, unverified reachability. Findings below the run's bar (`orchestration` reference `rigor.md`) are listed `below bar: noted` and skip the walkthrough.
+
+**Never average across lenses, and issue no roll-up verdict.** Each lens reports its own outcome on the protocol's verdict scale, set by its worst surviving finding — a clean `doc-coverage` does not soften a `parity` critical, and "5 of 6 lenses clean" is not a result. State each lens's worst finding separately.
 
 Then run the user-gated walkthrough per `agents/orchestrator_action_protocol.md` Step 1.5 and Step 4. Do NOT auto-run tests or auto-commit.

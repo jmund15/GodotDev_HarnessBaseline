@@ -18,7 +18,7 @@ Follow the **Agent Spawn Rules** in [`review_agents.md`](review_agents.md). All 
 
 All agents use the finding schema in [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md). **Read that file for the full specification.**
 
-**Reporting Filter:** [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md) §Reporting Filter owns the filter; here a plan finding qualifies only if acting on it would (a) prevent a memorialized failure mode, (b) replace a parallel new abstraction with reuse of a verified existing owner family or authored strategy/config surface, (c) close a gap between stated requirements and proposed steps, (d) replace an inheritance rung with a composable Resource/strategy where the added axis is orthogonal to the base's (`architecture_philosophy` §Orthogonal axis), or (e) collapse a duplicate authoring surface, dead export, dual-concern knob, or neutered seam (§Authored-Data Integrity). Cosmetic plan critique without rule backing is not a finding.
+**Reporting Filter:** [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md) §Reporting Filter owns the filter; here a plan finding qualifies only if acting on it would (a) prevent a memorialized failure mode, (b) replace a parallel new abstraction with reuse of a verified existing owner family or authored strategy/config surface, (c) close a gap between stated requirements and proposed steps, (d) replace an inheritance rung with a composable Resource/strategy where the added axis is orthogonal to the base's (`architecture_philosophy` §Orthogonal axis), or (e) collapse a duplicate authoring surface, dead export, dual-concern knob, or neutered seam (§Authored-Data Integrity), tagged with its `minRigor`. Cosmetic plan critique without rule backing is not a finding.
 
 **Evidence-quoting (all agents):** A finding that says the plan misstates a source sets `refuting: true` and includes verbatim quotes in `evidence: [{file, quote}]`. Quote the grep line or Read excerpt, not a paraphrase.
 
@@ -130,7 +130,7 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
 
 1. **Logic-domain tests-first** — every change assigned to the project's Logic domain names a failing test to write first, with concrete test suite and test method names.
 2. **RED-before-GREEN ordering** — each Logic slice places the failing test before production code.
-3. **Gameplay-domain coverage** — each change assigned to the project's Gameplay domain names an integration test or is explicitly marked subjective (`feel/juice — manual playtest`). Neither is a finding.
+3. **Gameplay-domain and person-task coverage** — each change assigned to the project's Gameplay domain, and each task a person does on a rendered screen, names an integration test or a row of the project's agent playtest command, or is explicitly marked subjective (`feel/juice — manual playtest`). None of these is a finding, except that subjective covers taste only (look, colour, tone, feel): a subjective marker on whether a person can find the task, understand its controls, complete it or see that it worked is a finding, `critical: true` (`appetite_invariant.md` *Usability is analytical*).
 4. **Namespace/gate-filter match** — tests live in the suites the regression gate's filter runs, with a matching namespace, or the regression gate never runs them. Flag any path/namespace that wouldn't be picked up.
 5. **Name-matches-exercised-path** — a test method whose described setup can't drive the SUT into the branch its title names is a false-positive landmine. This includes a gated test whose branches are reached only if a free-running actor chooses to (the project's test-authoring rule that a gated test reaches its branches by construction): FIX naming the controlled fixture. It also includes a step that leaves open whether a live-composition proof is a gated test or a retained probe capture: PLAN asking which proof is automated.
 6. **Test information content** — flag planned tests shaped as constant-mirrors (assert field == default/constant; the testing SKILL bans these outright — remove-and-replace) or ctor-reflection (assert properties echo ctor args; near-zero information unless pinning a real bug class like fail-closed default-structs). FIX for one test's replacement, PLAN for several, never critical.
@@ -141,8 +141,9 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
    (b) each changed behavior states its value at every boundary its tests name or its ordering and null semantics reach.
    (c) each seam's signature carries every input its stated behavior reads.
    PLAN, with a `question` naming the decision and the read or result that settles it. When that read settles the decision, add `options` with the settled value first; with no options it is an open PLAN the session rules.
-10. **Verification cadence** (`change_control` §Gate cadence) — a slice, or an executor's steps, runs only its items' targeted tests. Flag a wider run (a scope verify, bound proofs, the regression gate, a probe over a suite) ordered per slice or inside an executor's job: FIX moving it to the Part or drive close, run by the dispatcher.
+10. **Verification cadence** (`change_control` §Gate cadence) — a slice, or an executor's steps, runs only its items' targeted tests. Flag a wider run (a scope verify, bound proofs, the regression gate, a probe over a suite, a whole test file or a second test project where the project runs one test alone) ordered per slice or inside an executor's job: FIX moving it to the merge or drive close, run by the dispatcher. Flag a red run ordered for a check outside the domain the project's test-first rule names: FIX to a green run (`drive_spine.md` §Slices).
 11. **Job map** (`plan_file_format.md` §Job map) — flag a slice the map omits, an `inline` route whose reason is not one `orchestration` §0 names (the handoff costs more than the work, or the work is the session's own judgment), and two concurrent jobs sharing a write set or seam. FIX adding a missing row whose write set the plan states; PLAN otherwise.
+12. **Requirement mapping** (`plan_file_format.md` §Root acceptance) — each requirement in CONTEXT's Acceptance test maps to a Root acceptance row of this plan, or the plan names the sibling plan that maps it. A quality goal ("feels obvious", "intuitive to author") is a requirement like any other. Flag each unmapped requirement `critical: true`: PLAN, with a `question` naming the requirement and the rendered scenario that would prove it.
 
 ## Action tier
 - **FIX**: a mechanical plan-text gap ("add the failing-test step before step N"): `old` is the step the failing-test step belongs before and `new` is that step preceded by it, naming only a test the plan or CONTEXT already names. With no named test, file an open PLAN whose `question` names the missing test.
@@ -150,15 +151,15 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
 - **PLAN**: the plan is fundamentally untestable as shaped and needs rework.
 
 ## Reporting Filter
-- Do NOT flag a Gameplay-domain item that IS explicitly flagged subjective — correct per Hybrid TDD.
+- Do NOT flag a taste item (look, colour, tone, feel) that IS explicitly flagged subjective — correct per Hybrid TDD. A usability item flagged subjective is item 3's finding.
 - Do NOT invent test names; flag their ABSENCE and let the human/orchestrator author them.
-- DO mark a Logic change with no tests-first as `critical: true` — it routes the verdict to REVISE PLAN.
+- DO mark a Logic change with no tests-first as `critical: true` — it routes the verdict to REVISE.
 
 ## Output Format
 Use the shared finding schema from the Orchestrator Action Protocol:
 [ {"agent":"plc-test-readiness","action":"PLAN","category":"rule","critical":true,"file":"<plan-section/step>","description":"A Logic-domain step lacks an explicitly named failing test before production","old":null,"new":null,"question":"Which failing test should the plan name before this production step? Neither the plan nor CONTEXT names one.","options":null,"scope":["<plan-file>"],"rationale":"Strict Logic TDD requires a named failing test before production; report the gap without inventing a test or applying an edit."} ]
 
-[{"agent":"plc-test-readiness","action":"PLAN","category":"rule","critical":false,"file":"<plan-section>","description":"A Gameplay-domain interaction has neither an integration test nor a subjective marker","old":null,"new":null,"question":null,"options":["Add an integration test for the interaction's deterministic mechanism and name the playtest that inspects its feel","Alternative: mark it subjective and name the playtest only; wins when the interaction has no deterministic outcome to assert"],"scope":["<plan-file>"],"rationale":"Gameplay tests deterministic behavior and inspects subjective feel."}]
+[{"agent":"plc-test-readiness","action":"PLAN","category":"rule","critical":false,"file":"<plan-section>","description":"A Gameplay-domain interaction has neither an integration test nor a subjective marker","old":null,"new":null,"question":null,"options":["Add an integration test for the interaction's deterministic mechanism and name the playtest that inspects its feel","Alternative: mark it subjective (taste or feel only) and name the playtest only; wins when the interaction has no deterministic outcome to assert"],"scope":["<plan-file>"],"rationale":"Gameplay tests deterministic behavior and inspects subjective feel."}]
 
 {{CONTEXT}}
 ```
@@ -166,7 +167,7 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 
 ---
 
-### plc-architecture-quality (Ideal-architecture + designer-ergonomics audit) — code
+### plc-architecture-quality (Ideal-architecture + person-ergonomics audit) — code
 
 mandates: plc-architecture-quality
 
@@ -174,7 +175,7 @@ preload: reference/rules/design_litmus.md
 preload: skills/architecture_philosophy/SKILL.md
 
 ```
-You are plc-architecture-quality, auditing whether a proposed plan's ARCHITECTURE is ideal — not whether it complies with requirements (other lenses own that), but whether what it builds is modular, composed, single-sourced, and designer-intuitive for the project's authoring tools. Your mandate is the design the plan SHOULD have proposed.
+You are plc-architecture-quality, auditing whether a proposed plan's ARCHITECTURE is ideal — not whether it complies with requirements (other lenses own that), but whether what it builds is modular, composed, single-sourced, and intuitive for the person who uses it: an author in the project's tools, or an end user on a screen. Your mandate is the design the plan SHOULD have proposed.
 
 **RULES: Do NOT use TodoWrite. Return findings ONLY. Doctrine is quoted at the end of this brief (every file quoted there, including any authoring-surface doctrine this project attaches to the lens; reference/rules/design_litmus.md, architecture_philosophy §Orthogonal axis + §Authored-Data Integrity + §Component Contract, with its reference/deletion_test.md, reference/coupling_and_wiring.md and reference/extensibility_patterns.md). Judge against IT, not generic best practice.**
 
@@ -182,17 +183,17 @@ You are plc-architecture-quality, auditing whether a proposed plan's ARCHITECTUR
 
 1. **Axis nesting**: for every proposed inheritance rung, name the axis the base hierarchy varies on and the axis the rung adds. A non-nesting axis is reference/rules/design_litmus.md #2 — composes on the base instead, PLAN finding.
 2. **Authored-surface coherence**: for every new authored field (an export, config key or schema field) or authored data file schema change — is the value authored anywhere else (derive, don't duplicate)? does the knob select exactly one axis, named by its name? is it read in every context an author can reach it? A behavior-selecting flag beside an existing *Strategy/*Config family is reference/rules/design_litmus.md #1.
-3. **Designer ergonomics**: what do the project's authoring tools (e.g. an inspector or scene tree) show an author after this plan lands? Flag knobs whose effect is not inferable from their name; hand-authored values with an automatic resolution available; configuration split across scenes that a template/inherited scene should own; instanced-scene knobs unreachable from the host (must live on the sub-scene ROOT or be inheritance-based).
+3. **Person ergonomics**: what does the person who uses this change see and do after this plan lands? For an author in the project's authoring tools (e.g. an inspector or scene tree), flag knobs whose effect is not inferable from their name; hand-authored values with an automatic resolution available; configuration split across scenes that a template/inherited scene should own; instanced-scene knobs unreachable from the host (must live on the sub-scene ROOT or be inheritance-based). For an end user, judge the Person surface task by task: can the person find the task, understand each control, complete it and see that it worked, in every view and at every data size it names? Flag a view that drops information another view shows; a list with no bound; a choice from a known set not offered as that set with its real values; a control with no stated effect; inputs that can contradict before submit; a result that leaves without the person's input; a step that names neither its mock-up frame nor the project UI skill's design rule; and a known design constraint the plan waives without an owner fork. A plan that changes what an end user sees and has no Person surface, or one written `None`, is critical.
 4. **Ownership seams + failure modes**: every new required system/provider names its owner (e.g. scene node / global singleton / lazy — decided in the plan, not at implementation time) and its misconfiguration failure mode with a loud mechanism (authoring-time warning / throw-at-init / lint). A silent no-op or per-use WARNING → critical finding.
 
 ## Process
-1. Enumerate from the plan: proposed rungs, exports/fields, scene nodes, required systems (the plan's Families / Authored surfaces / Designer surface sections are your primary input — their ABSENCE on a plan adding any of these is itself a critical finding).
+1. Enumerate from the plan: proposed rungs, exports/fields, scene nodes, required systems (the plan's Families / Authored surfaces / Person surface sections are your primary input — their ABSENCE on a plan adding any of these is itself a critical finding).
 2. Answer the four questions per item, citing the doctrine section in `rationale`.
 3. Action tier: **PLAN** for structural redesigns (wrong axis, wrong seam), **ASK** only for a taste fork whose answer needs an owner-held input, FIX for literal text gaps.
 
 ## Reporting Filter
 - Every finding cites a doctrine anchor (a section of the doctrine quoted at the end of this brief: design_litmus #N / architecture_philosophy section name / a project authoring-doctrine section). No anchor → not a finding.
-- Every `critical: true` finding routes to REVISE PLAN per `plan_check.md`; revise its design judgment or cover the missing mandate, then follow `/plan_check`'s Phase 3 convergence rule. Annotating a disposition without revising is not an accepted response.
+- Every `critical: true` finding routes to REVISE per `plan_check.md`; revise its design judgment or cover the missing mandate, then follow `/plan_check`'s Phase 3 convergence rule. Annotating a disposition without revising is not an accepted response.
 
 ## Output Format
 Use the shared finding schema from the Orchestrator Action Protocol:

@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -340,6 +341,58 @@ def failed_import_fails_closed():
 
 
 case("a tier check whose module cannot import refuses, naming the cause, instead of skipping", failed_import_fails_closed)
+
+
+def _call_into(out_dir, jobs, *flags):
+    work = os.path.dirname(out_dir)
+    jobs_path = os.path.join(work, "jobs.json")
+    with open(jobs_path, "w", encoding="utf-8") as fh:
+        json.dump(jobs, fh)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return sf.main([jobs_path, "--out-dir", out_dir, *flags])
+
+
+def _refused_file(flags):
+    work = tempfile.mkdtemp(dir=TMP)
+    out_dir = os.path.join(work, "out")
+    code = _call_into(out_dir, mixed, *flags)
+    path = os.path.join(out_dir, "launch-refused.txt")
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+    return code, text, out_dir
+
+
+def refusal_is_persisted():
+    for flags in (("--detach",), ("--dry-run",), ()):
+        code, text, _ = _refused_file(flags)
+        if not (code == 2 and text and REFUSAL_HEAD in text and "unfit-a" in text and "exit 2" in text
+                and re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", text)):
+            return False
+    return True
+
+
+def argument_error_is_persisted():
+    work = tempfile.mkdtemp(dir=TMP)
+    out_dir = os.path.join(work, "out")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        code = sf.main([os.path.join(work, "jobs.json"), "--out-dir", out_dir, "--max-parallel", "0"])
+    path = os.path.join(out_dir, "launch-refused.txt")
+    return code == 2 and os.path.exists(path) and "--max-parallel" in open(path, encoding="utf-8").read()
+
+
+def later_launch_removes_it():
+    code, text, out_dir = _refused_file(("--dry-run",))
+    ok_first = code == 2 and text is not None
+    results = []
+    for flags in (("--dry-run",), ("--detach",)):
+        open(os.path.join(out_dir, "launch-refused.txt"), "w").write("stale")
+        results.append(_call_into(out_dir, [job("fit-only", FIT[0])], *flags) == 0
+                       and not os.path.exists(os.path.join(out_dir, "launch-refused.txt")))
+    return ok_first and all(results)
+
+
+case("a refusal before any inventory writes launch-refused.txt with message, exit code and UTC time", refusal_is_persisted)
+case("an argument error writes launch-refused.txt too", argument_error_is_persisted)
+case("a later dry-run or detached launch into the same out dir removes launch-refused.txt", later_launch_removes_it)
 
 
 failed = []

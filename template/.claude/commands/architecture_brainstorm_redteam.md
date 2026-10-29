@@ -5,10 +5,10 @@ description: Red-team a drafted architecture or a live Socratic design step
 
 # /architecture_brainstorm_redteam — Adversarial Design Red-Team
 
-Red-teams an architecture design for rigor holes, then classifies every finding as a **rigor-hole** (analytical — Claude/the design can address it) or a **taste-fork** (depends on the user's vision/appetite — human-only). It runs in **two modes**:
+Red-teams an architecture design for design holes, then classifies every finding as a **design-hole** (analytical — Claude/the design can address it) or a **taste-fork** (depends on the user's vision/appetite — human-only). It runs in **two modes**:
 
 - **Mode A — standalone (default):** one adversarial pass over a *drafted* design doc (or named sections) before it hardens into roadmap Parts.
-- **Mode B — interleaved:** dispatched *by* [`/architecture_brainstorm`](../skills/architecture_brainstorm/SKILL.md) when that skill is invoked with `--red_team`, firing a phase-scoped lens subset *between* Socratic steps so taste-forks become the next question and rigor-holes adjust the live design.
+- **Mode B — interleaved:** dispatched *by* [`/architecture_brainstorm`](../skills/architecture_brainstorm/SKILL.md) when that skill is invoked with `--red_team`, firing a phase-scoped lens subset *between* Socratic steps so taste-forks become the next question and design-holes adjust the live design.
 
 Both modes **augment** the Socratic dialogue — they never replace it (`feedback_dont_compress_socratic_on_rich_prompt`).
 
@@ -20,7 +20,7 @@ Both modes **augment** the Socratic dialogue — they never replace it (`feedbac
 
 ## When to use
 
-- **Mode B — interleaved:** the per-step adversarial pass during the `architecture_brainstorm` skill's Socratic-and-approaches Steps 2 and 4 and its Part-authoring Step 5 procedure. Its taste-forks become Socratic seeds for the user; its rigor-holes feed back into the live design before the next question or commitment review.
+- **Mode B — interleaved:** the per-step adversarial pass during the `architecture_brainstorm` skill's Socratic-and-approaches Steps 2 and 4 and its Part-authoring Step 5 procedure. Its taste-forks become Socratic seeds for the user; its design-holes feed back into the live design before the next question or commitment review.
 - **Mode A — standalone:** the full-doc hardening pass at the `architecture_brainstorm` skill's Doc-and-review Step 7 self-review checklist, before the design hardens into roadmap Parts. This is also the independent adversarial pass the self-review procedure invokes.
 
 Whether the design challenge is admitted follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Admission table, Design challenge row.
@@ -81,10 +81,10 @@ Workflow({
 })
 ```
 
-**Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` marks a lens that errors, times out or returns an invalid shape `failed` or `uncovered` in `perAgent` and raises a flag. Before reporting or converging, confirm every dispatched lens key reads as returned. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. Any missing lens is INCOMPLETE, never CLEAN: surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses or halt.
+**Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` marks a lens that errors, times out or returns an invalid shape `failed` or `uncovered` in `perAgent` and raises a flag. Before reporting or converging, confirm every dispatched lens key reads as returned. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. Any missing lens is INCOMPLETE, never APPROVE: surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses or halt.
 
-Each lens returns findings per the schema, classified by the registry's shared rule (rigor-hole → `FIX`/`PLAN`, taste-fork → `ASK`). One more class:
-- **Dead-end** → a rigor-hole with **no addressable fix within the design's constraints** (e.g. "cannot satisfy invariant X without breaking the framework boundary"). Encoded as `critical: true, action: PLAN` and named DEAD-END in the description. A rigor-hole with a named fix is FIX or a non-critical PLAN; `critical: true, action: PLAN` is reserved for DEAD-END: in this command `critical` marks a dead-end and overrides the protocol's §Critical Flag, so a severe rigor-hole states its severity in `description`. It halts (see below) — it is not a taste-fork.
+Each lens returns findings per the schema, classified by the registry's shared rule (design-hole → `FIX`/`PLAN`, taste-fork → `ASK`). One more class:
+- **Dead-end** → a design-hole with **no addressable fix within the design's constraints** (e.g. "cannot satisfy invariant X without breaking the framework boundary"). Encoded as `critical: true, action: PLAN` and named DEAD-END in the description. A design-hole with a named fix is FIX or a non-critical PLAN; `critical: true, action: PLAN` is reserved for DEAD-END: in this command `critical` marks a dead-end and overrides the protocol's §Critical Flag, so a severe design-hole states its weight in `minRigor`. It halts (see below) — it is not a taste-fork.
 
 ## Step 2: Report
 
@@ -92,12 +92,12 @@ The post-check recorded the pass from `args.ledger`.
 
 ### Mode A — the structured hand-off block
 
-**Read every finding before adjudicating any.** The three groups below organize the report; they do not license reading only the critical group. A non-critical rigor-hole is still a defect with one right answer, and the cheapest place to catch it is before the design locks — a panel whose findings are partially read has been paid for and mostly wasted.
+**Read every finding before adjudicating any.** The three groups below organize the report; they do not license reading only the critical group. A non-critical design-hole is still a defect with one right answer, and the cheapest place to catch it is before the design locks — a panel whose findings are partially read has been paid for and mostly wasted.
 
 Present findings in three groups, then a machine-branchable verdict consumed by the `architecture_brainstorm` skill's Doc-and-review Step 7 self-review checklist:
 
 ```
-─── RIGOR-HOLES (addressable — fold into the design) ───
+─── DESIGN-HOLES (addressable — fold into the design) ───
 <FIX/PLAN findings with the design section + the correction>
 
 ─── TASTE-FORKS (human-only — Socratic seeds; the critic did NOT decide these) ───
@@ -106,17 +106,17 @@ Present findings in three groups, then a machine-branchable verdict consumed by 
 ─── DEAD-ENDS (no fix within current constraints — escalate) ───
 <critical PLAN findings; each recommends reframe or re-architecture>
 
-RIGOR-HOLES:N   TASTE-FORKS:M   DEAD-ENDS:K   (lenses returned: X/<dispatched>)
+DESIGN-HOLES:N   TASTE-FORKS:M   DEAD-ENDS:K   (lenses returned: X/<dispatched>)
 ```
 
 | Verdict | Condition | Consuming-skill action |
 |---|---|---|
-| **CLEAN** | 0 rigor-holes, 0 dead-ends, X = dispatched (liveness OK); taste-forks batched | proceed to the user-review gate with the taste-batch |
-| **HARDEN** | any rigor-hole, no dead-end | fold rigor-holes into the doc; re-review only the units holding design no reviewer saw, per `orchestration` §2 *Later rounds*; a reviewer's own fix that the post-check passes needs no re-review (`orchestration` §2 *Later rounds*) |
+| **APPROVE** | 0 design-holes that count at the run's rigor (`orchestration` reference `rigor.md`), 0 dead-ends, X = dispatched (liveness OK); taste-forks batched | proceed to the user-review gate with the taste-batch |
+| **REVISE** | any design-hole that counts at the run's rigor, no dead-end; below-bar design-holes are listed `below bar: noted` | fold design-holes into the doc; re-review only the units holding design no reviewer saw, per `orchestration` §2 *Later rounds*; a reviewer's own fix that the post-check passes needs no re-review (`orchestration` §2 *Later rounds*) |
 | **HALT** | any dead-end | reframe constraints or a fresh `/architecture_brainstorm` pass; do not loop |
-| **INCOMPLETE** | X < dispatched (a lens didn't return) | cannot certify — re-dispatch missing lenses; never read as CLEAN |
+| **INCOMPLETE** | X < dispatched (a lens didn't return) | cannot certify — re-dispatch missing lenses; never read as APPROVE |
 
-- **Default Mode A does NOT auto-revise.** Rigor-holes feed back into the design (Claude folds them in, or the Socratic addresses them); taste-forks go to the user; dead-ends halt for a reframe.
+- **Default Mode A does NOT auto-revise.** Design-holes feed back into the design (Claude folds them in, or the Socratic addresses them); taste-forks go to the user; dead-ends halt for a reframe.
 
 ### Mode B — the compact per-decision block
 
@@ -124,20 +124,20 @@ No full hand-off report — emit a tight block the arch skill folds back into th
 
 ```
 ─── red-team · <the question / tentative pick / approach under review> ───
-RIGOR (adjust current approach): <FIX/PLAN findings, or "none">
+DESIGN-HOLE (adjust current approach): <FIX/PLAN findings, or "none">
 TASTE → next Socratic question: <each ASK reframed as the question to ask the user next>
 DEAD-END: <only if a critical PLAN surfaced — HALT and surface to the user>
 (lenses returned: X/<dispatched>)
 ```
 
-Routing back into `/architecture_brainstorm`: **rigor-holes** adjust the current tentative pick/approach before the next question; **taste-forks** become the **next Socratic question**; a **dead-end** halts the brainstorm for a reframe.
+Routing back into `/architecture_brainstorm`: **design-holes** adjust the current tentative pick/approach before the next question; **taste-forks** become the **next Socratic question**; a **dead-end** halts the brainstorm for a reframe.
 
 ## Optional: `--auto` mode (Mode A only — trusted topics)
 
-`/architecture_brainstorm_redteam <design> --auto` runs a bounded **generate ↔ critique ↔ revise** loop for topics you trust the agents to harden. (When reached via `/architecture_brainstorm --red_team --auto`, this loop runs as the **Step-7 Mode A pass**; the interleaved Mode B steps still run human-gated, never in `--auto`.) Per round: snapshot the design as a blob subject ([protocol Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject)): root `.`, files `<design path>`, out `<snapshot manifest>`. Then dispatch the panel with `args.spillDir` and `args.fold` set to one `subjects` entry `{root: ".", snapshot, files: [<design path>]}`; the fold addresses **rigor-holes only**, and the session consumes the round per `orchestrator_action_protocol.md` Step 1.5 → **every** taste-fork accumulates into a running batch as an **open placeholder the design is parameterized over** — load-bearing or not, NEVER absorbed as a resolved decision. Each round after the first judges only the units revised since the previous round (delta review, per `orchestration` §2 *Later rounds*). Converge on complete, live lens coverage with no new rigor-holes; halt on a dead-end or on non-convergence (`_brainstorm_shared/drive_spine.md` §Halts).
+`/architecture_brainstorm_redteam <design> --auto` runs a bounded **generate ↔ critique ↔ revise** loop for topics you trust the agents to harden. (When reached via `/architecture_brainstorm --red_team --auto`, this loop runs as the **Step-7 Mode A pass**; the interleaved Mode B steps still run human-gated, never in `--auto`.) Per round: snapshot the design as a blob subject ([protocol Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject)): root `.`, files `<design path>`, out `<snapshot manifest>`. Then dispatch the panel with `args.spillDir` and `args.fold` set to one `subjects` entry `{root: ".", snapshot, files: [<design path>]}`; the fold addresses **design-holes only**, and the session consumes the round per `orchestrator_action_protocol.md` Step 1.5 → **every** taste-fork accumulates into a running batch as an **open placeholder the design is parameterized over** — load-bearing or not, NEVER absorbed as a resolved decision. Each round after the first judges only the units revised since the previous round (delta review, per `orchestration` §2 *Later rounds*). Converge on complete, live lens coverage with no new design-holes that count at the run's rigor; halt on a dead-end or on non-convergence (`_brainstorm_shared/drive_spine.md` §Halts).
 
 **Machine-checked valves (each closes a fabrication path the audit identified — do NOT rely on prose alone):**
-- **Liveness valve.** Before treating "0 new rigor-holes" as convergence, assert the round's `perAgent` shows every lens the round seated returned. Any missing lens is the INCOMPLETE verdict above: HALT `panel incomplete — N/<seated> returned; cannot certify convergence`.
+- **Liveness valve.** Before treating "0 new design-holes that count at the run's rigor" as convergence, assert the round's `perAgent` shows every lens the round seated returned. Any missing lens is the INCOMPLETE verdict above: HALT `panel incomplete — N/<seated> returned; cannot certify convergence`.
 - **Dead-end valve.** After each round, scan returned findings for `critical === true && action === 'PLAN'`. Any hit → HALT unconditionally (this IS the dead-end shape per Step 1; do not depend on noticing the word "DEAD-END" in a description string). Reframe, don't iterate.
 - **No-owner ASK valve.** **In `--auto` there is no owner present:** `ASK` findings are NEVER auto-resolved — they only accumulate into the taste-batch (`_brainstorm_shared/appetite_invariant.md`).
 
@@ -153,11 +153,11 @@ Routing back into `/architecture_brainstorm`: **rigor-holes** adjust the current
 | "Run the full panel between every Socratic question." | Most core lenses need committed design shape — early-Step-2 they no-op. Mode B runs the phase-scoped subset (Step 1 table). Full panel is Step 5 / Mode A. |
 | "This question looks analytical, the critic can just answer it." | If its answer depends on coupling/scope/risk/feel appetite, it's taste — present options, never pick. Erring toward taste is the safe default (`_brainstorm_shared/appetite_invariant.md`). |
 | "`--auto` converged, so the design is ready." | `--auto` output is a draft for review. Convergence ≠ approval; the user still answers the taste-batch and approves. |
-| "Zero findings came back — the design is clean." | A missing `perAgent` lens is INCOMPLETE, not CLEAN (Step 1 liveness). |
+| "Zero findings came back — the design is clean." | A missing `perAgent` lens is INCOMPLETE, not APPROVE (Step 1 liveness). |
 | "This taste fork doesn't block the current design, fold it in quietly." | Any fork that sets a convention/default/naming precedent is load-bearing-for-downstream → surfaced, never absorbed. |
 | "It's a dead-end but let me keep the `--auto` loop iterating to fix it." | The dead-end valve HALTs on any `critical PLAN` (Step 1). |
 | "Push the whole design into each critic prompt to be thorough." | Push it through the shared `contextPrefix` and keep prompts to mandates (Step 1 dispatch; `gotcha_workflow_args_generation_fidelity`). |
 | "I'll just answer the panel mandates myself to save a dispatch." | Dispatch is MANDATORY. A model critiquing its own design isn't adversarial — it's the failure the panel exists to prevent. |
-| "Use this instead of the Socratic brainstorm to save time." | It AUGMENTS the Socratic dialogue (`feedback_dont_compress_socratic_on_rich_prompt`); it sharpens questions and catches rigor holes; it does not replace the human design conversation. |
+| "Use this instead of the Socratic brainstorm to save time." | It AUGMENTS the Socratic dialogue (`feedback_dont_compress_socratic_on_rich_prompt`); it sharpens questions and catches design holes; it does not replace the human design conversation. |
 | "Add a bespoke 'overall quality' lens to catch whatever the core misses." | A bespoke mandate names the concrete failure mode it hunts (Step 0.5) — an unfalsifiable lens produces noise findings that cost triage. The completeness critic is the sanctioned catch-all, and it feeds the next round, not this one. |
 | "More lenses = more rigor; add every imaginable concern." | Add a lens for each distinct, uncovered, committed design risk; partition independent risks when one panel exceeds the input or integration budget. |

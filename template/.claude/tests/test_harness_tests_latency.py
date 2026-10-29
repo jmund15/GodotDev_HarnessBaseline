@@ -24,7 +24,7 @@ from _harness_repo_case import RepoCase  # noqa: E402
 
 
 def git(repo, *args):
-    subprocess.run(["git"] + list(args), cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git"] + list(args), cwd=repo, check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 def write(repo, rel, text):
@@ -193,6 +193,21 @@ class TiersRows(Planted):
         text = runner.format_tiers(list(rows.values()))
         self.assertIn("test_orphan.py", text)
         self.assertIn("none", text)
+
+
+class CorpusBinding(Planted):
+    def test_a_corpus_scanning_proof_binds_every_file_under_its_corpus(self):
+        write(self.repo, ".claude/guards/unnamed.md", "rule\n")
+        write(self.repo, ".claude/tools/elsewhere.py", "X = 1\n")
+        write(self.repo, ".claude/tests/test_corpus.py", "import sys\n")
+        git(self.repo, "init", "-q")
+        git(self.repo, "add", "-A")
+        git(self.repo, "add", "-f", ".claude/tests")
+        with patch.object(runner, "_CORPUS_SCANNING", {"test_corpus.py": (".claude/guards",)}):
+            bound = runner.bindings(self.repo, [".claude/guards/unnamed.md", ".claude/tools/elsewhere.py"])
+        names = {t: [os.path.basename(p) for p in ps] for t, ps in bound.items()}
+        self.assertIn("test_corpus.py", names[".claude/guards/unnamed.md"])
+        self.assertNotIn("test_corpus.py", names[".claude/tools/elsewhere.py"])
 
 
 class FlakyLog(Planted):

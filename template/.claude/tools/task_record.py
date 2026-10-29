@@ -285,6 +285,7 @@ def set_fields(task_id, phase=None, next_action=None, owner=None, files=None, ri
             state.setdefault("scope", {})["files"] = list(files)
         if rigor is not None:
             state["rigor"] = rigor
+            state["rigorAt"] = now()
         return state["phase"]
 
     return _mutate(task_id, mutation)
@@ -551,10 +552,14 @@ def _session_key(session_id):
 
 
 def active(session_id, require=None, *, directory=None):
-    """The newest record opened or bound for the session; with `require`, the newest that holds that key."""
+    """The newest record opened or bound for the session; with `require`, the newest that holds that key.
+
+    A key whose write stamps `<key>At` (rigor) orders by that stamp, so an unrelated write to an older record
+    never makes its value the newest."""
     directory = record_dir() if directory is None else directory
     key = _session_key(session_id)
     newest = None
+    stamp = lambda rec: (rec.get(require + "At") if require else None) or rec.get("updated") or ""
     try:
         names = os.listdir(directory)
     except OSError:
@@ -565,7 +570,7 @@ def active(session_id, require=None, *, directory=None):
         rec = _hook_state.read_json_salvage(os.path.join(directory, name))
         if not key or _session_key(rec.get("session_id")) != key or (require and not rec.get(require)):
             continue
-        if newest is None or (rec.get("updated") or "") > (newest.get("updated") or ""):
+        if newest is None or stamp(rec) > stamp(newest):
             newest = rec
     return newest
 

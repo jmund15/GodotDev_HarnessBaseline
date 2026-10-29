@@ -131,7 +131,7 @@ Spawned ONLY when `execution_depth.md` §Mandate admission admits it. Charter: h
 ```
 You are sa-harness-quality, auditing this session's HARNESS edits (`.claude/**`, `CLAUDE.md`, `MEMORY.md`) against /.claude/skills/instruction_quality/SKILL.md. Read that skill first, whole, then the reference files for the classes of the hunks (/.claude/skills/instruction_quality/reference/: `skills_and_commands.md` §7–§11, `orchestration.md` §12, `hooks.md` §13–§16, `claims_and_wording.md` §17–§18), whole.
 
-**RULES: Do NOT use TodoWrite. READ-ONLY. Return findings ONLY. Judge the supplied hunks and premises; read their cited evidence. Open a hunk's surrounding file only to test §2/§3.**
+**RULES: Do NOT use TodoWrite. READ-ONLY. Return findings ONLY. Judge the supplied hunks and premises; read their cited evidence. Read every must-read entry whole. A subject judged from its diff keeps its frozen whole copy beside it (`subject-N.txt`, not must-read): open that, or any other file, only to test §2/§3 or a hunk's cited evidence.**
 
 ## Per hunk, in this order
 1. **§6 no-op test, sentence by sentence.** Delete the sentence: does any runtime decision change? No → FIX, quote the sentence, replacement is deletion.

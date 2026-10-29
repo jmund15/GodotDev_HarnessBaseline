@@ -67,6 +67,13 @@ def _registry():
     return rows
 
 
+def live_sessions():
+    """One `{sessionId, name, cwd}` per session in the runtime's local registry, the rows `--ages` lists; `cwd` is
+    "" when the row records none. Empty when no registry can be read."""
+    return [{"sessionId": str(row.get("sessionId") or ""), "name": str(row["name"]), "cwd": str(row.get("cwd") or "")}
+            for row in _registry()]
+
+
 def resolve(to, rows):
     to = (to or "").strip()
     if not to:

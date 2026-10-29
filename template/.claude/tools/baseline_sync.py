@@ -2957,6 +2957,10 @@ def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
             continue
         if unshipped and (current.get(relpath) is None or judged.get("sha") != current[relpath]
                           or current[relpath] == entry.get("hash")):
+            if (judged.get("verdict") == "push" and current.get(relpath) is not None
+                    and judged.get("sha") != current[relpath] and current[relpath] != entry.get("hash")):
+                print(f"stale verdict: {relpath} changed since it was judged push; "
+                      f"judge {relpath} --carry <base>..<head> to list it", file=sys.stderr)
             continue
         if since is not None:
             at = judged.get("at")

@@ -6,8 +6,10 @@ the work triage above what was recorded.
 `tools/triage.py` derives reach and oracle from the paths and changed lines a commit publishes. The recorded
 triage is the commit's `Triage:` trailer, else the session's task record (`task_record.py triage`). A field
 the diff raises above it is printed with the tag and its probe. Standing reach names its computed
-harness-quality-seat admission, not a declaration. A commit with neither trailer nor record gets
-`--trailer "Triage-Derived: reach=<r> oracle=<o>"` through `updatedInput`; it speaks only above local reach.
+harness-quality-seat admission, not a declaration. A commit with no trailer under a session record gets
+`--trailer "Triage: <recorded fields>"` through `updatedInput`, so `review_ledger.py owed` and the escape log
+read the triage this check used; one with neither gets `--trailer "Triage-Derived: reach=<r> oracle=<o>"`,
+and it speaks only above local reach.
 Derived fields are not a judged triage. This hook never denies. An exception, a read error or an
 import failure exits non-zero; the dispatcher reports the unavailable check on stderr and in context.
 
@@ -59,13 +61,15 @@ def _project_root():
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.path.normpath(os.path.join(HERE, "..", ".."))
 
 
-def _recorded(message, session_id):
-    """(fields, None) | (None, unreadable-reason) | (None, None) when neither trailer nor record exists."""
+def _recorded(message, session_id, with_source=False):
+    """(fields, None) | (None, unreadable-reason) | (None, None) when neither trailer nor record exists. With
+    `with_source`, a third item says whether the fields came from the session's task record."""
     fields, error = triage.parse_trailer(message) if message is not None else (None, None)
     if error or fields is not None:
-        return fields, error
+        return (fields, error, False) if with_source else (fields, error)
     import task_record
-    return task_record.triage_for_session(session_id), None
+    fields = task_record.triage_for_session(session_id)
+    return (fields, None, fields is not None) if with_source else (fields, None)
 
 
 def _blobs(invocation, paths):
@@ -200,9 +204,9 @@ def _triage_block(invocation, session_id, tags, paths):
     except OSError as exc:
         raise _ReadError("cannot read the content this commit publishes (%s)" % exc)
     message = commit_message(invocation.rest, invocation.cwd)
-    fields, error = _recorded(message, session_id)
+    fields, error, from_record = _recorded(message, session_id, with_source=True)
     return triage_verdict(result, fields, error, message, invocation.sub,
-                          lambda: _standing_state(invocation))
+                          lambda: _standing_state(invocation), from_record)
 
 
 def _standing_state(invocation):
@@ -210,10 +214,19 @@ def _standing_state(invocation):
     return triage.current(root), triage.rigor(root=root)
 
 
-def triage_verdict(result, fields, error, message, sub, standing_state):
+def triage_verdict(result, fields, error, message, sub, standing_state, from_record=False):
     """(advice, trailer) for one commit from its derived triage result and its recorded fields. Pure: the caller
     reads the diff, the message and the task record. `standing_state()` returns (current triage, rigor) and runs
-    only when the derived reach is standing."""
+    only when the derived reach is standing. Fields `from_record` (the session's task record, no trailer in the
+    message) are written into the commit as its `Triage:` trailer, so a later per-commit read (`owed`, the
+    escape log) sees the triage this check used."""
+    advice, trailer = _verdict(result, fields, error, message, sub, standing_state)
+    if from_record and sub == "commit" and trailer is None:
+        trailer = "Triage: " + triage.trailer_text(fields)
+    return advice, trailer
+
+
+def _verdict(result, fields, error, message, sub, standing_state):
     if error:
         return ("[triage] Triage: trailer unreadable (%s); grammar: triage.py --help." % error), None
     if fields is None:

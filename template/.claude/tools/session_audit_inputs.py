@@ -70,6 +70,12 @@ def session_decisions(root, session, task=None):
     return rows
 
 
+def judged_whole(path):
+    """The lens judges instruction prose (§2/§3/§6) and hooks (§13-§16 docstring parity) across the whole file; any
+    other subject is judged from its diff, its frozen copy kept for a targeted read."""
+    return ledger.is_doctrine_path(path) or path.startswith(".claude/hooks/")
+
+
 def freeze(args):
     root = Path(args.root).resolve()
     out = Path(args.out)
@@ -143,17 +149,18 @@ def freeze(args):
     for commit in commits:
         messages.append(git(root, "show", "-s", "--format=%H%n%s%n%b", commit["sha"]))
         diffs.append((f"commit-{commit['sha']}.diff", git(
-            root, "show", "--format=fuller", "--cc", "--no-renames", commit["sha"], "--", *commit["files"])))
+            root, "show", "--format=fuller", "--cc", "--no-renames", commit["sha"], "--", *commit["files"]), True))
     for index, path in enumerate(files):
         committed = git(root, "diff", "--no-renames", f"{args.session_base}..{head}", "--", path)
         dirty = "" if path in committed_only else git(root, "diff", "HEAD", "--", path)
         if path not in committed_only and not git(root, "ls-files", "--", path).strip() and (root / path).is_file():
             dirty = (root / path).read_text(encoding="utf-8")
-        diffs.append((f"subject-{index}.diff", f"{path}\n{committed}\n{dirty}"))
+        diffs.append((f"subject-{index}.diff", f"{path}\n{committed}\n{dirty}", True))
         if path in blobs:
             content = (git(root, "show", f"{head}:{path}") if path in committed_only
                        else (root / path).read_text(encoding="utf-8"))
-            diffs.append((f"subject-{index}.txt", content))
+            new = git(root, "cat-file", "-e", f"{args.session_base}:{path}", optional=True) is None
+            diffs.append((f"subject-{index}.txt", content, judged_whole(path) and not new))
     for path, blob in blobs.items():
         if path not in committed_only and git(root, "hash-object", "--", path).strip() != blob:
             raise ledger.ToolError(f"{path} changed while freezing inputs; retry with a fresh run path")
@@ -170,11 +177,11 @@ def freeze(args):
 
     ids = write("premise-commits.json", [c["sha"] for c in commits], True)
     blob_path = write("blobs.json", blobs, True)
-    decisions_path = write("decisions.json", decisions, True)
     payload = "\n".join(messages) + "\nSession task_record.py decisions:\n" + json.dumps(decisions, indent=2)
     prompt = write("doctrine-commits.md", "\n".join("> " + line for line in payload.splitlines()) + "\n")
     groups_path = write("restate-groups.txt", scan_text)
-    must_read = [prompt, decisions_path, groups_path] + [write(name, diff) for name, diff in diffs]
+    written = [(write(name, diff), must) for name, diff, must in diffs]
+    must_read = [prompt, groups_path] + [path for path, must in written if must]
     if record is not None:
         must_read.append(write("task.json", record, True))
     if plan_text is not None:

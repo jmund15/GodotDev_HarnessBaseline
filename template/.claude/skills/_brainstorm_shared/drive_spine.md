@@ -2,7 +2,8 @@
 
 `/part_drive`, `/part_execute`, `/feature_drive`, `/design_drive` and `/worklog drive` are adapters onto this file.
 `/overnight` ships in the pure layer, so it carries the adapter header with no link here and owns its pauses in its
-Step 2. A stage runs as `execution_depth.md` §Admission table admits it.
+Step 2. A stage runs as `execution_depth.md` §Admission table admits it. An admitted element whose owner command the
+project lacks (no `.claude/commands/<name>.md`) is an absent result under H4: the drive stops there and never skips it.
 
 ## Stages
 
@@ -18,7 +19,7 @@ Step 2. A stage runs as `execution_depth.md` §Admission table admits it.
 | Land | always; the Owner approval row when reversibility = none | `change_control` §Commits | H4 |
 | Close | always | §Close | — |
 
-- **Intake.** Open an admitted task record with `python3 .claude/tools/task_record.py open <task_id>` before recording conditions or running `task_record.py triage`. When recording triage, if the owner's words name the run's rigor ("light run", "thorough", "make it perfect"), record those words as a request under `execution_depth.md` §Conditions, then run `python3 .claude/tools/task_record.py set <task_id> --rigor light|normal|thorough` with the chosen level.
+- **Intake.** Open an admitted task record with `python3 .claude/tools/task_record.py open <task_id>` before recording conditions or running `task_record.py triage`. When recording triage, if the owner's words name the run's rigor ("light run", "thorough", "make it perfect"), record those words as a request under `execution_depth.md` §Conditions, then run `python3 .claude/tools/triage.py rigor --set light|normal|thorough --task <task_id>` with the chosen level. Then run `python3 .claude/tools/triage.py rigor --task <task_id>` and state the level in force (recorded, else the project default; `orchestration` reference `rigor.md`) in the first report; every stage report after it names the level.
 - **Requirements.** Before the first brief, record each goal or constraint the owner's words set for the result with `task_record.py add <task_id> requirement|exclusion`. Record quality goals ("intuitive to author") as well as mechanism rulings. Briefs, review seats and plan checks judge against the record, never against a brief author's summary of it.
 - **Ground.** When Ground runs: run `/explore` before drafting. Absorb every `premise-contradiction` claim and close every UNCOVERED
   dimension the design touches before drafting; `/explore` owns lens selection and evidence reuse (`execution_depth.md` §Boundary).
@@ -64,12 +65,13 @@ that patch as its resume point. A red test left in the tree fails every other se
   (`orchestration` reference `checkpointing.md`). If the complete plan still cannot be planned and reviewed, that is the same promotion, split by behaviour;
   never truncate a half-converged plan. Executor load splits into jobs, not Parts. Dropping or shrinking a planned
   slice is a halt with an owner question, never a silent cut.
-- **H3: an owner-domain fork (taste, appetite, or a done-condition that is subjective behaviour).**
+- **H3: an owner-domain fork (taste, appetite, or a done-condition that is subjective taste).**
   `appetite_invariant.md` classifies it. It is batched at the adapter's owner stop when one exists; otherwise the
-  drive halts. It is never resolved by an agent default. Behaviour no test can assert: implement the mechanism, flag
-  it for the owner, and continue, unless the done-condition is that behaviour.
+  drive halts. It is never resolved by an agent default. Taste no test can assert: implement the mechanism, flag
+  it for the owner, and continue, unless the done-condition is that taste. Usability is not taste
+  (`appetite_invariant.md` *Usability is analytical*): §Close step 1's walk judges it.
 - **H4: the drive stops before any commit on any of these:** a red gate that is not a trivial in-scope fix; an
-  unaccounted baseline drop; any BLOCKER or MERGE-BLOCKER left unfixed; an absent, partial or timed-out gate, battery
+  unaccounted baseline drop; any critical finding left unresolved (neither fixed nor refuted with evidence); an absent, partial or timed-out gate, battery
   or lens result, which is never green (a lens that returns nothing is uncovered: `orchestration` §8). An owner's
   quoted waiver of a named check exits H4 for that check only. The record keeps the quote, and the waiver packet
   recommends the scoped run over the changed files as its default. A blocking verdict is never downgraded to advisory
@@ -85,7 +87,8 @@ that patch as its resume point. A red test left in the tree fails every other se
 
 ## Slices
 
-- RED before GREEN per behaviour change, under the project's test-first rule.
+- RED before GREEN per behaviour change in the domain the project's test-first rule names, and for a regression's test in any domain (it reproduces the bug, `debugging`). A new check in any other domain (a rendered or integration row) runs green, with assertions that name the slice's change. Whether a new row could pass on the old build is a review question at the merge, never a per-slice run of the old build.
+- Verification grows with distance from the change. Inside a slice: only the tests of the items it changes, each run alone, and after a failure only the failed tests. At each merge of slices: the dispatcher runs the scope the merged slices touched. Once at drive close: the full gate. When a selective runner at an inner tier cannot place a changed path, it names the path and keeps to that tier's scope; it never widens to the full gate, which the close runs anyway. A test that cannot run alone is a test-design defect fixed in the test, never a reason to widen a run. The project's `change_control` §Gate cadence binds each tier to its runner.
 - A plan still in plan check runs no slice, even one no open finding touches: the next fold can still rewrite it, and its landed code then misleads the next round.
 - A slice reaches green alone, or per-slice verification proves nothing. Slice 1 of a multi-slice plan is a thin
   end-to-end tracer touching every layer the feature crosses. When the feature has visible runtime behavior, the
@@ -115,7 +118,7 @@ that patch as its resume point. A red test left in the tree fails every other se
   `/session_audit --files <the boundary's files> --lens sa-architecture-sweep --plan <plan path> --task <task id>`.
   The boundary's files are its slices' write sets that the Session File Identification Procedure reconciles. Each
   finding routes into the consuming slice's scope as a slice repair, a later round (`orchestration` §2 *Later
-  rounds*), dispositioned before that slice's scoped verification closes it. A skipped seam review is a
+  rounds*), dispositioned before that slice's scoped verification closes it. A finding below the run's bar is noted in the seam report and routes into no slice. A skipped seam review is a
   `task_record.py add <task id> decision` naming the boundary and the reason. It is not an absent lens result under
   H4, because §Close step 2 sweeps the seam files the ledger still shows uncovered.
 - Completion is proven by the artifacts the slice's change kind and oracle require under the project's test-first
@@ -137,13 +140,15 @@ that patch as its resume point. A red test left in the tree fails every other se
 
 ## Close
 
-1. Verify by chain position per `change_control` §Gate cadence, which also owns fix re-verification. At drive
-   close, before the close gate, run each root-acceptance row (`plan_file_format.md` §Root acceptance) of every plan
-   serving the goal on their merged candidate, through the project's agent playtest command. Record each requirement
-   met, partial, not met or owner-judges with its run evidence; a requirement no row maps is not met. A partial or
-   not-met row is repaired as a slice and re-run before the gate, and no push precedes this verification, even after a green
-   gate. The owner's play checklist is built from these rows, and an owner-deferred, partial or unprobed row is never
-   reported met.
+1. Verify by chain position per `change_control` §Gate cadence, which also owns fix re-verification. At each Part's
+   close, run its plan's root-acceptance rows (`plan_file_format.md` §Root acceptance) on the Part's candidate through
+   the project's agent playtest command; at drive close, before the close gate, run the rows of every plan serving the goal on their
+   merged candidate the same way. Record each requirement met, partial, not met or owner-judges with its run
+   evidence; a requirement no row maps is not met, and only taste is owner-judges (`appetite_invariant.md`
+   *Usability is analytical*). A partial or not-met row is repaired as a slice and re-run before the gate, and no
+   push precedes this verification, even after a green gate. Step 6 writes the record into the Part's roadmap row
+   (`roadmap_triggers_mvp.md` §6.10, the `complete` row). The owner's play checklist is built from these rows, and
+   an owner-deferred, partial or unprobed row is never reported met.
 2. Candidate review (the Candidate review row), run only at the drive's close (`change_control`
    §Gate cadence). Any other close runs step 1, and the seam review when its row admits it. The chain
    position places this step, not the commit: a plan that commits per job runs it over the landed commits.
@@ -155,11 +160,11 @@ that patch as its resume point. A red test left in the tree fails every other se
    report holds an `sa-architecture-sweep` verdict or the ledger row that covers it. It reads the review ledger
    (`tools/review_ledger.py`, `orchestration` §2).
    Every finding is dispositioned (applied by the fold, with its `applied` entry; fix now by a refold; worklog under a `worklog_reference` §Do-now gate reason, or refuse with
-   evidence); an ASK goes to the adapter's owner stop, or halts the drive under H3 when there is none. A fix-now disposition routes per `orchestration` §2 *Later rounds*. Close is done when every finding has a disposition; an undispositioned finding stops the commit sequence.
+   evidence; or below bar: noted); an ASK goes to the adapter's owner stop, or halts the drive under H3 when there is none. A fix-now disposition routes per `orchestration` §2 *Later rounds*. Close is done when every finding has a disposition; an undispositioned finding stops the commit sequence.
    The close report lists each seam review the drive's boundaries admitted: the runs from
    `review_ledger.py rows --task <task id>`, the skips from the task record's decisions.
 3. When preparing a branch for a PR or merge, run `/pr_ready` over the readiness checks the diff admits, reusing
-   current coverage. A clean battery means every admitted lens returned and none reported a BLOCKER; a BLOCKER is H4.
+   current coverage. A clean battery means every admitted lens returned and none reported a critical finding; one is H4.
 4. Close out dispatch ratings (`/orchestration_metrics` §Incremental rating, *Phase close*) when consumed dispatches
    remain unrated.
 5. Commit per the project's commit rules (`change_control` §Commits). The drive does not push; a later push follows
@@ -175,7 +180,7 @@ that patch as its resume point. A red test left in the tree fails every other se
 | "The plan is detailed, so RED-before-GREEN is covered." | A detailed plan is starter material, never a license to skip RED-before-GREEN. | the project's test-first rule |
 | "It's ad-hoc, so relax TDD or the gate." | The domain split and the regression gate bind on provenance-blind rules: every gated change, no carve-outs. | the project's test-first rule; `change_control` §Gate cadence |
 | "This taste question is small — pick the sensible default to keep the drive moving." | The owner stop decides where taste goes, never whether it is honoured. Batch it or halt on it. | H3 |
-| "Criticals remain but I'm out of rounds — present the plan anyway." | Approval-ready and known-critical are mutually exclusive. | H5 |
+| "Criticals remain but I've run enough rounds — present the plan anyway." | Approval-ready and known-critical are mutually exclusive. | H5 |
 | "Run every slice in parallel to finish sooner." | Coupled slices serialize; only independent lanes run as dispatch chains, and execution state stays in the task record. | §Slices |
 | "The design is in the conversation, so skip the plan file." | Conversation context dies at compaction; the plan file exists whenever the Plan file row admits it. | `execution_depth.md` §Admission table |
 | "We discussed it thoroughly, so skip /plan_check." | A resolved design is not an audited plan; plan check runs whenever its row admits it. | `execution_depth.md` §Admission table |

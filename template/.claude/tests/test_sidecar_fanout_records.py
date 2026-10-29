@@ -172,6 +172,53 @@ case('memory exit 12 waits before each attempt and completes the job', memory_re
 case('detached memory refusal keeps attempt 1 and completes on a new record', lambda: memory_retry(True))
 
 
+_BRIEF = os.path.join(TMP, "brief.md")
+_with_brief = sf._inventory_job("j", ["bash", "anthropic_sidecar.sh", "-f", _BRIEF, "-R", "r.json"], "id", "r.json")
+_without_brief = sf._inventory_job("j", ["bash", "anthropic_sidecar.sh", "-R", "r.json"], "id", "r.json")
+case("an inventory job records the absolute path of the launcher's -f prompt file",
+     lambda: _with_brief.get("brief") == os.path.abspath(_BRIEF))
+case("an inventory job for a launch with no -f carries no brief",
+     lambda: "brief" not in _without_brief)
+
+
+_grouped = sf._inventory_job("j", ["bash", "anthropic_sidecar.sh", "-R", "r.json"], "id", "r.json", wake_with="seats")
+case("an inventory job records the wake group its jobs file named as `wakeWith`",
+     lambda: _grouped.get("wakeWith") == "seats")
+case("an inventory job with no wake group carries no `wakeWith`",
+     lambda: "wakeWith" not in _without_brief)
+
+
+def _refuses(jobs):
+    try:
+        sf.wake_groups(jobs)
+    except sf.JobError:
+        return True
+    return False
+
+
+case("wake_groups maps each grouped label to its group and leaves ungrouped jobs out",
+     lambda: sf.wake_groups([{"label": "a", "wakeWith": "seats"}, {"label": "b"}, {"label": "c", "wakeWith": "seats"}])
+     == {"a": "seats", "c": "seats"})
+case("wake_groups refuses a blank or non-string group",
+     lambda: all(_refuses([{"label": "a", "wakeWith": bad}]) for bad in ("", "  ", 3, None, ["x"])))
+
+
+def _grouped_inventory():
+    out_dir = os.path.join(TMP, "grouped_inventory")
+    os.makedirs(out_dir, exist_ok=True)
+    planned = [(label, _fake_launcher_argv(os.path.join(out_dir, label + ".stream")), os.path.join(out_dir, label + ".out.json"))
+               for label in ("g1", "g2", "solo")]
+    sf.run_jobs(planned, 2, out_dir, wake_groups={"g1": "seats", "g2": "seats"})
+    import json
+    path = next(f for f in os.listdir(out_dir) if f.endswith(".inventory.json"))
+    with open(os.path.join(out_dir, path), encoding="utf-8") as fh:
+        return {job["label"]: job.get("wakeWith") for job in json.load(fh)["jobs"]}
+
+
+case("run_jobs writes each job's wake group into the fan-out inventory the watcher reads",
+     lambda: _grouped_inventory() == {"g1": "seats", "g2": "seats", "solo": None})
+
+
 def main():
     failed = 0
     total = 0

@@ -8,6 +8,7 @@
   },
   "env": {
     "CLAUDE_CODE_GLOB_NO_IGNORE": "false",
+    "PYTHON_BASIC_REPL": "1",
     "PYTHONUTF8": "1"
   },
   "hooks": {

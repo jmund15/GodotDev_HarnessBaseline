@@ -71,12 +71,14 @@ class Session:
         entry.update(extra)
         return entry
 
-    def inventory(self, name, label, written, with_process=True):
+    def inventory(self, name, label, written, with_process=True, brief=None):
         """The fan-out inventory the driver writes once, listing the job's record (the captured one, trimmed)."""
         path = os.path.join(self.dir, "fanout-%s.inventory.json" % name)
         body = {"schemaVersion": 1, "fanoutId": name, "parentSessionId": SID, "afterSeats": False,
                 "jobs": [{"label": label, "launchId": LAUNCH, "recordPath": self.record(label),
                           "launcher": "anthropic", "workdir": self.root}]}
+        if brief:
+            body["jobs"][0]["brief"] = brief
         if with_process:
             body["fanoutProcess"] = alive()
         with open(path, "w", encoding="utf-8") as fh:
@@ -166,6 +168,16 @@ class FanoutEnd(unittest.TestCase):
         self.assertNotIn("UNRESOLVED", text)
         self.assertFalse(exited, "the watcher must keep watching the running job, printed: %r" % text)
 
+    def test_a_call_refused_for_its_out_dir_and_reissued_elsewhere_does_not_wake_unresolved(self):
+        """Session ef516d99 (2026-10-26): `--out-dir run` was refused for differing from the jobs file's spillDir,
+        so that dir was never created, and the re-issue ran in the spillDir."""
+        refused, relaunch = self.refused_then_relaunched()
+        refused["fanout_dir"] = os.path.join(self.s.root, "run")
+        self.s.pending([refused, relaunch])
+        text, exited = outcome(self.s.watch(), 4)
+        self.assertNotIn("UNRESOLVED", text)
+        self.assertFalse(exited, "the watcher must keep watching the running job, printed: %r" % text)
+
     def test_unresolved_still_fires_when_no_later_call_launched_the_job(self):
         self.s.pending([self.s.entry(LIVE, self.s.now - 500)])
         text, exited = outcome(self.s.watch(), 6)
@@ -241,6 +253,167 @@ class FanoutEnd(unittest.TestCase):
         text, exited = outcome(proc, 8)
         self.assertTrue(exited)
         self.assertIn("DONE %s exit=1" % ENDED, text)
+
+    def done_digest(self, stream, amend=True):
+        """The wake text of a fan-out job that ended, whose inventory names its brief and whose stream is `stream(amend_path)`."""
+        now = self.s.now
+        brief = os.path.join(self.s.root, "brief.md")
+        with open(brief, "w", encoding="utf-8") as fh:
+            fh.write("brief\n")
+        if amend:
+            with open(brief + ".amend.md", "w", encoding="utf-8") as fh:
+                fh.write("amendment\n")
+        inventory = self.s.inventory("7b162c1c-72f9-4c74-9d23-226c36cd4721", ENDED, now - 290, brief=brief)
+        record = self.s.record(ENDED)
+        with open(record + ".pid", "w", encoding="utf-8") as fh:
+            fh.write("%s launch=%s winpid=1 pid=1\n" % (stamp(now - 280), LAUNCH))
+        self.s.ended(ENDED, 1, with_json=True)
+        with open(os.path.join(self.s.dir, ENDED + ".out.json"), "w", encoding="utf-8") as fh:
+            fh.write(stream(brief + ".amend.md") + '{"type":"result","result":"done"}\n')
+        self.s.pending([self.s.entry(ENDED, now - 300, record, inventory=inventory)])
+        text, exited = outcome(self.s.watch(), 8)
+        self.assertTrue(exited)
+        self.assertIn("DONE %s exit=1" % ENDED, text)
+        return text
+
+    @staticmethod
+    def read_events(path, ok):
+        use = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_a", "name": "Read", "input": {"file_path": path}}]}}
+        res = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_a", "is_error": not ok,
+             "content": "1\tamended" if ok else "File does not exist."}]}}
+        return json.dumps(use) + "\n" + json.dumps(res) + "\n"
+
+    def test_done_digest_flags_an_amendment_whose_only_read_errored(self):
+        text = self.done_digest(lambda amend: self.read_events(amend, ok=False))
+        self.assertIn("AMEND UNREAD", text)
+        self.assertIn(".amend.md: the job never read this amendment; its work follows the brief alone", text)
+
+    def test_done_digest_is_quiet_when_the_amendment_was_read(self):
+        self.assertNotIn("AMEND UNREAD", self.done_digest(lambda amend: self.read_events(amend, ok=True)))
+
+    def test_done_digest_is_quiet_with_no_amend_file(self):
+        self.assertNotIn("AMEND UNREAD", self.done_digest(lambda amend: self.read_events(amend, ok=False), amend=False))
+
+
+class WakeUnit(unittest.TestCase):
+    """The wake unit is the jobs one fan-out inventory puts in a `wakeWith` group; a job with none is its own unit.
+
+    Captured 2026-10-28: eight independent fix jobs in one fan-out; three ended clean over
+    40, 22 and 10 minutes and none woke the session, which woke only when a fourth job failed."""
+
+    def setUp(self):
+        self.s = Session()
+        self.addCleanup(self.s.close)
+
+    def fanout(self, groups, after_seats=False):
+        """A running fan-out of one job per label of `groups` ({label: wakeWith group or None}), one call, one inventory."""
+        now = self.s.now
+        path = os.path.join(self.s.dir, "fanout-wake-unit.inventory.json")
+        jobs = []
+        for label, group in groups.items():
+            job = {"label": label, "launchId": LAUNCH, "recordPath": self.s.record(label),
+                   "launcher": "anthropic", "workdir": self.s.root}
+            if group:
+                job["wakeWith"] = group
+            jobs.append(job)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"schemaVersion": 1, "fanoutId": "wake-unit", "parentSessionId": SID, "afterSeats": after_seats,
+                       "fanoutProcess": alive(), "jobs": jobs}, fh)
+        entries = []
+        for label in groups:
+            record = self.s.running(label, now - 90)
+            entries.append(self.s.entry(label, now - 120, record, inventory=path, call="toolu_wake_unit"))
+        self.s.pending(entries)
+
+    def finish(self, label, code=0):
+        self.s.ended(label, code, with_json=True)
+
+    def assertAsleep(self, proc, why):
+        time.sleep(2.0)
+        self.assertIsNone(proc.poll(), why)
+
+    def test_ungrouped_clean_end_wakes_while_siblings_run(self):
+        self.fanout({"a": None, "b": None, "c": None})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "three running jobs keep the watcher alive")
+        self.finish("a")
+        text, exited = outcome(proc, 8)
+        self.assertTrue(exited, "an ungrouped clean end is its own unit and wakes; printed: %r" % text)
+        self.assertIn("DONE a exit=0", text)
+        self.assertIn("STILL RUNNING 2", text)
+
+    def test_grouped_clean_end_waits_for_its_running_group_member_then_wakes_on_the_last(self):
+        self.fanout({"a": "seats", "b": "seats"})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running group keeps the watcher alive")
+        self.finish("a")
+        self.assertAsleep(proc, "a clean end must not wake while a member of its group runs")
+        self.finish("b")
+        text, exited = outcome(proc, 8)
+        self.assertTrue(exited, "the group's last end wakes; printed: %r" % text)
+        self.assertIn("DONE a exit=0", text)
+        self.assertIn("DONE b exit=0", text)
+
+    def test_a_failure_inside_a_group_wakes_at_once(self):
+        self.fanout({"a": "seats", "b": "seats"})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running group keeps the watcher alive")
+        self.finish("a", 1)
+        text, exited = outcome(proc, 8)
+        self.assertTrue(exited, "a failed member wakes while its group runs; printed: %r" % text)
+        self.assertIn("DONE a exit=1", text)
+
+    def test_two_groups_in_one_fanout_are_independent(self):
+        self.fanout({"a": "one", "b": "one", "c": "two", "d": "two"})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running groups keep the watcher alive")
+        self.finish("a")
+        self.finish("c")
+        self.assertAsleep(proc, "each group still has a running member")
+        self.finish("d")
+        text, exited = outcome(proc, 8)
+        self.assertTrue(exited, "group `two` ended and wakes though group `one` runs; printed: %r" % text)
+        self.assertIn("DONE c exit=0", text)
+        self.assertIn("DONE d exit=0", text)
+        self.assertIn("STILL RUNNING 1", text)
+
+    def test_an_ungrouped_end_wakes_while_a_group_runs(self):
+        self.fanout({"a": "seats", "b": "seats", "solo": None})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running jobs keep the watcher alive")
+        self.finish("solo")
+        text, exited = outcome(proc, 8)
+        self.assertTrue(exited, "the ungrouped job wakes; printed: %r" % text)
+        self.assertIn("DONE solo exit=0", text)
+
+    def test_review_seats_ungrouped_wait_for_the_fanouts_fold_stage(self):
+        self.fanout({"a": None, "b": None}, after_seats=True)
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running seats keep the watcher alive")
+        self.finish("a")
+        self.finish("b")
+        self.assertAsleep(proc, "ended seats of a fan-out that still runs its fold stage wake nobody")
+
+    def test_ends_in_one_poll_arrive_in_one_wake(self):
+        self.fanout({"a": None, "b": None, "c": None})
+        self.finish("a")
+        self.finish("b")
+        text, exited = outcome(self.s.watch(), 8)
+        self.assertTrue(exited)
+        self.assertIn("DONE a exit=0", text)
+        self.assertIn("DONE b exit=0", text)
+
+    def test_a_clean_end_that_woke_is_not_reported_again_by_the_next_watcher(self):
+        self.fanout({"a": None, "b": None})
+        self.finish("a")
+        first, exited = outcome(self.s.watch(), 8)
+        self.assertTrue(exited)
+        self.assertIn("DONE a exit=0", first)
+        again, exited = outcome(self.s.watch(), 3)
+        self.assertFalse(exited, "b still runs, so the re-armed watcher keeps watching; printed: %r" % again)
+        self.assertNotIn("DONE a", again)
 
 
 if __name__ == "__main__":

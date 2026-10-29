@@ -62,6 +62,7 @@ REPO = TOOLS.parents[1]
 sys.path.insert(0, str(TOOLS))
 import adaptation  # noqa: E402
 import fold_check  # noqa: E402
+import finding_bar  # noqa: E402
 from cli_usage import usage  # noqa: E402
 
 Unusable = fold_check.Unusable
@@ -166,6 +167,7 @@ def _archive_rows(directory, kind="review", *, merge=True, seat_order=None):
                        category=min(members, key=lambda m: category.get(m.get('category'), 9)).get('category'),
                        critical=any(member.get('critical') for member in members),
                        refuting=any(member.get('refuting') for member in members))
+            finding_bar.set_strongest(row, members)
             if row['action'] == 'ASK':
                 row['question'] = ' / '.join(dict.fromkeys(m['question'] for m in members if m.get('question'))) or None
                 row['options'] = list(dict.fromkeys(option for m in members if m.get('action') == 'ASK'
@@ -356,9 +358,11 @@ def _hold_class(entry):
     return next((name for name in HOLD_CLASSES if name in text), "other")
 
 
-def held_rows(rows, jobs, *, views=None):
+def held_rows(rows, jobs, *, views=None, rigor=None):
     """Every id the parent rules: the fold's deferred ids with their class, each ASK and open PLAN, and on a run with
-    no fold every FIX and resolved PLAN as `unfolded`, which the standalone fold applies."""
+    no fold every FIX and resolved PLAN as `unfolded`, which the standalone fold applies. A finding below the run's
+    `rigor` is never held: the fold defers it `below-bar`, and `below_bar_ids` lists it."""
+    by_id = {row['id']: row for row in rows}
     jobs = [fold_check._expanded_job(job, job.get('rows') or views or rows) for job in jobs]
     held, seen = [], set()
     for job in jobs:
@@ -366,14 +370,19 @@ def held_rows(rows, jobs, *, views=None):
         for entry in digest.get("deferred") or []:
             if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"] not in seen:
                 seen.add(entry["id"])
-                held.append({"id": entry["id"], "class": _hold_class(entry),
-                             "reason": str(entry.get("reason") or "")})
+                row = by_id.get(entry["id"])
+                if entry.get("class") == "below-bar" and row is not None and finding_bar.below(row, rigor):
+                    continue
+                held_class = "below-bar" if entry.get("class") == "below-bar" else _hold_class(entry)
+                held.append({"id": entry["id"], "class": held_class, "reason": str(entry.get("reason") or "")})
     applied = {entry.get("id") for job in jobs if isinstance(job.get("digestValue"), dict)
                for entry in job["digestValue"].get("applied") or [] if isinstance(entry, dict)}
     authorized = {i for job in jobs for i in job.get('ruled') or []}
     for row in rows:
         if row['id'] in seen or (row['id'] in applied and
                                 (not fold_check.hold_class(row) or row['id'] in authorized)):
+            continue
+        if finding_bar.below(row, rigor):
             continue
         held_class = fold_check.hold_class(row)
         if held_class:
@@ -382,6 +391,14 @@ def held_rows(rows, jobs, *, views=None):
         elif not jobs and row.get("action") in ("FIX", "PLAN"):
             held.append({"id": row["id"], "class": "unfolded", "reason": str(row.get("description") or "")})
     return held
+
+
+def below_bar_ids(rows, jobs, held, rigor):
+    """The ids below the run's rigor that neither the fold applied nor `held_rows` holds: listed with the close's offer."""
+    held_ids = {entry["id"] for entry in held}
+    applied = {entry.get("id") for job in jobs if isinstance(job.get("digestValue"), dict)
+               for entry in job["digestValue"].get("applied") or [] if isinstance(entry, dict)}
+    return [row["id"] for row in rows if finding_bar.below(row, rigor) and row["id"] not in held_ids | applied]
 
 
 def _covering_mandates(rows, rel, wanted):
@@ -481,11 +498,13 @@ def record_panel(cwd, args, src, subjects):
         return None
     flag, value = src.record
     files = {f for s in subjects for f in s.files}
+    frozen = {}
     if args.blobs:
         # A frozen blob map names the reviewed subject; without it a fold-less review records no file.
         import review_ledger
         try:
-            files |= set(review_ledger.blob_map(args.blobs))
+            frozen = review_ledger.blob_map(args.blobs)
+            files |= set(frozen)
         except review_ledger.ToolError:
             pass  # record reads the same map and reports it unreadable
 
@@ -498,9 +517,11 @@ def record_panel(cwd, args, src, subjects):
     if files:
         cmd += ["--files", *files]
     blobs = {rel: sha for s in subjects for rel, sha in reviewed_blobs(s).items()}
-    if args.blobs:
+    if args.blobs and not (frozen and set(blobs) - set(frozen)):
         cmd += ["--blobs", args.blobs]
     elif blobs:
+        # The frozen map is what its seat read; the fold snapshot adds the files it lacks.
+        blobs.update(frozen)
         path = Path(args.out).with_name(Path(args.out).name + ".reviewed_blobs.json")
         _write(path, blobs)
         cmd += ["--blobs", str(path)]
@@ -602,6 +623,9 @@ def review(args, *, independent=None):
             raise Unusable('--ruled requires a fold and known finding ids')
         for job in src.jobs:
             job['ruled'] = sorted(ruled)
+    rigor = finding_bar.run_rigor(args.task, Path(args.root or REPO))
+    for job in src.jobs:
+        job['bar'] = rigor
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     fold_out = str(out) + ".fold"
@@ -677,7 +701,7 @@ def review(args, *, independent=None):
         next_round["roles"] = roles_note
     if unseated:
         next_round["unseated"] = unseated
-    held = held_rows(src.rows, src.jobs, views=fold_check.load_rows(src.findings_path, allow_empty=True)
+    held = held_rows(src.rows, src.jobs, rigor=rigor, views=fold_check.load_rows(src.findings_path, allow_empty=True)
                      if src.findings_path else None)
     held_ids = {entry["id"] for entry in held}
     for entry in (fold_report or {}).get("dispositions") or []:
@@ -731,7 +755,8 @@ def review(args, *, independent=None):
                   or (fold_check.FAILURE_SCOPE.get(f["kind"]) == "finding" and not f.get("ids")) for f in failures)
               else "pass",
               "unverified": sorted(i for i, v in independent.items() if v == "UNVERIFIED"),
-              "held": held, "failures": failures, "ledger": ledger_report,
+              "held": held, "failures": failures, "ledger": ledger_report, "rigor": rigor,
+              "belowBar": below_bar_ids(src.rows, src.jobs, held, rigor),
               "nextRound": next_round, "changedPaths": changed_paths,
               "foldReport": fold_out + ".json" if fold_report else None, "mode": "review", "source": source}
     if src.selection is not None:

@@ -665,10 +665,24 @@ CASES = [
                                  "limits": {"contextTokens": 200000, "maxOutputTokens": 10000,
                                             "compactAtTokens": 100000}})["autoCompactWindow"] == 123000),
     ("a non-Claude name keeps the max-context environment contract",
-     lambda: mr.anthropic_window({"id": "vendor-test", "longContextTier": None,
-                                 "limits": {"contextTokens": 272000}}) == {
+     lambda: _with_login(None, lambda: mr.anthropic_window({"id": "vendor-test", "longContextTier": None,
+                                 "limits": {"contextTokens": 272000}})) == {
          "model": "vendor-test", "autoCompactWindow": None, "maxContextTokens": 272000,
          "contextWindow": 272000, "contextWindowSource": "launcher-declared"}),
+    ("a non-Claude 1M row declares its own window and compacts at a 500000 login cap",
+     lambda: _with_login(500000, lambda: mr.anthropic_window({"id": "vendor-test", "longContextTier": None,
+                                 "limits": {"contextTokens": 1000000}})) == {
+         "model": "vendor-test", "autoCompactWindow": 500000, "maxContextTokens": 1000000,
+         "contextWindow": 500000, "contextWindowSource": "anthropic-auto-compact"}),
+    ("a non-Claude row under the login cap is not raised, and full_window skips the cap",
+     lambda: _with_login(500000, lambda: (
+         mr.anthropic_window({"id": "vendor-test", "limits": {"contextTokens": 272000}})["autoCompactWindow"] is None
+         and mr.anthropic_window({"id": "vendor-test", "limits": {"contextTokens": 1000000}},
+                                 full_window=True)["autoCompactWindow"] is None))),
+    ("compaction_point takes the login cap on every transport, not only Anthropic",
+     lambda: _with_login(500000, lambda: mr.compaction_point(
+         {"id": "vendor-test", "transport": "go", "limits": {"contextTokens": 1000000, "maxOutputTokens": 64000}},
+         {"transport": "go"}))[1] == "auto-compact"),
     ("a sub-1M row cannot claim a larger Claude window or request the 1M suffix",
      lambda: (lambda w: w["model"] == "claude-test" and w["contextWindow"] is None
               and w["contextWindowSource"] == "unknown")(
@@ -741,14 +755,16 @@ CASES = [
     ("anthropic_window takes no shape or resident parameter",
      lambda: not {"shape", "resident"} & set(mr.anthropic_window.__code__.co_varnames[:mr.anthropic_window.__code__.co_argcount])
      and not hasattr(mr, "RESIDENT_COMPACT_WINDOW")),
-    ("compaction_point ignores a job's shape and resident marks, and still selects the Anthropic route from transport",
+    ("compaction_point ignores a job's shape and resident marks, and every transport's client takes the login cap",
      lambda: _with_login(500000, lambda: (
          mr.compaction_point({"id": "claude-opus-test", "longContextTier": None,
                               "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
                              {"transport": "anthropic", "shape": "review", "resident": True}) == (467000, "auto-compact")
          and mr.compaction_point({"id": "claude-opus-test", "longContextTier": None,
                                   "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}},
-                                 {"transport": "go"})[1] == "usable-window"))),
+                                 {"transport": "go"}) == (467000, "auto-compact")
+         and mr.compaction_point({"id": "claude-opus-test", "longContextTier": None,
+                                  "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000}})[1] == "usable-window"))),
 
     # ---- context-window modes ----------------------------------------------
     ("the default context query uses contextTokens and the provider percentage",

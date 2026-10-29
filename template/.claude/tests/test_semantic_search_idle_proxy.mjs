@@ -452,7 +452,7 @@ test('S1.8 an invalid SEMANTIC_SEARCH_IDLE_MINUTES fails loudly at startup', asy
 // FAKE_EXIT_DELAY_MS; `exit pid=` in FAKE_LOG marks the moment.
 const FAKE_SERVER = String.raw`
 import readline from 'node:readline'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 const DELAY = Number(process.env.FAKE_DELAY_MS || 0)
 const EXIT_DELAY = Number(process.env.FAKE_EXIT_DELAY_MS || 0)
 const ECHO = !!process.env.FAKE_ECHO
@@ -485,6 +485,7 @@ rl.on('line', (line) => {
     const id = msg.id
     const args = msg.params.arguments || {}
     const q = args.query
+    log('args=' + JSON.stringify(args))
     log('received id=' + id + ' q=' + q)
     send({ jsonrpc: '2.0', method: 'notifications/message',
            params: { level: 'info', logger: 'semantic-search', data: 'searching' } })
@@ -495,7 +496,8 @@ rl.on('line', (line) => {
       let text = 'fake:' + q + ':pid=' + process.pid
       if (ECHO) text += ':cwd=' + process.cwd() + ':dir=' + args.searchDir
       if (typeof q === 'string' && q.startsWith('big')) text += ':' + 'x'.repeat(1024 * 1024)
-      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } })
+      const result = process.env.FAKE_RESULT ? JSON.parse(readFileSync(process.env.FAKE_RESULT, 'utf8')) : { content: [{ type: 'text', text }] }
+      send({ jsonrpc: '2.0', id, result })
       maybeExit()
     }, quick ? 0 : DELAY)
     inFlight.set(id, timer)
@@ -825,6 +827,7 @@ function fakeCase(name, env = {}) {
 	const root = path.join(SCRATCH, 'roots', name)
 	rmSync(root, { recursive: true, force: true })
 	mkdirSync(root, { recursive: true })
+	git(['init', '-q'], root)
 	const baseEnv = { ...DBG, FAKE_LOG: log, ...env }
 	return {
 		pluginRoot, log, root, baseEnv,
@@ -875,6 +878,192 @@ function startRawFrontend({ cwd, pluginRoot, env }) {
 		kill: () => { try { child.kill('SIGKILL') } catch { /* gone */ } },
 	}
 }
+
+function linkedFixture(name) {
+	const main = buildFixture(path.join(SCRATCH, name + '-main'))
+	const linked = path.join(SCRATCH, name + '-linked')
+	git(['worktree', 'add', '--detach', linked, 'HEAD'], main)
+	return { main: realpathSync.native(main), linked: realpathSync.native(linked) }
+}
+
+const { formatResults } = await import(pathToFileURL(path.join(PLUGIN, 'dist', 'format.js')).href)
+function formattedResult(paths, preview = 'source preview') {
+	return { content: [{ type: 'text', text: formatResults(paths.map((filePath) => ({
+		chunk: { filePath, startLine: 2, endLine: 4, kind: 'function', name: 'example', content: preview },
+		scores: { semantic: 0.8 },
+	}))) + '\n\n[Index: 5 files, 7 chunks]' }] }
+}
+
+function resultHeaders(result) {
+	return resultText(result).split('\n').filter((line) => /^\d+\. /.test(line))
+}
+
+test('S4.1 a cold linked worktree builds the primary index once and shares its real backend', { timeout: 240000 }, async () => {
+	const { main, linked } = linkedFixture('s4-1')
+	const a = await startFrontend({ cwd: linked, env: DBG })
+	const b = await startFrontend({ cwd: main, env: DBG })
+	try {
+		assert.equal(existsSync(path.join(main, '.search-index')), false)
+		const args = { query: 'magma reaction pressure', searchDir: '.', limit: 3 }
+		const ra = await callSearch(a, args, 180000)
+		const rb = await callSearch(b, args, 180000)
+		own(a, b)
+		assert.notEqual(ra.isError, true, resultText(ra))
+		assert.notEqual(rb.isError, true, resultText(rb))
+		assert.equal(backendPids(a, b).length, 1)
+		assert.equal(existsSync(path.join(linked, '.search-index')), false)
+		assert.equal(existsSync(path.join(main, '.search-index', 'search.db')), true)
+		assert.ok(resultHeaders(ra).length > 0)
+		assert.ok(resultHeaders(ra).every((line) => line.includes(linked + path.sep)), resultText(ra))
+		assert.match(resultText(ra), /primary checkout.*rank.*preview/i)
+		assert.ok(!resultText(rb).includes('primary checkout'), 'ordinary checkout keeps stock output')
+		const guestLinked = await callSearch(b, { ...args, searchDir: linked })
+		assert.ok(resultHeaders(guestLinked).every((line) => line.includes(linked + path.sep)), resultText(guestLinked))
+		assert.equal(backendPids(a, b).length, 1)
+	} finally {
+		trackPids(a); trackPids(b)
+		await b.close()
+		await a.close()
+	}
+})
+
+test('S4.2 rebasing covers relative and absolute headers, not previews or metadata', async () => {
+	const { main, linked } = linkedFixture('s4-2')
+	const c = fakeCase('s4-2')
+	const output = path.join(SCRATCH, 's4-2-result.json')
+	const preview = 'do not rewrite ' + main + ' or 1. alpha_module.py:L2 (text)'
+	const original = formattedResult(['alpha_module.py', path.join(main, 'beta_notes.md'), main.replaceAll('\\', '/') + '/delta_scene.gd'], preview)
+	writeFileSync(output, JSON.stringify(original))
+	const fe = await c.start({ FAKE_RESULT: output }, linked)
+	try {
+		const res = await callSearch(fe, { query: 'quick-paths', searchDir: '.', restrictToDir: 'src', limit: 3, rebuild: true })
+		assert.notEqual(res.isError, true, resultText(res))
+		assert.deepEqual(resultHeaders(res), ['alpha_module.py', 'beta_notes.md', 'delta_scene.gd'].map((file, i) => `${i + 1}. ${path.join(linked, file)}:L2-4 (function example)`))
+		assert.ok(resultText(res).includes('   ' + preview.slice(0, 117)), resultText(res))
+		assert.match(resultText(res), /scores: semantic=0\.80/)
+		assert.match(resultText(res), /\[Index: 5 files, 7 chunks\]/)
+		const args = JSON.parse(fakeLog(c.log).split('\n').find((line) => line.startsWith('args=')).slice(5))
+		assert.deepEqual(args, { query: 'quick-paths', searchDir: main, restrictToDir: 'src', limit: 3, rebuild: true })
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
+
+test('S4.3 each repository maps to its own primary, including a subdirectory and relative searchDir', async () => {
+	const first = linkedFixture('s4-3-first')
+	const second = linkedFixture('s4-3-second')
+	for (const root of [second.main, second.linked]) mkdirSync(path.join(root, 'sub dir'))
+	const c = fakeCase('s4-3')
+	const output = path.join(SCRATCH, 's4-3-result.json')
+	writeFileSync(output, JSON.stringify(formattedResult(['beta_notes.md'])))
+	const fe = await c.start({ FAKE_RESULT: output }, first.linked)
+	try {
+		const a = await callSearch(fe, { query: 'quick-first', searchDir: '.' })
+		const b = await callSearch(fe, { query: 'quick-second', searchDir: path.relative(first.linked, path.join(second.linked, 'sub dir')) })
+		assert.ok(resultHeaders(a)[0].includes(path.join(first.linked, 'beta_notes.md')), resultText(a))
+		assert.ok(resultHeaders(b)[0].includes(path.join(second.linked, 'sub dir', 'beta_notes.md')), resultText(b))
+		const args = fakeLog(c.log).split('\n').filter((line) => line.startsWith('args=')).map((line) => JSON.parse(line.slice(5)))
+		assert.deepEqual(args.map((a) => a.searchDir), [first.main, path.join(second.main, 'sub dir')])
+		assert.equal(c.booted(), 2)
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
+
+test('S4.4 ordinary non-Git roots keep the same directory and result bytes', async () => {
+	const c = fakeCase('s4-4')
+	rmSync(path.join(c.root, '.git'), { recursive: true, force: true })
+	const output = path.join(SCRATCH, 's4-4-result.json')
+	const original = formattedResult(['alpha_module.py'])
+	writeFileSync(output, JSON.stringify(original))
+	const fe = await c.start({ FAKE_RESULT: output, GIT_CEILING_DIRECTORIES: path.dirname(c.root) })
+	try {
+		const res = await callSearch(fe, { query: 'quick-ordinary', searchDir: '.' })
+		assert.equal(resultText(res), resultText(original))
+		const args = JSON.parse(fakeLog(c.log).split('\n').find((line) => line.startsWith('args=')).slice(5))
+		assert.equal(args.searchDir, realpathSync.native(c.root))
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
+
+test('S4.5 a branch-only search directory cannot start a worktree index or a phantom primary directory', async () => {
+	const { main, linked } = linkedFixture('s4-5')
+	mkdirSync(path.join(linked, 'branch-only'))
+	const c = fakeCase('s4-5')
+	const fe = await c.start({}, linked)
+	try {
+		const res = await callSearch(fe, { query: 'quick-missing', searchDir: 'branch-only' })
+		assert.equal(res.isError, true)
+		assert.match(resultText(res), /primary checkout.*directory/i)
+		assert.equal(c.booted(), 0)
+		assert.equal(existsSync(path.join(main, 'branch-only')), false)
+		assert.equal(existsSync(path.join(linked, 'branch-only', '.search-index')), false)
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
+
+test('S4.6 output-format drift blocks rebasing before a backend starts', async () => {
+	const { linked } = linkedFixture('s4-6')
+	const c = fakeCase('s4-6')
+	const format = path.join(c.pluginRoot, 'dist', 'format.js')
+	writeFileSync(format, readFileSync(format, 'utf8') + '\n// format drift\n')
+	const fe = await c.start({}, linked)
+	try {
+		const res = await callSearch(fe, { query: 'quick-drift', searchDir: '.' })
+		assert.equal(res.isError, true)
+		assert.match(resultText(res), /result format drift.*format\.js/i)
+		assert.equal(c.booted(), 0)
+		const ordinary = await callSearch(fe, { query: 'quick-ordinary-drift', searchDir: c.root })
+		assert.notEqual(ordinary.isError, true, resultText(ordinary))
+		assert.equal(c.booted(), 1)
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
+
+test('S4.7 headers escaping the shared root fail without rewriting source text', async () => {
+	const { linked } = linkedFixture('s4-7')
+	const c = fakeCase('s4-7')
+	const output = path.join(SCRATCH, 's4-7-result.json')
+	writeFileSync(output, JSON.stringify(formattedResult(['../outside/file.py'])))
+	const fe = await c.start({ FAKE_RESULT: output }, linked)
+	try {
+		const res = await callSearch(fe, { query: 'quick-escape', searchDir: '.' })
+		assert.equal(res.isError, true)
+		assert.match(resultText(res), /path outside.*shared index root/i)
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
+
+test('S4.8 a linked checkout of a bare repository cannot index the Git object directory', async () => {
+	const source = buildFixture(path.join(SCRATCH, 's4-8-source'))
+	const bare = path.join(SCRATCH, 's4-8-bare')
+	const linked = path.join(SCRATCH, 's4-8-linked')
+	git(['clone', '--bare', '-q', source, bare], SCRATCH)
+	git(['worktree', 'add', '--detach', linked, 'HEAD'], bare)
+	const c = fakeCase('s4-8')
+	const fe = await c.start({}, linked)
+	try {
+		const res = await callSearch(fe, { query: 'quick-bare', searchDir: '.' })
+		assert.equal(res.isError, true)
+		assert.match(resultText(res), /bare repository.*no primary checkout/i)
+		assert.equal(c.booted(), 0)
+		assert.equal(existsSync(path.join(bare, '.search-index')), false)
+		assert.equal(existsSync(path.join(linked, '.search-index')), false)
+	} finally {
+		trackPids(fe)
+		await fe.close()
+	}
+})
 
 test('S3.1 two frontends on one root share one real backend', { timeout: 240000 }, async () => {
 	const root = ownRoot('s3-1')

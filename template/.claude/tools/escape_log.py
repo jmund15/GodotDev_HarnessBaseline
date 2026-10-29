@@ -134,19 +134,6 @@ def domain_keys(paths):
     return triage.domain_keys(paths, claude_dir())
 
 
-def _trailer_text(fields):
-    """One canonical `Triage:` trailer line. `triage.parse_trailer` reads it back unchanged."""
-    parts = []
-    for key in triage.FIELDS | triage.OPTIONAL_FIELDS:
-        if key not in fields:
-            continue
-        value = fields[key]
-        if key == "oracle":
-            value = triage._format_oracle(value)
-        parts.append("%s=%s" % (key, value))
-    return " ".join(parts)
-
-
 def _task_naming(sha):
     """The newest task record whose JSON text names `sha`, else None. No record field holds a
     commit sha today, so the match is textual; a record that never names one simply does not match."""
@@ -178,12 +165,12 @@ def _triage_text(sha):
     message = _git_commit.run_git(["log", "-1", "--format=%B", sha], project_root()) or ""
     fields, _error = triage.parse_trailer(message)
     if fields is not None:
-        return _trailer_text(fields)
+        return triage.trailer_text(fields)
     record = _task_naming(sha)
     if record is not None:
         fields = (record.get("triage") or {}).get("fields")
         if isinstance(fields, dict) and fields:
-            return _trailer_text(fields)
+            return triage.trailer_text(fields)
     return UNRECORDED
 
 

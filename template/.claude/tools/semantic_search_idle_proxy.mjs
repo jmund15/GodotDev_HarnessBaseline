@@ -8,8 +8,9 @@
  * backend as a stdio child on the first `tools/call`.
  *
  * One backend per index root, shared by every frontend on the machine. The first frontend to
- * search a root (its canonical `searchDir`) hosts that root's backend and listens on a named pipe
- * derived from the root; every other frontend forwards its calls for that root over the pipe.
+ * search a root hosts that root's backend and listens on a named pipe derived from the root;
+ * every other frontend forwards its calls for that root over the pipe. Linked worktrees use
+ * their primary checkout's index root, with result paths rebased by the calling frontend.
  * Reference: `.claude/reference/semantic_search_idle.md`.
  *
  * The stock backend cache stays untouched: a child-only import hook adds C# AST support.
@@ -19,6 +20,8 @@
 import path from 'node:path'
 import net from 'node:net'
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -57,7 +60,7 @@ const NO_REQUEST_TIMEOUT_MS = 2147483647
 const MAX_IDLE_MINUTES = Math.floor(NO_REQUEST_TIMEOUT_MS / 60000)
 
 // Bump when the pipe wire format changes: shims of different protocols never share a pipe.
-const SHARE_PROTOCOL = 1
+const SHARE_PROTOCOL = 2
 // A POSIX socket leaves a stale file after a crash and nothing here proves its recovery, so
 // sharing runs on win32 only; elsewhere each frontend owns a private backend per root.
 const SHARED = process.platform === 'win32'
@@ -124,8 +127,25 @@ function readPluginVersion() {
 }
 
 const SERVER_VERSION = readPluginVersion()
+const RESULT_MODULE_HASHES = {
+	'format.js': '03e3f8771e24baafe010894f2338c23e02de0d7bdc404c59068afa7356ee80a6',
+	'mcp-server.js': 'c4f7f52d6220fc50c99df4664eec7e642d4199620f403eb3c731b18aa4564896',
+}
+const RESULT_FORMAT_DRIFT = resultFormatDrift()
+
+function resultFormatDrift() {
+	for (const [name, expected] of Object.entries(RESULT_MODULE_HASHES)) {
+		try {
+			const actual = createHash('sha256').update(readFileSync(path.join(PLUGIN_ROOT, 'dist', name))).digest('hex')
+			if (actual === expected) continue
+		} catch {}
+		return `Semantic search result format drift: ${name}; review the upstream result format before reinstalling the proxy.`
+	}
+	return null
+}
 
 if (argv.includes('--print-contract')) {
+	if (RESULT_FORMAT_DRIFT) fail(RESULT_FORMAT_DRIFT)
 	process.stdout.write(
 		JSON.stringify({
 			serverInfo: { name: 'semantic-search', version: SERVER_VERSION },
@@ -300,14 +320,11 @@ function validTimeoutMs(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Roots
-//
-// The unit of sharing is the index root: the caller's `searchDir`, resolved against the caller's
-// own cwd and canonicalized, so a relative path always means the caller's directory and two
-// spellings of one directory reach one engine. `realpath.native` returns the on-disk spelling, so
-// no case-folding is needed and distinct directories keep distinct keys.
+// Roots: canonical caller directories map to the same relative directory in their Git primary
+// checkout. Only that index root participates in backend election; each caller rebases its own reply.
 // ---------------------------------------------------------------------------
 const PLUGIN_CANONICAL = canonical(PLUGIN_ROOT)
+const execGit = promisify(execFile)
 
 function canonical(p) {
 	try {
@@ -320,6 +337,56 @@ function canonical(p) {
 function canonicalRoot(searchDir) {
 	const raw = typeof searchDir === 'string' && searchDir !== '' ? searchDir : '.'
 	return canonical(path.resolve(process.cwd(), raw))
+}
+
+function within(root, target) {
+	const relative = path.relative(root, target)
+	return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)
+}
+
+async function searchRoot(searchDir) {
+	const callerDir = canonicalRoot(searchDir)
+	const unchanged = { callerDir, indexDir: callerDir }
+	if (!isDirectory(callerDir)) return unchanged
+	const env = { ...process.env }
+	for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE']) delete env[key]
+	const git = async (args) => (await execGit('git', ['-C', callerDir, ...args], { env, encoding: 'utf8', windowsHide: true })).stdout
+	let metadata
+	try {
+		metadata = await git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'])
+	} catch (err) {
+		if (err.code === 'ENOENT' || /not a git repository/i.test(err.stderr ?? '')) return unchanged
+		throw new Error(`Cannot resolve semantic search Git root: ${messageOf(err)}`)
+	}
+	const fields = metadata.trimEnd().split(/\r?\n/)
+	if (fields.length !== 3) throw new Error('Cannot resolve semantic search Git root: unexpected Git metadata')
+	const [top, gitDir, commonDir] = fields.map(canonical)
+	if (gitDir === commonDir) return unchanged
+	const worktrees = (await git(['worktree', 'list', '--porcelain', '-z'])).split('\0')
+	if (worktrees[1] === 'bare') throw new Error('A bare repository has no primary checkout to share; search a standalone checkout instead.')
+	const first = worktrees[0]
+	if (!first.startsWith('worktree ')) throw new Error('Cannot resolve semantic search primary checkout')
+	const primary = canonical(first.slice('worktree '.length))
+	const indexDir = canonical(path.resolve(primary, path.relative(top, callerDir)))
+	if (!within(primary, indexDir) || !isDirectory(indexDir)) {
+		throw new Error('The primary checkout has no matching search directory; search an existing parent and read branch-only files locally.')
+	}
+	if (RESULT_FORMAT_DRIFT) throw new Error(RESULT_FORMAT_DRIFT)
+	return { callerDir, indexDir }
+}
+
+function callerResult(result, { callerDir, indexDir }) {
+	if (callerDir === indexDir || result.isError) return result
+	const content = (result.content ?? []).map((block) => {
+		if (block.type !== 'text') return block
+		const text = block.text.replace(/^(\d+\. )(.+)(:L\d+(?:-\d+)? \([^\r\n]*\))$/gm, (_, prefix, file, suffix) => {
+			const absolute = path.resolve(indexDir, file)
+			if (!within(indexDir, absolute)) throw new Error('Result path outside the shared index root; cannot rebase this result safely.')
+			return prefix + path.resolve(callerDir, path.relative(indexDir, absolute)) + suffix
+		})
+		return { ...block, text }
+	})
+	return { ...result, content: [...content, { type: 'text', text: 'Shared primary checkout index: ranks, previews and line ranges use the primary copy. Read the worktree file before relying on them; branch-only files are not indexed.' }] }
 }
 
 function isDirectory(p) {
@@ -736,14 +803,14 @@ server.setRequestHandler(types.CallToolRequestSchema, async (request, extra) => 
 	if (request.params.name !== SEARCH_TOOL.name) {
 		return { content: [{ type: 'text', text: `Unknown tool: ${request.params.name}` }], isError: true }
 	}
-	const dir = canonicalRoot(request.params.arguments?.searchDir)
-	const params = { ...request.params, arguments: { ...(request.params.arguments ?? {}), searchDir: dir } }
 	const controller = new AbortController()
 	const onAbort = () => controller.abort(extra.signal.reason)
 	extra.signal.addEventListener('abort', onAbort, { once: true })
 	localCalls.add(controller)
 	try {
-		const result = await rootFor(dir).call(params, controller.signal, REQUEST_TIMEOUT_MS, localSink)
+		const mapping = await searchRoot(request.params.arguments?.searchDir)
+		const params = { ...request.params, arguments: { ...(request.params.arguments ?? {}), searchDir: mapping.indexDir } }
+		const result = callerResult(await rootFor(mapping.indexDir).call(params, controller.signal, REQUEST_TIMEOUT_MS, localSink), mapping)
 		return CSHARP_OFF ? { ...result, content: [...(result.content ?? []), { type: 'text', text: CSHARP_OFF }] } : result
 	} catch (err) {
 		return errorResult(`Semantic search backend unavailable: ${messageOf(err)}`)

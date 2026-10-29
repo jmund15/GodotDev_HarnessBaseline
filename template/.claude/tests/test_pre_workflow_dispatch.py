@@ -119,7 +119,7 @@ class World:
             os.environ, HOME=str(self.home), USERPROFILE=str(self.home), CLAUDE_PROJECT_DIR=str(REPO),
             CLAUDE_CODE_TRANSPORT="anthropic", PROVIDER_CAPACITY_CACHE=str(cache),
             HARNESS_HOOK_STATE_DIR=self.state, HARNESS_PROVIDER_GUARD_LOG=str(self.root / "guard.jsonl"))
-        for name in ("CLAUDE_CODE_SIDECAR", "HARNESS_WORKFLOW_ARGS_OWNER"):
+        for name in ("CLAUDE_CODE_SIDECAR", "HARNESS_WORKFLOW_ARGS_OWNER", "CLAUDE_CONFIG_DIR"):
             self.env.pop(name, None)
 
     def payload(self, **fields):

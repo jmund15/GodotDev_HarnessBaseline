@@ -704,6 +704,213 @@ if os.environ.get('PROOF_MEMORY_FILE'):
     else:
         bad("already clear headroom", "reads=%s err=%r" % (after - before, healthy_err[-500:]))
 
+# ---- 9. the floor follows the job: a brief that declares no heavy operation gets the light floor
+# The briefs below are cut from real dispatch briefs: LIGHT_BRIEF from the harness author job that
+# waited 20 min on 2026-10-28 (it names e2e runs only as the cost it measures, and `--close`/`--all`
+# only to forbid them); HEAVY_BRIEF is an e2e fix job's command line.
+LIGHT_BRIEF = ("Your task: assess the options below, implement it test-first in the semantic-search idle proxy.\n"
+               "- Cost: full-machine CPU that slowed the e2e runs sharing the machine, and RAM.\n"
+               "- Run the proofs bound to the changed files: `python3 .claude/scripts/harness_tests.py "
+               "--proofs-for <changed paths>`. Do not run `--close` or `--all`.\n")
+HEAVY_BRIEFS = {
+    "deploy script": "Run `npm run deploy`, then the rows.",
+    "e2e script": "Verify with npm run e2e -- finish.spec.ts",
+    "playwright": "Run the playwright suite for the finish back.",
+    "vitest": "Fix the failing vitest case in src/tasks.test.ts and rerun vitest.",
+    "npx": "Run npx tsc -b before you return.",
+}
+
+if mod is None or not hasattr(mod, "classify_job"):
+    for name in ("light brief classifies light", "each declared heavy operation classifies heavy",
+                 "unknown shape, empty and missing brief classify heavy", "light floors are below heavy floors"):
+        bad(name, "launch_memory.classify_job is missing")
+else:
+    if mod.classify_job(LIGHT_BRIEF, "author") == "light" and mod.classify_job(LIGHT_BRIEF, "review") == "light":
+        ok("a brief that runs no browser or test runner classifies light for author and review")
+    else:
+        bad("light brief classifies light", repr((mod.classify_job(LIGHT_BRIEF, "author"),
+                                                  mod.classify_job(LIGHT_BRIEF, "review"))))
+    wrong = {n: mod.classify_job(t, "author") for n, t in HEAVY_BRIEFS.items()
+             if mod.classify_job(t, "author") != "heavy"}
+    if not wrong:
+        ok("each declared heavy operation (playwright, vitest, npm, npx) classifies heavy")
+    else:
+        bad("each declared heavy operation classifies heavy", repr(wrong))
+    odd = [mod.classify_job(LIGHT_BRIEF, "bench-score"), mod.classify_job(LIGHT_BRIEF, "arm"),
+           mod.classify_job(LIGHT_BRIEF, ""), mod.classify_job(LIGHT_BRIEF, None),
+           mod.classify_job("", "author"), mod.classify_job(None, "author")]
+    if odd == ["heavy"] * 6:
+        ok("a shape outside author/review/survey, an empty shape and an empty or missing brief classify heavy")
+    else:
+        bad("unknown shape, empty and missing brief classify heavy", repr(odd))
+    light, heavy = mod.floors_for("light"), mod.floors_for("heavy")
+    if (heavy.commit_gib, heavy.physical_gib) == (12.0, 6.0) and mod.floors_for("anything else") == heavy:
+        ok("the heavy floors are today's 12 / 6 GiB and an unrecognized class falls back to them")
+    else:
+        bad("heavy floors", "%r %r" % (tuple(heavy), tuple(mod.floors_for("anything else"))))
+    if 0 < light.physical_gib < heavy.physical_gib and 0 < light.commit_gib < heavy.commit_gib:
+        ok("light floors are positive and below the heavy floors")
+    else:
+        bad("light floors are below heavy floors", repr(tuple(light)))
+    tool_text = TOOL.read_text(encoding="utf-8")
+    if "4.85" in tool_text and "basis" in tool_text.lower() and "commit" in tool_text.lower().split("basis", 1)[1]:
+        ok("the docstring states the measured basis of the floors")
+    else:
+        bad("docstring states the basis", "no measured basis text")
+
+    saved_env = {k: os.environ.pop(k, None) for k in
+                 ("LAUNCH_MIN_COMMIT_GIB", "LAUNCH_MIN_PHYSICAL_GIB", "LAUNCH_MEMORY_POLL_SEC")}
+    try:
+        os.environ["LAUNCH_MIN_COMMIT_GIB"] = "3"
+        os.environ["LAUNCH_MIN_PHYSICAL_GIB"] = "2"
+        pinned = mod.floors_from_env("light")
+        pinned_heavy = mod.floors_from_env("heavy")
+        os.environ.pop("LAUNCH_MIN_COMMIT_GIB")
+        os.environ.pop("LAUNCH_MIN_PHYSICAL_GIB")
+        by_class = (mod.floors_from_env("light"), mod.floors_from_env("heavy"), mod.floors_from_env())
+    finally:
+        for k, v in saved_env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    if (pinned.commit_gib, pinned.physical_gib) == (3.0, 2.0) == (pinned_heavy.commit_gib, pinned_heavy.physical_gib):
+        ok("an env override wins over the class floors")
+    else:
+        bad("env override over the class", repr((tuple(pinned), tuple(pinned_heavy))))
+    if (by_class[0][:2] == light[:2] and by_class[1][:2] == heavy[:2] and by_class[2][:2] == heavy[:2]):
+        ok("floors_from_env takes its defaults from the job class, heavy when none is given")
+    else:
+        bad("floors_from_env by class", repr([tuple(f) for f in by_class]))
+
+    launch_flags = mod.launch_class_args(["bash", "launcher.sh", "-m", "model-a", "-f", "/tmp/brief.md", "-l", "x",
+                                          "-X", "-R", "rec.json", "-G", "author", "-d", "/w"])
+    if launch_flags == ["--brief", "/tmp/brief.md", "--shape", "author"] and mod.launch_class_args(["bash", "-l", "x"]) == []:
+        ok("launch_class_args reads the brief file and shape from a launcher argv, and nothing when absent")
+    else:
+        bad("launch_class_args", repr(launch_flags))
+
+# CLI: the same planted sample is refused for a heavy brief and admitted for a light one.
+PLANT_SITE = '''import ctypes, os, subprocess
+from pathlib import Path
+if os.environ.get('PROOF_MEMORY_FILE'):
+    def sample(pointer, size):
+        commit, physical = map(int, Path(os.environ['PROOF_MEMORY_FILE']).read_text().split())
+        info = pointer._obj
+        info.PageSize = 1024 ** 3
+        info.CommitLimit = 100
+        info.CommitTotal = 100 - commit
+        info.PhysicalAvailable = physical
+        return 1
+    ctypes.windll.psapi.GetPerformanceInfo = sample
+    real_run = subprocess.run
+    def run(args, *rest, **kwargs):
+        if args[0] == 'powershell.exe':
+            return subprocess.CompletedProcess(args, 0, 'fixture|1|1073741824', '')
+        return real_run(args, *rest, **kwargs)
+    subprocess.run = run
+'''
+class_tmp = Path(tempfile.mkdtemp(prefix="lm_class_"))
+(class_tmp / "plant").mkdir()
+(class_tmp / "plant" / "sitecustomize.py").write_text(PLANT_SITE, encoding="utf-8", newline="\n")
+(class_tmp / "light.md").write_text(LIGHT_BRIEF, encoding="utf-8", newline="\n")
+(class_tmp / "heavy.md").write_text(HEAVY_BRIEFS["deploy script"], encoding="utf-8", newline="\n")
+(class_tmp / "reading.txt").write_text("8 4", encoding="utf-8")
+plant_env = {"PYTHONPATH": str(class_tmp / "plant"), "PROOF_MEMORY_FILE": str(class_tmp / "reading.txt")}
+cases = [("light author brief", ["--brief", str(class_tmp / "light.md"), "--shape", "author"], 0),
+         ("heavy author brief", ["--brief", str(class_tmp / "heavy.md"), "--shape", "author"], 3),
+         ("no brief", [], 3),
+         ("unreadable brief", ["--brief", str(class_tmp / "absent.md"), "--shape", "author"], 3)]
+for name, extra, want in cases:
+    proc = cli(["check", "--label", "class-cli"] + extra, plant_env)
+    if proc.returncode == want:
+        ok("check CLI on 8 GiB commit / 4 GiB physical free: %s exits %d" % (name, want))
+    else:
+        bad("check CLI class: %s" % name, "rc=%r want %d err=%r" % (proc.returncode, want, proc.stderr[-300:]))
+proc = cli(["check", "--label", "class-cli", "--brief", str(class_tmp / "heavy.md"), "--shape", "author"], plant_env)
+if "floors commit 12.00 GiB, physical 6.00 GiB" in proc.stderr:
+    ok("the heavy REFUSED line names today's 12 / 6 GiB floors")
+else:
+    bad("heavy REFUSED line", proc.stderr[-300:])
+(class_tmp / "reading.txt").write_text("2 1", encoding="utf-8")
+proc = cli(["check", "--label", "class-cli", "--brief", str(class_tmp / "light.md"), "--shape", "author"], plant_env)
+if proc.returncode == 3 and "(light job)" in proc.stderr:
+    ok("a light job below its own floors is still refused, and the line says the floors are the light ones")
+else:
+    bad("light job below its floors", "rc=%r err=%r" % (proc.returncode, proc.stderr[-300:]))
+
+# The fan-out hold (_supervised_launch.launch) and the sidecar seam read the same brief.
+SUP = CLAUDE / "tools" / "_supervised_launch.py"
+sup_spec = importlib.util.spec_from_file_location("_supervised_launch", SUP)
+sup = importlib.util.module_from_spec(sup_spec)
+sys.path.insert(0, str(CLAUDE / "tools"))
+sup_spec.loader.exec_module(sup)
+(class_tmp / "reading.txt").write_text("8 4", encoding="utf-8")
+light_argv = ["bash", "launcher.sh", "-f", str(class_tmp / "light.md"), "-G", "author", "-l", "fan-light"]
+if hasattr(sup, "memory_args") and sup.memory_args(light_argv) == ["--brief", str(class_tmp / "light.md"), "--shape", "author"]:
+    ok("_supervised_launch passes the launch argv's brief and shape to the memory tool")
+else:
+    bad("_supervised_launch.memory_args", "missing or wrong")
+held_env = dict({k: v for k, v in os.environ.items()
+                 if k not in ("LAUNCH_MIN_COMMIT_GIB", "LAUNCH_MIN_PHYSICAL_GIB")},
+                LAUNCH_MEMORY_POLL_SEC="1", **plant_env)
+runs = []
+try:
+    code = sup.launch("fan-light", lambda: runs.append(1) or 0, held_env, argv=light_argv)
+except TypeError as exc:
+    bad("fan-out light job is admitted at 8/4 GiB free", "launch takes no argv: %s" % exc)
+else:
+    if code == 0 and runs == [1]:
+        ok("fan-out light job is admitted at 8/4 GiB free instead of holding for the heavy floors")
+    else:
+        bad("fan-out light job is admitted", "code=%r runs=%r" % (code, runs))
+heavy_hold = subprocess.Popen(
+    [sys.executable, "-c",
+     "import sys; sys.path.insert(0, sys.argv[1]); import _supervised_launch as s; "
+     "s.launch('fan-heavy', lambda: 0, None, argv=['bash','l.sh','-f',sys.argv[2],'-G','author'])",
+     str(CLAUDE / "tools"), str(class_tmp / "heavy.md")],
+    env=held_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+try:
+    heavy_hold.wait(timeout=6)
+    bad("fan-out heavy job holds at 8/4 GiB free", "it was admitted: rc=%r" % heavy_hold.returncode)
+except subprocess.TimeoutExpired:
+    ok("fan-out heavy job still holds at 8/4 GiB free (the heavy floors bind)")
+finally:
+    if heavy_hold.poll() is None:
+        subprocess.run(["taskkill", "/PID", str(heavy_hold.pid), "/T", "/F"], capture_output=True)
+    heavy_hold.communicate()
+
+if BASH is not None and LIB.is_file():
+    SEAM_CLASS = r'''
+set -uo pipefail
+. "$LIB"
+SC_FORMAT=json
+SC_LABEL=seam-class
+SC_PROMPT_FILE="$BRIEF"
+SC_SHAPE=author
+stub_child() { printf 'CHILD-STARTED\n' >> "$MARK"; printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'; }
+sc_run_watched stub_child ""
+printf 'DONE rc=%s\n' "$rc"
+'''
+    for name, brief, started in (("light", "light.md", True), ("heavy", "heavy.md", False)):
+        tmp2 = Path(tempfile.mkdtemp(prefix="lm_seamclass_"))
+        drv = tmp2 / "driver.sh"
+        drv.write_text(SEAM_CLASS, encoding="utf-8", newline="\n")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SC_") and k != "SIDECAR_DETACHED"
+               and k not in ("LAUNCH_MIN_COMMIT_GIB", "LAUNCH_MIN_PHYSICAL_GIB")}
+        env.update(plant_env)
+        env["PYTHONPATH"] = posix(class_tmp / "plant")
+        env.update({"LIB": posix(LIB), "MARK": posix(tmp2 / "mark.txt"), "BRIEF": posix(class_tmp / brief),
+                    "PYTHONIOENCODING": "utf-8", "PROOF_MEMORY_FILE": posix(class_tmp / "reading.txt")})
+        env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+        proc = subprocess.run([BASH, posix(drv)], env=env, capture_output=True, text=True, timeout=90)
+        ran_child = (tmp2 / "mark.txt").exists()
+        if ran_child == started and (started or proc.returncode == 12):
+            ok("sidecar seam on 8/4 GiB free: a %s brief %s" % (name, "starts its child" if started
+                                                                 else "is refused with exit 12"))
+        else:
+            bad("sidecar seam class: %s brief" % name, "child=%s rc=%r err=%r" % (ran_child, proc.returncode,
+                                                                                  proc.stderr[-300:]))
+
 if ran < 36:
     bad("case coverage", "only %d cases reached an assertion; a skipped case is not a pass" % ran)
 print("%d cases, %s" % (ran, "all passed" if not fail else "FAILURES above"))
