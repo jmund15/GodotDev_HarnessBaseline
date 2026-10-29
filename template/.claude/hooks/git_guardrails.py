@@ -1037,8 +1037,20 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
     before the default branch moves."""
     if bypass_declared(inline_env, BYPASS_VAR):
         return None
-    next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "
-                 ".claude/scripts/harness_tests.py --close` in the background, then push the commit it proves.")
+    try:
+        land = _land_prefix()
+    except Exception:
+        land = ""
+    if land:
+        next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: prove this "
+                     "session's commits with `python3 .claude/scripts/harness_tests.py --for <their paths> --base <the "
+                     "revision before them>`, then `git push origin HEAD:%s<session id's first 8 chars>`; the runner "
+                     "runs the close and lands the branch. A direct push needs `python3 "
+                     ".claude/scripts/harness_tests.py --close` in the background first, then the commit it proves."
+                     % land)
+    else:
+        next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "
+                     ".claude/scripts/harness_tests.py --close` in the background, then push the commit it proves.")
     if _STATE_IMPORT_ERROR or _HARNESS_IMPORT_ERROR:
         return next_step % "close machinery unavailable"
     root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
@@ -1059,8 +1071,7 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
         return next_step % "cannot resolve the outgoing harness range"
     except (OSError, ValueError):
         return next_step % "cannot resolve the outgoing harness range"
-    land = _land_prefix()
-    harness = [(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
+    harness =[(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
                if paths and not (land and dest[1].removeprefix("refs/heads/").startswith(land))]
     if not harness:
         return None

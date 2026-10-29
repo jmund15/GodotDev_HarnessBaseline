@@ -20,8 +20,7 @@ Signal detection runs over the digest, never over what survived compaction. In `
 python3 .claude/tools/session_digest.py --prompt-tail autolearn --handoff
 ```
 
-Use the handoff only as the bounded orientation packet. Before claiming whole-session coverage, page every
-prompt and friction row in the saved evidence index until each kind's reported `pages` count is exhausted:
+Use the handoff only as the bounded orientation packet. Then dispatch one fresh qualified analyst, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
 
 ```bash
 python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>
@@ -33,7 +32,13 @@ The digest rebuilds the whole session from the live transcript (append-only acro
 the same schema and only needed if the live transcript is gone. Recovered command-argument rows follow the
 `unattributed` rule in `session_digest.md` §Caveats.
 
-The pass is done when it states whether early corrections held across compaction segments.
+The analyst returns two outputs:
+1. **Audit table:** one row per prompt, friction and `fix` ID with a disposition. A row that cites an existing rule as cover also states why that rule failed to prevent the cost.
+2. **Causal pass:** an uncapped read across rows for shared causes and for early corrections that did not hold across compaction segments. Zero lessons is valid; no minimum applies.
+
+Each proposal names its executor: `/codify` for a guidance or memory edit, a fix job for a code or hook edit, `/worklog` for a deferral. Non-proposal dispositions stay in the audit table even when they leave the packet.
+
+The pass is done when the parent has reconciled the table's distinct IDs and counts against the digest `pages` totals and the `git log` output, read the source rows behind every `accepted` or disputed claim, and ruled on each proposal the analyst returned. The parent then launches one `/codify` or fix job per approved target.
 
 **Nuance recall (conditional):** apply [Transcript Nuance Recall](agents/transcript_nuance_recall.md), which owns the gate, the quote check and the cached pass. Candidates enter at MEDIUM confidence through the normal filter. `/self_evaluate` reads this pass instead of repeating it.
 
@@ -92,7 +97,7 @@ Only propose changes that pass questions 1–4, and 5 when the entry asserts a m
 
 ## Review packet
 
-Proposals reach the owner as one packet (`CLAUDE.core.md` §Preferences), retirements included. Each row names its target file and section, the change (a memory entry's text; a skill's current and proposed text), the signal quote, its confidence and recommendation; recommended rows come first. It also carries `/codify`'s §Step 0 verdict with the target's quoted text and its §Step 2 model scope. It prices the trade: what each occurrence cost and how often it recurs, against the edit's cost in loaded bytes, new code, its proof and any state its guard would need recorded. Recommend a row only when that benefit is larger (`feedback_price_the_tradeoff_before_recommending_it`). Ask once: apply the recommended rows, choose rows, or apply none. Under an armed `/overnight`, each row becomes a `Q` row parked `owner-domain` in its Close doc, and `/overnight_review` applies the answers.
+Proposals reach the owner as one packet (`CLAUDE.core.md` §Preferences), retirements included. Each row names its target file and section, the change (a memory entry's text; a skill's current and proposed text), the signal quote, its confidence and recommendation; recommended rows come first. It also carries `/codify`'s §Step 0 verdict with the target's quoted text and its §Step 2 model scope. It prices the trade: what each occurrence cost and how often it recurs, against the edit's cost in loaded bytes, new code, its proof and any state its guard would need recorded. Recommend a row only when that benefit is larger (`feedback_price_the_tradeoff_before_recommending_it`). The packet ends with the reconciled prompt, friction and `fix` counts. Ask once: apply the recommended rows, choose rows, or apply none. Under an armed `/overnight`, each row becomes a `Q` row parked `owner-domain` in its Close doc, and `/overnight_review` applies the answers.
 
 ## Applying changes
 

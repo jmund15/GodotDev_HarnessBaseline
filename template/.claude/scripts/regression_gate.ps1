@@ -444,7 +444,7 @@ if ($script:GateOwnerRoot) {
 # The gate holds this checkout's lock from entry to its verdict (RuntimeSlots.ps1 Enter-HeldCheckout): its pool's held
 # children run --no-build on the tree it built, and no ad-hoc run rebuilds under them. Enter-GateHeld is the gate's ONE
 # wait: it holds nothing while it waits. Every exit releases the lock: Complete-Gate and the finally below call
-# Exit-GateHeld, which reaps the run dir first. A static-only run holds it from entry through its build only.
+# Exit-GateHeld, which reaps the run dir first.
 $script:HeldLease = $null
 $script:RunDir = $null
 function Invoke-RunDirReap {
@@ -1085,7 +1085,7 @@ if (-not $probe.ok) {
 Emit "ENGINE=OK ver=$sdk"
 if (Test-InteractiveSessionLocked) {
     Emit "SESSION=LOCKED"
-    Add-Detail "The console session is locked (LogonUI.exe is running). Advisory only: a windowed engine runs about 40x slower on a locked desktop, and only the windowed Render unit is windowed; every other unit runs headless."
+    Add-Detail "The console session is locked (LogonUI.exe is running). Advisory only: a windowed engine runs much slower on a locked desktop, and only the windowed Render unit is windowed; every other unit runs headless."
 }
 
 # ---------------------------------------------------------------- static guards
@@ -1479,7 +1479,11 @@ if ($script:Recompiled -and -not $sanityRed) {
     # which reads as "major drop" for a run that simply did not finish. Real failures still outrank it.
     # UNKNOWN counts as not-comparable, not as complete: the verdict emits COMPLETENESS on every exit
     # path, so its ABSENCE means the run did not report — weaker evidence than INCOMPLETE, never stronger.
-    if ($intComplete -in @('INCOMPLETE', 'UNKNOWN') -and $intFailed -le 0 -and $intT.tier -ne 'LOCKED') {
+    $redNoFailed = [regex]::Match($intTxt, '(?m)^RED_NO_FAILED_TEST=(\S+)')
+    if ($redNoFailed.Success -and $intFailed -le 0) {
+        $intT = @{ tier = 'HARDFAIL'; note = "batch(es) $($redNoFailed.Groups[1].Value) exited nonzero with every test passed: the engine crashed or aborted. Read each batch's godot_test.log under TRX_DIR for the exit code and the lines above it. A real defect, not machine load." }
+    }
+    elseif ($intComplete -in @('INCOMPLETE', 'UNKNOWN') -and $intFailed -le 0 -and $intT.tier -ne 'LOCKED') {
         $why = if ($intComplete -eq 'UNKNOWN') { 'the Integration verdict carried no COMPLETENESS line, so the total cannot be assumed whole' }
                else { 'a unit was left LOCKED or returned no readable result (no wrapper output, no or malformed TRX) after the retry pass' }
         $intT = @{ tier = 'INCOMPLETE'; note = "$why, so passed=$intPassed is partial by construction and is NOT comparable to the baseline" }
