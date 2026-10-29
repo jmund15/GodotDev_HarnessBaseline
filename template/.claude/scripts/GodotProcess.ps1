@@ -10,8 +10,8 @@
   run_test_suite.ps1 and regression_gate.ps1 dot-source this file.
 
 .KILL POLICY -- two axes, BOTH required before anything dies.
-  ROLE:      only TestRunner and Orphan are ever killable. Editor, Playtest and Unknown are
-             never killed. Unknown is SPARED, not reaped -- a surviving orphan costs one retry
+  ROLE:      only TestRunner and Orphan are ever killable. Editor, Playtest, ProjectManager and
+             Unknown are never killed. Unknown is SPARED, not reaped -- a surviving orphan costs one retry
              that Wait-PipeDrained already absorbs; a killed editor costs unsaved work.
   OWNERSHIP: a live TestRunner on this checkout may belong to a CONCURRENT SESSION sharing the
              checkout. Preflight (before we launch anything) reaps Orphan ONLY -- a peer's live
@@ -26,8 +26,8 @@
   handle) is unambiguous and is what this file implements.
 
 .NOTES
-  Dot-sourced flat .ps1 (house pattern -- no .psm1 anywhere in this harness). Windows-only
-  (Win32_Process). `. (Join-Path $PSScriptRoot 'GodotProcess.ps1')`
+  Dot-sourced flat .ps1 (house pattern -- no .psm1 anywhere in this harness). Win32_Process on
+  Windows, /proc on Linux (Get-LinuxProcSnapshot). `. (Join-Path $PSScriptRoot 'GodotProcess.ps1')`
 #>
 
 # The host seams: every script asks these for the platform and its scratch and data roots, and none reads
@@ -132,8 +132,8 @@ function Get-HeadlessDisplayArgv {
 }
 
 # The bash that runs a repo's .sh launchers. A bare `bash` from PowerShell or a program-spawned shell can resolve
-# to WSL's System32\bash.exe on Windows, which cannot read a Windows path (this launch exited 127,
-# "godot_bin.sh: No such file"), so Windows asks for Git for Windows' own bash.exe.
+# to WSL's System32\bash.exe on Windows, which cannot read a Windows path (it cannot find godot_bin.sh), so Windows
+# asks for Git for Windows' own bash.exe.
 function Get-GitBash {
     param([string] $Platform = (Get-HostPlatform))
     if ($Platform -eq 'linux') {
@@ -152,16 +152,29 @@ function Get-GitBash {
     throw 'Get-GitBash: no Git for Windows bash.exe found (git --exec-path, PATH); WSL bash cannot run a Windows path'
 }
 
+# The pwsh running this script, as the FilePath and leading arguments that start another with no process between.
+# `pwsh` by name can resolve to the .NET global tool shim, which runs the real pwsh as its child: the launched Id
+# would then be the shim, and a Kill would leave the command running. That pwsh runs as `dotnet pwsh.dll`.
+# Lead is quoted for Start-Process, which re-splits its -ArgumentList on spaces.
+function Get-PwshStart {
+    $exe = [Environment]::ProcessPath
+    $dll = [System.Reflection.Assembly]::GetEntryAssembly().Location
+    $lead = [string[]] @()
+    if ([System.IO.Path]::GetFileNameWithoutExtension($exe) -eq 'dotnet') { $lead = [string[]] @($(if ($dll -match '\s') { '"' + $dll + '"' } else { $dll })) }
+    [pscustomobject]@{ FilePath = $exe; Lead = $lead }
+}
+
 # A pwsh child that outlives its launcher without a window and without the launcher's stdio. Windows hides the
 # window (-WindowStyle is a hard error elsewhere). Linux starts it through `setsid -w` with its stdio on /dev/null,
 # so it holds none of the caller's pipes and survives the launcher's session; the returned process is that
 # setsid, which waits and passes the child's exit code on.
 function Start-HiddenPwsh {
     param([Parameter(Mandatory)] [string[]] $PwshArgs, [string] $Platform = (Get-HostPlatform))
-    if ($Platform -eq 'windows') { return (Start-Process -FilePath 'pwsh' -WindowStyle Hidden -PassThru -ArgumentList $PwshArgs) }
+    $pw = Get-PwshStart
+    if ($Platform -eq 'windows') { return (Start-Process -FilePath $pw.FilePath -WindowStyle Hidden -PassThru -ArgumentList (@($pw.Lead) + $PwshArgs)) }
     # ProcessStartInfo.ArgumentList hands each argument over whole; Start-Process -ArgumentList re-splits them on spaces.
     $psi = [System.Diagnostics.ProcessStartInfo]::new('sh')
-    foreach ($a in (@('-c', 'exec setsid -w "$@" </dev/null >/dev/null 2>&1', 'sh', 'pwsh') + $PwshArgs)) { $psi.ArgumentList.Add($a) }
+    foreach ($a in (@('-c', 'exec setsid -w "$@" </dev/null >/dev/null 2>&1', 'sh', $pw.FilePath) + @($pw.Lead | ForEach-Object { $_.Trim('"') }) + $PwshArgs)) { $psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $false
     [System.Diagnostics.Process]::Start($psi)
 }
@@ -208,7 +221,7 @@ if ($script:GatePinFiles.Count -gt 0) {
     }
 }
 
-# A locked desktop slows a windowed engine about 40x; the lock screen is a LogonUI.exe in this session.
+# A locked desktop slows a windowed engine sharply; the lock screen is a LogonUI.exe in this session.
 function Test-InteractiveSessionLocked {
     try {
         $sid = (Get-Process -Id $PID).SessionId
@@ -316,14 +329,32 @@ function Get-SuiteTimeoutMs {
     Get-HeadroomMs -ExpectedSec $expected -ExtraMs $script:SuiteDurationExtraMs
 }
 
+# The run cap prices an idle machine. A loaded machine runs gate batches several times slower than
+# expected, so a run still writing its Godot log keeps going past the cap, to this multiple of it.
+$script:SuiteProgressCeilingFactor = 3
+# A wedged GdUnit4 run writes nothing; a live one logs every test.
+$script:SuiteStallMs = 60000
 function Wait-SuiteAttempt {
     param($Process, [int] $TimeoutMs, [string] $GodotLog, [switch] $NoGodotRuntime,
-          [int] $BootTimeoutMs = $script:SuiteBootTimeoutMs, [int] $PollMs = 500)
+          [int] $BootTimeoutMs = $script:SuiteBootTimeoutMs, [int] $PollMs = 500,
+          [int] $StallMs = $script:SuiteStallMs)
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $bootAt = -1L
     $connected = $false
+    $logLen = -1L
+    $grewAt = -1L
+    $ceilingMs = [long] $TimeoutMs * $script:SuiteProgressCeilingFactor
     while ($true) {
-        $remaining = $TimeoutMs - $clock.ElapsedMilliseconds
+        if (-not $NoGodotRuntime) {
+            $info = [IO.FileInfo]::new($GodotLog)
+            $len = if ($info.Exists) { $info.Length } else { -1L }
+            if ($logLen -ge 0 -and $len -gt $logLen) { $grewAt = $clock.ElapsedMilliseconds }
+            $logLen = $len
+        }
+        $elapsed = $clock.ElapsedMilliseconds
+        $limit = $TimeoutMs
+        if ($elapsed -ge $TimeoutMs -and $grewAt -ge 0 -and $elapsed - $grewAt -lt $StallMs) { $limit = $ceilingMs }
+        $remaining = $limit - $elapsed
         if ($remaining -le 0) { return 'cap-hang' }
         if ($Process.WaitForExit([int][math]::Min($PollMs, $remaining))) { return 'exited' }
         if (-not $NoGodotRuntime -and -not $connected -and (Test-Path -LiteralPath $GodotLog)) {
@@ -402,7 +433,7 @@ function Get-SuiteRunBounds {
     param([Parameter(Mandatory)] [int64] $TimeoutMs)
     $attempts = 2
     $lockWait = $attempts * [math]::Max($TimeoutMs, $script:SuiteLockWaitFloorMs) + $script:SuiteLockWaitExtraMs
-    [pscustomobject] @{ LockWaitMs = $lockWait; MaxAttempts = $attempts; LifetimeMs = $lockWait + $attempts * $TimeoutMs }
+    [pscustomobject] @{ LockWaitMs = $lockWait; MaxAttempts = $attempts; LifetimeMs = $lockWait + $attempts * $TimeoutMs * $script:SuiteProgressCeilingFactor }
 }
 
 # The process table as pid -> an object with the six members every classifier below reads: ProcessId,
@@ -438,6 +469,7 @@ function Get-ProcessStartStamp {
         if ($Platform -eq 'windows') { return (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToUniversalTime() }
         $stat = [System.IO.File]::ReadAllText((Join-Path $ProcRoot "$ProcessId/stat"))
         $rest = $stat.Substring($stat.LastIndexOf(')') + 1).Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+        if ($rest[0] -in 'Z', 'X') { return $null }  # an exited process nobody has reaped still has a /proc entry
         if ($ClkTck -le 0) { $ClkTck = Get-ClockTicksPerSecond }
         return [datetime]::SpecifyKind([datetime]::UnixEpoch.AddTicks([long] $rest[19] * [TimeSpan]::TicksPerSecond / $ClkTck), [DateTimeKind]::Utc)
     }
@@ -496,9 +528,10 @@ function Get-TreePids {
 # A parent that is killed first orphans its children and one that is killed last keeps spawning, so neither
 # a single tree snapshot nor taskkill /T is enough. Windows runs taskkill, then sweeps the pids born under any
 # pid of the tree since. Linux has no tree kill: it freezes the tree (SIGSTOP the root, then each descendant
-# found by repeated /proc passes until a pass finds none new) and SIGKILLs it frozen.
+# found by repeated /proc passes until a pass finds none new) and SIGKILLs it frozen. A SIGKILL lands after kill
+# returns, so Linux then waits, up to -WaitMs, until each pid reads gone: a caller's next liveness check must not see it.
 function Stop-ProcessTree {
-    param([Parameter(Mandatory)] [int] $ProcessId, [string] $Platform = (Get-HostPlatform))
+    param([Parameter(Mandatory)] [int] $ProcessId, [string] $Platform = (Get-HostPlatform), [string] $ProcRoot = '/proc', [int] $WaitMs = 5000)
     $tree = [System.Collections.Generic.HashSet[int]]::new()
     [void] $tree.Add($ProcessId)
     if ($Platform -eq 'windows') {
@@ -519,7 +552,7 @@ function Stop-ProcessTree {
     & $kill -STOP $ProcessId 2>$null | Out-Null
     $order.Add($ProcessId)
     do {
-        $found = @(Get-TreePids -Map (Get-LinuxProcSnapshot) -Known $tree)
+        $found = @(Get-TreePids -Map (Get-LinuxProcSnapshot -ProcRoot $ProcRoot) -Known $tree)
         foreach ($p in $found) {
             & $kill -STOP $p 2>$null | Out-Null
             [void] $tree.Add($p)
@@ -529,6 +562,12 @@ function Stop-ProcessTree {
     for ($i = $order.Count - 1; $i -ge 0; $i--) {
         & $kill -KILL $order[$i] 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { & $kill -CONT $order[$i] 2>$null | Out-Null }
+    }
+    $deadline = [Environment]::TickCount64 + $WaitMs
+    foreach ($p in $order) {
+        while ($null -ne (Get-ProcessStartStamp -ProcessId $p -Platform $Platform -ProcRoot $ProcRoot) -and [Environment]::TickCount64 -lt $deadline) {
+            Start-Sleep -Milliseconds 10
+        }
     }
 }
 
@@ -636,6 +675,12 @@ function Test-HasMainWindow {
     catch { return $false }
 }
 
+function Get-MainWindowTitle {
+    param([int] $ProcessId)
+    try { return [string] (Get-Process -Id $ProcessId -ErrorAction Stop).MainWindowTitle }
+    catch { return '' }
+}
+
 # --- Role classification ----------------------------------------------------------------
 <#
   ORDERING INVARIANT: every SPARE rule precedes the ORPHAN test. The Orphan test includes
@@ -665,6 +710,11 @@ function Get-GodotRole {
 
     # 4. Child of an editor -> a playtest / run-project window. Interactive: never killed.
     foreach ($p in $chain) { if (Test-IsEditorProc -Proc $p) { return 'Playtest' } }
+
+    # 4b. Godot's Project Manager: launched with no argument at all, and its window says so. It has no project open,
+    #     so it is no editor on any checkout. Both conditions are required: a bare launch inside a project folder
+    #     opens that project, and a translated title falls through to Editor, which blocks rather than risks.
+    if ($cl -match '^\s*("[^"]+"|\S+)\s*$' -and (Get-MainWindowTitle -ProcessId ([int] $Proc.ProcessId)) -match 'Project Manager') { return 'ProjectManager' }
 
     # 5. Has a main window -> interactive, so Editor. The window handle is used ONLY to SPARE,
     #    never to kill -- the inverse of the retired title filter. Covers editors launched
