@@ -116,6 +116,7 @@ import _dispatch_pins  # noqa: E402  (the native pin name of a row)
 import dispatch_size  # noqa: E402  (a seat's reading and its fit to its pin's window)
 import lens  # noqa: E402  (sibling module: registry parsing)
 import model_registry  # noqa: E402  (the tier vocabulary, and the sidecar alias resolution)
+import finding_bar  # noqa: E402  (the run's bar words; a sidecar prompt has no engine contract to carry them)
 import plan_job_map_guard  # noqa: E402  (the `## Job map` heading rule, one home)
 import review_result  # noqa: E402  (the Read window a must-read brief states)
 import tool_profiles  # noqa: E402  (the review profile's built-ins, and the brief coverage gate)
@@ -576,6 +577,8 @@ def main() -> None:
                     help="task record whose requirements and exclusions every seat judges as its acceptance test")
     a = ap.parse_args()
     acceptance = acceptance_section(a.task) if a.task else ""
+    rigor = finding_bar.run_rigor(a.task, REPO) if a.target == "sidecar" else None
+    bar = finding_bar.bar_contract(rigor) + "\n" if rigor else ""
 
     a.keys = seat_keys(a.keys, a.plan)
 
@@ -734,12 +737,14 @@ def main() -> None:
         if len(prompts) == 1:
             lens_part = "# Your lens\n\n" + prompts[0] + "\n"
         else:
+            catalog = lens.seat_mandates(k) or []
             lens_part = (
                 f"# Your seat: {len(prompts)} mandates\n\n"
                 "Run every mandate below. Set each finding's `agent` to the mandate key that produced it. "
-                "In `checked.basis`, write one `<mandate key>: <outcome>` clause per mandate, separated by "
-                "`;`, where the outcome is findings, clean with the evidence checked, or not reached "
-                "(orchestration §2 *Sizing the width*).\n\n"
+                "`checked.mandates` maps each of " + ", ".join(f"`{m}`" for m in catalog) + " to `findings`, "
+                "`clean` or `not-reached`: the engines score only that map, so a mandate missing from it covers "
+                "nothing. In `checked.basis`, give each mandate's evidence as one `<mandate key>: <outcome>` "
+                "clause, separated by `;` (orchestration §2 *Sizing the width*).\n\n"
                 + "\n\n".join(f"## Mandate `{key}`\n\n{p}" for key, p in zip(seats[k], prompts)) + "\n"
             )
         preamble = lens_facing(preambles[found[seats[k][0]].registry])
@@ -764,7 +769,7 @@ def main() -> None:
         if grounding and k in grounding_seats:
             artifact = (out / f"{a.prefix}_behavior.json").resolve().as_posix()
             must = must + must_read_entries([artifact])
-        lens_part += acceptance + "\n" + must_read_section(must)
+        lens_part += acceptance + ("\n" + bar if bar else "") + "\n" + must_read_section(must)
 
         if a.target == "native":
             if a.pr_num is not None:

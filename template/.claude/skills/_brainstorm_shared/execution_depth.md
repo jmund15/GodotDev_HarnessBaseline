@@ -127,7 +127,7 @@ Settled, mechanical or cheaply reversible work goes straight to execution. An ad
 
 `triage.admits("candidate-lenses", ...)` returns the width. Admission is policy: a mechanical change under a green gate whose size is one-context or reach is local gets `none`, no candidate review, below thorough; gate unknown counts as not green. Thorough gets `all`, the command's full roster with its conditional mandates admitted below. Every other change gets `sized`: it carries `sa-architecture-sweep` (plan conformance and executor design), and the session adds each of `sa-design-semantics`, `sa-robustness-performance` and `sa-intuitiveness-testability` whose risk the change carries, against the rigor bar in `orchestration` reference `review_width.md`'s size rule, and reports the lenses and why.
 
-Stages reading rigor through §Conditions Rigor: Review at drive close and `/session_end` Phase 1 select candidate width and the harness seat; every other fixed panel's first round sets its bar (`orchestration` reference `review_width.md` size rule); drafting uses the Instruction-quality row; Land uses the Premises row at commit. The last two rows have the same admission at every level.
+Every stage that dispatches, reviews or folds reads rigor through §Conditions Rigor; this layer's stages are in [`rigor_stages.md`](rigor_stages.md).
 
 ### Simpler-path probe
 
@@ -208,17 +208,11 @@ Work with no nameable oracle is not ready. It goes to grounding, a spike or resh
 
 ## Conditions
 
-Conditions describe the run, not the work. They adjust when an admitted review runs, its width and its mandates. None waives a floor element (§Boundary's quality floor) or an owner approval.
+Conditions describe the run, not the work. They adjust when an admitted review runs, its width and its mandates, and the bar its findings clear. None waives a floor element (§Boundary's quality floor) or an owner approval.
 
 ### Rigor
 
-Set a drive's level with `python3 .claude/tools/task_record.py set <task_id> --rigor light|normal|thorough`.
-`triage.rigor(task_id, root)` reads the recorded level, or the project-class default in `adaptation.json`'s
-`rigor_defaults` through `tools/adaptation.py`: harness and game use `normal`, side tools use `light`.
-Defaults use the task's triage paths, else scope files, else the working tree's changed paths. With no task,
-they use changed paths. Mixed classes take the highest level; unmatched paths or no paths use `normal`.
-Without a task id, the accessor uses this session's most recently updated task. Owner-named rigor is recorded at
-`drive_spine.md` §Stages Intake.
+Recording and reading the level, the bar, every panel's rule and the shared stages are `orchestration` reference `rigor.md`'s. The floor (§Boundary) never scales with it, and the Do-now gate's "declined with a reason and an offer" (`worklog_reference`) is the close of a below-bar finding. What rigor changes at each stage this layer adds is [`rigor_stages.md`](rigor_stages.md)'s table.
 
 ### Other conditions
 

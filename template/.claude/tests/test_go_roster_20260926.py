@@ -15,7 +15,7 @@ CATALOG = """deepseek-flash deepseek-v4-flash deepseek-v4-flash-vision-exp deeps
  muse-spark-1.3-contributor omen-alpha qwen3.6-plus qwen3.7-max qwen3.7-plus
  qwen3.8-flash qwen3.8-max space-bunny-free""".split()
 # Ids Go's live catalog dropped after the snapshot: the row stays and reads unavailable.
-LEFT_CATALOG = {"space-bunny-free"}
+LEFT_CATALOG = {"space-bunny-free", "deepseek-flash"}
 
 
 class GoRosterTests(unittest.TestCase):
@@ -43,11 +43,13 @@ class GoRosterTests(unittest.TestCase):
                 else:
                     self.assertNotEqual(state, "unavailable")
 
-    def test_go_serves_the_v4_1_flash_request_as_one_deepseek_flash_row(self):
-        self.assertIs(self.go["deepseek-v4.1-flash"], self.go["deepseek-flash"])
-        self.assertEqual(self.go["deepseek-flash"]["id"], "go/deepseek-flash")
-        self.assertEqual(self.go["deepseek-flash"]["upstreamId"], "deepseek-flash")
-        self.assertIn("deepseek-v4.1-flash", self.go["deepseek-flash"]["servedIds"])
+    def test_go_calls_v4_1_flash_since_the_bare_flash_id_was_retired(self):
+        row = self.go["deepseek-v4.1-flash"]
+        self.assertEqual(row["id"], "go/deepseek-flash")
+        self.assertEqual(row["upstreamId"], "deepseek-v4.1-flash")
+        self.assertNotIn("state", row.get("status") or {})
+        self.assertEqual(self.go["deepseek-flash"]["id"], "go/deepseek-flash-v4.1")
+        self.assertEqual(self.go["deepseek-flash"]["status"]["state"], "unavailable")
 
     def test_parallel_product_lines_do_not_borrow_superseded_lifecycle(self):
         for left, right in (("qwen3.8-max", "qwen3.8-flash"),
@@ -69,7 +71,7 @@ class GoRosterTests(unittest.TestCase):
             row = self.go[model]
             self.assertGreater(row["limits"]["contextTokens"], 0)
             self.assertGreater(row["limits"]["maxOutputTokens"], 0)
-        self.assertIn("deepseek-v4.1-flash", self.go["deepseek-flash"]["_limitsComment"])
+        self.assertIn("deepseek-v4.1-flash", self.go["deepseek-v4.1-flash"]["_limitsComment"])
 
 
 if __name__ == "__main__":

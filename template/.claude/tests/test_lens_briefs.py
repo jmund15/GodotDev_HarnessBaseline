@@ -107,6 +107,116 @@ def job_tier_checks():
           tiers.get("seat-b") == "fanout", repr(tiers))
 
 
+def bar_checks():
+    """A sidecar seat's brief carries the run's bar (the sidecar prompt has no engine contract); a native seat's
+    brief never does, since the engine appends it to the native seat's contract."""
+    import os
+    saved_env = os.environ.get("HARNESS_TASK_RECORD_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        records = root / "tasks"
+        records.mkdir()
+        (records / "T1.json").write_text(json.dumps({"id": "T1", "updated": "2026-10-26T10:00:00", "rigor": "light",
+                                                     "session_id": "sess0001", "requirements": ["ships"],
+                                                     "exclusions": []}), encoding="utf-8")
+        os.environ["HARNESS_TASK_RECORD_DIR"] = str(records)
+        saved_session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "sess0001"
+        context = root / "context.md"
+        context.write_text("context\n", encoding="utf-8")
+        must = root / "must.txt"
+        must.write_text(str(context) + "\n", encoding="utf-8")
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
+        found = {"seat-a": types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"], kfm=False,
+                                                 citers=False)}
+        saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
+                 lens_briefs.seat_overage, lens_briefs.resolve_sidecar_entry, lens_briefs.effort_rungs)
+        lens.catalog = lambda: ({"review": "preamble"}, found)
+        lens.doctrine = lambda lenses: ""
+        lens.seat_tier = lambda key: None
+        lens_briefs.lens_tier_refusal = lambda **kwargs: []
+        lens_briefs.seat_overage = lambda **kwargs: None
+        lens_briefs.resolve_sidecar_entry = lambda token, what, data: {"alias": token, "transport": "off"}
+        lens_briefs.effort_rungs = lambda entry, data: ["medium"]
+
+        def briefs(target, out, task="T1"):
+            argv = ["--plan", str(plan), "--out", str(out), "--prefix", "p", "--target", target,
+                    "--context-path", str(context), "--model", sorted(lens_briefs.NATIVE_PINS)[0],
+                    "--effort", "medium", "--must-read", str(must)]
+            if task:
+                argv += ["--task", task]
+            outcome = run_main(argv)
+            text = "".join(p.read_text(encoding="utf-8") for p in out.glob("*.md")) if out.exists() else ""
+            return outcome, text
+        try:
+            sidecar_outcome, sidecar_text = briefs("sidecar", root / "out_sidecar")
+            native_outcome, native_text = briefs("native", root / "out_native")
+            taskless_outcome, taskless_text = briefs("sidecar", root / "out_taskless", task=None)
+        finally:
+            (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
+             lens_briefs.seat_overage, lens_briefs.resolve_sidecar_entry, lens_briefs.effort_rungs) = saved
+            if saved_env is None:
+                os.environ.pop("HARNESS_TASK_RECORD_DIR", None)
+            else:
+                os.environ["HARNESS_TASK_RECORD_DIR"] = saved_env
+            if saved_session is None:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            else:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = saved_session
+    check("the sidecar brief run returns without a refusal", sidecar_outcome == "returned", str(sidecar_outcome))
+    check("a sidecar seat brief carries the bar text of the task's rigor",
+          lens_briefs_bar("light") in sidecar_text, "no BAR paragraph in the sidecar brief")
+    check("a native seat brief never carries the bar text",
+          "BAR: this run" not in native_text, "the native brief repeats the engine contract's bar")
+    check("a sidecar seat brief with no --task still carries the session's bar text",
+          taskless_outcome == "returned" and lens_briefs_bar("light") in taskless_text,
+          "no BAR paragraph in the task-less sidecar brief")
+
+
+def merged_seat_checks():
+    """A merged seat's brief sends each mandate's outcome to `checked.mandates` under the catalog keys the
+    engines score, never to `checked.basis` alone: a seat that wrote outcomes only in its basis covered nothing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        context = root / "context.md"
+        context.write_text("context\n", encoding="utf-8")
+        must = root / "must.txt"
+        must.write_text(str(context) + "\n", encoding="utf-8")
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"roster": [{"key": "seat-a+seat-b"}]}), encoding="utf-8")
+        body = ["```\n", "prompt\n", "```\n"]
+        found = {k: types.SimpleNamespace(registry="review", lines=body, kfm=False, citers=False)
+                 for k in ("seat-a", "seat-b")}
+        saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens.seat_mandates, lens_briefs.lens_tier_refusal,
+                 lens_briefs.seat_overage)
+        lens.catalog = lambda: ({"review": "preamble"}, found)
+        lens.doctrine = lambda lenses: ""
+        lens.seat_tier = lambda key: None
+        lens.seat_mandates = lambda key: ["m.A", "m.B", "m.C"] if key == "seat-a+seat-b" else None
+        lens_briefs.lens_tier_refusal = lambda **kwargs: []
+        lens_briefs.seat_overage = lambda **kwargs: None
+        try:
+            out = root / "out"
+            outcome = run_main(["--plan", str(plan), "--out", str(out), "--prefix", "p", "--context-path",
+                                str(context), "--model", sorted(lens_briefs.NATIVE_PINS)[0], "--effort", "medium",
+                                "--must-read", str(must)])
+            text = "".join(p.read_text(encoding="utf-8") for p in out.glob("*.md")) if out.exists() else ""
+        finally:
+            (lens.catalog, lens.doctrine, lens.seat_tier, lens.seat_mandates, lens_briefs.lens_tier_refusal,
+             lens_briefs.seat_overage) = saved
+    check("the merged-seat brief run returns without a refusal", outcome == "returned", str(outcome))
+    check("a merged seat's brief names checked.mandates with the catalog keys the engines score",
+          "`checked.mandates`" in text and "`m.A`, `m.B`, `m.C`" in text, text[:400])
+    check("a merged seat's brief never routes outcomes to checked.basis alone",
+          "In `checked.basis`, write one" not in text, "the brief still sends outcomes to the basis")
+
+
+def lens_briefs_bar(rigor):
+    import finding_bar
+    return finding_bar.bar_contract(rigor)
+
+
 def main():
     text = "# Review agents\n\n## Agent Templates\n\n### code-reviewer -- `model: \"opus\"`\nbody\n"
     with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +236,8 @@ def main():
           "no such lens: no-such-key" in outcome, outcome)
     companion_checks()
     job_tier_checks()
+    merged_seat_checks()
+    bar_checks()
     import contextlib
     import io
     saved_tier = lens.seat_tier

@@ -35,6 +35,8 @@ Checks, each a failure kind in the report:
   fold-old-missing        an applied FIX whose `old` occurs zero times in its file's snapshot bytes,
                           unless another applied id in the same file changed that region
   fold-applied-held       ASK or open PLAN (a PLAN with no options) applied without a caller-authorized ruling
+  fold-applied-below-bar  an applied id that does not count at the job's `bar` (the run's rigor) and is not a FIX
+                          old/new pair applied verbatim (`source: finding`, its `new` in the file), without a ruling
   fold-application-unattributed an applied id resolves to no subject file
   fold-unchanged-file     an applied id over file bytes identical to the snapshot, unless `--ruled` names it
   fold-untested-code      an applied id on a code path without `noTest`, and the change set
@@ -94,6 +96,7 @@ import sys
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import finding_bar  # noqa: E402
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
 import difflib  # noqa: E402
 
@@ -108,7 +111,7 @@ from typing import Literal
 Scope = Literal["id", "file", "path", "finding", "subject", "none", "run"]
 FAILURE_SCOPE: dict[str, Scope] = {
     "fold-not-applied": "id", "fold-applied-unverified": "id", "fold-old-missing": "id",
-    "fold-applied-held": "id", "fold-application-unattributed": "id",
+    "fold-applied-held": "id", "fold-applied-below-bar": "id", "fold-application-unattributed": "id",
     "fold-test-order": "id", "fold-untested-code": "id", "fold-unchanged-file": "file",
     "fold-out-of-subject": "path", "fold-id-coverage": "id", "fold-routing": "finding",
     "fold-invalid-shape": "subject", "fold-snapshot-missing": "subject",
@@ -793,11 +796,18 @@ def check_job(job, rows, independent, failures):
     for entry in digest["applied"]:
         entries.setdefault(entry["id"], entry)
     sources = {i: _source_of(entries[i]) for i in applied}
+
+    def below_bar(i):
+        return finding_bar.below(by_id[i], job.get('bar')) and i not in (job.get('ruled') or ())
     for i in applied:
         row = by_id[i]
         held = hold_class(row)
         if held and i not in (job.get('ruled') or ()):
             fail('fold-applied-held', f'{i}: {held} applied without a caller-authorized ruling', id=i)
+        if below_bar(i) and not (sources[i] == 'finding' and row.get('action') == 'FIX' and _has_pair(row)):
+            fail('fold-applied-below-bar', f"{i}: below the run's bar {job.get('bar')}, applied as {sources[i]} "
+                                           f"{row.get('action')} rather than a verbatim FIX old/new pair, without a "
+                                           "caller-authorized ruling", id=i)
         has_evidence = bool(row.get("evidence"))
         if i in (job.get('ruled') or ()):
             continue
@@ -817,6 +827,10 @@ def check_job(job, rows, independent, failures):
                 fail('fold-application-unattributed', f'{i}: applied id resolves to no subject file', id=i)
         state = _FoldState(by_id, applied, file_of, tables, sources, entries, digest)
         job["reworded"] = _check_old_new(state, fail)
+        for i in sorted(job["reworded"]):
+            if below_bar(i):
+                fail('fold-applied-below-bar', f"{i}: below the run's bar {job.get('bar')}, its `new` is not in "
+                                               "the file verbatim", id=i)
         _check_unchanged_files(state, fail, set(job.get('ruled') or ()))
         _check_untested_code(state, change, fail)
         _check_out_of_subject(subject, job, digest, change, fail)
@@ -849,6 +863,11 @@ class _FoldState:
     digest: dict
 
 
+def _has_pair(row):
+    old, new = row.get("old"), row.get("new")
+    return isinstance(old, str) and old.strip() != "" and isinstance(new, str)
+
+
 def _check_old_new(state, fail):
     """Fail an applied id whose `old` is still present; -> the ids whose `old` is gone but whose `new` is not verbatim
     though the fold named `finding` as the source: those are reworded edits for the next round's re-review."""
@@ -858,7 +877,7 @@ def _check_old_new(state, fail):
         row = by_id.get(i) or {}
         old, new = row.get("old"), row.get("new")
         rel = file_of.get(i)
-        if not (isinstance(old, str) and old.strip() and isinstance(new, str) and new.strip()) or rel is None:
+        if not _has_pair(row) or rel is None:
             continue
         before, text = _text(tables[rel][0]), _text(tables[rel][1])
         flat, flat_before = _flat(text), _flat(before)

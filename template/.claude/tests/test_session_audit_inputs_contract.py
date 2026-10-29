@@ -70,9 +70,38 @@ def case_planted_checkout_freezes_inputs(directory):
     assert frozen.is_file(), "the frozen packet must be written"
 
 
+def case_must_read_holds_whole_copies_only_of_whole_judged_files(directory):
+    repo, _, roster = planted_checkout(directory)
+    edited = {".claude/commands/doc.md": "rule one\n", ".claude/hooks/guard.py": "'''doc'''\nA = 1\n",
+              ".claude/tools/tool.py": "B = 1\n"}
+    for name, text in edited.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text, encoding="utf-8")
+    git(repo, "add", *edited)
+    git(repo, "commit", "-q", "-m", "planted subjects")
+    base = git(repo, "rev-parse", "HEAD")
+    for name, text in edited.items():
+        (repo / name).write_text(text + "changed\n", encoding="utf-8")
+    (repo / ".claude/tools/new_tool.py").write_text("C = 1\n", encoding="utf-8")
+    subjects = [*edited, ".claude/tools/new_tool.py"]
+    env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_SESSION_ID"}
+    done = subprocess.run([sys.executable, str(TOOL), "--root", str(repo), "--base-ref", "HEAD~1",
+                           "--session-base", base, "--roster", str(roster), "--out", ".claude/scratch/run/inputs.json",
+                           "--files", *subjects], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    must = [Path(p).name for p in json.loads(done.stdout)["mustRead"]]
+    whole = {i for i, name in enumerate(subjects) if f"subject-{i}.txt" in must}
+    assert whole == {0, 1}, f"whole copies on must-read for {sorted(subjects[i] for i in whole)}; want the doc and the hook"
+    assert all(f"subject-{i}.diff" in must for i in range(len(subjects))), must
+    assert "decisions.json" not in must, "decisions repeat inside doctrine-commits.md"
+    folder = repo / ".claude" / "scratch" / "run"
+    assert all((folder / f"subject-{i}.txt").is_file() for i in range(3)), "each frozen copy stays on disk"
+
+
 def main():
     cases = [case_unreadable_roster_exits_nonzero, case_out_path_outside_checkout_exits_nonzero,
-             case_planted_checkout_freezes_inputs]
+             case_planted_checkout_freezes_inputs, case_must_read_holds_whole_copies_only_of_whole_judged_files]
     failures = []
     for case in cases:
         directory = tempfile.mkdtemp(prefix="session-audit-inputs-proof-")

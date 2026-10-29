@@ -47,7 +47,7 @@ a caller should use depends on whether a backgrounded job wakes it:
    run long, and a raised call holds every other wake. The one exception is a proof batch whose every proof has a
    recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A delegate
    or print-mode child keeps its timeout: no wake reaches it, so one bounded call is its wait.
-5. Blind pipe (denies, background calls only). A `run_in_background` pipeline whose producer streams progress until it exits (`harness_tests.py` with `--close`, `--all` or no mode; a `.ps1` run with `-Watch`; `sidecar_fanout.py` without `--detach`, `--status`, `--dry-run`, `--review-artifact` or `--help`) and whose stdout reaches a later `tail` or `head` unredirected and unteed is denied (`blind_pipe`): the pipe holds every line until the job exits. `tail -f` and a `tee` stage pass. Rule home: CLAUDE.core.md §Shell Discipline.
+5. Blind pipe (denies, background calls only). A `run_in_background` pipeline whose stdout reaches a later `tail` or `head` unredirected and unteed is denied (`blind_pipe`): the task's output file already keeps every line, so the pipe only holds them until the job exits and drops the ones past its count. `tail -f`, a `tee` stage and a `tail` of a file pass. Rule home: CLAUDE.core.md §Shell Discipline.
 
 7. Monitor past its cap. A Monitor call whose `timeout_ms` exceeds MONITOR_CAP_MS is denied: the tool ends every watch
    at that ceiling with no wake, so the request cannot do what it says. The deny names the waiter for a detached
@@ -642,8 +642,9 @@ def _check_in(payload, command, tool_input, note, bounded=False):
 
 
 BLIND_REASON = (
-    "[wait] DENIED: this backgrounded %s pipes its output into `%s`, which holds every line until the job exits "
-    "(CLAUDE.core.md §Shell Discipline). Drop the `| %s`: the background task's output file shows the job's progress as it runs."
+    "[wait] DENIED: this backgrounded %s pipes its output into `%s`, which holds every line until the job exits and "
+    "drops the lines past its count (CLAUDE.core.md §Shell Discipline). Drop the `| %s`: the background task's output "
+    "file keeps every line, and a bounded Read of it after the wake takes the part you need."
 )
 
 
@@ -682,12 +683,16 @@ def _producer(words):
 
 
 def blind_pipe(command):
-    """(producer, consumer) when a pipeline runs a progress-streaming job (`_producer`) whose stdout reaches a later
-    `tail` or `head` stage unredirected and unteed, else None. `tail -f` follows a file and stays live."""
+    """(producer, consumer) when a backgrounded pipeline's stdout reaches a later `tail` or `head` stage unredirected
+    and unteed, else None. The task's output file already keeps every line for a later bounded Read, so the pipe only
+    hides progress until exit and drops the lines past its count. `tail -f` follows a file and stays live."""
     for pipeline in re.split(r"\|\||&&|[;\n]|(?<![>&])&(?![&>])", shell_code(command)):
         stages = [s.strip(" \t()`$") for s in re.split(r"(?<![|>])\|(?!\|)", pipeline)]
         for i, stage in enumerate(stages[:-1]):
-            producer = _producer(_words(stage))
+            words = _words(stage)
+            if words and words[0] == "tee":
+                break
+            producer = _producer(words) or (words[0] if words else None)
             if not producer or ">" in re.sub(r"\d?>&\d|2>\s*/dev/null|2>\S+", "", stage):
                 continue
             for later in stages[i + 1:]:

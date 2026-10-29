@@ -91,6 +91,23 @@ class RecordTierProof(unittest.TestCase):
         self.assertEqual(profile_tier("survey", "architect"), "architect")
 
 
+class AmendLineProof(unittest.TestCase):
+    def test_author_prompt_reads_its_amend_file_without_an_existence_probe(self):
+        """A Glob existence probe hides a gitignored amend file, so the line orders a Read."""
+        bash = git_bash()
+        self.assertIsNotNone(bash)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        brief = Path(tmp, "brief.md")
+        brief.write_text("task", encoding="utf-8")
+        script = 'source "$1"; SC_PROMPT_FILE="$2"; SC_SHAPE=author; sc_read_prompt; printf "%s" "$SC_PROMPT"'
+        proc = subprocess.run([bash, "-c", script, "_", (CLAUDE / "scripts/lib/sidecar_common.sh").as_posix(),
+                               brief.as_posix()], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertRegex(proc.stdout, r"Read \S*brief\.md\.amend\.md with the Read tool")
+        self.assertNotIn("amend.md exists", proc.stdout)
+
+
 class CheckFactsTierProof(unittest.TestCase):
     def test_check_facts_resolve_the_tier_through_job_tier(self):
         """`--check` folds a written `-Q validation` onto `fanout` and names an unknown tier, as the launch does."""

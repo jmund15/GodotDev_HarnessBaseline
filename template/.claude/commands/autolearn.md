@@ -38,7 +38,7 @@ The analyst returns two outputs:
 
 Each proposal names its executor: `/codify` for a guidance or memory edit, a fix job for a code or hook edit, `/worklog` for a deferral. Non-proposal dispositions stay in the audit table even when they leave the packet.
 
-The pass is done when the parent has reconciled the table's distinct IDs and counts against the digest `pages` totals and the `git log` output, read the source rows behind every `accepted` or disputed claim, and ruled on each proposal the analyst returned. The parent then launches one `/codify` or fix job per approved target.
+The pass is done when the parent has reconciled the table's distinct IDs and counts against the digest `pages` totals and the `git log` output, read the source rows behind every `accepted` or disputed claim, and ruled on each proposal the analyst returned.
 
 **Nuance recall (conditional):** apply [Transcript Nuance Recall](agents/transcript_nuance_recall.md), which owns the gate, the quote check and the cached pass. Candidates enter at MEDIUM confidence through the normal filter. `/self_evaluate` reads this pass instead of repeating it.
 
@@ -101,6 +101,6 @@ Proposals reach the owner as one packet (`CLAUDE.core.md` §Preferences), retire
 
 ## Applying changes
 
-Run `/codify` §Steps 6–7 on each approved row, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing: it lands the change and proves it fires. Commit as `chore(autolearn): <brief description>` and report what changed.
+Run each approved row's named executor (§Step 0): `/codify` §Steps 6–7 for a guidance or memory edit, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing, which lands the change and proves it fires; a fix job for a code or hook edit; `/worklog` for a deferral. Commit as `chore(autolearn): <brief description>` and report what changed.
 
 Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --row <R#> --target <target> --signal <signal> --recommended <apply|choose> --outcome applied|declined --reason <text>`, with the owner's stated reason or `none given`. The tool rejects a malformed row and caps the file.

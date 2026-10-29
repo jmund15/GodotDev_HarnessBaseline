@@ -2822,6 +2822,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/_brainstorm_shared/rigor_stages.md",
+      "layer": "coding",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/_brainstorm_shared/roadmap_schema.md",
       "layer": "coding",
       "sync": "auto"
@@ -3118,6 +3123,11 @@
     },
     {
       "path": ".claude/skills/orchestration/reference/review_width.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/skills/orchestration/reference/rigor.md",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3682,6 +3692,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/review_fanout_mandate_map_schema_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/review_fanout_schema_parity_test.js",
       "layer": "pure",
       "sync": "auto"
@@ -4227,6 +4242,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_finding_bar.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_fold_check_post_check_modes.py",
       "layer": "pure",
       "sync": "auto"
@@ -4692,7 +4712,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_post_check_bar.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_post_check_out_of_subject.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_post_check_record_blobs.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4822,6 +4852,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_python_null_stdin.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_quota_bands.py",
       "layer": "pure",
       "sync": "auto"
@@ -4892,6 +4927,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_review_ledger_bar.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_review_ledger_blobs.py",
       "layer": "pure",
       "sync": "auto"
@@ -4909,6 +4949,11 @@
     {
       "path": ".claude/tests/test_review_result_defer.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_rigor_doctrine.py",
+      "layer": "coding",
       "sync": "auto"
     },
     {
@@ -5173,6 +5218,11 @@
     },
     {
       "path": ".claude/tests/test_sidecar_fanout_records.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_fanout_review_fold_bar.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5542,6 +5592,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_workflow_provider_guard_bar.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_workflow_provider_guard_citers.py",
       "layer": "pure",
       "sync": "auto"
@@ -5773,6 +5828,11 @@
     },
     {
       "path": ".claude/tools/extract_subagent_tools.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/finding_bar.py",
       "layer": "pure",
       "sync": "auto"
     },

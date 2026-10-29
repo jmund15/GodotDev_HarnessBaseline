@@ -90,6 +90,24 @@ advice, trailer = _advice("proof note\n\nTriage: reach=external design=settled g
 check("a diff whose derived reach the trailer already records raises nothing",
       advice is None and trailer is None, (advice, trailer))
 
+RECORDED = {"reach": "shared", "reversibility": "clean", "design": "settled", "grounding": "verified",
+            "oracle": ["gate", "new-test"], "size": "milestones", "kind": "decision"}
+with open(os.path.join(RECORDS, "proof-task.json"), "w", encoding="utf-8", newline="\n") as fh:
+    json.dump({"task_id": "proof-task", "session_id": "proof-triage-1", "updated": "2026-01-01T00:00:00Z",
+               "triage": {"fields": RECORDED, "paths": ["notes.md"]}}, fh)
+rc, out, err = run('git commit -q -m "proof note"')
+command = (json.loads(out).get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+           if out.strip() else "")
+written = command.partition('--trailer "')[2].partition('"')[0]
+fields, error = triage.parse_trailer("proof note\n\n" + written)
+check("a commit with no trailer under a session triage carries that triage as its Triage trailer",
+      rc == 0 and written.startswith("Triage: ") and error is None and fields is not None
+      and fields.get("reach") == "shared" and fields.get("size") == "milestones", (command, err))
+rc, out, err = run('git commit -q -m "proof note" -m "Triage: reach=local design=settled grounding=verified oracle=none size=one-context"')
+check("a commit that writes its own Triage trailer keeps it and gets none added",
+      rc == 0 and "--trailer" not in (out or ""), out)
+os.remove(os.path.join(RECORDS, "proof-task.json"))
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

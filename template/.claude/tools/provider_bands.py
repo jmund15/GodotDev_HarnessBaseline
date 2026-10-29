@@ -65,10 +65,13 @@ DEFAULT_TTL_S = 600  # compatibility parameter; provider_capacity owns freshness
 USED_RESOLUTION = 1.0  # percentage points: providers report usedPercent in whole percents
 RECENT_HORIZON_S = 86400.0  # recent use is the plan's last day of samples, never its early burst
 RECENT_MIN_SPAN_S = 3600.0  # two samples closer than this cannot state a rate
+# A day of use, to the sampler's hour, holds its rhythm of work and sleep, so a rate over that span forecasts any
+# time left; a rate over less forecasts no further than its span.
+RATE_FULL_SPAN_S = RECENT_HORIZON_S - RECENT_MIN_SPAN_S
 RESET_TOLERANCE_S = 900.0  # samples of one period agree on its reset to within this
 SAMPLES_TTL_S = 30.0  # one prompt reads many plans, so the samples file is read once per turn
 _SAMPLES_CACHE = {"at": None, "rows": []}
-# What one sidecar job is assumed to take from its plan's tightest window, in percentage points, when no history
+# What one sidecar job is assumed to take from one window of its plan, in percentage points, when no history
 # measures it. Room is a pace ratio and says nothing about a burst: on 2026-10-14 a 5h window at 24% left read room
 # 0.97, 13 jobs went to it, and 6+ hit the limit within 15 minutes (about 4 points a job). Thin basis: one burst.
 JOB_DRAIN_PCT = float(os.environ.get("SIDECAR_JOB_DRAIN_PCT") or 4)
@@ -185,8 +188,8 @@ def _samples():
 
 
 def _recent_rate(transport, window, now, samples):
-    """The plan's own rate, in percentage points per second, from its samples of `window` in the
-    current reset period over the last day; None when the samples cannot state one.
+    """(rate in percentage points per second, span in seconds the samples cover) from the plan's own samples
+    of `window` in the current reset period over the last day; None when the samples cannot state one.
 
     The rate is the least-squares slope of `used` over time. The reset filter already confines the
     samples to one period, so a dip is two writers rounding one plan apart, never a roll."""
@@ -210,12 +213,13 @@ def _recent_rate(transport, window, now, samples):
         if reset is None or seen_reset is None or abs(seen_reset - reset) > RESET_TOLERANCE_S:
             continue
         rows.append((float(ts), float(used)))
-    if len(rows) < 2 or max(r[0] for r in rows) - min(r[0] for r in rows) < RECENT_MIN_SPAN_S:
+    span = max(r[0] for r in rows) - min(r[0] for r in rows) if rows else 0.0
+    if len(rows) < 2 or span < RECENT_MIN_SPAN_S:
         return None
     mean_ts = sum(r[0] for r in rows) / len(rows)
     mean_used = sum(r[1] for r in rows) / len(rows)
     spread = sum((r[0] - mean_ts) ** 2 for r in rows)
-    return max(0.0, sum((r[0] - mean_ts) * (r[1] - mean_used) for r in rows) / spread)
+    return max(0.0, sum((r[0] - mean_ts) * (r[1] - mean_used) for r in rows) / spread), span
 
 
 def _bound_rate(window, windows, now):
@@ -249,7 +253,9 @@ def unused_at_reset(transport, window, now=None, samples=None, windows=None):
     """{pct, basis, daysLeft} for `window`: the share of its allowance the plan's recent rate leaves
     at its reset, or None when the window cannot say (no used share, length or future reset).
 
-    `basis` is the shortest honest one that applies. `recent`: the plan's own samples of this window,
+    `basis` is the shortest honest one that applies. A rate needs a span of `RATE_FULL_SPAN_S` or the time left,
+    whichever is shorter: with a shorter span the next basis is tried, and with the window's own elapsed time also
+    shorter the answer is None. `recent`: the plan's own samples of this window,
     in its current reset period, over the last day (`RECENT_HORIZON_S`), at least two an hour apart;
     rate is their change in `used` over time. With no such samples, `average` is the window's own
     used share over its elapsed time, and `bound` replaces it when `_bound_rate`'s cap from the
@@ -276,10 +282,16 @@ def unused_at_reset(transport, window, now=None, samples=None, windows=None):
     time_left = reset - now
     if minutes * 60.0 - time_left < RECENT_MIN_SPAN_S:
         return None  # a window that just rolled says nothing about the rate it will spend at
-    rate = _recent_rate(transport, window, now, _samples() if samples is None else samples)
+    elapsed = minutes * 60.0 - time_left
+    recent = _recent_rate(transport, window, now, _samples() if samples is None else samples)
     basis, source = "recent", None
-    if rate is None:
-        rate, basis = used / (minutes * 60.0 - time_left), "average"
+    needed = min(RATE_FULL_SPAN_S, time_left)
+    if recent is not None and recent[1] >= needed:
+        rate = recent[0]
+    elif elapsed < needed:
+        return None
+    else:
+        rate, basis = used / elapsed, "average"
         bound = _bound_rate(window, windows, now)
         if bound is not None and bound[0] < rate:
             rate, source, basis = bound[0], bound[1], "bound"
@@ -334,8 +346,9 @@ def read_capacity(transport, data=None, live=True):
 
 
 def plan_room(transport, data, read, now):
-    """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
-    {transport, room: None, why}."""
+    """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, windows, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
+    {transport, room: None, why}. `headroom` is the window with the fewest points left; `windows` lists every window's own
+    {name, headroom, resetsAt}, because points of two windows are different units and a job's draw is priced per window."""
     try:
         got = read(transport, data)
     except Exception as exc:
@@ -368,13 +381,22 @@ def plan_room(transport, data, read, now):
         return {"transport": transport, "room": None,
                 "why": "unreadable: routing window %s has no used share, length or future reset" % name}
     reset = provider_capacity._epoch(window.get("resetsAt"))
+    def usable(w):
+        # The launcher refuses a job once a window reaches its dispatch floor, so room ends there.
+        floor = w.get("dispatchFloorPercent")
+        return (floor if isinstance(floor, (int, float)) and not isinstance(floor, bool) else 100.0) - w["usedPercent"]
+
     tightest_window = min((w for w in windows
                            if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)),
-                          key=lambda w: 100.0 - w["usedPercent"])
+                          key=usable)
     row = {"transport": transport, "room": value, "window": name,
            "left": 100.0 - window["usedPercent"],
-           "headroom": 100.0 - tightest_window["usedPercent"], "headroomWindow": tightest_window.get("name"),
+           "headroom": usable(tightest_window), "headroomWindow": tightest_window.get("name"),
            "headroomResetsAt": provider_capacity._epoch(tightest_window.get("resetsAt")),
+           "windows": [{"name": w.get("name"), "headroom": usable(w),
+                        "resetsAt": provider_capacity._epoch(w.get("resetsAt"))}
+                       for w in windows
+                       if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)],
            "daysLeft": (reset - now) / 86400.0 if reset is not None else None,
            "planType": got.get("planType")}
     projection = unused_at_reset(transport, window, now, windows=windows)
@@ -385,6 +407,16 @@ def plan_room(transport, data, read, now):
     if tightest:
         row["bindingRoom"], row["binding"] = tightest
     return row
+
+
+def spent_reset(capacity):
+    """Epoch of the latest reset among a reading's windows that are 100% used, else None: when a spent plan has
+    room again."""
+    windows = ((capacity or {}).get("quota") or {}).get("windows") or []
+    resets = [provider_capacity._epoch(w.get("resetsAt")) for w in windows
+              if isinstance(w, dict) and isinstance(w.get("usedPercent"), (int, float))
+              and not isinstance(w["usedPercent"], bool) and w["usedPercent"] >= 100]
+    return max((r for r in resets if r is not None), default=None)
 
 
 def _gates(window, now):
@@ -401,9 +433,20 @@ def rank_room(row):
     return row["bindingRoom"] if row.get("bindingRoom") is not None else row["room"]
 
 
+def row_windows(row):
+    """The `{name, headroom, resetsAt}` of each window a plan row can price a job on: its `windows`, else the one
+    `headroom` it states, else none (the launcher's own gate decides)."""
+    if isinstance(row.get("windows"), list):
+        return row["windows"]
+    headroom = row.get("headroom")
+    if isinstance(headroom, bool) or not isinstance(headroom, (int, float)):
+        return []
+    return [{"name": row.get("headroomWindow"), "headroom": headroom, "resetsAt": row.get("headroomResetsAt")}]
+
+
 def fits(row, committed_pct, drain_pct):
-    """True while the plan's tightest window, `headroom`, holds the `committed_pct` points of the jobs already on
-    the plan and this job's `drain_pct`. A row with no `headroom` reading fits: its launcher's own gate decides."""
+    """True while a window's `headroom` holds the `committed_pct` points of the jobs already on the plan and this
+    job's `drain_pct`; a plan holds a job while each of its windows does (`row_windows`). A row with no `headroom` reading fits: its launcher's own gate decides."""
     headroom = row.get("headroom")
     return not isinstance(headroom, (int, float)) or headroom - committed_pct - drain_pct >= 0
 

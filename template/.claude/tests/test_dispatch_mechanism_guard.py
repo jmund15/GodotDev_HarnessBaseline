@@ -151,7 +151,7 @@ def test_unloaded_orchestration_denies_and_compaction_reasks():
         _hook_state.clear_compaction_keys(sid)
     decision, reason = run(payload, skill=False)
     assert decision == DENY and 'Skill(skill="orchestration")' in reason and "SKILL.md" not in reason, reason
-    assert "CLAUDE.core.md §9" in reason and "re-issue" in reason and "unchanged" not in reason, reason
+    assert "orchestration §0" in reason and "re-issue" in reason and "unchanged" not in reason, reason
     assert "model_ladder_evidence" not in reason, 'a read ladder was named as unmet: ' + reason
     assert run(payload)[0] == ALLOW
     with patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=STATE):

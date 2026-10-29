@@ -89,8 +89,13 @@ def main():
          "derived" in lowered and "orchestration" in lowered),
         # The bulk-copyable arm names a tool this machine may not have.
         ("an absent ai-worker names the local route instead of the worker",
-         (lambda out: "read_files" not in out and "bounded Read" in out and "subagent" in out)(
+         (lambda out: "read_files" not in out and "bounded Read" in out and "subagent" not in out)(
              run(hook, SYNTHESIS, env=profile_env("full", "absent")))),
+        # A delegate cannot dispatch, so its advice names no delegate route (orchestration §0 owns delegation).
+        ("a delegate's advice names no orchestration, delegate or subagent route",
+         (lambda out: out.startswith("<user-prompt-submit-hook>") and "Known focused" in out
+          and not any(w in out.lower() for w in ("orchestration", "delegate", "subagent")))(
+             run(hook, SYNTHESIS, env=dict(profile_env("full", "absent"), CLAUDE_CODE_SIDECAR="1")))),
         ("a present ai-worker keeps the worker route",
          "read_files" in run(hook, SYNTHESIS, env=profile_env("full", "present"))),
         ("no profile keeps the worker route",

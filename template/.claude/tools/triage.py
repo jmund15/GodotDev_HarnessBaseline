@@ -9,6 +9,8 @@ no project path: every project fact lives in that data.
                                         derive over planned paths; unknown predicates stay conditional
     triage.py check-registry             validate every registry entry; exit 1 on an invalid one
     triage.py rederive <rev-range>       flag each commit whose Triage: trailer sits below its own diff
+    triage.py rigor [--task ID] [--set LEVEL]
+                                        print the rigor in force, or record LEVEL on the task or session record
 
 Trailer, one line, keys in any order; reversibility and kind are optional and validated when supplied.
 The other five keys are required; the last `Triage:` line of a message counts:
@@ -165,23 +167,31 @@ CHECKS = ("harness-quality-seat", "candidate-lenses", "premises", "iq-audit")
 RIGORS = ("light", "normal", "thorough")
 
 
-def rigor(task_id: str | None = None, root: Path | None = None) -> str:
-    """Recorded level, else the highest per-path default; most literal glob wins, ties take higher rigor."""
+def rigor(task_id: str | None = None, root: Path | None = None, session_id: str | None = None) -> str:
+    """Recorded level, else the highest per-path default; most literal glob wins, ties take higher rigor.
+
+    The level is the named task's record when it holds one, else the level the session named last
+    (`task_record.active` by `rigorAt`), else the default. Without a task id the record read for the
+    default's paths is the session's newest record."""
     import task_record
     root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     directory = Path(os.environ.get("HARNESS_TASK_RECORD_DIR") or root / ".claude/logs/tasks")
+    session = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if task_id:
         record = task_record._hook_state.read_json_salvage(str(directory / (task_id + ".json")))
     else:
-        session = os.environ.get("CLAUDE_CODE_SESSION_ID")
         records = [task_record._hook_state.read_json_salvage(str(p)) for p in directory.glob("*.json")]
         records = [r for r in records if session and task_record._session_key(r.get("session_id"))
                    == task_record._session_key(session)]
         record = max(records, key=lambda r: r.get("updated") or "", default={})
-    if record.get("rigor") is not None:
-        if record["rigor"] not in RIGORS:
-            raise ValueError("unknown rigor %r" % record["rigor"])
-        return record["rigor"]
+    level = record.get("rigor") if task_id else None
+    if level is None and session:
+        held = task_record.active(session, require="rigor", directory=str(directory))
+        level = (held or {}).get("rigor")
+    if level is not None:
+        if level not in RIGORS:
+            raise ValueError("unknown rigor %r" % level)
+        return level
     paths = ((record.get("triage") or {}).get("paths")
              or (record.get("scope") or {}).get("files") or [])
     if not paths:
@@ -644,6 +654,15 @@ def parse_oracle(text):
     return sorted(set(members))
 
 
+def trailer_text(fields):
+    """The canonical `Triage:` trailer value for recorded fields; `parse_trailer` reads it back unchanged."""
+    parts = []
+    for key in FIELDS | OPTIONAL_FIELDS:
+        if key in fields:
+            parts.append("%s=%s" % (key, _format_oracle(fields[key]) if key == "oracle" else fields[key]))
+    return " ".join(parts)
+
+
 def parse_trailer(message):
     """(fields, None) for a valid trailer, (None, reason) for an unreadable one, (None, None) when the
     message has no `Triage:` line. The last such line counts. `oracle` parses to a frozenset."""
@@ -891,6 +910,32 @@ def _cmd_rederive(args, tags):
     return 1 if flagged else 0
 
 
+def _cmd_rigor(args):
+    import task_record
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
+    try:
+        if args.set_level:
+            task = args.task
+            if not task:
+                session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+                if not session:
+                    raise ValueError("no session id: set CLAUDE_CODE_SESSION_ID or pass --task")
+                newest = task_record.active(session)
+                if newest:
+                    task = newest["task_id"]
+                else:
+                    task = "session-" + task_record._session_key(session)
+                    task_record.open_record(task, session, "session rigor")
+            task_record.set_fields(task, rigor=args.set_level)
+            print(args.set_level)
+            return 0
+        print(rigor(args.task, root))
+        return 0
+    except (OSError, ValueError, KeyError, task_record.RecordTooLarge, task_record.TriageRefused) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Work triage lookup.", epilog=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -918,8 +963,13 @@ def main(argv=None):
     source.add_argument("--task")
     p.add_argument("--json", action="store_true")
     p.add_argument("--gate-green", action=argparse.BooleanOptionalAction, default=None)
+    p = sub.add_parser("rigor", help="print the drive rigor in force, or record it with --set")
+    p.add_argument("--task", help="task id; without it, this session's record")
+    p.add_argument("--set", dest="set_level", choices=RIGORS, help="record this level")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+    if args.cmd == "rigor":
+        return _cmd_rigor(args)
     if args.cmd == "admits":
         import task_record
         try:

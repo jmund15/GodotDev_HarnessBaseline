@@ -113,17 +113,17 @@ def test_record_and_cli(tmp_path, monkeypatch):
                            reach='local', kind='mechanical', size='one-context')
     cli = subprocess.run([sys.executable, str(HERE.parent / 'tools/triage.py'), 'admits', 'iq-audit',
                           '--task', 'admission', '--json'],
-                         capture_output=True, text=True, encoding='utf-8')
+                         stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8')
     assert cli.returncode == 0, cli.stderr
     assert json.loads(cli.stdout)['admitted'] is False
     assert len(task_record.load('admission')['admissions']) == 2
     green = subprocess.run([sys.executable, str(HERE.parent / 'tools/triage.py'), 'admits', 'candidate-lenses',
                             '--task', 'admission', '--gate-green', '--json'],
-                           capture_output=True, text=True, encoding='utf-8')
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8')
     assert green.returncode == 0 and json.loads(green.stdout)['width'] == 'none', green.stderr
     unknown = subprocess.run([sys.executable, str(HERE.parent / 'tools/triage.py'), 'admits', 'candidate-lenses',
                               '--task', 'admission', '--no-gate-green', '--json'],
-                             capture_output=True, text=True, encoding='utf-8')
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8')
     assert unknown.returncode == 0 and json.loads(unknown.stdout)['width'] == 'sized', unknown.stderr
     assert 'admissions' in task_record.open_record('empty', 'admit-test', 'Empty')
     # Legacy records acquire the list through the same locked mutation, without erasing their state.
@@ -151,9 +151,111 @@ def test_unrecorded_size_fails_closed(tmp_path, monkeypatch):
     assert not triage.admits('harness-quality-seat', explicit, 'normal').admitted
 
 
+def _rigor_cli(args, env):
+    return subprocess.run([sys.executable, str(HERE.parent / 'tools/triage.py'), 'rigor'] + args,
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', env=env)
+
+
+def _rigor_env(tmp_path, session=None):
+    env = dict(os.environ, HARNESS_TASK_RECORD_DIR=str(tmp_path / 'records'),
+               CLAUDE_PROJECT_DIR=str(tmp_path))
+    env.pop('CLAUDE_CODE_SESSION_ID', None)
+    if session:
+        env['CLAUDE_CODE_SESSION_ID'] = session
+    return env
+
+
+def test_rigor_cli_prints_recorded_then_default(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    task_record.open_record('cli-recorded', 'cli-session-one', 'Recorded')
+    task_record.set_fields('cli-recorded', rigor='thorough')
+    task_record.open_record('cli-plain', 'cli-session-one', 'Plain')
+    task_record._mutate('cli-plain', lambda state: state.update(triage={
+        'fields': {'reach': 'local'}, 'paths': ['docs/unmatched.md']}))
+    env = _rigor_env(tmp_path)
+    recorded = _rigor_cli(['--task', 'cli-recorded'], env)
+    assert recorded.returncode == 0 and recorded.stdout.strip() == 'thorough', recorded.stderr
+    default = _rigor_cli(['--task', 'cli-plain'], env)
+    assert default.returncode == 0 and default.stdout.strip() == 'normal', default.stderr
+
+
+def test_rigor_set_with_task_writes_that_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    task_record.open_record('set-named', 'set-session-one', 'Named')
+    env = _rigor_env(tmp_path, session='set-session-one')
+    done = _rigor_cli(['--set', 'light', '--task', 'set-named'], env)
+    assert done.returncode == 0, done.stderr
+    assert task_record.load('set-named')['rigor'] == 'light'
+
+
+def test_rigor_set_without_task_writes_the_latest_session_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    task_record.open_record('set-older', 'set-session-two', 'Older')
+    task_record._mutate('set-older', lambda state: state.update(updated='2026-01-01T00:00:00'))
+    task_record.open_record('set-newer', 'set-session-two', 'Newer')
+    task_record._mutate('set-newer', lambda state: state.update(updated='2026-02-01T00:00:00'))
+    env = _rigor_env(tmp_path, session='set-session-two')
+    done = _rigor_cli(['--set', 'light'], env)
+    assert done.returncode == 0, done.stderr
+    assert task_record.load('set-newer')['rigor'] == 'light'
+    assert task_record.load('set-older').get('rigor') is None
+
+
+def test_rigor_set_without_any_record_opens_a_session_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    env = _rigor_env(tmp_path, session='abcdef1234567890')
+    done = _rigor_cli(['--set', 'light'], env)
+    assert done.returncode == 0, done.stderr
+    record = task_record.load('session-abcdef12')
+    assert record['rigor'] == 'light' and record['title'] == 'session rigor', record
+
+
+def test_rigor_read_prefers_the_session_level_over_a_later_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'readfirst-session')
+    task_record.open_record('read-level', 'readfirst-session', 'Level')
+    task_record.set_fields('read-level', rigor='light')
+    task_record._mutate('read-level', lambda state: state.update(updated='2026-01-01T00:00:00'))
+    task_record.open_record('read-later', 'readfirst-session', 'Later')
+    task_record._mutate('read-later', lambda state: state.update(updated='2026-02-01T00:00:00'))
+    task_record.open_record('read-other', 'readsecond-session', 'Other session')
+    task_record.set_fields('read-other', rigor='thorough')
+    assert triage.rigor(root=tmp_path) == 'light'
+    assert triage.rigor(root=tmp_path, session_id='readsecond-session') == 'thorough'
+
+
+def test_rigor_read_keeps_the_last_named_level_when_an_older_level_record_is_written(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    task_record.open_record('named-first', 'named-session', 'First')
+    task_record.set_fields('named-first', rigor='light')
+    task_record._mutate('named-first', lambda state: state.update(rigorAt='2026-01-01T00:00:00'))
+    task_record.open_record('named-last', 'named-session', 'Last')
+    task_record.set_fields('named-last', rigor='normal')
+    task_record.set_fields('named-first', next_action='unrelated write')
+    assert triage.rigor(root=tmp_path, session_id='named-session') == 'normal'
+
+
+def test_rigor_read_survives_a_write_to_another_record(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    task_record.open_record('survive-level', 'survive-session', 'Level')
+    task_record.set_fields('survive-level', rigor='light')
+    task_record.open_record('survive-other', 'survive-session', 'Other')
+    task_record.set_fields('survive-other', next_action='unrelated write')
+    assert triage.rigor(root=tmp_path, session_id='survive-session') == 'light'
+
+
 def main():
     from types import SimpleNamespace
     from unittest.mock import patch
+    if pytest.main(['-q', str(Path(__file__).resolve())]) != 0:
+        return 1
     tests = (test_table_cells, test_boundaries)
     for test in tests:
         test()

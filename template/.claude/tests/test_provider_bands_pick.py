@@ -210,6 +210,15 @@ def main():
     case("a window whose reset has passed has no room (the reading predates the reset)",
          pb.room({"usedPercent": 10, "resetsAt": NOW - 60, "windowDurationMins": 300}, NOW) is None)
 
+    spent_reset = getattr(pb, "spent_reset", None)
+    both = reading("p", 100, 0.5)
+    both["quota"]["windows"].append({"name": "five_hour", "usedPercent": 100, "resetsAt": NOW + 7200,
+                                     "windowDurationMins": 300})
+    live = reading("p", 40, 0.5)
+    case("spent_reset is the latest reset among the windows that are 100% used, else None",
+         callable(spent_reset) and spent_reset(both) == both["quota"]["windows"][0]["resetsAt"]
+         and spent_reset(live) is None and spent_reset(None) is None and spent_reset({}) is None)
+
     # The projection: the share of the routing window's allowance the plan's recent rate leaves at its
     # reset. An even-pace figure hides a plan that was busy early and idles now, so recent use decides.
     projection = getattr(pb, "unused_at_reset", None)
@@ -224,23 +233,31 @@ def main():
              and round(avg["daysLeft"], 2) == 2.0 and "from" not in avg, repr(avg))
         base = {"plan": "anthropic", "provider": "anthropic", "window": "seven_day",
                 "resets_at": week["resetsAt"]}
-        recent = [dict(base, ts=NOW - 7200, used=10.0), dict(base, ts=NOW - 3600, used=10.4)]
-        got_recent = projection("anthropic", week, NOW, samples=recent)
-        case("two samples an hour apart project the plan's own recent rate",
-             got_recent and got_recent["basis"] == "recent" and round(got_recent["pct"], 1) == 60.8,
+        # A rate forecasts no further than the span it was measured over: recent samples decide only
+        # while their span covers the time left, so the recent cases sit half a day before the reset.
+        late = dict(week, resetsAt=NOW + 43200)
+        late_base = dict(base, resets_at=late["resetsAt"])
+        recent = [dict(late_base, ts=NOW - 86000, used=10.0), dict(late_base, ts=NOW - 600, used=15.0)]
+        got_recent = projection("anthropic", late, NOW, samples=recent)
+        case("two samples a day apart project the plan's own recent rate when they span the time left",
+             got_recent and got_recent["basis"] == "recent" and round(got_recent["pct"], 1) == 77.5,
              repr(got_recent))
+        hour = [dict(base, ts=NOW - 7200, used=10.0), dict(base, ts=NOW - 3600, used=10.4)]
+        case("samples an hour apart do not forecast two days: the window's average decides",
+             projection("anthropic", week, NOW, samples=hour)["basis"] == "average",
+             repr(projection("anthropic", week, NOW, samples=hour)))
         # Two writers read one plan (the statusline capture and the capacity probe) and round apart, so
         # used dips a point between them inside one reset period.
-        jitter = [dict(base, ts=NOW - h * 3600, used=u)
-                  for h, u in ((6, 16.0), (3, 17.0), (1, 19.0), (0.9, 18.0), (0.5, 19.0), (0.4, 18.0))]
-        got_jitter = projection("anthropic", week, NOW, samples=jitter)
+        jitter = [dict(late_base, ts=NOW - h * 3600, used=u)
+                  for h, u in ((20, 16.0), (10, 17.0), (2, 19.0), (1.9, 18.0), (1, 19.0), (0.9, 18.0))]
+        got_jitter = projection("anthropic", late, NOW, samples=jitter)
         case("a one-point dip between two writers of one plan keeps the recent rate",
              got_jitter and got_jitter["basis"] == "recent" and 0 < got_jitter["pct"] < 81,
              repr(got_jitter))
-        falling = [dict(base, ts=NOW - 7200, used=12.0), dict(base, ts=NOW - 3600, used=11.0)]
+        falling = [dict(late_base, ts=NOW - 86000, used=12.0), dict(late_base, ts=NOW - 600, used=11.0)]
         case("a used share that only falls in one reset period projects no draw",
-             round(projection("anthropic", week, NOW, samples=falling)["pct"], 1) == 80.0,
-             repr(projection("anthropic", week, NOW, samples=falling)))
+             round(projection("anthropic", late, NOW, samples=falling)["pct"], 1) == 80.0,
+             repr(projection("anthropic", late, NOW, samples=falling)))
         near = [dict(base, ts=NOW - 1800, used=10.0), dict(base, ts=NOW - 1700, used=10.4)]
         case("two samples less than an hour apart cannot state a rate",
              projection("anthropic", week, NOW, samples=near)["basis"] == "average",
@@ -259,7 +276,7 @@ def main():
         case("another plan's own samples never project this plan",
              projection("anthropic", week, NOW, samples=stranger)["basis"] == "average",
              repr(projection("anthropic", week, NOW, samples=stranger)))
-        month = {"name": "thirty_day", "usedPercent": 50, "resetsAt": NOW + 20 * 86400,
+        month = {"name": "thirty_day", "usedPercent": 50, "resetsAt": NOW + 12 * 86400,
                  "windowDurationMins": 30 * 1440}
         short = {"name": "seven_day", "usedPercent": 2, "resetsAt": NOW + 2 * 86400,
                  "windowDurationMins": WEEK_MIN}
@@ -267,7 +284,7 @@ def main():
                 "windowDurationMins": 300}
         bound = projection("go", month, NOW, samples=[], windows=[month, short])
         case("a shorter window's used share bounds the longer window's recent rate",
-             bound and bound["basis"] == "bound" and round(bound["pct"], 1) == 42.0
+             bound and bound["basis"] == "bound" and round(bound["pct"], 1) == 45.2
              and bound.get("from") == "7d", repr(bound))
         # A shorter window caps the rate from above, so it replaces the window's own average only when
         # lower: a 5h burst stretched over days read a Surplus week as fully spent.
@@ -280,13 +297,12 @@ def main():
              capped and capped["basis"] == "average" and round(capped["pct"]) == 40, repr(capped))
         widest = projection("go", month, NOW, samples=[], windows=[month, five, short])
         case("the closest shorter window bounds, not the shortest",
-             round(widest["pct"], 1) == 42.0 and widest.get("from") == "7d", repr(widest))
+             round(widest["pct"], 1) == 45.2 and widest.get("from") == "7d", repr(widest))
         capacity_go = {"status": "available", "quota": {"routingWindow": "thirty_day",
                                                         "windows": [month, short]}}
         entry = pb.plan_entry("go", capacity_go, NOW)
         case("the plan entry appends the unused share to its routing window's figures",
-             "go Hot: 30d 50% left, 67% to go, resets " in entry
-             and entry.endswith(", ~42% goes unused at reset (this week's use); 7d 98% left, 29% to go"),
+             entry.startswith("go Surplus: 30d 50% left, 40% to go, ~45% goes unused at reset (this week's use)"),
              entry)
         tight = {"name": "seven_day", "usedPercent": 99, "resetsAt": NOW + 3600,
                  "windowDurationMins": WEEK_MIN}
@@ -297,7 +313,7 @@ def main():
             pb._samples = lambda: samples
             try:
                 return pb.plan_entry("anthropic", {"status": "available", "quota": {
-                    "routingWindow": "seven_day", "windows": [week]}}, NOW)
+                    "routingWindow": "seven_day", "windows": [late]}}, NOW)
             finally:
                 pb._samples = saved
 
@@ -641,6 +657,18 @@ def drain_cases(case):
          row.get("headroom") == 8.0 and row.get("headroomWindow") == "five_hour"
          and row.get("headroomResetsAt") == soon, repr(row))
 
+    week_reset = NOW + 0.5 * WEEK_MIN * 60
+    case("a plan row lists every window's own headroom and reset, not only the tightest",
+         {w["name"]: (w["headroom"], w["resetsAt"]) for w in row.get("windows") or []}
+         == {"seven_day": (50.0, week_reset), "five_hour": (8.0, soon), "other": (40.0, late)}, repr(row))
+
+    floored = reading("floored", 50, 0.5)
+    floored["quota"]["windows"].append({"name": "five_hour", "usedPercent": 95, "resetsAt": soon,
+                                        "windowDurationMins": five, "dispatchFloorPercent": 98})
+    row = pb.plan_room("floored", registry(["floored"]), reader({"floored": floored}), NOW)
+    case("a plan's headroom ends at its window's dispatch floor, where the launcher refuses, not at 100%",
+         row.get("headroom") == 3.0 and row.get("headroomWindow") == "five_hour", repr(row))
+
 
 CONSOLE = "anthropic-console"
 CONSOLE_SECOND = "anthropic-console-secondary"
@@ -770,10 +798,13 @@ def facts_cases(case):
     facts_view = pb.room_facts(got, read=reader(roomy), now=NOW)
     case("room_facts reads facts directly, in the same registry order",
          [p["transport"] for p in facts_view["plans"]] == names and not facts_view["low"], repr(facts_view))
+    late = {"secondary": reading("secondary", 40, 0.4), "codex": reading("codex", 40, 0.4)}
+    got_late = facts("executor", "anthropic", data=data, read=reader(late), now=NOW)
+    view_late = pb.room_facts(got_late, read=reader(late), now=NOW)
     case("facts and room_facts carry each plan's projection, a fact and no new sort",
-         all(isinstance(r.get("unusedAtReset"), dict) for r in got["plans"])
-         and all(isinstance(p.get("unusedAtReset"), dict) for p in facts_view["plans"])
-         and "transport" not in facts_view, repr(facts_view["plans"]))
+         all(isinstance(r.get("unusedAtReset"), dict) for r in got_late["plans"])
+         and all(isinstance(p.get("unusedAtReset"), dict) for p in view_late["plans"])
+         and "transport" not in facts_view, repr(view_late["plans"]))
     spare = getattr(pb, "spare_pct", None)
     at = {"unusedAtReset": {"pct": pb.USED_RESOLUTION, "daysLeft": 2}}
     below = {"unusedAtReset": {"pct": pb.USED_RESOLUTION - 0.6, "daysLeft": 2}}
@@ -913,7 +944,7 @@ def lean_cases(case):
          plans == [("anthropic", 0.9), ("anthropic-secondary", None)], repr(plans))
     case("each row's plans carry their projection beside their room",
          all("unusedAtReset" in p for p in opus.get("plans") or [])
-         and isinstance(next(p for p in opus["plans"] if p["plan"] == "anthropic")["unusedAtReset"], dict),
+         and next(p for p in opus["plans"] if p["plan"] == "anthropic")["unusedAtReset"] is None,
          repr(opus.get("plans")))
     case("a candidate set names no transport or room of its own, so it never picks",
          "transport" not in got and "room" not in got and not got.get("refused"), repr(sorted(got)))

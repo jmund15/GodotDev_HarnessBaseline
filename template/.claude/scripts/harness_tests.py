@@ -657,8 +657,9 @@ def _write_stamp(repo_root, run, passed, excluded_list, indeterminate=(), entrie
 # Proofs that scan every hook rather than one target; a scoped run always includes them.
 _DIR_SCANNING = ("test_hook_state.py",)
 
-# {proof basename: tracked directories it lists and reads without naming each file}. The pass cache keys
-# every file under them, so a proof reuses its pass only while that whole corpus is unchanged.
+# {proof basename: tracked directories it lists and reads without naming each file}. Every file under them
+# binds the proof, and the pass cache keys them all, so a proof reuses its pass only while that whole corpus is
+# unchanged.
 _CORPUS_SCANNING = {
     "test_hook_state.py": (".claude/hooks",),
     "test_claudemd_citations.py": (".claude",),
@@ -725,7 +726,8 @@ def _importers(touched, sources):
 def _tracked_by_basename(repo_root):
     """{basename: {repo-relpath}} over the files git tracks under `.claude/`; {} when git cannot
     answer, which leaves every basename unique (the plain basename mention rule)."""
-    result = subprocess.run(["git", "ls-files", "--", ".claude"], cwd=repo_root, capture_output=True, text=True)
+    result = subprocess.run(["git", "ls-files", "--", ".claude"], cwd=repo_root, capture_output=True, text=True,
+                            stdin=subprocess.DEVNULL)
     census = {}
     if result.returncode == 0:
         for line in result.stdout.splitlines():
@@ -794,6 +796,7 @@ def bindings(repo_root, touched, include_excluded=False, proofs=None):
         rel = _norm(os.path.relpath(path, repo_root))
         for t, (stems, tokens, declared, settings) in rules.items():
             if (rel == t or name in _DIR_SCANNING or name in declared
+                    or any(t.startswith(folder.rstrip("/") + "/") for folder in _corpus_dirs(name))
                     or any(_named_for(name, s) for s in stems)
                     or any(tok in text_of(path) for tok in tokens)
                     or (settings and any(os.path.basename(f) in text_of(path) for f in _SETTINGS_FILES))):
@@ -2698,7 +2701,7 @@ def run_scoped(repo_root, touched, verbose=False, mode="for", base=None, behavio
     union.update(os.path.join(repo_root, *rel.split('/')) for rel in _behavior_plan(repo_root, in_scope)['proofs'])
     selected = [p for p in discover(os.path.join(repo_root, ".claude", "tests")) if p in union]
     if not selected:
-        print("harness_tests: no proof is bound to %s; add test_<name>*.py or run the full battery" % ", ".join(in_scope))
+        print("harness_tests: no proof is bound to %s; add test_<name>*.py; the close runs the full battery" % ", ".join(in_scope))
         return 1
     statuses, details = {}, {}
     passed, failed, indeterminate, elapsed_total = _run_selected(

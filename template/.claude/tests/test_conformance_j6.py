@@ -27,16 +27,17 @@ class DispatchInterfaceTests(unittest.TestCase):
 
 
 class StopInvocationTests(unittest.TestCase):
-    def test_mention_only_waiter_allowed_paid_launch_denied(self):
-        commands = [("until test -s .claude/scratch/sidecar_fanout.py/out/a.record.json; do sleep 60; done", False),
-                    ("printf '%s' '.claude/tools/sidecar_fanout.py'", False),
-                    ("python3 .claude/tools/sidecar_fanout.py jobs.json", True),
-                    ("bash -c 'python3 .claude/tools/sidecar_fanout.py jobs.json'", True)]
-        for command, denied in commands:
+    def test_own_launch_passes_whatever_it_runs_and_an_unlaunched_task_is_denied(self):
+        commands = ["until test -s .claude/scratch/sidecar_fanout.py/out/a.record.json; do sleep 60; done",
+                    "printf '%s' '.claude/tools/sidecar_fanout.py'",
+                    "python3 .claude/tools/sidecar_fanout.py jobs.json",
+                    "bash -c 'python3 .claude/tools/sidecar_fanout.py jobs.json'"]
+        for command in commands:
             with self.subTest(command=command), patch.object(kill_guard, '_launch_of',
                     return_value=('Bash', {'command': command}, None)):
-                verdict = kill_guard.taskstop_verdict(None, {'task_id': 'wait'}, str(ROOT))
-                self.assertEqual(verdict is not None, denied, verdict)
+                self.assertIsNone(kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
+        with patch.object(kill_guard, '_launch_of', return_value=None):
+            self.assertIn('did not launch', kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
 
 
 class TerminalStatusTests(unittest.TestCase):
@@ -65,6 +66,7 @@ class WakeDecisionTests(unittest.TestCase):
                 with contextlib.redirect_stdout(output):
                     watch.wake_loop(lambda: group, ack_path=ack)
                 self.assertIn('STILL RUNNING 0', output.getvalue())
+                self.assertNotIn('RE-ARM', output.getvalue())
                 self.assertNotIn('NONE', output.getvalue())
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
@@ -93,6 +95,7 @@ class WakeDecisionTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 watch.wake_loop(lambda: group)
             self.assertIn('STILL RUNNING 1', output.getvalue())
+            self.assertIn('RE-ARM NOW: ' + watch.ARM_COMMAND, output.getvalue())
             self.assertNotIn('CHECKIN', output.getvalue())
 
     def test_standing_stale_stall_wakes_but_fresh_traffic_does_not(self):
@@ -106,6 +109,34 @@ class WakeDecisionTests(unittest.TestCase):
                 with contextlib.redirect_stdout(output):
                     watch.wake_loop(lambda: group)
                 self.assertEqual('CHECKIN' in output.getvalue(), age == 23, output.getvalue())
+
+    def test_checkin_counts_from_the_session_last_turn_not_the_arm(self):
+        import os, time, types
+
+        class Polled(Exception):
+            pass
+
+        group = {'u': {'records': [('seat', 'seat.record.json')], 'fanout_dir': None}}
+        with tempfile.TemporaryDirectory() as temp:
+            transcript = Path(temp) / 'session.jsonl'
+            transcript.write_text('{}\n')
+            for offset, due in ((-1000, True), (60, False)):
+                stamp = time.time() + offset
+                os.utime(transcript, (stamp, stamp))
+                source = lambda: group
+                source.shells = types.SimpleNamespace(path=str(transcript), persist=lambda: None)
+                with self.subTest(offset=offset), \
+                        patch.object(watch, 'record_state', return_value=('WATCH', None, 'pid')), \
+                        patch.object(watch, 'stall_idle', return_value=None), \
+                        patch.object(watch, 'CHECKIN_SECONDS', 0), \
+                        patch.object(watch.time, 'sleep', side_effect=[None, Polled]):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        try:
+                            watch.wake_loop(source)
+                        except Polled:
+                            pass
+                    self.assertEqual('CHECKIN' in output.getvalue(), due, output.getvalue())
 
 
 class ExistingRepairTests(unittest.TestCase):

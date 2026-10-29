@@ -76,6 +76,10 @@ except Exception:  # no task-block reader: every named file counts whole
 
 KB = 1024
 CHARS_PER_TOKEN = 2.5
+# platform.claude.com/docs/en/build-with-claude/vision, read 2026-10-26: "Max visual tokens" 4,784 for "Claude 4.7
+# and later models"; a larger image is downscaled, so a file's bytes never measure what reading it costs.
+IMAGE_TOKENS = 4784
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 SHARED_KEYS = ("contextPath", "contextPrefixPath")
 UNREADABLE_SHOWN = 3
 LARGEST_SHOWN = 3
@@ -113,6 +117,8 @@ def _size(path: str, root: Path):
     candidate = Path(path)
     try:
         data = (candidate if candidate.is_absolute() else root / candidate).read_bytes()
+        if candidate.suffix.lower() in IMAGE_SUFFIXES:
+            return len(data), math.ceil(IMAGE_TOKENS * CHARS_PER_TOKEN)
         return len(data), len(data.decode("utf-8", errors="replace"))
     except OSError:
         return None
@@ -401,7 +407,8 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     a `cheaper claimants:` line for a job pinned above a cheaper claimant of its tier (the job's pin and cost, then each
     cheaper row on its transport with cost, prices, `±` cell, the job's measured reading against that row's usable
     window and long-context point), followed by `_dispatch_checks.spare_plan_fact`'s fact when another plan serving
-    the tier projects unused quota; a `cheaper claimants: `label` (model) not compared: reason` line for a job it
+    the tier projects unused quota; a `spare plan:` line carrying that fact alone for a job with no cheaper claimant;
+    a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
     A job's tier is `_dispatch_checks.job_tier`'s: its own `tier`, else its shape row's. Facts only: no check denies on
     these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
@@ -449,6 +456,9 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
             out.append(line + ("; " + spare if spare else ""))
         else:
             compared.append(label)
+            spare = _dispatch_checks.spare_plan_fact(tier, transport, data, now, read)
+            if spare:
+                out.append("spare plan: `%s` is pinned %s on %s; %s" % (label, model, transport, spare))
     if compared:
         out.append("pin is the cheapest claimant: " + ", ".join(compared))
     return out

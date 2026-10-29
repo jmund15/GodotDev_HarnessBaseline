@@ -272,7 +272,7 @@ hook_path = os.path.join(HERE, "..", "hooks", "shell_census.py")
 env = dict(os.environ)
 env["HARNESS_HOOK_STATE_DIR"] = _state_dir
 proc = subprocess.run([sys.executable, hook_path], input="not json{{{", capture_output=True, text=True,
-                       env=env, timeout=30)
+                       encoding="utf-8", errors="replace", env=env, timeout=30)
 case("malformed stdin exits 0", proc.returncode == 0, "rc=%r stderr=%r" % (proc.returncode, proc.stderr))
 case("malformed stdin produces no traceback", "Traceback" not in proc.stderr, proc.stderr)
 
