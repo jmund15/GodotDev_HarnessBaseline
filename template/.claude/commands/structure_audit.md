@@ -95,9 +95,9 @@ Apply [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md
 2. sort critical first, then FIX, ASK, PLAN, then category;
 3. show scanned counts and finding counts by action and category;
 4. rate the result:
-   - `CLEAN`: no critical and at most 3 findings;
-   - `MINOR POLISH`: no critical and 4–15 findings;
-   - `REVIEW RECOMMENDED`: any critical or at least 16 findings.
+   - `APPROVE`: no surviving finding;
+   - `APPROVE WITH NOTES`: worst surviving finding is non-critical;
+   - `REVISE`: any critical finding. The worst surviving finding sets the rating, never the count.
 
 Add notes only for a cross-agent pattern that changes the next action. Do not turn a missing agent,
 unreadable input, or zero-engagement scan into a clean verdict.
