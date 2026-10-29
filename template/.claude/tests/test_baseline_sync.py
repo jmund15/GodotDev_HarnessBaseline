@@ -1257,6 +1257,20 @@ def test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged
         assert _json_output(result) == sorted([old_judged, never]), _out(result)
 
 
+def test_paths_unshipped_names_a_push_row_edited_after_its_verdict() -> None:
+    moved = ".claude/tools/moved_row.py"
+    with _fixture() as path:
+        root, _baseline, _r, _c = _v2_fixture(path, {
+            moved: {"upstream": b"one\n", "local": b"one edited again\n",
+                    "judged": {"sha": _sha(b"one edited\n"), "verdict": "push", "at": "2026-09-14T00:00:00Z"}},
+        })
+        result = _run(root, "paths", "--verdict", "push", "--unshipped", "--json")
+        assert result.returncode == 0, _out(result)
+        assert _json_output(result) == [], _out(result)
+        stderr = result.stderr.decode(errors="replace")
+        assert f"stale verdict: {moved}" in stderr and "--carry" in stderr, stderr
+
+
 def test_v2_pull_explicit_states_and_new_hash() -> None:
     existing = ".claude/tools/existing.py"
     new = ".claude/tools/new.py"
@@ -3245,6 +3259,7 @@ def main() -> int:
         test_triage_lists_every_identity_hit_the_push_scan_would_refuse,
         test_bare_pull_refreshes_a_lock_stale_row,
         test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged,
+        test_paths_unshipped_names_a_push_row_edited_after_its_verdict,
         test_push_refuses_a_literal_placeholder_a_pull_would_render,
         test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks,
         test_j3_write_prints_the_layer_closure_it_adds,

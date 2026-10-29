@@ -77,7 +77,7 @@ Single field, 11 values. Phase-position is encoded in the prefix; sub-state in t
 | `workshop-pending` | Awaits user decision (no agent action possible) | user, then re-route |
 | `prototype-pending` | Blocked on a prototype answer — `prototypes/<slug>/QUESTION.md` written, verdict needs a human playing the build (the prototype workflow). The sanctioned opener for a long-horizon topic whose core feel/mechanic is unvalidated: first Part, later Parts depend on it | user runs the prototype → answer banked in `decisions.md` `## Decided` → re-route (usually `arch-pending` / `plan-pending`) |
 | `user-owned` | Execution is user-domain (spatial design, manual content authoring, taste-driven tuning); no agent phase applies. Roadmap-resident — carries deps and dependents. | user builds → `complete` |
-| `complete` | Shipped | none (terminal) |
+| `complete` | Shipped: built, gated, and closed by its drive's `drive_spine.md` §Close step 1, whose record the Trigger carries (§6.10) | none (terminal) |
 | `abandoned` | Dropped | none (terminal) |
 
 `user-owned` requires a Trigger naming the user deliverable. Transitions only to `complete` / `abandoned`. Distinct from `workshop-pending` (transient decision gate that re-routes to an agent phase) and from `User-Tasks.md` worklog routing (standalone items without roadmap deps).

@@ -545,7 +545,7 @@ sc_read_prompt() {
     # Absolute: the job's cwd may be a worktree, where a relative brief path names a missing file.
     local brief_abs
     brief_abs="$(sc_to_native "$(cd "$(dirname "$SC_PROMPT_FILE")" && pwd)/$(basename "$SC_PROMPT_FILE")")"
-    [ "${SC_SHAPE:-}" = "author" ] && SC_PROMPT+=$'\n\n'"Amend: at each item and before returning, if $brief_abs.amend.md exists, read it; it overrides the brief. Name what you applied."
+    [ "${SC_SHAPE:-}" = "author" ] && SC_PROMPT+=$'\n\n'"Amend: at each item and before returning, Read $brief_abs.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied."
   else
     SC_PROMPT="${*:-}"
   fi
@@ -797,6 +797,11 @@ elif marker.get("resetsAt"):
 else:
     basis = "the 30-minute default; the stream named no reset time"
 scope = "the %s member %s" % (transport, member) if member else "the %s provider" % transport
+if marker.get("reason") == "auth":
+    print("[sidecar] REFUSING: %s failed to authenticate (label %s). Its marker expires %s." % (scope, marker.get("label") or "?", when))
+    print("  Route this work to another provider: python3 .claude/tools/model_registry.py available")
+    print("  The owner re-logs in to this plan, then deletes %s" % path)
+    sys.exit(10)
 print("[sidecar] REFUSING: %s hit its usage limit. Its exhausted marker expires %s (%s)." % (scope, when, basis))
 print("  Route this work to another provider: python3 .claude/tools/model_registry.py available")
 print("  -A and -U do not override an exhausted provider. Owner override: delete %s" % path)
@@ -816,6 +821,7 @@ sc_mark_exhausted() {
   mkdir -p "$(dirname "$marker")" 2>/dev/null || { echo "[sidecar] could not create $(dirname "$marker"); no exhausted marker written" >&2; return 0; }
   MARKER_V="$(sc_to_native "$marker")" TRANSPORT_V="$SC_TRANSPORT" RESET_V="${SC_USAGE_LIMIT_RESET:-}" \
     LABEL_V="${SC_LABEL:-}" SID_V="${SC_USAGE_LIMIT_SID:-}" MEMBER_V="${1:-}" HOOKS_V="$(sc_to_native "$SC_ROOT/hooks")" \
+    REASON_V="${SC_EXHAUSTED_REASON:-}" \
     python3 - <<'PY' || echo "[sidecar] could not write the exhausted marker $marker" >&2
 import json, os, sys, tempfile, time
 sys.path.insert(0, os.environ["HOOKS_V"])
@@ -834,6 +840,8 @@ reset = int(reset) if reset.isdigit() and int(reset) > now else None
 data = {"schemaVersion": 1, "transport": os.environ["TRANSPORT_V"], "writtenAt": int(now),
         "expiresAt": reset or int(now + 1800), "resetsAt": reset,
         "label": os.environ.get("LABEL_V") or None, "sessionId": os.environ.get("SID_V") or None}
+if os.environ.get("REASON_V"):
+    data["reason"] = os.environ["REASON_V"]
 member = os.environ.get("MEMBER_V", "")
 if member:
     failures = prior.get("failures", 0) if isinstance(prior, dict) else 0
@@ -852,6 +860,14 @@ except Exception:
         pass
     raise
 PY
+}
+
+# A login that cannot authenticate fails every later job on its plan the same way; the marker moves
+# them to another plan through the fan-out's exit-10 fallback.
+sc_mark_auth_failure() { # <output> <rc>
+  [ "${2:-0}" != 0 ] || return 0
+  printf '%s' "$1" | grep -Eq 'Failed to authenticate|"api_error_status": ?401' || return 0
+  SC_EXHAUSTED_REASON=auth sc_mark_exhausted
 }
 
 # ------------------------------------------------------- gate 1: transport suspension
@@ -1430,14 +1446,16 @@ sc_finish_usage_limit() { # [<progress-file>]
 # publishing its WAIT readings in <record>.memory for the session watcher and fan-out status.
 # -T / SIDECAR_TIMEOUT bounds that admission wait when supplied; expiry is exit 12, with no child run.
 # Once per launch: codex calls this before its proxy, so sc_run_watched and resumes do not recheck.
+# The brief file and shape pick the job's floors (launch_memory.py); an inline prompt is heavy.
 # Unreadable samples warn and launch; broken overrides exit 2. `--check` never reaches here.
 sc_check_launch_memory() {
   [ "${SC_MEMORY_CHECKED:-0}" = 1 ] && return 0
   SC_MEMORY_CHECKED=1
-  local said mem_rc
+  local said mem_rc class_args=()
+  [ -z "${SC_PROMPT_FILE:-}" ] || class_args=(--brief "$(sc_to_native "$SC_PROMPT_FILE")" --shape "${SC_SHAPE:-}")
   if [ -n "${SIDECAR_DETACHED:-}" ]; then
     local marker="${SC_RECORD}.memory" line
-    local memory_cmd=(python3 "$SC_ROOT/tools/launch_memory.py" wait --label "${SC_LABEL:-sidecar}")
+    local memory_cmd=(python3 "$SC_ROOT/tools/launch_memory.py" wait --label "${SC_LABEL:-sidecar}" "${class_args[@]}")
     [ -z "${SC_TIMEOUT:-}" ] || memory_cmd=(timeout "$SC_TIMEOUT" "${memory_cmd[@]}")
     "${memory_cmd[@]}" 2>&1 | while IFS= read -r line; do
       printf '%s\n' "$line" >&2
@@ -1455,7 +1473,7 @@ sc_check_launch_memory() {
       *) sc_die 2 "[sidecar] memory wait failed (exit $mem_rc; its error above)" ;;
     esac
   fi
-  said="$(python3 "$SC_ROOT/tools/launch_memory.py" check --label "${SC_LABEL:-sidecar}" 2>&1)"
+  said="$(python3 "$SC_ROOT/tools/launch_memory.py" check --label "${SC_LABEL:-sidecar}" "${class_args[@]}" 2>&1)"
   mem_rc=$?
   [ -z "$said" ] || printf '%s\n' "$said" >&2
   case $mem_rc in
@@ -1939,6 +1957,7 @@ sc_ensure_launch_id() {
 # sc_write_record <raw-output> <exit-code>
 sc_write_record() {
   local output="$1" rc="$2"
+  sc_mark_auth_failure "$output" "$rc"
   [ -n "$SC_RECORD" ] || return 0
   sc_ensure_launch_id || return 1
   local hb hs dsha raw_tmp ledger_default publish_rc=0

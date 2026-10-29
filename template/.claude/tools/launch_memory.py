@@ -9,13 +9,32 @@ process. An unreadable or malformed sample logs one WARNING and lets the launch 
 every launch on a sampling fault would be worse than the pressure it guards. A broken override is a
 configuration error, never a fake healthy sample.
 
-    check --label <label>     exit 0 = proceed; 3 = refused (one REFUSED line); 2 = invalid configuration
-    wait --label <label>      exit 0 = proceed; 2 = invalid configuration
+    check --label <label> [--brief F --shape S]   exit 0 = proceed; 3 = refused (one REFUSED line); 2 = invalid configuration
+    wait --label <label> [--brief F --shape S]    exit 0 = proceed; 2 = invalid configuration
 
-Environment: LAUNCH_MIN_COMMIT_GIB (default 12), LAUNCH_MIN_PHYSICAL_GIB (default 6),
-LAUNCH_MEMORY_POLL_SEC (default 20, seconds). A floor of 0 disables that metric. The physical
-default is the largest measured sidecar process tree (claude -p plus its tool and test processes:
-4.85 GiB private bytes, 12 live trees sampled every 5 s) plus 1 GiB.
+The floors follow the job, never a field the dispatcher fills in. `--brief <file> --shape <shape>`
+(read from the launcher's own `-f`/`-G`) lets `classify_job` read the brief's declared operations:
+
+    light   shape author/review/survey and the brief names no Playwright, vitest, npm/npx
+            or tsc command: commit 6.5 GiB, physical 3.25 GiB free
+    heavy   everything else, including a missing, unreadable or empty brief and any other shape:
+            commit 12 GiB, physical 6 GiB free (the floors before classes existed)
+
+Basis (2026-10-28; a floor is its class's peak plus a 1 GiB margin, the margin the old floor used):
+- heavy peak 4.85 GiB: the largest of 12 live sidecar trees (claude -p plus its tool and test processes,
+  private bytes, sampled every 5 s). An e2e job fits it: its test tree measured 0.65 GiB for the
+  backend plus 1.94 GiB for one Playwright worker (working set), 2.6 GiB, on top of
+  claude -p.
+- light peak 2.25 GiB is DERIVED, not sampled: 4.85 minus that 2.6 GiB test tree. No direct sample of a
+  no-test job was taken. A sample of a
+  no-test author or review job above 2.25 GiB private bytes reverses the light floor.
+- commit floor is twice the physical floor in both classes. No commit charge was measured per class:
+  the old 12 / 6 ratio is kept, so a measured commit peak per class replaces it.
+A brief that points at a file which runs those commands reads as light: the brief text is all the
+launcher sees. Classes are two because a measured e2e tree lands on the heavy floor.
+
+Environment: LAUNCH_MIN_COMMIT_GIB, LAUNCH_MIN_PHYSICAL_GIB (each replaces that floor for every
+class), LAUNCH_MEMORY_POLL_SEC (default 20, seconds). A floor of 0 disables that metric.
 """
 from __future__ import annotations
 
@@ -23,6 +42,7 @@ import argparse
 import ctypes
 import math
 import os
+import re
 import sys
 import time
 from typing import Callable, NamedTuple
@@ -30,10 +50,15 @@ from typing import Callable, NamedTuple
 COMMIT_ENV = "LAUNCH_MIN_COMMIT_GIB"
 PHYSICAL_ENV = "LAUNCH_MIN_PHYSICAL_GIB"
 POLL_ENV = "LAUNCH_MEMORY_POLL_SEC"
-DEFAULT_COMMIT_GIB = 12.0
-DEFAULT_PHYSICAL_GIB = 6.0
 DEFAULT_POLL_SEC = 20.0
 _GIB = 1024 ** 3
+HEAVY = "heavy"
+LIGHT = "light"
+CLASS_FLOORS = {HEAVY: (12.0, 6.0), LIGHT: (6.5, 3.25)}
+LIGHT_SHAPES = frozenset({"author", "review", "survey"})
+HEAVY_OPERATION = re.compile(
+    r"\bnpm\s+(?:run|test|ci|exec|install|i)\b|\bnpx\b|\bplaywright\b"
+    r"|\bvitest\b|\btsc\b", re.IGNORECASE)
 
 
 class ConfigError(Exception):
@@ -44,6 +69,7 @@ class Floors(NamedTuple):
     commit_gib: float
     physical_gib: float
     poll_sec: float
+    job_class: str = HEAVY
 
 
 class _PERFORMANCE_INFORMATION(ctypes.Structure):
@@ -105,17 +131,57 @@ def _float_env(name: str, default: float, *, strictly_positive: bool) -> float:
     return value
 
 
-def floors_from_env() -> Floors:
+def floors_for(job_class: str) -> Floors:
+    """The class's floors; an unrecognized class is heavy."""
+    job_class = job_class if job_class in CLASS_FLOORS else HEAVY
+    commit, physical = CLASS_FLOORS[job_class]
+    return Floors(commit, physical, DEFAULT_POLL_SEC, job_class)
+
+
+def classify_job(brief, shape) -> str:
+    """LIGHT only for a brief that declares no heavy operation under a shape that runs none."""
+    if shape not in LIGHT_SHAPES or not isinstance(brief, str) or not brief.strip():
+        return HEAVY
+    return HEAVY if HEAVY_OPERATION.search(brief) else LIGHT
+
+
+def launch_class_args(argv) -> "list[str]":
+    """`--brief`/`--shape` for this tool from a launcher argv's `-f` and `-G`; [] when it has no brief."""
+    flags = {tok: argv[i + 1] for i, tok in enumerate(argv[1:-1], 1) if tok in ("-f", "-G")}
+    if "-f" not in flags:
+        return []
+    return ["--brief", flags["-f"]] + (["--shape", flags["-G"]] if "-G" in flags else [])
+
+
+def job_class_of(brief_path, shape) -> str:
+    """classify_job over a brief file; an absent or unreadable one is heavy."""
+    if not brief_path:
+        return HEAVY
+    try:
+        with open(brief_path, encoding="utf-8", errors="replace") as fh:
+            return classify_job(fh.read(), shape)
+    except OSError:
+        return HEAVY
+
+
+def floors_from_env(job_class: str = HEAVY) -> Floors:
     """The one admission family's configuration. Raises ConfigError, naming the variable."""
+    base = floors_for(job_class)
     return Floors(
-        _float_env(COMMIT_ENV, DEFAULT_COMMIT_GIB, strictly_positive=False),
-        _float_env(PHYSICAL_ENV, DEFAULT_PHYSICAL_GIB, strictly_positive=False),
-        _float_env(POLL_ENV, DEFAULT_POLL_SEC, strictly_positive=True),
+        _float_env(COMMIT_ENV, base.commit_gib, strictly_positive=False),
+        _float_env(PHYSICAL_ENV, base.physical_gib, strictly_positive=False),
+        _float_env(POLL_ENV, base.poll_sec, strictly_positive=True),
+        base.job_class,
     )
 
 
 def _floor_text(value: float) -> str:
     return "disabled" if not value else "%.2f GiB" % value
+
+
+def _floors_text(floors: Floors) -> str:
+    text = "commit %s, physical %s" % (_floor_text(floors.commit_gib), _floor_text(floors.physical_gib))
+    return text if floors.job_class == HEAVY else "%s (%s job)" % (text, floors.job_class)
 
 
 def top_holders(count: int = 3) -> str:
@@ -179,9 +245,8 @@ def check_headroom(read_snapshot: Callable[[], tuple], log: Callable[[str], None
     if _clears(floors, commit, physical):
         return 0
     log("REFUSED memory headroom for %s: commit %.2f GiB free, physical %.2f GiB free; "
-        "floors commit %s, physical %s%s"
-        % (label, commit, physical, _floor_text(floors.commit_gib), _floor_text(floors.physical_gib),
-           _holders_suffix(read_holders, "; top holders ")))
+        "floors %s%s"
+        % (label, commit, physical, _floors_text(floors), _holders_suffix(read_holders, "; top holders ")))
     return REFUSED_EXIT
 
 
@@ -210,15 +275,12 @@ def wait_for_headroom(read_snapshot: Callable[[], tuple], sleep: Callable[[float
         if _clears(floors, commit, physical):
             if waited:
                 log("READY memory headroom for %s: commit %.2f GiB free, physical %.2f GiB free; "
-                    "floors commit %s, physical %s"
-                    % (label, commit, physical, _floor_text(floors.commit_gib),
-                       _floor_text(floors.physical_gib)))
+                    "floors %s" % (label, commit, physical, _floors_text(floors)))
             return
         if not waited:
             log("WAIT memory headroom for %s: commit %.2f GiB free, physical %.2f GiB free; "
-                "floors commit %s, physical %s; sampling every %gs%s"
-                % (label, commit, physical, _floor_text(floors.commit_gib),
-                   _floor_text(floors.physical_gib), floors.poll_sec, holders()))
+                "floors %s; sampling every %gs%s"
+                % (label, commit, physical, _floors_text(floors), floors.poll_sec, holders()))
             waited = True
         elif waited_sec >= next_emit:
             log("STILL WAITING %.0f min for memory headroom for %s: commit %.2f GiB free, physical "
@@ -239,9 +301,12 @@ def main(argv=None) -> int:
     wait.add_argument("--label", default="sidecar", help="what is waiting, for the log lines")
     check = sub.add_parser("check", help="sample once; exit 3 with a REFUSED line when a floor is short")
     check.add_argument("--label", default="sidecar", help="what is launching, for the REFUSED line")
+    for command in (wait, check):
+        command.add_argument("--brief", default="", help="the job's brief file; its declared operations pick the floors")
+        command.add_argument("--shape", default="", help="the job's guard shape (author, review, survey ...)")
     args = parser.parse_args(argv)
     try:
-        floors = floors_from_env()
+        floors = floors_from_env(job_class_of(args.brief, args.shape))
     except ConfigError as exc:
         print("launch_memory: invalid configuration: %s" % exc, file=sys.stderr)
         return 2

@@ -406,6 +406,7 @@ const BASE_CONTRACT = (a) => [
   mandateKeysOf(a).length > 0 ? 'MANDATES: `checked.mandates` maps each of ' + mandateKeysOf(a).join(', ') + ' to `findings`, `clean` or `not-reached`. Report `not-reached` for a mandate you did not read every changed file for; a missing or unknown key voids the map.' : null,
   'Evidence: ' + EVIDENCE_RULES,
   'OUTPUT: return ONLY the JSON object `{"findings": [...], "checked": {...}, "gaps": [...]}` per the schema — no prose around it.',
+  typeof A.__barText === 'string' && A.__barText ? A.__barText : null,
   spillContract(a) || null,
 ].filter(l => l !== null).join('\n')
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3).
@@ -462,6 +463,7 @@ const FINDINGS_SCHEMA = {
           action: { type: 'string', enum: ['FIX', 'ASK', 'PLAN'] },
           category: { type: 'string', enum: ['bug', 'rule', 'improvement'] },
           critical: { type: 'boolean' },
+          minRigor: { type: 'string', description: 'lowest rigor whose bar admits the finding: light, normal or thorough; absent or unrecognized counts at every rigor' },
           file: { type: ['string', 'null'], pattern: '^.+:[1-9][0-9]*$', description: 'location as "path/to/file.cs:line" — include the line number; an anchor for humans, never finding identity (the engine assigns F-ids, and two findings may share one anchor)' },
           // Schema caps and field descriptions: orchestration SKILL §9.
           description: { type: 'string', description: 'the defect, briefly enough to act on without the rationale; no restatement of the rationale' },
@@ -496,6 +498,19 @@ const tierOfAgent = (a) => LENS_TIERS[a.key] || a.tier || A.tier || '-'
 const LENS_MANDATES = (A.__lensMandates && typeof A.__lensMandates === 'object') ? A.__lensMandates : {}
 const mandateKeysOf = (a) => Array.isArray(LENS_MANDATES[a.key]) ? [...new Set(LENS_MANDATES[a.key])]
   : [...new Set(String(a.key).split('+').flatMap(part => Array.isArray(LENS_MANDATES[part]) ? LENS_MANDATES[part] : []))]
+const MANDATE_OUTCOMES = ['findings', 'clean', 'not-reached']
+// A seat with catalog mandates must return `checked.mandates` over exactly its keys: the engine scores only that
+// map, so the schema enforces it rather than the brief asking for it.
+const seatSchema = (a) => {
+  const keys = mandateKeysOf(a)
+  if (!keys.length) return FINDINGS_SCHEMA
+  const checked = FINDINGS_SCHEMA.properties.checked
+  const mandates = { type: 'object', additionalProperties: false, required: keys,
+    properties: Object.fromEntries(keys.map(key => [key, { type: 'string', enum: MANDATE_OUTCOMES }])),
+    description: checked.properties.mandates.description }
+  return { ...FINDINGS_SCHEMA, properties: { ...FINDINGS_SCHEMA.properties, checked: { ...checked,
+    required: [...checked.required, 'mandates'], properties: { ...checked.properties, mandates } } } }
+}
 // No pin is filled: a seat without a legal model (or without a legal effort, when the transport declares efforts) fails here.
 const unpinned = agents.filter(a => !a || !VALID_MODELS.includes(a.model) || (VALID_EFFORTS !== undefined && !VALID_EFFORTS.includes(a.effort)))
 if (unpinned.length) {
@@ -683,7 +698,7 @@ const contextPre = A.contextPrefixPath
 phase('Review')
 const raw = await parallel(resolved.map(a => () => {
   const opts = {
-    label: a.label, phase: 'Review', schema: FINDINGS_SCHEMA,
+    label: a.label, phase: 'Review', schema: seatSchema(a),
     model: PIN(a.model), effort: EFF(a.effort), agentType: a.askedType,
   }
   const body = a.promptPath
@@ -706,7 +721,6 @@ const isChecked = (value) => isRecord(value)
   && value.toolsUsed.every(tool => typeof tool === 'string' && tool.trim())
   && STOPS.includes(value.stoppedAt)
   && typeof value.basis === 'string' && value.basis.trim()
-const MANDATE_OUTCOMES = ['findings', 'clean', 'not-reached']
 // The seat coverage contract, judged as tools/review_result.py `gap_verdict` judges it on the sidecar
 // route; that docstring names the contract's home.
 const GAP_REASONS = ['outside-lens', 'capability', 'missing']
@@ -927,7 +941,15 @@ for (let i = 0; i < resolved.length; i++) {
 // (bug→rule→improvement). Sorting reorders views; sources stay intact, complete, and in order.
 const TIER = { FIX: 0, ASK: 1, PLAN: 2 }
 const CAT = { bug: 0, rule: 1, improvement: 2 }
+// Mirrors tools/finding_bar.py RIGORS: a Workflow script cannot import it. Lower rank counts at more runs.
+const RIG = { light: 0, normal: 1, thorough: 2 }
 const nonblank = (v) => typeof v === 'string' && v.trim() !== ''
+// Mirrors tools/finding_bar.py counts.
+const countsAt = (f, rigor) => {
+  if (RIG[rigor] === undefined || f.critical || f.action === 'ASK') return true
+  if (f.action === 'PLAN' && !(Array.isArray(f.options) && f.options.some(o => nonblank(String(o ?? ''))))) return true
+  return !Object.hasOwn(RIG, f.minRigor) || RIG[f.minRigor] <= RIG[rigor]
+}
 const isDecision = (f) => f.action === 'ASK' || (f.action === 'PLAN' && nonblank(f.question))
 // A merged group keeps its most restrictive decider, ASK > open PLAN > resolved PLAN > FIX, so an owner-held ASK or an
 // open PLAN survives a merge. review_result.py `_decider_rank` ranks the same way.
@@ -1073,7 +1095,10 @@ if (mergeCandidates.length > 0) {
         const decider = mergedDecider(members)
         const strongestCategory = members.reduce((a, b) => ((CAT[a] ?? 9) <= (CAT[b.category] ?? 9) ? a : b.category), members[0].category)
         const sameEdit = members.every(m => m.file === rep.file && (m.old ?? null) === (rep.old ?? null) && (m.new ?? null) === (rep.new ?? null))
-        return {
+        const rigors = members.map(m => m.minRigor)
+        const strongestRigor = rigors.every(r => RIG[r] !== undefined)
+          ? rigors.reduce((a, b) => (RIG[a] <= RIG[b] ? a : b)) : undefined
+        const merged = {
           agent: agents.join(', '),
           action: decider.action,
           category: strongestCategory,
@@ -1091,6 +1116,8 @@ if (mergeCandidates.length > 0) {
           id: 'M' + merges,
           merged_from: ids,
         }
+        if (strongestRigor !== undefined) merged.minRigor = strongestRigor
+        return merged
       })
       const candidateIds = new Set(mergeCandidates.map(s => s.id))
       final.push(...sources.filter(s => !candidateIds.has(s.id)).map(s => Object.assign({}, viewOf(s), { merged_from: [s.id] })))
@@ -1149,7 +1176,7 @@ const DIGEST_SCHEMA = {
   },
   required: ['applied', 'deferred', 'designDelta', 'changedPaths'],
 }
-const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, if ' + promptPath + '.amend.md exists, read it; it overrides the brief. Name what you applied.'
+const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, Read ' + promptPath + '.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.'
 const authorRef = (label, model, writes, promptPath) => {
   const tier = tierOf(model)
   const contract = [
@@ -1179,6 +1206,7 @@ const runStage = async (label, phaseName, prompt, schema, model, effort) => {
 }
 const foldSubject = async (job, jobFinal) => {
   const FOLD_FILES = job.files
+  const foldRows = A.__rigor ? jobFinal.map(f => Object.assign({}, f, { counts: countsAt(f, A.__rigor) })) : jobFinal
   const ids = jobFinal.map(f => f.id)
   const byId = new Map(jobFinal.map(f => [f.id, f]))
   const mergedIds = new Set(jobFinal.flatMap(f => (Array.isArray(f.merged_from) && f.merged_from.length > 1) ? f.merged_from : []))
@@ -1188,7 +1216,7 @@ const foldSubject = async (job, jobFinal) => {
   const dataBlock = v => '```json\n' + JSON.stringify(v).replace(/`/g, '\\u0060') + '\n```'
   const findingsBlock = [
     'CONSOLIDATED FINDINGS (' + ids.length + ' ids: ' + ids.join(', ') + '):',
-    dataBlock(jobFinal),
+    dataBlock(foldRows),
     members.length ? '\nMERGED MEMBERS (the sources behind each M-id):\n' + dataBlock(members) : null,
   ].filter(l => l !== null).join('\n')
   const foldPrompt = [
@@ -1201,6 +1229,7 @@ const foldSubject = async (job, jobFinal) => {
     'Findings file: ' + FOLD_FILES.findings,
     'Verdicts file: ' + FOLD_FILES.verdicts,
     'Digest file: ' + FOLD_FILES.digest,
+    A.__rigor ? 'Bar: ' + A.__rigor + ' — each finding\'s `counts` says whether it counts at it (review_fold.md step 5).' : null,
     'Prompt file: ' + FOLD_FILES.promptPath,
     'Write the CONSOLIDATED FINDINGS JSON array exactly to the Findings file. Run `' + cdRootPrefix(A) + 'python3 .claude/tools/verify_claims.py --findings ' + FOLD_FILES.findings + ' --out ' + FOLD_FILES.verdicts + '` and read the verdicts file (template steps 1 and 5).',
     'Read each cited source and decide whether it supports the finding (template step 3). A refuting finding with no evidence is deferred, never applied.',

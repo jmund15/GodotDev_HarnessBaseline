@@ -1001,7 +1001,7 @@ def main():
     no_skill_reason = no_skill.get("permissionDecisionReason", "")
     cases.append(("a direct dispatch without the orchestration skill is denied naming the Skill retry",
                   no_skill.get("permissionDecision") == "deny"
-                  and 'Skill(skill="orchestration")' in no_skill_reason and "CLAUDE.core.md §9" in no_skill_reason))
+                  and 'Skill(skill="orchestration")' in no_skill_reason and "orchestration §0" in no_skill_reason))
     neither = run(launch, env, session="sdc00962", ladder=False, skill=False)
     neither_reason = neither.get("permissionDecisionReason", "")
     cases.append(("an unloaded skill and ladder: one deny names both retries",

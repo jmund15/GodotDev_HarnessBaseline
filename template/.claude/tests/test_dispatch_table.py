@@ -580,6 +580,24 @@ def test_fanout_that_wrote_no_inventory_after_its_call_ended_is_never_started():
     assert e.pending() == [], e.pending()
 
 
+def test_never_started_line_names_launch_refused_file_when_present():
+    e = Env()
+    _refused_fanout(e, "named", 700)
+    fanout_dir = e.pending()[0]["fanout_dir"]
+    open(os.path.join(fanout_dir, "launch-refused.txt"), "w").write("refused (exit 2)")
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "named: never started" in msg and "launch-refused.txt" in msg and "output names the refusal" not in msg, msg
+
+
+def test_never_started_line_without_the_file_keeps_the_call_output_pointer():
+    e = Env()
+    _refused_fanout(e, "unnamed", 700)
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "unnamed: never started" in msg and "output names the refusal" in msg, msg
+
+
 def test_a_refused_call_whose_label_a_later_call_launched_is_dropped_without_a_never_started_line():
     e = Env()
     _refused_fanout(e, "again", 700)

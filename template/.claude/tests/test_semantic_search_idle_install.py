@@ -134,6 +134,24 @@ class InstallerProof(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("C# hook drift: scanner.js", proc.stdout)
 
+    def test_result_format_drift_is_reported_for_each_output_module(self):
+        self.install()
+        real_dist = active_plugin_root() / "dist"
+        os.rmdir(self.fx.plugin_root / "dist")
+        shutil.copytree(real_dist, self.fx.plugin_root / "dist")
+        for name in ("format.js", "mcp-server.js"):
+            with self.subTest(module=name):
+                module = self.fx.plugin_root / "dist" / name
+                original = module.read_bytes()
+                module.write_bytes(original + b"\n// result format drift\n")
+                try:
+                    proc = self.check()
+                    self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                    self.assertIn("result format drift", proc.stdout)
+                    self.assertIn(name, proc.stdout)
+                finally:
+                    module.write_bytes(original)
+
     def test_01_check_on_an_uninstalled_home_reports_it(self):
         proc = self.check()
         self.assertEqual(proc.returncode, 1)

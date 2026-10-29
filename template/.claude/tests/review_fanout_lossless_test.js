@@ -187,6 +187,16 @@ async function check(name, test) {
     assert.equal(out.counts.raw, 2)
     assert.equal(out.counts.exactDuplicates, 1)
   })
+  await check('merged group carries the strongest minRigor', async () => {
+    const out = await run({one: {findings: [finding('first defect', {minRigor: 'thorough'})]},
+      two: {findings: [finding('second defect', {minRigor: 'normal'})]}, merge: grouped()})
+    assert.equal(out.findings[0].minRigor, 'normal')
+  })
+  await check('merged group drops minRigor when a member lacks it', async () => {
+    const out = await run({one: {findings: [finding('first defect', {minRigor: 'light'})]},
+      two: {findings: [finding('second defect')]}, merge: grouped()})
+    assert.equal(Object.prototype.hasOwnProperty.call(out.findings[0], 'minRigor'), false)
+  })
   await check('merger cannot invent question options scope or claim text', async () => {
     const same = finding('original claim', {question: 'source question', options: ['source option'], scope: ['source.py']})
     const out = await run({one: {findings: [same]}, two: {findings: [same]},

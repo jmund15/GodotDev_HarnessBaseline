@@ -17,7 +17,7 @@ The parent accepts inline text or one or more `@<path>`s and selects the newest 
 When plan check is not admitted, the plan executes from the short plan `execution_depth.md` §Admission table defines. Convergence then rests on the validation pass plus the `/explore` dossier, and the approval presentation states that plan check was skipped and what replaced it. A skip never satisfies convergence by itself. When plan check is admitted, every mandatory lens runs whatever the plan's size, because the Plan check row of `execution_depth.md` §Admission table decides the audit.
 
 ### 1b. Scope coverage
-Map every requirement to an implementation and verification step. Check conflicting steps, invented scope, unverified dependencies, stubs/deferrals and closing work. A replacement enumerates the old contract before removal. C# drive closure names the full regression gate. A slice runs only its items' targeted tests; the scoped verifier runs once at Part close, by the dispatcher. A wider run (scoped verifier, bound proofs, the gate) ordered per slice or inside an executor's steps is a scope gap (`change_control` §Gate cadence). Meta changes name executable, channel, registration and reference checks as applicable. No-tests or unavailable coverage is not green. A `.cs` plan is incomplete if it omits the closing regression gate (`change_control` §Gate cadence names it), `<summary>` coverage for each new `[Export]`, or (roadmap Part) the closing `/update_roadmap` state flip.
+Map every requirement to an implementation and verification step. Check conflicting steps, invented scope, unverified dependencies, stubs/deferrals and closing work. A replacement enumerates the old contract before removal. C# drive closure names the full regression gate. A run wider than a slice's own targeted tests (a scoped verifier, bound proofs, the gate, a whole test file), ordered per slice or inside an executor's steps, is a scope gap: `drive_spine.md` §Slices owns the tiers and `change_control` §Gate cadence binds them. Meta changes name executable, channel, registration and reference checks as applicable. No-tests or unavailable coverage is not green. A `.cs` plan is incomplete if it omits the closing regression gate (`change_control` §Gate cadence names it), `<summary>` coverage for each new `[Export]`, or (roadmap Part) the closing `/update_roadmap` state flip.
 
 Run `git status --short` over the plan's write set before seats launch. Each dirty path another session owns is resolved before the audit by `environment_bootstrap` §Concurrent-session shared-tree etiquette item 7, and the plan states the outcome. An unresolved one is a scope gap, never a reason to widen the panel.
 
@@ -36,7 +36,7 @@ Read [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 1 context 
 
 Run the seats with explicit model, effort and agent profile through the existing engines. `orchestration` owns role/transport/currency selection. One arm per seat, because the engine keys coverage per seat (`args.agents`); extra providers are not automatic work. Same-task comparisons require an explicit comparison request and budget.
 
-Every admitted mandate of the shape runs. Width and depth come from the triage 1b read and the drive's rigor: `orchestration` §2 *Sizing the width* (size and room rules) and §5 *Effort*. A merge follows the order in the table below, and the report states the rigor, the seats and why. A merged seat returns separate evidence for each mandate it carries.
+Every admitted mandate of the shape runs. Width and depth come from the triage 1b read and the drive's rigor, and each seat is told the rigor's bar by the engine contract (`orchestration` reference `rigor.md`); `orchestration` §2 *Sizing the width* (size and room rules) and §5 *Effort*. A merge follows the order in the table below, and the report states the rigor, the seats and why. A merged seat returns separate evidence for each mandate it carries.
 
 | Shape | Mandates | Merge order |
 |---|---|---|
@@ -74,15 +74,11 @@ Preserve every original finding and source ID. Group only as a view; never disca
 
 Follow the action protocol in [`agents/orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md): critical first, then `FIX|ASK|PLAN`, then `bug|rule|improvement`. Report the shape, the tier with the fact that set it, the seat map, per-mandate coverage with UNCOVERED mandates, per-seat yield from `orchestration_metrics.py --run <runId>`, scope gaps, verified findings and the artifact path briefly. Record one verdict row per seat in the `mandates` shape (`/orchestration_metrics` *Incremental rating*). Account for every finding before acceptance. List applied alternatives as `<id> applied <options[0] short> — alternative: <options[1]>`: full mode uses `fold.digest.appliedWithAlternative` or each `fold.subjects[].digest.appliedWithAlternative`; bounded mode uses `fold.appliedWithAlternative` or each `fold.subjects[].appliedWithAlternative`. Retrieve the complete fold artifact when the preview is incomplete.
 
-| Verdict | Meaning |
-|---|---|
-| APPROVE | No critical or orphan requirement and no remaining actionable findings |
-| APPROVE WITH NOTES | No critical or orphan requirement; accepted actionable noncritical findings have supported dispositions |
-| REVISE PLAN | Critical, orphan scope, missing required test-first/integration verification, or unresolved design fork |
+Verdict: the protocol's scale (`agents/orchestrator_action_protocol.md` §Verdict Logic). REVISE also covers orphan scope, missing required test-first/integration verification and an unresolved design fork.
 
 Which changes need a failing test first and which need integration verification is CLAUDE.md §Hybrid TDD's. Meta reviews use harness verification, not unrelated Godot rules.
 
-When the verdict calls for a revision round, read [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 3 rounds: it reconverges per `orchestration` §2 *Later rounds* from the post-check's `nextRound` facts, measures your own design edits with `fold_check.py --measure`, and scopes a round on split plans. Stop when coverage is complete and no supported critical remains; otherwise halt per `drive_spine.md` §Halts.
+When the verdict calls for a revision round, read [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 3 rounds: it reconverges per `orchestration` §2 *Later rounds* from the post-check's `nextRound` facts, measures your own design edits with `fold_check.py --measure`, and scopes a round on split plans. Stop when coverage is complete, every finding that counts at the run's rigor has a disposition and no supported critical remains; otherwise halt per `drive_spine.md` §Halts.
 
 ## Phase 4: Execute Actions
 
@@ -94,4 +90,4 @@ The fold stage rules on every finding per [`review_fold.md`](agents/review_fold.
 - Missing/invalid lenses remain uncovered. An invocation or process exit is not verification.
 - Keep existing safety, ownership and permission boundaries while simplifying procedure.
 - An empirical refutation without verbatim tool output is discarded.
-- Replacements enumerate their old public/behavioral surface in the plan; `/session_audit` Phase 1.5 verifies reproduction as a MERGE-BLOCKER.
+- Replacements enumerate their old public/behavioral surface in the plan; `/session_audit` Phase 1.5 verifies reproduction as a critical parity finding.

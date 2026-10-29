@@ -118,13 +118,20 @@ Additionally, the **caller** must read these shared checklists and inject **targ
 
 When the godot layer is installed, the companion of this file (same name plus `_godot`) adds engine items: append its `## <agent>` section to that agent's checklist, and apply its *Batch Sizing* and *Submodule Review* sections with the two above.
 
+## Seat coverage contract
+
+Every review seat carries a must-read list, one `{path, lines}` entry per file its mandate judges in full; the dispatching command chooses the entries, and `lens_briefs.py` writes them into the seat's `# Must read` section with this contract's done-condition.
+- A seat is done only when its Read ranges together cover every line of each entry. A search covers no line, and a Read with no range counts as the Read tool's default window.
+- An entry the seat does not read goes in `gaps` with one of three reasons: `outside-lens` (another seat's lens owns it), `capability` (it needs a tool the seat lacks) or `missing` (the path does not exist).
+- An entry read only in part, or a gap in any other form, fails the seat whatever its `stoppedAt` says. The engines judge this from the seat's transcript Read ranges where one exists (`review_result.py` `gap_verdict`, `review_fanout.js` `gapVerdict`), and a failed seat covers nothing in the ledger.
+
 ## Finding Schema & Reporting Filter
 
 All agents use the finding schema, action tiers, category tags, critical flag, and output format defined in [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md). **Read that file for the full specification.**
 
 ### Reporting Filter (Agent-Specific)
 
-**Report a finding ONLY if acting on it would prevent a bug, enforce an explicit project rule, or meaningfully improve correctness/safety.** There is no "low priority" tier — either it's worth acting on or it's not worth reporting.
+**Report a finding ONLY if acting on it would prevent a bug, enforce an explicit project rule, or meaningfully improve correctness/safety, tagged with its `minRigor`** (`orchestrator_action_protocol.md` §Reporting Filter).
 
 ---
 
@@ -150,7 +157,7 @@ Check EVERY item in this Compliance + Design + Semantics checklist against EVERY
 3. **Refactor verification:** If the diff contains renames, moves, or extractions (deleted code replaced by new code), use Grep to search the ENTIRE codebase for remaining references to the old name/pattern. Flag any un-migrated call sites as findings.
 4. Walk through each checklist item per file
 5. For each potential finding, classify as FIX/ASK/PLAN (see orchestrator_action_protocol.md for schema) and assign a category (bug/rule/improvement)
-6. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
+6. Apply the reporting filter (`orchestrator_action_protocol.md` §Reporting Filter)
 
 ## Output Format
 Return a JSON array of findings (see orchestrator_action_protocol.md for schema):
@@ -187,7 +194,7 @@ You are test-analyzer, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for TDD comp
 4. Check each test for quality issues
 5. Identify coverage gaps (new public methods without tests)
 6. For each potential finding, classify as FIX/ASK/PLAN and assign a category (bug/rule/improvement)
-7. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
+7. Apply the reporting filter (`orchestrator_action_protocol.md` §Reporting Filter)
 
 ## Output Format
 Return a JSON array of findings (see orchestrator_action_protocol.md for schema):
@@ -226,7 +233,7 @@ Additionally, check these detailed error-hunting items:
 2. For each function/method, ask: "What happens when this fails?"
 3. Check for silent swallowing of errors
 4. For each potential finding, classify as FIX/ASK/PLAN and assign a category (bug/rule/improvement)
-5. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
+5. Apply the reporting filter (`orchestrator_action_protocol.md` §Reporting Filter)
 
 ## Output Format
 Return a JSON array of findings (see orchestrator_action_protocol.md for schema):
@@ -258,7 +265,7 @@ Check every item below against all changed files (covers exposed-option clarity 
 2. Check each type definition against the Types checklist
 3. For files with exposed options: check each Intuitiveness item
 4. For each potential finding, classify as FIX/ASK/PLAN and assign a category (bug/rule/improvement)
-5. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
+5. Apply the reporting filter (`orchestrator_action_protocol.md` §Reporting Filter)
 
 ## Output Format
 Return a JSON array of findings (see orchestrator_action_protocol.md for schema):
@@ -291,7 +298,7 @@ You are data-integrity, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for .tres/.
 3. Check UID presence on all resource headers and ext_resource entries
 4. Verify load_steps count matches actual resource count
 5. For each potential finding, classify as FIX/ASK/PLAN and assign a category (bug/rule/improvement)
-6. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
+6. Apply the reporting filter (`orchestrator_action_protocol.md` §Reporting Filter)
 
 ## Output Format
 Return a JSON array of findings (see orchestrator_action_protocol.md for schema):
@@ -350,7 +357,7 @@ You are pool-lifecycle, auditing PR #{{PR_NUM}} (branch: {{BRANCH}}) for pool li
 3. For IPoolable changes: check whether a mirror implementation needs the same change
 4. For collision activation changes: trace the full activation chain from spawn → sibling group → hitbox enable
 5. For each potential finding, classify as FIX/ASK/PLAN and assign a category (bug/rule/improvement)
-6. Apply the reporting filter: only report if it would prevent a bug, enforce an explicit rule, or meaningfully improve correctness/safety
+6. Apply the reporting filter (`orchestrator_action_protocol.md` §Reporting Filter)
 
 ## Output Format
 Return a JSON array of findings (see orchestrator_action_protocol.md for schema):

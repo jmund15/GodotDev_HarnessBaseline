@@ -116,6 +116,15 @@ async function prompts(file, args, logs) {
   const reading = await prompts('dispatch_chains.js', chainJob('Explore'))
   check('dispatch_chains.js: a read-only job gets no CHOICES block', !(reading.seen[0] || '').includes('=== CHOICES'),
     reading.result && reading.result.error || (reading.seen[0] || '').slice(-300))
+  // A probe for whether the amend file exists (Glob) hides it: briefs live under gitignored scratch.
+  const authorJob = { ...JOB, agentType: 'general-purpose', shape: 'author' }
+  for (const [file, args] of [['dispatch.js', { jobs: [authorJob] }],
+                              ['dispatch_chains.js', { chains: [{ name: 'c', jobs: [authorJob] }] }]]) {
+    const amended = (await prompts(file, args)).seen[0] || ''
+    check(file + ': an author job is told to Read its amend file, never to probe that it exists',
+      /Read \S*p\.md\.amend\.md with the Read tool/.test(amended) && !amended.includes('amend.md exists'),
+      amended.slice(-300))
+  }
   console.log('\n' + (total - failed) + '/' + total + ' passed')
   process.exit(failed ? 1 : 0)
 })()

@@ -83,15 +83,15 @@ OWNER OVERRIDE: an `owner:` statement (`args.currency: "<session transport>"` wi
 `args.currencyReason: "owner: <words>"`, or an Agent prompt line `CURRENCY: <transport> — owner:
 <words>`) is held on the session record (`ownerOverride`) for the rest of the session and lifts
 RULE 5. It lifts only when an owner turn of this session holds the literal token `--<transport>` outside
-a pasted block, or the owner answered an AskUserQuestion naming the transport with a lift
-(`owner_lift_found`, over `hooks/_owner_text.py`); the stated words are display only. A held statement is
+a pasted block (`owner_lift_found`, over `hooks/_owner_text.py`); the stated words are display only, and no
+answered question or other free text lifts it. A held statement is
 a verified one and this call's own text never lifts. A RULE 5 deny
 opens with the instruction it enforces (orchestration §5b, read before the call) and closes by
 naming the override as the owner's to grant, never the agent's.
 
 INJECTION: every Workflow call on a known transport receives `args.__rails`, `args.__railsText`, `args.__driverNotes`
 (registry `driverNotes` per pinned model, when any), `args.__toolProfileDefaults` and `args.__transport` = {name, ids (the legal pins), efforts (only when
-the transport declares a vocabulary)}. `args.__coverage` lists a covered shape only when the session
+the transport declares a vocabulary)}. A review_fanout call also receives `args.__rigor` and `args.__barText` (the run's rigor and its bar text, `finding_bar.bar_contract`), read from `args.ledger.task`'s record or the payload session's; a caller's own `rigor` is ignored, and neither key is set when the rigor cannot be read. `args.__coverage` lists a covered shape only when the session
 can have loaded its generated agent type (`loadable_coverage`): the client reads `.claude/agents/` once,
 at session start, so a type whose file is missing or not older than the session's first transcript
 timestamp would fail as "agent type not found". An unknown start offers no shape. It carries no default pin. A call naming no `args.checker` gets
@@ -122,6 +122,8 @@ import traceback
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
 import quota_bands  # band order SSOT; imports nothing from this package
 import citer_coverage
+import finding_bar  # noqa: E402  the run's bar words (tools/)
+import triage  # noqa: E402  the run's rigor (tools/)
 try:
     import model_registry
 except Exception:  # no registry reader: tier fit and currency advise, never guess
@@ -674,38 +676,25 @@ def override_class(reason):
     return m.group(1) if m and len(m.group(2).strip()) >= MIN_REASON_CHARS else None
 
 
-_LIFT_YES = re.compile(r"\b(?:yes|lift|allow|approve[ds]?|go ahead)\b", re.I)
-_LIFT_NO = re.compile(r"\b(?:no|don'?t|decline|keep|deny|wait)\b", re.I)
-
-
 def owner_lift_found(payload, transport):
-    """Did the owner of this session name `transport` for the RULE 5 lift?
+    """Did the owner of this session type the literal token `--<transport>` for the RULE 5 lift?
 
-    The one place an `owner:` statement is verified. Two facts pass: an owner row
-    (`_owner_text.owner_quote_rows`) holding the literal token `--<transport>` outside a pasted block, or an
-    answered AskUserQuestion whose question names the transport and the 5h rule and whose picked label approves
-    (`_owner_text.owner_consent`, where a later owner input replaces an earlier one). The words
-    the call states are display only. An unreadable transcript verifies nothing: an unverifiable lift
-    neither lifts nor is held.
+    The one place an `owner:` statement is verified: an owner row (`_owner_text.owner_quote_rows`) holding the
+    token outside a pasted block, the same owner-set token `tools/spend_mode.py` reads for `--lean`. No answered
+    question or other free text counts, and the words the call states are display only. An unreadable transcript
+    verifies nothing: an unverifiable lift neither lifts nor is held.
     """
     path = str(payload.get("transcript_path") or "")
     if not path or not transport:
         return False
     texts = _owner_text.owner_quote_rows(path) or []
-    if any(_owner_text.holds_token(text, transport) for text in texts):
-        return True
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return False
-    return _owner_text.owner_consent(lines, [transport, "5h"], _LIFT_YES, _LIFT_NO)
+    return any(_owner_text.holds_token(text, transport) for text in texts)
 
 
 def _owner_statement(state, transport, reason, cls, payload):
     """(words, verified_here): the owner's words lifting RULE 5 for this session.
 
-    This call's `owner:` words when the owner's token or answer names the transport (`owner_lift_found`),
+    This call's `owner:` words when the owner's token names the transport (`owner_lift_found`),
     else the words already held on the session record (itself only ever a verified lift). `(None, False)`
     when neither exists, so the caller can persist exactly what this call verified and nothing else.
     """
@@ -736,8 +725,7 @@ def _owner_line(seat):
     return (f"Only the owner can lift this for the session; once they have, state `args.currency: \"{seat}\"` "
             f"with `args.currencyReason: \"owner: <their words>\"` (Agent tool: a prompt line "
             f"`CURRENCY: {seat} — owner: <their words>`). It passes only when an owner turn of this session "
-            f"holds the literal token `--{seat}` outside a pasted block, or the owner answered an "
-            f"AskUserQuestion that names `{seat}` with a lift.")
+            f"holds the literal token `--{seat}` outside a pasted block.")
 
 
 # ---------------------------------------------------------------- five-hour width
@@ -1255,9 +1243,21 @@ def loadable_coverage(payload, coverage, agents_dir=None):
         return {label: dict(entry, covered=[]) for label, entry in coverage.items()}
 
 
-def transport_injection(payload, transport, data=None):
+def _review_rigor(payload, task_id, repo_root, advice):
+    """The run's rigor for a review_fanout call, or None. An unreadable record names its cause in `advice`
+    (`additionalContext`). The reader is `triage.rigor`, the call post-check makes through `finding_bar`."""
+    try:
+        return triage.rigor(task_id, repo_root, payload.get("session_id"))
+    except (OSError, ValueError) as exc:
+        if advice is not None:
+            advice.append("rigor unreadable (%s): this review runs without a bar" % exc)
+        return None
+
+
+def transport_injection(payload, transport, data=None, advice=None):
     """`updatedInput` adding `args.__rails`, `args.__railsText`, `args.__driverNotes`, the tool profiles and
-    `args.__transport`, or None when there is nothing to inject.
+    `args.__transport`, or None when there is nothing to inject. `advice` collects advice lines for the caller's
+    `additionalContext`.
 
     `args.__repoRoot` is the checkout root (`_repo_root`), omitted when git cannot answer. An `args.fold`
     object with no `repoRoot` gets it too, else the payload cwd: the fold router resolves an absolute citation
@@ -1361,6 +1361,14 @@ def transport_injection(payload, transport, data=None):
         mandates = lens_mandates(parsed)
         if mandates:
             parsed["__lensMandates"] = mandates
+        if _is_review_fanout(ti):
+            parsed.pop("__rigor", None)
+            parsed.pop("__barText", None)
+            ledger = parsed.get("ledger") if isinstance(parsed.get("ledger"), dict) else {}
+            rigor = _review_rigor(payload, ledger.get("task"), repo_root, advice)
+            if rigor is not None:
+                parsed["__rigor"] = rigor
+                parsed["__barText"] = finding_bar.bar_contract(rigor)
     # Preserve the wire form: an engine that received a STRING must keep receiving one.
     ti["args"] = json.dumps(parsed) if isinstance(raw, str) else parsed
     return ti
@@ -1814,7 +1822,7 @@ def check(payload):
         _deny(t_body)
         return
 
-    updated = transport_injection(payload, transport) if _session_transport else None
+    updated = transport_injection(payload, transport, advice=guard_notes) if _session_transport else None
     if (coverage_notes or alias_notes) and updated is None:
         updated = tool_input
     if _session_transport and transport != _session_transport.HOST_TRANSPORT:
@@ -1828,7 +1836,7 @@ def check(payload):
     reason = stated_reason(payload, transport) or ""
     cls = override_class(reason)
     owner, verified_here = _owner_statement(state, transport, reason, cls, payload)
-    # Only a lift the owner's token or answer verified is held, never the dispatcher's claim to have one.
+    # Only a lift the owner's token verified is held, never the dispatcher's claim to have one.
     if verified_here and state_path:
         held = {"transport": transport, "reason": reason[:400]}
         _hook_state.update_json_locked(state_path, lambda latest: latest.__setitem__("ownerOverride", held))

@@ -81,14 +81,14 @@ def msys(path):
     return "/" + drive.rstrip(":").lower() + rest.replace("\\", "/")
 
 
-def channel(cmd, project=PROJECT, transcript=None):
+def channel(cmd, project=PROJECT, transcript=None, env=None):
     payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "regen-clone-proof",
                "hook_event_name": "PreToolUse", "cwd": project}
     if transcript:
         payload["transcript_path"] = transcript
     proc = subprocess.run([sys.executable, os.path.join(CLAUDE, "hooks", "pre_bash_dispatch.py")],
                           input=json.dumps(payload), capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "CLAUDE_PROJECT_DIR": project})
+                          env={**os.environ, "CLAUDE_PROJECT_DIR": project, **(env or {})})
     if proc.returncode not in (0, 2) or "Traceback" in proc.stderr:
         return "CRASH", proc
     denied = proc.returncode == 2 or '"deny"' in proc.stdout or "BLOCKED" in (proc.stdout + proc.stderr)
@@ -137,10 +137,10 @@ def expect_wt(label, token, want, project, cwd=None, **kwargs):
         print(f"  ok   worktree {label}: {'pass' if want else 'block'}")
 
 
-def expect_wt_channel(label, cmd, want, project, transcript=None):
+def expect_wt_channel(label, cmd, want, project, transcript=None, env=None):
     global fails, total
     total += 1
-    got, proc = channel(cmd, project, transcript)
+    got, proc = channel(cmd, project, transcript, env)
     if got != want:
         fails += 1
         print(f"  FAIL worktree channel {label}: expected {want}, got {got} (exit {proc.returncode}) "
@@ -171,17 +171,47 @@ def expect_retire_check(label, argv, want_code, want_lines, project):
         print(f"  ok   retire-check {label}: exit {code}")
 
 
-def answer_transcript(path, *answers):
-    """A transcript holding one owner AskUserQuestion answer row per (question, label), in order."""
+def created_transcript(path, *worktrees):
+    """A transcript in which this session ran `git worktree add` for each path, with timestamps around the
+    moment the fixture made it, so `session_created_worktree` proves the creation from the real rows."""
+    from datetime import datetime, timezone
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    start, end = time.time() - 600, time.time() + 600
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        for i, (question, label) in enumerate(answers):
+        for i, wt in enumerate(worktrees):
             fh.write(json.dumps({
-                "type": "user", "uuid": "u%d" % i,
-                "message": {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "t%d" % i, "content": "answered"}]},
-                "toolUseResult": {"questions": [{"question": question}], "answers": {question: label}},
-            }) + "\n")
+                "type": "assistant", "timestamp": iso(start), "cwd": FIX,
+                "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "w%d" % i, "name": "Bash",
+                            "input": {"command": "git worktree add " + wt.replace("\\", "/") + " HEAD"}}]}}) + "\n")
+            fh.write(json.dumps({
+                "type": "user", "timestamp": iso(end),
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "w%d" % i,
+                            "content": "Preparing worktree"}]}}) + "\n")
     return path
+
+
+
+def peer_login(name, *rows):
+    """A login directory whose `sessions/<pid>.json` registry holds one live session per `(name, sessionId, cwd)`
+    row: the runtime's local registry `peer_message_guard.live_sessions` reads, reached through
+    CLAUDE_CONFIG_DIR. Returns the environment that points the hook at it."""
+    login = os.path.join(FIX, "login_" + name)
+    os.makedirs(os.path.join(login, "sessions"))
+    for pid, (peer, sid, cwd) in enumerate(rows, 4000):
+        write(os.path.join(login, "sessions", "%d.json" % pid), json.dumps(
+            {"pid": pid, "sessionId": sid, "name": peer, "status": "idle", "kind": "interactive", "cwd": cwd}))
+    return {"CLAUDE_CONFIG_DIR": login}
+
+
+def expect_wt_deny_names(label, cmd, needle, project, transcript=None, env=None):
+    global fails, total
+    total += 1
+    verdict, proc = channel(cmd, project, transcript, env)
+    if verdict != "deny" or needle not in proc.stdout + proc.stderr:
+        fails += 1
+        print(f"  FAIL worktree {label}: {verdict} {(proc.stdout + proc.stderr)[-240:]!r}")
+    else:
+        print(f"  ok   worktree {label}")
 
 
 def retired_worktree_cases():
@@ -283,6 +313,11 @@ def retired_worktree_cases():
     expect_retire_check("retired worktree prints retired, exit 0", [clean], 0, [clean + ": retired"], proj)
     expect_retire_check("blocked worktrees print their reasons, exit 1", [clean, dirty, locked], 1,
                         [clean + ": retired", dirty + ": blocked: ", locked + ": blocked: "], proj)
+    expect_retire_check("--created judges as a worktree this session created", ["--created", evidence], 0,
+                        [evidence + ": retired"], proj)
+    expect_retire_check("without --created, ignored evidence blocks", [evidence], 1, [evidence + ": blocked: "], proj)
+    expect_retire_check("the retired --owner-approved flag grants nothing", ["--owner-approved", evidence], 1,
+                        [evidence + ": blocked: "], proj)
 
     from unittest.mock import patch
     from pathlib import Path
@@ -324,72 +359,73 @@ def retired_worktree_cases():
             fails += 1
         print(('  ok   ' if ok else '  FAIL ') + 'retirement reason ' + label + ': ' + repr(reasons))
 
-    expect_wt_channel("rm -rf peer retired worktree without ownership", "rm -rf .claude/worktrees/clean", "deny", proj)
+    expect_wt_channel("rm -rf retired worktree this session did not create (nothing is lost)", "rm -rf .claude/worktrees/clean", "allow", proj)
     expect_wt_channel("rm -rf dirty worktree", "rm -rf .claude/worktrees/dirty", "deny", proj)
     if os.name == "nt":
         expect_wt_channel("rm -rf dirty worktree, Git Bash /c/ path", "rm -rf " + msys(dirty), "deny", proj)
-        expect_wt_channel("rm -rf peer retired worktree, Git Bash /c/ path", "rm -rf " + msys(clean), "deny", proj)
+        expect_wt_channel("rm -rf retired worktree, Git Bash /c/ path", "rm -rf " + msys(clean), "allow", proj)
     expect_wt_channel("rm -rf retired worktree chained", "rm -rf .claude/worktrees/clean && rm -rf .claude/worktrees/dirty", "deny", proj)
     expect_wt_channel("rm -rf worktrees directory", "rm -rf .claude/worktrees", "deny", proj)
 
-    # An owner AskUserQuestion answer that picks removal of a named worktree lifts only the
-    # ignored-file check: tracked edits, untracked files and unpushed commits still block.
+    # Ignored files that are no regenerable cache go only with a worktree this session created; tracked
+    # edits, untracked files and unpushed commits block whoever created it.
     expect_wt("ignored scratch evidence, ignored files allowed", evidence, True, proj, allow_ignored=True)
     expect_wt("untracked authored file, ignored files allowed", untracked, False, proj, allow_ignored=True)
-    q = "Remove the merged worktrees (evidence, dirty)? Both are merged into main."
-    approve = answer_transcript(os.path.join(FIX, "t_approve.jsonl"), (q, "Remove all (Recommended)"))
-    keep = answer_transcript(os.path.join(FIX, "t_keep.jsonl"), (q, "Keep them"))
-    other = answer_transcript(os.path.join(FIX, "t_other.jsonl"),
-                              ("Remove the merged worktree clean?", "Remove it"))
-    revoked = answer_transcript(os.path.join(FIX, "t_revoked.jsonl"), (q, "Remove all"), (q, "Keep them"))
-    plain = answer_transcript(os.path.join(FIX, "t_plain.jsonl"), (q, "Remove all"))
-    numbered = answer_transcript(os.path.join(FIX, "t_numbered.jsonl"), (q, "Remove all 7 (Recommended)"))
-    excepting = answer_transcript(os.path.join(FIX, "t_except.jsonl"), (q, "Remove all except evidence"))
-    deferred = answer_transcript(os.path.join(FIX, "t_deferred.jsonl"), (q, "Remove after the PR merges"))
+    made = created_transcript(os.path.join(FIX, "t_made.jsonl"), evidence, dirty)
     rm_evidence = "rm -rf .claude/worktrees/evidence"
-    expect_wt_channel("scratch evidence, no answer", rm_evidence, "deny", proj)
-    expect_wt_channel("scratch evidence, owner picked removal", rm_evidence, "allow", proj, approve)
-    expect_wt_channel("scratch evidence, owner picked keep", rm_evidence, "deny", proj, keep)
-    expect_wt_channel("scratch evidence, approval names another worktree", rm_evidence, "deny", proj, other)
-    expect_wt_channel("scratch evidence, a later keep revokes removal", rm_evidence, "deny", proj, revoked)
-    expect_wt_channel("scratch evidence, plain 'Remove all' approves", rm_evidence, "allow", proj, plain)
-    expect_wt_channel("scratch evidence, 'Remove all 7 (Recommended)' approves", rm_evidence, "allow", proj, numbered)
-    expect_wt_channel("scratch evidence, 'Remove all except evidence' does not approve", rm_evidence, "deny", proj,
-                      excepting)
-    expect_wt_channel("scratch evidence, 'Remove after the PR merges' does not approve", rm_evidence, "deny", proj,
-                      deferred)
-    expect_wt_channel("modified tracked file, owner picked removal", "rm -rf .claude/worktrees/dirty",
-                      "deny", proj, approve)
+    expect_wt_channel("scratch evidence, worktree not created by this session", rm_evidence, "deny", proj)
+    expect_wt_channel("scratch evidence, worktree this session created", rm_evidence, "allow", proj, made)
+    expect_wt_channel("modified tracked file, worktree this session created", "rm -rf .claude/worktrees/dirty",
+                      "deny", proj, made)
+    expect_wt_deny_names("scratch evidence deny names the ignored path", rm_evidence, "!! .claude/scratch", proj)
 
-    # On the owner's pick, a dirty path loses nothing when its content is a blob in the object store
+    # A worktree a live peer session works in stays, clean and pushed or not: deleting it breaks that session.
+    # The fact is the runtime registry's `cwd` for a session other than this one (`peer_message_guard`).
+    rm_clean = "rm -rf .claude/worktrees/clean"
+    in_clean = peer_login("at", ("peer-at", "5eed5eed-aaaa-4bbb-8ccc-000000000001", clean))
+    expect_wt_deny_names("peer session working in the worktree: deny names the session", rm_clean, "peer-at", proj,
+                         env=in_clean)
+    expect_wt_channel("peer session working inside the worktree", rm_clean, "deny", proj, env=peer_login(
+        "inside", ("peer-in", "5eed5eed-aaaa-4bbb-8ccc-000000000002", os.path.join(clean, "Sub"))))
+    expect_wt_channel("peer session working in another worktree", rm_clean, "allow", proj, env=peer_login(
+        "other", ("peer-other", "5eed5eed-aaaa-4bbb-8ccc-000000000003", dirty)))
+    expect_wt_channel("this session's own registry row does not hold the worktree", rm_clean, "allow", proj,
+                      os.path.join(FIX, "5eed5eed-aaaa-4bbb-8ccc-000000000004.jsonl"), peer_login(
+        "self", ("self-row", "5eed5eed-aaaa-4bbb-8ccc-000000000004", clean)))
+    expect_wt_channel("peer session working in a worktree this session created", rm_evidence, "deny", proj, made,
+                      peer_login("made", ("peer-made", "5eed5eed-aaaa-4bbb-8ccc-000000000005", evidence)))
+    expect_wt_channel("no peer session registered", rm_clean, "allow", proj, env=peer_login("none"))
+
+    # A dirty path loses nothing when its content is a blob in the object store
     # (saved with `git hash-object -w`) or its working file is gone (index blobs are always stored).
     stored = add_wt("stored")
     write(os.path.join(stored, "a.txt"), "a saved edit\n")
     write(os.path.join(stored, "new.txt"), "a saved new file\n")
     git("hash-object", "-w", "a.txt", "new.txt", cwd=stored)
-    expect_wt("edits whose content git stores, owner approved", stored, True, proj, allow_ignored=True)
-    expect_wt("edits whose content git stores, no approval", stored, False, proj)
+    expect_wt("edits whose content git stores, ignored files allowed", stored, True, proj, allow_ignored=True)
+    expect_wt("edits whose content git stores, ignored files not allowed", stored, False, proj)
     half = add_wt("half")
     write(os.path.join(half, "a.txt"), "a saved edit\n")
     write(os.path.join(half, "new.txt"), "an unsaved new file\n")
     git("hash-object", "-w", "a.txt", cwd=half)
-    expect_wt("one edit stored, one not, owner approved", half, False, proj, allow_ignored=True)
+    expect_wt("one edit stored, one not, ignored files allowed", half, False, proj, allow_ignored=True)
     gone = add_wt("gone")
     os.remove(os.path.join(gone, "a.txt"))
     git("add", "-A", cwd=gone)
-    expect_wt("tracked file deleted and staged, owner approved", gone, True, proj, allow_ignored=True)
+    expect_wt("tracked file deleted and staged, ignored files allowed", gone, True, proj, allow_ignored=True)
     hollow = add_wt("hollow", submodule=True)
     git("rm", "-q", "-r", "--cached", ".", cwd=os.path.join(hollow, "Sub"))
     os.remove(os.path.join(hollow, "Sub", "s.txt"))
-    expect_wt("submodule checkout emptied with its deletions staged, owner approved", hollow, True, proj,
+    expect_wt("submodule checkout emptied with its deletions staged, ignored files allowed", hollow, True, proj,
               allow_ignored=True)
-    expect_wt("submodule checkout emptied with its deletions staged, no approval", hollow, False, proj)
-    sq = "Remove the worktrees stored and hollow? Their changes are saved."
-    s_approve = answer_transcript(os.path.join(FIX, "t_stored.jsonl"), (sq, "Remove both (Recommended)"))
-    expect_wt_channel("stored edits, owner picked removal", "rm -rf .claude/worktrees/stored", "allow", proj,
-                      s_approve)
-    expect_wt_channel("one edit unstored, removal named another worktree", "rm -rf .claude/worktrees/half", "deny",
-                      proj, s_approve)
+    expect_wt("submodule checkout emptied with its deletions staged, ignored files not allowed", hollow, False, proj)
+    made_stored = created_transcript(os.path.join(FIX, "t_made_stored.jsonl"), stored, half)
+    expect_wt_channel("stored edits, worktree this session created", "rm -rf .claude/worktrees/stored", "allow", proj,
+                      made_stored)
+    expect_wt_channel("stored edits, worktree not created by this session", "rm -rf .claude/worktrees/stored", "deny",
+                      proj)
+    expect_wt_channel("one edit unstored, worktree this session created", "rm -rf .claude/worktrees/half", "deny",
+                      proj, made_stored)
 
     # An orphan: git pruned the worktree's admin directory, so git can no longer read its state.
     # Its commits live in the shared object store; only file content git does not hold is loss.
@@ -403,15 +439,15 @@ def retired_worktree_cases():
         return path
 
     o_clean = orphan("o_clean")
-    expect_wt("orphan, content held by git, owner approved", o_clean, True, proj, allow_ignored=True)
-    expect_wt("orphan, content held by git, no approval", o_clean, True, proj)
+    expect_wt("orphan, content held by git, ignored files allowed", o_clean, True, proj, allow_ignored=True)
+    expect_wt("orphan, content held by git, ignored files not allowed", o_clean, True, proj)
     o_godot = orphan("o_godot", edit=lambda p: (os.makedirs(os.path.join(p, ".godot", "imported")),
                                                   write(os.path.join(p, ".godot", "imported", "c.ctex"), "c\n"),
                                                   os.makedirs(os.path.join(p, "empty_ignored_dir"))))
-    expect_wt("orphan, ignored .godot cache, no approval", o_godot, True, proj)
+    expect_wt("orphan, ignored .godot cache, ignored files not allowed", o_godot, True, proj)
     o_json = orphan("o_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
                                                 write(os.path.join(p, ".claude", "scratch", "x.json"), "{}\n")))
-    expect_wt("orphan, ignored non-regenerable file, no approval", o_json, False, proj)
+    expect_wt("orphan, ignored non-regenerable file, ignored files not allowed", o_json, False, proj)
     named = []
     rc.is_retired_worktree(o_json, proj, proj, reasons=named)
     total += 1
@@ -420,15 +456,15 @@ def retired_worktree_cases():
         print(f"  FAIL orphan deny names the non-regenerable ignored file: {named}")
     else:
         print("  ok   orphan deny names the non-regenerable ignored file")
-    expect_wt("orphan, ignored non-regenerable file, owner approved", o_json, True, proj, allow_ignored=True)
+    expect_wt("orphan, ignored non-regenerable file, ignored files allowed", o_json, True, proj, allow_ignored=True)
     o_scratch = orphan("o_scratch", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
                                                      write(os.path.join(p, ".claude", "scratch", "x.out"), "x\n")))
-    expect_wt("orphan, ignored scratch, owner approved", o_scratch, True, proj, allow_ignored=True)
+    expect_wt("orphan, ignored scratch, ignored files allowed", o_scratch, True, proj, allow_ignored=True)
     o_import = orphan("o_import", edit=lambda p: write(os.path.join(p, "icon.png.import"), "generated\n"))
-    expect_wt("orphan, untracked Godot .import, owner approved", o_import, True, proj, allow_ignored=True)
+    expect_wt("orphan, untracked Godot .import, ignored files allowed", o_import, True, proj, allow_ignored=True)
     o_new = orphan("o_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
     expect_wt("orphan, authored file git never saw", o_new, False, proj, allow_ignored=True)
-    expect_wt("orphan, authored file git never saw, no approval", o_new, False, proj)
+    expect_wt("orphan, authored file git never saw, ignored files not allowed", o_new, False, proj)
     o_dirty = orphan("o_dirty", edit=lambda p: write(os.path.join(p, "a.txt"), "edited, never committed\n"))
     expect_wt("orphan, tracked file edited", o_dirty, False, proj, allow_ignored=True)
     o_sub = orphan("o_sub", submodule=True)
@@ -470,8 +506,8 @@ def retired_worktree_cases():
         return path
 
     b_held = broken_sub("b_held")
-    expect_wt("broken submodule link, content held by git, owner approved", b_held, True, proj, allow_ignored=True)
-    expect_wt("broken submodule link, no approval", b_held, False, proj)
+    expect_wt("broken submodule link, content held by git, ignored files allowed", b_held, True, proj, allow_ignored=True)
+    expect_wt("broken submodule link, ignored files not allowed", b_held, False, proj)
     b_reasons = []
     rc.is_retired_worktree(b_held, proj, proj, reasons=b_reasons)
     total += 1
@@ -504,27 +540,20 @@ def retired_worktree_cases():
         return path
 
     g_clean = gitless("g_clean")
-    expect_wt("gitless leftover, content held by git, owner approved", g_clean, True, proj, allow_ignored=True)
-    expect_wt("gitless leftover, content held by git, no approval", g_clean, True, proj)
+    expect_wt("gitless leftover, content held by git, ignored files allowed", g_clean, True, proj, allow_ignored=True)
+    expect_wt("gitless leftover, content held by git, ignored files not allowed", g_clean, True, proj)
     g_new = gitless("g_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
     expect_wt("gitless leftover, authored file git never saw", g_new, False, proj, allow_ignored=True)
-    oq = "Remove the orphan worktree folders (o_clean, o_new)? Git lost their links."
-    o_approve = answer_transcript(os.path.join(FIX, "t_orphan.jsonl"), (oq, "Remove all"))
-    expect_wt_channel("orphan, owner picked removal", "rm -rf .claude/worktrees/o_clean", "allow", proj, o_approve)
-    expect_wt_channel("lossless orphan, no answer", "rm -rf .claude/worktrees/o_clean", "allow", proj)
-    expect_wt_channel("orphan with an ignored .godot cache, no answer", "rm -rf .claude/worktrees/o_godot", "allow",
+    expect_wt_channel("lossless orphan", "rm -rf .claude/worktrees/o_clean", "allow", proj)
+    expect_wt_channel("lossless orphan a peer session works in", "rm -rf .claude/worktrees/o_clean", "deny", proj,
+                      env=peer_login("orphan", ("peer-orphan", "5eed5eed-aaaa-4bbb-8ccc-000000000006", o_clean)))
+    expect_wt_channel("orphan with an ignored .godot cache", "rm -rf .claude/worktrees/o_godot", "allow",
                       proj)
-    expect_wt_channel("orphan with unsaved work, no answer", "rm -rf .claude/worktrees/o_new", "deny", proj)
-    expect_wt_channel("orphan with ignored non-regenerable file, no answer", "rm -rf .claude/worktrees/o_json",
+    expect_wt_channel("orphan with unsaved work", "rm -rf .claude/worktrees/o_new", "deny", proj)
+    expect_wt_channel("orphan with ignored non-regenerable file", "rm -rf .claude/worktrees/o_json",
                       "deny", proj)
-    jq = "Remove the orphan worktree folder o_json? It holds ignored scratch json."
-    j_approve = answer_transcript(os.path.join(FIX, "t_orphan_json.jsonl"), (jq, "Remove it"))
-    expect_wt_channel("orphan with ignored non-regenerable file, owner picked removal",
-                      "rm -rf .claude/worktrees/o_json", "allow", proj, j_approve)
-    expect_wt_channel("registered unlocked worktree this session did not create, no answer",
-                      "rm -rf .claude/worktrees/clean", "deny", proj)
-    expect_wt_channel("orphan holding unsaved work, owner picked removal", "rm -rf .claude/worktrees/o_new",
-                      "deny", proj, o_approve)
+    expect_wt_channel("registered worktree holding an unpushed commit, not created by this session",
+                      "rm -rf .claude/worktrees/ahead", "deny", proj)
 
     # A lane landed by rebase: its local commit's patch is on the remote under another hash, so
     # retirement loses nothing (2026-10-08, session b48600e4: eight such lanes read as unpushed).
@@ -541,26 +570,37 @@ def retired_worktree_cases():
     expect_wt("lane commit landed on the remote by rebase", rebased, True, proj)
     expect_wt("local-only HEAD commit, after another patch landed", ahead, False, proj)
 
-    # A scratch folder that is no clone (a copy, a study's output) is removable once the owner's
-    # AskUserQuestion answer names it with a remove pick; a registered worktree inside still blocks.
+    # A scratch folder that is no clone (a copy, a study's output) holds no git state to lose, so it is
+    # removable; a registered worktree inside it, or a repository whose commits are on no remote, is not.
     scratch = os.path.join(proj, ".claude", "scratch")
     os.makedirs(os.path.join(scratch, "copytree"))
     write(os.path.join(scratch, "copytree", "big.bin"), "x\n")
     held = os.path.join(scratch, "heldtree")
     git("worktree", "add", "-q", "--detach", os.path.join(held, "wt"), cwd=proj)
-    sq = "Delete the scratch copy copytree and the folder heldtree?"
-    s_approve = answer_transcript(os.path.join(FIX, "t_scratch.jsonl"), (sq, "Delete it (Recommended)"))
-    s_keep = answer_transcript(os.path.join(FIX, "t_scratch_keep.jsonl"), (sq, "Keep it"))
-    s_other = answer_transcript(os.path.join(FIX, "t_scratch_other.jsonl"), ("Delete the folder other?", "Delete it"))
-    rm_copy = "rm -rf .claude/scratch/copytree"
-    expect_wt_channel("scratch copy, no answer", rm_copy, "deny", proj)
-    expect_wt_channel("scratch copy, owner picked delete", rm_copy, "allow", proj, s_approve)
-    expect_wt_channel("scratch copy, owner picked keep", rm_copy, "deny", proj, s_keep)
-    expect_wt_channel("scratch copy, approval names another folder", rm_copy, "deny", proj, s_other)
-    expect_wt_channel("scratch folder holding a registered worktree, owner picked delete",
-                      "rm -rf .claude/scratch/heldtree", "deny", proj, s_approve)
-    expect_wt_channel("whole scratch dir, owner picked delete of an entry", "rm -rf .claude/scratch", "deny", proj,
-                      s_approve)
+    unsaved = os.path.join(scratch, "unsaved_repo")
+    os.makedirs(unsaved)
+    git("init", "-q", "-b", "main", cwd=unsaved)
+    write(os.path.join(unsaved, "n.txt"), "unpushed\n")
+    git("add", "n.txt", cwd=unsaved)
+    git("commit", "-q", "-m", "only here", cwd=unsaved)
+    expect_wt_channel("scratch copy", "rm -rf .claude/scratch/copytree", "allow", proj)
+    expect_wt_deny_names("scratch copy a peer session works in: deny names the session",
+                         "rm -rf .claude/scratch/copytree", "peer-scratch", proj, env=peer_login(
+                             "scratch", ("peer-scratch", "5eed5eed-aaaa-4bbb-8ccc-000000000007",
+                                         os.path.join(scratch, "copytree"))))
+    expect_wt_channel("scratch folder holding a registered worktree", "rm -rf .claude/scratch/heldtree", "deny", proj)
+    expect_wt_channel("scratch repository with an unpushed commit", "rm -rf .claude/scratch/unsaved_repo", "deny", proj)
+    expect_wt_channel("whole scratch dir", "rm -rf .claude/scratch", "deny", proj)
+    peer_dir = os.path.join(scratch, "peers", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d")
+    os.makedirs(peer_dir)
+    write(os.path.join(peer_dir, "out.txt"), "x\n")
+    os.makedirs(os.path.join(scratch, "no_ids"))
+    write(os.path.join(scratch, "no_ids", "f.txt"), "x\n")
+    expect_wt_channel("scratch folder of another session",
+                      "rm -rf .claude/scratch/peers/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "deny", proj)
+    expect_wt_channel("glob over a folder holding another session's folder", "rm -rf .claude/scratch/peers/*",
+                      "deny", proj)
+    expect_wt_channel("glob over a folder holding no session folder", "rm -rf .claude/scratch/no_ids/*", "allow", proj)
 
 
 print("_regenerable_clone — regenerable scratch clone discriminator")
@@ -677,22 +717,21 @@ try:
         print(f"  FAIL channel clone deny names its reason: {verdict} {(proc.stdout + proc.stderr)[-240:]!r}")
     else:
         print("  ok   channel clone deny names its reason")
-    # A plain scratch folder is evidence, not recoverable clone contents.
-    expect_channel("rm -rf clean clone plus plain dir", "rm -rf " + rel(clean) + " " + rel(plain), "deny")
+    # A plain scratch folder holds no git state to lose; a folder holding a dirty clone does.
+    expect_channel("rm -rf clean clone plus plain dir", "rm -rf " + rel(clean) + " " + rel(plain), "allow")
     expect_channel("rm -rf plain dir holding a dirty clone", "rm -rf " + rel(FIX), "deny")
     expect_channel("rm -rf clean clone chained", "rm -rf " + rel(clean) + " && rm -rf " + rel(dirty), "deny")
     expect_channel("rm -rf scratch", "rm -rf .claude/scratch", "deny")
 
-    # Owner ruling 2026-10-23: an empty leftover directory under scratch (no file, no .git at any depth) is
-    # removable with no owner answer; one file or one nested .git keeps the owner route; an empty directory
-    # outside scratch keeps its verdict.
+    # An empty leftover directory under scratch (no file, no .git at any depth) is removable, and so is one
+    # holding plain files; a nested .git keeps the deny; an empty directory outside scratch keeps its verdict.
     empty_leftover = os.path.join(FIX, "empty_leftover", "redcheck")
     os.makedirs(empty_leftover)
     expect_channel("rm -r empty leftover under scratch", "rm -r " + rel(empty_leftover), "allow")
     filled_leftover = os.path.join(FIX, "filled_leftover", "redcheck")
     os.makedirs(filled_leftover)
     write(os.path.join(filled_leftover, "notes.txt"), "keep\n")
-    expect_channel("rm -r leftover holding one file", "rm -r " + rel(filled_leftover), "deny")
+    expect_channel("rm -r leftover holding one file", "rm -r " + rel(filled_leftover), "allow")
     git_leftover = os.path.join(FIX, "git_leftover", "redcheck")
     os.makedirs(os.path.join(git_leftover, ".git"))
     expect_channel("rm -r leftover holding an empty .git", "rm -r " + rel(git_leftover), "deny")

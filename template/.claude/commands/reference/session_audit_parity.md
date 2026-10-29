@@ -4,7 +4,7 @@ disable-model-invocation: true
 
 # `/session_audit` — Phase 1.5 scan details
 
-Read at `/session_audit` §1.5a for the stub-marker scan and at §1.5d for the shape of a MERGE-BLOCKER report. Entrypoint: [`../session_audit.md`](../session_audit.md).
+Read at `/session_audit` §1.5a for the stub-marker scan and at §1.5d for the shape of a critical parity report. Entrypoint: [`../session_audit.md`](../session_audit.md).
 
 ## Stub-marker scan
 
@@ -25,7 +25,7 @@ Blocking examples:
 If 1.5a/b find issues:
 ```
 ╔══════════════════════════════════════════════════════╗
-║   MERGE-BLOCKER: DELETED-SURFACE PARITY ISSUES       ║
+║   critical: DELETED-SURFACE PARITY ISSUES            ║
 ╠══════════════════════════════════════════════════════╣
 ║ Stub markers: <count>   Parity drops: <count>        ║
 ╚══════════════════════════════════════════════════════╝

@@ -167,10 +167,10 @@ Follow the **Orchestrator Action Protocol** report format. Present all findings 
 - Tests included: <YES | NO — flag if Logic Domain changes lack tests>
 
 ## Verdict
-<APPROVE | APPROVE WITH NOTES | REQUEST CHANGES>
-- APPROVE: nothing needs action before merge
+<APPROVE | APPROVE WITH NOTES | REVISE> (the protocol's scale, `agents/orchestrator_action_protocol.md` §Verdict Logic)
+- APPROVE: nothing needs action before merge. APPROVE reads only findings that count at the run's rigor (`orchestration` reference `rigor.md`); below-bar findings are listed `below bar: noted`.
 - APPROVE WITH NOTES: addressable non-critical findings remain, and none blocks merge
-- REQUEST CHANGES: a critical finding, an unresolved ASK, or an open PLAN in the PR's scope
+- REVISE: a critical finding, an unresolved ASK, or an open PLAN in the PR's scope
 ```
 
 **Note:** The calling orchestrator (`/review_prs` Phase 2, or the user) handles fix application per the Orchestrator Action Protocol.
@@ -181,7 +181,7 @@ If reviewing unstaged changes (no PR number), omit PR-specific sections (PR Hygi
 
 ## Phase 5: Regression Gate (PR mode only)
 
-If the PR contains code changes, run the project's regression gate (`change_control` §Gate cadence names it) after the review but before issuing the final verdict. If the gate fails, the verdict MUST be `REQUEST CHANGES` regardless of code review findings.
+If the PR contains code changes, run the project's regression gate (`change_control` §Gate cadence names it) after the review but before issuing the final verdict. If the gate fails, the verdict MUST be `REVISE` regardless of code review findings.
 
 **Skip this phase when a batch orchestrator invoked you.** It runs the gate once itself; N concurrent PR agents each running it would collide on the single-flight machine slot. Issue the verdict from review findings and note the gate as orchestrator-deferred.
 

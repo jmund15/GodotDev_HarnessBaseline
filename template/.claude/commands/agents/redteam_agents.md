@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 Every lens judges pushed input only (read-only; no tests, no LSP) and classifies each finding:
 
-- **Rigor-hole** → `action: FIX` (a concrete design correction) or `PLAN` (needs a redesign pass). `category: rule | bug | improvement`.
+- **Design-hole** → `action: FIX` (a concrete design correction) or `PLAN` (needs a redesign pass). `category: rule | bug | improvement`.
 - **Taste-fork** → `action: ASK` with `options[]` (viable alternatives, each ending `wins when <condition>`; `options[0]` carries no recommendation). The critic presents, NEVER picks.
 
 ---
@@ -61,7 +61,7 @@ mandates: rt-testability
 interleave: Step 4 (only when an approach already names its test surface), 5, 7 (needs commitments)
 
 ```
-Can each commitment be driven test-first (Logic → concrete `[TestCase]` names; Gameplay → ISceneRunner or explicit subjective flag)? Feeds the plan stage.
+Can each commitment be driven test-first (Logic → concrete `[TestCase]` names; Gameplay → ISceneRunner or explicit subjective flag; a person's task on a rendered screen → a row of the project's agent playtest command, and subjective covers taste only)? Feeds the plan stage.
 ```
 
 ### rt-systemic (neighboring-design conflict) — triggered

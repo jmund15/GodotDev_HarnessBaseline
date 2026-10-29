@@ -1,6 +1,6 @@
-# The Appetite Invariant — rigor-hole vs taste-fork
+# The Appetite Invariant — design-hole vs taste-fork
 
-> Single source of truth for the rigor-hole-vs-taste-fork classification rule shared by [`/architecture_brainstorm_redteam`](../../commands/architecture_brainstorm_redteam.md) (its critic panel) and [`/part_drive`](../../commands/part_drive.md) (its convergence loop). Both reference this file via *"[Shared] See `_brainstorm_shared/appetite_invariant.md`."* and then add their own one-line application.
+> Single source of truth for the design-hole-vs-taste-fork classification rule shared by [`/architecture_brainstorm_redteam`](../../commands/architecture_brainstorm_redteam.md) (its critic panel) and [`/part_drive`](../../commands/part_drive.md) (its convergence loop). Both reference this file via *"[Shared] See `_brainstorm_shared/appetite_invariant.md`."* and then add their own one-line application.
 
 ---
 
@@ -13,6 +13,7 @@ An **analytical** (model-answerable) finding has a single correct answer *given 
 - **Lexical tripwire:** the words *"acceptable / good enough / worth it / matters / tolerable / fine"* force taste classification. You may **quantify** a cost (analytical); you may **never** rule whether the cost is **worth paying** (taste).
 - **Always taste:** abstraction-level sizing; boundary placement between viable options; *"is coupling X acceptable"*; over- vs under-engineering; anything that sets a **convention / value-set / default / naming precedent** a downstream Part will inherit.
 - **Errs toward taste:** when unsure, classify as taste-fork and batch it. Misclassifying taste as analytical (and answering it) **fabricates the user's vision — the worst outcome.** Misclassifying the other way costs only one extra batched question.
+- **Usability is analytical.** Whether the person a change serves can find each task it adds, understand each control on the way, complete the task and see that it worked has one answer, read off the rendered result: the task the plan states is the stated appetite. This bullet outranks the tripwire and *Errs toward taste*, so "is a clipped label acceptable" is a usability defect, not a taste-fork. The agent judges usability on the build (`drive_spine.md` §Close step 1) and fixes it. Taste is the choice among usable results (look, colour, tone, feel); a fix that needs such a choice is a taste-fork, and the defect itself is not.
 
 ## Why this is load-bearing
 

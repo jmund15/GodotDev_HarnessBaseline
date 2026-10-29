@@ -227,7 +227,7 @@ After the regression gate produces its pre-commit checklist, re-render it here w
 [<state>] PR title and description accurate; labels applied (Step 8 will enforce hygiene)
 [<state>] Manual verification checklist (Step 7) — N/A when Step 3's classification needs none
 
-Verdict: PROCEED TO MERGE | RESOLVE BLOCKERS FIRST
+Verdict: PROCEED TO MERGE | RESOLVE CRITICALS FIRST
 ```
 
 **PR-specific self-attest rules:**

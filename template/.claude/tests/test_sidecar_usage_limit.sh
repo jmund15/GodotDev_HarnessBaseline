@@ -214,6 +214,26 @@ _q=$(grep -n '^  sc_gate_capacity' "$R/scripts/lib/sidecar_common.sh" | tail -1 
   && ok "E4 --check refuses on a live exhausted marker before its live capacity probe" \
   || bad "E4 --check refuses on a live exhausted marker before its live capacity probe" "availability-gate=$_x capacity-gate=$_q"
 
+# --- G: a login that fails to authenticate marks its plan, so the fan-out moves later jobs off it
+rm -f "$MARKER"
+_auth='{"type":"result","is_error":true,"api_error_status":null,"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}'
+(SC_LABEL=g1; sc_mark_auth_failure "$_auth" 1) 2>/dev/null
+[ "$(marker_field reason)" = auth ] && ok "G1 an auth failure writes the plan's marker with reason auth" \
+  || bad "G1 an auth failure writes the plan's marker with reason auth" "reason=$(marker_field reason)"
+_out="$( (sc_gate_exhausted; echo GATE-PASSED) 2>&1 )"; _rc=$?
+[ "$_rc" = 10 ] && printf '%s' "$_out" | grep -qi 'authenticate' && ! printf '%s' "$_out" | grep -qi 'usage limit' \
+  && ok "G2 the marker refuses the next launch (exit 10) naming the login, not a usage limit" \
+  || bad "G2 the marker refuses the next launch naming the login" "rc=$_rc out=$(printf '%s' "$_out" | tr '\n' ' ' | cut -c1-240)"
+rm -f "$MARKER"
+(sc_mark_auth_failure "$_auth" 0; sc_mark_auth_failure '{"type":"result","result":"done"}' 1) 2>/dev/null
+[ ! -f "$MARKER" ] && ok "G3 a clean exit, or a failure that names no auth error, writes no marker" \
+  || bad "G3 a clean exit, or a failure that names no auth error, writes no marker" "$(cat "$MARKER")"
+rm -f "$MARKER"; reset_run g4
+(sc_write_record "$_auth" 1) >/dev/null 2>&1
+[ "$(marker_field reason)" = auth ] && ok "G4 every launcher's record write marks an auth failure (sc_write_record)" \
+  || bad "G4 every launcher's record write marks an auth failure (sc_write_record)" "reason=$(marker_field reason)"
+rm -f "$MARKER"
+
 echo
 echo "provider usage limit: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

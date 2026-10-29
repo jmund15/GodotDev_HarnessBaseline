@@ -16,7 +16,7 @@ A stale worktree carries a **correctness** cost on top of disk: `.claude/worktre
 
 `git worktree list --porcelain`, then keep only entries whose path is under this repo's own `.claude/worktrees/`. Sibling checkouts share the same repo, so an unfiltered list returns other checkouts' worktrees — removing one of those destroys another session's working tree.
 
-Then list the directories under `.claude/worktrees/` that the porcelain output does not name. One whose `.git` file points at a missing admin directory is an **orphan**: git pruned its record, so `git -C <path>` cannot read it and no axis below applies. Bucket it `orphan`. Its removal is `rm -rf .claude/worktrees/<name>` alone. `CLAUDE.core.md` §Shell Discipline owns when the delete guard admits it without an owner pick.
+Then list the directories under `.claude/worktrees/` that the porcelain output does not name. One whose `.git` file points at a missing admin directory is an **orphan**: git pruned its record, so `git -C <path>` cannot read it and no axis below applies. Bucket it `orphan`. Its removal is `rm -rf .claude/worktrees/<name>` alone. `CLAUDE.core.md` §Shell Discipline owns what the delete guard admits.
 
 ### 2. Classify each
 
@@ -30,7 +30,7 @@ Per worktree, gather:
 | Merge state | `git branch --merged main` membership, or `git -C <path> log --oneline main..HEAD \| wc -l` for the unmerged-commit count |
 | Uncommitted | `git -C <path> status --porcelain` — count **tracked** modifications separately from untracked files |
 | Locked | `locked` in the porcelain output — a locked worktree is deliberately pinned; never recommend it |
-| Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check --owner-approved <path>...`: the delete guard's own verdict after an owner pick, with every reason it would deny |
+| Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check <path>...`: the delete guard's own verdict for a worktree this session did not create (an ignored file that is no regenerable cache blocks), with every reason it would deny |
 
 Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan`.
 
@@ -50,7 +50,7 @@ A `*--twin` worktree is an agent twin, which a test runner builds in while an ed
 1. audio_system — merged into main, 3 weeks idle, 1.2G. `git worktree remove .claude/worktrees/audio_system`
 ```
 
-The Note column carries each Guard reason. Recommend only a worktree whose Guard verdict is `retired`, so the owner's pick never meets a deny. When the only reason is untracked files, move them under `.claude/scratch/` and re-run the check before asking. A tracked diff stays a block: save it there as a patch and name the patch in the Note, and every other reason goes in the Note for the owner to decide.
+The Note column carries each Guard reason. Recommend only a worktree whose Guard verdict is `retired`, so the owner's pick never meets a deny. When the only reasons are untracked or ignored files that are not caches, move them under `.claude/scratch/` and re-run the check before asking. A tracked diff stays a block: save it there as a patch and name the patch in the Note, and every other reason goes in the Note for the owner to decide.
 
 The report is done when the table prints. With no worktree under `.claude/worktrees/`, print `No worktrees under .claude/worktrees/.` and stop; when every worktree is `locked` or `wip`, print the table and state that nothing is recommendable.
 

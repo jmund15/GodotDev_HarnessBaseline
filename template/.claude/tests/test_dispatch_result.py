@@ -406,6 +406,49 @@ _fan_side = cli("consume", _sc_dir, "--label", "w1", "--brief", _sc_brief, "--ch
 case("a fan-out out dir with --brief runs its checks: CHECK PASS, exit 0",
      lambda: _fan_side[0] == 0 and "CHECK 1 PASS" in _fan_side[1])
 
+_inv_nobrief = cli("consume", _sc_dir, "--label", "w1", "--check-timeout", "20")
+with open(os.path.join(_sc_dir, "fanout-proof.inventory.json"), "w", encoding="utf-8") as _fh:
+    json.dump({"jobs": [{"label": "w1", "brief": _sc_brief}]}, _fh)
+_inv_brief = cli("consume", _sc_dir, "--label", "w1", "--check-timeout", "20")
+case("a fan-out inventory with no brief still refuses without --brief",
+     lambda: _inv_nobrief[0] == 2 and "--brief" in _inv_nobrief[2])
+case("a fan-out inventory carrying brief lets consume run without --brief",
+     lambda: _inv_brief[0] == 0 and "CHECK 1 PASS" in _inv_brief[1])
+
+
+# ---- consume: an amend file the job never read --------------------------------------------------
+def read_events(path, ok, use_id="toolu_proof"):
+    """A Read tool_use and its tool_result, cut from a captured sidecar stream (q5-waves-2.out.json)."""
+    use = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": use_id, "name": "Read", "input": {"file_path": path}}]}}
+    res = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": use_id, "is_error": not ok,
+         "content": "1\tamended" if ok else "File does not exist."}]}}
+    return json.dumps(use) + "\n" + json.dumps(res) + "\n"
+
+
+def amend_scene(name, stream, amend=True):
+    record, brief, folder = plant_sidecar(name, {"check": [PY_OK]})
+    if amend:
+        open(brief + ".amend.md", "w", encoding="utf-8").write("Amendment 1\n")
+    open(record + ".out", "w", encoding="utf-8").write(
+        stream(brief) + '{"type":"result","result":"sidecar final"}\n')
+    return cli("consume", record, "--label", "w1", "--brief", brief, "--check-timeout", "20")
+
+
+_am_none = amend_scene("am_none", lambda brief: "")
+_am_failed = amend_scene("am_failed", lambda brief: read_events(brief + ".amend.md", ok=False))
+_am_read = amend_scene("am_read", lambda brief: read_events(brief.replace("/", "\\") + ".amend.md", ok=True))
+_am_absent = amend_scene("am_absent", lambda brief: read_events(brief + ".amend.md", ok=False), amend=False)
+case("an amend file the job never read prints AMEND UNREAD with its path",
+     lambda: "AMEND UNREAD" in _am_none[1] and ".amend.md" in _am_none[1])
+case("an amend file the job only failed to read (read before it was written) prints AMEND UNREAD",
+     lambda: "AMEND UNREAD" in _am_failed[1])
+case("a successful Read of the amend file, in either slash spelling, prints nothing",
+     lambda: _am_read[0] == 0 and "AMEND UNREAD" not in _am_read[1])
+case("no amend file prints nothing",
+     lambda: _am_absent[0] == 0 and "AMEND UNREAD" not in _am_absent[1])
+
 
 def git_in(work, *args):
     subprocess.run(["git", "-C", work, *args], check=True, capture_output=True,

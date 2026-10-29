@@ -426,7 +426,7 @@ if (SPILL_DIR) {
 // brief looks unrelated can answer that message instead of its brief.
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // How a parent corrects a running author job: Workflow agents have no inbox (orchestration §4).
-const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, if ' + promptPath + '.amend.md exists, read it; it overrides the brief. Name what you applied.'
+const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, Read ' + promptPath + '.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.'
 
 phase('Dispatch')
 const results = await parallel(jobs.map(j => () => {
