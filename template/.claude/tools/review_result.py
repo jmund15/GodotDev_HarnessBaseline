@@ -12,6 +12,7 @@ import sys
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude/hooks"))
 from _win_path import drive_path  # noqa: E402
+import finding_bar  # noqa: E402
 _EVIDENCE_KINDS = json.loads((REPO / '.claude/schemas/evidence.json').read_text(encoding='utf-8'))['items']['oneOf']
 
 _ACTIONS = {"FIX", "ASK", "PLAN"}
@@ -673,14 +674,27 @@ def text_body(text):
     return None
 
 
-def mandate_map(checked, mandates):
-    """`checked.mandates` when it maps exactly `mandates` to `findings`, `clean` or `not-reached`, else None.
+def _catalog_keys_of(key):
+    import lens
+    return lens.seat_mandates(key) or [key]
 
-    `review_fanout.js` `isMandateMap` applies the same rule: a missing or unknown key voids the map."""
+
+def mandate_map(checked, mandates):
+    """`checked.mandates` as a map over `mandates`, each `findings`, `clean` or `not-reached`, else None.
+
+    The map may key `mandates` themselves or their catalog keys, which `review_fanout.js` `isMandateMap` scores;
+    a lens key then takes `not-reached` when any of its catalog keys has it, else `findings` when any has it,
+    else `clean`. A missing or unknown key voids the map."""
     value = checked.get("mandates") if isinstance(checked, dict) else None
-    if not isinstance(value, dict) or not mandates or set(value) != set(mandates):
+    if not isinstance(value, dict) or not mandates or not all(v in MANDATE_TOKENS for v in value.values()):
         return None
-    return dict(value) if all(value[key] in MANDATE_TOKENS for key in mandates) else None
+    if set(value) == set(mandates):
+        return dict(value)
+    expanded = {key: _catalog_keys_of(key) for key in mandates}
+    if set(value) != {k for keys in expanded.values() for k in keys}:
+        return None
+    rank = {token: i for i, token in enumerate(("clean", "findings", "not-reached"))}
+    return {key: max((value[k] for k in keys), key=rank.get) for key, keys in expanded.items()}
 
 
 def _coverage(body, mandates):
@@ -818,6 +832,7 @@ def merge_view(sources, groups):
                     critical=any(member.get("critical") for member in found),
                     refuting=any(member.get("refuting") for member in found),
                     evidence=evidence)
+        finding_bar.set_strongest(item, found)
         item.pop("mandate", None)
         if item["action"] == "ASK":
             item["question"] = " / ".join(dict.fromkeys(

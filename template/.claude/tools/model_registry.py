@@ -3072,6 +3072,10 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
     model = entry["id"]
     window = effective_window(entry, use_max)
     if not model.lower().startswith("claude-"):
+        login = None if full_window else login_compact_window()
+        if window and login and login < window:
+            return {"model": model, "autoCompactWindow": login, "maxContextTokens": window,
+                    "contextWindow": login, "contextWindowSource": "anthropic-auto-compact"}
         return {"model": model, "autoCompactWindow": None, "maxContextTokens": window,
                 "contextWindow": window, "contextWindowSource": "launcher-declared" if window else "unknown"}
     operating_point = compact_override if compact_override is not None else limits.get("compactAtTokens")
@@ -3168,7 +3172,7 @@ def compaction_point(entry, job=None):
     `job` (its `transport`) selects `anthropic_window`'s `autoCompactWindow`, less the client
     reserves its docstring gives (source `auto-compact`). Without `job`, on any other transport, or for a row with no
     auto-compact window, it is `usable_window` (source `usable-window`); `(None, ...)` when the row states no window."""
-    if job is not None and str(job.get("transport") or entry.get("transport") or "").startswith("anthropic"):
+    if job is not None:
         auto = anthropic_window(entry, full_window=job.get("window") == "full")
         if auto.get("autoCompactWindow"):
             cap = output_cap(entry.get("limits") or {}, False, _tier_of(entry))

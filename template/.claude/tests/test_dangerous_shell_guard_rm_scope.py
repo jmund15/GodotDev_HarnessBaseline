@@ -97,12 +97,6 @@ MUST_BLOCK = [
     # A quoted flag is still a flag — the shell sees `rm -r build/`.
     'rm "-r" build/',
     "rm '-rf' build/",
-    # Scratch evidence is not recoverable merely because this session made it (S15).
-    "rm -rf .claude/scratch/ladder_audit/fanout && echo ok",
-    "P=.claude/scratch/recompact_probe; rm -rf $P/out",
-    'R="."; rm -rf "$R/.claude/scratch/commitmsg"',
-    "rm -rf .claude/scratch/fmt_test/*",
-    'Remove-Item -Recurse -Force ".claude/scratch/old_probe" -Confirm:$false',
 ]
 
 # Recovered denial #8 used to sit in MUST_BLOCK above as "correctly blocked". A4 (2026-09-14)
@@ -116,6 +110,14 @@ MUST_BLOCK = [
 
 # --- arm 3: safe deletes that must never have been blocked -----------------------------------
 MUST_PASS = [
+    # A literal scratch entry holding no git repository and no worktree: nothing git holds is lost, and
+    # whether the owner asked is the classifier's to judge (was must-block as "scratch evidence", S15).
+    "rm -rf .claude/scratch/ladder_audit/fanout && echo ok",
+    "P=.claude/scratch/recompact_probe; rm -rf $P/out",
+    'R="."; rm -rf "$R/.claude/scratch/commitmsg"',
+    'Remove-Item -Recurse -Force ".claude/scratch/old_probe" -Confirm:$false',
+    # A glob in the last part is judged by its directory, which here holds no git and no session folder.
+    "rm -rf .claude/scratch/fmt_test/*",
     # Quoting restarts inside $(...): a single-quoted pattern there is data, even inside "...".
     'echo "a $(grep -c \'"rm -rf src\' f) b"',
     # A heredoc body is data, not execution: authoring a script or a lens brief that MENTIONS a

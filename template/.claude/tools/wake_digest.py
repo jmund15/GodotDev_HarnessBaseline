@@ -68,8 +68,22 @@ def _counts(counts):
     return ", ".join("%s %s" % item for item in counts.items()) if isinstance(counts, dict) and counts else ""
 
 
-def sidecar_lines(label, record, fanout_dir=None):
+def _amend_line(brief, label, record, fanout_dir):
+    paths = dispatch_result._sidecar_source(fanout_dir or record, label)
+    if not brief or paths is None:
+        return []
+    try:
+        with open(paths[1], encoding="utf-8", errors="replace") as fh:
+            unread = dispatch_result.amend_unread(brief, fh.read())
+    except OSError:
+        return []
+    return ["  AMEND UNREAD %s: the job never read this amendment; its work follows the brief alone" % unread] if unread else []
+
+
+def sidecar_lines(label, record, fanout_dir=None, brief=None):
     """The indented digest lines of one ended sidecar job.
+
+    A `brief` whose amend file the job's stream never read successfully adds an `AMEND UNREAD` line.
 
     The result is the record's `.claims.json` `result`, else the head of the fan-out deliverable
     `<label>.md` written since this attempt launched (its `<record>.pid`). Verification is the claims file's `verification.status` with its counts, `UNCHECKED`
@@ -115,7 +129,7 @@ def sidecar_lines(label, record, fanout_dir=None):
     report = deliverable or (claims_path if claims is not None else None)
     if report:
         lines.append("  report: %s" % report)
-    return lines
+    return lines + _amend_line(brief, label, record, fanout_dir)
 
 
 def workflow_lines(host, events):

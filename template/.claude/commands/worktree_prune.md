@@ -30,7 +30,7 @@ Per worktree, gather:
 | Merge state | `git branch --merged main` membership, or `git -C <path> log --oneline main..HEAD \| wc -l` for the unmerged-commit count |
 | Uncommitted | `git -C <path> status --porcelain` — count **tracked** modifications separately from untracked files |
 | Locked | `locked` in the porcelain output — a locked worktree is deliberately pinned; never recommend it |
-| Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check --owner-approved <path>...`: the delete guard's own verdict after an owner pick, with every reason it would deny |
+| Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check <path>...`: the delete guard's own verdict for a worktree this session did not create (an ignored file that is no regenerable cache blocks), with every reason it would deny |
 
 Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan`.
 

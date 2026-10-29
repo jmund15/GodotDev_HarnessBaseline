@@ -41,6 +41,7 @@
           "action": { "type": "string", "enum": ["FIX", "ASK", "PLAN"] },
           "category": { "type": "string", "enum": ["bug", "rule", "improvement"] },
           "critical": { "type": "boolean" },
+          "minRigor": { "type": "string", "description": "lowest rigor whose bar admits the finding: light, normal or thorough; absent or unrecognized counts at every rigor" },
           "file": {
             "type": ["string", "null"],
             "pattern": "^.+:[1-9][0-9]*$",

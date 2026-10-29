@@ -66,6 +66,29 @@ for label, command, background in (
     rc, context, detail = advisory(command, background)
     check(label + " passes silently", rc == 0 and "run_in_background" not in context, detail)
 
+def decision_of(command, background):
+    rc, out, err = run(bash(command, background))
+    hso = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
+    return rc, hso.get("permissionDecision"), out + err
+
+
+for label, command in (
+        ("a streaming harness run piped into tail", "python3 .claude/scripts/harness_tests.py --close | tail -15"),
+        ("a scoped harness run piped into tail", "cd /r && python3 .claude/scripts/harness_tests.py --proofs-for x.py 2>&1 | tail -15"),
+        ("a test run filtered then cut by head", "(npx vitest run 2>&1 | grep -E 'Tests |FAIL' | head -8); echo end"),
+        ("a plain command piped into head", "npm run build | head -40")):
+    rc, verdict, detail = decision_of(command, True)
+    check("backgrounded, " + label + " is denied", rc == 0 and verdict == "deny", detail)
+
+for label, command, background in (
+        ("a backgrounded job teed to a file before tail", "npm run build | tee build.log | tail -3", True),
+        ("a backgrounded tail -f follows a file", "tail -f run.log", True),
+        ("a backgrounded job writing a file, then tail of that file", "npm run build > b.log 2>&1; tail -5 b.log", True),
+        ("a backgrounded filter with no truncation", "npx vitest run 2>&1 | grep FAIL", True),
+        ("a foreground command piped into tail", "git log --oneline | tail -5", False)):
+    rc, verdict, detail = decision_of(command, background)
+    check(label + " is not denied", rc == 0 and verdict != "deny", detail)
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

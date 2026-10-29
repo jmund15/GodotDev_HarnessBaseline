@@ -1602,8 +1602,11 @@ def _launched_nothing(entry, payload):
                 and _label(other) == label and float(other.get("issued_at") or other.get("launched_at") or 0) >= since
                 and resolve_sidecar_record(other, payload.get("session_id"), payload.get("_pending_sidecars"))):
             return SUPERSEDED
-    return ("its fan-out call wrote no inventory within %d min, so it launched nothing; the call's "
-            "output names the refusal" % (FANOUT_PREFLIGHT_S // 60))
+    refused = os.path.join(entry["fanout_dir"], "launch-refused.txt")
+    where = ("%s names the refusal" % refused.replace("\\", "/") if os.path.isfile(refused)
+             else "the call's output names the refusal")
+    return ("its fan-out call wrote no inventory within %d min, so it launched nothing; %s"
+            % (FANOUT_PREFLIGHT_S // 60, where))
 
 
 def _sidecar_record(entry, payload):

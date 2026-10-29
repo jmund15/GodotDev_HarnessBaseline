@@ -38,7 +38,8 @@ lane), a sidecar fan-out out dir or a `-R` record (which needs `--brief`, since 
 `<label>.md`, prints a bounded digest, reads the brief's one `task` block, runs each `check` in order from the repo root
 under a deadline and stops at the first failure, so later checks print NOT-RUN, lists changed paths (`git status`
 over `writeSet` and the deliverable's `changedPaths:` line, flagging paths outside `writeSet`, and a gitignored
-file written after the run start), prints the diff, and writes `<label>.seed.json` and `<label>.manifest.json`
+file written after the run start), prints the diff, prints `AMEND UNREAD <path>` when the brief's amend file exists
+and a sidecar job's stream holds no successful Read of it (`amend_unread`), and writes `<label>.seed.json` and `<label>.manifest.json`
 beside the deliverable. It prints facts only. EXIT 0 every check passed; 1 a check failed, timed
 out, or was HELD (the brief was written after the run started, so no check ran); 2 refused, with nothing run.
 A check matching a floor guard (an index write, a commit, a push, a process kill outside tools/reap.py) is
@@ -183,6 +184,28 @@ def _blocks(event):
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     return [b for b in content or [] if isinstance(b, dict)]
+
+
+def _same_file(a, b):
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def amend_unread(brief, stdout_text):
+    """The amend file's path when `<brief>.amend.md` exists and the stream holds no successful Read of it, else
+    None: an amendment the job never saw (`orchestration` §4). A Read that errored ran before the file existed."""
+    amend = Path(str(brief) + ".amend.md")
+    if not amend.is_file():
+        return None
+    reads, ok = set(), set()
+    for event in _stream_events(stdout_text):
+        for block in _blocks(event):
+            if block.get("type") == "tool_use" and block.get("name") == "Read":
+                path = (block.get("input") or {}).get("file_path")
+                if isinstance(path, str) and _same_file(path, str(amend)):
+                    reads.add(block.get("id"))
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") in reads and not block.get("is_error"):
+                ok.add(block.get("tool_use_id"))
+    return None if ok else amend.as_posix()
 
 
 def answered_after_report(stdout_text):
@@ -598,6 +621,7 @@ def _sidecar_origin(root, source, label, brief):
     record_path, stdout_path, out_dir = paths
     job = _inventory_job(out_dir, label) if Path(source).is_dir() else {}
     workdir = job.get("workdir")
+    brief = brief or job.get("brief")
     if not brief:
         raise Refused("a sidecar source needs --brief: its record and inventory hold no brief path")
     try:
@@ -713,6 +737,11 @@ def _judge(root, label, origin, check_timeout, result):
             trailing = False
         if trailing:
             result["delivery_flag"] = "the final message answered a later turn after an earlier reply and no report file was kept"
+    if origin.get("stdout"):
+        try:
+            result["amend_unread"] = amend_unread(origin["brief"], Path(origin["stdout"]).read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
     work = origin.get("workdir") or root
     base = "HEAD"
     if origin.get("workdir"):
@@ -805,6 +834,8 @@ def main_consume(argv):
         print(f"REPLY {res['reply']}")
     if res.get("delivery_flag"):
         print(f"WARNING {res['delivery_flag']}")
+    if res.get("amend_unread"):
+        print(f"AMEND UNREAD {res['amend_unread']}: the job never read this amendment; its work follows the brief alone")
     for row in res["checks"]:
         print(f"CHECK {row['n']} {row['verdict']} {row['command']}")
         if row["tail"]:
@@ -849,7 +880,10 @@ def main(argv=None):
         return main_check(argv[1:])
     if argv and argv[0] == "consume":
         return main_consume(argv[1:])
-    ap = argparse.ArgumentParser(description="Write each dispatch job's deliverable to <outDir>/<label>.md.")
+    ap = argparse.ArgumentParser(description="Write each dispatch job's deliverable to <outDir>/<label>.md.",
+                                 epilog="Subcommands: `check <report.md> --block <name>=<fields>` checks a job's "
+                                        "report blocks; `consume <out dir> --label <label>` prints a finished "
+                                        "job's digest, checks and diff. Each has its own --help.")
     ap.add_argument("dir", help="a Workflow run's transcript dir, or a sidecar fan-out out dir")
     ap.add_argument("--out-dir", default=None, help="where <label>.md lands (Workflow runs only)")
     args = ap.parse_args(argv)

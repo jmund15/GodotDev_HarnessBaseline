@@ -60,10 +60,6 @@ try:
 except Exception:
     is_harness_file = None
 try:
-    from _owner_text import classify as owner_row, owner_consent, owner_quote_text  # noqa: E402
-except Exception:
-    owner_row = owner_consent = owner_quote_text = None
-try:
     from harness_tests import close_base, close_paths, commit_advisories, default_base_covers, push_destination, unproven_note  # noqa: E402
     _HARNESS_IMPORT_ERROR = None
 except Exception as _exc:
@@ -127,7 +123,8 @@ _NO_LOSS_OPTS = {"--theirs", "--ours", "-q", "--quiet"}
 def _discards_nothing(sub, rest, cwd, git_env=None):
     """True when a path-scoped checkout/restore loses no edit: every named path is an unmerged
     path taken with --theirs/--ours (not .tscn/.tres, where one side silently drops Export wiring),
-    or has no difference from its source beyond CR line endings, or (checked out of another ref) is a
+    or sits in a `__pycache__` directory (Python regenerates the bytecode), or has no difference from its source
+    beyond CR line endings, or (checked out of another ref) is a
     path HEAD tracks with no staged or unstaged edit, or a path absent from HEAD, index and worktree.
     Any doubt reads as a loss."""
     if cwd is None or (sub == "checkout" and "--" not in rest):
@@ -145,6 +142,8 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
     side = "--theirs" in opts or "--ours" in opts
     base = refs[0] if refs else (source[0] if source else None)
     for path in paths:
+        if "__pycache__" in Path(path).parts:
+            continue
         if side:
             if path.lower().endswith(_SIDE_UNSAFE):
                 return False
@@ -154,15 +153,16 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
             continue
         diff = ["diff", "--quiet", "--ignore-cr-at-eol"] + ([base] if base else []) + ["--", path]
         if (run_git(diff, cwd, git_env) is None and not (base and _clean_in_head(path, cwd, git_env))
-                and not (sub == "restore" and _content_stored(path, cwd))):
+                and not (_content_stored(path, cwd) and (sub == "restore" or not base))):
             return False
     return True
 
 
 def _content_stored(path, cwd):
     """True when git's object store holds the working-tree bytes of `path`, so discarding them loses nothing
-    git cannot reproduce (the orphan-worktree rule's standard: `_regenerable_clone.worktree_unstored`). Only a
-    restore qualifies: a checkout also overwrites the index, whose staged bytes this does not judge."""
+    git cannot reproduce (the orphan-worktree rule's standard: `_regenerable_clone.worktree_unstored`). A restore
+    or a checkout from the index qualifies; a checkout from another ref also overwrites the index, whose staged
+    bytes this does not judge."""
     if worktree_unstored is None or not os.path.isfile(os.path.join(cwd, path)):
         return False
     return worktree_unstored(cwd, [path]) == []
@@ -196,25 +196,34 @@ def _stash_preserved(args, cwd, git_env=None):
 _BRANCH_DELETE_FLAGS = ("-D", "--delete", "--force", "-f", "-q", "--quiet")
 
 
-def _branches_fully_applied(rest, cwd, git_env=None):
-    """True when `branch -D` deletes only local branches that are `scratch/<name>` session fixtures
-    (`orchestration` reference `worktrees.md`) or whose every commit `git cherry` finds already applied to HEAD or to
-    origin/HEAD (a squash-merged or cherry-picked branch, which `-d` refuses).
-    Any other flag, a missing branch or a failed git call fails closed."""
+def _branch_deletion_problems(rest, cwd, git_env=None):
+    """Why `branch -D` would lose a commit: one line per unmet branch, empty when it loses none. A branch is safe
+    when it is a `scratch/<name>` session fixture (`orchestration` reference `worktrees.md`), when every commit
+    `git cherry` finds is already applied to HEAD or to origin/HEAD (a squash-merged or cherry-picked branch, which
+    `-d` refuses), or when a ref outside the deleted set (a remote-tracking ref, a tag, `refs/preserve/`) holds its
+    tip. Any other flag, a missing branch or a failed git call is a problem."""
     names = [a for a in rest if not a.startswith("-")]
-    if not cwd or not names or any(a not in _BRANCH_DELETE_FLAGS for a in rest if a.startswith("-")):
-        return False
+    if not cwd or not names:
+        return ["no branch is named, or the repository cannot be read"]
+    problems = ["flag `%s` is not one `branch -D` is judged with" % a
+                for a in rest if a.startswith("-") and a not in _BRANCH_DELETE_FLAGS]
     bases = ["HEAD"] + (["refs/remotes/origin/HEAD"]
                         if run_git(["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"], cwd, git_env) else [])
+    doomed = {"refs/heads/" + n for n in names}
     for name in names:
-        if run_git(["rev-parse", "--verify", "-q", "refs/heads/" + name], cwd, git_env) is None:
-            return False
+        tip = run_git(["rev-parse", "--verify", "-q", "refs/heads/" + name], cwd, git_env)
+        if tip is None or not tip.strip():
+            problems.append("`%s` is not a local branch" % name)
+            continue
         if name.startswith("scratch/"):
             continue
-        if not any(out is not None and not any(l.startswith("+") for l in out.splitlines())
-                   for out in (run_git(["cherry", base, "refs/heads/" + name], cwd, git_env) for base in bases)):
-            return False
-    return True
+        if any(out is not None and not any(l.startswith("+") for l in out.splitlines())
+               for out in (run_git(["cherry", base, "refs/heads/" + name], cwd, git_env) for base in bases)):
+            continue
+        holders = run_git(["for-each-ref", "--contains", tip.strip(), "--format=%(refname)"], cwd, git_env)
+        if not any(ref and ref not in doomed for ref in (holders or "").splitlines()):
+            problems.append("`%s` holds commits no other ref has" % name)
+    return problems
 
 
 def _own_worktree_discard(sub, rest, cwd, git_env, transcript_path):
@@ -234,61 +243,6 @@ def _own_worktree_discard(sub, rest, cwd, git_env, transcript_path):
     return False
 
 
-_APPROVE_LABEL = re.compile(r"\b(?:reset|discard|restore|revert)\b", re.I)
-_DECLINE_LABEL = re.compile(r"\b(?:no|not|don't|dont|stop|keep|leave|abort|cancel|skip)\b", re.I)
-_OWNER_TAIL_BYTES = 4_000_000
-
-
-_DELETE_LABEL = re.compile(r"\b(?:delete|remove)\b", re.I)
-
-
-def _owner_tail(transcript_path):
-    """The transcript's last _OWNER_TAIL_BYTES as lines, or None when it cannot be read."""
-    try:
-        with open(transcript_path, 'rb') as fh:
-            size = os.fstat(fh.fileno()).st_size
-            fh.seek(max(0, size - _OWNER_TAIL_BYTES))
-            return fh.read().decode('utf-8', errors='replace').splitlines()
-    except (OSError, TypeError, ValueError):
-        return None
-
-
-def _owner_approved_branch_delete(rest, transcript_path, cwd=None, git_env=None):
-    """True when the owner's latest input approves deleting every branch this `branch -D` names
-    (`_owner_text.owner_consent`, with a delete or remove verb), and each is a local branch of this repo."""
-    names = [a for a in rest if not a.startswith('-')]
-    if (not owner_consent or not transcript_path or not cwd or not names
-            or any(a not in _BRANCH_DELETE_FLAGS for a in rest if a.startswith('-'))
-            or any(run_git(['rev-parse', '--verify', '-q', 'refs/heads/' + n], cwd, git_env) is None for n in names)):
-        return False
-    lines = _owner_tail(transcript_path)
-    return bool(lines) and owner_consent(lines, names, _DELETE_LABEL, _DECLINE_LABEL)
-
-
-def _owner_approved_discard(sub, rest, transcript_path, cwd=None, git_env=None):
-    """True when the owner's latest input approves discarding every file this checkout/restore names, each
-    by its absolute path in this checkout (`_owner_text.owner_consent`, with a reset, discard, restore or
-    revert verb). Literal tracked-file paths only: a pathspec of `.`, a directory or a glob is never named
-    exactly enough to consent to, and a relative name would also match the same file in every other
-    checkout."""
-    if not owner_consent or not transcript_path or sub not in ('checkout', 'restore'):
-        return False
-    if sub == 'checkout':
-        if '--' not in rest:
-            return False
-        paths = rest[rest.index('--') + 1:]
-    else:
-        paths = [a for a in rest if not a.startswith('-')]
-    if not cwd or not paths or any(
-            p in ('.', '..', ':/') or re.search(r'[*?\[]', p) or p.endswith('/') or '..' in Path(p).parts
-            or os.path.isdir(os.path.join(cwd, p))
-            or run_git(['ls-files', '--error-unmatch', '--', p], cwd, git_env) is None for p in paths):
-        return False
-    lines = _owner_tail(transcript_path)
-    norm = [os.path.abspath(os.path.join(cwd, p)).replace('\\', '/') for p in paths]
-    return bool(lines) and owner_consent(lines, norm, _APPROVE_LABEL, _DECLINE_LABEL)
-
-
 def verdict(args, cwd=None, git_env=None, transcript_path=None):
     """Return a one-line block message, or None if allowed. `cwd` is the repo the command
     targets; without it a checkout/restore discard is judged unsafe."""
@@ -298,8 +252,7 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
     if sub in ("checkout", "restore"):
         redirected = any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE'))
         if not redirected and (_discards_nothing(sub, rest, cwd, git_env)
-                or _own_worktree_discard(sub, rest, cwd, git_env, transcript_path)
-                or _owner_approved_discard(sub, rest, transcript_path, cwd, git_env)):
+                or _own_worktree_discard(sub, rest, cwd, git_env, transcript_path)):
             return None
 
     if sub == "reset" and "--hard" in rest:
@@ -317,21 +270,16 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
 
     if sub == "checkout" and ("--" in rest or "." in rest):
         return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "overwrites uncommitted edits to those paths, which may be another session's. Copy the file "
-                "aside (`cp <path> .claude/scratch/`), then edit your own change back out in place. For an edit "
-                "that is not yours, ask the owner in one message naming each file by its absolute path and the word "
-                "discard, reset, restore or revert; their next reply approving it lets this exact-path discard through. Never `git stash`: every session "
-                "in this checkout shares its list.")
+                "overwrites uncommitted edits to those paths, which may be another session's. To discard an "
+                "edit, save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, then the "
+                "same command passes.")
 
     staged_only = ({"--staged", "-S"} & set(rest)) and not ("--worktree" in rest or "W" in short_flag_chars(rest))
     if sub == "restore" and not staged_only:
         return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "discards uncommitted worktree edits, which may be another session's. Copy the file aside "
-                "(`cp <path> .claude/scratch/`), then edit your own change back out in place; for an edit "
-                "that is not yours, ask the owner in one message naming each file by its absolute path and the word "
-                "discard, reset, restore or revert; their next reply approving it lets this exact-path discard through. "
-                "`git restore --staged` alone is "
-                "allowed.")
+                "discards uncommitted worktree edits, which may be another session's. To discard an edit, "
+                "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, then the same "
+                "command passes.")
 
     if sub == "push":
         forcing = {"--force", "--force-with-lease", "--force-if-includes"} & set(rest)
@@ -344,12 +292,12 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
                     "history and can erase commits other checkouts still depend on. Rebase onto the remote and "
                     "push normally.")
 
-    if (sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest))
-            and not _branches_fully_applied(rest, cwd, git_env)
-            and not _owner_approved_branch_delete(rest, transcript_path, cwd, git_env)):
-        return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — force-deletes a "
-                "branch whose commits are not applied to HEAD. Ask the owner in one message naming each branch exactly and "
-                "the word delete; their next reply approving it lets this exact delete through.")
+    if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)):
+        problems = _branch_deletion_problems(rest, cwd, git_env)
+        if problems:
+            return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+                    "force-deleting would lose commits: " + "; ".join(problems) + ". Keep each branch's commits "
+                    "reachable, then the same delete passes: `git update-ref refs/preserve/<name> <branch>`.")
 
     if sub == "stash" and rest and rest[0] in ("drop", "clear"):
         if rest[0] == "drop" and _stash_preserved(rest[1:], cwd, git_env):

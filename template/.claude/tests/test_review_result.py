@@ -255,6 +255,25 @@ class ReviewIngestionTests(unittest.TestCase):
         void = review_result.ingest([seat("merged", body, mandates=keys)])["coverage"][0]
         self.assertEqual(void["uncoveredMandates"], keys, "a map missing a key is void; the basis text decides")
 
+    def test_a_map_keyed_by_catalog_mandates_decides_a_seat_listed_by_lens_keys(self):
+        # The engine scores a map keyed by catalog mandates; a job lists its seat's lens keys. One map serves both.
+        lenses = ["lens-a", "lens-b"]
+        expand = {"lens-a": ["m.A1", "m.A2"], "lens-b": ["m.B"]}
+        saved = getattr(review_result, "_catalog_keys_of", None)
+        review_result._catalog_keys_of = lambda key: expand.get(key, [key])
+        try:
+            body = reply(finding(), basis="read every changed file")
+            checked = body["structured_output"]["checked"]
+            checked["mandates"] = {"m.A1": "clean", "m.A2": "findings", "m.B": "clean"}
+            both = review_result.ingest([seat("merged", body, mandates=lenses)])["coverage"][0]
+            self.assertEqual((both["status"], both["uncoveredMandates"]), ("completed", []))
+            checked["mandates"] = {"m.A1": "clean", "m.A2": "not-reached", "m.B": "clean"}
+            part = review_result.ingest([seat("merged", body, mandates=lenses)])["coverage"][0]
+            self.assertEqual(part["uncoveredMandates"], ["lens-a"], "a lens with any not-reached catalog key is uncovered")
+            self.assertEqual(review_result.mandate_map(checked, lenses), {"lens-a": "not-reached", "lens-b": "clean"})
+        finally:
+            review_result._catalog_keys_of = saved
+
     def test_explicit_not_reached_mandate_is_uncovered(self):
         result = review_result.ingest([seat(
             "merged", reply(finding(), basis=(
@@ -682,6 +701,23 @@ class ReviewIngestionTests(unittest.TestCase):
                 result = review_result.merge_view(sources, bad)
                 self.assertTrue(result["issues"])
                 self.assertEqual([row["id"] for row in result["view"]], ["F1", "F2"])
+
+    def test_merged_view_keeps_the_strongest_minrigor(self):
+        sources = [{"id": "F1", "seat": "one", "finding": finding(description="same defect", file="src/m.py:1",
+                                                                  minRigor="thorough")},
+                   {"id": "F2", "seat": "two", "finding": finding(description="same defect", file="src/m.py:2",
+                                                                  minRigor="normal")}]
+        merged = review_result.merge_view(sources, {"findings": [{"merged_from": ["F1", "F2"]}]})
+        self.assertEqual(merged["issues"], [])
+        self.assertEqual(merged["view"][0]["minRigor"], "normal")
+
+    def test_merged_view_drops_minrigor_when_a_member_lacks_it(self):
+        sources = [{"id": "F1", "seat": "one", "finding": finding(description="same defect", file="src/m.py:1",
+                                                                  minRigor="light")},
+                   {"id": "F2", "seat": "two", "finding": finding(description="same defect", file="src/m.py:2")}]
+        merged = review_result.merge_view(sources, {"findings": [{"merged_from": ["F1", "F2"]}]})
+        self.assertEqual(merged["issues"], [])
+        self.assertNotIn("minRigor", merged["view"][0])
 
     def test_exact_groups_join_only_same_file_and_normalized_claim(self):
         self.assertTrue(hasattr(review_result, "exact_groups"))

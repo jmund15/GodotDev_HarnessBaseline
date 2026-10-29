@@ -1291,14 +1291,14 @@ def five_hour_cases():
                  patches=[(wpg, "live_native_jobs", _raiser("planted live-job scan failure"))]),
              "deny", ("planted live-job scan failure", "Re-issue"))
 
-        # An `owner:` statement lifts only when an owner turn holds the `--host` token or the owner answered a question naming the transport with a lift.
+        # An `owner:` statement lifts only when an owner turn holds the `--host` token; no answered question lifts.
         owned_live = plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
                                    owner=[OWNER_WORDS + " --host"])
         owner = {"currency": "host", "currencyReason": OWNER_QUOTE}
         shared = tempfile.mkdtemp(prefix="wpg_state_")
         case("the 5h deny cites the rule it enforces and names the owner override as the owner's to grant",
              run(with_transcript(arch, one_live), HOT_5H), "deny",
-             ("orchestration §5b", "Only the owner", "owner: <their words>", "-l j0"))
+             ("orchestration §5b", "Only the owner", "owner: <their words>", "-l j0"), absent=("AskUserQuestion",))
         case("an owner: statement lifts the 5h rule",
              run(with_transcript(jobs([("h-arch", "architect")], extra=owner), owned_live), HOT_5H,
                  state_dir=shared), "allow", absent=("lifted for this session", "5h used faster"))
@@ -1346,19 +1346,15 @@ def five_hour_cases():
         lift_case("owner: --hostile is not the --host token",
                   plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
                                 owner=["--hostile"]), "deny", musts=("5h 14% left, 40% to go",))
-        lift_case("owner: an answered question naming the transport and approving the lift lifts",
+        lift_case("owner: an answered question naming the transport and approving the lift does not lift (only the token does)",
                   plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
                                 answers=[("Lift the 5h one-job rule on host for this session?", "Yes, lift it")]),
+                  "deny", musts=("5h 14% left, 40% to go",))
+        lift_case("owner: the --host token still lifts beside an answered question",
+                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
+                                owner=[OWNER_WORDS + " --host"],
+                                answers=[("Lift the 5h one-job rule on host for this session?", "No, keep it")]),
                   "allow")
-        lift_case("owner: a declined answer, or one naming another transport, does not lift",
-                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
-                                answers=[("Lift the 5h one-job rule on host for this session?", "No, keep it"),
-                                         ("Lift the 5h one-job rule on off for this session?", "Yes, lift it")]),
-                  "deny", musts=("5h 14% left, 40% to go",))
-        lift_case("owner: an answer to a question naming the transport but not the 5h rule does not lift",
-                  plant_session(runs=[("wf_live-001", [("a1", "review:alpha", "live", 60)])],
-                                answers=[("Run the review on host?", "Yes")]),
-                  "deny", musts=("5h 14% left, 40% to go",))
         case("owner: a too-short owner reason does not lift",
              run(with_transcript(jobs([("h-arch", "architect")], currency('owner: "use host"')), one_live),
                  HOT_5H), "deny", ("5h 14% left, 40% to go",))

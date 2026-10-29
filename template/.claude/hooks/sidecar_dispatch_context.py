@@ -23,8 +23,9 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
 1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-U] [-W]`
    synchronously. A fan-out call has no launcher to check, so the hook denies it from cached capacity
    through `sidecar_fanout.admission_refusal` (`fanout_capacity_refusal`): a job whose named plan, or whose
-   route's every plan, has no room or cannot hold the job's expected drain, is refused in the call, backgrounded or not. A stale, missing or
-   unreadable reading decides nothing. The same launcher gates each fan-out child at runtime. Availability,
+   route's every plan, has no room is refused in the call, backgrounded or not. A forecast-only shortfall
+   never refuses; the fan-out paces each plan in waves (`sidecar_fanout.Waves`). A stale, missing or unreadable reading decides nothing.
+   The same launcher gates each fan-out child at runtime. Availability,
    budget-band, provider-capacity, balance, and pricing refusals remain owned by the launchers.
    A direct launch whose `-R` or `-l` value comes from a shell variable is denied: tracking
    reads those values from the command text (`reference/sidecar_dispatch.md` Procedure step 5).
@@ -383,7 +384,9 @@ def fanout_capacity_refusal(fanout, root, deadline):
     """`sidecar_fanout.admission_refusal` for the call's jobs, read from cached capacity only, else None.
     The cache rule is the launcher's (`provider_capacity.cached`: a reading no older than its TTL). A stale
     or missing reading decides nothing; nor does a call this hook cannot read or one past `deadline`, since
-    each launcher still gates its own job. A refold launches no seat."""
+    each launcher still gates its own job. Positive headroom admits even below the forecast; only observed
+    lack of room refuses, and the pacing that shortfall needs (per-plan waves, re-sized from observed drain) is
+    the fan-out's own, never this hook's. A refold launches no seat."""
     if (fanout is None or sidecar_fanout is None or model_registry is None
             or os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0" or time.monotonic() >= deadline):
         return None
@@ -531,8 +534,7 @@ def dispatch_checks(jobs):
         return ("Sidecar launch outside the tier its job implies (orchestration §5) — " + "; ".join(unfit[:8])
                 + ". The job's written `tier` binds its pin; a job that writes none takes its `-G`/`shape` row's "
                 "tier (guards/tool_profiles.json). Launch a row of that tier "
-                "(`python3 .claude/tools/model_registry.py for-role <tier>`) or write the `tier` the work is; "
-                "raise effort before tier.")
+                "(`python3 .claude/tools/model_registry.py for-role <tier>`); raise effort before tier.")
     return None
 
 

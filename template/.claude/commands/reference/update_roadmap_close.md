@@ -40,7 +40,7 @@ Show the user the proposed diff — `roadmap.md` against the rendered document (
 3. Mermaid block regeneration
 4. Currently-Ready / Blocked view refresh
 5. Spawned sub-brainstorms section updates (if new spawn this session)
-6. MVP recompute (if a `## MVP Checkpoints` section exists): changed check-marks + Status transitions. **Surface a playtest prompt** for any MVP that flipped to `🧪 Ready for playtest` this run — name it, and name any remaining `user-owned` Required Part the user must finish first (e.g. *"MVP-2 ready for playtest, except user-owned Part: Room scene art"*). Surface any `✅ Verified`→downgrade regression flag.
+6. MVP recompute (if a `## MVP Checkpoints` section exists): changed check-marks + Status transitions. **Surface a playtest prompt** for any MVP that flipped to `🧪 Ready for playtest` this run — name it, list its owed owner-look paths (`roadmap_triggers_mvp.md` §6.11 *Status*), and name any remaining `user-owned` Required Part the user must finish first (e.g. *"MVP-2 ready for playtest, except user-owned Part: Room scene art"*). Surface any `✅ Verified`→downgrade regression flag.
 7. New Revision Log line(s)
 8. Validator warnings from Step 3 (if any), the generator's included
 9. Atlas regeneration (Step 9) — always listed, so the single approval covers it

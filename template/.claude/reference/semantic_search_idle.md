@@ -2,7 +2,7 @@
 
 The stock server never releases its warmed engine: a backend that embedded holds ~2.5 GB private, and one that only searched a pre-built full index holds ~0.56 GB. `.claude/tools/semantic_search_idle_proxy.mjs` answers the handshake and `tools/list` from a pinned snapshot of the upstream `search` tool. On the first `tools/call` for an index root it starts `bin/server.js` as a child with the C# import hook below, shares that child with every other frontend searching the same root, and closes it once the idle window passes with nothing in flight. The tool name and schema do not change.
 
-- **Root.** The frontend resolves `searchDir` against its own cwd (absent means its cwd), canonicalizes it with `realpath.native` and forwards that absolute path. A relative path means the caller's directory; a junction and its target are one root.
+- **Root.** The frontend resolves `searchDir` against its own cwd (absent means its cwd) and canonicalizes it with `realpath.native`. A relative path means the caller's directory; a junction and its target are one root. [Linked worktrees](#linked-worktrees) map to their primary checkout.
 - **One backend per root**, spawned with cwd = the root. The stock engine keeps one embedder per root anyway.
 - **Election.** Per root, the pipe is `\\.\pipe\semantic-search-<24 hex of sha256[protocol, root, plugin root, version, C# hook/grammar revision]>`. The first frontend to search listens and hosts the backend; the others connect as guests. A guest presenting another key is refused. There is no lock file: Windows drops a pipe name with its owner, including after a hard kill.
 - **Wire.** Newline-delimited JSON: `hello`/`welcome`/`refused`/`closing`, `call`/`cancel`/`result`/`log`. Call ids are scoped to their socket; a cancel, or a guest's death, cancels that call at the backend.
@@ -15,6 +15,13 @@ The stock server never releases its warmed engine: a backend that embedded holds
 - **Install.** `python3 .claude/tools/semantic_search_idle_install.py --install` copies the proxy, C# hook, grammar, provenance and license to `~/.claude/semantic-search-idle/`, and repoints the plugin manifest's `mcpServers.semantic-search` entry there. It backs up a manifest that does not already carry the shim. `--rollback` restores the newest stock backup byte-exactly and drops the SessionStart checker.
 - **Check.** `python3 .claude/tools/semantic_search_idle_install.py --check` is the read-only, silent-when-healthy SessionStart check. It compares the live tool contract, installed asset hashes, reviewed upstream module hashes and a C# AST smoke parse. A session keeps the shim it started with; old and new shims do not share a backend.
 - **After a plugin update:** run `--check`. A restored stock entry, moved install path, changed contract or changed hooked module is drift. Review changed upstream code and repin the hook's hashes/anchors if needed, rerun the proofs, then `--install`. Restart semantic-search MCP connections before reindexing; an already-running frontend keeps its old launch code.
+
+## Linked worktrees
+
+- **Index routing.** When Git's absolute `--git-dir` differs from `--git-common-dir`, the proxy takes the primary checkout from `git worktree list --porcelain -z` and maps `searchDir` to the same relative directory there. Each repository uses its own primary. A bare repository has no primary checkout and returns a tool error. A missing counterpart also returns an error without building a worktree index.
+- **Result paths.** The calling frontend rewrites numbered result-header paths, relative or absolute, to absolute paths under its requested directory. Scores, previews, line ranges and index stats stay unchanged. A header path outside the shared index root returns an error rather than a false local path.
+- **Local reads.** Linked callers search the primary copy, even with `rebuild: true`; there is no branch overlay. Each result carries this caveat. Read the local file before relying on a hit: edits and deletions can leave stale ranks and lines; branch-only files cannot rank. Use literal search for a known local change.
+- **Format drift.** The proxy pins `dist/format.js` and `dist/mcp-server.js` because upstream returns paths inside text headers, not structured fields. Drift blocks worktree searches before a backend starts and fails the installer's existing `--print-contract` probe. Review both modules and the rebasing proofs before updating the pins; ordinary-root searches still pass through.
 
 ## C# AST hook
 

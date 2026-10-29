@@ -90,6 +90,21 @@ class PeerMessageGuardTests(unittest.TestCase):
         self.assertIn("warm", lines["peer-warm"])
         self.assertIn("cold", lines["peer-cold"])
 
+    def test_live_sessions_lists_the_registry_rows_ages_prints(self):
+        self.peer(1, "peer-a", "idle", sid="aaaa0000-0000-0000-0000-000000000000")
+        doc = {"pid": 2, "sessionId": "bbbb0000-0000-0000-0000-000000000000", "name": "peer-b", "status": "busy",
+               "cwd": "C:\\work\\peer-b"}
+        (self.sessions / "2.json").write_text(json.dumps(doc), encoding="utf-8")
+        code = ("import json, peer_message_guard as p; print(json.dumps(p.live_sessions()))")
+        result = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True, cwd=str(HOOK.parent),
+                                env=self.env(), timeout=60)
+        self.assertEqual(0, result.returncode, result.stderr)
+        rows = {row["name"]: row for row in json.loads(result.stdout)}
+        self.assertEqual({"peer-a", "peer-b"}, set(rows))
+        self.assertEqual({"sessionId": "bbbb0000-0000-0000-0000-000000000000", "name": "peer-b",
+                          "cwd": "C:\\work\\peer-b"}, rows["peer-b"])
+        self.assertEqual("", rows["peer-a"]["cwd"])
+
     def subagent(self, agent_id, age_sec, parent="parent-sid"):
         path = self.home / ".claude" / "projects" / "C--repo" / parent / "subagents" / f"agent-{agent_id}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)

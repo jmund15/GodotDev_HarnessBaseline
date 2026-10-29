@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Proof for tools/reap.py — the sanctioned stop for a process this session owns.
 
-The reaper must let a justified kill of the session's own duplicate through on proof, and must still
-refuse the kills the guard exists for: a peer's process, a session host, shared infra anywhere in the
-tree, a live job with no justification, a kill it cannot record.
+The reaper decides on observed facts only: it kills a process no other session owns (no --reason needed, --why
+only a ledger note), verifies a --reason class when one is named, and refuses a peer's process, a session host,
+shared infra anywhere in the tree, and a kill it cannot record. Whether the owner ordered the stop is the
+auto-mode classifier's to judge, so no case here reads a stop verb, a keep word, a name or a transcript.
 
 The process table and the kill are planted; nothing here touches the OS.
 Run: python3 .claude/tests/test_reap.py
@@ -33,40 +34,9 @@ REAL_TASKKILL = reap.taskkill
 SID = "9ecb32b6-e8a8-45d1-9f2e-8331d8d0c9f3"
 SESSION_PID = 43144
 
-# The owner's typed messages in the planted session transcript. `--reason owner` accepts a --why only
-# when it appears verbatim in one of these, so an agent cannot author its own authorisation.
-OWNER_SAID = [
-    "please kill the duplicate judge daemon now",
-    "you close the Godot editor, I am away from my desk",
-    "you close it, I am away from my desk",
-    "Stop the env wrapper sidecar,   it is stuck",
-]
-
-
 def owner_row(text, sidechain=False):
     return {"type": "user", "sessionId": SID, "isSidechain": sidechain,
             "message": {"role": "user", "content": text}}
-
-
-def answer_row(question, label):
-    """The owner's AskUserQuestion answer row, in the transcript shape kill_guard's proof plants."""
-    return {"type": "user", "sessionId": SID, "isSidechain": False,
-            "message": {"role": "user", "content": [{
-                "type": "tool_result", "tool_use_id": "toolu_question",
-                "content": 'Your questions have been answered: "%s"="%s".' % (question, label)}]},
-            "toolUseResult": {"questions": [{"question": question, "header": "Stop", "multiSelect": False,
-                                             "options": [{"label": label, "description": ""}]}],
-                              "answers": {question: label}}}
-
-
-def asked(pid):
-    """A stop question naming `pid`, as the agent asks it; the default transcript holds the owner's stop answer."""
-    return "Process %d holds the run and is stuck. Stop it?" % pid
-
-
-ANSWERED = (101, 102, 103, 960, 972, 53844)
-# A later owner message approving nothing, so a case tests the --why quote and not the owner's latest-reply consent.
-NEUTRAL = "thanks, carry on with the board"
 
 
 def assistant_row(text):
@@ -84,6 +54,14 @@ def plant_transcript(rows):
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
     return root
+
+
+def last_ledger_row():
+    """The ledger's newest row, or {} when the run wrote none."""
+    try:
+        return json.loads(open(reap.LEDGER, encoding="utf-8").read().splitlines()[-1])
+    except (OSError, IndexError, ValueError):
+        return {}
 
 
 def row(pid, ppid, name, cmd, start="2026-09-15 14:00:00"):
@@ -120,8 +98,7 @@ def plant_registry(sessions=None):
 def run(argv, tbl, env=None, ledger=None, environ=None, transcript="default", sessions=None, kill_ok=True,
         peb=None, msys=None, ps=None):
     killed = []
-    rows = ([owner_row(t) for t in OWNER_SAID] + [answer_row(asked(p), "Stop it") for p in ANSWERED]
-            + [owner_row(NEUTRAL)] if transcript == "default" else transcript)
+    rows = [owner_row("carry on with the board")] if transcript == "default" else transcript
     reap.PROJECTS_ROOT = plant_transcript(rows)
     registry = plant_registry(sessions)
     reap.session_registry_dirs = lambda: [registry]
@@ -221,7 +198,13 @@ def main():
         rc, killed, out = run(["7865", "--reason", "orphan", "--why", "x"], table([hung]), environ=theirs)
         ck("... and denied when its environment names another session", rc == 2 and killed == [], out[-300:])
         rc, killed, out = run(["7865", "--reason", "orphan", "--why", "x"], table([hung]))
-        ck("... and denied when no environment is readable (fail closed)", rc == 2 and killed == [], out[-300:])
+        ck("... and, with no environment readable and an empty record, nothing names another session: the orphan fact decides",
+           rc == 0 and killed == [7865], out[-300:])
+        json.dump({"parentSessionId": "11111111-2222-3333-4444-555555555555"},
+                  open(os.path.join(td, "rec_arch.json"), "w", encoding="utf-8"))
+        rc, killed, out = run(["7865", "--reason", "orphan", "--why", "x"], table([hung]))
+        ck("... and denied when no environment is readable and its record names another session",
+           rc == 2 and killed == [] and "DIFFERENT" in out, out[-300:])
         # The environ proof outranks the record one: a record naming another session cannot
         # authorize a process whose own environment says a different session launched it.
         plain = os.path.join(td, "rec_arch.json")
@@ -283,181 +266,98 @@ def main():
         rc, killed, out = run(["101", "--reason", "stalled", "--log", stall, "--idle-min", "30", "--why", "x"], table())
         ck("stalled: an unreadable .stall marker -> denied", rc == 2 and killed == [], out[-300:])
 
-    # 6. never a session host or shared infra, even under our own ancestry
-    rc, killed, out = run([str(SESSION_PID), "--reason", "owner", "--why", "owner said kill it"], table())
+    # 6. never a session host or shared infra, even under our own ancestry: refused with no --reason, too
+    rc, killed, out = run([str(SESSION_PID)], table())
     ck("this session's own host is never a target", rc == 2 and killed == [] and "REFUSED" in out, out[-300:])
     # A host that DOES pass the ownership gate (a nested/peer host under our own ancestry) must be
     # stopped by the NEVER gate, not by ownership.
     host = row(940, SESSION_PID, "claude.exe", r"C:\Users\x\claude.exe --session-id 11111111-2222-3333-4444-555555555555")
-    rc, killed, out = run(["940", "--reason", "owner", "--why", "owner said kill it"], table([host]))
+    rc, killed, out = run(["940"], table([host]))
     ck("a session host inside our own ancestry is refused by the NEVER gate",
        rc == 2 and killed == [] and "HOST" in out, out[-300:])
-    rc, killed, out = run(["950", "--reason", "owner", "--why", "owner said"], table())
+    rc, killed, out = run(["950", "--why", "x"], table())
     ck("shared infra (an MCP server) is never a target", rc == 2 and killed == [], out[-300:])
     envclean = row(960, SESSION_PID, "env.exe", "env.exe -u CLAUDE_CODE_CHILD_SESSION -u ENABLE_LSP_TOOL -u CLAUDE_PID claude.exe -p \"judge\"")
-    rc, killed, out = run(["960", "--reason", "owner", "--why", asked(960)],
-                          table([envclean]))
+    rc, killed, out = run(["960"], table([envclean]))
     ck("a sidecar env wrapper naming ENABLE_LSP_TOOL is not 'infra': killable", rc == 0 and killed == [960], out[-300:])
 
     # 6b. a codex.exe whose parent is ChatGPT.exe belongs to that app, and is refused like any other host
     chatgpt = row(970, 1, "ChatGPT.exe", r"C:\Users\x\ChatGPT.exe")
     app_codex = row(971, 970, "codex.exe", r"C:\Users\x\codex.exe app-server")
-    rc, killed, out = run(["971", "--reason", "owner", "--why", "kill the duplicate judge daemon"], table([chatgpt, app_codex]))
+    rc, killed, out = run(["971"], table([chatgpt, app_codex]))
     ck("a codex.exe parented by ChatGPT.exe is refused by the NEVER gate",
        rc == 2 and killed == [] and "ChatGPT" in out, out[-300:])
     own_codex = row(972, SESSION_PID, "codex.exe", r"C:\Users\x\codex.exe exec judge-brief")
-    rc, killed, out = run(["972", "--reason", "owner", "--why", asked(972)], table([own_codex]))
+    rc, killed, out = run(["972"], table([own_codex]))
     ck("a codex.exe this session launched is still killable", rc == 0 and killed == [972], out[-300:])
 
-    # 7. owner reason needs the owner's words; a headless claude -p child of ours is a valid target
-    rc, killed, out = run(["103", "--reason", "owner", "--why", ""], table())
-    ck("owner reason with empty --why is denied", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["103", "--reason", "owner", "--why", asked(103)], table())
-    ck("our own headless claude -p child is killable on the owner's words", rc == 0 and killed == [103], out[-300:])
+    # 7. no --reason: the facts decide (instruction_quality §3). A target that is not never-kill and not another
+    #    session's is killed; --why is the ledger's note and never a gate, and whether the stop was ordered is the
+    #    auto-mode classifier's to judge on the call. Wrong evidence reached the old owner reason's word lists on
+    #    2026-10-28: "close ... (that you don't need)", "rider" for rider64.exe, a plain "Yes".
+    rc, killed, out = run(["103"], table())
+    ck("our own headless claude -p child is killed with no --reason and no --why", rc == 0 and killed == [103], out[-300:])
+    rec = last_ledger_row()
+    ck("the ledger row of a no-reason kill records the proof and no reason", rec.get("result") == "killed"
+       and not rec.get("reason") and rec.get("why") == "" and rec.get("proof"), json.dumps(rec)[:300])
+    rc, killed, out = run(["103", "--why", ""], table())
+    ck("an empty --why is accepted", rc == 0 and killed == [103], out[-300:])
 
-    # 7f. the OWNER's instruction stands in for the ownership proof.
-    # Ownership proof exists to establish that SOMEONE authorised this kill when no human is in the
-    # loop. A human naming the target IS that authorisation, so `owner` is the one reason that may
-    # substitute for it -- otherwise the reason is dead code: anything we already own never needs the
-    # owner's words, and anything we do not own is refused before the reason is ever read.
-    # The live case: a Godot editor holding a worktree, blocking every test run, owner away from the
-    # keyboard. Not ours, not infra, and only the owner can say it may go.
+    # 7f. a process nobody owns: the owner's hand-launched Godot editor holding a worktree. Its environment names
+    #     no session and no session host sits above it, so the kill needs no reason.
     editor = row(53844, 7777, "Godot_v4.7.1-stable_mono_win64.exe",
                  "Godot_v4.7.1-stable_mono_win64.exe --path C:/x/.claude/worktrees/sync-pr113 --editor")
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", asked(53844)], table([editor]))
-    ck("a NOT-OWNED process the owner named is killable on their words", rc == 0 and killed == [53844], out[-300:])
-    rec = json.loads(open(reap.LEDGER, encoding="utf-8").read().splitlines()[-1])
-    ck("the ledger records the owner instruction as the proof, so the substitution is auditable",
-       "owner-instruction" in (rec.get("proof") or "") and "53844" in (rec.get("proof") or ""),
-       json.dumps(rec)[:300])
+    rc, killed, out = run(["53844"], table([editor]))
+    ck("a process no session owns is killed with no --reason and no --why", rc == 0 and killed == [53844], out[-300:])
+    rec = last_ledger_row()
+    ck("the ledger records an unclaimed proof, so the kill of a process no session owns is auditable",
+       "unclaimed" in (rec.get("proof") or "") and rec.get("pid") == 53844, json.dumps(rec)[:300])
+    rc, killed, out = run(["53844", "--why", "x"], table([editor]))
+    rec = last_ledger_row()
+    ck("--why \"x\" is accepted and lands in the ledger row verbatim", rc == 0 and rec.get("why") == "x", json.dumps(rec)[:300])
+    note = "  the owner said: close it, (that you don't need)  "
+    rc, killed, out = run(["53844", "--why", note], table([editor]))
+    rec = last_ledger_row()
+    ck("any --why on an allowed target is accepted, with a keep word or a whitespace edge, and logged verbatim",
+       rc == 0 and rec.get("why") == note, json.dumps(rec)[:300])
+    rc, killed, out = run(["53844", "--why", "x"], table([editor]), transcript=None)
+    ck("a missing session transcript no longer refuses: nothing here reads it", rc == 0 and killed == [53844], out[-300:])
+    # The 2026-10-28 order: the apps are named by short words, none of which the tool matches.
+    for exe in ("rider64.exe", "ChatGPT.exe", "Code.exe", "firefox.exe", "chrome.exe"):
+        app = row(150, 7777, exe, r"C:\Program Files\%s --type=gpu" % exe)
+        rc, killed, out = run(["150", "--why", "close rider, whisper, code, firefox, gpt and chrome (that you don't need)"],
+                              table([app]))
+        ck(f"{exe} is killed on a --why that names it only by a short word, and carries a 'don't need' clause",
+           rc == 0 and killed == [150], out[-300:])
+    rc, killed, out = run(["150", "--why", "Yes"], table([row(150, 7777, "ChatGPT.exe", r"C:\Program Files\ChatGPT.exe")]))
+    ck("a plain 'Yes' as --why is accepted", rc == 0 and killed == [150], out[-300:])
 
-    # ... and every other refusal still binds. These are the arms that keep the substitution narrow.
-    rc, killed, out = run(["53844", "--reason", "orphan", "--why", "x"], table([editor]))
-    ck("the same not-owned process stays refused under a NON-owner reason",
-       rc == 2 and killed == [] and "NOT OWNED" in out, out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "   "], table([editor]))
-    ck("owner reason without the owner's words cannot unlock a not-owned target", rc == 2 and killed == [], out[-300:])
+    # 7g. the refusals that stay: the facts the tool observes.
+    rc, killed, out = run(["53844", "--reason", "orphan", "--why", "x"], table([row(53844, 100, "Godot.exe", "Godot.exe")]))
+    ck("a reason you name is still verified: orphan on a process whose parent lives is refused",
+       rc == 2 and killed == [] and "parent" in out, out[-300:])
+    rc, killed, out = run(["53844", "--reason", "stalled", "--log", "C:/nope/none.log", "--why", "x"], table([editor]))
+    ck("a named reason whose fact is missing refuses a process no session owns", rc == 2 and killed == [], out[-300:])
+    rc, killed, out = run(["53844", "--reason", "owner", "--why", "x"], table([editor]))
+    ck("--reason owner is retired: refused, and the deny says to omit --reason",
+       rc == 2 and killed == [] and "omit --reason" in out, out[-300:])
     foreign_env = lambda pid: b"CLAUDE_CODE_SESSION_ID=11111111-2222-3333-4444-555555555555\x00"  # noqa: E731
-    rc, killed, out = run(["901", "--reason", "owner", "--why", "user: kill it"], table(), environ=foreign_env)
-    ck("a process whose OWN environment names another session is refused even on the owner's words",
+    rc, killed, out = run(["901", "--why", "x"], table(), environ=foreign_env)
+    ck("a process whose OWN environment names another session is refused with no reason",
        rc == 2 and killed == [] and "DIFFERENT session" in out, out[-300:])
+    ck("... and the deny names the reason class that can prove another session's process",
+       "--reason orphan" in out, out[-300:])
+    rc, killed, out = run(["901"], table())
+    ck("a process inside a peer session's tree is refused with no reason, naming that session",
+       rc == 2 and killed == [] and "DIFFERENT session" in out and "11111111" in out, out[-300:])
+    rc, killed, out = run(["901", "--reason", "duplicate", "--twin", "200", "--key", "worker.py", "--why", "x"], table())
+    ck("a peer's process stays refused under a reason whose fact holds", rc == 2 and killed == [], out[-300:])
     editor_infra = row(53845, 7777, "node.exe", "node semantic-search-mcp.js --port 2")
-    rc, killed, out = run(["53845", "--reason", "owner", "--why", "user: kill it"], table([editor_infra]))
-    ck("shared infra stays refused on the owner's words", rc == 2 and killed == [], out[-300:])
-
-    # 7g. the owner's words must be the OWNER's: --why is checked against the owner-typed messages of
-    #     this session's transcript. Any session could otherwise kill an unowned process (the owner's
-    #     hand-launched Godot editor) by writing its own quote.
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "the owner told me to close the editor"],
-                          table([editor]))
-    ck("an owner quote absent from the owner's messages is refused", rc == 2 and killed == []
-       and "verbatim" in out, out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "close the Godot editor now please"],
-                          table([editor]), transcript=[owner_row("keep going"),
-                                                       assistant_row("I will close the Godot editor now please")])
-    ck("a quote found only in an assistant message is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "close the Godot editor now please"],
-                          table([editor]), transcript=[owner_row("close the Godot editor now please",
-                                                                 sidechain=True)])
-    ck("a quote found only in a subagent (sidechain) prompt is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "you close it, I am away from my desk"],
-                          table([editor]), transcript=None)
-    ck("a missing session transcript refuses the owner reason (fail closed) and says what to do",
-       rc == 2 and killed == [] and "transcript" in out, out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "  PROCESS 53844 holds the run\n and is   STUCK. Stop it? "],
-                          table([editor]))
-    ck("the quote match ignores case and whitespace", rc == 0 and killed == [53844], out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "close it"], table([editor]))
-    ck("a short owner quote that names neither the target nor a stop order is refused", rc == 2 and killed == [], out[-300:])
-    question = "The Godot editor 53844 from 10:13 holds the worktree. Stop it?"
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", question], table([editor]),
-                          transcript=[answer_row(question, "Stop it (Recommended)")])
-    ck("a question the owner answered with a stop option is their stop instruction",
-       rc == 0 and killed == [53844], out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", question], table([editor]),
-                          transcript=[answer_row(question, "Keep it running")])
-    ck("a question the owner answered with a keep option is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "Stop it (Recommended)"], table([editor]),
-                          transcript=[answer_row(question, "Stop it (Recommended)"), owner_row(NEUTRAL)])
-    ck("an option label alone, which names no target, is refused", rc == 2 and killed == [], out[-300:])
-
-    # 7h. typed owner text counts only as a stop order (kill_guard's test: a stop verb, no keep word) that names the
-    #     target (instruction_quality §3).
-    run_row = row(140, SESSION_PID, "bash.exe", "bash C:/x/BenchmarkArms/cov-sonnet-xhigh-exec-t6_20261020.sh --worker")
-    said = lambda text: [owner_row(text)]  # noqa: E731
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "kill cov-sonnet-xhigh-exec-t6 now"], table([run_row]),
-                          transcript=said("kill cov-sonnet-xhigh-exec-t6 now"))
-    ck("a typed stop order naming the target's campaign is killed", rc == 0 and killed == [140], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "kill 140"], table([run_row]), transcript=said("kill 140"))
-    ck("a short typed stop order naming the pid is killed", rc == 0 and killed == [140], out[-300:])
-    effort = "Isn't t6 tight execution? Why would we overshoot on xhigh? Isn't that preferred to cheaper like medium effort???"
-    rc, killed, out = run(["140", "--reason", "owner", "--why", effort], table([run_row]), transcript=said(effort))
-    ck("a typed owner question with no stop verb is refused, even when it shares a word with the target",
-       rc == 2 and killed == [] and "stop order" in out, out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "don't kill cov-sonnet-xhigh-exec-t6"], table([run_row]),
-                          transcript=said("don't kill cov-sonnet-xhigh-exec-t6"))
-    ck("a typed order with a keep word is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "kill cov-other-run"], table([run_row]),
-                          transcript=said("kill cov-other-run"))
-    ck("a typed stop order naming another job is refused", rc == 2 and killed == [] and "names neither" in out, out[-300:])
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", "you close the Godot editor, I am away from my desk"],
-                          table([editor]))
-    ck("typed owner text with no stop verb is refused", rc == 2 and killed == [], out[-300:])
-    other = "Process 4040 holds the run and is stuck. Stop it?"
-    rc, killed, out = run(["53844", "--reason", "owner", "--why", other], table([editor]),
-                          transcript=[answer_row(other, "Stop it")])
-    ck("a stop answer to a question naming another process is refused",
-       rc == 2 and killed == [] and "names neither" in out, out[-300:])
-
-    # 7i. a typed "yes" is the owner's consent when the agent's message right before it asked to stop the target
-    #     (_owner_text.owner_consent, the approval check the git guards share).
-    ask = "cov-sonnet-xhigh-exec-t6 is stuck. Stop pid 140?"
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "yes"], table([run_row]),
-                          transcript=[assistant_row(ask), owner_row("yes")])
-    ck("a typed yes to a stop question naming the pid is killed", rc == 0 and killed == [140], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "yes"], table([run_row]),
-                          transcript=[assistant_row("Stop cov-sonnet-xhigh-exec-t6?"), owner_row("yes")])
-    ck("a typed yes to a stop question naming the campaign is killed", rc == 0 and killed == [140], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "yes"], table([run_row]),
-                          transcript=[assistant_row("Stop pid 4040?"), owner_row("yes")])
-    ck("a typed yes to a stop question naming another process is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "yes"], table([run_row]),
-                          transcript=[assistant_row("Pid 140 finished its T6 cell. Want the board?"), owner_row("yes")])
-    ck("a typed yes to a question with no stop verb is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", "yes"], table([run_row]),
-                          transcript=[assistant_row(ask), owner_row("yes"), assistant_row("Checking first."),
-                                      owner_row("wait")])
-    ck("a later owner message revokes the typed yes", rc == 2 and killed == [], out[-300:])
-    # A question may name the MSYS pid Git Bash's `ps` prints; ps -W maps it to the Windows pid.
-    ps_w = ("      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND\n"
-            "  4040846       1 4040846        140  ?         197608 16:51:07 /usr/bin/bash\n")
-    by_msys = "Stop the grid now (grid pid 4040846)?"
-    rc, killed, out = run(["140", "--reason", "owner"], table([run_row]), ps=ps_w,
-                          transcript=[answer_row(by_msys, "Stop it now (Recommended)")])
-    ck("a stop answer to a question naming the target's MSYS pid is killed", rc == 0 and killed == [140], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner", "--why", by_msys], table([run_row]), ps=ps_w,
-                          transcript=[answer_row(by_msys, "Stop it now (Recommended)"), owner_row(NEUTRAL)])
-    ck("a quoted stop question naming the target's MSYS pid is killed after a later owner message",
-       rc == 0 and killed == [140], out[-300:])
-    # A reply that is only an option code picks that option of the agent's packet (CLAUDE.core.md §Preferences).
-    packet = ("cov-sonnet-xhigh-exec-t6 is cycling.\n\n**Q1: what to do with it?**\n"
-              "- **O1 (my pick): stop it now and rerun under the fix.** reap has no stop reason that fits.\n"
-              "- **O2: keep it running.**")
-    rc, killed, out = run(["140", "--reason", "owner"], table([run_row]),
-                          transcript=[assistant_row(packet), owner_row("O1")])
-    ck("an option-code reply picking a stop option of a packet naming the target is killed",
-       rc == 0 and killed == [140], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner"], table([run_row]),
-                          transcript=[assistant_row(packet), owner_row("O2")])
-    ck("an option-code reply picking a keep option is refused", rc == 2 and killed == [], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner"], table([run_row]),
-                          transcript=[assistant_row(packet), assistant_row("Still cycling; Q1 is open."), owner_row("O1")])
-    ck("an option code picks from the latest packet since the owner's last reply that labels it",
-       rc == 0 and killed == [140], out[-300:])
-    rc, killed, out = run(["140", "--reason", "owner"], table([run_row]),
-                          transcript=[assistant_row(packet.replace("cov-sonnet-xhigh-exec-t6", "The grid")),
-                                      owner_row("O1")])
-    ck("an option-code reply to a packet naming no target is refused", rc == 2 and killed == [], out[-300:])
+    rc, killed, out = run(["53845", "--why", "x"], table([editor_infra]))
+    ck("shared infra stays refused with no reason", rc == 2 and killed == [], out[-300:])
+    rc, killed, out = run(["99999"], table())
+    ck("a pid that is not in the process table is refused", rc == 2 and killed == [] and "not in the process table" in out,
+       out[-300:])
 
     # 7j. queued: an owned job with nothing in flight (no model client or sidecar launcher in its tree)
     #     loses nothing when stopped, so the fact is its own justification and needs no owner quote.
@@ -503,12 +403,12 @@ def main():
     ck("sparing covers the infra member's whole subtree", rc == 0 and 104 not in killed and 105 not in killed, f"killed={killed}\n{out[-300:]}")
     # 7c. infra is recognised behind interpreter flags, not only as the first argument
     flagged = row(970, SESSION_PID, "node.exe", "node --inspect=9229 C:/x/semantic-search/server.js")
-    rc, killed, out = run(["970", "--reason", "owner", "--why", "owner said"], table([flagged]))
+    rc, killed, out = run(["970", "--why", "owner said"], table([flagged]))
     ck("an MCP server launched with flags before its script is still infra", rc == 2 and killed == [], out[-300:])
     # 7d. no ledger, no kill: the record is part of the contract
     with tempfile.TemporaryDirectory() as td:
         blocked = os.path.join(td, "not-a-dir.txt"); open(blocked, "w").write("x")
-        rc, killed, out = run(["103", "--reason", "owner", "--why", asked(103)], table(),
+        rc, killed, out = run(["103", "--why", "x"], table(),
                               ledger=os.path.join(blocked, "reap_ledger.jsonl"))
         ck("an unwritable ledger refuses the kill (fail closed)", rc == 2 and killed == [] and "LEDGER" in out, out[-300:])
     # 7e. a target inside another target's tree is covered once, and duplicates collapse
@@ -520,7 +420,7 @@ def main():
     ck("--dry-run prints the tree and kills nothing", rc == 0 and killed == [] and "DRY" in out and "103" in out, out[-300:])
 
     # 9. unknown pid and MSYS pid mapping
-    rc, killed, out = run(["4242", "--reason", "owner", "--why", "x"], table())
+    rc, killed, out = run(["4242", "--why", "x"], table())
     ck("a pid absent from the table is denied as gone/stale", rc == 2 and killed == [], out[-300:])
     ps = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND\n  1018021 1018020 1018009      101  ?         197608 13:59:21 /usr/bin/bash\n"
     ck("an MSYS pid maps to its WINPID through ps output", reap.winpid_from_ps(ps, 1018021) == 101 and reap.winpid_from_ps(ps, 5) is None)
@@ -636,7 +536,7 @@ def main():
         launch = {"type": "assistant", "sessionId": SID, "cwd": td, "message": {"role": "assistant", "content": [
             {"type": "tool_use", "name": "Bash", "input": {"command":
              "D=%s && bash .claude/scripts/codex_proxy_sidecar.sh -m sol -e high -f $D/fold_brief.md -R $D/r.json -X" % td.replace("\\", "/")}}]}}
-        rows_with_launch = [owner_row(t) for t in OWNER_SAID] + [launch]
+        rows_with_launch = [owner_row("run the sidecar")] + [launch]
         rc, killed, out = run(["400", "--reason", "orphan", "--why", "over-pinned fold child"], table([child]),
                               environ=env_prompt, transcript=rows_with_launch)
         ck("an untagged sidecar child whose prompt file this session launched is ours: killed",
@@ -691,12 +591,12 @@ def main():
                           environ=planted_env)
     ck("... and refused while the seat child carrying the same id is alive",
        rc == 2 and killed == [] and "521" in out, out[-400:])
-    for argv in (["--reason", "orphan"], ["--reason", "owner", "--why", "kill the duplicate judge daemon"],
+    for argv in (["--reason", "orphan"], ["--why", "kill the duplicate judge daemon"],
                  ["--reason", "duplicate", "--twin", "200", "--key", "serve"],
                  ["--reason", "superseded", "--artifact", str(HERE)]):
         rc, killed, out = run(["540"] + argv + (["--why", "x"] if "--why" not in argv else []),
                               table([shared]), environ=planted_env)
-        ck("a proxy executable with no launch id stays never-kill under %s" % argv[1],
+        ck("a proxy executable with no launch id stays never-kill under %s" % (argv[1] if argv[0] == "--reason" else "no reason"),
            rc == 2 and killed == [] and "PROXY" in out, out[-300:])
     rc, killed, out = run(["541", "--reason", "orphan", "--why", "x"], table([tail]), environ=planted_env)
     ck("a process that only NAMES the proxy's log path is not a proxy", rc == 0 and killed == [541], out[-300:])
@@ -1054,17 +954,17 @@ def main():
 
     launcher_env = {102: launch_env(L1), 103: launch_env(L1)}
     path = stop_case("owner")
-    rc, killed, out = run(["102", "--reason", "owner", "--why", asked(102)], table(), environ=planted(launcher_env))
+    rc, killed, out = run(["102", "--why", "x"], table(), environ=planted(launcher_env))
     ck("an owner stop of a launcher records its launch id once its kill lands",
        rc == 0 and 102 in killed and stopped_of(path) == [L1], f"rc={rc} killed={killed} state={stopped_of(path)}\n{out[-300:]}")
 
     # 7. control first: the same real stop records, so each refusal below is judged against a stop that lands.
     path = stop_case("control")
-    rc, killed, out = run(["102", "--reason", "owner", "--why", asked(102)], table(), environ=planted(launcher_env))
+    rc, killed, out = run(["102", "--why", "x"], table(), environ=planted(launcher_env))
     ck("7. control: the same real stop records its launch id", 102 in killed and stopped_of(path) == [L1],
        f"killed={killed} state={stopped_of(path)}\n{out[-300:]}")
     path = stop_case("dry")
-    rc, killed, out = run(["102", "--reason", "owner", "--why", asked(102), "--dry-run"], table(), environ=planted(launcher_env))
+    rc, killed, out = run(["102", "--why", "x", "--dry-run"], table(), environ=planted(launcher_env))
     ck("--dry-run records no stop", killed == [] and stopped_of(path) is None, f"killed={killed} state={stopped_of(path)}")
 
     path = stop_case("refused")
@@ -1072,23 +972,23 @@ def main():
     ck("a refused-unjustified stop records no stop", rc == 2 and killed == [] and stopped_of(path) is None, out[-300:])
     path = stop_case("foreign")
     peer_env = {901: b"CLAUDE_CODE_SESSION_ID=11111111-2222-3333-4444-555555555555\0SIDECAR_LAUNCH_ID=" + L2.encode() + b"\0"}
-    rc, killed, out = run(["901", "--reason", "owner", "--why", asked(901)], table(), environ=planted(peer_env))
+    rc, killed, out = run(["901", "--why", "x"], table(), environ=planted(peer_env))
     ck("a refused-foreign stop records no stop", rc == 2 and killed == [] and stopped_of(path) is None, out[-300:])
     path = stop_case("failed")
-    rc, killed, out = run(["102", "--reason", "owner", "--why", asked(102)], table(), environ=planted(launcher_env), kill_ok=False)
+    rc, killed, out = run(["102", "--why", "x"], table(), environ=planted(launcher_env), kill_ok=False)
     ck("a kill-failed stop records no stop", rc == 2 and stopped_of(path) is None, f"rc={rc}\n{out[-300:]}")
 
     path = stop_case("seat")
-    rc, killed, out = run(["103", "--reason", "owner", "--why", asked(103)], table(), environ=planted({103: launch_env(L1)}))
+    rc, killed, out = run(["103", "--why", "x"], table(), environ=planted({103: launch_env(L1)}))
     ck("a seat child carrying a launch id records that id", 103 in killed and stopped_of(path) == [L1],
        f"killed={killed} state={stopped_of(path)}\n{out[-300:]}")
     path = stop_case("bare")
-    rc, killed, out = run(["101", "--reason", "owner", "--why", asked(101)], table(), environ=planted({}))
+    rc, killed, out = run(["101", "--why", "x"], table(), environ=planted({}))
     ck("a process with no launch id records no stop", 101 in killed and stopped_of(path) is None,
        f"killed={killed} state={stopped_of(path)}")
     path = stop_case("twice")
     for _ in range(2):
-        run(["102", "--reason", "owner", "--why", asked(102)], table(), environ=planted(launcher_env))
+        run(["102", "--why", "x"], table(), environ=planted(launcher_env))
     ck("the same launch id stopped twice is listed once", stopped_of(path) == [L1], f"state={stopped_of(path)}")
     os.environ["HARNESS_HOOK_STATE_DIR"] = HOOK_STATE
 

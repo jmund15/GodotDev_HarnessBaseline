@@ -119,8 +119,8 @@ function checkFallback(label, runResult, expected = ['strong source', 'weak sour
 // result carries: the fingerprint covers the result, every agent() option and every log line in full and bounded modes.
 const crypto = require('crypto')
 const NO_FOLD_FINGERPRINTS = {
-  full: '813bc1ece333dd8e372149863d4996835f9ebf7184ec3c1587a87b1e6772ab55',
-  bounded: 'b6273249434a5d134680c1bc02eae54aa976226d5d097365059783afb42e97c6',
+  full: 'a2cadab2ac710700ab6d14e647b46223e3a51b81aa93b26541f5c59ddfee0b34',
+  bounded: 'a8a1b62abb91cf955e9c243ffd59fae0c96c852369ad876da540f47524703d24',
 }
 const fingerprint = (r) => crypto.createHash('sha256').update(JSON.stringify({
   result: r.result, opts: r.calls.map(c => c.opts), logs: r.logs,
@@ -156,6 +156,67 @@ const foldReply = ({ digest } = {}) => (prompt, opts) => {
   return foldFixtureReply(prompt, opts)
 }
 const flagKinds = (r) => (r.result.flags || []).map(f => f.kind)
+
+// The run's bar reaches the fold prompt and every seat's contract (S4). A caller's rigor never reaches the engine.
+const BAR_TEXT = 'BAR: this run\'s rigor is normal. Report a finding only when it counts at that rigor.'
+async function barCases() {
+  const barred = await run({ ...noFoldArgs('full'), fold: FOLD, __rigor: 'normal', __barText: BAR_TEXT }, foldReply())
+  const foldCall = barred.calls.find(call => call.opts.phase === 'Fold')
+  check('fold prompt carries Bar when __rigor is set',
+    foldCall && foldCall.prompt.includes('Bar: normal'), JSON.stringify(foldCall && foldCall.prompt.slice(0, 400)))
+  const seat = barred.calls.find(call => call.opts.label && call.opts.label.startsWith('review:'))
+  check('agent prompt carries the bar text',
+    seat && seat.prompt.includes(BAR_TEXT), JSON.stringify(seat && seat.prompt.slice(0, 200)))
+  const plain = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply())
+  const plainFold = plain.calls.find(call => call.opts.phase === 'Fold')
+  check('fold prompt omits Bar without __rigor',
+    plainFold && !plainFold.prompt.includes('Bar:'), JSON.stringify(plainFold && plainFold.prompt.slice(0, 400)))
+  // The engine computes each row's `counts` at the bar, so the fold never judges it from prose.
+  const thoroughTypo = (prompt, opts) => {
+    const reply = foldReply()(prompt, opts)
+    if (opts.label === 'review:one') reply.findings[0].minRigor = 'thorough'
+    return reply
+  }
+  const foldRows = (call) => {
+    const block = call && call.prompt.slice(call.prompt.indexOf('CONSOLIDATED FINDINGS ('))
+    const match = block && block.match(/```json\n([\s\S]*?)\n```/)
+    return match ? JSON.parse(match[1]) : []
+  }
+  const stamped = foldRows((await run({ ...noFoldArgs('full'), fold: FOLD, __rigor: 'normal', __barText: BAR_TEXT }, thoroughTypo))
+    .calls.find(call => call.opts.phase === 'Fold'))
+  const byOld = (rows, old) => rows.find(row => row.old === old)
+  const ask = stamped.find(row => row.action === 'ASK')
+  check('fold rows carry counts computed at the bar',
+    byOld(stamped, 'teh') && byOld(stamped, 'teh').counts === false && ask && ask.counts === true,
+    JSON.stringify(stamped.map(row => [row.id, row.minRigor, row.counts])))
+  check('fold rows carry no counts without __rigor',
+    foldRows(plainFold).length > 0 && foldRows(plainFold).every(row => !('counts' in row)),
+    JSON.stringify(foldRows(plainFold).map(row => [row.id, row.counts])))
+  // The engine's counts mirror tools/finding_bar.py counts on every grade shape.
+  const shapes = [{ critical: true, minRigor: 'thorough' }, { action: 'ASK', question: 'q?', minRigor: 'thorough' },
+    { action: 'PLAN', options: [], minRigor: 'thorough' }, { action: 'PLAN', options: [' '], minRigor: 'thorough' },
+    { action: 'PLAN', options: ['a', 'b'], minRigor: 'thorough' }, { minRigor: 'light' }, { minRigor: 'normal' },
+    { minRigor: 'thorough' }, {}, { minRigor: 'bogus' }, { minRigor: 'constructor' }, { minRigor: 'toString' },
+    { minRigor: '__proto__' }]
+  const matrix = (prompt, opts) => opts.phase === 'Fold' ? goodDigest()
+    : { findings: shapes.map((s, i) => finding({ agent: 'one', file: PLAN_P + ':' + (i + 1), description: 'shape ' + i, ...s })) }
+  const engineCounts = {}
+  for (const rigor of ['light', 'normal', 'thorough']) {
+    const rows = foldRows((await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD, __rigor: rigor }, matrix))
+      .calls.find(call => call.opts.phase === 'Fold'))
+    engineCounts[rigor] = rows.map(r => [r, r.counts])
+  }
+  const py = require('child_process').execFileSync('python3', ['-c',
+    'import json, sys; sys.path.insert(0, sys.argv[1]); import finding_bar; d = json.load(sys.stdin); '
+    + 'print(json.dumps({k: [finding_bar.counts(r, k) for r, _ in v] for k, v in d.items()}))', path.join(__dirname, '..', 'tools')],
+  { input: JSON.stringify(engineCounts), encoding: 'utf8' })
+  const expected = JSON.parse(py)
+  const mismatched = Object.keys(engineCounts).flatMap(k => engineCounts[k]
+    .filter(([, got], i) => got !== expected[k][i]).map(([r, got]) => k + ':' + r.description + ' engine ' + got))
+  check('engine counts match finding_bar.counts on every grade shape at every rigor',
+    Object.values(engineCounts).every(v => v.length === shapes.length) && mismatched.length === 0,
+    JSON.stringify(mismatched.length ? mismatched : Object.values(engineCounts).map(v => v.length)))
+}
 
 async function foldCases() {
   const cp = require('child_process')
@@ -209,7 +270,7 @@ async function foldCases() {
   check('native fold has a stable promptPath and polls its amendment before action',
     ruling.result.fold.files.promptPath === '.claude/scratch/fold_fixture/fold_prompt.md'
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes(
-        'Amend: at each item and before returning, if .claude/scratch/fold_fixture/fold_prompt.md.amend.md exists, read it; it overrides the brief. Name what you applied.')
+        'Amend: at each item and before returning, Read .claude/scratch/fold_fixture/fold_prompt.md.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Persist this full engine brief with Write to the Prompt file before any subject action.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Prompt file: .claude/scratch/fold_fixture/fold_prompt.md'))
   check('native digest schema admits ruling without changing designDelta strings',
@@ -1009,6 +1070,7 @@ async function verificationCases() {
   await foldCases()
   await jointFoldCases()
   await verificationCases()
+  await barCases()
 
   console.log(`review-fanout spills: ${passed} passed, ${failed} failed`)
   process.exit(failed ? 1 : 0)

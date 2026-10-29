@@ -334,7 +334,8 @@ class WindowFitTests(Plant):
 
     def test_a_haiku_executor_pin_prints_pin_is_the_cheapest_claimant(self):
         spec = {"jobs": [self.claimant_job("a", "claude-haiku-5-5", "author", "a.md")]}
-        self.assertEqual(dispatch_size.fact_lines(spec, self.root), ["pin is the cheapest claimant: a"])
+        self.assertEqual(dispatch_size.fact_lines(spec, self.root, read=lambda name, _data=None: None),
+                         ["pin is the cheapest claimant: a"])
         self.assertEqual(dispatch_size.fact_lines("not a spec", self.root), [])
 
     def test_the_m6_capture_names_haiku_for_each_sonnet_executor_pin_and_sizes_every_job(self):
@@ -399,14 +400,14 @@ class WindowFitTests(Plant):
         go = {"schemaVersion": 1, "transport": "go", "costModel": "plan-quota", "sourceKind": "live",
               "observedAt": "2027-01-15T08:00:00Z", "status": "available",
               "quota": {"windows": [{"name": "seven_day", "usedPercent": 20,
-                                     "resetsAt": now + 4 * 86400, "windowDurationMins": 10080}],
+                                     "resetsAt": now + 2 * 86400, "windowDurationMins": 10080}],
                         "routingWindow": "seven_day", "bindingWindow": "seven_day"}}
         readings = {"anthropic": None, "go": go}
         lines = dispatch_size.fact_lines({"jobs": [job]}, self.root, data=data, ladder=ladder,
                                          now=now, read=lambda name, _data=None: readings.get(name))
         self.assertEqual(len(lines), 1, lines)
         self.assertIn("cheaper there: cheap-a", lines[0])
-        self.assertIn("; go-exec on go: ~53% unused at reset in 4d", lines[0])
+        self.assertIn("; go-exec on go: ~72% unused at reset in 2d", lines[0])
         quiet = dispatch_size.fact_lines({"jobs": [job]}, self.root, data=data, ladder=ladder,
                                          now=now, read=lambda name, _data=None: None)
         self.assertEqual(quiet, [lines[0].split("; go-exec on go")[0]], quiet)
@@ -447,6 +448,13 @@ class CompactionPointTests(Plant):
         per = dispatch_size.dispatch_size([job])["perJob"][0]
         self.assertGreater(per["tokens"], 400 * KB / dispatch_size.CHARS_PER_TOKEN)
         self.assertEqual(per["tokens"], per["readingTokens"])
+
+    def test_a_named_image_counts_its_visual_token_ceiling_not_its_bytes(self):
+        photo = self.file("screen.jpg", 400)
+        job = {"label": "img", "prompt": "Read `%s` and report." % photo, "model": "opus", "effort": "high"}
+        per = dispatch_size.dispatch_size([job])["perJob"][0]
+        self.assertLessEqual(per["tokens"], dispatch_size.IMAGE_TOKENS + 100)
+        self.assertGreaterEqual(per["tokens"], dispatch_size.IMAGE_TOKENS)
 
     def test_a_full_window_job_is_sized_against_the_models_own_window(self):
         import model_registry

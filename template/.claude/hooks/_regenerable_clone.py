@@ -459,7 +459,7 @@ def empty_leftover(path: str) -> bool:
 def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | None:
     """The first `git status --porcelain --ignored=matching` line whose deletion loses work, or None.
     Untracked Godot `.import` files, ignored regenerable caches and ignored directories holding no file
-    lose nothing; `allow_ignored` (the owner approved the removal) lets every ignored entry go."""
+    lose nothing; `allow_ignored` (this session created the worktree) lets every ignored entry go."""
     for line in status.splitlines():
         entry = line[3:].rstrip("/")
         if line.startswith("?? ") and entry.endswith(_GENERATED_UNTRACKED_SUFFIXES):
@@ -471,7 +471,7 @@ def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | N
 
 
 def _first_unstored_loss(status: str, root: Path) -> str | None:
-    """`_first_loss` on the owner's removal pick: a dirty path loses nothing when its working file is gone
+    """`_first_loss` for a worktree this session created: a dirty path loses nothing when its working file is gone
     (an index blob is always in the store) or its content is already a blob in the object store, and a
     submodule's gitlink is judged by that submodule's own checks."""
     for line in status.splitlines():
@@ -577,7 +577,7 @@ def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
     """The first non-ignored file under `work_tree` whose content `git_dir`'s object store lacks, or
     None. `absent_index` names no file, so git reads an empty index and writes nothing. A nested
     checkout (a submodule) is judged against `root`'s `.git/modules/<path>` store. Unless `ignored_ok`
-    (the owner approved the removal), an ignored file that is no regenerable cache is a loss too
+    (this session created the worktree), an ignored file that is no regenerable cache is a loss too
     (`_regenerable_ignored`, Godot `.import`; an ignored directory holding no file lists nothing)."""
     env = {**os.environ, "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(work_tree),
            "GIT_INDEX_FILE": str(absent_index), "GIT_CEILING_DIRECTORIES": str(work_tree.parent)}
@@ -675,8 +675,7 @@ def lossless_orphan_worktree(token: str, cwd: str, project_root: str, reasons: l
     """True only for an orphaned worktree directory (git pruned its admin directory, or no `.git` link
     remains) directly under `<project>/.claude/worktrees/` that holds nothing git lacks: every
     non-ignored file, submodules included, is a blob in the object store, and every ignored file is a
-    regenerable cache. No session can work in an orphan, so it needs no owner approval or creation
-    proof. A worktree with a live `.git` link never qualifies. `reasons` receives the loss for an orphan and
+    regenerable cache. An orphan needs no creation proof. A worktree with a live `.git` link never qualifies. `reasons` receives the loss for an orphan and
     the 'not a linked worktree' reason for a target that is neither an orphan nor a live worktree;
     for a live worktree, or a target `_worktree_target` rejects (not a literal path, path traversal,
     unresolvable, or not directly under `.claude/worktrees/`), it receives nothing."""
@@ -698,8 +697,8 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     by a recursive delete followed by `git worktree prune`. The worktree must be registered and
     unlocked; its status may hold only untracked Godot `.import` files and ignored regenerable caches
     (`_REGENERABLE_IGNORED_SEGMENTS`, `_REGENERABLE_IGNORED_PAIRS`) or ignored directories holding no
-    file, so ignored scratch evidence or local config blocks the delete unless `allow_ignored` (the
-    owner approved removing this worktree, so its ignored files may go with it, and so may a tracked or
+    file, so ignored scratch evidence or local config blocks the delete unless `allow_ignored` (this
+    session created the worktree, so its ignored files may go with it, and so may a tracked or
     untracked change whose content is already a blob in the object store or whose file is gone,
     `_first_unstored_loss`); its HEAD and every populated
     submodule's HEAD must be on a remote (`_pushed`: by hash, or by patch for a rebased lane), and each
@@ -748,7 +747,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     for name in broken:
         if not allow_ignored:
             failed.append('submodule ' + name + ': its .git names a missing admin directory, so its state is '
-                          'unreadable, and its removal is not owner-approved')
+                          'unreadable, and this session did not create the worktree')
             continue
         store = root / ".git" / "modules" / name
         lost = _unheld_file(store, target / name, root, target / name / ".git-absent" / "index") \
@@ -788,19 +787,19 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
 
 
 def main(argv: list[str]) -> int:
-    """`--retire-check [--owner-approved] <worktree>...`: the delete guard's verdict per worktree, with
-    every reason it would deny; `--owner-approved` judges as after an owner's removal pick. Exit 1 when any
+    """`--retire-check [--created] <worktree>...`: the delete guard's verdict per worktree, with
+    every reason it would deny; `--created` judges as for a worktree this session created. Exit 1 when any
     worktree is not retired."""
     if not argv or argv[0] != "--retire-check":
         print(main.__doc__)
         return 2
-    approved = "--owner-approved" in argv
+    created = "--created" in argv
     root = os.environ.get("CLAUDE_PROJECT_DIR") or _git(["rev-parse", "--show-toplevel"], Path.cwd()) or "."
     root = root.strip()
     blocked = 0
     for token in (a for a in argv[1:] if not a.startswith("--")):
         reasons: list[str] = []
-        if is_retired_worktree(token, os.getcwd(), root, allow_ignored=approved, reasons=reasons):
+        if is_retired_worktree(token, os.getcwd(), root, allow_ignored=created, reasons=reasons):
             print(f"{token}: retired")
         else:
             blocked += 1

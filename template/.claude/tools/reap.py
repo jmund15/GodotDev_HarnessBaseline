@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""reap.py — stop a process THIS session owns, on proof, with a reason, on the record.
+"""reap.py — stop a process no other session owns, on the facts the tool observes, on the record.
 
-    python3 .claude/tools/reap.py <pid> [<pid> ...] --reason <class> --why "<one line>" [class evidence] [--dry-run]
+    python3 .claude/tools/reap.py <pid> [<pid> ...] [--why "<note>"] [--reason <class> [class evidence]] [--dry-run]
 
-A raw kill cannot show WHY it is justified, so the classifier denies it. This tool can, and refuses when
-it cannot (incident: auto-memory/archive/feedback_guard_denial_of_justified_work_fix_the_guard.md):
+A raw kill cannot show what it kills, so the classifier denies it. This tool shows it, and refuses on the
+facts it observes, never on a stated reason (incident:
+auto-memory/archive/feedback_guard_denial_of_justified_work_fix_the_guard.md). Whether the owner ordered a
+stop is the auto-mode classifier's to judge: the pids and the --why note are in the command line it reads,
+beside the whole transcript. The tool reads no transcript for it, no stop verb, no keep word and no name
+(instruction_quality §3).
 
-  ownership   any one of:
+  default     no --reason. A target that is not `never` and not another session's is killed: this session's
+              own, and one no session owns (an app the owner launched). The ledger row records the proof,
+              `unclaimed` for the second. --why is a note for the ledger, optional, never a gate.
+
+  ownership   any one of (a target none of them covers is "unclaimed", killed unless it is another session's):
               - it descends from this session's claude.exe (CLAUDE_PID);
               - its OWN environment names this session's CLAUDE_CODE_SESSION_ID, the proof that
                 survives the launcher wrapper being killed and so covers the hung-run case;
@@ -16,8 +24,12 @@ it cannot (incident: auto-memory/archive/feedback_guard_denial_of_justified_work
                 launched;
               - only when the environment is unreadable, its command line names a dispatch record
                 whose parentSessionId is this session.
-              A process whose environment names a DIFFERENT session is refused outright, record or
-              no record. A peer's process with an identical command line is NOT OWNED and is never
+              Another session's: a sidecar prompt file this session never launched, or, with the
+              environment unreadable, a dispatch record whose parentSessionId names a different session.
+              A process is ANOTHER session's, and refused outright, record or no record, when its
+              environment names a DIFFERENT session or a session host (claude.exe --session-id X) of
+              another session is among its ancestors. Only `--reason orphan` on the leftover of a
+              dead session (below) reaches it. A peer's process with an identical command line is never
               killed.
   never       a session host (claude.exe --session-id / --bg-pty-host), an MCP server, a shared
               transport proxy, a codex.exe whose parent is ChatGPT.exe (the app runs it headless, with
@@ -26,7 +38,8 @@ it cannot (incident: auto-memory/archive/feedback_guard_denial_of_justified_work
               never a transport proxy.
               A never-kill member INSIDE a target's tree is spared and the rest of the tree dies;
               a never-kill TARGET is refused outright, because its children are its own.
-  reason      one closed class, each verified from evidence, not from prose:
+  reason      optional; one closed class, each verified from evidence, not from prose. A class you name is
+              verified, so omit --reason where none is needed:
                 duplicate   --twin <pid> alive and sharing --key <text> in its command line: the
                             work continues there, so this copy is pure waste
                 orphan      the target's parent is gone from the process table; for a process carrying
@@ -44,20 +57,6 @@ it cannot (incident: auto-memory/archive/feedback_guard_denial_of_justified_work
                             by its launcher at spawn, so detached members count). A target with no job id
                             refuses. Stopping it loses no paid or model work, so an owned job waiting its turn
                             stops on this.
-                owner       --why is the owner's stop order, verbatim from this session's transcript (case and
-                            whitespace ignored): an owner-typed message that passes kill_guard's stop-order
-                            test (a stop verb, no keep word), or the question of an AskUserQuestion the owner
-                            answered with a stop option. It names the target: its pid, its launch label, or the
-                            script or campaign its command line or a launching ancestor's runs. Any other owner
-                            sentence is one the agent chose. The owner's latest reply also passes with no quote
-                            when it approves the stop (_owner_text.owner_consent): a typed "yes" to the agent's
-                            message that asked to stop the target by one of those names, or a typed or answered
-                            order naming it. A missing or unreadable transcript refuses. The
-                            only prose-backed class,
-                            and the only one that SUBSTITUTES for the ownership proof above: the
-                            proof stands in for a human's authorisation, so a human naming the
-                            target outranks it. It does not reach a never-kill target or one whose
-                            own environment names a different session.
   dispatch    a DISPATCH SERVER carries SIDECAR_LAUNCH_ID=X and is a claude-code-proxy executable, a
   servers     text_only_shim.py python process, or the nohup wrapper of either. A sidecar launch starts
               them detached and stops them in an exit trap, which a TerminateProcess never runs.
@@ -126,8 +125,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
-from kill_guard import KEEP_LABEL_RE, STOP_LABEL_RE, _owner_inputs  # noqa: E402  (the owner-message projection a stop request reads)
-from _owner_text import owner_consent  # noqa: E402
 import _hook_state  # noqa: E402
 from _win_path import drive_path, native_path  # noqa: E402
 
@@ -138,7 +135,9 @@ from model_registry import login_dirs, session_projects_dir  # noqa: E402
 import sidecar_argv  # noqa: E402
 
 PROJECTS_ROOT = Path(session_projects_dir())
-REASONS = ("duplicate", "orphan", "stalled", "superseded", "queued", "owner")
+REASONS = ("duplicate", "orphan", "stalled", "superseded", "queued")
+RETIRED_REASONS = {"owner": "omit --reason: a target that is not never-kill and not another session's needs none, and "
+                            "whether the owner ordered the stop is judged on the call, not by this tool"}
 # A tree member doing paid or result-bearing work: a model client, a sidecar launcher, or a dispatch shim.
 IN_FLIGHT_RE = re.compile(r"(?:^|[\\/\s\"'])(?:claude|codex|opencode|ollama)(?:\.exe)?(?=[\s\"']|$)|_sidecar\.sh\b|text_only_shim",
                           re.I)
@@ -639,7 +638,7 @@ def launch_census(table):
 
 def ownership(table, pid, session_pid, sid):
     """(proof, foreign): a proof string when the target is this session's; `foreign` set when it is
-    positively ANOTHER session's; (None, None) when ownership simply cannot be established."""
+    positively ANOTHER session's; (None, None) when no session claims it."""
     if session_pid and session_pid in ancestors(table, pid):
         return "descends from this session's claude.exe pid %d" % session_pid, None
     # The target's OWN environment is the decisive evidence: a process launched from this session
@@ -660,14 +659,26 @@ def ownership(table, pid, session_pid, sid):
     prompt = _env_value(env, PROMPT_ENV)
     if prompt and sid and launched_prompt(sid, prompt):
         return "its sidecar prompt file %s was launched by this session's transcript" % os.path.basename(prompt), None
+    if prompt:
+        return None, ("its sidecar prompt file %s was not launched by this session: a sidecar belongs to the session "
+                      "that launched it, a DIFFERENT one" % os.path.basename(prompt))
     # A record on disk is second-hand (a stale -R path can name us while the process is a peer's),
     # so it is consulted only when the environment was unreadable.
     cmd = table[pid].get("cmd") or ""
     m = RECORD_RE.search(cmd)
     if m and sid:
         path = m.group(1)
-        if _read_json(_resolve(path)).get("parentSessionId") == sid:
+        named = _read_json(_resolve(path)).get("parentSessionId")
+        if named == sid:
             return "its dispatch record %s names parentSessionId %s (this session)" % (os.path.basename(path), sid[:8]), None
+        if named:
+            return None, "its dispatch record %s names a DIFFERENT parent session (%s)" % (os.path.basename(path), str(named)[:8])
+    for a in ancestors(table, pid):
+        host = HOST_SESSION.search(table[a].get("cmd") or "") if any(
+            pat.search(table[a].get("cmd") or "") for pat in HOST_PATTERNS) else None
+        if host and host.group(1) != sid:
+            return None, ("NOT OWNED: it runs inside a DIFFERENT session's tree (host pid %d, session %s)"
+                          % (a, host.group(1)[:8]))
     return None, None
 
 
@@ -714,41 +725,12 @@ def launched_prompt(sid, prompt):
     return False
 
 
-def _norm(text):
-    return " ".join((text or "").split()).lower()
-
-
 def session_transcript(sid):
     """This session's main transcript: the single `<projects>/<key>/<sid>.jsonl`, else None."""
     if not sid or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sid):
         return None
     hits = [p for p in PROJECTS_ROOT.glob("*/%s.jsonl" % sid) if p.is_file()]
     return hits[0] if len(hits) == 1 else None
-
-
-def owner_quote(why, sid):
-    """(ok, evidence): --why is the owner's stop order, verbatim (case/whitespace-folded) from THIS session's
-    transcript: an owner-typed message, or the question of an AskUserQuestion the owner answered with a stop
-    option. A typed quote passes kill_guard's stop-order test itself: a stop verb, no keep word. Assistant text,
-    subagent prompts and tool output never count. `owner_names_target` then requires it to name the target."""
-    quote = _norm(why).strip("\"'`“”‘’ ")
-    if not quote:
-        return False, "--why must quote the owner's stop order, verbatim from their message"
-    path = session_transcript(sid)
-    inputs = _owner_inputs(str(path)) if path else None
-    if inputs is None:
-        return False, ("this session's transcript (session %s) is missing or unreadable, so the owner's "
-                       "words cannot be verified; ask the owner to stop the process themselves, or prove "
-                       "ownership under another --reason" % ((sid or "?")[:8]))
-    def stopped(pairs):
-        return any(quote in _norm(question) and STOP_LABEL_RE.search(label) and not KEEP_LABEL_RE.search(label)
-                   for question, label in pairs)
-    typed_order = bool(STOP_LABEL_RE.search(quote)) and not KEEP_LABEL_RE.search(quote)
-    if not any((typed_order and quote in _norm(text)) if kind == "text" else stopped(text) for kind, text in inputs):
-        return False, ("--why is neither an owner-typed stop order (a stop verb, no keep word) nor the question of "
-                       "an AskUserQuestion the owner answered with a stop option, verbatim from this session's "
-                       "transcript (case and whitespace are ignored)")
-    return True, "owner: %s" % why.strip()[:160]
 
 
 def orphan_evidence(table, pid):
@@ -774,10 +756,11 @@ def orphan_evidence(table, pid):
     return True, "parent %s is gone" % ppid
 
 
-def justification(args, table, pid, targets, owner=None, sid=None):
-    """(ok, evidence) for the claimed reason, verified mechanically. `owner` is the precomputed
-    `owner_quote` verdict, read once per invocation rather than once per target."""
+def justification(args, table, pid, targets):
+    """(ok, evidence) for the named reason, verified mechanically; a call naming none needs none."""
     reason = args.reason
+    if not reason:
+        return True, "no reason named; none is needed for a target that is not another session's"
     if reason == "duplicate":
         twin = args.twin
         if twin is None or twin not in table:
@@ -822,16 +805,6 @@ def justification(args, table, pid, targets, owner=None, sid=None):
         return True, "artifact %s exists" % name
     if reason == "queued":
         return queued_evidence(table, pid)
-    if reason == "owner":
-        if owner and owner[0]:
-            refusal = owner_names_target(args.why, table, pid)
-            if refusal is None:
-                return owner
-        else:
-            refusal = owner or (False, "owner quote was not verified")
-        if owner_consents(sid, table, pid):
-            return True, "owner: their latest reply approved stopping %d" % pid
-        return refusal
     return False, "unknown reason"
 
 
@@ -856,46 +829,6 @@ def queued_evidence(table, pid):
         return False, ("its detached work is live (%s: %s); wait for it to end"
                        % (", ".join(map(str, members)), (table[members[0]].get("cmd") or "")[:60]))
     return True, "nothing in flight: no model client or launcher in its tree, and no live process carries its job id"
-
-
-def target_names(table, pid):
-    """The names a stop order may call `pid` by: its launch label, and the name of a script or campaign its
-    command line or a launching ancestor's runs (a path's file name without extension or a trailing _YYYYMMDD)."""
-    label = _launch_label(table, pid)
-    members = [pid] + [a for a in ancestors(table, pid) if not never_reason(table[a], table)]
-    names = {label} if label != "unknown" else set()
-    for k in members:
-        for path in re.findall(r"[\w.:~-]*[\\/][^\s\"']+", table[k].get("cmd") or ""):
-            stem = os.path.splitext(re.split(r"[\\/]", path)[-1])[0]
-            names.update(n for n in (stem, re.sub(r"_\d{8}$", "", stem)) if len(n) >= 6)
-    return names
-
-
-def owner_names_target(why, table, pid):
-    """None when the owner's stop order names `pid` or one of its `target_names`; else the refusal. An order
-    that names none of them stops some other process."""
-    said = why.lower()
-    msys = msys_pid_for_winpid(pid)
-    if any(re.search(r"(?<!\d)%d(?!\d)" % p, why) for p in [pid] + ([msys] if msys else [])) or any(
-            re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(n.lower()), said) for n in target_names(table, pid)):
-        return None
-    return False, ("the owner's stop order names neither pid %d, its launch label, nor its script or campaign; "
-                   "ask the owner one plain-text question that names pid %d and its launch label, and keep "
-                   "working: their typed yes then binds" % (pid, pid))
-
-
-def owner_consents(sid, table, pid):
-    """True when the owner's latest input approves stopping `pid` (`_owner_text.owner_consent`): a typed "yes"
-    to the agent's stop question that named the pid or one of its `target_names` counts, as in the git guards."""
-    path = session_transcript(sid)
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path else []
-    except OSError:
-        return False
-    msys = msys_pid_for_winpid(pid)
-    pids = [str(pid)] + ([str(msys)] if msys else [])
-    return bool(lines) and any(owner_consent(lines, [name], STOP_LABEL_RE, KEEP_LABEL_RE)
-                               for name in pids + sorted(target_names(table, pid)))
 
 
 # ----------------------------------------------------------------- act + record
@@ -1171,7 +1104,7 @@ def describe_launches(table, hits):
         ok, _evidence = orphan_evidence(table, pid)
         lines.append("  stop: python3 .claude/tools/reap.py %d %s" % (
             pid, '--reason orphan --why "a relaunch replaces this run"' if ok
-            else "--reason queued once nothing it runs is in flight, else ask the owner a question naming it"))
+            else "with no --reason once the owner has ordered it, or --reason queued once nothing it runs is in flight"))
     return "\n".join(lines)
 
 
@@ -1211,8 +1144,8 @@ def _main(argv=None, env=None):
         return live_launch_main(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
-    ap.add_argument("--reason", required=True, choices=REASONS)
-    ap.add_argument("--why", default="", help="one line for the ledger; for --reason owner, the owner's stop order or the question they answered with a stop option, verbatim (their latest reply approving the stop needs no quote)")
+    ap.add_argument("--reason", help="only to stop another session's dead leftover or to have a class verified: " + ", ".join(REASONS))
+    ap.add_argument("--why", default="", help="optional note for the ledger, recorded verbatim; never a gate")
     ap.add_argument("--twin", type=int, help="duplicate: the surviving copy")
     ap.add_argument("--key", help="duplicate: text both command lines carry (script + campaign, or the cell)")
     ap.add_argument("--log", help="stalled: the log the target should be writing")
@@ -1220,6 +1153,12 @@ def _main(argv=None, env=None):
     ap.add_argument("--artifact", help="superseded: the output that already exists")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+    if args.reason in RETIRED_REASONS:
+        print("REFUSED: --reason %s is retired; %s" % (args.reason, RETIRED_REASONS[args.reason]))
+        return 2
+    if args.reason and args.reason not in REASONS:
+        print("REFUSED: unknown --reason %r; one of %s, or none" % (args.reason, ", ".join(REASONS)))
+        return 2
 
     session_pid = int(env.get("CLAUDE_PID") or 0) or None
     sid = env.get("CLAUDE_CODE_SESSION_ID") or None
@@ -1246,12 +1185,11 @@ def _main(argv=None, env=None):
     for pid in covered:
         print("COVERED %d: inside another target's tree; killed with it" % pid)
     targets = [t for t in unique if t not in covered]
-    owner = owner_quote(args.why, sid) if args.reason == "owner" and targets else None
     for pid in targets:
         row = table[pid]
         head = "%d %s :: %s" % (pid, row.get("name"), (row.get("cmd") or "")[:110])
         proof, foreign = ownership(table, pid, session_pid, sid)
-        ok, evidence = justification(args, table, pid, set(targets), owner=owner, sid=sid)
+        ok, evidence = justification(args, table, pid, set(targets))
         tree = [pid] + descendants(table, pid)
         # The NEVER gate is judged on every member, but a member that may never die is SPARED rather
         # than the whole kill being refused: refusing made any sidecar whose tree merely contains an
@@ -1269,33 +1207,25 @@ def _main(argv=None, env=None):
             print("REFUSED %s\n   NEVER: %s — not a target, and its own children are not ours to kill" % (head, root_never))
             entry["result"] = "refused-never"; record(entry); refused += 1
             continue
-        # `owner` is the one reason that may STAND IN for the ownership proof. That proof exists to
-        # establish that someone authorised this kill when no human is in the loop; a human naming
-        # the target is that authorisation. Gated behind it, the reason was dead code -- anything we
-        # already own never needs the owner's words, and anything we do not own was refused before
-        # the reason was read. It does NOT reach the two hard boundaries, both judged above and
-        # below it: a never-kill target, and a process whose own environment names a DIFFERENT
-        # session, which is that session's to stop.
-        if args.reason == "owner" and ok and not proof and not foreign:
-            proof = "owner-instruction: %s" % args.why.strip()[:160]
-            entry["proof"] = proof
         # A dead session's leftover: no session can consume its result, so any session may stop it.
         if args.reason == "orphan" and ok and not proof:
             leftover = leftover_proof(table, pid, sid)
             if leftover:
                 proof, foreign = leftover, None
                 entry["proof"] = proof
+        # No session claims it (an app the owner launched): the facts above already cleared it. Whether the
+        # owner ordered the stop is the classifier's to judge on the call, not this tool's.
+        if not proof and not foreign:
+            proof = "unclaimed: its environment names no session and no session host sits above it"
+            entry["proof"] = proof
         if not proof:
-            print("REFUSED %s\n   %s" % (head, foreign or
-                  "NOT OWNED: no ancestor is this session's claude.exe (%s), its environment does not "
-                  "name session %s, and no dispatch record does either%s"
-                  % (session_pid, (sid or "?")[:8],
-                     "\n   OWNER: %s" % evidence if args.reason == "owner" and not ok else "")))
+            print("REFUSED %s\n   %s\n   Another session's process is stopped only by --reason orphan, on the "
+                  "leftover of a dead session; otherwise it is that session's to stop." % (head, foreign))
             entry["result"] = "refused-foreign" if foreign else "refused-not-owned"
             record(entry); refused += 1
             continue
         if not ok:
-            print("REFUSED %s\n   %s: %s" % (head, args.reason.upper(), evidence))
+            print("REFUSED %s\n   %s: %s" % (head, (args.reason or "").upper(), evidence))
             entry["result"] = "refused-unjustified"; record(entry); refused += 1
             continue
         base = {k: entry[k] for k in ("ts", "session", "reason", "why")}
@@ -1303,7 +1233,7 @@ def _main(argv=None, env=None):
         stop_launch = _launch_label(table, pid)
         strays = launch_strays(table, pid, session_pid, sid, tree, args.reason)
         if args.dry_run:
-            print("DRY %s\n   owned: %s\n   %s: %s\n   tree: %s" % (head, proof, args.reason, evidence, tree))
+            print("DRY %s\n   owned: %s\n   %s: %s\n   tree: %s" % (head, proof, args.reason or "default", evidence, tree))
             entry["result"] = "dry-run"; record(entry)
             reap_strays(table, pid, strays, args, base)
             continue
@@ -1317,7 +1247,7 @@ def _main(argv=None, env=None):
             killed, failed, spared = kill_subtree_sparing_infra(table, pid, [k for k, _ in never])
             print("%s %s\n   owned: %s\n   %s: %s\n   killed: %s\n   spared (never-kill): %s"
                   % ("PARTIAL" if (killed and failed) else "KILLED" if killed else "FAILED",
-                     head, proof, args.reason, evidence, sorted(killed), spared))
+                     head, proof, args.reason or "default", evidence, sorted(killed), spared))
             entry["result"] = "partial" if (killed and failed) else "killed" if killed else "kill-failed"
             entry["killed"], entry["spared"] = sorted(killed), spared
             record(entry)
@@ -1332,7 +1262,7 @@ def _main(argv=None, env=None):
         if done:
             for k in outside_windows_tree(table, pid, tree):
                 done = taskkill(k, tree=False) and done
-        print("%s %s\n   owned: %s\n   %s: %s\n   tree: %s" % ("KILLED" if done else "FAILED", head, proof, args.reason, evidence, tree))
+        print("%s %s\n   owned: %s\n   %s: %s\n   tree: %s" % ("KILLED" if done else "FAILED", head, proof, args.reason or "default", evidence, tree))
         entry["result"] = "killed" if done else "kill-failed"; record(entry)
         if not done:
             refused += 1

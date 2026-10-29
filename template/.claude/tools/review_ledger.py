@@ -39,7 +39,9 @@ with the same row clauses and roster depth, independently of content hashes.
 A row covers mandate `m` on file `f` only when
 every clause of `CLAUSES` holds. Clause 9 (standing) is the one clause that reads another row: a panel row whose model
 holds the row's tier in registry `supplementary` covers a pair only when another panel row, whose model is qualified at
-its own tier, holds the same pair under clauses 1-8, with depth judged without the seat's load. `uncovered` prints the tab-separated `<file>\\t<mandate>` pairs no row
+its own tier, holds the same pair under clauses 1-8, with depth judged without the seat's load. Clause 10 (bar) holds a
+row to the rigor it was recorded at: a row with a recognized `rigor` covers only requests at that rigor or below it, a
+row without one covers every request, and a request with no resolved rigor counts as `thorough`. `uncovered` prints the tab-separated `<file>\\t<mandate>` pairs no row
 covers, and `plan` drops from a roster the mandates every file already has and names each kept seat's
 `uncoveredFiles`, the files where one of its kept mandates is uncovered. What it returns is a ceiling, never a width: a later round sizes its seats per `orchestration` §2 *Later rounds*.
 When every owed `(mandate, file)` pair of the kept seats has an earlier reviewed blob (the `after:<blob>` test below), `plan`
@@ -1155,8 +1157,10 @@ class Cover:
     """Decides whether a ledger row covers a (mandate, file) pair for one subject and one seat."""
 
     def __init__(self, ctx: Ctx, catalog: dict, rows: list, escapes: list | None, subject_kind: str,
-                 seat: dict | None = None, design: str | None = None, claude_dir: Path | None = None):
-        """`escapes` None means the escape log exists and cannot be parsed: clause 5 then holds for no row."""
+                 seat: dict | None = None, design: str | None = None, claude_dir: Path | None = None, *,
+                 task_id: str | None = None, rigor: str | None = None):
+        """`escapes` None means the escape log exists and cannot be parsed: clause 5 then holds for no row.
+        `rigor` is the request's resolved rigor; absent, it resolves once from `task_id` (clause 10)."""
         self.ctx = ctx
         self.catalog = catalog
         self.rows = rows
@@ -1165,6 +1169,7 @@ class Cover:
         self.seat = seat
         self.design = design
         self.claude_dir = claude_dir or _claude_dir()
+        self.request_rigor = rigor if rigor is not None else _import("finding_bar").run_rigor(task_id, ctx.repo)
         self._rules: dict = {}
         self._premise_ancestors: dict = {}
         self._tiers = None
@@ -1499,6 +1504,17 @@ def _clause_subject(cover, row, mandate, path):
     return kind == cover.subject_kind or (kind in readers and cover.subject_kind in readers)
 
 
+def _clause_bar(cover, row, mandate, path):
+    """A row recorded at a rigor covers a request at that rigor or a higher one. A row with no recognized `rigor`
+    is a legacy row and covers every request. A request with no resolved rigor counts as `thorough`."""
+    rigors = _import("triage").RIGORS
+    recorded = row.get("rigor")
+    if recorded not in rigors:
+        return True
+    request = cover.request_rigor if cover.request_rigor in rigors else "thorough"
+    return rigors.index(recorded) >= rigors.index(request)
+
+
 CLAUSES = (
     (1, _clause_rule_text),
     (2, _clause_outcome),
@@ -1509,6 +1525,7 @@ CLAUSES = (
     (7, _clause_merge_base),
     (8, _clause_subject),
     (9, _clause_standing),
+    (10, _clause_bar),
 )
 
 
@@ -1553,7 +1570,7 @@ def read_escapes(repo: Path, toplevel: Path | None = None):
     return out, None
 
 
-def _make_cover(repo: Path, base_ref: str, subject_kind: str, seat=None, design=None, hashes=None):
+def _make_cover(repo: Path, base_ref: str, subject_kind: str, seat=None, design=None, hashes=None, task_id=None):
     catalog = load_catalog()
     rows, corrupt, problem = read_rows(ledger_path(repo))
     _note_ledger(problem, corrupt)
@@ -1561,7 +1578,7 @@ def _make_cover(repo: Path, base_ref: str, subject_kind: str, seat=None, design=
     escapes, escape_problem = read_escapes(repo, ctx.toplevel)
     if escape_problem:
         print(f"{escape_problem}: no row covers until it is repaired", file=sys.stderr)
-    return Cover(ctx, catalog, rows, escapes, subject_kind, seat, design), problem
+    return Cover(ctx, catalog, rows, escapes, subject_kind, seat, design, task_id=task_id), problem
 
 
 def cover_at(repo: Path, hashes: dict, base_ref: str = "origin/main") -> Cover:
@@ -2010,7 +2027,7 @@ def cmd_plan(args, repo: Path) -> int:
         waived = bool(scope.get("waived"))
         # The owner vouched for every file at the waived head, so only what changed since it is owed.
         files_in += [str(p) for p in scope.get("delta_files" if waived else "files") or []]
-    cover, problem = _make_cover(repo, args.base_ref, kind)
+    cover, problem = _make_cover(repo, args.base_ref, kind, task_id=getattr(args, "task", None))
     files = normalize_files(cover.ctx.toplevel, files_in)
     design = normalize_files(cover.ctx.toplevel, [args.design])[0] if args.design and args.no_new_decision else None
     cover.design = design
@@ -2818,11 +2835,14 @@ def cmd_record(args, repo: Path) -> int:
     if author is None:
         author = "unknown"
         print("author model unknown: no readable session transcript (pass --author-model)", file=sys.stderr)
+    recorded = _import("finding_bar").run_rigor(args.task, repo)
     base = {"v": 1, "stage": args.stage, "subject": args.subject, "head": ctx.head, "mergeBase": ctx.merge_base(),
             "premise_commits": premise_commits,
             "degraded": bool(args.degraded), "authorModel": author, "task": args.task,
             "session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "noNewDecision": bool(args.no_new_decision),
-            "call": uuid.uuid4().hex[:12]}
+            "call": uuid.uuid4().hex[:12],
+            # An unreadable rigor records the lowest level: the row then covers only light requests (clause 10).
+            "rigor": recorded or "light"}
     if args.roster:
         document = json.loads(Path(args.roster).read_text(encoding="utf-8"))
         if isinstance(document, dict) and "reviewerSelection" in document:
@@ -3006,18 +3026,19 @@ def range_commits(repo: Path, base: str, rev: str, *, exclude_remotes: bool = Fa
     return commits
 
 
-def _admits_harness_seat(triage, repo: Path, sha: str) -> bool:
+def _admits_harness_seat(triage, repo: Path, sha: str, task_id: str | None = None) -> bool:
     """Whether a commit's triage admits the harness-quality seat. An unreadable Triage trailer admits it:
     the audit then names that commit instead of the whole range check going unavailable."""
     try:
         fields = triage.current(repo, rev=sha)
     except ValueError:
         return True
-    return triage.admits("harness-quality-seat", fields, triage.rigor(root=repo)).admitted
+    return triage.admits("harness-quality-seat", fields, triage.rigor(task_id, root=repo)).admitted
 
 
 def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: list | None = None,
-               paths=None, *, exclude_remotes: bool = False, coverage_base: str | None = None) -> list[dict]:
+               paths=None, *, exclude_remotes: bool = False, coverage_base: str | None = None,
+               task_id: str | None = None) -> list[dict]:
     """Uncovered commits in base..rev. `paths` filters paths with a predicate or a collection.
 
     With a path filter, judge final text states at rev and attribute them to the last changing commit.
@@ -3036,7 +3057,8 @@ def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: lis
             sys.path.insert(0, str(TOOLS_DIR))
             try:
                 triage = _import("triage")
-                commits = [commit for commit in commits if _admits_harness_seat(triage, repo, commit["sha"])]
+                commits = [commit for commit in commits
+                           if _admits_harness_seat(triage, repo, commit["sha"], task_id)]
             finally:
                 sys.path.remove(str(TOOLS_DIR))
         for commit in commits:
@@ -3074,7 +3096,8 @@ def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: lis
     escapes, escape_problem = read_escapes(repo)
     if escape_problem:
         raise LedgerUnreadable(escape_problem)
-    cover = Cover(Ctx(repo, coverage_base or base, snapshot=rev), load_catalog(), rows, escapes, "session")
+    cover = Cover(Ctx(repo, coverage_base or base, snapshot=rev), load_catalog(), rows, escapes, "session",
+                  task_id=task_id)
     base_ctx = Ctx(repo, coverage_base or base, snapshot=base)
     premise_pairs = uncovered_premises(cover, premise_inputs, roster)
     owed = []
@@ -3108,7 +3131,7 @@ def cmd_owed(args, repo: Path) -> int:
     no_upstream = upstream.returncode != 0
     base = args.base_ref if no_upstream else "@{u}"
     for commit in owed_range(repo, base, "HEAD", mandates, roster, is_doctrine_path if args.doctrine else None,
-                             coverage_base=args.base_ref):
+                             coverage_base=args.base_ref, task_id=args.task):
         unchecked = all(len(pair) == 3 for pair in commit["pairs"])
         print(f"{commit['sha'][:7]} {commit['subject']}" + (" (no upstream)" if no_upstream else "")
               + (" (depth-unchecked: no --roster)" if unchecked else ""))
@@ -3131,7 +3154,7 @@ def whole_scope(cover: Cover, subject: str, files: list[str], mandates: list[str
     runs = []
     for (call, head), rows in reversed(list(groups.items())):
         candidate = Cover(cover.ctx, cover.catalog, rows, cover.escapes, _subject_kind(subject),
-                          claude_dir=cover.claude_dir)
+                          claude_dir=cover.claude_dir, rigor=cover.request_rigor)
         pairs = uncovered_pairs(candidate, files, mandates, roster)
         runs.append({"call": call, "head": head, "uncovered": [list(pair) for pair in pairs]})
     complete = next((run for run in runs if not run["uncovered"]), None) if files and mandates else None
@@ -3291,6 +3314,7 @@ def _build_parser() -> argparse.ArgumentParser:
     owed.add_argument("--roster")
     owed.add_argument("--mandates", default="candidate")
     owed.add_argument("--doctrine", action="store_true")
+    owed.add_argument("--task", help="task whose rigor the coverage bar reads; absent, the session's newest record")
     common(owed)
 
     whole = subs.add_parser("whole-scope")

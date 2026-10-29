@@ -15,8 +15,9 @@ Exemptions, each judged on the resolved target and never on the command's wordin
   an echo, a commit body) is no command. `git rm` stays allowed.
 - A recursive delete whose every target is a regenerable cache inside the project, a path below the
   system temp directory holding no git repository, this session's own `.claude/scratch/<session id>`
-  output, a pushed regenerable clone, a retired worktree this session created or the owner's
-  AskUserQuestion answer approved, or a `NAME=$(mktemp -d)` variable the same command owns.
+  output, a pushed regenerable clone, a scratch folder holding no git repository and no registered
+  worktree, a retired worktree (nothing git lacks, every commit on a remote; its ignored files go
+  only when this session created it), or a `NAME=$(mktemp -d)` variable the same command owns.
   Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it.
 
 Git history rewrites (reset --hard, clean -f, force-push, branch -D, stash drop) belong to
@@ -34,7 +35,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import executable_text, _REDIRECTION  # noqa: E402
 from _regenerable_clone import (empty_leftover, is_regenerable_clone, is_retired_worktree,  # noqa: E402
                                 lossless_orphan_worktree, session_created_worktree)
-from _owner_text import classify, owner_consent  # noqa: E402
 from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
 
 
@@ -76,7 +76,7 @@ DANGEROUS_BASH_PATTERNS = [
 _CACHE_SEGMENTS = frozenset({".search-index", "__pycache__", ".pytest_cache"})
 _CACHE_PAIRS = frozenset({(".claude", ".cache"), (".claude", "logs")})
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
-_CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders an owner AskUserQuestion pick named for removal."
+_CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders holding no git repository."
 
 
 def _project_root() -> str:
@@ -222,43 +222,6 @@ def _strip_double(s: str, i: int) -> tuple[str, int]:
     return " ".join(kept), i + 1
 
 
-_REMOVE_LABEL_RE = re.compile(r"\b(?:remove|delete|prune)\b", re.I)
-_KEEP_LABEL_RE = re.compile(r"\b(?:keep|leave|no|not|hold|don't|dont"
-                            r"|except|but|after|once|when|until|later|unless|only)\b", re.I)
-_TRANSCRIPT_TAIL_BYTES = 8 * 1024 * 1024
-
-
-def _owner_approved_removal(token: str, transcript_path: str | None) -> bool:
-    """True when the owner's last AskUserQuestion answer whose question names this worktree picked a
-    remove option with no keep word or qualifier ("except", "after", "only"): a qualified label
-    excludes or defers part of the removal. Answers come from the transcript's `toolUseResult` rows (`_owner_text` pairs), which
-    only the owner's pick writes, so no text the agent writes can grant it."""
-    name = token.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    if not transcript_path or not name:
-        return False
-    named = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", re.I)
-    try:
-        with open(transcript_path, "rb") as fh:
-            size = os.fstat(fh.fileno()).st_size
-            fh.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
-            content = fh.read().decode("utf-8", errors="replace")
-    except (OSError, TypeError, ValueError):
-        return False
-    verdict = False
-    for line in content.splitlines():
-        try:
-            row = classify(json.loads(line), 0, raw=line)
-        except (TypeError, ValueError):
-            continue
-        if row is None or row.meta or row.sidechain or not row.pairs:
-            continue
-        for question, label in row.pairs:
-            if named.search(question):
-                verdict = bool(_REMOVE_LABEL_RE.search(label)) and not _KEEP_LABEL_RE.search(label)
-    return verdict or owner_consent(content.splitlines(), [token.replace("\\", "/").rstrip("/")],
-                                    _REMOVE_LABEL_RE, _KEEP_LABEL_RE)
-
-
 def _registered_worktrees() -> list[str]:
     """Normalized paths of the project's registered worktrees; an unreadable list holds the project root,
     so every scratch target counts as holding one and the delete stays denied."""
@@ -274,20 +237,64 @@ def _registered_worktrees() -> list[str]:
     return [_norm(line[len('worktree '):]) for line in out.stdout.splitlines() if line.startswith('worktree ')]
 
 
-def _owner_approved_scratch(token: str, target: str, transcript_path: str | None,
-                            reasons: list[str] | None = None) -> bool:
-    """A scratch entry that is no clone (a copy, a study's output) is removable once the owner's
-    AskUserQuestion answer names it with a remove pick, unless a registered worktree lies inside it."""
-    held = [wt for wt in _registered_worktrees() if wt == _norm(target) or _strictly_under(wt, _norm(target))]
-    if not _owner_approved_removal(token, transcript_path):
+_ANY_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def _peer_session_folder(target: str, transcript_path: str | None) -> str | None:
+    """The first name, in `target`'s path below scratch or among its direct children, that carries a session id
+    other than this session's: a folder another session's output lives in. This session's own id counts only as
+    a whole name, so a prefixed or extended name is a peer's."""
+    sid = os.path.splitext(os.path.basename(transcript_path or ""))[0].lower()
+    below = os.path.relpath(_norm(target), _norm(os.path.join(_project_root(), '.claude', 'scratch')))
+    names = [p for p in below.replace("\\", "/").split("/") if p]
+    try:
+        names += os.listdir(target)
+    except OSError:
+        pass
+    return next((n for n in names if _ANY_SESSION_ID.search(n) and n.lower() != sid), None)
+
+
+def _peer_working_in(target: str, transcript_path: str | None) -> str | None:
+    """The name of a session in the runtime's local registry, other than this one, whose recorded working
+    directory is `target` or lies inside it: deleting `target` breaks that session. None when the registry
+    cannot be read, so an unreadable registry observes nothing."""
+    try:
+        from peer_message_guard import live_sessions
+        sessions = live_sessions()
+    except Exception:
+        return None
+    sid = os.path.splitext(os.path.basename(transcript_path or ""))[0].lower()
+    base = _norm(target)
+    for row in sessions:
+        if not row["cwd"] or row["sessionId"].lower() == sid:
+            continue
+        here = _norm(row["cwd"])
+        if here == base or _strictly_under(here, base):
+            return row["name"]
+    return None
+
+
+def _removable_scratch_entry(token: str, target: str, cwd: str | None, transcript_path: str | None = None,
+                             reasons: list[str] | None = None) -> bool:
+    """A scratch entry that is no regenerable clone (a copy, a study's output) loses nothing git holds when it
+    contains no git repository and no registered worktree: a repository there may hold commits on no remote.
+    A folder another session's id names is that session's output, not this one's to delete."""
+    peer = _peer_session_folder(target, transcript_path)
+    if peer:
         if reasons is not None:
-            reasons.append('it is no pushed clone and the owner has not approved its removal. Ask the owner in one '
-                           'message naming the folder and the word delete; their next reply approving it lets this '
-                           'delete through')
+            reasons.append('it is or holds another session\'s folder (%s)' % peer)
         return False
+    held =[wt for wt in _registered_worktrees() if wt == _norm(target) or _strictly_under(wt, _norm(target))]
     if held:
         if reasons is not None:
             reasons.append('a registered worktree lies inside it (%s): retire that worktree first' % held[0])
+        return False
+    if _holds_git(target):
+        if reasons is not None:
+            clone: list[str] = []
+            is_regenerable_clone(token, cwd or _project_root(), _project_root(), clone)
+            reasons.append('it holds a git repository whose work is not shown to be saved (%s): push it or delete '
+                           'it by file' % (clone[0] if clone else 'not a clean pushed clone'))
         return False
     return True
 
@@ -296,27 +303,33 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
                            reasons: list[str] | None = None) -> bool:
     """A pushed clone, a lossless orphaned worktree directory (needs no approval: nothing in it is
     unheld by git or a non-regenerable ignored file), an empty leftover directory under scratch (no file,
-    no `.git`), or a retired worktree this session created or the owner approved by name; optionally
-    explain failure."""
+    no `.git`), a scratch entry holding no git repository or worktree, or a retired worktree (ignored files
+    go only when this session created it); optionally explain failure."""
     root = _project_root()
+    target = resolve_cd(cwd or root, token)
+    peer = _peer_working_in(target, transcript_path)
+    if peer:
+        if reasons is not None:
+            reasons.append('live session %s works in it, so deleting it breaks that session: remove it after '
+                           'that session ends' % peer)
+        return False
     if is_regenerable_clone(token, cwd or root, root):
         return True
-    target = resolve_cd(cwd or root, token)
     if _strictly_under(_norm(target), _norm(os.path.join(root, '.claude', 'scratch'))):
         if empty_leftover(_norm(target)):
             return True
-        return _owner_approved_scratch(token, target, transcript_path, reasons)
+        if _UNSAFE_PATH_CHARS.search(token):
+            if reasons is not None:
+                reasons.append('it is not a literal path, so it can match another session\'s folder')
+            return False
+        return _removable_scratch_entry(token, target, cwd, transcript_path, reasons)
     orphan_loss: list[str] = []
     if lossless_orphan_worktree(token, cwd or root, root, orphan_loss):
         return True
-    if not (_owner_approved_removal(token, transcript_path) or session_created_worktree(target, transcript_path)):
-        if reasons is not None:
-            reasons.extend(orphan_loss)
-            reasons.append('ownership not proven: this session did not create it, and the owner has not approved its '
-                           'removal. Ask the owner in one message naming each worktree and the word remove; their '
-                           'next reply approving it lets this delete through')
-        return False
-    return is_retired_worktree(token, cwd or root, root, allow_ignored=True, reasons=reasons)
+    own = session_created_worktree(target, transcript_path)
+    if reasons is not None and not own:
+        reasons.extend(orphan_loss)
+    return is_retired_worktree(token, cwd or root, root, allow_ignored=own, reasons=reasons)
 
 
 _SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")

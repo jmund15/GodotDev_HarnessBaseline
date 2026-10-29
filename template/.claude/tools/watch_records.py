@@ -20,8 +20,8 @@ launcher resumes by itself; a record's `.stall` marker appearing while its upstr
 (`USAGE-LIMIT <label> <transport> resets <UTC time|unknown>`, the launcher's first usage-limit retry; the job's DONE is the wake); a running record whose stream (`<record>.stream`, else `<label>.stream`) has sat on a result written
 after its launch for `sidecar_resume_check.RESULT_LINGER_S` (`LINGERING <label>`, the reading `sidecar_fanout.py --status`
 gives the same run); a fan-out's own process gone while it still lists jobs
-that will never start; or every record of one dispatch unit (one fan-out, one benchmark campaign, or one
-direct launch) ending; or, while work still runs, `CHECKIN_SECONDS` after arm (50 min by default, inside the
+that will never start; or every record of one dispatch unit (one `wakeWith` group or ungrouped job of a fan-out, one benchmark campaign, or one
+direct launch) ending; or, while work still runs, `CHECKIN_SECONDS` after the later of the arm and the session transcript's last write (50 min by default, inside the
 orchestrator's one-hour prompt cache and before its idle compaction (`_hook_state.ORCHESTRATOR_CHECKIN_SECONDS`); `WATCH_RECORDS_CHECKIN_SEC` overrides it), printing a
 `RUNNING` line per job with its age and last write, a `progress:` clause line under it (`agent_progress.clause`: the measures its
 stream shows, `progress unreadable` when the stream cannot be parsed) and `CHECKIN_RULE`, the sentence that says how to judge
@@ -49,7 +49,9 @@ that ended since the transcript byte offset saved in session hook state (`sideca
 `SHELL <id> <status> exit=<n>` with its output path, failure-marker lines and tail; a shell that ran this watcher is skipped.
 Ended Workflow runs and shells never wake the watcher: they print with the next wake, once. The last lines before `STILL RUNNING`
 or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispatches.
-Any other flag is a usage error (exit 2), never a record path. A successful job whose unit still has running jobs wakes nobody.
+Any other flag is a usage error (exit 2), never a record path. A fan-out job that ends cleanly wakes the session on its own, once,
+unless another job of its `wakeWith` group (the group its inventory row records) still runs, or its fan-out still runs an
+after-seat stage; the group's last end wakes. A fan-out job with no group is its own unit.
 A benchmark campaign's cells (direct launches labelled `<campaign>-<date>:<task>:<model>:r<n>`) are one unit: while
 `<logs>/<campaign>/grid.log` has a `CELL` line after its last terminal `GRID` line and `grid.pid` is alive, the grid
 has cells no pending entry names yet, so the cells that ended wake nobody and the watcher stays live. The unit
@@ -119,7 +121,7 @@ CHECKIN_RULE = (
     "Not converging: the same unit reworked, results flat, a new cause each cycle. A job not converging gets, in order "
     "of cost kept: an amend file for its brief (the brief's full file name plus `.amend.md`), its finished items split off, or a stop through "
     "tools/reap.py with these facts in hand. A job still progressing stops only on the owner's word. "
-    "`watch_records.py --digest <record or transcript>` prints a job's whole course. Then re-arm.")
+    "`watch_records.py --digest <record or transcript>` prints a job's whole course. Then re-arm (the RE-ARM NOW line).")
 
 
 def _proc_started_linux(pid):
@@ -419,12 +421,15 @@ def _entry_label(entry):
 def superseded(entry, pending):
     """True for a fan-out entry that allocated no record while a later call for the same label and out dir did: a
     call the launch refused (the doctrine or tier check) and the caller re-issued. The later call's entry watches
-    the job; this one would wake the session with `UNRESOLVED` for work that runs."""
+    the job; this one would wake the session with `UNRESOLVED` for work that runs. A call refused for its out dir
+    never created that dir, so its re-issue elsewhere supersedes it too."""
     issued = _launch_time(entry)
     if entry.get("record") or not entry.get("fanout_dir") or issued is None:
         return False
+    never_made = not os.path.isdir(entry["fanout_dir"])
     return any(other is not entry and other.get("record") and other.get("fanout_dir")
-               and _entry_label(other) == _entry_label(entry) and _same_dir(other["fanout_dir"], entry["fanout_dir"])
+               and _entry_label(other) == _entry_label(entry)
+               and (never_made or _same_dir(other["fanout_dir"], entry["fanout_dir"]))
                and (_launch_time(other) or 0.0) > issued for other in pending)
 
 
@@ -1049,6 +1054,19 @@ def _inventory(unit):
     return None, []
 
 
+def group_holds(unit, label):
+    """True while a job that shares `label`'s `wakeWith` group in this fan-out's inventory is provably still running.
+
+    The group is a fact the fan-out wrote on each inventory row; it is never inferred. A member the ladder cannot
+    place (`NO-IDENTITY`) does not hold, so an unreadable job never silences a finished result."""
+    jobs = _inventory(unit)[1]
+    group = next((j.get("wakeWith") for j in jobs if j.get("label") == label), None)
+    if not (isinstance(group, str) and group):
+        return False
+    return any(record_state(j["recordPath"])[0] == "WATCH" for j in jobs
+               if j.get("label") != label and j.get("wakeWith") == group and j.get("recordPath"))
+
+
 def orphan_line(unit):
     """`ORPHANED <labels>` when the unit's fan-out process is gone but still lists jobs that never
     started; None otherwise."""
@@ -1358,8 +1376,13 @@ def _wake(grouped, now=None):
                 if stopped:
                     text = "STOPPED %s (stopped by this session)" % label
                 elif state == "DONE" and not (finish and finish.get("outcome") == ENDED):
-                    text = "\n".join([text] + _digest().sidecar_lines(label, record, unit.get("fanout_dir")))
-                lines.append(("end", identity, text, failed and not stopped))
+                    brief = next((j.get("brief") for j in _inventory(unit)[1] if j.get("label") == label), None)
+                    text = "\n".join([text] + _digest().sidecar_lines(label, record, unit.get("fanout_dir"), brief))
+                # A fan-out job's clean end wakes unless its fold stage is still to run or a member of its
+                # `wakeWith` group runs: its result is actionable alone.
+                alone = (state == "DONE" and not failed and not stopped and bool(unit.get("fanout_dir"))
+                         and not unit.get("folding") and not group_holds(unit, label))
+                lines.append(("end", identity, text, "once" if alone else failed and not stopped))
                 orphan = orphan_processes(label, record) if state == "DIED" else None
                 if orphan:
                     lines.append(("orphan-process", ("orphan-process", _norm_record(record)), orphan, "always"))
@@ -1555,6 +1578,24 @@ def _acknowledge(path, identities):
         _hook_state.update_json_locked(path, add)
 
 
+def _still_running(live):
+    """The wake's last lines. This watcher exits as it wakes, so with work still live nothing watches until the
+    orchestrator arms the next one: the command closes the output, where the reader acts."""
+    print("STILL RUNNING %d" % live, flush=True)
+    if live:
+        print("RE-ARM NOW: %s (its own Bash call, run_in_background, timeout 7200000)" % ARM_COMMAND, flush=True)
+
+
+def _idle_since(source, armed):
+    """When the orchestrator last spent its prompt cache: the later of the arm and its transcript's last write.
+    A turn taken after the arm (an owner prompt) already refreshed the cache, so the check-in waits from that turn."""
+    path = getattr(getattr(source, "shells", None), "path", None)
+    try:
+        return max(armed, os.path.getmtime(path)) if path else armed
+    except OSError:
+        return armed
+
+
 def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
     """Poll `source()` (a `{key: unit}` map) and apply the wake rule. Returns the exit code.
 
@@ -1579,7 +1620,7 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
     def say(kind, identity, text, triggers):
         print(text, flush=True)
         said.append(identity)
-        if kind in REPORTED_ONCE_KINDS and not triggers:
+        if kind in REPORTED_ONCE_KINDS and triggers in (False, "once"):
             printed.append(identity)
 
     def leave(code=0):
@@ -1620,7 +1661,7 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
             if observation in seen:
                 continue
             seen.add(observation)
-            if kind in REPORTED_ONCE_KINDS and not triggers and _wake_event_key(identity) in reported:
+            if kind in REPORTED_ONCE_KINDS and triggers in (False, "once") and _wake_event_key(identity) in reported:
                 continue
             if triggers and _wake_event_key(identity) in fresh:
                 woke = True
@@ -1640,14 +1681,14 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
                 return leave()
         elif woke:
             release(deferred, lines, standing)
-            print("STILL RUNNING %d" % live, flush=True)
+            _still_running(live)
             return leave()
-        elif live and time.time() - armed >= CHECKIN_SECONDS:
+        elif live and time.time() - _idle_since(source, armed) >= CHECKIN_SECONDS:
             release(deferred, lines, standing)
             for text in checkin_lines(grouped):
                 print(text, flush=True)
-            print("CHECKIN after %d min: %s" % ((time.time() - armed) // 60, CHECKIN_RULE), flush=True)
-            print("STILL RUNNING %d" % live, flush=True)
+            print("CHECKIN after %d min: %s" % ((time.time() - _idle_since(source, armed)) // 60, CHECKIN_RULE), flush=True)
+            _still_running(live)
             return leave()
         elif not live:
             release(deferred, lines, standing)

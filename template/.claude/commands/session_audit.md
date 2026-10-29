@@ -5,7 +5,7 @@ allowed-tools: Bash(python3 .claude/tools/lens.py:*), Bash(python3 .claude/tools
 
 Audit all code changes from this session for code smells, sub-optimal design, and substantive improvements. Delegates analysis to the seats of its seat map, running in parallel, then consolidates findings.
 
-**Run on its own, this command is advisory — it does NOT block commits, except Phase 1.5's MERGE-BLOCKER findings.** Inside a calling drive or `/session_end` Phase 1, the caller's approval covers every finding: fix it now, worklog it only for a defer reason `worklog_reference` §Do-now gate names, or refuse it with evidence, with no per-finding walkthrough.
+**Run on its own, this command is advisory — it does NOT block commits, except Phase 1.5's critical parity findings.** Inside a calling drive or `/session_end` Phase 1, the caller's approval covers every finding: fix it now, worklog it only for a defer reason `worklog_reference` §Do-now gate names, or refuse it with evidence, with no per-finding walkthrough. A finding below the run's bar is listed `below bar: noted` with one offer to apply it (`orchestration` reference `rigor.md`).
 
 ## Arguments
 
@@ -42,21 +42,21 @@ Each seat's CONTEXT lists the `uncoveredFiles` `plan` returned for it (§Ledger 
 
 ---
 
-## Phase 1.5: Deleted-Surface Parity Screen (MERGE-BLOCKER tier)
+## Phase 1.5: Deleted-Surface Parity Screen (critical parity finding tier)
 
 A `--lens` seam review skips this phase only when a later candidate review will run it. Drive-close and `/session_end` candidate reviews run the applicable parity checks even with a restricted roster.
 
-**Run this BEFORE the audit seats.** Findings here surface at the TOP of the report and are tagged MERGE-BLOCKER (above FIX/ASK/PLAN). Before commit, each is fixed or the user explicitly approves "ship anyway". Inside a caller, an unfixed MERGE-BLOCKER halts the caller.
+**Run this BEFORE the audit seats.** Findings here surface at the TOP of the report and are tagged critical parity finding (above FIX/ASK/PLAN). Before commit, each is fixed or the user explicitly approves "ship anyway". Inside a caller, an unfixed critical parity finding halts the caller.
 
 ### 1.5a. Stub-marker scan
 
 Read [`session_audit_parity.md`](reference/session_audit_parity.md) §Stub-marker scan for the lines to scan, the markers and the blocking examples.
 
-A hit is a MERGE-BLOCKER only when its surrounding code shows unfinished wiring in shipped code; otherwise report it as a note, not in the blocker count. Surface the file, line number and surrounding context.
+A hit is a critical parity finding only when its surrounding code shows unfinished wiring in shipped code; otherwise report it as a note, not in the critical count. Surface the file, line number and surrounding context.
 
 ### 1.5b. Deleted-surface parity diff
 
-The ledger's `parity` mandate covers this deleted-surface check, not a behavioural baseline. Run the [Retired-code procedure](checklists/parity.md) over each session-changed file whose directory lost a file in the session diff. Any retired surface item it leaves unaccounted for is a MERGE-BLOCKER finding. After the check, record it inline: `python3 .claude/tools/review_ledger.py record --stage candidate --subject session:<sid> --inline session_audit --mandate parity --outcome <findings|clean> --files <the checked files> [--task <id>]`.
+The ledger's `parity` mandate covers this deleted-surface check, not a behavioural baseline. Run the [Retired-code procedure](checklists/parity.md) over each session-changed file whose directory lost a file in the session diff. Any retired surface item it leaves unaccounted for is a critical parity finding. After the check, record it inline: `python3 .claude/tools/review_ledger.py record --stage candidate --subject session:<sid> --inline session_audit --mandate parity --outcome <findings|clean> --files <the checked files> [--task <id>]`.
 
 ### 1.5c. Gameplay-domain regression re-triage
 
@@ -66,7 +66,7 @@ When session-changed files touch `Wizard/`, `UI/`, `VFX/` or `Prototype/` and th
 
 If 1.5a/b find issues, report them in the shape of [`session_audit_parity.md`](reference/session_audit_parity.md) §Report shape.
 
-If clean, log `Deleted-surface parity: CLEAN` and proceed to Phase 2. Report `Behavioural baseline: <proved|unverified|not applicable>` separately, with receipt paths and comparison verdict when proved; `drive_spine.md` §Slices owns its trigger and required before/after receipts.
+If clean, log `Deleted-surface parity: no critical parity finding` and proceed to Phase 2. Report `Behavioural baseline: <proved|unverified|not applicable>` separately, with receipt paths and comparison verdict when proved; `drive_spine.md` §Slices owns its trigger and required before/after receipts.
 
 ---
 
@@ -158,17 +158,17 @@ Then present findings grouped by action tier (FIX → ASK → PLAN) per the prot
 
 ### Verdict — two axes, never merged
 
-Issue **two** verdicts: **correctness** (findings tagged `bug` or `rule` — silent failures, regressions, violated project rules) and **design** (findings tagged `improvement` — structure, seams, naming, taste). Never average them into one rating: strong design plus one data-loss bug is `REVIEW RECOMMENDED` on correctness and `CLEAN` on design, never "pretty good".
+Issue **two** verdicts: **correctness** (findings tagged `bug` or `rule` — silent failures, regressions, violated project rules) and **design** (findings tagged `improvement` — structure, seams, naming, taste). Never average them into one rating: strong design plus one data-loss bug is `REVISE` on correctness and `APPROVE` on design, never "pretty good".
 
-Before `CLEAN` on correctness, run `python3 .claude/tools/task_record.py check --rerun <task_id>` on the session's active record: a STALE or MISSING row, or one whose evidence items check UNVERIFIED or UNCHECKED, is a decision whose premise is unverified and holds the axis at `REVIEW RECOMMENDED` until it is re-run.
+Before `APPROVE` on correctness, run `python3 .claude/tools/task_record.py check --rerun <task_id>` on the session's active record: a STALE or MISSING row, or one whose evidence items check UNVERIFIED or UNCHECKED, is a decision whose premise is unverified and holds the axis at `REVISE` until it is re-run.
 
-Each axis's verdict is set by its **worst surviving finding** — not the average, not the count:
+Each axis's verdict is set by its **worst surviving finding** that counts at the run's rigor (`orchestration` reference `rigor.md`); a finding below the bar is listed `below bar: noted` and moves no verdict — not the average, not the count:
 
-- **CLEAN** — no surviving finding on this axis.
-- **MINOR POLISH** — worst surviving finding is non-critical.
-- **REVIEW RECOMMENDED** — worst surviving finding is `critical: true`, a MERGE-BLOCKER from Phase 1.5, or an open PLAN (`question` set) of category `bug` or `rule`. Address before commit.
+- **APPROVE** — no surviving finding on this axis.
+- **APPROVE WITH NOTES** — worst surviving finding is non-critical.
+- **REVISE** — worst surviving finding is `critical: true`, a critical parity finding from Phase 1.5, or an open PLAN (`question` set) of category `bug` or `rule`. Address before commit.
 
-**Harness sessions close with one context-cost line** (harness set non-empty): run `python3 .claude/tools/load_census.py --delta <base>`. Append any new per-call hook emission from the `sa-harness-quality` runtime observation.
+**Harness sessions close with one context-cost line** (harness set non-empty): run `python3 .claude/tools/load_census.py --budgets` and report each budget's measured value against its baseline, plus any oversized body it flags. Append any new per-call hook emission from the `sa-harness-quality` runtime observation.
 
 ### Execute Actions
 
