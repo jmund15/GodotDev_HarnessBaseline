@@ -153,12 +153,15 @@ def freeze(args):
     for index, path in enumerate(files):
         committed = git(root, "diff", "--no-renames", f"{args.session_base}..{head}", "--", path)
         dirty = "" if path in committed_only else git(root, "diff", "HEAD", "--", path)
-        if path not in committed_only and not git(root, "ls-files", "--", path).strip() and (root / path).is_file():
-            dirty = (root / path).read_text(encoding="utf-8")
+        deleted = git(root, "cat-file", "-e", f"{args.session_base}:{path}", optional=True) is not None and \
+            git(root, "cat-file", "-e", f"{head}:{path}", optional=True) is None
+        if (path not in committed_only and not deleted and not git(root, "ls-files", "--", path).strip()
+                and (root / path).is_file()):
+            dirty = (root / path).read_text(encoding="utf-8", errors="replace")
         diffs.append((f"subject-{index}.diff", f"{path}\n{committed}\n{dirty}", True))
         if path in blobs:
             content = (git(root, "show", f"{head}:{path}") if path in committed_only
-                       else (root / path).read_text(encoding="utf-8"))
+                       else (root / path).read_text(encoding="utf-8", errors="replace"))
             new = git(root, "cat-file", "-e", f"{args.session_base}:{path}", optional=True) is None
             diffs.append((f"subject-{index}.txt", content, judged_whole(path) and not new))
     for path, blob in blobs.items():

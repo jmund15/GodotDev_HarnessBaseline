@@ -99,9 +99,29 @@ def case_must_read_holds_whole_copies_only_of_whole_judged_files(directory):
     assert all((folder / f"subject-{i}.txt").is_file() for i in range(3)), "each frozen copy stays on disk"
 
 
+def case_a_binary_left_on_disk_after_its_deletion_freezes(directory):
+    repo, _, roster = planted_checkout(directory)
+    binary = ".claude/tests/__pycache__/x.cpython-314.pyc"
+    (repo / binary).parent.mkdir(parents=True, exist_ok=True)
+    (repo / binary).write_bytes(b"\xd7\x0d\x0d\x0a\x00binary")
+    git(repo, "add", "-f", binary)
+    git(repo, "commit", "-q", "-m", "planted binary")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "rm", "-q", "--cached", binary)
+    git(repo, "commit", "-q", "-m", "untrack binary")
+    env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_SESSION_ID"}
+    done = subprocess.run([sys.executable, str(TOOL), "--root", str(repo), "--base-ref", "HEAD~1",
+                           "--session-base", base, "--roster", str(roster), "--out", ".claude/scratch/run/inputs.json",
+                           "--files", binary], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (repo / binary).is_file(), "the leftover copy stays on disk"
+
+
 def main():
     cases = [case_unreadable_roster_exits_nonzero, case_out_path_outside_checkout_exits_nonzero,
-             case_planted_checkout_freezes_inputs, case_must_read_holds_whole_copies_only_of_whole_judged_files]
+             case_planted_checkout_freezes_inputs, case_must_read_holds_whole_copies_only_of_whole_judged_files,
+             case_a_binary_left_on_disk_after_its_deletion_freezes]
     failures = []
     for case in cases:
         directory = tempfile.mkdtemp(prefix="session-audit-inputs-proof-")

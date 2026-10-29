@@ -71,8 +71,8 @@ PID_RE = re.compile(r"(?:/PID|/pid|-PID)\s+(\d+)|(?:^|\s|;|&&|\|)kill\s+(?:-\w+\
 # budget cannot afford resolves nothing, so the kill fails closed instead of the hook timing out open.
 HOOK_BUDGET_S = 15.0
 SUBPROCESS_TIMEOUT_S = 5
-NOT_LAUNCHED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — this session did not launch task %s "
-                "(a peer's or a subagent's). Stop it from the session or launcher that owns it.")
+NOT_LAUNCHED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — no launch of task %s by this session's main thread is in the transcript "
+                "(a peer's or a subagent's task, or a transcript the hook cannot read). Stop it from the session or launcher that owns it.")
 
 
 def _launch_of(transcript_path, task_id):

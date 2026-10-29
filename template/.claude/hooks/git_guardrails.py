@@ -144,7 +144,7 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
     side = "--theirs" in opts or "--ours" in opts
     base = refs[0] if refs else (source[0] if source else None)
     for path in paths:
-        if "__pycache__" in Path(path).parts:
+        if "__pycache__" in Path(path).parts and ".." not in Path(path).parts and not path.startswith(":"):
             continue
         if side:
             if path.lower().endswith(_SIDE_UNSAFE):
@@ -260,6 +260,22 @@ def _checkout_retry(rest, cwd):
     return "then the same command passes."
 
 
+def _restore_retry(rest, cwd):
+    """The step after the save that `_discards_nothing` admits for this restore's shape: one named file at a
+    time for `.`, a glob or a directory, no `--worktree`/`-W` (restore's default), `--source=<ref>` spelled with
+    the equals sign, else the same command."""
+    split = rest.index("--") if "--" in rest else len(rest)
+    paths = rest[split + 1:] if "--" in rest else [a for a in rest if not a.startswith("-")]
+    if any(p in (".", ":/", "/") or re.search(r"[*?\[\]$`%]", p) or (cwd and os.path.isdir(os.path.join(cwd, p)))
+           for p in paths):
+        return "then name each file: `git restore <file>` for one saved edit at a time."
+    if "--worktree" in rest or "W" in short_flag_chars(rest):
+        return "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
+    if "-s" in rest:
+        return "then spell the source `--source=<ref>` and name one saved file."
+    return "then the same command passes."
+
+
 def verdict(args, cwd=None, git_env=None, transcript_path=None):
     """Return a one-line block message, or None if allowed. `cwd` is the repo the command
     targets; without it a checkout/restore discard is judged unsafe."""
@@ -286,17 +302,18 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
                     "`-n` first, then ask the user to confirm.")
 
     if sub == "checkout" and ("--" in rest or "." in rest):
-        return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "overwrites uncommitted edits to those paths, which may be another session's. To discard an "
-                "edit, save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
+        return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+                "overwrites uncommitted edits to those paths, which may be another session's; another session's "
+                "edit needs the owner's words first. To discard your own edit, save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
                 + _checkout_retry(rest, cwd))
 
     staged_only = ({"--staged", "-S"} & set(rest)) and not ("--worktree" in rest or "W" in short_flag_chars(rest))
     if sub == "restore" and not staged_only:
-        return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "discards uncommitted worktree edits, which may be another session's. To discard an edit, "
-                "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, then the same "
-                "command passes.")
+        return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+                "discards uncommitted worktree edits, which may be another session's; another session's edit "
+                "needs the owner's words first. To discard your own edit, "
+                "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
+                + _restore_retry(rest, cwd))
 
     if sub == "push":
         forcing = {"--force", "--force-with-lease", "--force-if-includes"} & set(rest)
@@ -312,7 +329,7 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
     if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)):
         problems = _branch_deletion_problems(rest, cwd, git_env)
         if problems:
-            return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+            return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
                     "force-deleting would lose commits: " + "; ".join(problems) + ". "
                     + ("Name only local branches, with no flag beyond `-D`. "
                        if any(not p.endswith("holds commits no other ref has") for p in problems) else "")
@@ -1014,8 +1031,7 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: prove this "
                      "session's commits with `python3 .claude/scripts/harness_tests.py --for <their paths> --base <the "
                      "revision before them>`, then `git push origin HEAD:%s<session id's first 8 chars>`; the runner "
-                     "runs the close and lands the branch. A direct push needs `python3 "
-                     ".claude/scripts/harness_tests.py --close` in the background first, then the commit it proves."
+                     "runs the close and lands the branch."
                      % land)
     else:
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "

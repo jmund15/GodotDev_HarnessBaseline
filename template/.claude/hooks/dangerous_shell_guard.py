@@ -18,7 +18,8 @@ Exemptions, each judged on the resolved target and never on the command's wordin
   output, a pushed regenerable clone, a scratch folder holding no git repository and no registered
   worktree, a retired worktree (nothing git lacks, every commit on a remote; its ignored files go
   only when this session created it), or a `NAME=$(mktemp -d)` variable the same command owns.
-  Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it.
+  Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it, as
+  does a target a live peer session works in, or a scratch target that is or holds another session's id folder.
 
 Git history rewrites (reset --hard, clean -f, force-push, branch -D, stash drop) belong to
 `git_guardrails`, which parses git invocations; this file holds no second copy of them.
@@ -293,8 +294,8 @@ def _removable_scratch_entry(token: str, target: str, cwd: str | None, transcrip
         if reasons is not None:
             clone: list[str] = []
             is_regenerable_clone(token, cwd or _project_root(), _project_root(), clone)
-            reasons.append('it holds a git repository whose work is not shown to be saved (%s): push it or delete '
-                           'it by file' % (clone[0] if clone else 'not a clean pushed clone'))
+            reasons.append('it holds a git repository whose work is not shown to be saved (%s): push its commits to a remote, then '
+                           'delete it' % (clone[0] if clone else 'not a clean pushed clone'))
         return False
     return True
 

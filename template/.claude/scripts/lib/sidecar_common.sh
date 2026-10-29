@@ -866,7 +866,13 @@ PY
 # them to another plan through the fan-out's exit-10 fallback.
 sc_mark_auth_failure() { # <output> <rc>
   [ "${2:-0}" != 0 ] || return 0
-  printf '%s' "$1" | grep -Eq 'Failed to authenticate|"api_error_status": ?401' || return 0
+  local _row
+  if printf '%s\n' "$1" | grep -Eq '^\{"type": ?"'; then
+    _row=$(printf '%s\n' "$1" | grep -E '^\{"type": ?"result"' | tail -n 1)
+    printf '%s' "$_row" | grep -Eq '"result": ?"Failed to authenticate|"api_error_status": ?401' || return 0
+  else
+    printf '%s' "$1" | grep -Eq 'Failed to authenticate|"api_error_status": ?401' || return 0
+  fi
   SC_EXHAUSTED_REASON=auth sc_mark_exhausted
 }
 

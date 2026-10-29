@@ -36,7 +36,7 @@ Read [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 1 context 
 
 Run the seats with explicit model, effort and agent profile through the existing engines. `orchestration` owns role/transport/currency selection. One arm per seat, because the engine keys coverage per seat (`args.agents`); extra providers are not automatic work. Same-task comparisons require an explicit comparison request and budget.
 
-Every admitted mandate of the shape runs. Width and depth come from the triage 1b read and the drive's rigor, and each seat is told the rigor's bar by the engine contract (`orchestration` reference `rigor.md`); `orchestration` §2 *Sizing the width* (size and room rules) and §5 *Effort*. A merge follows the order in the table below, and the report states the rigor, the seats and why. A merged seat returns separate evidence for each mandate it carries.
+Every admitted mandate of the shape runs. Width and depth come from the triage 1b read and the drive's rigor (`orchestration` reference `rigor.md`): `orchestration` §2 *Sizing the width* (size and room rules) and §5 *Effort*. A merge follows the order in the table below, and the report states the rigor, the seats and why. A merged seat returns separate evidence for each mandate it carries.
 
 | Shape | Mandates | Merge order |
 |---|---|---|
