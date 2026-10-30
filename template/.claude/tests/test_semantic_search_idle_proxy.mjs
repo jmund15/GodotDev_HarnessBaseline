@@ -17,7 +17,7 @@ import { mkdirSync, rmSync, rmdirSync, writeFileSync, readFileSync, existsSync, 
 import net from 'node:net'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -25,7 +25,8 @@ const REPO = path.resolve(HERE, '..', '..')
 const PROXY = process.env.SEMANTIC_SEARCH_IDLE_TEST_PROXY
 	? path.resolve(process.env.SEMANTIC_SEARCH_IDLE_TEST_PROXY)
 	: path.join(REPO, '.claude', 'tools', 'semantic_search_idle_proxy.mjs')
-const SCRATCH = path.join(REPO, '.claude', 'scratch', 'semantic_search_idle', `run-${process.pid}-${Date.now()}`)
+// Under the OS temp root: a fixture nested in a deep checkout passes Windows' path limit and git cannot stat it.
+const SCRATCH = path.join(tmpdir(), 'semantic_search_idle', `run-${process.pid}-${Date.now()}`)
 const BACKEND_FIRST_SEEN = new Map()
 const REGISTRY = path.join(homedir(), '.claude', 'plugins', 'installed_plugins.json')
 if (!process.env.SEMANTIC_SEARCH_IDLE_TEST_PLUGIN_ROOT && !existsSync(REGISTRY)) {

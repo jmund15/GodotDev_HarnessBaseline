@@ -57,6 +57,30 @@ def main():
             ok, detail = False, str(exc)[:300]
         longest = max((len(str(p)) for p in target.rglob("*")), default=0)
         check(f"{name}._git adds a worktree whose paths pass 260 characters ({longest})", ok and longest > 260, detail)
+    # A publish battery's own tests run plain git in the worktree, with no `-c` of the tools'; the repo's config
+    # must carry core.longpaths for them.
+    # A tracked file whose absolute path in the new worktree is exactly 260 characters: the length the publish
+    # battery failed at (paths well past it took another route in git for Windows and passed).
+    target = root / "added"
+    edge = Path("e" * 40) / ("x" * (260 - len(str(target)) - 44) + ".j")
+    edge_src = src / edge
+    edge_src.parent.mkdir(parents=True)
+    edge_src.write_text("{}\n", encoding="utf-8")
+    for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "edge"]):
+        subprocess.run(["git", "-C", str(src), "-c", "core.longpaths=true", *args], check=True, capture_output=True)
+    try:
+        baseline_sync.add_worktree(src, ["-q", "-b", "t-added", str(target), "HEAD"])
+        assert len(str(target / edge)) == 260, len(str(target / edge))
+        # The bootstrap proof's snapshot: a fresh index from HEAD, so `add -A` opens every tracked deep file, under
+        # Git for Windows' install-default core.fscache (its system gitconfig, blanked above).
+        env = dict(os.environ, GIT_INDEX_FILE=str(root / "snapshot.index"))
+        plain_git = ["git", "-C", str(target), "-c", "core.fscache=true"]
+        subprocess.run(plain_git + ["read-tree", "HEAD"], env=env, check=True, capture_output=True)
+        plain = subprocess.run(plain_git + ["add", "-A"], env=env, capture_output=True, text=True)
+        ok, detail = plain.returncode == 0, plain.stderr[:300]
+    except Exception as exc:  # noqa: BLE001 - the error text is the evidence
+        ok, detail = False, str(exc)[:300]
+    check("add_worktree leaves plain git in the worktree able to index a 260-character path", ok, detail)
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         return 1

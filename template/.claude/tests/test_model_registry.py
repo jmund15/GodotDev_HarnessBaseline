@@ -1811,10 +1811,12 @@ def _with_evidence(cell):
     return [r.replace("| pub |", "| %s |" % cell) if r.startswith("| kimi ") else r for r in FAMILY_ROWS]
 
 
-INTENDED_GO_FANOUT = {"go-deepseek-flash", "go-mimo-v2-6-flash", "go-qwen3-8-flash", "go-gpt-6-luna",
-                      "go-mimo-v2-6-pro"}
-INTENDED_GO_NO_ROLE = {"go-kimi", "go-glm", "go-qwen3-8-max", "go-grok-4-7", "go-hy4-preview"}
-INTENDED_GO_SCOUT = {"go-minimax-m3", "go-longcat-2-0", "go-kimi-k2-7-code", "go-hy3"}
+# The Go plan runs deepseek-flash alone: it serves every tier Go serves, and no other Go row claims one.
+INTENDED_GO_FANOUT = {"go-deepseek-flash"}
+INTENDED_GO_NO_ROLE = {"go-kimi", "go-glm", "go-qwen3-8-max", "go-grok-4-7", "go-hy4-preview", "go-gpt-6-luna",
+                       "go-mimo-v2-6-flash", "go-mimo-v2-6-pro", "go-qwen3-8-flash", "go-minimax-m3",
+                       "go-longcat-2-0", "go-kimi-k2-7-code", "go-hy3"}
+INTENDED_GO_SCOUT = {"go-deepseek-flash"}
 
 
 def _row_versions():
@@ -1878,6 +1880,15 @@ def _ladder_family_cases(live):
          lambda: INTENDED_GO_FANOUT <= cross("fanout")),
         ("LIVE: `for-role fanout` never lists a Go row the plan does not run",
          lambda: not (INTENDED_GO_NO_ROLE & cross("fanout"))),
+        ("issuer names the lab by the row's family, whatever transport serves it",
+         lambda: [mr.issuer(a, {"models": [{"id": "x/l", "alias": "l1", "transport": "t1", "family": "lf"},
+                                            {"id": "y/l", "alias": "l2", "transport": "t2", "family": "lf"}],
+                                 "familyIssuers": {"lf": "Lab"}}) for a in ("l1", "l2")] == ["Lab", "Lab"]),
+        ("issuer is None for an unknown row or a family the table omits",
+         lambda: [mr.issuer(a, {"models": [{"id": "z", "alias": "z1", "transport": "t", "family": "nf"}],
+                                 "familyIssuers": {}}) for a in ("z1", "nope")] == [None, None]),
+        ("LIVE: `for-role scout` never lists a Go row the plan does not run",
+         lambda: not (INTENDED_GO_NO_ROLE & cross("scout"))),
         ("LIVE: `for-role scout` lists the scout pool's Go rows across the hop",
          lambda: INTENDED_GO_SCOUT <= cross("scout")),
         ("LIVE: every live ladder row carries a valid evidence cell",

@@ -214,9 +214,14 @@ def _first_visible_add(command: str, cwd: str) -> list[Path]:
         segment, sep = (command[:match.start()], match.group(0)) if match else (command, '')
         target = _visible_add_target(segment, cwd) if sep != '||' else []
         if not target:
-            # A submodule init between literal loop iterations cannot skip the next add.
+            # A submodule init or an expansion-free simple command (an `echo ok`) between literal loop
+            # iterations cannot skip or move the next add.
             parsed = _visible_git_invocation(segment, cwd)
+            words = segment.split()
             if sep in (';', '\n') and parsed and parsed[0][:3] == ['submodule', 'update', '--init']:
+                continue
+            if (sep in (';', '\n') and words and words[0] == 'echo'
+                    and not re.search(r'[$`<>|]', segment)):
                 continue
             break
         found += target
